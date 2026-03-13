@@ -385,7 +385,7 @@
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
                         <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels}>
-                            <RefreshCw size={14} class:loader-spin={loadingModels} />
+                            <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
                 </div>
@@ -393,7 +393,7 @@
 
             <div class="actions">
                 <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
-                    <span class:loader-spin={testingConnection}>
+                    <span class={testingConnection ? "loader-spin" : ""}>
                         {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
                     </span>
                     {i18n.t.settings.test_connection}
