@@ -44,38 +44,41 @@ export class BatchManager {
     }
 
     async addItem(path: string, name: string) {
-        // Prevent duplicates in the current batch
-        if (this.items.find(i => i.originalPath === path)) {
+        // Synchronous immediate check to prevent double adding from rapid calls (like drag-drop loop)
+        if (this.items.some(i => i.originalPath === path)) {
             console.log(`[BatchManager] Skipping duplicate: ${name}`);
             return;
         }
 
         console.log(`[BatchManager] Adding item: ${name} at ${path}`);
+        
+        // Push a placeholder immediately to claim the path
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
         
-        let size = 0;
-        let modifiedAt = Date.now();
-        
-        try {
-            const s = await stat(path);
-            size = s.size;
-            modifiedAt = s.mtime?.getTime() || Date.now();
-        } catch(e) {
-            console.warn(`[BatchManager] Failed to stat file ${path}:`, e);
-        }
-
-        this.items.push({
+        const newItem: BatchItem = {
             id,
             originalPath: path,
             originalName: name,
             extension,
-            size,
-            modifiedAt,
+            size: 0,
+            modifiedAt: Date.now(),
             status: 'queued',
             isAccepted: false,
             isIgnored: false
-        });
+        };
+        
+        this.items.push(newItem);
+
+        // Update with real stats asynchronously
+        try {
+            const s = await stat(path);
+            newItem.size = s.size;
+            newItem.modifiedAt = s.mtime?.getTime() || Date.now();
+        } catch(e) {
+            console.warn(`[BatchManager] Failed to stat file ${path}:`, e);
+        }
+
         await this.saveCurrentSession();
     }
 

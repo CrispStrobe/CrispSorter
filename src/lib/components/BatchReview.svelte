@@ -115,7 +115,7 @@
             </div>
 
             <div class="search-box">
-                <Search size={14} class="dim-icon" />
+                <Search size={14} style="color: #71717a; margin-right: 8px;" />
                 <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} />
             </div>
 
@@ -280,7 +280,6 @@
     .dropdown-menu button:hover { background: #27272a; color: white; }
 
     .search-box { display: flex; align-items: center; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 0 10px; flex: 1; min-width: 250px; }
-    .dim-icon { color: #71717a; margin-right: 8px; }
     .search-box input { border: none; background: transparent; color: white; padding: 4px 0; font-size: 0.8125rem; width: 100%; }
     .search-box input:focus { outline: none; }
 
