@@ -1,12 +1,13 @@
 <script lang="ts">
     import { batchManager } from '../batch/store.svelte';
-    import { llmClient } from '../llm/client';
+    import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
     import { getSetting } from '../store';
     import { i18n } from '../i18n.svelte';
     import { 
         Send, User, Bot, Trash2, FileText, 
-        ChevronRight, Loader2, Info
+        ChevronRight, Loader2, Info, Cpu, Zap
     } from 'lucide-svelte';
+    import { onMount } from 'svelte';
 
     interface Message {
         role: 'user' | 'assistant';
@@ -19,6 +20,34 @@
     let isTyping = $state(false);
     let selectedIds = $state<Set<string>>(new Set());
     let scrollContainer: HTMLDivElement;
+
+    // Chat-specific engine selection
+    let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
+    let activeProviderId = $state('ollama');
+    let selectedModel = $state('');
+    let localModels = $state<any[]>([]);
+
+    onMount(async () => {
+        const savedProviders = await getSetting('providers');
+        if (savedProviders) providers = savedProviders as LLMProvider[];
+        
+        activeProviderId = await getSetting('activeProviderId', 'ollama');
+        localModels = await getSetting('localModels', []) as any[];
+
+        const currentProv = providers.find(p => p.id === activeProviderId);
+        if (currentProv) {
+            selectedModel = currentProv.selectedModel || currentProv.models[0] || '';
+        }
+    });
+
+    const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
+    
+    let availableModels = $derived.by(() => {
+        if (activeProviderId === 'mistralrs') {
+            return localModels.filter(m => m.isDownloaded).map(m => m.path);
+        }
+        return activeProvider.models;
+    });
 
     const selectedItems = $derived(
         batchManager.items.filter(i => selectedIds.has(i.id))
@@ -38,21 +67,8 @@
         isTyping = true;
 
         try {
-            const providers = await getSetting('providers', []);
-            const activeProviderId = await getSetting('activeProviderId', 'ollama');
-            const activeProvider = (providers as any[]).find(p => p.id === activeProviderId) || providers[0];
-            
-            let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
-            
-            // Handle mistralrs
-            if (activeProviderId === 'mistralrs') {
-                const localModels = await getSetting('localModels', []) as any[];
-                const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
-                modelId = activeLocal?.path;
-            }
-
-            if (!activeProvider || !modelId) {
-                throw new Error("No AI Provider or Model selected in Settings.");
+            if (!activeProviderId || !selectedModel) {
+                throw new Error("No AI Provider or Model selected.");
             }
 
             // Build context from selected documents
@@ -68,7 +84,7 @@
             }
 
             const fullPrompt = contextPrompt + userMsg;
-            const response = await llmClient.query(activeProviderId, modelId, fullPrompt, activeProvider.apiKey);
+            const response = await llmClient.query(activeProviderId, selectedModel, fullPrompt, activeProvider.apiKey);
             
             messages.push({ role: 'assistant', content: response, timestamp: Date.now() });
         } catch (error: any) {
@@ -92,27 +108,54 @@
 
 <div class="chat-container">
     <div class="chat-sidebar">
-        <div class="sidebar-header">
-            <h3>{i18n.t.chat.context}</h3>
-            <p class="hint">{i18n.t.chat.context_hint}</p>
+        <div class="sidebar-section">
+            <div class="sidebar-header">
+                <h3>Engine</h3>
+            </div>
+            <div class="engine-selectors">
+                <div class="select-group">
+                    <label for="chat-prov"><Zap size={12} /> Provider</label>
+                    <select id="chat-prov" bind:value={activeProviderId} class="styled-select small">
+                        {#each providers as provider}
+                            <option value={provider.id}>{provider.name}</option>
+                        {/each}
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label for="chat-model"><Cpu size={12} /> Model</label>
+                    <select id="chat-model" bind:value={selectedModel} class="styled-select small">
+                        <option value="">-- Select --</option>
+                        {#each availableModels as model}
+                            <option value={model}>{model.split(/[\\/]/).pop()}</option>
+                        {/each}
+                    </select>
+                </div>
+            </div>
         </div>
-        <div class="context-list">
-            {#each batchManager.items as item}
-                <button 
-                    class="context-item" 
-                    class:selected={selectedIds.has(item.id)}
-                    onclick={() => toggleContext(item.id)}
-                >
-                    <FileText size={14} />
-                    <span class="file-name">{item.originalName}</span>
-                    {#if selectedIds.has(item.id)}
-                        <ChevronRight size={14} class="indicator" />
-                    {/if}
-                </button>
-            {/each}
-            {#if batchManager.items.length === 0}
-                <p class="empty-hint">{i18n.t.batch.empty}</p>
-            {/if}
+
+        <div class="sidebar-section">
+            <div class="sidebar-header">
+                <h3>{i18n.t.chat.context}</h3>
+                <p class="hint">{i18n.t.chat.context_hint}</p>
+            </div>
+            <div class="context-list">
+                {#each batchManager.items as item}
+                    <button 
+                        class="context-item" 
+                        class:selected={selectedIds.has(item.id)}
+                        onclick={() => toggleContext(item.id)}
+                    >
+                        <FileText size={14} />
+                        <span class="file-name">{item.originalName}</span>
+                        {#if selectedIds.has(item.id)}
+                            <ChevronRight size={14} class="indicator" />
+                        {/if}
+                    </button>
+                {/each}
+                {#if batchManager.items.length === 0}
+                    <p class="empty-hint">{i18n.t.batch.empty}</p>
+                {/if}
+            </div>
         </div>
     </div>
 
@@ -182,11 +225,17 @@
     .chat-container { display: flex; height: 100%; background: #09090b; }
     
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; }
-    .sidebar-header { padding: 20px; border-bottom: 1px solid #27272a; }
-    .sidebar-header h3 { margin: 0; font-size: 0.875rem; text-transform: uppercase; color: #a1a1aa; letter-spacing: 0.05em; }
+    .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; }
+    .sidebar-header { padding: 16px 20px; }
+    .sidebar-header h3 { margin: 0; font-size: 0.75rem; text-transform: uppercase; color: #71717a; letter-spacing: 0.05em; }
     .hint { font-size: 0.7rem; color: #71717a; margin-top: 4px; }
     
-    .context-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 4px; }
+    .engine-selectors { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .select-group { display: flex; flex-direction: column; gap: 6px; }
+    .select-group label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #a1a1aa; font-weight: 600; text-transform: uppercase; }
+    .styled-select.small { padding: 4px 8px; font-size: 0.8125rem; background: #09090b; }
+
+    .context-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 400px; }
     .context-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #a1a1aa; cursor: pointer; text-align: left; font-size: 0.8125rem; transition: all 0.2s; }
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }

@@ -48,13 +48,11 @@ export class BatchManager {
     }
 
     async addItem(path: string, name: string) {
-        // SYNCHRONOUS check first
         if (this.processingPaths.has(path) || this.items.some(i => i.originalPath === path)) {
             console.log(`[BatchManager] Synchronous duplicate block for: ${name}`);
             return;
         }
 
-        // Mark as being added IMMEDIATELY
         this.processingPaths.add(path);
         console.log(`[BatchManager] Adding item: ${name} at ${path}`);
         
@@ -75,7 +73,6 @@ export class BatchManager {
         
         this.items.push(newItem);
 
-        // Async metadata update
         try {
             const s = await stat(path);
             newItem.size = s.size;
@@ -98,7 +95,6 @@ export class BatchManager {
         
         let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
         
-        // Handle mistralrs specifically
         if (activeProviderId === 'mistralrs') {
             const localModels = await getSetting('localModels', []) as any[];
             const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
@@ -108,20 +104,18 @@ export class BatchManager {
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
         const llmMaxChars = await getSetting('llmMaxChars', 5000);
-        const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+        const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
         const authorSortEnabled = await getSetting('authorSortEnabled', false);
 
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
             
             try {
-                // 1. Extraction
                 item.status = 'extracting';
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
-                // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled) {
                     if (!activeProvider || !modelId) {
                         throw new Error(`AI Provider or Model not selected in Settings.`);
@@ -132,7 +126,7 @@ export class BatchManager {
 
                     item.status = 'analyzing';
                     const textSample = item.extractedText.substring(0, llmMaxChars);
-                    const prompt = `Context: Filename is "${item.originalName}".\n\n${basePrompt}\n\nDocument snippet:\n${textSample}`;
+                    const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
@@ -171,17 +165,41 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
+    private fixMalformedXmlTags(text: string): string {
+        // Fix tags with equals signs: <TAG=value</TAG> -> <TAG>value</TAG>
+        let fixed = text.replace(/<(TITLE|AUTHOR|YEAR|LANGUAGE)[=\s]+([^>]*?)<\/(\1)>/gi, (match, tag, val) => {
+            let content = val.trim();
+            if ((content.startsWith('"') && content.endsWith('"')) || (content.startsWith("'") && content.endsWith("'"))) {
+                content = content.slice(1, -1);
+            }
+            return `<${tag}>${content}</${tag}>`;
+        });
+
+        // Fix unclosed malformed tags: <TAG=value> -> <TAG>value</TAG>
+        fixed = fixed.replace(/<(TITLE|AUTHOR|YEAR|LANGUAGE)[=\s]+([^<>]+?)(?=\s*(?:<|$))/gi, '<$1>$2</$1>');
+        
+        return fixed;
+    }
+
     private parseLLMResponse(response: string): { title?: string, author?: string, year?: string } {
-        try {
-            const cleanJson = response.replace(/```json|```/g, '').trim();
-            const data = JSON.parse(cleanJson);
-            return { title: data.title, author: data.author, year: data.year };
-        } catch (e) {
-            const title = response.match(/<(TITLE|PUBLICATION TITLE)>(.*?)<\/\1>/i)?.[2];
-            const author = response.match(/<AUTHOR>(.*?)<\/AUTHOR>/i)?.[2];
-            const year = response.match(/<YEAR>(.*?)<\/YEAR>/i)?.[2];
-            return { title, author, year };
+        const cleaned = this.fixMalformedXmlTags(response);
+        
+        const extractTag = (tag: string) => {
+            const regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 'i');
+            const match = cleaned.match(regex);
+            return match ? match[1].trim() : undefined;
+        };
+
+        let title = extractTag('TITLE');
+        const author = extractTag('AUTHOR');
+        const year = extractTag('YEAR');
+
+        // Handle alternates
+        if (!title) {
+            title = extractTag('PUBLICATION TITLE') || extractTag('PUBLICATIONTITLE');
         }
+
+        return { title, author, year };
     }
 
     async executeBatch() {
@@ -268,6 +286,7 @@ export class BatchManager {
             this.items = data.items || [];
             this.isMetadataExtractionEnabled = data.isMetadataExtractionEnabled ?? true;
             this.processingPaths = new Set(this.items.map(i => i.originalPath));
+            await saveSetting('isMetadataExtractionEnabled', this.isMetadataExtractionEnabled);
             await this.saveCurrentSession();
             alert('Batch imported successfully!');
         }

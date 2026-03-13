@@ -36,7 +36,7 @@
     
     // LLM & OCR Settings
     let llmMaxChars = $state(5000);
-    let llmPrompt = $state('Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+    let llmPrompt = $state('Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
     let ocrEnabled = $state(false);
     let authorSortEnabled = $state(false);
 
@@ -64,6 +64,14 @@
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);
 
+    // Consolidate current provider models
+    let availableModels = $derived.by(() => {
+        if (selectedProviderId === 'mistralrs') {
+            return localModels.filter(m => m.isDownloaded).map(m => m.path);
+        }
+        return selectedProvider.models;
+    });
+
     onMount(async () => {
         const savedProviders = await getSetting('providers');
         if (savedProviders) {
@@ -78,7 +86,7 @@
         saveTxt = await getSetting('saveTxt', true);
         currentLanguage = await getSetting('language', 'en') as Language;
         llmMaxChars = await getSetting('llmMaxChars', 5000);
-        llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+        llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         
@@ -193,8 +201,9 @@
         }
     }
 
-    async function setLocalModelActive(index: number) {
-        localModels.forEach((m, i) => m.isActive = i === index);
+    async function setLocalModelActive(path: string) {
+        localModels.forEach(m => m.isActive = m.path === path);
+        selectedProvider.selectedModel = path;
         await handleSave();
     }
 
@@ -224,8 +233,8 @@
     }
 
     async function handleTestConnection() {
-        const model = selectedProvider.selectedModel || selectedProvider.models[0];
-        if (!model && selectedProvider.id !== 'mistralrs') {
+        const model = selectedProvider.selectedModel;
+        if (!model) {
             alert(i18n.t.settings.select_model);
             return;
         }
@@ -353,8 +362,52 @@
                 </div>
             </div>
 
+            {#if selectedProvider.id !== 'mistralrs'}
+                <div class="form-group">
+                    <label for="base-url-input">{i18n.t.settings.base_url}</label>
+                    <input id="base-url-input" type="text" bind:value={selectedProvider.baseUrl} />
+                </div>
+
+                <div class="form-group">
+                    <label for="api-key-input">{i18n.t.settings.api_key}</label>
+                    <input id="api-key-input" type="password" bind:value={selectedProvider.apiKey} />
+                </div>
+            {/if}
+
+            <div class="form-group">
+                <label for="model-select">{i18n.t.settings.select_model}</label>
+                <div class="input-with-action">
+                    <select id="model-select" bind:value={selectedProvider.selectedModel} class="styled-select">
+                        <option value="">-- {i18n.t.settings.select_model} --</option>
+                        {#each availableModels as model}
+                            <option value={model}>{model.split(/[\\/]/).pop()}</option>
+                        {/each}
+                    </select>
+                    {#if selectedProvider.id !== 'mistralrs'}
+                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels}>
+                            <RefreshCw size={14} class:loader-spin={loadingModels} />
+                        </button>
+                    {/if}
+                </div>
+            </div>
+
+            <div class="actions">
+                <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
+                    <span class:loader-spin={testingConnection}>
+                        {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                    </span>
+                    {i18n.t.settings.test_connection}
+                </button>
+            </div>
+
+            {#if testResult}
+                <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
+                    <span>{testResult.message}</span>
+                </div>
+            {/if}
+
             {#if selectedProvider.id === 'mistralrs'}
-                <div class="section-card">
+                <div class="section-card" style="margin-top: 24px;">
                     <div class="header" style="margin-bottom: 15px;">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><HardDrive size={16} /> Local Model Manager</h2>
                         <button class="action-btn small success" onclick={addLocalModel}>
@@ -364,11 +417,11 @@
                     
                     <div class="model-manager-list">
                         {#each localModels as model, i}
-                            <div class="local-model-row" class:active-model-row={model.isActive}>
+                            <div class="local-model-row" class:active-model-row={selectedProvider.selectedModel === model.path}>
                                 <div class="model-info">
                                     <div class="model-title-line">
                                         <strong>{model.name}</strong>
-                                        {#if model.isActive}<Zap size={12} style="color: #eab308;" />{/if}
+                                        {#if selectedProvider.selectedModel === model.path}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
                                     <span class="model-path">{model.path || 'Not downloaded yet'}</span>
                                     {#if model.progress !== undefined}
@@ -381,8 +434,8 @@
                                 <div class="model-status">
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
-                                        <button class="action-btn small" onclick={() => setLocalModelActive(i)}>
-                                            {model.isActive ? 'Active' : 'Use'}
+                                        <button class="action-btn small" onclick={() => setLocalModelActive(model.path)}>
+                                            {selectedProvider.selectedModel === model.path ? 'Selected' : 'Use'}
                                         </button>
                                         <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title="Delete file"><Trash2 size={14} /></button>
                                     {:else if model.progress === undefined}
@@ -394,64 +447,6 @@
                                 </div>
                             </div>
                         {/each}
-                    </div>
-                    <p class="hint">Models run locally via mistral.rs. No external keys required once downloaded.</p>
-                </div>
-            {:else}
-                <div class="form-group">
-                    <label for="base-url-input">{i18n.t.settings.base_url}</label>
-                    <input id="base-url-input" type="text" bind:value={selectedProvider.baseUrl} />
-                </div>
-
-                <div class="form-group">
-                    <label for="api-key-input">{i18n.t.settings.api_key}</label>
-                    <input id="api-key-input" type="password" bind:value={selectedProvider.apiKey} />
-                </div>
-
-                <div class="form-group">
-                    <label for="model-select">{i18n.t.settings.select_model}</label>
-                    <select id="model-select" bind:value={selectedProvider.selectedModel} class="styled-select">
-                        <option value="">-- {i18n.t.settings.select_model} --</option>
-                        {#each selectedProvider.models as model}
-                            <option value={model}>{model}</option>
-                        {/each}
-                    </select>
-                </div>
-
-                <div class="actions">
-                    <button class="action-btn" onclick={handleRefreshModels} disabled={loadingModels}>
-                        <span class:loader-spin={loadingModels}>
-                            {#if loadingModels}<Loader2 size={16} />{:else}<RefreshCw size={16} />{/if}
-                        </span>
-                        {i18n.t.settings.refresh_models}
-                    </button>
-                    <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
-                        <span class:loader-spin={testingConnection}>
-                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
-                        </span>
-                        {i18n.t.settings.test_connection}
-                    </button>
-                </div>
-
-                {#if testResult}
-                    <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
-                        <span>{testResult.message}</span>
-                    </div>
-                {/if}
-
-                <div class="models-section">
-                    <label>{i18n.t.settings.available_models} ({selectedProvider.models.length})</label>
-                    <div class="models-list-view">
-                        <ul>
-                            {#each selectedProvider.models as model}
-                                <li class:active-item-row={selectedProvider.selectedModel === model}>
-                                    <span>{model}</span>
-                                    {#if selectedProvider.selectedModel === model}
-                                        <CheckCircle size={12} style="color: #3b82f6;" />
-                                    {/if}
-                                </li>
-                            {/each}
-                        </ul>
                     </div>
                 </div>
             {/if}
@@ -504,11 +499,6 @@
     .progress-bar { height: 100%; background: #3b82f6; transition: width 0.3s; }
     .progress-text { position: absolute; top: 0; left: 0; width: 100%; text-align: center; font-size: 0.65rem; line-height: 16px; color: white; font-weight: 700; }
 
-    .models-list-view { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow: auto; }
-    .models-list-view ul { list-style: none; padding: 0; margin: 0; }
-    .models-list-view li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
-    .models-list-view li.active-item-row { color: white; background: #27272a; border-radius: 4px; }
-    
     .icon-btn { background: transparent; border: none; cursor: pointer; color: #71717a; display: flex; align-items: center; justify-content: center; padding: 4px; border-radius: 4px; }
     .icon-btn:hover { background: #27272a; color: white; }
     .icon-btn.danger:hover { background: #ef444433; color: #ef4444; }
