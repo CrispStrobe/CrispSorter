@@ -6,7 +6,7 @@
     import { 
         RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
-        Scan, Edit, Zap, Trash2, Download, Plus, HardDrive
+        Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code
     } from 'lucide-svelte';
     import { open, save } from '@tauri-apps/plugin-dialog';
     import { stat, remove } from '@tauri-apps/plugin-fs';
@@ -36,9 +36,10 @@
     
     // LLM & OCR Settings
     let llmMaxChars = $state(5000);
-    let llmPrompt = $state('Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
+    let llmPrompt = $state(''); // Loaded from store
     let ocrEnabled = $state(false);
     let authorSortEnabled = $state(false);
+    let parsingFormat = $state<'xml' | 'json'>('xml');
 
     // mistral.rs / Local Model Management
     let localModels = $state<LocalModel[]>([
@@ -87,7 +88,13 @@
         saveTxt = await getSetting('saveTxt', true);
         currentLanguage = await getSetting('language', 'en') as Language;
         llmMaxChars = await getSetting('llmMaxChars', 5000);
-        llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
+        parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
+        
+        const defaultPrompt = parsingFormat === 'xml' 
+            ? 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>'
+            : 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
+            
+        llmPrompt = await getSetting('llmPrompt', defaultPrompt);
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         
@@ -141,6 +148,7 @@
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
+        await saveSetting('parsingFormat', parsingFormat);
         await saveSetting('localModels', $state.snapshot(localModels));
         i18n.setLanguage(currentLanguage);
         
@@ -252,6 +260,13 @@
             testingConnection = false;
         }
     }
+
+    function switchParsingFormat(format: 'xml' | 'json') {
+        parsingFormat = format;
+        const xmlPrompt = 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>';
+        const jsonPrompt = 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
+        llmPrompt = format === 'xml' ? xmlPrompt : jsonPrompt;
+    }
 </script>
 
 <div class="settings-container">
@@ -285,7 +300,7 @@
                 <h1>{i18n.t.settings.general}</h1>
                 <div class="save-area">
                     {#if saveIndicator}
-                        <span class="save-badge"><Check size={14} /> {i18n.t.settings.saved}</span>
+                        <span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>
                     {/if}
                     <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
                 </div>
@@ -330,6 +345,18 @@
             <div class="section-card">
                 <label for="max-chars-input"><MessageSquare size={16} /> {i18n.t.settings.llm_max_chars}</label>
                 <input id="max-chars-input" type="number" bind:value={llmMaxChars} min="500" step="500" class="styled-input" />
+            </div>
+
+            <div class="section-card">
+                <label for="format-select"><Code size={16} /> {i18n.t.settings.parsing_format}</label>
+                <div class="toggle-group">
+                    <button class="toggle-btn" class:active={parsingFormat === 'xml'} onclick={() => switchParsingFormat('xml')}>
+                        {i18n.t.settings.parsing_xml}
+                    </button>
+                    <button class="toggle-btn" class:active={parsingFormat === 'json'} onclick={() => switchParsingFormat('json')}>
+                        {i18n.t.settings.parsing_json}
+                    </button>
+                </div>
             </div>
 
             <div class="section-card">
@@ -493,6 +520,11 @@
     .styled-textarea { font-family: inherit; resize: vertical; }
     input:focus, .styled-select:focus, .styled-textarea:focus { outline: 2px solid #3b82f6; border-color: transparent; }
     .input-with-action { display: flex; gap: 10px; }
+    
+    .toggle-group { display: flex; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 2px; width: fit-content; }
+    .toggle-btn { padding: 4px 12px; border: none; background: transparent; color: #71717a; font-size: 0.75rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s; }
+    .toggle-btn.active { background: #27272a; color: white; }
+
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }

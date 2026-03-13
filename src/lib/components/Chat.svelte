@@ -18,7 +18,9 @@
     let messages = $state<Message[]>([]);
     let input = $state('');
     let isTyping = $state(false);
-    let selectedIds = $state<Set<string>>(new Set());
+    
+    // Use an array for selected IDs to ensure clean Svelte 5 reactivity
+    let selectedIds = $state<string[]>([]);
     let scrollContainer: HTMLDivElement;
 
     // Chat-specific engine selection
@@ -50,12 +52,15 @@
     });
 
     const selectedItems = $derived(
-        batchManager.items.filter(i => selectedIds.has(i.id))
+        batchManager.items.filter(i => selectedIds.includes(i.id))
     );
 
     function toggleContext(id: string) {
-        if (selectedIds.has(id)) selectedIds.delete(id);
-        else selectedIds.add(id);
+        if (selectedIds.includes(id)) {
+            selectedIds = selectedIds.filter(i => i !== id);
+        } else {
+            selectedIds = [...selectedIds, id];
+        }
     }
 
     async function handleSend() {
@@ -115,7 +120,7 @@
             <div class="engine-selectors">
                 <div class="select-group">
                     <label for="chat-prov"><Zap size={12} /> Provider</label>
-                    <select id="chat-prov" bind:value={activeProviderId} class="styled-select small">
+                    <select id="chat-prov" bind:value={activeProviderId} class="styled-select chat-select">
                         {#each providers as provider}
                             <option value={provider.id}>{provider.name}</option>
                         {/each}
@@ -123,7 +128,7 @@
                 </div>
                 <div class="select-group">
                     <label for="chat-model"><Cpu size={12} /> Model</label>
-                    <select id="chat-model" bind:value={selectedModel} class="styled-select small">
+                    <select id="chat-model" bind:value={selectedModel} class="styled-select chat-select">
                         <option value="">-- Select --</option>
                         {#each availableModels as model}
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>
@@ -133,7 +138,7 @@
             </div>
         </div>
 
-        <div class="sidebar-section">
+        <div class="sidebar-section scrollable">
             <div class="sidebar-header">
                 <h3>{i18n.t.chat.context}</h3>
                 <p class="hint">{i18n.t.chat.context_hint}</p>
@@ -142,12 +147,12 @@
                 {#each batchManager.items as item}
                     <button 
                         class="context-item" 
-                        class:selected={selectedIds.has(item.id)}
+                        class:selected={selectedIds.includes(item.id)}
                         onclick={() => toggleContext(item.id)}
                     >
                         <FileText size={14} />
                         <span class="file-name">{item.originalName}</span>
-                        {#if selectedIds.has(item.id)}
+                        {#if selectedIds.includes(item.id)}
                             <ChevronRight size={14} class="indicator" />
                         {/if}
                     </button>
@@ -225,17 +230,30 @@
     .chat-container { display: flex; height: 100%; background: #09090b; }
     
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; }
-    .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; }
+    .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar-section.scrollable { flex: 1; overflow-y: auto; }
     .sidebar-header { padding: 16px 20px; }
-    .sidebar-header h3 { margin: 0; font-size: 0.75rem; text-transform: uppercase; color: #71717a; letter-spacing: 0.05em; }
+    .sidebar-header h3 { margin: 0; font-size: 0.75rem; text-transform: uppercase; color: #a1a1aa; letter-spacing: 0.05em; }
     .hint { font-size: 0.7rem; color: #71717a; margin-top: 4px; }
     
     .engine-selectors { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
     .select-group { display: flex; flex-direction: column; gap: 6px; }
-    .select-group label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #a1a1aa; font-weight: 600; text-transform: uppercase; }
-    .styled-select.small { padding: 4px 8px; font-size: 0.8125rem; background: #09090b; }
+    .select-group label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; font-weight: 600; text-transform: uppercase; }
+    
+    /* Fix blank black selectors */
+    .chat-select { 
+        background: #09090b !important; 
+        color: white !important; 
+        padding: 6px 8px !important; 
+        font-size: 0.8125rem !important;
+        border: 1px solid #27272a !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 32px !important;
+    }
+    .chat-select option { background: #18181b; color: white; }
 
-    .context-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 400px; }
+    .context-list { padding: 10px; display: flex; flex-direction: column; gap: 4px; }
     .context-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #a1a1aa; cursor: pointer; text-align: left; font-size: 0.8125rem; transition: all 0.2s; }
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }

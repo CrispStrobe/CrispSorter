@@ -104,8 +104,14 @@ export class BatchManager {
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
         const llmMaxChars = await getSetting('llmMaxChars', 5000);
-        const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>');
+        const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
         const authorSortEnabled = await getSetting('authorSortEnabled', false);
+
+        // Define prompts based on format
+        const xmlPrompt = 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>';
+        const jsonPrompt = 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
+        
+        const basePrompt = await getSetting('llmPrompt', parsingFormat === 'xml' ? xmlPrompt : jsonPrompt);
 
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
@@ -130,7 +136,7 @@ export class BatchManager {
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
-                    const metadata = this.parseLLMResponse(response);
+                    const metadata = this.parseLLMResponse(response, parsingFormat);
                     item.suggestedTitle = metadata.title || 'Unknown Title';
                     item.suggestedAuthor = metadata.author || 'Unknown Author';
                     item.suggestedYear = metadata.year || 'Unknown Year';
@@ -181,7 +187,18 @@ export class BatchManager {
         return fixed;
     }
 
-    private parseLLMResponse(response: string): { title?: string, author?: string, year?: string } {
+    private parseLLMResponse(response: string, format: 'xml' | 'json'): { title?: string, author?: string, year?: string } {
+        if (format === 'json') {
+            try {
+                const cleanJson = response.replace(/```json|```/g, '').trim();
+                const data = JSON.parse(cleanJson);
+                return { title: data.title, author: data.author, year: data.year };
+            } catch (e) {
+                // Fallback to XML parsing if JSON fails even in JSON mode
+                console.warn("[BatchManager] JSON parsing failed, falling back to XML tags");
+            }
+        }
+
         const cleaned = this.fixMalformedXmlTags(response);
         
         const extractTag = (tag: string) => {
@@ -287,6 +304,7 @@ export class BatchManager {
             this.isMetadataExtractionEnabled = data.isMetadataExtractionEnabled ?? true;
             this.processingPaths = new Set(this.items.map(i => i.originalPath));
             await saveSetting('isMetadataExtractionEnabled', this.isMetadataExtractionEnabled);
+            await saveSetting('parsingFormat', data.parsingFormat || 'xml');
             await this.saveCurrentSession();
             alert('Batch imported successfully!');
         }
