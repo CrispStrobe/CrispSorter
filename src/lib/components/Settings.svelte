@@ -247,7 +247,7 @@
                     <span>{provider.name}</span>
                     {#if activeProviderId === provider.id}
                         <Zap size={12} style="color: #eab308;" />
-                    {#/if}
+                    {/if}
                 </button>
             {/each}
         </div>
@@ -368,7 +368,7 @@
                                             <div class="progress-bar" style="width: {model.progress}%"></div>
                                             <span class="progress-text">{model.progress}%</span>
                                         </div>
-                                    {#/if}
+                                    {/if}
                                 </div>
                                 <div class="model-status">
                                     {#if model.isDownloaded}
@@ -382,7 +382,7 @@
                                             <Download size={14} /> Download
                                         </button>
                                         <button class="icon-btn" onclick={() => localModels.splice(i, 1)}><XCircle size={14} /></button>
-                                    {#/if}
+                                    {/if}
                                 </div>
                             </div>
                         {/each}
@@ -406,7 +406,7 @@
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each selectedProvider.models as model}
                             <option value={model}>{model}</option>
-                        {#/each}
+                        {/each}
                     </select>
                 </div>
 
@@ -429,7 +429,7 @@
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
                         <span>{testResult.message}</span>
                     </div>
-                {#/if}
+                {/if}
 
                 <div class="models-section">
                     <label>{i18n.t.settings.available_models} ({selectedProvider.models.length})</label>
@@ -440,9 +440,9 @@
                                     <span>{model}</span>
                                     {#if selectedProvider.selectedModel === model}
                                         <CheckCircle size={12} style="color: #3b82f6;" />
-                                    {#/if}
+                                    {/if}
                                 </li>
-                            {#/each}
+                            {/each}
                         </ul>
                     </div>
                 </div>
