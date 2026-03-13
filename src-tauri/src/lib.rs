@@ -6,13 +6,9 @@ use std::io::Write;
 use tauri::Emitter;
 use std::sync::{Arc, Mutex};
 use mistralrs::{
-    IsqType, Response, SamplingParams, 
-    TextMessageRole, Device, RequestBuilder, best_device
+    GgufModelBuilder, IsqType, TextMessageRole, TextMessages, 
+    best_device, Model, Device
 };
-use mistralrs::core::{
-    GGUFLoaderBuilder, GGUFSpecificConfig, DeviceMapMetadata, MistralRs
-};
-use tokio::sync::mpsc;
 
 #[derive(Deserialize)]
 pub struct MoveRequest {
@@ -27,9 +23,9 @@ struct DownloadProgress {
     total: u64,
 }
 
-// Global state to hold the engine instance
-struct AppState {
-    mistralrs: Mutex<Option<Arc<MistralRs>>>,
+// Global state to hold the high-level Model instance
+pub struct AppState {
+    model: Mutex<Option<Arc<Model>>>,
 }
 
 #[tauri::command]
@@ -96,58 +92,47 @@ async fn run_mistralrs_query(
     model_path: String,
     prompt: String,
 ) -> Result<String, String> {
-    let mut mistralrs_lock = state.mistralrs.lock().unwrap();
+    let mut model_lock = state.model.lock().unwrap();
     
-    if mistralrs_lock.is_none() {
-        let loader = GGUFLoaderBuilder::new(
-            GGUFSpecificConfig::default(),
-            None,
-            None,
-            Some(model_path),
-        ).build();
+    // Check if we need to load or reload the model
+    let should_load = match &*model_lock {
+        None => true,
+        Some(_) => false, // For now, we don't handle model swapping here, just caching the first one
+    };
+
+    if should_load {
+        let path = Path::new(&model_path);
+        let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
+        let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
+
+        println!("[mistral.rs] Loading model from: {} / {}", parent, filename);
+
+        let model = GgufModelBuilder::new(parent.clone(), parent, filename)
+            .with_isq(IsqType::Q4K)
+            .with_device(best_device(false).map_err(|e| e.to_string())?)
+            .with_logging()
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
         
-        let pipeline = loader.load_model(
-            None,
-            IsqType::Q4K,
-            &best_device(),
-            false,
-            DeviceMapMetadata::dummy(),
-            None,
-            None,
-        ).map_err(|e| e.to_string())?;
-        
-        *mistralrs_lock = Some(pipeline);
+        *model_lock = Some(Arc::new(model));
+        println!("[mistral.rs] Model loaded successfully.");
     }
 
-    let mistralrs = mistralrs_lock.as_ref().unwrap();
-    let (tx, mut rx) = mpsc::channel(10000);
+    let model = model_lock.as_ref().unwrap();
     
-    let request = RequestBuilder::new()
-        .add_message(TextMessageRole::User, prompt)
-        .set_sampling_params(SamplingParams::deterministic())
-        .build_chat(tx, None);
+    let messages = TextMessages::new()
+        .add_message(TextMessageRole::User, prompt);
 
-    mistralrs.get_sender(None)
-        .map_err(|e| e.to_string())?
-        .send(request)
+    println!("[mistral.rs] Sending chat request...");
+    let response = model.send_chat_request(messages)
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut response_text = String::new();
-    while let Some(response) = rx.recv().await {
-        match response {
-            Response::Done(c) => {
-                response_text = c.choices[0].message.content.as_ref().cloned().unwrap_or_default();
-                break;
-            }
-            Response::InternalError(e) => return Err(e.to_string()),
-            Response::ValidationError(e) => return Err(e.to_string()),
-            Response::ModelError(msg, _) => return Err(msg),
-            _ => {}
-        }
-    }
-
-    Ok(response_text)
+    let content = response.choices[0].message.content.as_ref().cloned().unwrap_or_default();
+    println!("[mistral.rs] Query complete. Response length: {}", content.length());
+    
+    Ok(content)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -160,7 +145,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(AppState { mistralrs: Mutex::new(None) })
+        .manage(AppState { model: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![move_files, download_file, run_mistralrs_query])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
