@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use mistralrs::{
     GgufModelBuilder, TextMessageRole, TextMessages, 
-    best_device, Model, initialize_logging
+    best_device, Model, initialize_logging,
+    PagedAttentionMetaBuilder
 };
 
 #[derive(Deserialize)]
@@ -26,9 +27,60 @@ struct DownloadProgress {
 
 // Global state to hold the high-level Model instance and current model path
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
+use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
+
 pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
     current_model_path: Mutex<Option<String>>,
+    sidecar_process: Mutex<Option<CommandChild>>,
+}
+
+#[tauri::command]
+async fn start_llamacpp_sidecar(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    model_path: String,
+) -> Result<String, String> {
+    let mut sidecar_lock = state.sidecar_process.lock().await;
+    
+    // Kill existing process if running
+    if let Some(child) = sidecar_lock.take() {
+        let _ = child.kill();
+    }
+
+    println!("[Sidecar] Starting llama-server with Metal acceleration...");
+    
+    // Use the sidecar defined in tauri.conf.json
+    // -ngl 99 ensures all layers are offloaded to Metal GPU
+    let (mut rx, child) = app_handle
+        .shell()
+        .sidecar("llama-server")
+        .map_err(|e| e.to_string())?
+        .args(["-m", &model_path, "--port", "8080", "-ngl", "99", "--parallel", "1", "--ctx-size", "4096"])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    // Monitor output in background
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            if let tauri_plugin_shell::process::CommandEvent::Stdout(line) = event {
+                println!("[llama.cpp] {}", String::from_utf8_lossy(&line));
+            }
+        }
+    });
+
+    *sidecar_lock = Some(child);
+    Ok("Sidecar started".to_string())
+}
+
+#[tauri::command]
+async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut sidecar_lock = state.sidecar_process.lock().await;
+    if let Some(child) = sidecar_lock.take() {
+        let _ = child.kill();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -105,23 +157,52 @@ async fn run_mistralrs_query(
     };
 
     if needs_load {
-        println!("[mistral.rs] Loading model from: {}", model_path);
-        let path = Path::new(&model_path);
-        let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
-        let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
-
-        println!("[mistral.rs] Building GGUF model: ID='{}', File='{}'", parent, filename);
-        // GgufModelBuilder::new takes (model_id, files)
-        // For local files, we use the directory as model_id
-        let model = GgufModelBuilder::new(parent.clone(), vec![filename])
-            .with_device(best_device(false).map_err(|e| e.to_string())?)
-            .with_logging()
-            .build()
-            .await
-            .map_err(|e| {
-                println!("[mistral.rs] LOAD ERROR: {}", e);
-                e.to_string()
-            })?;
+        println!("[mistral.rs] Loading model: {}", model_path);
+        
+        let model = if model_path.ends_with(".gguf") && Path::new(&model_path).exists() {
+            // Local GGUF file
+            let path = Path::new(&model_path);
+            let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
+            let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
+            
+            println!("[mistral.rs] Loading local GGUF: ID='{}', File='{}'", parent, filename);
+            GgufModelBuilder::new(parent, vec![filename])
+                .with_device(best_device(false).map_err(|e| e.to_string())?)
+                .with_logging()
+                .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())
+                .map_err(|e| e.to_string())?
+                .build()
+                .await
+        } else {
+            // Assume it's an HF Repo ID or URL that mistralrs can handle
+            // For GGUF on HF, we usually need the repo_id and the specific file.
+            // If the user provided "repo_id/file.gguf", we split it.
+            let parts: Vec<&str> = model_path.split('/').collect();
+            if parts.len() >= 3 && model_path.contains(".gguf") {
+                // e.g. "bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+                let filename = parts.last().unwrap().to_string();
+                let repo_id = parts[..parts.len()-1].join("/");
+                println!("[mistral.rs] Loading remote HF GGUF: Repo='{}', File='{}'", repo_id, filename);
+                GgufModelBuilder::new(repo_id, vec![filename])
+                    .with_device(best_device(false).map_err(|e| e.to_string())?)
+                    .with_logging()
+                    .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())
+                    .map_err(|e| e.to_string())?
+                    .build()
+                    .await
+            } else {
+                // Fallback to TextModelBuilder if no .gguf extension
+                println!("[mistral.rs] Loading as TextModel (Repo ID): {}", model_path);
+                mistralrs::TextModelBuilder::new(model_path.clone())
+                    .with_device(best_device(false).map_err(|e| e.to_string())?)
+                    .with_logging()
+                    .build()
+                    .await
+            }
+        }.map_err(|e| {
+            println!("[mistral.rs] LOAD ERROR: {}", e);
+            e.to_string()
+        })?;
         
         *model_lock = Some(Arc::new(model));
         *current_path_lock = Some(model_path.clone());
@@ -165,9 +246,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState { 
             model: Mutex::new(None),
-            current_model_path: Mutex::new(None)
+            current_model_path: Mutex::new(None),
+            sidecar_process: Mutex::new(None)
         })
-        .invoke_handler(tauri::generate_handler![move_files, download_file, run_mistralrs_query])
+        .invoke_handler(tauri::generate_handler![
+            move_files, 
+            download_file, 
+            run_mistralrs_query,
+            start_llamacpp_sidecar,
+            stop_llamacpp_sidecar
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

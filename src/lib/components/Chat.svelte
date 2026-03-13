@@ -258,7 +258,7 @@
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }
     .file-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .indicator { color: #3b82f6; }
+    :global(.indicator) { color: #3b82f6; }
     .empty-hint { padding: 20px; text-align: center; color: #71717a; font-size: 0.8125rem; }
 
     .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; }
@@ -284,7 +284,7 @@
     .user-row .msg-meta { align-self: flex-end; }
 
     .typing { padding: 8px 16px; }
-    .loader-anim { animation: spin 1s linear infinite; color: #3b82f6; }
+    :global(.loader-anim) { animation: spin 1s linear infinite; color: #3b82f6; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
     .input-area { padding: 20px 24px; background: #18181b; border-top: 1px solid #27272a; display: flex; gap: 12px; align-items: flex-end; }

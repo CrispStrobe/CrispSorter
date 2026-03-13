@@ -124,7 +124,7 @@
         }
     }
 
-    function handleRowClick(e: MouseEvent, id: string) {
+    function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
         if (e.shiftKey && lastClickedId) {
             const items = sortedItems;
             const start = items.findIndex(i => i.id === lastClickedId);
@@ -290,13 +290,25 @@
                         {#each columns as col, i}
                             {#if col.visible}
                                 <th style="width: {col.width}px; min-width: {col.width}px;">
-                                    <div class="th-content" onclick={() => toggleSort(col.id)}>
+                                    <div 
+                                        class="th-content" 
+                                        onclick={() => toggleSort(col.id)}
+                                        onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleSort(col.id)}
+                                        role="button"
+                                        tabindex="0"
+                                    >
                                         <span class="th-label">{col.label}</span>
                                         {#if sortColumn === col.id}
                                             {#if sortDirection === 'asc'}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
                                         {/if}
                                     </div>
-                                    <div class="resizer" onmousedown={(e) => startResizing(e, i)}></div>
+                                    <div 
+                                        class="resizer" 
+                                        onmousedown={(e) => startResizing(e, i)}
+                                        role="button"
+                                        tabindex="-1"
+                                        aria-label="Resize column"
+                                    ></div>
                                 </th>
                             {/if}
                         {/each}
@@ -308,8 +320,10 @@
                             class:selected={selection.has(item.id)}
                             class:active-row={selectedItemId === item.id}
                             onclick={(e) => handleRowClick(e, item.id)}
+                            onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleRowClick(e, item.id)}
                             class:status-error={item.status === 'error'}
                             class:status-done={item.status === 'done'}
+                            tabindex="0"
                         >
                             <td onclick={e => e.stopPropagation()} style="width: 35px; text-align: center;">
                                 <input type="checkbox" bind:checked={item.isAccepted} aria-label="Accept item" />

@@ -6,7 +6,8 @@
     import { 
         RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
-        Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code
+        Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
+        Rocket
     } from 'lucide-svelte';
     import { open, save } from '@tauri-apps/plugin-dialog';
     import { stat, remove } from '@tauri-apps/plugin-fs';
@@ -44,12 +45,12 @@
     // mistral.rs / Local Model Management
     let localModels = $state<LocalModel[]>([
         {
-            id: 'granite-1b',
-            name: 'Granite 4.0 1B (Q4_K_M)',
+            id: 'qwen3-0.6b',
+            name: 'Qwen 3 0.6B (Q4_K_M)',
             path: '',
             isDownloaded: false,
             isActive: true,
-            downloadUrl: 'https://huggingface.co/ibm-granite/granite-4.0-h-1b-GGUF/resolve/main/granite-4.0-h-1b-Q4_K_M.gguf'
+            downloadUrl: 'https://huggingface.co/Mungert/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-q4_k_m.gguf'
         },
         {
             id: 'ministral-3b',
@@ -64,14 +65,43 @@
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);
     let saveIndicator = $state(false);
+    let customModelInput = $state('');
 
     // Consolidate current provider models
     let availableModels = $derived.by(() => {
-        if (selectedProviderId === 'mistralrs') {
+        if (['mistralrs', 'llamacpp'].includes(selectedProviderId)) {
             return localModels.filter(m => m.isDownloaded).map(m => m.path);
         }
         return selectedProvider.models;
     });
+
+    async function addCustomModel() {
+        if (!customModelInput.trim()) return;
+        const input = customModelInput.trim();
+        const fileName = input.split(/[\\/]/).pop() || 'Custom Model';
+        const id = 'custom-' + Date.now();
+        
+        localModels.push({
+            id,
+            name: fileName,
+            path: input,
+            isDownloaded: true, // We treat remote IDs as ready-to-load
+            isActive: false,
+            downloadUrl: input.startsWith('http') ? input : undefined
+        });
+        
+        customModelInput = '';
+        await saveSetting('localModels', localModels);
+        saveIndicator = true;
+        setTimeout(() => saveIndicator = false, 2000);
+    }
+
+    async function deleteLocalModel(id: string) {
+        localModels = localModels.filter(m => m.id !== id);
+        await saveSetting('localModels', localModels);
+        saveIndicator = true;
+        setTimeout(() => saveIndicator = false, 2000);
+    }
 
     onMount(async () => {
         const savedProviders = await getSetting('providers');
@@ -214,6 +244,16 @@
     async function setLocalModelActive(path: string) {
         localModels.forEach(m => m.isActive = m.path === path);
         selectedProvider.selectedModel = path;
+        
+        if (selectedProviderId === 'llamacpp') {
+            try {
+                await invoke('start_llamacpp_sidecar', { modelPath: path });
+                alert("llama.cpp Sidecar started with Metal acceleration!");
+            } catch (e) {
+                alert(`Failed to start sidecar: ${e}`);
+            }
+        }
+        
         await handleSave();
     }
 
@@ -399,7 +439,7 @@
                 </div>
             </div>
 
-            {#if selectedProvider.id !== 'mistralrs'}
+            {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
                 <div class="form-group">
                     <label for="base-url-input">{i18n.t.settings.base_url}</label>
                     <input id="base-url-input" type="text" bind:value={selectedProvider.baseUrl} />
@@ -414,45 +454,74 @@
             <div class="form-group">
                 <label for="model-select">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
-                    <select id="model-select" bind:value={selectedProvider.selectedModel} class="styled-select">
+                    <select id="model-select" bind:value={selectedProvider.selectedModel} class="styled-select" onchange={() => setLocalModelActive(selectedProvider.selectedModel)}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each availableModels as model}
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>
                         {/each}
                     </select>
-                    {#if selectedProvider.id !== 'mistralrs'}
+                    {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
                         <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
+                        </button>
+                    {:else if selectedProvider.id === 'llamacpp'}
+                         <button class="action-btn small primary" onclick={() => setLocalModelActive(selectedProvider.selectedModel)} title="Start Sidecar">
+                            <Rocket size={14} />
                         </button>
                     {/if}
                 </div>
             </div>
 
-            <div class="actions">
-                <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
-                    <span class={testingConnection ? "loader-spin" : ""}>
-                        {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
-                    </span>
-                    {i18n.t.settings.test_connection}
-                </button>
-            </div>
-
-            {#if testResult}
-                <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
-                    <span>{testResult.message}</span>
+            {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
+                <div class="actions">
+                    <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
+                        <span class={testingConnection ? "loader-spin" : ""}>
+                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                        </span>
+                        {i18n.t.settings.test_connection}
+                    </button>
                 </div>
+
+                {#if testResult}
+                    <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
+                        <span>{testResult.message}</span>
+                    </div>
+                {/if}
             {/if}
 
-            {#if selectedProvider.id === 'mistralrs'}
+            {#if ['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
                 <div class="section-card" style="margin-top: 24px;">
                     <div class="header" style="margin-bottom: 15px;">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><HardDrive size={16} /> Local Model Manager</h2>
-                        <button class="action-btn small success" onclick={addLocalModel}>
-                            <Plus size={14} /> Add Model File
-                        </button>
+                        <div class="header-actions" style="display: flex; gap: 8px;">
+                            {#if selectedProvider.id === 'llamacpp'}
+                                <button class="action-btn small primary" onclick={() => setLocalModelActive(selectedProvider.selectedModel)}>
+                                    <Rocket size={14} /> Start Sidecar
+                                </button>
+                            {/if}
+                            <button class="action-btn small success" onclick={addLocalModel}>
+                                <Plus size={14} /> Add File
+                            </button>
+                        </div>
                     </div>
-                    
-                    <div class="model-manager-list">
+
+                    <div class="form-group" style="margin-bottom: 20px;">
+                        <label for="custom-model-id">Custom HF Repo ID or URL</label>
+                        <div class="input-with-action">
+                            <input 
+                                type="text" 
+                                id="custom-model-id" 
+                                placeholder="e.g. bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf" 
+                                bind:value={customModelInput}
+                            />
+                            <button class="action-btn small" onclick={addCustomModel}>
+                                <Plus size={14} /> Add
+                            </button>
+                        </div>
+                        <p class="hint">For GGUF on HF use Format: REPO_ID/FILENAME.GGUF</p>
+                    </div>
+
+                    <div class="models-grid">
                         {#each localModels as model, i}
                             <div class="local-model-row" class:active-model-row={selectedProvider.selectedModel === model.path}>
                                 <div class="model-info">
@@ -533,7 +602,7 @@
     .test-result-box.success { background: #064e3b33; color: #ecfdf5; border-color: #065f46; }
     .test-result-box.error { background: #450a0a33; color: #fef2f2; border-color: #7f1d1d; }
     
-    .model-manager-list { display: flex; flex-direction: column; gap: 10px; }
+    :global(.model-manager-list) { display: flex; flex-direction: column; gap: 10px; }
     .local-model-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; }
     .local-model-row.active-model-row { border-color: #3b82f6; background: #1e3a8a33; }
     .model-title-line { display: flex; align-items: center; gap: 8px; }
