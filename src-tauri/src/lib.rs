@@ -7,7 +7,7 @@ use tauri::Emitter;
 use std::sync::{Arc, Mutex};
 use mistralrs::{
     GgufModelBuilder, IsqType, TextMessageRole, TextMessages, 
-    best_device, Model, Device
+    best_device, Model
 };
 
 #[derive(Deserialize)]
@@ -23,9 +23,10 @@ struct DownloadProgress {
     total: u64,
 }
 
-// Global state to hold the high-level Model instance
+// Global state to hold the high-level Model instance and current model path
 pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
+    current_model_path: Mutex<Option<String>>,
 }
 
 #[tauri::command]
@@ -93,29 +94,31 @@ async fn run_mistralrs_query(
     prompt: String,
 ) -> Result<String, String> {
     let mut model_lock = state.model.lock().unwrap();
+    let mut current_path_lock = state.current_model_path.lock().unwrap();
     
-    // Check if we need to load or reload the model
-    let should_load = match &*model_lock {
-        None => true,
-        Some(_) => false, // For now, we don't handle model swapping here, just caching the first one
+    // Check if we need to load or swap the model
+    let needs_load = match &*current_path_lock {
+        Some(path) if path == &model_path => model_lock.is_none(),
+        _ => true,
     };
 
-    if should_load {
+    if needs_load {
+        println!("[mistral.rs] Loading model from: {}", model_path);
         let path = Path::new(&model_path);
         let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
         let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
 
-        println!("[mistral.rs] Loading model from: {} / {}", parent, filename);
-
-        let model = GgufModelBuilder::new(parent.clone(), parent, filename)
-            .with_isq(IsqType::Q4K)
+        // GgufModelBuilder::new takes (model_id, files)
+        // For local files, we use the directory as model_id
+        let model = GgufModelBuilder::new(parent.clone(), vec![filename])
             .with_device(best_device(false).map_err(|e| e.to_string())?)
             .with_logging()
             .build()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e: anyhow::Error| e.to_string())?;
         
         *model_lock = Some(Arc::new(model));
+        *current_path_lock = Some(model_path.clone());
         println!("[mistral.rs] Model loaded successfully.");
     }
 
@@ -127,10 +130,10 @@ async fn run_mistralrs_query(
     println!("[mistral.rs] Sending chat request...");
     let response = model.send_chat_request(messages)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e: anyhow::Error| e.to_string())?;
 
     let content = response.choices[0].message.content.as_ref().cloned().unwrap_or_default();
-    println!("[mistral.rs] Query complete. Response length: {}", content.length());
+    println!("[mistral.rs] Query complete. Response length: {}", content.len());
     
     Ok(content)
 }
@@ -145,7 +148,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(AppState { model: Mutex::new(None) })
+        .manage(AppState { 
+            model: Mutex::new(None),
+            current_model_path: Mutex::new(None)
+        })
         .invoke_handler(tauri::generate_handler![move_files, download_file, run_mistralrs_query])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
