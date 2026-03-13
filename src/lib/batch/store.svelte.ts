@@ -95,10 +95,10 @@ export class BatchManager {
         
         let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
         
-        if (activeProviderId === 'mistralrs') {
+        if (['mistralrs', 'llamacpp'].includes(activeProviderId)) {
             const localModels = await getSetting('localModels', []) as any[];
             const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
-            modelId = activeLocal?.path;
+            modelId = activeLocal?.path || modelId;
         }
 
         const globalExportPath = await getSetting('exportPath', '');

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 use std::io::Write;
 use tauri::Emitter;
+use tauri::Manager;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use mistralrs::{
@@ -50,22 +51,53 @@ async fn start_llamacpp_sidecar(
     }
 
     println!("[Sidecar] Starting llama-server with Metal acceleration...");
+    println!("[Sidecar] Model path: {}", model_path);
     
-    // Use the sidecar defined in tauri.conf.json
-    // -ngl 99 ensures all layers are offloaded to Metal GPU
+    // In dev mode, sidecars are in src-tauri/bin
+    // In production, they are in the resources folder
+    let bin_dir = if cfg!(debug_assertions) {
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        // target/debug/tauri-app -> src-tauri/bin
+        exe_path.parent().unwrap().parent().unwrap().parent().unwrap().join("bin")
+    } else {
+        let resource_dir = app_handle.path().resource_dir().map_err(|e: tauri::Error| e.to_string())?;
+        resource_dir.join("bin")
+    };
+    
+    let bin_dir_str = bin_dir.to_string_lossy().to_string();
+    println!("[Sidecar] Library path: {}", bin_dir_str);
+
     let (mut rx, child) = app_handle
         .shell()
         .sidecar("llama-server")
-        .map_err(|e| e.to_string())?
-        .args(["-m", &model_path, "--port", "8080", "-ngl", "99", "--parallel", "1", "--ctx-size", "4096"])
+        .map_err(|e| {
+            println!("[Sidecar] DEFINE ERROR: {}", e);
+            e.to_string()
+        })?
+        .args(["-m", &model_path, "--port", "8080", "--host", "0.0.0.0", "-ngl", "99", "--parallel", "1", "-c", "4096"])
+        .env("DYLD_LIBRARY_PATH", &bin_dir_str)
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            println!("[Sidecar] SPAWN ERROR: {}", e);
+            e.to_string()
+        })?;
+
+    println!("[Sidecar] Spawned PID: {:?}", child.pid());
 
     // Monitor output in background
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            if let tauri_plugin_shell::process::CommandEvent::Stdout(line) = event {
-                println!("[llama.cpp] {}", String::from_utf8_lossy(&line));
+            match event {
+                tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
+                    println!("[llama.cpp] {}", String::from_utf8_lossy(&line));
+                }
+                tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
+                    eprintln!("[llama.cpp] ERR: {}", String::from_utf8_lossy(&line));
+                }
+                tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
+                    println!("[llama.cpp] Terminated with code: {:?}", payload.code);
+                }
+                _ => {}
             }
         }
     });

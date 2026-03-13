@@ -45,7 +45,7 @@
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
     
     let availableModels = $derived.by(() => {
-        if (activeProviderId === 'mistralrs') {
+        if (['mistralrs', 'llamacpp'].includes(activeProviderId)) {
             return localModels.filter(m => m.isDownloaded).map(m => m.path);
         }
         return activeProvider.models;

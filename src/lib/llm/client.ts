@@ -28,7 +28,7 @@ export const OPENAI_COMPATIBLE = {
 export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: [], selectedModel: '', isConfigured: true },
     { id: 'mistralrs', name: 'mistral.rs (Native)', baseUrl: 'local', apiKey: '', models: [], selectedModel: '', isConfigured: true },
-    { id: 'llamacpp', name: 'llama.cpp (Sidecar)', baseUrl: 'http://localhost:8080/v1', apiKey: 'no-key', models: ['local-model'], selectedModel: 'local-model', isConfigured: true },
+    { id: 'llamacpp', name: 'llama.cpp (Sidecar)', baseUrl: 'http://localhost:8080/v1', apiKey: 'no-key', models: [], selectedModel: '', isConfigured: true },
     { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
@@ -127,34 +127,47 @@ export class LLMClient {
         if (!key && providerId !== 'ollama') throw new Error(`API key for ${providerId} is required.`);
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
-        try {
-            console.log(`[LLMClient] POST ${baseUrl}/chat/completions`);
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (key && providerId !== 'ollama') headers['Authorization'] = `Bearer ${key}`;
+        const maxRetries = 3;
+        let lastError = null;
 
-            const response = await fetch(`${baseUrl}/chat/completions`, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify({
-                    model: modelId,
-                    messages: [{ role: 'user', content: prompt }],
-                    temperature: 0.3
-                })
-            });
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                console.log(`[LLMClient] POST ${baseUrl}/chat/completions (Attempt ${attempt + 1})`);
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                if (key && providerId !== 'ollama' && providerId !== 'llamacpp') headers['Authorization'] = `Bearer ${key}`;
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error(`[LLMClient] Query failed: ${response.status} ${errorText}`);
-                throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
+                const response = await fetch(`${baseUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        model: modelId,
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.3
+                    }),
+                    connectTimeout: 5000 // Shorter timeout for retries
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`[LLMClient] Query failed: ${response.status} ${errorText}`);
+                    throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
+                }
+
+                const data = await response.json();
+                console.log(`[LLMClient] Query success.`);
+                return data.choices[0].message.content;
+            } catch (error: any) {
+                lastError = error;
+                console.warn(`[LLMClient] Attempt ${attempt + 1} failed for ${providerId}:`, error.message || error);
+                if (attempt < maxRetries - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+                }
             }
-
-            const data = await response.json();
-            console.log(`[LLMClient] Query success.`);
-            return data.choices[0].message.content;
-        } catch (error: any) {
-            console.error(`[LLMClient] Error in query:`, error.message);
-            throw error;
         }
+
+        console.error(`[LLMClient] All ${maxRetries} attempts failed for ${providerId}.`);
+        const errorMsg = typeof lastError === 'object' ? (lastError.message || JSON.stringify(lastError)) : String(lastError);
+        throw new Error(`[${providerId}] ${errorMsg}`);
     }
 }
 

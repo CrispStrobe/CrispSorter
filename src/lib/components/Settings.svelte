@@ -246,9 +246,18 @@
         selectedProvider.selectedModel = path;
         
         if (selectedProviderId === 'llamacpp') {
+            if (!path) {
+                try {
+                    await invoke('stop_llamacpp_sidecar');
+                } catch (e) { console.error(e); }
+                return;
+            }
             try {
                 await invoke('start_llamacpp_sidecar', { modelPath: path });
-                alert("llama.cpp Sidecar started with Metal acceleration!");
+                // Give it a moment to initialize
+                setTimeout(() => {
+                    alert("llama.cpp Sidecar starting with Metal acceleration! It will be ready in a few seconds.");
+                }, 1000);
             } catch (e) {
                 alert(`Failed to start sidecar: ${e}`);
             }
@@ -260,6 +269,13 @@
     async function setActiveProvider(id: string) {
         activeProviderId = id;
         await handleSave();
+    }
+
+    async function resetProviders() {
+        if (!confirm("Are you sure you want to reset all providers to defaults? This will clear your API keys.")) return;
+        providers = JSON.parse(JSON.stringify(DEFAULT_PROVIDERS));
+        await handleSave();
+        alert("Providers reset to defaults.");
     }
 
     async function handleRefreshModels() {
@@ -341,6 +357,9 @@
                     {#if saveIndicator}
                         <span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>
                     {/if}
+                    <button class="action-btn small danger" onclick={resetProviders}>
+                        <RefreshCw size={14} /> Reset to Defaults
+                    </button>
                     <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
                 </div>
             </div>
