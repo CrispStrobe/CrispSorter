@@ -2,33 +2,64 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import Tesseract from 'tesseract.js';
 import { getSetting } from '../store';
 
-// Point to the local static worker file we just copied
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+// Set worker to the local legacy file we just copied to static/
+// We use the non-minified version for better debugging if needed
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
+
+// Polyfill for ReadableStream.values which is missing in some WebKit versions
+// and causes the "undefined is not a function (near '...value of readableStream...')" error
+if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype.values) {
+    console.log("[PDFExtractor] Polyfilling ReadableStream.prototype.values");
+    // @ts-ignore
+    ReadableStream.prototype.values = function() {
+        const reader = this.getReader();
+        return {
+            next() {
+                return reader.read();
+            },
+            [Symbol.asyncIterator]() {
+                return this;
+            }
+        };
+    };
+}
 
 export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}`);
     const ocrEnabled = await getSetting('ocrEnabled', false);
     
     try {
+        // We use Uint8Array as it's the most compatible data type for getDocument
+        const data = new Uint8Array(arrayBuffer);
+        
         const loadingTask = pdfjsLib.getDocument({ 
-            data: arrayBuffer,
+            data: data,
             useSystemFonts: true,
-            disableFontFace: true 
+            disableFontFace: true,
+            // These flags help with compatibility in restricted environments like webviews
+            disableRange: true,
+            disableStream: true,
+            disableAutoFetch: true
         });
         
         const pdfDocument = await loadingTask.promise;
         let fullText = '';
         const numPages = pdfDocument.numPages;
-        console.log(`[PDFExtractor] Document loaded, pages: ${numPages}`);
+        console.log(`[PDFExtractor] Document loaded successfully, pages: ${numPages}`);
 
         for (let pageNum = 1; pageNum <= numPages; pageNum++) {
             console.log(`[PDFExtractor] Processing page ${pageNum}/${numPages}...`);
             const page = await pdfDocument.getPage(pageNum);
-            const textContent = await page.getTextContent();
             
-            let pageText = textContent.items
-                .map((item: any) => item.str || '')
-                .join(' ');
+            let pageText = '';
+            try {
+                const textContent = await page.getTextContent();
+                pageText = textContent.items
+                    .map((item: any) => item.str || '')
+                    .join(' ');
+            } catch (textErr) {
+                console.warn(`[PDFExtractor] Text extraction failed for page ${pageNum}:`, textErr);
+            }
             
             // If no text was found and OCR is enabled, try OCR on this page
             if (pageText.trim().length < 20 && ocrEnabled) {

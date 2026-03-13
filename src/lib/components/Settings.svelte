@@ -19,6 +19,7 @@
     let llmMaxChars = $state(5000);
     let llmPrompt = $state('Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
     let ocrEnabled = $state(false);
+    let authorSortEnabled = $state(false);
 
     let loadingModels = $state(false);
     let testingConnection = $state(false);
@@ -39,6 +40,7 @@
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
         ocrEnabled = await getSetting('ocrEnabled', false);
+        authorSortEnabled = await getSetting('authorSortEnabled', false);
     });
 
     async function handleSave() {
@@ -49,6 +51,7 @@
         await saveSetting('llmMaxChars', llmMaxChars);
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
+        await saveSetting('authorSortEnabled', authorSortEnabled);
         i18n.setLanguage(currentLanguage);
         alert(i18n.t.settings.saved);
     }
@@ -178,6 +181,14 @@
                 <p class="hint">{i18n.t.settings.llm_prompt_hint}</p>
             </div>
 
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <label><Edit size={16} /> {i18n.t.settings.author_sort}</label>
+                    <input type="checkbox" bind:checked={authorSortEnabled} />
+                </div>
+                <p class="hint">{i18n.t.settings.author_sort_hint}</p>
+            </div>
+
             <div class="header" style="margin-top: 40px;">
                 <h1>{i18n.t.settings.ocr_options}</h1>
             </div>
@@ -226,20 +237,16 @@
 
             <div class="actions">
                 <button class="action-btn" onclick={handleRefreshModels} disabled={loadingModels}>
-                    {#if loadingModels}
-                        <Loader2 class="loader-spin" size={16} />
-                    {:else}
-                        <RefreshCw size={16} />
-                    {/if}
+                    <span class:loader-spin={loadingModels}>
+                        {#if loadingModels}<Loader2 size={16} />{:else}<RefreshCw size={16} />{/if}
+                    </span>
                     {i18n.t.settings.refresh_models}
                 </button>
 
                 <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
-                    {#if testingConnection}
-                        <Loader2 class="loader-spin" size={16} />
-                    {:else}
-                        <CheckCircle size={16} />
-                    {/if}
+                    <span class:loader-spin={testingConnection}>
+                        {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                    </span>
                     {i18n.t.settings.test_connection}
                 </button>
             </div>
@@ -263,10 +270,10 @@
                     {#if selectedProvider.models.length > 0}
                         <ul>
                             {#each selectedProvider.models as model}
-                                <li class:active={selectedProvider.selectedModel === model}>
+                                <li class:active-item={selectedProvider.selectedModel === model}>
                                     {model}
                                     {#if selectedProvider.selectedModel === model}
-                                        <CheckCircle size={12} class="active-check" />
+                                        <CheckCircle size={12} style="color: #3b82f6;" />
                                     {/if}
                                 </li>
                             {/each}
@@ -316,14 +323,13 @@
     
     .test-result { padding: 10px; border-radius: 6px; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; margin-bottom: 24px; max-width: 600px; }
     .test-result.success { background: #064e3b; color: #ecfdf5; border: 1px solid #065f46; }
-    .test-result.error { background: #450a0a; color: #fecaca; border: 1px solid #7f1d1d; }
+    .test-result.error { background: #450a0a; color: #fef2f2; border: 1px solid #7f1d1d; }
     
     .models-list { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow-y: auto; }
     .models-list ul { list-style: none; padding: 0; margin: 0; }
     .models-list li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
-    .models-list li.active { color: white; background: #27272a; border-radius: 4px; }
-    .active-check { color: #3b82f6; }
+    .models-list li.active-item { color: white; background: #27272a; border-radius: 4px; }
     .hint { font-size: 0.75rem; color: #71717a; margin-top: 6px; display: block; line-height: 1.4; }
-    .loader-spin { animation: spin 1s linear infinite; }
+    .loader-spin { display: flex; align-items: center; justify-content: center; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

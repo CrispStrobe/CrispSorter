@@ -115,7 +115,7 @@
             </div>
 
             <div class="search-box">
-                <Search size={14} style="color: #71717a; margin-right: 8px;" />
+                <Search size={14} class="search-icon-dim" />
                 <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} />
             </div>
 
@@ -197,7 +197,7 @@
                             class:status-done={item.status === 'done'}
                         >
                             <td onclick={e => e.stopPropagation()}>
-                                <input type="checkbox" bind:checked={item.isAccepted} />
+                                <input type="checkbox" bind:checked={item.isAccepted} aria-label="Accept item" />
                             </td>
                             <td>
                                 <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}>
@@ -205,8 +205,8 @@
                                 </span>
                             </td>
                             <td class="file-name" title={item.originalPath}>{item.originalName}</td>
-                            <td><input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} /></td>
-                            <td><input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} /></td>
+                            <td><input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} aria-label="Suggested title" /></td>
+                            <td><input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} aria-label="Suggested author" /></td>
                         </tr>
                     {/each}
                     {#if batchManager.filteredItems.length === 0}
@@ -278,6 +278,7 @@
     .dropdown-menu button:hover { background: #27272a; color: white; }
 
     .search-box { display: flex; align-items: center; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 0 10px; flex: 1; min-width: 250px; }
+    .search-icon-dim { color: #71717a; margin-right: 8px; }
     .search-box input { border: none; background: transparent; color: white; padding: 4px 0; font-size: 0.8125rem; width: 100%; }
     .search-box input:focus { outline: none; }
 
