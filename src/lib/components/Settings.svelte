@@ -2,7 +2,8 @@
     import { onMount } from 'svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { getSetting, saveSetting } from '../store';
-    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save } from 'lucide-svelte';
+    import { i18n, type Language } from '../i18n.svelte';
+    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save, Languages } from 'lucide-svelte';
     import { open } from '@tauri-apps/plugin-dialog';
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
@@ -12,6 +13,7 @@
     // Global App Settings
     let exportPath = $state('');
     let saveTxt = $state(true);
+    let currentLanguage = $state<Language>('en');
 
     let loadingModels = $state(false);
     let testingConnection = $state(false);
@@ -28,13 +30,16 @@
         }
         exportPath = await getSetting('exportPath', '');
         saveTxt = await getSetting('saveTxt', true);
+        currentLanguage = await getSetting('language', 'en') as Language;
     });
 
     async function handleSave() {
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('exportPath', exportPath);
         await saveSetting('saveTxt', saveTxt);
-        alert('Settings saved!');
+        await saveSetting('language', currentLanguage);
+        i18n.setLanguage(currentLanguage);
+        alert(i18n.t.settings.saved);
     }
 
     async function pickExportPath() {
@@ -49,6 +54,10 @@
     }
 
     async function handleRefreshModels() {
+        if (!selectedProvider.apiKey && selectedProvider.id !== 'ollama') {
+            alert(i18n.t.settings.key_required);
+            return;
+        }
         loadingModels = true;
         try {
             const models = await llmClient.fetchModels(selectedProvider.id, selectedProvider.apiKey, selectedProvider.baseUrl);
@@ -56,7 +65,7 @@
             await saveSetting('providers', $state.snapshot(providers));
         } catch (error: any) {
             const msg = error instanceof Error ? error.message : String(error);
-            alert(`Failed to fetch models: ${msg}`);
+            alert(`${i18n.t.settings.fetch_failed}: ${msg}`);
         } finally {
             loadingModels = false;
         }
@@ -68,10 +77,10 @@
         try {
             const model = selectedProvider.models[0] || 'gpt-3.5-turbo';
             const response = await llmClient.query(selectedProvider.id, model, 'Hello, are you working?', selectedProvider.apiKey);
-            testResult = { success: true, message: `Success! Response: ${response.substring(0, 50)}...` };
+            testResult = { success: true, message: `${i18n.t.settings.test_success} Response: ${response.substring(0, 50)}...` };
         } catch (error: any) {
             const msg = error instanceof Error ? error.message : String(error);
-            testResult = { success: false, message: `Error: ${msg}` };
+            testResult = { success: false, message: `${i18n.t.settings.test_error}: ${msg}` };
         } finally {
             testingConnection = false;
         }
@@ -80,7 +89,7 @@
 
 <div class="settings-container">
     <div class="sidebar">
-        <h2>Providers</h2>
+        <h2>{i18n.t.settings.providers}</h2>
         <div class="provider-list">
             {#each providers as provider}
                 <button 
@@ -94,53 +103,63 @@
         </div>
         
         <div class="sidebar-divider"></div>
-        <h2>App Settings</h2>
+        <h2>{i18n.t.settings.app_settings}</h2>
         <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
-            General Settings
+            {i18n.t.settings.general}
         </button>
     </div>
 
     <div class="content">
         {#if selectedProviderId === 'global'}
             <div class="header">
-                <h1>General Settings</h1>
-                <button class="save-btn" onclick={handleSave}>Save All</button>
+                <h1>{i18n.t.settings.general}</h1>
+                <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
             </div>
 
             <div class="form-group">
                 <label>
-                    <FolderOpen size={16} /> Default Export Directory
+                    <FolderOpen size={16} /> {i18n.t.settings.export_dir}
                 </label>
                 <div class="input-with-action">
-                    <input type="text" bind:value={exportPath} placeholder="Path where .txt and sorted files go..." />
-                    <button class="action-btn" onclick={pickExportPath}>Browse</button>
+                    <input type="text" bind:value={exportPath} placeholder="Path..." />
+                    <button class="action-btn" onclick={pickExportPath}>{i18n.t.settings.browse}</button>
                 </div>
-                <p class="hint">If empty, files will be saved in a "Sorted" folder next to the source.</p>
+                <p class="hint">{i18n.t.settings.dir_hint}</p>
             </div>
 
             <div class="form-group checkbox-group">
                 <label>
-                    <Save size={16} /> Save Extracted Text (.txt)
+                    <Save size={16} /> {i18n.t.settings.save_txt}
                 </label>
                 <input type="checkbox" bind:checked={saveTxt} />
-                <span class="hint">Always create a .txt file alongside the sorted document.</span>
+                <span class="hint">{i18n.t.settings.save_txt_hint}</span>
+            </div>
+
+            <div class="form-group">
+                <label>
+                    <Languages size={16} /> {i18n.t.settings.language}
+                </label>
+                <select bind:value={currentLanguage} class="lang-select">
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                </select>
             </div>
         {:else}
             <div class="header">
-                <h1>{selectedProvider.name} Settings</h1>
-                <button class="save-btn" onclick={handleSave}>Save All</button>
+                <h1>{selectedProvider.name}</h1>
+                <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
             </div>
 
             <div class="form-group">
                 <label for="base-url">
-                    <Globe size={16} /> Base URL
+                    <Globe size={16} /> {i18n.t.settings.base_url}
                 </label>
                 <input id="base-url" type="text" bind:value={selectedProvider.baseUrl} placeholder="https://api..." />
             </div>
 
             <div class="form-group">
                 <label for="api-key">
-                    <Key size={16} /> API Key
+                    <Key size={16} /> {i18n.t.settings.api_key}
                 </label>
                 <div class="input-with-action">
                     <input id="api-key" type="password" bind:value={selectedProvider.apiKey} placeholder="sk-..." />
@@ -154,7 +173,7 @@
                     {:else}
                         <RefreshCw size={16} />
                     {/if}
-                    Refresh Models
+                    {i18n.t.settings.refresh_models}
                 </button>
 
                 <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
@@ -163,7 +182,7 @@
                     {:else}
                         <CheckCircle size={16} />
                     {/if}
-                    Test Connection
+                    {i18n.t.settings.test_connection}
                 </button>
             </div>
 
@@ -180,7 +199,7 @@
 
             <div class="models-section">
                 <label>
-                    <Cpu size={16} /> Available Models ({selectedProvider.models.length})
+                    <Cpu size={16} /> {i18n.t.settings.available_models} ({selectedProvider.models.length})
                 </label>
                 <div class="models-list">
                     {#if selectedProvider.models.length > 0}
@@ -190,7 +209,7 @@
                             {/each}
                         </ul>
                     {:else}
-                        <p class="empty-hint">No models found. Click "Refresh Models" to fetch them.</p>
+                        <p class="empty-hint">{i18n.t.settings.no_models}</p>
                     {/if}
                 </div>
             </div>
@@ -200,7 +219,7 @@
 
 <style>
     .settings-container { display: flex; height: 100%; background: #09090b; color: #fafafa; font-family: 'Inter', sans-serif; overflow: hidden; }
-    .sidebar { width: 240px; background: #18181b; border-right: 1px solid #27272a; padding: 20px 0; display: flex; flex-direction: column; }
+    .sidebar { width: 240px; background: #18181b; border-right: 1px solid #27272a; padding: 20px 0; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar h2 { padding: 0 20px; font-size: 0.875rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; }
     .sidebar-divider { height: 1px; background: #27272a; margin: 20px 0; }
     .provider-list { display: flex; flex-direction: column; }
@@ -215,8 +234,8 @@
     .checkbox-group { display: flex; align-items: center; gap: 12px; }
     .checkbox-group label { margin-bottom: 0; }
     label { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; font-weight: 600; margin-bottom: 8px; color: #a1a1aa; }
-    input[type="text"], input[type="password"] { width: 100%; padding: 10px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.9375rem; background: #18181b; color: white; }
-    input:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+    input[type="text"], input[type="password"], .lang-select { width: 100%; padding: 10px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.9375rem; background: #18181b; color: white; }
+    input:focus, .lang-select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
     .input-with-action { display: flex; gap: 10px; }
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }

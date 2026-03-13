@@ -3,7 +3,8 @@
     import { getSetting, saveSetting } from '../store';
     import { type BatchSession } from '../types';
     import { batchManager } from '../batch/store.svelte';
-    import { Clock, Play, Trash2, Calendar, FileText } from 'lucide-svelte';
+    import { i18n } from '../i18n.svelte';
+    import { Clock, Play, Trash2, Calendar, FileText, Upload, Download } from 'lucide-svelte';
 
     let sessions = $state<BatchSession[]>([]);
 
@@ -22,10 +23,15 @@
     }
 
     async function handleDelete(id: string) {
-        if (!confirm('Are you sure you want to delete this session?')) return;
+        if (!confirm(i18n.t.history.delete_confirm)) return;
         const saved = await getSetting('sessions', {}) as Record<string, BatchSession>;
         delete saved[id];
         await saveSetting('sessions', saved);
+        await refreshHistory();
+    }
+
+    async function handleImport() {
+        await batchManager.importBatch();
         await refreshHistory();
     }
 
@@ -34,8 +40,18 @@
 
 <div class="history-container">
     <div class="header">
-        <h1>Batch History</h1>
-        <p>Resume previous sorting sessions or review results.</p>
+        <div class="title-area">
+            <h1>{i18n.t.history.title}</h1>
+            <p>{i18n.t.history.subtitle}</p>
+        </div>
+        <div class="header-actions">
+            <button class="action-btn" onclick={handleImport}>
+                <Upload size={18} /> {i18n.t.history.import}
+            </button>
+            <button class="action-btn" onclick={() => batchManager.exportBatch()}>
+                <Download size={18} /> {i18n.t.history.export}
+            </button>
+        </div>
     </div>
 
     <div class="sessions-list">
@@ -56,7 +72,7 @@
                 </div>
                 <div class="session-actions">
                     <button class="resume-btn" onclick={() => handleResume(session.id, onResumeBatch)}>
-                        <Play size={16} /> Resume
+                        <Play size={16} /> {i18n.t.history.resume}
                     </button>
                     <button class="delete-btn" onclick={() => handleDelete(session.id)}>
                         <Trash2 size={16} />
@@ -66,7 +82,7 @@
         {:else}
             <div class="empty-state">
                 <Clock size={48} />
-                <p>No history found. Start a new batch to see it here.</p>
+                <p>{i18n.t.history.empty}</p>
             </div>
         {/each}
     </div>
@@ -81,9 +97,13 @@
         color: #fafafa;
     }
 
-    .header { margin-bottom: 32px; }
+    .header { margin-bottom: 32px; display: flex; justify-content: space-between; align-items: flex-start; }
     h1 { font-size: 1.875rem; font-weight: 700; margin: 0 0 8px; }
     p { color: #a1a1aa; margin: 0; }
+
+    .header-actions { display: flex; gap: 12px; }
+    .action-btn { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border: 1px solid #27272a; background: #18181b; border-radius: 8px; color: #d4d4d8; cursor: pointer; font-weight: 600; transition: background 0.2s; }
+    .action-btn:hover { background: #27272a; }
 
     .sessions-list { display: flex; flex-direction: column; gap: 16px; max-width: 800px; }
 
