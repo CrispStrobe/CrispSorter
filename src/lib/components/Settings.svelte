@@ -3,7 +3,7 @@
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { getSetting, saveSetting } from '../store';
     import { i18n, type Language } from '../i18n.svelte';
-    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save, Languages } from 'lucide-svelte';
+    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save, Languages, MessageSquare, Scan } from 'lucide-svelte';
     import { open } from '@tauri-apps/plugin-dialog';
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
@@ -14,6 +14,11 @@
     let exportPath = $state('');
     let saveTxt = $state(true);
     let currentLanguage = $state<Language>('en');
+    
+    // LLM & OCR Settings
+    let llmMaxChars = $state(5000);
+    let llmPrompt = $state('Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+    let ocrEnabled = $state(false);
 
     let loadingModels = $state(false);
     let testingConnection = $state(false);
@@ -31,6 +36,9 @@
         exportPath = await getSetting('exportPath', '');
         saveTxt = await getSetting('saveTxt', true);
         currentLanguage = await getSetting('language', 'en') as Language;
+        llmMaxChars = await getSetting('llmMaxChars', 5000);
+        llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+        ocrEnabled = await getSetting('ocrEnabled', false);
     });
 
     async function handleSave() {
@@ -38,6 +46,9 @@
         await saveSetting('exportPath', exportPath);
         await saveSetting('saveTxt', saveTxt);
         await saveSetting('language', currentLanguage);
+        await saveSetting('llmMaxChars', llmMaxChars);
+        await saveSetting('llmPrompt', llmPrompt);
+        await saveSetting('ocrEnabled', ocrEnabled);
         i18n.setLanguage(currentLanguage);
         alert(i18n.t.settings.saved);
     }
@@ -127,10 +138,16 @@
                 <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
             </div>
 
-            <div class="form-group">
-                <label>
-                    <FolderOpen size={16} /> {i18n.t.settings.export_dir}
-                </label>
+            <div class="section-card">
+                <label><Languages size={16} /> {i18n.t.settings.language}</label>
+                <select bind:value={currentLanguage} class="styled-select">
+                    <option value="en">English</option>
+                    <option value="de">Deutsch</option>
+                </select>
+            </div>
+
+            <div class="section-card">
+                <label><FolderOpen size={16} /> {i18n.t.settings.export_dir}</label>
                 <div class="input-with-action">
                     <input type="text" bind:value={exportPath} placeholder="Path..." />
                     <button class="action-btn" onclick={pickExportPath}>{i18n.t.settings.browse}</button>
@@ -138,23 +155,41 @@
                 <p class="hint">{i18n.t.settings.dir_hint}</p>
             </div>
 
-            <div class="form-group checkbox-group">
-                <label>
-                    <Save size={16} /> {i18n.t.settings.save_txt}
-                </label>
-                <input type="checkbox" bind:checked={saveTxt} />
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <label><Save size={16} /> {i18n.t.settings.save_txt}</label>
+                    <input type="checkbox" bind:checked={saveTxt} />
+                </div>
                 <span class="hint">{i18n.t.settings.save_txt_hint}</span>
             </div>
 
-            <div class="form-group">
-                <label>
-                    <Languages size={16} /> {i18n.t.settings.language}
-                </label>
-                <select bind:value={currentLanguage} class="styled-select">
-                    <option value="en">English</option>
-                    <option value="de">Deutsch</option>
-                </select>
+            <div class="header" style="margin-top: 40px;">
+                <h1>{i18n.t.settings.llm_options}</h1>
             </div>
+
+            <div class="section-card">
+                <label><MessageSquare size={16} /> {i18n.t.settings.llm_max_chars}</label>
+                <input type="number" bind:value={llmMaxChars} min="500" step="500" class="styled-input" />
+            </div>
+
+            <div class="section-card">
+                <label><MessageSquare size={16} /> {i18n.t.settings.llm_prompt}</label>
+                <textarea bind:value={llmPrompt} rows="4" class="styled-textarea"></textarea>
+                <p class="hint">{i18n.t.settings.llm_prompt_hint}</p>
+            </div>
+
+            <div class="header" style="margin-top: 40px;">
+                <h1>{i18n.t.settings.ocr_options}</h1>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <label><Scan size={16} /> {i18n.t.settings.ocr_enabled}</label>
+                    <input type="checkbox" bind:checked={ocrEnabled} />
+                </div>
+                <p class="hint">{i18n.t.settings.ocr_hint}</p>
+            </div>
+
         {:else}
             <div class="header">
                 <h1>{selectedProvider.name}</h1>
@@ -255,30 +290,40 @@
     .provider-btn:hover { background: #27272a; color: white; }
     .provider-btn.active { background: #27272a; color: white; font-weight: 600; border-left: 3px solid #3b82f6; }
     .content { flex: 1; padding: 32px 48px; overflow-y: auto; }
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     h1 { font-size: 1.25rem; font-weight: 700; margin: 0; }
     .save-btn { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.875rem; }
+    
+    .section-card { background: #18181b; border: 1px solid #27272a; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    
     .form-group { margin-bottom: 20px; max-width: 600px; }
-    .checkbox-group { display: flex; align-items: center; gap: 12px; }
+    .checkbox-group { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
     .checkbox-group label { margin-bottom: 0; }
-    label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.02em; }
-    input[type="text"], input[type="password"], .styled-select { width: 100%; padding: 8px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.875rem; background: #18181b; color: white; }
-    input:focus, .styled-select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+    
+    label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; margin-bottom: 10px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.02em; }
+    
+    input[type="text"], input[type="password"], input[type="number"], .styled-select, .styled-textarea { 
+        width: 100%; padding: 8px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.875rem; background: #09090b; color: white; 
+    }
+    .styled-textarea { font-family: inherit; resize: vertical; }
+    input:focus, .styled-select:focus, .styled-textarea:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+    
     .input-with-action { display: flex; gap: 10px; }
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }
     .test-btn { color: #10b981; border-color: #064e3b; }
+    
     .test-result { padding: 10px; border-radius: 6px; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; margin-bottom: 24px; max-width: 600px; }
     .test-result.success { background: #064e3b; color: #ecfdf5; border: 1px solid #065f46; }
     .test-result.error { background: #450a0a; color: #fecaca; border: 1px solid #7f1d1d; }
-    .models-section { margin-top: 32px; max-width: 600px; }
-    .models-list { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow-y: auto; }
+    
+    .models-list { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow-y: auto; }
     .models-list ul { list-style: none; padding: 0; margin: 0; }
     .models-list li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
     .models-list li.active { color: white; background: #27272a; border-radius: 4px; }
     .active-check { color: #3b82f6; }
-    .hint { font-size: 0.75rem; color: #71717a; margin-top: 4px; display: block; }
+    .hint { font-size: 0.75rem; color: #71717a; margin-top: 6px; display: block; line-height: 1.4; }
     .loader-spin { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

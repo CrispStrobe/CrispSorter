@@ -83,6 +83,8 @@ export class BatchManager {
         
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
+        const llmMaxChars = await getSetting('llmMaxChars', 5000);
+        const llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
 
         console.log(`[BatchManager] Processing with ${activeProvider?.name}, model: ${modelId}`);
 
@@ -90,14 +92,17 @@ export class BatchManager {
             if (item.status !== 'queued' && item.status !== 'error') continue;
             
             try {
+                // 1. Extraction
                 item.status = 'extracting';
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
+                // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled && activeProvider && modelId) {
                     item.status = 'analyzing';
-                    const prompt = `Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }. Text: ${item.extractedText.substring(0, 4000)}`;
+                    const textSample = item.extractedText.substring(0, llmMaxChars);
+                    const prompt = `${llmPrompt}\n\nDocument Text:\n${textSample}`;
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
@@ -110,7 +115,10 @@ export class BatchManager {
                         const safeTitle = (item.suggestedTitle as string).replace(/[\\/:*?"<>|]/g, '');
                         const safeAuthor = (item.suggestedAuthor as string).replace(/[\\/:*?"<>|]/g, '');
                         
-                        const baseDir = globalExportPath || item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
+                        const lastSlash = item.originalPath.lastIndexOf('/');
+                        const originalDir = lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.';
+                        const baseDir = globalExportPath || originalDir;
+                        
                         item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
                         
                         item.status = 'review';
@@ -119,7 +127,9 @@ export class BatchManager {
                         item.errorMessage = 'Failed to parse LLM JSON';
                     }
                 } else {
-                    const baseDir = globalExportPath || item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
+                    const lastSlash = item.originalPath.lastIndexOf('/');
+                    const originalDir = lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.';
+                    const baseDir = globalExportPath || originalDir;
                     item.targetPath = `${baseDir}/Extracted/${item.originalName}.txt`;
                     item.status = 'review';
                 }
@@ -144,7 +154,8 @@ export class BatchManager {
             try {
                 if (globalSaveTxt && item.extractedText) {
                     const txtPath = item.targetPath!.replace(/\.[^.]+$/, '.txt');
-                    const parentDir = txtPath.substring(0, txtPath.lastIndexOf('/'));
+                    const lastSlash = txtPath.lastIndexOf('/');
+                    const parentDir = lastSlash !== -1 ? txtPath.substring(0, lastSlash) : '.';
                     try { await mkdir(parentDir, { recursive: true }); } catch(e) {}
                     const encoder = new TextEncoder();
                     await writeFile(txtPath, encoder.encode(item.extractedText));

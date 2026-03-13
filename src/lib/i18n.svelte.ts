@@ -68,7 +68,14 @@ export const translations = {
             fetch_failed: 'Fetch failed',
             test_success: 'Success!',
             test_error: 'Error',
-            select_model: 'Select Model'
+            select_model: 'Select Model',
+            llm_options: 'LLM Options',
+            llm_max_chars: 'Max Characters per File',
+            llm_prompt: 'AI Analysis Prompt',
+            llm_prompt_hint: 'The prompt must request a JSON response with title, author, and year.',
+            ocr_options: 'OCR Options',
+            ocr_enabled: 'Enable OCR for Scanned PDFs',
+            ocr_hint: 'Will download ~50MB of data on first run.'
         }
     },
     de: {
@@ -138,7 +145,14 @@ export const translations = {
             fetch_failed: 'Fehler beim Laden',
             test_success: 'Erfolg!',
             test_error: 'Fehler',
-            select_model: 'Modell auswählen'
+            select_model: 'Modell auswählen',
+            llm_options: 'KI-Optionen',
+            llm_max_chars: 'Max. Zeichen pro Datei',
+            llm_prompt: 'KI-Analyse Prompt',
+            llm_prompt_hint: 'Der Prompt muss eine JSON-Antwort mit title, author und year verlangen.',
+            ocr_options: 'OCR-Optionen',
+            ocr_enabled: 'OCR für Scans aktivieren',
+            ocr_hint: 'Lädt beim ersten Start ca. 50MB Daten nach.'
         }
     }
 };

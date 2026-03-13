@@ -22,7 +22,8 @@
     "@tauri-apps/plugin-store": "^2.4.2",
     "lucide-svelte": "^0.577.0",
     "mammoth": "^1.12.0",
-    "pdfjs-dist": "^5.5.207"
+    "pdfjs-dist": "^5.5.207",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

@@ -1,13 +1,14 @@
-import * as pdfjsLib from 'pdfjs-dist';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import Tesseract from 'tesseract.js';
+import { getSetting } from '../store';
 
-// Use Vite's worker loading for better compatibility
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-
-console.log(`[PDFExtractor] Loading worker from: ${pdfjsWorker}`);
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+// Use standard CDN for worker to keep bundle small and compatible
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}`);
+    const ocrEnabled = await getSetting('ocrEnabled', false);
+    
     try {
         const loadingTask = pdfjsLib.getDocument({ 
             data: arrayBuffer,
@@ -15,9 +16,7 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
             disableFontFace: true 
         });
         
-        console.log("[PDFExtractor] Document loading task created");
         const pdfDocument = await loadingTask.promise;
-        
         let fullText = '';
         const numPages = pdfDocument.numPages;
         console.log(`[PDFExtractor] Document loaded, pages: ${numPages}`);
@@ -27,12 +26,36 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
             const page = await pdfDocument.getPage(pageNum);
             const textContent = await page.getTextContent();
             
-            const pageText = textContent.items
-                .map((item) => {
-                    if ('str' in item) return item.str;
-                    return '';
-                })
+            let pageText = textContent.items
+                .map((item: any) => item.str || '')
                 .join(' ');
+            
+            // If no text was found and OCR is enabled, try OCR on this page
+            if (pageText.trim().length < 10 && ocrEnabled) {
+                console.log(`[PDFExtractor] Page ${pageNum} seems empty/scanned. Running OCR...`);
+                try {
+                    const canvas = document.createElement('canvas');
+                    const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    
+                    const renderContext = {
+                        canvasContext: canvas.getContext('2d')!,
+                        viewport: viewport
+                    };
+                    
+                    await page.render(renderContext).promise;
+                    const imageData = canvas.toDataURL('image/png');
+                    
+                    const { data: { text } } = await Tesseract.recognize(imageData, 'deu+eng', {
+                        logger: m => console.log(`[OCR] ${m.status}: ${Math.round(m.progress * 100)}%`)
+                    });
+                    pageText = text;
+                    console.log(`[PDFExtractor] OCR Success for page ${pageNum}, length: ${pageText.length}`);
+                } catch (ocrErr) {
+                    console.error(`[PDFExtractor] OCR Failed for page ${pageNum}:`, ocrErr);
+                }
+            }
             
             fullText += pageText + '\n';
         }
