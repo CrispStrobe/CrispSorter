@@ -5,7 +5,17 @@ export const translations = {
         nav: {
             batch: 'Batches',
             history: 'History',
-            settings: 'Settings'
+            settings: 'Settings',
+            chat: 'Chat'
+        },
+        chat: {
+            title: 'Chat',
+            context: 'Context',
+            context_hint: 'Select files to include in chat context.',
+            placeholder: 'Ask something about the documents...',
+            send: 'Send',
+            no_context: 'No documents selected.',
+            clear: 'Clear Chat'
         },
         batch: {
             add_files: 'Add',
@@ -87,7 +97,17 @@ export const translations = {
         nav: {
             batch: 'Batches',
             history: 'Verlauf',
-            settings: 'Einstellungen'
+            settings: 'Einstellungen',
+            chat: 'Chat'
+        },
+        chat: {
+            title: 'Chat',
+            context: 'Kontext',
+            context_hint: 'Wählen Sie Dateien für den Kontext aus.',
+            placeholder: 'Fragen Sie etwas zu den Dokumenten...',
+            send: 'Senden',
+            no_context: 'Keine Dokumente ausgewählt.',
+            clear: 'Chat leeren'
         },
         batch: {
             add_files: 'Hinzufügen',

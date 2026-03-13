@@ -1,4 +1,5 @@
 import { fetch } from '@tauri-apps/plugin-http';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface LLMProvider {
     id: string;
@@ -98,9 +99,18 @@ export class LLMClient {
 
     async query(providerId: string, modelId: string, prompt: string, apiKey?: string): Promise<string> {
         console.log(`[LLMClient] query provider=${providerId}, model=${modelId}`);
+        
         if (providerId === 'mistralrs') {
-            console.log(`[LLMClient] Native mistral.rs query for model at path: ${modelId}`);
-            throw new Error("mistral.rs query not yet implemented in backend.");
+            console.log(`[LLMClient] Invoking native mistral.rs engine...`);
+            try {
+                return await invoke('run_mistralrs_query', { 
+                    modelPath: modelId,
+                    prompt: prompt 
+                });
+            } catch (error: any) {
+                console.error(`[LLMClient] Native query failed:`, error);
+                throw new Error(`mistral.rs error: ${error}`);
+            }
         }
 
         const key = apiKey || this.keys[providerId];

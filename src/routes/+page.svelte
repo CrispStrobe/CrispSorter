@@ -3,12 +3,13 @@
     import Settings from '$lib/components/Settings.svelte';
     import BatchReview from '$lib/components/BatchReview.svelte';
     import History from '$lib/components/History.svelte';
+    import Chat from '$lib/components/Chat.svelte';
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, ListChecks } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare } from 'lucide-svelte';
 
-    let activeTab = $state('batch'); // 'batch', 'settings', 'history'
+    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings'
 
     onMount(async () => {
         // Load saved language
@@ -39,6 +40,11 @@
                 <ListChecks size={20} />
                 <span>{i18n.t.nav.batch}</span>
             </button>
+
+            <button class="nav-item" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>
+                <MessageSquare size={20} />
+                <span>{i18n.t.nav.chat}</span>
+            </button>
             
             <button class="nav-item" class:active={activeTab === 'history'} onclick={() => activeTab = 'history'}>
                 <Database size={20} />
@@ -59,6 +65,8 @@
             <Settings />
         {:else if activeTab === 'batch'}
             <BatchReview />
+        {:else if activeTab === 'chat'}
+            <Chat />
         {:else if activeTab === 'history'}
             <History onResumeBatch={switchToBatch} />
         {/if}
