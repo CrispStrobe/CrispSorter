@@ -7,8 +7,16 @@
     "core:default",
     "opener:default",
     "http:default",
-    "fs:default",
     "dialog:default",
-    "store:default"
+    "store:default",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    "fs:allow-rename",
+    "fs:allow-create-dir",
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }
