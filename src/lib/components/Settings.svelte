@@ -25,7 +25,7 @@
     }
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
-    let selectedProviderId = $state(DEFAULT_PROVIDERS[0].id);
+    let selectedProviderId = $state('global'); // Start with Global settings
     let selectedProvider = $derived(providers.find(p => p.id === selectedProviderId) || providers[0]);
 
     // Global App Settings
@@ -244,6 +244,12 @@
 
 <div class="settings-container">
     <div class="sidebar">
+        <h2>{i18n.t.settings.app_settings}</h2>
+        <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
+            {i18n.t.settings.general}
+        </button>
+
+        <div class="sidebar-divider"></div>
         <h2>{i18n.t.settings.providers}</h2>
         <div class="provider-list">
             {#each providers as provider}
@@ -259,12 +265,6 @@
                 </button>
             {/each}
         </div>
-        
-        <div class="sidebar-divider"></div>
-        <h2>{i18n.t.settings.app_settings}</h2>
-        <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
-            {i18n.t.settings.general}
-        </button>
     </div>
 
     <div class="content">
