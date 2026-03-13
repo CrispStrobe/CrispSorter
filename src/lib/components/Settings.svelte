@@ -43,24 +43,23 @@
 
     // mistral.rs / Local Model Management
     let localModels = $state<LocalModel[]>([
-        { 
-            id: 'qwen-0.8b',
-            name: 'Qwen 3.5 0.8B (Q4_K_M)', 
-            path: '', 
+        {
+            id: 'granite-1b',
+            name: 'Granite 4.0 1B (Q4_K_M)',
+            path: '',
             isDownloaded: false,
             isActive: true,
-            downloadUrl: 'https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf'
+            downloadUrl: 'https://huggingface.co/ibm-granite/granite-4.0-h-1b-GGUF/resolve/main/granite-4.0-h-1b-Q4_K_M.gguf'
         },
-        { 
+        {
             id: 'ministral-3b',
-            name: 'Ministral 3B (Q4_K_M)', 
-            path: '', 
+            name: 'Ministral 3B (Q4_K_M)',
+            path: '',
             isDownloaded: false,
             isActive: false,
             downloadUrl: 'https://huggingface.co/bartowski/Ministral-3b-instruct-GGUF/resolve/main/Ministral-3b-instruct-Q4_K_M.gguf'
         }
     ]);
-
     let loadingModels = $state(false);
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);

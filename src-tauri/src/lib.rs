@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use mistralrs::{
     GgufModelBuilder, TextMessageRole, TextMessages, 
-    best_device, Model
+    best_device, Model, initialize_logging
 };
 
 #[derive(Deserialize)]
@@ -110,6 +110,7 @@ async fn run_mistralrs_query(
         let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
         let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
 
+        println!("[mistral.rs] Building GGUF model: ID='{}', File='{}'", parent, filename);
         // GgufModelBuilder::new takes (model_id, files)
         // For local files, we use the directory as model_id
         let model = GgufModelBuilder::new(parent.clone(), vec![filename])
@@ -117,7 +118,10 @@ async fn run_mistralrs_query(
             .with_logging()
             .build()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                println!("[mistral.rs] LOAD ERROR: {}", e);
+                e.to_string()
+            })?;
         
         *model_lock = Some(Arc::new(model));
         *current_path_lock = Some(model_path.clone());
@@ -128,21 +132,29 @@ async fn run_mistralrs_query(
     let model = model_lock.as_ref().unwrap();
     
     let messages = TextMessages::new()
-        .add_message(TextMessageRole::User, prompt);
+        .add_message(TextMessageRole::User, prompt.clone());
 
-    println!("[mistral.rs] Sending chat request...");
+    println!("[mistral.rs] Sending chat request (prompt len={})...", prompt.len());
     let response = model.send_chat_request(messages)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            println!("[mistral.rs] QUERY ERROR: {}", e);
+            e.to_string()
+        })?;
 
     let content = response.choices[0].message.content.as_ref().cloned().unwrap_or_default();
-    println!("[mistral.rs] Query complete. Response length: {}", content.len());
+    println!("[mistral.rs] Query complete. Response length: {}. Usage: P={}, C={}", 
+        content.len(),
+        response.usage.prompt_tokens,
+        response.usage.completion_tokens
+    );
     
     Ok(content)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    initialize_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())

@@ -98,17 +98,23 @@ export class LLMClient {
     }
 
     async query(providerId: string, modelId: string, prompt: string, apiKey?: string): Promise<string> {
-        console.log(`[LLMClient] query provider=${providerId}, model=${modelId}`);
+        console.log(`[LLMClient] query: provider=${providerId}, model=${modelId}`);
+        console.log(`[LLMClient] prompt length: ${prompt.length}`);
         
         if (providerId === 'mistralrs') {
-            console.log(`[LLMClient] Invoking native mistral.rs engine...`);
+            console.log(`[LLMClient] Invoking native mistral.rs engine for local model...`);
+            const startTime = Date.now();
             try {
-                return await invoke('run_mistralrs_query', { 
+                const result = await invoke('run_mistralrs_query', { 
                     modelPath: modelId,
                     prompt: prompt 
                 });
+                const duration = Date.now() - startTime;
+                console.log(`[LLMClient] Native query successful in ${duration}ms. Result length: ${String(result).length}`);
+                return String(result);
             } catch (error: any) {
-                console.error(`[LLMClient] Native query failed:`, error);
+                const duration = Date.now() - startTime;
+                console.error(`[LLMClient] Native query failed after ${duration}ms:`, error);
                 throw new Error(`mistral.rs error: ${error}`);
             }
         }
