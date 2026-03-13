@@ -3,7 +3,7 @@
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { getSetting, saveSetting } from '../store';
     import { i18n, type Language } from '../i18n.svelte';
-    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save, Languages, MessageSquare, Scan } from 'lucide-svelte';
+    import { RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, Loader2, FolderOpen, Save, Languages, MessageSquare, Scan, Edit } from 'lucide-svelte';
     import { open } from '@tauri-apps/plugin-dialog';
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
@@ -323,13 +323,13 @@
     
     .test-result { padding: 10px; border-radius: 6px; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; margin-bottom: 24px; max-width: 600px; }
     .test-result.success { background: #064e3b; color: #ecfdf5; border: 1px solid #065f46; }
-    .test-result.error { background: #450a0a; color: #fef2f2; border: 1px solid #7f1d1d; }
+    .test-result.error { background: #450a0a; color: #fecaca; border: 1px solid #7f1d1d; }
     
-    .models-list { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow-y: auto; }
+    .models-list { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow: auto; }
     .models-list ul { list-style: none; padding: 0; margin: 0; }
     .models-list li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
     .models-list li.active-item { color: white; background: #27272a; border-radius: 4px; }
     .hint { font-size: 0.75rem; color: #71717a; margin-top: 6px; display: block; line-height: 1.4; }
-    .loader-spin { display: flex; align-items: center; justify-content: center; animation: spin 1s linear infinite; }
+    .loader-spin { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

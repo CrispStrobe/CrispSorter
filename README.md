@@ -44,9 +44,10 @@ CrispSorter stays lean by default but offers two paths for OCR:
 - **Cross-Device Sync**: Sync sorting plans and library metadata between your Desktop and NAS.
 - **RAG Tool**: Extension into a "Chat with your Documents" interface using local vectors (via Ollama or Transformers.js WASM).
 
-### Phase 5: Local LLM Bundling (llama.cpp)
-- **Zero Configuration**: Bundle a pre-compiled `llama.cpp` sidecar.
-- **Offline UX**: Automatically download small quantized models (GGUF) to allow AI sorting without Ollama or Cloud API keys.
+### Phase 5: Local LLM Integration (mistral.rs / llama.cpp)
+- **Zero Configuration**: Bundle **mistral.rs** or a pre-compiled `llama.cpp` sidecar.
+- **Offline UX**: Automatically download small quantized models (like **Ministral in Q4_K_M**) to allow AI sorting without Ollama or Cloud API keys.
+- **Model Management**: Dedicated UI for downloading and switching between bundled GGUF models.
 
 ## 🛠️ Architecture
 
