@@ -29,7 +29,12 @@ export const translations = {
             year: 'Year',
             path_hint: 'Will be calculated after extraction.',
             extract_hint: 'Processing required to view text.',
-            confirm_move: 'Move {count} files to their sorted locations?'
+            confirm_move: 'Move {count} files to their sorted locations?',
+            search_placeholder: 'Search files...',
+            filters: 'Filters',
+            filter_type: 'File Type',
+            filter_size: 'Min Size (KB)',
+            filter_status: 'Status'
         },
         history: {
             title: 'Batch History',
@@ -92,7 +97,12 @@ export const translations = {
             year: 'Jahr',
             path_hint: 'Wird nach der Extraktion berechnet.',
             extract_hint: 'Verarbeitung erforderlich, um Text zu sehen.',
-            confirm_move: '{count} Dateien an ihre sortierten Orte verschieben?'
+            confirm_move: '{count} Dateien an ihre sortierten Orte verschieben?',
+            search_placeholder: 'Dateien suchen...',
+            filters: 'Filter',
+            filter_type: 'Dateityp',
+            filter_size: 'Min. Größe (KB)',
+            filter_status: 'Status'
         },
         history: {
             title: 'Stapel-Verlauf',

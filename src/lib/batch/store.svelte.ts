@@ -2,7 +2,7 @@ import { type BatchItem, type BatchStatus, type BatchSession } from '../types';
 import { extractText } from '../extractors'; 
 import { llmClient } from '../llm/client';
 import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
-import { readFile, writeFile, mkdir } from '@tauri-apps/plugin-fs';
+import { readFile, writeFile, mkdir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 
@@ -12,6 +12,26 @@ export class BatchManager {
     isMetadataExtractionEnabled = $state(true);
     currentSessionId = $state<string | null>(null);
     
+    // UI Filters
+    searchQuery = $state('');
+    filterExtension = $state('all');
+    filterStatus = $state('all');
+    filterMinSize = $state(0);
+
+    filteredItems = $derived(
+        this.items.filter(item => {
+            const matchesSearch = item.originalName.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
+                                 (item.suggestedTitle?.toLowerCase().includes(this.searchQuery.toLowerCase()) ?? false) ||
+                                 (item.suggestedAuthor?.toLowerCase().includes(this.searchQuery.toLowerCase()) ?? false);
+            
+            const matchesExt = this.filterExtension === 'all' || item.extension === this.filterExtension;
+            const matchesStatus = this.filterStatus === 'all' || item.status === this.filterStatus;
+            const matchesSize = item.size >= this.filterMinSize * 1024;
+
+            return matchesSearch && matchesExt && matchesStatus && matchesSize;
+        })
+    );
+
     constructor() {
         console.log("[BatchManager] Initialized");
     }
@@ -23,15 +43,29 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
-    addItem(path: string, name: string) {
+    async addItem(path: string, name: string) {
         console.log(`[BatchManager] Adding item: ${name} at ${path}`);
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
+        
+        let size = 0;
+        let modifiedAt = Date.now();
+        
+        try {
+            const s = await stat(path);
+            size = s.size;
+            modifiedAt = s.mtime?.getTime() || Date.now();
+        } catch(e) {
+            console.warn(`[BatchManager] Failed to stat file ${path}:`, e);
+        }
+
         this.items.push({
             id,
             originalPath: path,
             originalName: name,
             extension,
+            size,
+            modifiedAt,
             status: 'queued',
             isAccepted: false,
             isIgnored: false
@@ -40,11 +74,7 @@ export class BatchManager {
     }
 
     async processAll() {
-        console.log("[BatchManager] Starting processAll loop");
-        if (this.isProcessing) {
-            console.warn("[BatchManager] Already processing, skipping");
-            return;
-        }
+        if (this.isProcessing) return;
         this.isProcessing = true;
 
         const providers = await getSetting('providers', []);
@@ -58,16 +88,14 @@ export class BatchManager {
             if (item.status !== 'queued' && item.status !== 'error') continue;
             
             try {
-                // 1. Extraction
                 item.status = 'extracting';
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
-                // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled && activeProvider && modelId) {
                     item.status = 'analyzing';
-                    const prompt = `Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }. Use the first few pages of text: ${item.extractedText.substring(0, 4000)}`;
+                    const prompt = `Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }. Text: ${item.extractedText.substring(0, 4000)}`;
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
@@ -89,17 +117,10 @@ export class BatchManager {
                         item.errorMessage = 'Failed to parse LLM JSON';
                     }
                 } else {
-                    // No LLM mode - just set default target path if export path exists
                     const baseDir = globalExportPath || item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
                     item.targetPath = `${baseDir}/Extracted/${item.originalName}.txt`;
                     item.status = 'review';
                 }
-
-                // Auto-save TXT if enabled and we are not in AI mode (or even in AI mode if desired)
-                if (globalSaveTxt && item.extractedText) {
-                    // We'll do this during execution to be cleaner, but could do here too.
-                }
-
             } catch (error: any) {
                 item.status = 'error';
                 item.errorMessage = error.message || String(error);
@@ -119,7 +140,6 @@ export class BatchManager {
 
         for (const item of toMove) {
             try {
-                // 1. Save TXT if enabled
                 if (globalSaveTxt && item.extractedText) {
                     const txtPath = item.targetPath!.replace(/\.[^.]+$/, '.txt');
                     const parentDir = txtPath.substring(0, txtPath.lastIndexOf('/'));
@@ -128,7 +148,6 @@ export class BatchManager {
                     await writeFile(txtPath, encoder.encode(item.extractedText));
                 }
 
-                // 2. Perform Move/Rename via Rust
                 const results: string[] = await invoke('move_files', { 
                     moves: [{ source: item.originalPath, destination: item.targetPath! }] 
                 });

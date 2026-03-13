@@ -5,11 +5,12 @@
     import { 
         Play, Trash2, Check, X, FileSearch, 
         Loader2, Eye, Edit, Rocket, CheckSquare, 
-        Square, Brain, Type
+        Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
+    let showFilters = $state(false);
 
     async function handleAddFiles() {
         const selected = await open({
@@ -87,6 +88,17 @@
             
             <div class="divider"></div>
 
+            <div class="search-box">
+                <Search size={16} class="search-icon" />
+                <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} />
+            </div>
+
+            <button class="action-btn" onclick={() => showFilters = !showFilters} class:active={showFilters}>
+                <Filter size={18} />
+                {#if showFilters}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
+            </button>
+        </div>
+        <div class="right-actions">
             <button class="action-btn" onclick={acceptAll} title={i18n.t.batch.accept_all}>
                 <CheckSquare size={18} /> {i18n.t.batch.accept_all}
             </button>
@@ -96,13 +108,42 @@
                     disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
                 <Rocket size={18} /> {i18n.t.batch.execute}
             </button>
-        </div>
-        <div class="right-actions">
             <button class="action-btn danger" onclick={() => batchManager.clear()}>
                 <Trash2 size={18} /> {i18n.t.batch.clear_all}
             </button>
         </div>
     </div>
+
+    {#if showFilters}
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label>{i18n.t.batch.filter_type}</label>
+                <select bind:value={batchManager.filterExtension}>
+                    <option value="all">All</option>
+                    <option value="pdf">PDF</option>
+                    <option value="docx">DOCX</option>
+                    <option value="txt">TXT</option>
+                    <option value="md">MD</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>{i18n.t.batch.filter_status}</label>
+                <select bind:value={batchManager.filterStatus}>
+                    <option value="all">All</option>
+                    <option value="queued">Queued</option>
+                    <option value="extracting">Extracting</option>
+                    <option value="analyzing">Analyzing</option>
+                    <option value="review">Review</option>
+                    <option value="done">Done</option>
+                    <option value="error">Error</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>{i18n.t.batch.filter_size}</label>
+                <input type="number" bind:value={batchManager.filterMinSize} min="0" />
+            </div>
+        </div>
+    {/if}
 
     <div class="main-split">
         <div class="table-container">
@@ -118,7 +159,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {#each batchManager.items as item (item.id)}
+                    {#each batchManager.filteredItems as item (item.id)}
                         <tr 
                             class:selected={selectedItemId === item.id}
                             onclick={() => toggleSelect(item.id)}
@@ -142,7 +183,7 @@
                             </td>
                         </tr>
                     {/each}
-                    {#if batchManager.items.length === 0}
+                    {#if batchManager.filteredItems.length === 0}
                         <tr>
                             <td colspan="6" class="empty-row">{i18n.t.batch.empty}</td>
                         </tr>
@@ -194,19 +235,34 @@
 
 <style>
     .batch-container { display: flex; flex-direction: column; height: 100%; background: #09090b; overflow: hidden; }
-    .toolbar { padding: 12px 20px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; }
+    .toolbar { padding: 12px 20px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
     .left-actions, .right-actions { display: flex; align-items: center; gap: 10px; }
-    .mode-toggle { display: flex; background: #27272a; padding: 4px; border-radius: 8px; gap: 4px; margin-right: 10px; }
+    
+    .search-box { display: flex; align-items: center; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 0 10px; flex: 1; max-width: 300px; }
+    .search-icon { color: #71717a; margin-right: 8px; }
+    .search-box input { border: none; background: transparent; color: white; padding: 6px 0; font-size: 0.875rem; width: 100%; }
+    .search-box input:focus { outline: none; }
+
+    .filter-bar { display: flex; gap: 20px; background: #18181b; border-bottom: 1px solid #27272a; padding: 10px 20px; align-items: center; }
+    .filter-group { display: flex; align-items: center; gap: 10px; }
+    .filter-group label { font-size: 0.75rem; font-weight: 600; color: #71717a; text-transform: uppercase; }
+    .filter-group select, .filter-group input { background: #09090b; border: 1px solid #27272a; color: white; border-radius: 4px; padding: 4px 8px; font-size: 0.8125rem; }
+
+    .mode-toggle { display: flex; background: #27272a; padding: 4px; border-radius: 8px; gap: 4px; }
     .toggle-btn { display: flex; align-items: center; gap: 6px; padding: 4px 12px; border: none; background: transparent; border-radius: 6px; font-size: 0.75rem; font-weight: 600; color: #a1a1aa; cursor: pointer; transition: all 0.2s; }
     .toggle-btn.active { background: #3f3f46; color: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .divider { width: 1px; height: 24px; background: #27272a; margin: 0 5px; }
+    
+    .divider { width: 1px; height: 24px; background: #27272a; }
+    
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; cursor: pointer; font-size: 0.875rem; font-weight: 600; color: #d4d4d8; }
     .action-btn:hover:not(:disabled) { background: #27272a; }
+    .action-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
     .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .action-btn.primary { background: #3b82f6; color: white; border-color: #3b82f6; }
     .action-btn.success { background: #10b981; color: white; border-color: #10b981; }
     .action-btn.danger { background: #ef4444; color: white; border-color: #ef4444; }
     .action-btn.rocket-btn { background: #8b5cf6; color: white; border-color: #8b5cf6; }
+
     .main-split { display: flex; flex: 1; overflow: hidden; }
     .table-container { flex: 1; overflow-y: auto; }
     .dense-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; table-layout: fixed; }

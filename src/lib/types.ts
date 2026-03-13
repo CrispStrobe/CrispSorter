@@ -5,6 +5,8 @@ export interface BatchItem {
     originalPath: string;
     originalName: string;
     extension: string;
+    size: number;
+    modifiedAt: number;
     status: BatchStatus;
     errorMessage?: string;
     extractedText?: string;

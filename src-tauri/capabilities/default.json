@@ -14,7 +14,12 @@
     "fs:write-all",
     {
       "identifier": "http:allow-fetch",
-      "allow": [{ "url": "**" }]
+      "allow": [
+        { "url": "http://*" },
+        { "url": "https://*" },
+        { "url": "http://localhost:*" },
+        { "url": "http://127.0.0.1:*" }
+      ]
     },
     {
       "identifier": "fs:scope",
