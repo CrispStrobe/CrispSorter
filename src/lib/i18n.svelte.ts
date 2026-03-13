@@ -51,6 +51,7 @@ export const translations = {
             app_settings: 'App Settings',
             general: 'General',
             save_all: 'Save All',
+            active_provider: 'Active AI Provider',
             export_dir: 'Export Directory',
             browse: 'Browse',
             dir_hint: 'Default: "Sorted" folder next to source.',
@@ -77,7 +78,9 @@ export const translations = {
             author_sort_hint: 'Runs a 2nd step to ensure "Lastname Firstname" format.',
             ocr_options: 'OCR Options',
             ocr_enabled: 'Enable OCR',
-            ocr_hint: 'Downloads ~50MB data on first run.'
+            ocr_hint: 'Downloads ~50MB data on first run.',
+            local_model_path: 'Local GGUF Model Path',
+            local_model_hint: 'Path to your .gguf file (e.g., Qwen 0.8B).'
         }
     },
     de: {
@@ -130,6 +133,7 @@ export const translations = {
             app_settings: 'App-Einstellungen',
             general: 'Allgemein',
             save_all: 'Speichern',
+            active_provider: 'Aktiver KI-Anbieter',
             export_dir: 'Export-Verzeichnis',
             browse: 'Durchsuchen',
             dir_hint: 'Standard: "Sorted"-Ordner neben der Quelle.',
@@ -156,7 +160,9 @@ export const translations = {
             author_sort_hint: '2. Schritt für "Nachname Vorname" Format.',
             ocr_options: 'OCR-Optionen',
             ocr_enabled: 'OCR aktivieren',
-            ocr_hint: 'Lädt beim ersten Start ca. 50MB Daten nach.'
+            ocr_hint: 'Lädt beim ersten Start ca. 50MB Daten nach.',
+            local_model_path: 'Lokaler GGUF Modell-Pfad',
+            local_model_hint: 'Pfad zu Ihrer .gguf Datei (z.B. Qwen 0.8B).'
         }
     }
 };
