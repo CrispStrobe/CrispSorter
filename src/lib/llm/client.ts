@@ -48,23 +48,25 @@ export class LLMClient {
     }
 
     async fetchModels(providerId: string, apiKey?: string, baseUrl?: string): Promise<string[]> {
-        if (providerId === 'mistralrs') return []; // Managed via Model Manager UI
+        console.log(`[LLMClient] fetchModels for ${providerId}`);
+        if (providerId === 'mistralrs') return [];
 
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
-        if (!key && providerId !== 'ollama') throw new Error(`API key for ${providerId} is required.`);
-        if (!base) throw new Error(`Base URL for ${providerId} is not configured.`);
+        if (!key && providerId !== 'ollama') {
+            console.error(`[LLMClient] Missing API key for ${providerId}`);
+            throw new Error(`API key for ${providerId} is required.`);
+        }
+        if (!base) {
+            console.error(`[LLMClient] Missing Base URL for ${providerId}`);
+            throw new Error(`Base URL for ${providerId} is not configured.`);
+        }
 
         try {
-            console.log(`[LLMClient] Fetching models from ${base}/models`);
-            
-            const headers: Record<string, string> = {
-                'Content-Type': 'application/json'
-            };
-            if (key && providerId !== 'ollama') {
-                headers['Authorization'] = `Bearer ${key}`;
-            }
+            console.log(`[LLMClient] GET ${base}/models`);
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (key && providerId !== 'ollama') headers['Authorization'] = `Bearer ${key}`;
 
             const response = await fetch(`${base}/models`, {
                 method: 'GET',
@@ -74,30 +76,30 @@ export class LLMClient {
 
             if (!response.ok) {
                 const errorText = await response.text();
+                console.error(`[LLMClient] Fetch models failed: ${response.status} ${errorText}`);
                 throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
             }
 
             const data = await response.json();
+            console.log(`[LLMClient] Models received for ${providerId}`);
             
             if (providerId === 'ollama') {
                 return data.data ? data.data.map((m: any) => m.id) : data.models?.map((m: any) => m.name) || [];
             }
-
             if (data.data && Array.isArray(data.data)) {
                 return data.data.map((m: any) => m.id).sort();
             }
-
             return [];
         } catch (error: any) {
-            const msg = error instanceof Error ? error.message : String(error);
-            console.error(`[LLMClient] Failed to fetch models for ${providerId}:`, msg);
-            throw new Error(msg);
+            console.error(`[LLMClient] Error in fetchModels:`, error.message);
+            throw error;
         }
     }
 
     async query(providerId: string, modelId: string, prompt: string, apiKey?: string): Promise<string> {
+        console.log(`[LLMClient] query provider=${providerId}, model=${modelId}`);
         if (providerId === 'mistralrs') {
-            // This will be implemented as a Tauri Command later
+            console.log(`[LLMClient] Native mistral.rs query for model at path: ${modelId}`);
             throw new Error("mistral.rs query not yet implemented in backend.");
         }
 
@@ -108,12 +110,9 @@ export class LLMClient {
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
         try {
-            const headers: Record<string, string> = {
-                'Content-Type': 'application/json'
-            };
-            if (key && providerId !== 'ollama') {
-                headers['Authorization'] = `Bearer ${key}`;
-            }
+            console.log(`[LLMClient] POST ${baseUrl}/chat/completions`);
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (key && providerId !== 'ollama') headers['Authorization'] = `Bearer ${key}`;
 
             const response = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
@@ -127,13 +126,16 @@ export class LLMClient {
 
             if (!response.ok) {
                 const errorText = await response.text();
+                console.error(`[LLMClient] Query failed: ${response.status} ${errorText}`);
                 throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
             }
 
             const data = await response.json();
+            console.log(`[LLMClient] Query success.`);
             return data.choices[0].message.content;
         } catch (error: any) {
-            throw new Error(error instanceof Error ? error.message : String(error));
+            console.error(`[LLMClient] Error in query:`, error.message);
+            throw error;
         }
     }
 }

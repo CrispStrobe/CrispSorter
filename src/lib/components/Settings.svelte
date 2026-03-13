@@ -19,6 +19,7 @@
         path: string;
         size?: string;
         isDownloaded: boolean;
+        isActive: boolean;
         downloadUrl?: string;
         progress?: number;
     }
@@ -46,6 +47,7 @@
             name: 'Qwen 3.5 0.8B (Q4_K_M)', 
             path: '', 
             isDownloaded: false,
+            isActive: true,
             downloadUrl: 'https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf'
         },
         { 
@@ -53,6 +55,7 @@
             name: 'Ministral 3B (Q4_K_M)', 
             path: '', 
             isDownloaded: false,
+            isActive: false,
             downloadUrl: 'https://huggingface.co/bartowski/Ministral-3b-instruct-GGUF/resolve/main/Ministral-3b-instruct-Q4_K_M.gguf'
         }
     ]);
@@ -146,7 +149,7 @@
         });
         if (typeof selected === 'string') {
             const name = selected.split(/[\\/]/).pop() || 'Unknown Model';
-            localModels.push({ id: crypto.randomUUID(), name, path: selected, isDownloaded: true });
+            localModels.push({ id: crypto.randomUUID(), name, path: selected, isDownloaded: true, isActive: false });
             await updateLocalModelSizes();
         }
     }
@@ -186,6 +189,10 @@
                 model.progress = undefined;
             }
         }
+    }
+
+    function setLocalModelActive(index: number) {
+        localModels.forEach((m, i) => m.isActive = i === index);
     }
 
     async function handleRefreshModels() {
@@ -264,7 +271,7 @@
                 <select id="active-prov-select" bind:value={activeProviderId} class="styled-select">
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
-                    {/each}
+                    {#/each}
                 </select>
             </div>
 
@@ -349,9 +356,12 @@
                     
                     <div class="model-manager-list">
                         {#each localModels as model, i}
-                            <div class="local-model-row">
+                            <div class="local-model-row" class:active-model-row={model.isActive}>
                                 <div class="model-info">
-                                    <strong>{model.name}</strong>
+                                    <div class="model-title-line">
+                                        <strong>{model.name}</strong>
+                                        {#if model.isActive}<Zap size={12} class="active-zap-icon" />{/if}
+                                    </div>
                                     <span class="model-path">{model.path || 'Not downloaded yet'}</span>
                                     {#if model.progress !== undefined}
                                         <div class="progress-container">
@@ -363,6 +373,9 @@
                                 <div class="model-status">
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
+                                        <button class="action-btn small" onclick={() => setLocalModelActive(i)}>
+                                            {model.isActive ? 'Active' : 'Use'}
+                                        </button>
                                         <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title="Delete file"><Trash2 size={14} /></button>
                                     {:else if model.progress === undefined}
                                         <button class="action-btn small primary" onclick={() => downloadLocalModel(i)}>
@@ -469,10 +482,12 @@
     .test-btn { color: #10b981; border-color: #064e3b; }
     .test-result-box { padding: 10px; border-radius: 6px; font-size: 0.8125rem; margin-bottom: 24px; max-width: 600px; border: 1px solid #27272a; }
     .test-result-box.success { background: #064e3b33; color: #ecfdf5; border-color: #065f46; }
-    .test-result-box.error { background: #450a0a33; color: #fef2f2; border-color: #7f1d1d; }
+    .test-result-box.error { background: #450a0a33; color: #fecaca; border-color: #7f1d1d; }
     
     .model-manager-list { display: flex; flex-direction: column; gap: 10px; }
     .local-model-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; }
+    .local-model-row.active-model-row { border-color: #3b82f6; background: #1e3a8a33; }
+    .model-title-line { display: flex; align-items: center; gap: 8px; }
     .model-info { display: flex; flex-direction: column; gap: 4px; flex: 1; margin-right: 20px; }
     .model-path { font-size: 0.7rem; color: #71717a; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
     .model-status { display: flex; align-items: center; gap: 12px; }
