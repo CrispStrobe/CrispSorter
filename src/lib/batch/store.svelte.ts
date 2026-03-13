@@ -133,7 +133,7 @@ export class BatchManager {
                     const metadata = this.parseLLMResponse(response);
                     item.suggestedTitle = metadata.title || 'Unknown Title';
                     item.suggestedAuthor = metadata.author || 'Unknown Author';
-                    item.suggestedYear = metadata.year || '';
+                    item.suggestedYear = metadata.year || 'Unknown Year';
 
                     if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
                         const sortPrompt = `Convert author name to "Lastname Firstname" format. Use <AUTHOR> tags. Name: "${item.suggestedAuthor}"`;
@@ -147,7 +147,7 @@ export class BatchManager {
                     const lastSlash = item.originalPath.lastIndexOf('/');
                     const baseDir = globalExportPath || (lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.');
                     
-                    item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
+                    item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear !== 'Unknown Year' ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
                     item.status = 'review';
                 } else {
                     const lastSlash = item.originalPath.lastIndexOf('/');

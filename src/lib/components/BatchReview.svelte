@@ -8,7 +8,7 @@
         Play, Trash2, Check, X, FileSearch, 
         Loader2, Eye, Edit, Rocket, CheckSquare, 
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp, 
-        Plus
+        Plus, Columns, Calendar, FileText, HardDrive, Hash
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -19,13 +19,90 @@
     let lastClickedId = $state<string | null>(null);
     let showFilters = $state(false);
     let showModeMenu = $state(false);
+    let showColumnSelector = $state(false);
+
+    // Sorting state
+    let sortColumn = $state<string>('file_name');
+    let sortDirection = $state<'asc' | 'desc'>('asc');
+
+    // Column visibility and width state
+    let columns = $state([
+        { id: 'status', label: i18n.t.batch.status, width: 90, visible: true, locked: true },
+        { id: 'file_name', label: i18n.t.batch.file_name, width: 250, visible: true },
+        { id: 'title', label: i18n.t.batch.title, width: 250, visible: true },
+        { id: 'author', label: i18n.t.batch.author, width: 180, visible: true },
+        { id: 'year', label: i18n.t.batch.year, width: 70, visible: true },
+        { id: 'size', label: i18n.t.batch.size, width: 80, visible: false },
+        { id: 'date', label: i18n.t.batch.date, width: 140, visible: false },
+        { id: 'extension', label: i18n.t.batch.extension, width: 60, visible: false },
+        { id: 'path', label: i18n.t.batch.path, width: 400, visible: false },
+    ]);
+
+    // Resizing logic
+    let resizingColIdx = $state<number | null>(null);
+    let startX = 0;
+    let startWidth = 0;
+
+    function startResizing(e: MouseEvent, index: number) {
+        e.preventDefault();
+        e.stopPropagation();
+        resizingColIdx = index;
+        startX = e.pageX;
+        startWidth = columns[index].width;
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', stopResizing);
+    }
+
+    function handleMouseMove(e: MouseEvent) {
+        if (resizingColIdx !== null) {
+            const diff = e.pageX - startX;
+            columns[resizingColIdx].width = Math.max(50, startWidth + diff);
+        }
+    }
+
+    function stopResizing() {
+        resizingColIdx = null;
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', stopResizing);
+    }
+
+    // Sorting logic
+    function toggleSort(colId: string) {
+        if (sortColumn === colId) {
+            sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            sortColumn = colId;
+            sortDirection = 'asc';
+        }
+    }
+
+    let sortedItems = $derived.by(() => {
+        const items = [...batchManager.filteredItems];
+        return items.sort((a, b) => {
+            let valA: any = '';
+            let valB: any = '';
+
+            switch (sortColumn) {
+                case 'status': valA = a.status; valB = b.status; break;
+                case 'file_name': valA = a.originalName; valB = b.originalName; break;
+                case 'title': valA = a.suggestedTitle || ''; valB = b.suggestedTitle || ''; break;
+                case 'author': valA = a.suggestedAuthor || ''; valB = b.suggestedAuthor || ''; break;
+                case 'year': valA = a.suggestedYear || ''; valB = b.suggestedYear || ''; break;
+                case 'size': valA = a.size; valB = b.size; break;
+                case 'date': valA = a.modifiedAt; valB = b.modifiedAt; break;
+                case 'extension': valA = a.extension; valB = b.extension; break;
+                case 'path': valA = a.originalPath; valB = b.originalPath; break;
+            }
+
+            if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
+            if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
+            return 0;
+        });
+    });
 
     onMount(async () => {
-        // Tauri drag-drop listener
-        // We use a set to track processed paths during a single drop event to prevent duplicates
         const unlisten = await listen('tauri://drag-drop', (event: any) => {
             const paths = event.payload.paths as string[];
-            console.log(`[BatchReview] Received drop event with ${paths.length} files`);
             paths.forEach(path => {
                 const name = path.split(/[\\/]/).pop() || '';
                 batchManager.addItem(path, name);
@@ -49,7 +126,7 @@
 
     function handleRowClick(e: MouseEvent, id: string) {
         if (e.shiftKey && lastClickedId) {
-            const items = batchManager.filteredItems;
+            const items = sortedItems;
             const start = items.findIndex(i => i.id === lastClickedId);
             const end = items.findIndex(i => i.id === id);
             const range = items.slice(Math.min(start, end), Math.max(start, end) + 1);
@@ -84,9 +161,16 @@
             }
         });
     }
+
+    function formatSize(bytes: number) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="batch-container" ondragover={e => e.preventDefault()} role="region" aria-label="File drop zone">
     <div class="toolbar">
         <div class="left-actions">
@@ -124,11 +208,29 @@
             <button class="action-btn small" onclick={() => showFilters = !showFilters} class:active={showFilters}>
                 <Filter size={16} />
             </button>
+
+            <div class="dropdown-container">
+                <button class="action-btn small" onclick={() => showColumnSelector = !showColumnSelector} class:active={showColumnSelector}>
+                    <Columns size={16} />
+                </button>
+                {#if showColumnSelector}
+                    <div class="dropdown-menu col-selector">
+                        {#each columns as col}
+                            {#if !col.locked}
+                                <label class="col-opt">
+                                    <input type="checkbox" bind:checked={col.visible} />
+                                    <span>{col.label}</span>
+                                </label>
+                            {/if}
+                        {/each}
+                    </div>
+                {/if}
+            </div>
         </div>
 
         <div class="right-actions">
             <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
-                <span class:loader-anim={batchManager.isProcessing}>
+                <span class={batchManager.isProcessing ? "loader-anim" : ""}>
                     {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}
                 </span>
                 {i18n.t.batch.start_batch}
@@ -184,15 +286,24 @@
             <table class="dense-table">
                 <thead>
                     <tr>
-                        <th width="30"></th>
-                        <th width="90">{i18n.t.batch.status}</th>
-                        <th>{i18n.t.batch.file_name}</th>
-                        <th>{i18n.t.batch.title}</th>
-                        <th>{i18n.t.batch.author}</th>
+                        <th style="width: 35px; min-width: 35px;"></th>
+                        {#each columns as col, i}
+                            {#if col.visible}
+                                <th style="width: {col.width}px; min-width: {col.width}px;">
+                                    <div class="th-content" onclick={() => toggleSort(col.id)}>
+                                        <span class="th-label">{col.label}</span>
+                                        {#if sortColumn === col.id}
+                                            {#if sortDirection === 'asc'}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
+                                        {/if}
+                                    </div>
+                                    <div class="resizer" onmousedown={(e) => startResizing(e, i)}></div>
+                                </th>
+                            {/if}
+                        {/each}
                     </tr>
                 </thead>
                 <tbody>
-                    {#each batchManager.filteredItems as item (item.id)}
+                    {#each sortedItems as item (item.id)}
                         <tr 
                             class:selected={selection.has(item.id)}
                             class:active-row={selectedItemId === item.id}
@@ -200,22 +311,41 @@
                             class:status-error={item.status === 'error'}
                             class:status-done={item.status === 'done'}
                         >
-                            <td onclick={e => e.stopPropagation()}>
+                            <td onclick={e => e.stopPropagation()} style="width: 35px; text-align: center;">
                                 <input type="checkbox" bind:checked={item.isAccepted} aria-label="Accept item" />
                             </td>
-                            <td>
-                                <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}>
-                                    {item.status}
-                                </span>
-                            </td>
-                            <td class="file-name" title={item.originalPath}>{item.originalName}</td>
-                            <td><input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} aria-label="Suggested title" /></td>
-                            <td><input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} aria-label="Suggested author" /></td>
+                            {#each columns as col}
+                                {#if col.visible}
+                                    <td style="width: {col.width}px;">
+                                        {#if col.id === 'status'}
+                                            <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}>
+                                                {item.status}
+                                            </span>
+                                        {:else if col.id === 'file_name'}
+                                            <span class="file-name" title={item.originalPath}>{item.originalName}</span>
+                                        {:else if col.id === 'title'}
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} class:fallback={item.suggestedTitle === 'Unknown Title'} />
+                                        {:else if col.id === 'author'}
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} class:fallback={item.suggestedAuthor === 'Unknown Author'} />
+                                        {:else if col.id === 'year'}
+                                            <input type="text" bind:value={item.suggestedYear} onclick={e => e.stopPropagation()} style="text-align: center;" />
+                                        {:else if col.id === 'size'}
+                                            <span class="mono">{formatSize(item.size)}</span>
+                                        {:else if col.id === 'date'}
+                                            <span class="mono">{new Date(item.modifiedAt).toLocaleDateString()}</span>
+                                        {:else if col.id === 'extension'}
+                                            <span class="ext-badge">{item.extension}</span>
+                                        {:else if col.id === 'path'}
+                                            <span class="path-text" title={item.originalPath}>{item.originalPath}</span>
+                                        {/if}
+                                    </td>
+                                {/if}
+                            {/each}
                         </tr>
                     {/each}
-                    {#if batchManager.filteredItems.length === 0}
+                    {#if sortedItems.length === 0}
                         <tr>
-                            <td colspan="5" class="empty-row">{i18n.t.batch.empty}</td>
+                            <td colspan={columns.filter(c => c.visible).length + 1} class="empty-row">{i18n.t.batch.empty}</td>
                         </tr>
                     {/if}
                 </tbody>
@@ -281,6 +411,11 @@
     .dropdown-menu button { width: 100%; text-align: left; padding: 8px 12px; background: transparent; border: none; color: #d4d4d8; cursor: pointer; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; }
     .dropdown-menu button:hover { background: #27272a; color: white; }
 
+    .col-selector { padding: 8px; min-width: 180px; }
+    .col-opt { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-radius: 4px; font-size: 0.8125rem; color: #a1a1aa; }
+    .col-opt:hover { background: #27272a; color: white; }
+    .col-opt input { cursor: pointer; }
+
     .search-box { display: flex; align-items: center; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 0 10px; flex: 1; min-width: 250px; }
     .search-box input { border: none; background: transparent; color: white; padding: 4px 0; font-size: 0.8125rem; width: 100%; }
     .search-box input:focus { outline: none; }
@@ -298,20 +433,33 @@
     .small { padding: 4px 8px; font-size: 0.75rem; }
 
     .main-split { display: flex; flex: 1; overflow: hidden; }
-    .table-container { flex: 1; overflow-y: auto; }
-    .dense-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
-    .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 8px 12px; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; }
-    .dense-table td { padding: 4px 12px; border-bottom: 1px solid #1e1e1e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; }
+    .table-container { flex: 1; overflow: auto; }
+    .dense-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; }
+    .th-content { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 100%; cursor: pointer; }
+    .th-content:hover { background: #27272a; color: white; }
+    .th-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    
+    .resizer { position: absolute; right: 0; top: 0; width: 4px; height: 100%; cursor: col-resize; transition: background 0.2s; z-index: 20; }
+    .resizer:hover { background: #3b82f6; }
+
+    .dense-table td { padding: 4px 12px; border-bottom: 1px solid #1e1e1e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; height: 32px; vertical-align: middle; }
     .dense-table tr:hover { background: #1e293b; }
     .dense-table tr.selected { background: #1e3a8a; }
     .dense-table tr.active-row { border-left: 3px solid #3b82f6; }
     .dense-table tr.status-done { background: #064e3b33; }
+    
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }
+    .dense-table input.fallback { color: #fbbf24; font-style: italic; }
     
-    .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; }
+    .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; text-transform: capitalize; }
     .status-active { color: #3b82f6; background: #1e3a8a33; }
     .status-error { color: #ef4444; background: #450a0a33; }
+
+    .mono { font-family: monospace; font-size: 0.75rem; color: #a1a1aa; }
+    .ext-badge { font-size: 0.65rem; background: #27272a; padding: 1px 4px; border-radius: 3px; color: #71717a; text-transform: uppercase; font-weight: 700; }
+    .path-text { font-family: monospace; font-size: 0.7rem; color: #71717a; }
 
     .detail-pane { width: 400px; background: #0f172a; border-left: 1px solid #1e293b; display: flex; flex-direction: column; }
     .detail-header { padding: 12px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }

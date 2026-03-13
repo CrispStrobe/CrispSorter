@@ -63,6 +63,7 @@
     let loadingModels = $state(false);
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);
+    let saveIndicator = $state(false);
 
     // Consolidate current provider models
     let availableModels = $derived.by(() => {
@@ -142,7 +143,9 @@
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('localModels', $state.snapshot(localModels));
         i18n.setLanguage(currentLanguage);
-        alert(i18n.t.settings.saved);
+        
+        saveIndicator = true;
+        setTimeout(() => saveIndicator = false, 2000);
     }
 
     async function pickExportPath() {
@@ -280,7 +283,12 @@
         {#if selectedProviderId === 'global'}
             <div class="header">
                 <h1>{i18n.t.settings.general}</h1>
-                <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                <div class="save-area">
+                    {#if saveIndicator}
+                        <span class="save-badge"><Check size={14} /> {i18n.t.settings.saved}</span>
+                    {/if}
+                    <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                </div>
             </div>
 
             <div class="section-card">
@@ -353,6 +361,9 @@
             <div class="header">
                 <h1>{selectedProvider.name}</h1>
                 <div class="header-actions">
+                    {#if saveIndicator}
+                        <span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>
+                    {/if}
                     <button class="action-btn small" 
                             class:active-btn={activeProviderId === selectedProvider.id}
                             onclick={() => setActiveProvider(selectedProvider.id)}>
@@ -468,6 +479,11 @@
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
     h1 { font-size: 1.25rem; font-weight: 700; margin: 0; }
+    
+    .save-area { display: flex; align-items: center; gap: 12px; }
+    .save-badge { font-size: 0.75rem; color: #10b981; font-weight: 600; display: flex; align-items: center; gap: 4px; animation: fadeIn 0.3s; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
     .save-btn { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.875rem; }
     .section-card { background: #18181b; border: 1px solid #27272a; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
     .form-group { margin-bottom: 20px; max-width: 600px; }

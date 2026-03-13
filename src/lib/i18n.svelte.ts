@@ -38,6 +38,10 @@ export const translations = {
             extracted_text: 'Text Preview',
             edit_metadata: 'Metadata',
             year: 'Year',
+            size: 'Size',
+            date: 'Date',
+            extension: 'Ext',
+            path: 'Full Path',
             path_hint: 'Calculated after extraction.',
             extract_hint: 'Run extraction first.',
             confirm_move: 'Sort {count} files?',
@@ -45,7 +49,8 @@ export const translations = {
             filters: 'Filters',
             filter_type: 'Type',
             filter_size: 'Min KB',
-            filter_status: 'Status'
+            filter_status: 'Status',
+            columns: 'Columns'
         },
         history: {
             title: 'History',
@@ -130,6 +135,10 @@ export const translations = {
             extracted_text: 'Text-Vorschau',
             edit_metadata: 'Metadaten',
             year: 'Jahr',
+            size: 'Größe',
+            date: 'Datum',
+            extension: 'Ext',
+            path: 'Pfad',
             path_hint: 'Wird berechnet.',
             extract_hint: 'Zuerst extrahieren.',
             confirm_move: '{count} Dateien sortieren?',
@@ -137,7 +146,8 @@ export const translations = {
             filters: 'Filter',
             filter_type: 'Typ',
             filter_size: 'Min KB',
-            filter_status: 'Status'
+            filter_status: 'Status',
+            columns: 'Spalten'
         },
         history: {
             title: 'Verlauf',
