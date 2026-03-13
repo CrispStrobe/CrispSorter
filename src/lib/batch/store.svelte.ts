@@ -37,38 +37,25 @@ export class BatchManager {
     }
 
     async createNewSession() {
-        console.log("[BatchManager] Creating new session");
         this.currentSessionId = crypto.randomUUID();
         this.items = [];
         await this.saveCurrentSession();
     }
 
     async addItem(path: string, name: string) {
-        console.log(`[BatchManager] Adding item: ${name} at ${path}`);
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
-        
         let size = 0;
         let modifiedAt = Date.now();
-        
         try {
             const s = await stat(path);
             size = s.size;
             modifiedAt = s.mtime?.getTime() || Date.now();
-        } catch(e) {
-            console.warn(`[BatchManager] Failed to stat file ${path}:`, e);
-        }
+        } catch(e) {}
 
         this.items.push({
-            id,
-            originalPath: path,
-            originalName: name,
-            extension,
-            size,
-            modifiedAt,
-            status: 'queued',
-            isAccepted: false,
-            isIgnored: false
+            id, originalPath: path, originalName: name, extension,
+            size, modifiedAt, status: 'queued', isAccepted: false, isIgnored: false
         });
         await this.saveCurrentSession();
     }
@@ -84,52 +71,50 @@ export class BatchManager {
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
         const llmMaxChars = await getSetting('llmMaxChars', 5000);
-        const llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
-
-        console.log(`[BatchManager] Processing with ${activeProvider?.name}, model: ${modelId}`);
+        const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
+        const authorSortEnabled = await getSetting('authorSortEnabled', false);
 
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
             
             try {
-                // 1. Extraction
                 item.status = 'extracting';
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
-                // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled && activeProvider && modelId) {
                     item.status = 'analyzing';
                     const textSample = item.extractedText.substring(0, llmMaxChars);
-                    const prompt = `${llmPrompt}\n\nDocument Text:\n${textSample}`;
+                    const prompt = `Context: Filename is "${item.originalName}".\n\n${basePrompt}\n\nDocument Snippet:\n${textSample}`;
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
-                    try {
-                        const metadata = JSON.parse(response.replace(/```json|```/g, '').trim());
-                        item.suggestedTitle = metadata.title || 'Unknown Title';
-                        item.suggestedAuthor = metadata.author || 'Unknown Author';
-                        item.suggestedYear = metadata.year || '';
-                        
-                        const safeTitle = (item.suggestedTitle as string).replace(/[\\/:*?"<>|]/g, '');
-                        const safeAuthor = (item.suggestedAuthor as string).replace(/[\\/:*?"<>|]/g, '');
-                        
-                        const lastSlash = item.originalPath.lastIndexOf('/');
-                        const originalDir = lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.';
-                        const baseDir = globalExportPath || originalDir;
-                        
-                        item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
-                        
-                        item.status = 'review';
-                    } catch (e) {
-                        item.status = 'error';
-                        item.errorMessage = 'Failed to parse LLM JSON';
+                    // Attempt to parse response (handles both JSON and XML-like tags for robustness)
+                    const metadata = this.parseLLMResponse(response);
+                    item.suggestedTitle = metadata.title || 'Unknown Title';
+                    item.suggestedAuthor = metadata.author || 'Unknown Author';
+                    item.suggestedYear = metadata.year || '';
+
+                    // Optional Step 2: Author Reformatting
+                    if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
+                        console.log(`[BatchManager] Reformatting author: ${item.suggestedAuthor}`);
+                        const sortPrompt = `Convert this author name to "Lastname Firstname" format. Respond ONLY with the name inside <AUTHOR></AUTHOR> tags. Name: "${item.suggestedAuthor}"`;
+                        const sortResponse = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
+                        const match = sortResponse.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
+                        if (match) item.suggestedAuthor = match[1].trim();
                     }
+                    
+                    const safeTitle = (item.suggestedTitle as string).replace(/[\\/:*?"<>|]/g, '');
+                    const safeAuthor = (item.suggestedAuthor as string).replace(/[\\/:*?"<>|]/g, '');
+                    const lastSlash = item.originalPath.lastIndexOf('/');
+                    const baseDir = globalExportPath || (lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.');
+                    
+                    item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
+                    item.status = 'review';
                 } else {
                     const lastSlash = item.originalPath.lastIndexOf('/');
-                    const originalDir = lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.';
-                    const baseDir = globalExportPath || originalDir;
+                    const baseDir = globalExportPath || (lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.');
                     item.targetPath = `${baseDir}/Extracted/${item.originalName}.txt`;
                     item.status = 'review';
                 }
@@ -141,6 +126,21 @@ export class BatchManager {
         }
         this.isProcessing = false;
         await this.saveCurrentSession();
+    }
+
+    private parseLLMResponse(response: string): { title?: string, author?: string, year?: string } {
+        // Try JSON first
+        try {
+            const cleanJson = response.replace(/```json|```/g, '').trim();
+            const data = JSON.parse(cleanJson);
+            return { title: data.title, author: data.author, year: data.year };
+        } catch (e) {
+            // Fallback to XML tags
+            const title = response.match(/<(TITLE|PUBLICATION TITLE)>(.*?)<\/\1>/i)?.[2];
+            const author = response.match(/<AUTHOR>(.*?)<\/AUTHOR>/i)?.[2];
+            const year = response.match(/<YEAR>(.*?)<\/YEAR>/i)?.[2];
+            return { title, author, year };
+        }
     }
 
     async executeBatch() {
@@ -165,12 +165,8 @@ export class BatchManager {
                     moves: [{ source: item.originalPath, destination: item.targetPath! }] 
                 });
 
-                if (results[0].startsWith('Success:')) {
-                    item.status = 'done';
-                } else {
-                    item.status = 'error';
-                    item.errorMessage = results[0];
-                }
+                if (results[0].startsWith('Success:')) item.status = 'done';
+                else { item.status = 'error'; item.errorMessage = results[0]; }
             } catch (error: any) {
                 item.status = 'error';
                 item.errorMessage = error.message;
@@ -211,14 +207,8 @@ export class BatchManager {
     }
 
     async exportBatch() {
-        const sessionData = JSON.stringify({
-            items: $state.snapshot(this.items),
-            isMetadataExtractionEnabled: this.isMetadataExtractionEnabled
-        }, null, 2);
-        const filePath = await save({
-            filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }],
-            defaultPath: `batch_export_${new Date().toISOString().split('T')[0]}.json`
-        });
+        const sessionData = JSON.stringify({ items: $state.snapshot(this.items), isMetadataExtractionEnabled: this.isMetadataExtractionEnabled }, null, 2);
+        const filePath = await save({ filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }], defaultPath: `batch_export_${new Date().toISOString().split('T')[0]}.json` });
         if (filePath) {
             const encoder = new TextEncoder();
             await writeFile(filePath, encoder.encode(sessionData));
@@ -227,10 +217,7 @@ export class BatchManager {
     }
 
     async importBatch() {
-        const filePath = await open({
-            multiple: false,
-            filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }]
-        });
+        const filePath = await open({ multiple: false, filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }] });
         if (typeof filePath === 'string') {
             const fileData = await readFile(filePath);
             const decoder = new TextDecoder();

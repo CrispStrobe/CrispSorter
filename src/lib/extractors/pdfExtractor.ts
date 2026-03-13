@@ -2,8 +2,10 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import Tesseract from 'tesseract.js';
 import { getSetting } from '../store';
 
-// Use standard CDN for worker to keep bundle small and compatible
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+// Use a stable CDN for the worker to avoid Vite/Tauri 404 issues with local workers
+// This version should match the installed pdfjs-dist version
+const PDFJS_VERSION = '4.10.38'; // Matches current npm install
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.mjs`;
 
 export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}`);
@@ -31,11 +33,11 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
                 .join(' ');
             
             // If no text was found and OCR is enabled, try OCR on this page
-            if (pageText.trim().length < 10 && ocrEnabled) {
-                console.log(`[PDFExtractor] Page ${pageNum} seems empty/scanned. Running OCR...`);
+            if (pageText.trim().length < 20 && ocrEnabled) {
+                console.log(`[PDFExtractor] Page ${pageNum} seems empty or scanned. Running OCR...`);
                 try {
                     const canvas = document.createElement('canvas');
-                    const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+                    const viewport = page.getViewport({ scale: 2.0 }); 
                     canvas.height = viewport.height;
                     canvas.width = viewport.width;
                     
@@ -48,7 +50,7 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
                     const imageData = canvas.toDataURL('image/png');
                     
                     const { data: { text } } = await Tesseract.recognize(imageData, 'deu+eng', {
-                        logger: m => console.log(`[OCR] ${m.status}: ${Math.round(m.progress * 100)}%`)
+                        logger: m => console.log(`[OCR] Page ${pageNum} - ${m.status}: ${Math.round(m.progress * 100)}%`)
                     });
                     pageText = text;
                     console.log(`[PDFExtractor] OCR Success for page ${pageNum}, length: ${pageText.length}`);

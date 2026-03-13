@@ -75,9 +75,9 @@
     }
 
     function toggleSelectionAccepted(val: boolean) {
-        const ids = selection.size > 0 ? Array.from(selection) : batchManager.filteredItems.map(i => i.id);
+        const targetIds = selection.size > 0 ? Array.from(selection) : batchManager.filteredItems.map(i => i.id);
         batchManager.items.forEach(i => {
-            if (ids.includes(i.id) && (i.status === 'review' || i.status === 'done')) {
+            if (targetIds.includes(i.id) && (i.status === 'review' || i.status === 'done' || i.status === 'queued')) {
                 i.isAccepted = val;
             }
         });
@@ -130,8 +130,12 @@
             </button>
 
             <div class="btn-group">
-                <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>{i18n.t.batch.accept_all}</button>
-                <button class="action-btn small" onclick={() => toggleSelectionAccepted(false)}>{i18n.t.batch.uncheck_all}</button>
+                <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>
+                    <CheckSquare size={14} /> {i18n.t.batch.accept_all}
+                </button>
+                <button class="action-btn small" onclick={() => toggleSelectionAccepted(false)}>
+                    <Square size={14} /> {i18n.t.batch.uncheck_all}
+                </button>
             </div>
             
             <button class="action-btn rocket-btn small" 
