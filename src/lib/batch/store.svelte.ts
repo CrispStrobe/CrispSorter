@@ -70,7 +70,7 @@ export class BatchManager {
             isAccepted: false,
             isIgnored: false
         });
-        this.saveCurrentSession();
+        await this.saveCurrentSession();
     }
 
     async processAll() {
@@ -79,10 +79,12 @@ export class BatchManager {
 
         const providers = await getSetting('providers', []);
         const activeProvider = (providers as any[]).find(p => p.id === 'ollama') || providers[0];
-        const modelId = activeProvider?.models?.[0];
+        const modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
         
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
+
+        console.log(`[BatchManager] Processing with ${activeProvider?.name}, model: ${modelId}`);
 
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;

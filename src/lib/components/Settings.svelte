@@ -62,6 +62,9 @@
         try {
             const models = await llmClient.fetchModels(selectedProvider.id, selectedProvider.apiKey, selectedProvider.baseUrl);
             selectedProvider.models = models;
+            if (models.length > 0 && !selectedProvider.selectedModel) {
+                selectedProvider.selectedModel = models[0];
+            }
             await saveSetting('providers', $state.snapshot(providers));
         } catch (error: any) {
             const msg = error instanceof Error ? error.message : String(error);
@@ -72,11 +75,19 @@
     }
 
     async function handleTestConnection() {
+        if (!selectedProvider.selectedModel && selectedProvider.models.length > 0) {
+            selectedProvider.selectedModel = selectedProvider.models[0];
+        }
+        
+        if (!selectedProvider.selectedModel) {
+            alert(i18n.t.settings.select_model);
+            return;
+        }
+
         testingConnection = true;
         testResult = null;
         try {
-            const model = selectedProvider.models[0] || 'gpt-3.5-turbo';
-            const response = await llmClient.query(selectedProvider.id, model, 'Hello, are you working?', selectedProvider.apiKey);
+            const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, 'Hello, are you working?', selectedProvider.apiKey);
             testResult = { success: true, message: `${i18n.t.settings.test_success} Response: ${response.substring(0, 50)}...` };
         } catch (error: any) {
             const msg = error instanceof Error ? error.message : String(error);
@@ -139,7 +150,7 @@
                 <label>
                     <Languages size={16} /> {i18n.t.settings.language}
                 </label>
-                <select bind:value={currentLanguage} class="lang-select">
+                <select bind:value={currentLanguage} class="styled-select">
                     <option value="en">English</option>
                     <option value="de">Deutsch</option>
                 </select>
@@ -164,6 +175,18 @@
                 <div class="input-with-action">
                     <input id="api-key" type="password" bind:value={selectedProvider.apiKey} placeholder="sk-..." />
                 </div>
+            </div>
+
+            <div class="form-group">
+                <label for="active-model">
+                    <Cpu size={16} /> {i18n.t.settings.select_model}
+                </label>
+                <select id="active-model" bind:value={selectedProvider.selectedModel} class="styled-select">
+                    <option value="">-- {i18n.t.settings.select_model} --</option>
+                    {#each selectedProvider.models as model}
+                        <option value={model}>{model}</option>
+                    {/each}
+                </select>
             </div>
 
             <div class="actions">
@@ -205,7 +228,12 @@
                     {#if selectedProvider.models.length > 0}
                         <ul>
                             {#each selectedProvider.models as model}
-                                <li>{model}</li>
+                                <li class:active={selectedProvider.selectedModel === model}>
+                                    {model}
+                                    {#if selectedProvider.selectedModel === model}
+                                        <CheckCircle size={12} class="active-check" />
+                                    {/if}
+                                </li>
                             {/each}
                         </ul>
                     {:else}
@@ -219,35 +247,37 @@
 
 <style>
     .settings-container { display: flex; height: 100%; background: #09090b; color: #fafafa; font-family: 'Inter', sans-serif; overflow: hidden; }
-    .sidebar { width: 240px; background: #18181b; border-right: 1px solid #27272a; padding: 20px 0; display: flex; flex-direction: column; flex-shrink: 0; }
-    .sidebar h2 { padding: 0 20px; font-size: 0.875rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; }
+    .sidebar { width: 200px; background: #18181b; border-right: 1px solid #27272a; padding: 20px 0; display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar h2 { padding: 0 20px; font-size: 0.75rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; letter-spacing: 0.05em; }
     .sidebar-divider { height: 1px; background: #27272a; margin: 20px 0; }
     .provider-list { display: flex; flex-direction: column; }
-    .provider-btn { padding: 10px 20px; text-align: left; border: none; background: transparent; cursor: pointer; font-size: 0.9375rem; color: #a1a1aa; transition: all 0.2s; }
+    .provider-btn { padding: 8px 20px; text-align: left; border: none; background: transparent; cursor: pointer; font-size: 0.875rem; color: #a1a1aa; transition: all 0.2s; }
     .provider-btn:hover { background: #27272a; color: white; }
     .provider-btn.active { background: #27272a; color: white; font-weight: 600; border-left: 3px solid #3b82f6; }
     .content { flex: 1; padding: 32px 48px; overflow-y: auto; }
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; }
-    h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
-    .save-btn { background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }
-    .form-group { margin-bottom: 24px; max-width: 600px; }
+    h1 { font-size: 1.25rem; font-weight: 700; margin: 0; }
+    .save-btn { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.875rem; }
+    .form-group { margin-bottom: 20px; max-width: 600px; }
     .checkbox-group { display: flex; align-items: center; gap: 12px; }
     .checkbox-group label { margin-bottom: 0; }
-    label { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; font-weight: 600; margin-bottom: 8px; color: #a1a1aa; }
-    input[type="text"], input[type="password"], .lang-select { width: 100%; padding: 10px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.9375rem; background: #18181b; color: white; }
-    input:focus, .lang-select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+    label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; margin-bottom: 8px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.02em; }
+    input[type="text"], input[type="password"], .styled-select { width: 100%; padding: 8px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.875rem; background: #18181b; color: white; }
+    input:focus, .styled-select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
     .input-with-action { display: flex; gap: 10px; }
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
-    .action-btn { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
+    .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }
     .test-btn { color: #10b981; border-color: #064e3b; }
-    .test-result { padding: 12px; border-radius: 6px; font-size: 0.875rem; display: flex; align-items: center; gap: 8px; margin-bottom: 24px; max-width: 600px; }
+    .test-result { padding: 10px; border-radius: 6px; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; margin-bottom: 24px; max-width: 600px; }
     .test-result.success { background: #064e3b; color: #ecfdf5; border: 1px solid #065f46; }
-    .test-result.error { background: #450a0a; color: #fef2f2; border: 1px solid #7f1d1d; }
+    .test-result.error { background: #450a0a; color: #fecaca; border: 1px solid #7f1d1d; }
     .models-section { margin-top: 32px; max-width: 600px; }
-    .models-list { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; }
+    .models-list { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow-y: auto; }
     .models-list ul { list-style: none; padding: 0; margin: 0; }
-    .models-list li { padding: 6px 0; font-size: 0.875rem; border-bottom: 1px solid #27272a; color: #d4d4d8; }
+    .models-list li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
+    .models-list li.active { color: white; background: #27272a; border-radius: 4px; }
+    .active-check { color: #3b82f6; }
     .hint { font-size: 0.75rem; color: #71717a; margin-top: 4px; display: block; }
     .loader-spin { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
