@@ -6,12 +6,13 @@ use std::io::Write;
 use tauri::Emitter;
 use std::sync::{Arc, Mutex};
 use mistralrs::{
-    IsqType, MessageHandler, MistralRs, Request, Response, SamplingParams, 
-    TextMessages, TextMessageRole, NormalLoaderBuilder, NormalModelLoader,
-    Device, DeviceMapMetadata, GGUFLoaderBuilder, GGUFSpecificConfig, 
+    IsqType, Response, SamplingParams, 
+    TextMessageRole, Device, RequestBuilder, best_device
+};
+use mistralrs::core::{
+    GGUFLoaderBuilder, GGUFSpecificConfig, DeviceMapMetadata, MistralRs
 };
 use tokio::sync::mpsc;
-use anyhow::Result;
 
 #[derive(Deserialize)]
 pub struct MoveRequest {
@@ -26,7 +27,7 @@ struct DownloadProgress {
     total: u64,
 }
 
-// Global state to hold the mistralrs instance
+// Global state to hold the engine instance
 struct AppState {
     mistralrs: Mutex<Option<Arc<MistralRs>>>,
 }
@@ -97,7 +98,6 @@ async fn run_mistralrs_query(
 ) -> Result<String, String> {
     let mut mistralrs_lock = state.mistralrs.lock().unwrap();
     
-    // Load model if not already loaded or if path changed
     if mistralrs_lock.is_none() {
         let loader = GGUFLoaderBuilder::new(
             GGUFSpecificConfig::default(),
@@ -109,7 +109,7 @@ async fn run_mistralrs_query(
         let pipeline = loader.load_model(
             None,
             IsqType::Q4K,
-            &Device::new_metal(0).unwrap_or(Device::Cpu),
+            &best_device(),
             false,
             DeviceMapMetadata::dummy(),
             None,
@@ -120,30 +120,29 @@ async fn run_mistralrs_query(
     }
 
     let mistralrs = mistralrs_lock.as_ref().unwrap();
-    
     let (tx, mut rx) = mpsc::channel(10000);
-    let request = Request::new_text(
-        prompt,
-        SamplingParams::default(),
-        TextMessages::new().add_message(TextMessageRole::User, "Extract metadata..."),
-        None,
-        None,
-        None,
-        None,
-        tx,
-        None,
-    );
+    
+    let request = RequestBuilder::new()
+        .add_message(TextMessageRole::User, prompt)
+        .set_sampling_params(SamplingParams::deterministic())
+        .build_chat(tx, None);
 
-    mistralrs.get_sender().send(request).await.map_err(|e| e.to_string())?;
+    mistralrs.get_sender(None)
+        .map_err(|e| e.to_string())?
+        .send(request)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut response_text = String::new();
     while let Some(response) = rx.recv().await {
         match response {
             Response::Done(c) => {
-                response_text = c.choices[0].message.content.clone();
+                response_text = c.choices[0].message.content.as_ref().cloned().unwrap_or_default();
                 break;
             }
-            Response::Error(e) => return Err(e.to_string()),
+            Response::InternalError(e) => return Err(e.to_string()),
+            Response::ValidationError(e) => return Err(e.to_string()),
+            Response::ModelError(msg, _) => return Err(msg),
             _ => {}
         }
     }
