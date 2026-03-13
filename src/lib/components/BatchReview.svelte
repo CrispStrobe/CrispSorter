@@ -126,7 +126,9 @@
 
         <div class="right-actions">
             <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
-                {#if batchManager.isProcessing}<Loader2 class="loader-spin" size={16} />{:else}<Play size={16} />{/if}
+                <span class:loader-anim={batchManager.isProcessing}>
+                    {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}
+                </span>
                 {i18n.t.batch.start_batch}
             </button>
 
@@ -317,6 +319,6 @@
     .edit-fields label { display: block; font-size: 0.75rem; margin-bottom: 12px; color: #a1a1aa; }
     .edit-fields input { width: 100%; margin-top: 4px; padding: 6px 10px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: white; font-size: 0.8125rem; }
     
-    .loader-spin { animation: spin 1s linear infinite; }
+    .loader-anim { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

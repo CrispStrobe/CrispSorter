@@ -1,27 +1,33 @@
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import Tesseract from 'tesseract.js';
 import { getSetting } from '../store';
 
 // Set worker to the local legacy file we just copied to static/
-// We use the non-minified version for better debugging if needed
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
 
-// Polyfill for ReadableStream.values which is missing in some WebKit versions
-// and causes the "undefined is not a function (near '...value of readableStream...')" error
+// Robust polyfill for async iteration on ReadableStream
+if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.asyncIterator]) {
+    console.log("[PDFExtractor] Polyfilling ReadableStream.prototype[Symbol.asyncIterator]");
+    // @ts-ignore
+    ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
+        const reader = this.getReader();
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) return;
+                yield value;
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    };
+}
+
+// Polyfill for values() specifically if that's what's failing
 if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype.values) {
     console.log("[PDFExtractor] Polyfilling ReadableStream.prototype.values");
     // @ts-ignore
-    ReadableStream.prototype.values = function() {
-        const reader = this.getReader();
-        return {
-            next() {
-                return reader.read();
-            },
-            [Symbol.asyncIterator]() {
-                return this;
-            }
-        };
-    };
+    ReadableStream.prototype.values = ReadableStream.prototype[Symbol.asyncIterator];
 }
 
 export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
@@ -29,14 +35,12 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     const ocrEnabled = await getSetting('ocrEnabled', false);
     
     try {
-        // We use Uint8Array as it's the most compatible data type for getDocument
         const data = new Uint8Array(arrayBuffer);
         
         const loadingTask = pdfjsLib.getDocument({ 
             data: data,
             useSystemFonts: true,
             disableFontFace: true,
-            // These flags help with compatibility in restricted environments like webviews
             disableRange: true,
             disableStream: true,
             disableAutoFetch: true
