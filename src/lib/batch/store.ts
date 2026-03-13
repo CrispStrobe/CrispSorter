@@ -1,5 +1,5 @@
 import { type BatchItem, type BatchStatus, type BatchSession } from '../types';
-// import { extractText } from '../extractors'; // MOCKED for debug
+import { extractText } from '../extractors';
 import { llmClient } from '../llm/client';
 import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
 import { readFile, writeFile } from '@tauri-apps/plugin-fs';
@@ -48,12 +48,13 @@ export class BatchManager {
             
             try {
                 item.status = 'extracting';
-                // Mocking extraction for debug
-                item.extractedText = "Sample extracted text for " + item.originalName;
+                const fileData = await readFile(item.originalPath);
+                const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
+                item.extractedText = extraction.text;
 
                 if (this.isMetadataExtractionEnabled && activeProvider && modelId) {
                     item.status = 'analyzing';
-                    const prompt = `Extract metadata...`;
+                    const prompt = `Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }. Use the first few pages of text: ${item.extractedText.substring(0, 4000)}`;
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
                     try {

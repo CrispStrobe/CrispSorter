@@ -39,7 +39,8 @@
             selectedProvider.models = models;
             await handleSave();
         } catch (error: any) {
-            alert(`Failed to fetch models: ${error.message}`);
+            const msg = error instanceof Error ? error.message : String(error);
+            alert(`Failed to fetch models: ${msg}`);
         } finally {
             loadingModels = false;
         }
@@ -53,7 +54,8 @@
             const response = await llmClient.query(selectedProvider.id, model, 'Hello, are you working?', selectedProvider.apiKey);
             testResult = { success: true, message: `Success! Response: ${response.substring(0, 50)}...` };
         } catch (error: any) {
-            testResult = { success: false, message: `Error: ${error.message}` };
+            const msg = error instanceof Error ? error.message : String(error);
+            testResult = { success: false, message: `Error: ${msg}` };
         } finally {
             testingConnection = false;
         }
@@ -101,7 +103,7 @@
         <div class="actions">
             <button class="action-btn" onclick={handleRefreshModels} disabled={loadingModels}>
                 {#if loadingModels}
-                    <Loader2 class="loader-icon" size={16} />
+                    <Loader2 class="loader-spin" size={16} />
                 {:else}
                     <RefreshCw size={16} />
                 {/if}
@@ -110,7 +112,7 @@
 
             <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
                 {#if testingConnection}
-                    <Loader2 class="loader-icon" size={16} />
+                    <Loader2 class="loader-spin" size={16} />
                 {:else}
                     <CheckCircle size={16} />
                 {/if}
@@ -149,7 +151,7 @@
 </div>
 
 <style>
-    .settings-container { display: flex; height: 100%; background: var(--bg-main, #fff); color: var(--text-main, #333); font-family: 'Inter', sans-serif; }
+    .settings-container { display: flex; height: 100%; background: var(--bg-main, #fff); color: var(--text-main, #333); font-family: 'Inter', sans-serif; overflow: hidden; }
     .sidebar { width: 240px; background: #f4f4f5; border-right: 1px solid #e4e4e7; padding: 20px 0; display: flex; flex-direction: column; }
     .sidebar h2 { padding: 0 20px; font-size: 0.875rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; }
     .provider-list { display: flex; flex-direction: column; }
@@ -165,7 +167,7 @@
     input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9375rem; }
     input:focus { outline: 2px solid #3b82f6; border-color: transparent; }
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
-    .action-btn { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid #d1d5db; background: white; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.2s; }
+    .action-btn { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border: 1px solid #ced4da; background: white; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.2s; }
     .action-btn:hover { background: #f9fafb; }
     .test-btn { color: #059669; border-color: #a7f3d0; }
     .test-btn:hover { background: #ecfdf5; }
@@ -178,7 +180,7 @@
     .models-list li { padding: 6px 0; font-size: 0.875rem; border-bottom: 1px solid #f3f4f6; }
     .models-list li:last-child { border-bottom: none; }
     .empty-hint { color: #9ca3af; font-size: 0.875rem; text-align: center; margin: 20px 0; }
-    .loader-icon { animation: spin 1s linear infinite; }
+    .loader-spin { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @media (prefers-color-scheme: dark) {
         .sidebar { background: #18181b; border-color: #27272a; }

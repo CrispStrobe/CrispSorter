@@ -34,9 +34,6 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'google', name: 'Google (Gemini)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', apiKey: '', models: [], isConfigured: false },
 ];
 
-/**
- * Robust LLM Client utilizing Tauri's native HTTP plugin to bypass CORS.
- */
 export class LLMClient {
     private keys: Record<string, string> = {};
 
@@ -56,6 +53,7 @@ export class LLMClient {
         if (!base) throw new Error(`Base URL for ${providerId} is not configured.`);
 
         try {
+            console.log(`[LLMClient] Fetching models from ${base}/models`);
             const response = await fetch(`${base}/models`, {
                 method: 'GET',
                 headers: {
@@ -67,25 +65,25 @@ export class LLMClient {
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errorText}`);
+                throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
             }
 
             const data = await response.json();
+            console.log(`[LLMClient] Models received:`, data);
             
             if (providerId === 'ollama') {
-                // Ollama's /v1/models (OpenAI compat) vs /api/tags
                 return data.data ? data.data.map((m: any) => m.id) : data.models?.map((m: any) => m.name) || [];
             }
 
-            // Standard OpenAI-compatible response: { data: [{ id: "..." }] }
             if (data.data && Array.isArray(data.data)) {
                 return data.data.map((m: any) => m.id).sort();
             }
 
             return [];
         } catch (error: any) {
-            console.error(`[LLMClient] Failed to fetch models for ${providerId}:`, error.message);
-            throw error;
+            const msg = error instanceof Error ? error.message : String(error);
+            console.error(`[LLMClient] Failed to fetch models for ${providerId}:`, msg);
+            throw new Error(msg);
         }
     }
 
@@ -94,30 +92,32 @@ export class LLMClient {
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
         if (!key && providerId !== 'ollama') throw new Error(`API key for ${providerId} is required.`);
+        if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
-        // Special handling for Anthropic/Gemini could be added here
-        // For now, focusing on OpenAI-Compatible which covers most of your list
-        
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${key}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: modelId,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.3
-            })
-        });
+        try {
+            const response = await fetch(`${baseUrl}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${key}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: modelId,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.3
+                })
+            });
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`LLM Error (${providerId}): ${errorText}`);
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
+            }
+
+            const data = await response.json();
+            return data.choices[0].message.content;
+        } catch (error: any) {
+            throw new Error(error instanceof Error ? error.message : String(error));
         }
-
-        const data = await response.json();
-        return data.choices[0].message.content;
     }
 }
 
