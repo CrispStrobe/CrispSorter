@@ -81,13 +81,11 @@
         
         const savedLocalModels = await getSetting('localModels');
         if (savedLocalModels) {
-            // Merge defaults with saved to keep URLs up to date
             const saved = savedLocalModels as LocalModel[];
             localModels = localModels.map(def => {
                 const s = saved.find(m => m.id === def.id);
                 return s ? { ...def, ...s } : def;
             });
-            // Add any custom added models from saved
             saved.forEach(s => {
                 if (!localModels.find(m => m.id === s.id)) localModels.push(s);
             });
@@ -241,7 +239,7 @@
                 >
                     <span>{provider.name}</span>
                     {#if activeProviderId === provider.id}
-                        <Zap size={12} style="color: #eab308;" />
+                        <Zap size={12} class="active-zap-icon" />
                     {/if}
                 </button>
             {/each}
@@ -266,7 +264,7 @@
                 <select id="active-prov-select" bind:value={activeProviderId} class="styled-select">
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
-                    {#/each}
+                    {/each}
                 </select>
             </div>
 
@@ -426,7 +424,7 @@
                         <ul>
                             {#each selectedProvider.models as model}
                                 <li class:active-item-row={selectedProvider.selectedModel === model}>
-                                    {model}
+                                    <span>{model}</span>
                                     {#if selectedProvider.selectedModel === model}
                                         <CheckCircle size={12} style="color: #3b82f6;" />
                                     {/if}
@@ -467,6 +465,7 @@
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }
     .action-btn.active-btn { color: #eab308; border-color: #713f12; background: #42200633; }
+    .active-zap-icon { color: #eab308; }
     .test-btn { color: #10b981; border-color: #064e3b; }
     .test-result-box { padding: 10px; border-radius: 6px; font-size: 0.8125rem; margin-bottom: 24px; max-width: 600px; border: 1px solid #27272a; }
     .test-result-box.success { background: #064e3b33; color: #ecfdf5; border-color: #065f46; }
