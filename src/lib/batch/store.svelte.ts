@@ -44,15 +44,14 @@ export class BatchManager {
     }
 
     async addItem(path: string, name: string) {
-        // Synchronous immediate check to prevent double adding from rapid calls (like drag-drop loop)
-        if (this.items.some(i => i.originalPath === path)) {
-            console.log(`[BatchManager] Skipping duplicate: ${name}`);
+        // SYNCHRONOUS check to block duplicate paths immediately
+        const exists = this.items.some(i => i.originalPath === path);
+        if (exists) {
+            console.log(`[BatchManager] Synchronous duplicate block for: ${name}`);
             return;
         }
 
         console.log(`[BatchManager] Adding item: ${name} at ${path}`);
-        
-        // Push a placeholder immediately to claim the path
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
         
@@ -68,9 +67,10 @@ export class BatchManager {
             isIgnored: false
         };
         
+        // Immediate push ensures subsequent calls to addItem see this path
         this.items.push(newItem);
 
-        // Update with real stats asynchronously
+        // Async metadata update
         try {
             const s = await stat(path);
             newItem.size = s.size;
@@ -93,11 +93,22 @@ export class BatchManager {
         
         let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
         
-        // Handle mistralrs specifically
+        // Handle mistralrs specifically with more robustness
         if (activeProviderId === 'mistralrs') {
             const localModels = await getSetting('localModels', []) as any[];
-            const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
-            modelId = activeLocal?.path;
+            console.log("[BatchManager] Mistral.rs selected. Local models in store:", localModels.length);
+            
+            const activeLocal = localModels.find(m => m.isActive);
+            if (activeLocal) {
+                console.log(`[BatchManager] Found active local model: ${activeLocal.name}`);
+                modelId = activeLocal.path;
+            } else if (localModels.length > 0) {
+                const firstDownloaded = localModels.find(m => m.isDownloaded);
+                if (firstDownloaded) {
+                    console.log(`[BatchManager] No model marked active, falling back to: ${firstDownloaded.name}`);
+                    modelId = firstDownloaded.path;
+                }
+            }
         }
 
         const globalExportPath = await getSetting('exportPath', '');
@@ -106,7 +117,10 @@ export class BatchManager {
         const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
         const authorSortEnabled = await getSetting('authorSortEnabled', false);
 
-        console.log(`[BatchManager] Provider: ${activeProvider?.name}, Model: ${modelId}`);
+        console.log(`[BatchManager] Configuration Summary:`);
+        console.log(` - Provider: ${activeProviderId} (${activeProvider?.name})`);
+        console.log(` - Model: ${modelId}`);
+        console.log(` - AI Sort: ${this.isMetadataExtractionEnabled}`);
 
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
@@ -114,26 +128,27 @@ export class BatchManager {
             try {
                 // 1. Extraction
                 item.status = 'extracting';
+                console.log(`[BatchManager] [${item.originalName}] Extracting text...`);
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
                 // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled) {
-                    if (!activeProvider || !modelId) {
+                    if (!activeProviderId || !modelId) {
                         throw new Error(`AI Provider or Model not selected in Settings.`);
                     }
-                    if (!activeProvider.apiKey && !['ollama', 'mistralrs'].includes(activeProvider.id)) {
-                        throw new Error(`API Key for ${activeProvider.name} is missing.`);
+                    if (!activeProvider.apiKey && !['ollama', 'mistralrs'].includes(activeProviderId)) {
+                        throw new Error(`API Key for ${activeProvider?.name || activeProviderId} is missing.`);
                     }
 
                     item.status = 'analyzing';
                     const textSample = item.extractedText.substring(0, llmMaxChars);
-                    const prompt = `Context: Filename is "${item.originalName}".\n\n${basePrompt}\n\nDocument snippet (first ${llmMaxChars} chars):\n${textSample}`;
+                    const prompt = `Context: Filename is "${item.originalName}".\n\n${basePrompt}\n\nDocument snippet:\n${textSample}`;
                     
-                    console.log(`[BatchManager] Querying LLM for ${item.originalName}...`);
-                    const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
-                    console.log(`[BatchManager] LLM Response received.`);
+                    console.log(`[BatchManager] [${item.originalName}] Sending query to ${activeProviderId}...`);
+                    const response = await llmClient.query(activeProviderId, modelId, prompt, activeProvider.apiKey);
+                    console.log(`[BatchManager] [${item.originalName}] Response received.`);
                     
                     const metadata = this.parseLLMResponse(response);
                     item.suggestedTitle = metadata.title || 'Unknown Title';
@@ -142,7 +157,7 @@ export class BatchManager {
 
                     if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
                         const sortPrompt = `Convert author name to "Lastname Firstname" format. Use <AUTHOR> tags. Name: "${item.suggestedAuthor}"`;
-                        const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
+                        const sortRes = await llmClient.query(activeProviderId, modelId, sortPrompt, activeProvider.apiKey);
                         const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                         if (match) item.suggestedAuthor = match[1].trim();
                     }
@@ -161,7 +176,7 @@ export class BatchManager {
                     item.status = 'review';
                 }
             } catch (error: any) {
-                console.error(`[BatchManager] Error processing ${item.originalName}:`, error.message);
+                console.error(`[BatchManager] [${item.originalName}] ERROR:`, error.message);
                 item.status = 'error';
                 item.errorMessage = error.message || String(error);
             }
