@@ -25,6 +25,7 @@ export const OPENAI_COMPATIBLE = {
 
 export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: [], selectedModel: '', isConfigured: true },
+    { id: 'mistralrs', name: 'mistral.rs (Native)', baseUrl: 'local', apiKey: '', models: [], selectedModel: '', isConfigured: true },
     { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
@@ -47,6 +48,8 @@ export class LLMClient {
     }
 
     async fetchModels(providerId: string, apiKey?: string, baseUrl?: string): Promise<string[]> {
+        if (providerId === 'mistralrs') return []; // Managed via Model Manager UI
+
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
@@ -75,7 +78,6 @@ export class LLMClient {
             }
 
             const data = await response.json();
-            console.log(`[LLMClient] Models received for ${providerId}:`, data);
             
             if (providerId === 'ollama') {
                 return data.data ? data.data.map((m: any) => m.id) : data.models?.map((m: any) => m.name) || [];
@@ -94,6 +96,11 @@ export class LLMClient {
     }
 
     async query(providerId: string, modelId: string, prompt: string, apiKey?: string): Promise<string> {
+        if (providerId === 'mistralrs') {
+            // This will be implemented as a Tauri Command later
+            throw new Error("mistral.rs query not yet implemented in backend.");
+        }
+
         const key = apiKey || this.keys[providerId];
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
