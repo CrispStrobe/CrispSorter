@@ -151,6 +151,7 @@
             const name = selected.split(/[\\/]/).pop() || 'Unknown Model';
             localModels.push({ id: crypto.randomUUID(), name, path: selected, isDownloaded: true, isActive: false });
             await updateLocalModelSizes();
+            await handleSave();
         }
     }
 
@@ -160,6 +161,7 @@
             try { await remove(model.path); } catch(e) { console.error(e); }
         }
         localModels.splice(index, 1);
+        await handleSave();
     }
 
     async function downloadLocalModel(index: number) {
@@ -191,8 +193,14 @@
         }
     }
 
-    function setLocalModelActive(index: number) {
+    async function setLocalModelActive(index: number) {
         localModels.forEach((m, i) => m.isActive = i === index);
+        await handleSave();
+    }
+
+    async function setActiveProvider(id: string) {
+        activeProviderId = id;
+        await handleSave();
     }
 
     async function handleRefreshModels() {
@@ -207,7 +215,7 @@
             if (models.length > 0 && !selectedProvider.selectedModel) {
                 selectedProvider.selectedModel = models[0];
             }
-            await saveSetting('providers', $state.snapshot(providers));
+            await handleSave();
         } catch (error: any) {
             alert(`${i18n.t.settings.fetch_failed}: ${error.message}`);
         } finally {
@@ -338,7 +346,7 @@
                 <div class="header-actions">
                     <button class="action-btn small" 
                             class:active-btn={activeProviderId === selectedProvider.id}
-                            onclick={() => activeProviderId = selectedProvider.id}>
+                            onclick={() => setActiveProvider(selectedProvider.id)}>
                         <Zap size={14} /> {activeProviderId === selectedProvider.id ? 'Active' : 'Set Active'}
                     </button>
                     <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
