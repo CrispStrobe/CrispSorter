@@ -246,8 +246,8 @@
                 >
                     <span>{provider.name}</span>
                     {#if activeProviderId === provider.id}
-                        <Zap size={12} class="active-zap-icon" />
-                    {/if}
+                        <Zap size={12} style="color: #eab308;" />
+                    {#/if}
                 </button>
             {/each}
         </div>
@@ -271,7 +271,7 @@
                 <select id="active-prov-select" bind:value={activeProviderId} class="styled-select">
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
-                    {#/each}
+                    {/each}
                 </select>
             </div>
 
@@ -360,7 +360,7 @@
                                 <div class="model-info">
                                     <div class="model-title-line">
                                         <strong>{model.name}</strong>
-                                        {#if model.isActive}<Zap size={12} class="active-zap-icon" />{/if}
+                                        {#if model.isActive}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
                                     <span class="model-path">{model.path || 'Not downloaded yet'}</span>
                                     {#if model.progress !== undefined}
@@ -368,7 +368,7 @@
                                             <div class="progress-bar" style="width: {model.progress}%"></div>
                                             <span class="progress-text">{model.progress}%</span>
                                         </div>
-                                    {/if}
+                                    {#/if}
                                 </div>
                                 <div class="model-status">
                                     {#if model.isDownloaded}
@@ -382,7 +382,7 @@
                                             <Download size={14} /> Download
                                         </button>
                                         <button class="icon-btn" onclick={() => localModels.splice(i, 1)}><XCircle size={14} /></button>
-                                    {/if}
+                                    {#/if}
                                 </div>
                             </div>
                         {/each}
@@ -406,7 +406,7 @@
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each selectedProvider.models as model}
                             <option value={model}>{model}</option>
-                        {/each}
+                        {#/each}
                     </select>
                 </div>
 
@@ -429,7 +429,7 @@
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
                         <span>{testResult.message}</span>
                     </div>
-                {/if}
+                {#/if}
 
                 <div class="models-section">
                     <label>{i18n.t.settings.available_models} ({selectedProvider.models.length})</label>
@@ -440,9 +440,9 @@
                                     <span>{model}</span>
                                     {#if selectedProvider.selectedModel === model}
                                         <CheckCircle size={12} style="color: #3b82f6;" />
-                                    {/if}
+                                    {#/if}
                                 </li>
-                            {/each}
+                            {#/each}
                         </ul>
                     </div>
                 </div>
@@ -478,11 +478,10 @@
     .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }
     .action-btn.active-btn { color: #eab308; border-color: #713f12; background: #42200633; }
-    .active-zap-icon { color: #eab308; }
-    .test-btn { color: #10b981; border-color: #064e3b; }
+    
     .test-result-box { padding: 10px; border-radius: 6px; font-size: 0.8125rem; margin-bottom: 24px; max-width: 600px; border: 1px solid #27272a; }
     .test-result-box.success { background: #064e3b33; color: #ecfdf5; border-color: #065f46; }
-    .test-result-box.error { background: #450a0a33; color: #fecaca; border-color: #7f1d1d; }
+    .test-result-box.error { background: #450a0a33; color: #fef2f2; border-color: #7f1d1d; }
     
     .model-manager-list { display: flex; flex-direction: column; gap: 10px; }
     .local-model-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; }
