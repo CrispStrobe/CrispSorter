@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '../store';
     import { type BatchSession } from '../types';
-    import { batchManager } from '../batch/store';
+    import { batchManager } from '../batch/store.svelte';
     import { Clock, Play, Trash2, Calendar, FileText } from 'lucide-svelte';
 
     let sessions = $state<BatchSession[]>([]);
@@ -18,7 +18,7 @@
 
     async function handleResume(id: string, onDone: () => void) {
         await batchManager.loadSession(id);
-        onDone(); // Switch to batch view
+        onDone();
     }
 
     async function handleDelete(id: string) {
@@ -77,26 +77,19 @@
         padding: 40px;
         height: 100%;
         overflow-y: auto;
-        background: #f9fafb;
+        background: #09090b;
+        color: #fafafa;
     }
 
-    .header {
-        margin-bottom: 32px;
-    }
-
+    .header { margin-bottom: 32px; }
     h1 { font-size: 1.875rem; font-weight: 700; margin: 0 0 8px; }
-    p { color: #6b7280; margin: 0; }
+    p { color: #a1a1aa; margin: 0; }
 
-    .sessions-list {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        max-width: 800px;
-    }
+    .sessions-list { display: flex; flex-direction: column; gap: 16px; max-width: 800px; }
 
     .session-card {
-        background: white;
-        border: 1px solid #e5e7eb;
+        background: #18181b;
+        border: 1px solid #27272a;
         border-radius: 12px;
         padding: 20px;
         display: flex;
@@ -105,83 +98,21 @@
         transition: transform 0.2s, box-shadow 0.2s;
     }
 
-    .session-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    }
+    .session-card:hover { transform: translateY(-2px); border-color: #3f3f46; }
 
-    .session-info {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }
+    .session-info { display: flex; flex-direction: column; gap: 8px; }
+    .session-main { display: flex; align-items: center; gap: 10px; font-size: 1rem; color: #f9fafb; }
 
-    .session-main {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 1rem;
-    }
+    .badge { font-size: 0.75rem; padding: 2px 8px; background: #3f3f46; color: #d4d4d8; border-radius: 9999px; text-transform: uppercase; font-weight: 600; }
+    .badge.completed { background: #166534; color: #dcfce7; }
 
-    .badge {
-        font-size: 0.75rem;
-        padding: 2px 8px;
-        background: #fef3c7;
-        color: #92400e;
-        border-radius: 9999px;
-        text-transform: uppercase;
-        font-weight: 600;
-    }
-
-    .badge.completed { background: #dcfce7; color: #166534; }
-
-    .session-details {
-        display: flex;
-        gap: 20px;
-        font-size: 0.875rem;
-        color: #6b7280;
-    }
-
+    .session-details { display: flex; gap: 20px; font-size: 0.875rem; color: #a1a1aa; }
     .session-details span { display: flex; align-items: center; gap: 4px; }
 
-    .session-actions {
-        display: flex;
-        gap: 12px;
-    }
+    .session-actions { display: flex; gap: 12px; }
 
-    .resume-btn {
-        background: #3b82f6;
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-weight: 600;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
+    .resume-btn { background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    .delete-btn { background: #450a0a; color: #fecaca; border: none; padding: 8px; border-radius: 8px; cursor: pointer; }
 
-    .delete-btn {
-        background: #fee2e2;
-        color: #991b1b;
-        border: none;
-        padding: 8px;
-        border-radius: 8px;
-        cursor: pointer;
-    }
-
-    .empty-state {
-        text-align: center;
-        padding: 60px;
-        color: #9ca3af;
-    }
-
-    @media (prefers-color-scheme: dark) {
-        .history-container { background: #09090b; }
-        .session-card { background: #18181b; border-color: #27272a; }
-        .session-main { color: #f9fafb; }
-        .session-details { color: #a1a1aa; }
-        .delete-btn { background: #450a0a; color: #fecaca; }
-    }
+    .empty-state { text-align: center; padding: 60px; color: #71717a; }
 </style>
