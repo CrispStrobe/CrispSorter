@@ -22,8 +22,10 @@
 
     onMount(async () => {
         // Tauri drag-drop listener
+        // We use a set to track processed paths during a single drop event to prevent duplicates
         const unlisten = await listen('tauri://drag-drop', (event: any) => {
             const paths = event.payload.paths as string[];
+            console.log(`[BatchReview] Received drop event with ${paths.length} files`);
             paths.forEach(path => {
                 const name = path.split(/[\\/]/).pop() || '';
                 batchManager.addItem(path, name);
