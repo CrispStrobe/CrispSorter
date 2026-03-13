@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 use std::io::Write;
 use tauri::Emitter;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use mistralrs::{
-    GgufModelBuilder, IsqType, TextMessageRole, TextMessages, 
+    GgufModelBuilder, TextMessageRole, TextMessages, 
     best_device, Model
 };
 
@@ -24,6 +25,7 @@ struct DownloadProgress {
 }
 
 // Global state to hold the high-level Model instance and current model path
+// Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
 pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
     current_model_path: Mutex<Option<String>>,
@@ -93,8 +95,8 @@ async fn run_mistralrs_query(
     model_path: String,
     prompt: String,
 ) -> Result<String, String> {
-    let mut model_lock = state.model.lock().unwrap();
-    let mut current_path_lock = state.current_model_path.lock().unwrap();
+    let mut model_lock = state.model.lock().await;
+    let mut current_path_lock = state.current_model_path.lock().await;
     
     // Check if we need to load or swap the model
     let needs_load = match &*current_path_lock {
@@ -115,13 +117,14 @@ async fn run_mistralrs_query(
             .with_logging()
             .build()
             .await
-            .map_err(|e: anyhow::Error| e.to_string())?;
+            .map_err(|e| e.to_string())?;
         
         *model_lock = Some(Arc::new(model));
         *current_path_lock = Some(model_path.clone());
         println!("[mistral.rs] Model loaded successfully.");
     }
 
+    // We can unwrap here because we ensured it's Some above
     let model = model_lock.as_ref().unwrap();
     
     let messages = TextMessages::new()
@@ -130,7 +133,7 @@ async fn run_mistralrs_query(
     println!("[mistral.rs] Sending chat request...");
     let response = model.send_chat_request(messages)
         .await
-        .map_err(|e: anyhow::Error| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let content = response.choices[0].message.content.as_ref().cloned().unwrap_or_default();
     println!("[mistral.rs] Query complete. Response length: {}", content.len());
