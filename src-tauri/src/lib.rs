@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 use std::io::Write;
 use tauri::Emitter;
+use std::sync::{Arc, Mutex};
+use mistralrs::{
+    IsqType, MessageHandler, MistralRs, Request, Response, SamplingParams, 
+    TextMessages, TextMessageRole, NormalLoaderBuilder, NormalModelLoader,
+    Device, DeviceMapMetadata, GGUFLoaderBuilder, GGUFSpecificConfig, 
+};
+use tokio::sync::mpsc;
+use anyhow::Result;
 
 #[derive(Deserialize)]
 pub struct MoveRequest {
@@ -16,6 +24,11 @@ struct DownloadProgress {
     id: String,
     received: u64,
     total: u64,
+}
+
+// Global state to hold the mistralrs instance
+struct AppState {
+    mistralrs: Mutex<Option<Arc<MistralRs>>>,
 }
 
 #[tauri::command]
@@ -76,6 +89,68 @@ async fn download_file(
     Ok(())
 }
 
+#[tauri::command]
+async fn run_mistralrs_query(
+    state: tauri::State<'_, AppState>,
+    model_path: String,
+    prompt: String,
+) -> Result<String, String> {
+    let mut mistralrs_lock = state.mistralrs.lock().unwrap();
+    
+    // Load model if not already loaded or if path changed
+    if mistralrs_lock.is_none() {
+        let loader = GGUFLoaderBuilder::new(
+            GGUFSpecificConfig::default(),
+            None,
+            None,
+            Some(model_path),
+        ).build();
+        
+        let pipeline = loader.load_model(
+            None,
+            IsqType::Q4K,
+            &Device::new_metal(0).unwrap_or(Device::Cpu),
+            false,
+            DeviceMapMetadata::dummy(),
+            None,
+            None,
+        ).map_err(|e| e.to_string())?;
+        
+        *mistralrs_lock = Some(pipeline);
+    }
+
+    let mistralrs = mistralrs_lock.as_ref().unwrap();
+    
+    let (tx, mut rx) = mpsc::channel(10000);
+    let request = Request::new_text(
+        prompt,
+        SamplingParams::default(),
+        TextMessages::new().add_message(TextMessageRole::User, "Extract metadata..."),
+        None,
+        None,
+        None,
+        None,
+        tx,
+        None,
+    );
+
+    mistralrs.get_sender().send(request).await.map_err(|e| e.to_string())?;
+
+    let mut response_text = String::new();
+    while let Some(response) = rx.recv().await {
+        match response {
+            Response::Done(c) => {
+                response_text = c.choices[0].message.content.clone();
+                break;
+            }
+            Response::Error(e) => return Err(e.to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(response_text)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -86,7 +161,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![move_files, download_file])
+        .manage(AppState { mistralrs: Mutex::new(None) })
+        .invoke_handler(tauri::generate_handler![move_files, download_file, run_mistralrs_query])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
