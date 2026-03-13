@@ -18,6 +18,9 @@ export class BatchManager {
     filterStatus = $state('all');
     filterMinSize = $state(0);
 
+    // Track paths synchronously to prevent rapid drop duplicates
+    private processingPaths = new Set<string>();
+
     filteredItems = $derived(
         this.items.filter(item => {
             const matchesSearch = item.originalName.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
@@ -40,18 +43,21 @@ export class BatchManager {
         console.log("[BatchManager] Creating new session");
         this.currentSessionId = crypto.randomUUID();
         this.items = [];
+        this.processingPaths.clear();
         await this.saveCurrentSession();
     }
 
     async addItem(path: string, name: string) {
-        // SYNCHRONOUS check to block duplicate paths immediately
-        const exists = this.items.some(i => i.originalPath === path);
-        if (exists) {
+        // SYNCHRONOUS check first
+        if (this.processingPaths.has(path) || this.items.some(i => i.originalPath === path)) {
             console.log(`[BatchManager] Synchronous duplicate block for: ${name}`);
             return;
         }
 
+        // Mark as being added IMMEDIATELY
+        this.processingPaths.add(path);
         console.log(`[BatchManager] Adding item: ${name} at ${path}`);
+        
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
         
@@ -67,7 +73,6 @@ export class BatchManager {
             isIgnored: false
         };
         
-        // Immediate push ensures subsequent calls to addItem see this path
         this.items.push(newItem);
 
         // Async metadata update
@@ -93,22 +98,11 @@ export class BatchManager {
         
         let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
         
-        // Handle mistralrs specifically with more robustness
+        // Handle mistralrs specifically
         if (activeProviderId === 'mistralrs') {
             const localModels = await getSetting('localModels', []) as any[];
-            console.log("[BatchManager] Mistral.rs selected. Local models in store:", localModels.length);
-            
-            const activeLocal = localModels.find(m => m.isActive);
-            if (activeLocal) {
-                console.log(`[BatchManager] Found active local model: ${activeLocal.name}`);
-                modelId = activeLocal.path;
-            } else if (localModels.length > 0) {
-                const firstDownloaded = localModels.find(m => m.isDownloaded);
-                if (firstDownloaded) {
-                    console.log(`[BatchManager] No model marked active, falling back to: ${firstDownloaded.name}`);
-                    modelId = firstDownloaded.path;
-                }
-            }
+            const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
+            modelId = activeLocal?.path;
         }
 
         const globalExportPath = await getSetting('exportPath', '');
@@ -117,38 +111,30 @@ export class BatchManager {
         const basePrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
         const authorSortEnabled = await getSetting('authorSortEnabled', false);
 
-        console.log(`[BatchManager] Configuration Summary:`);
-        console.log(` - Provider: ${activeProviderId} (${activeProvider?.name})`);
-        console.log(` - Model: ${modelId}`);
-        console.log(` - AI Sort: ${this.isMetadataExtractionEnabled}`);
-
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
             
             try {
                 // 1. Extraction
                 item.status = 'extracting';
-                console.log(`[BatchManager] [${item.originalName}] Extracting text...`);
                 const fileData = await readFile(item.originalPath);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
 
                 // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled) {
-                    if (!activeProviderId || !modelId) {
+                    if (!activeProvider || !modelId) {
                         throw new Error(`AI Provider or Model not selected in Settings.`);
                     }
-                    if (!activeProvider.apiKey && !['ollama', 'mistralrs'].includes(activeProviderId)) {
-                        throw new Error(`API Key for ${activeProvider?.name || activeProviderId} is missing.`);
+                    if (!activeProvider.apiKey && !['ollama', 'mistralrs'].includes(activeProvider.id)) {
+                        throw new Error(`API Key for ${activeProvider.name} is missing.`);
                     }
 
                     item.status = 'analyzing';
                     const textSample = item.extractedText.substring(0, llmMaxChars);
                     const prompt = `Context: Filename is "${item.originalName}".\n\n${basePrompt}\n\nDocument snippet:\n${textSample}`;
                     
-                    console.log(`[BatchManager] [${item.originalName}] Sending query to ${activeProviderId}...`);
-                    const response = await llmClient.query(activeProviderId, modelId, prompt, activeProvider.apiKey);
-                    console.log(`[BatchManager] [${item.originalName}] Response received.`);
+                    const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
                     
                     const metadata = this.parseLLMResponse(response);
                     item.suggestedTitle = metadata.title || 'Unknown Title';
@@ -157,7 +143,7 @@ export class BatchManager {
 
                     if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
                         const sortPrompt = `Convert author name to "Lastname Firstname" format. Use <AUTHOR> tags. Name: "${item.suggestedAuthor}"`;
-                        const sortRes = await llmClient.query(activeProviderId, modelId, sortPrompt, activeProvider.apiKey);
+                        const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
                         const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                         if (match) item.suggestedAuthor = match[1].trim();
                     }
@@ -176,7 +162,6 @@ export class BatchManager {
                     item.status = 'review';
                 }
             } catch (error: any) {
-                console.error(`[BatchManager] [${item.originalName}] ERROR:`, error.message);
                 item.status = 'error';
                 item.errorMessage = error.message || String(error);
             }
@@ -252,6 +237,7 @@ export class BatchManager {
         if (session) {
             this.currentSessionId = session.id;
             this.items = session.items;
+            this.processingPaths = new Set(this.items.map(i => i.originalPath));
         }
     }
 
@@ -281,6 +267,7 @@ export class BatchManager {
             await this.createNewSession();
             this.items = data.items || [];
             this.isMetadataExtractionEnabled = data.isMetadataExtractionEnabled ?? true;
+            this.processingPaths = new Set(this.items.map(i => i.originalPath));
             await this.saveCurrentSession();
             alert('Batch imported successfully!');
         }
@@ -288,6 +275,7 @@ export class BatchManager {
 
     clear() {
         this.items = [];
+        this.processingPaths.clear();
         this.saveCurrentSession();
     }
 }
