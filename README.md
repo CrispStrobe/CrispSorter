@@ -44,11 +44,15 @@ CrispSorter stays lean by default but offers two paths for OCR:
 - **Cross-Device Sync**: Sync sorting plans and library metadata between your Desktop and NAS.
 - **RAG Tool**: Extension into a "Chat with your Documents" interface using local vectors (via Ollama or Transformers.js WASM).
 
+### Phase 5: Local LLM Bundling (llama.cpp)
+- **Zero Configuration**: Bundle a pre-compiled `llama.cpp` sidecar.
+- **Offline UX**: Automatically download small quantized models (GGUF) to allow AI sorting without Ollama or Cloud API keys.
+
 ## 🛠️ Architecture
 
 - **Frontend**: Svelte 5 (Runes) + Lucide Icons.
 - **Backend**: Tauri v2 (Rust) for safe file system operations and CORS-free API calls.
-- **Extractors**: `pdfjs-dist`, `mammoth.js`, `epub-parser` (All JS-native).
+- **Extractors**: `pdfjs-dist` (Legacy Build), `mammoth.js`, `epub-parser`, `Tesseract.js` (OCR).
 - **Persistence**: Automatic session saving and resume support.
 
 ## 🏗️ Development

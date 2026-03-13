@@ -2,10 +2,8 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import Tesseract from 'tesseract.js';
 import { getSetting } from '../store';
 
-// Use a stable CDN for the worker to avoid Vite/Tauri 404 issues with local workers
-// This version should match the installed pdfjs-dist version
-const PDFJS_VERSION = '4.10.38'; // Matches current npm install
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.mjs`;
+// Point to the local static worker file we just copied
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
 export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}`);

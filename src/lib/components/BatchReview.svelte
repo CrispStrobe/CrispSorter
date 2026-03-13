@@ -8,7 +8,7 @@
         Play, Trash2, Check, X, FileSearch, 
         Loader2, Eye, Edit, Rocket, CheckSquare, 
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp, 
-        Plus, Minus
+        Plus
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -84,7 +84,8 @@
     }
 </script>
 
-<div class="batch-container" ondragover={e => e.preventDefault()}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="batch-container" ondragover={e => e.preventDefault()} role="region" aria-label="File drop zone">
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
@@ -114,7 +115,7 @@
             </div>
 
             <div class="search-box">
-                <Search size={14} class="search-icon" />
+                <Search size={14} style="color: #71717a; margin-right: 8px;" />
                 <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} />
             </div>
 
@@ -149,8 +150,8 @@
     {#if showFilters}
         <div class="filter-bar">
             <div class="filter-group">
-                <label>{i18n.t.batch.filter_type}</label>
-                <select bind:value={batchManager.filterExtension}>
+                <label for="ext-filter">{i18n.t.batch.filter_type}</label>
+                <select id="ext-filter" bind:value={batchManager.filterExtension}>
                     <option value="all">All</option>
                     <option value="pdf">PDF</option>
                     <option value="docx">DOCX</option>
@@ -158,8 +159,8 @@
                 </select>
             </div>
             <div class="filter-group">
-                <label>{i18n.t.batch.filter_status}</label>
-                <select bind:value={batchManager.filterStatus}>
+                <label for="status-filter">{i18n.t.batch.filter_status}</label>
+                <select id="status-filter" bind:value={batchManager.filterStatus}>
                     <option value="all">All</option>
                     <option value="queued">Queued</option>
                     <option value="review">Review</option>
@@ -168,8 +169,8 @@
                 </select>
             </div>
             <div class="filter-group">
-                <label>{i18n.t.batch.filter_size}</label>
-                <input type="number" bind:value={batchManager.filterMinSize} min="0" />
+                <label for="size-filter">{i18n.t.batch.filter_size}</label>
+                <input id="size-filter" type="number" bind:value={batchManager.filterMinSize} min="0" />
             </div>
         </div>
     {/if}
@@ -238,9 +239,18 @@
                     <div class="detail-section">
                         <h4>{i18n.t.batch.edit_metadata}</h4>
                         <div class="edit-fields">
-                            <label>{i18n.t.batch.title} <input type="text" bind:value={selectedItem.suggestedTitle} /></label>
-                            <label>{i18n.t.batch.author} <input type="text" bind:value={selectedItem.suggestedAuthor} /></label>
-                            <label>{i18n.t.batch.year} <input type="text" bind:value={selectedItem.suggestedYear} /></label>
+                            <label>
+                                {i18n.t.batch.title} 
+                                <input type="text" bind:value={selectedItem.suggestedTitle} />
+                            </label>
+                            <label>
+                                {i18n.t.batch.author} 
+                                <input type="text" bind:value={selectedItem.suggestedAuthor} />
+                            </label>
+                            <label>
+                                {i18n.t.batch.year} 
+                                <input type="text" bind:value={selectedItem.suggestedYear} />
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -268,7 +278,6 @@
     .dropdown-menu button:hover { background: #27272a; color: white; }
 
     .search-box { display: flex; align-items: center; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 0 10px; flex: 1; min-width: 250px; }
-    .search-icon { color: #71717a; margin-right: 8px; }
     .search-box input { border: none; background: transparent; color: white; padding: 4px 0; font-size: 0.8125rem; width: 100%; }
     .search-box input:focus { outline: none; }
 
@@ -304,7 +313,7 @@
     .detail-header { padding: 12px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
     .detail-content { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
     .path-preview, .text-preview { background: #020617; border: 1px solid #1e293b; padding: 10px; font-family: monospace; font-size: 0.75rem; border-radius: 6px; color: #94a3b8; }
-    .edit-fields label { display: block; font-size: 0.75rem; margin-bottom: 8px; color: #a1a1aa; }
+    .edit-fields label { display: block; font-size: 0.75rem; margin-bottom: 12px; color: #a1a1aa; }
     .edit-fields input { width: 100%; margin-top: 4px; padding: 6px 10px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: white; font-size: 0.8125rem; }
     
     .loader-spin { animation: spin 1s linear infinite; }
