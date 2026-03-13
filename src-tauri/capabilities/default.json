@@ -9,13 +9,24 @@
     "http:default",
     "dialog:default",
     "store:default",
-    "fs:allow-read-file",
-    "fs:allow-write-file",
-    "fs:allow-exists",
-    "fs:allow-rename",
-    "fs:allow-create-dir",
     {
-      "identifier": "fs:scope",
+      "identifier": "fs:allow-read-file",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-create-dir",
       "allow": [{ "path": "**" }]
     }
   ]
