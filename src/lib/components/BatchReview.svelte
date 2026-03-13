@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { batchManager } from '../batch/store';
+    import { batchManager } from '../batch/store.svelte';
     import { open } from '@tauri-apps/plugin-dialog';
     import { 
         Play, Trash2, Check, X, FileSearch, 
@@ -217,6 +217,7 @@
     .dense-table td { padding: 6px 12px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .dense-table tr:hover { background: #f8fafc; }
     .dense-table tr.selected { background: #eff6ff; }
+    .dense-table tr.status-done { background: #f0fdf4; }
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 4px 8px; border-radius: 4px; font-size: 0.875rem; }
     .status-badge { padding: 3px 8px; border-radius: 20px; background: #f1f5f9; font-size: 0.75rem; font-weight: 600; color: #64748b; }
     .status-active { background: #dbeafe; color: #1e40af; }
