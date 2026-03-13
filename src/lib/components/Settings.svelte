@@ -8,14 +8,19 @@
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive
     } from 'lucide-svelte';
-    import { open } from '@tauri-apps/plugin-dialog';
-    import { stat, remove, readDir } from '@tauri-apps/plugin-fs';
+    import { open, save } from '@tauri-apps/plugin-dialog';
+    import { stat, remove } from '@tauri-apps/plugin-fs';
+    import { invoke } from '@tauri-apps/api/core';
+    import { listen } from '@tauri-apps/api/event';
 
     interface LocalModel {
+        id: string;
         name: string;
         path: string;
         size?: string;
         isDownloaded: boolean;
+        downloadUrl?: string;
+        progress?: number;
     }
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
@@ -36,8 +41,20 @@
 
     // mistral.rs / Local Model Management
     let localModels = $state<LocalModel[]>([
-        { name: 'Qwen 3.5 0.8B (Q4_K_M)', path: '', isDownloaded: false },
-        { name: 'Ministral 3B (Q4_K_M)', path: '', isDownloaded: false }
+        { 
+            id: 'qwen-0.8b',
+            name: 'Qwen 3.5 0.8B (Q4_K_M)', 
+            path: '', 
+            isDownloaded: false,
+            downloadUrl: 'https://huggingface.co/bartowski/Qwen_Qwen3.5-0.8B-GGUF/resolve/main/Qwen_Qwen3.5-0.8B-Q4_K_M.gguf'
+        },
+        { 
+            id: 'ministral-3b',
+            name: 'Ministral 3B (Q4_K_M)', 
+            path: '', 
+            isDownloaded: false,
+            downloadUrl: 'https://huggingface.co/bartowski/Ministral-3b-instruct-GGUF/resolve/main/Ministral-3b-instruct-Q4_K_M.gguf'
+        }
     ]);
 
     let loadingModels = $state(false);
@@ -61,10 +78,32 @@
         llmPrompt = await getSetting('llmPrompt', 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }.');
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
+        
         const savedLocalModels = await getSetting('localModels');
-        if (savedLocalModels) localModels = savedLocalModels as LocalModel[];
+        if (savedLocalModels) {
+            // Merge defaults with saved to keep URLs up to date
+            const saved = savedLocalModels as LocalModel[];
+            localModels = localModels.map(def => {
+                const s = saved.find(m => m.id === def.id);
+                return s ? { ...def, ...s } : def;
+            });
+            // Add any custom added models from saved
+            saved.forEach(s => {
+                if (!localModels.find(m => m.id === s.id)) localModels.push(s);
+            });
+        }
         
         await updateLocalModelSizes();
+
+        const unlisten = await listen('download-progress', (event: any) => {
+            const { id, received, total } = event.payload;
+            const model = localModels.find(m => m.id === id);
+            if (model) {
+                model.progress = Math.round((received / total) * 100);
+            }
+        });
+
+        return () => unlisten();
     });
 
     async function updateLocalModelSizes() {
@@ -109,7 +148,7 @@
         });
         if (typeof selected === 'string') {
             const name = selected.split(/[\\/]/).pop() || 'Unknown Model';
-            localModels.push({ name, path: selected, isDownloaded: true });
+            localModels.push({ id: crypto.randomUUID(), name, path: selected, isDownloaded: true });
             await updateLocalModelSizes();
         }
     }
@@ -122,8 +161,37 @@
         localModels.splice(index, 1);
     }
 
+    async function downloadLocalModel(index: number) {
+        const model = localModels[index];
+        if (!model.downloadUrl) return;
+
+        const dest = await save({
+            defaultPath: model.name + '.gguf',
+            filters: [{ name: 'GGUF', extensions: ['gguf'] }]
+        });
+
+        if (dest) {
+            try {
+                model.progress = 0;
+                await invoke('download_file', { 
+                    id: model.id,
+                    url: model.downloadUrl,
+                    path: dest
+                });
+                model.path = dest;
+                model.isDownloaded = true;
+                model.progress = undefined;
+                await updateLocalModelSizes();
+                await handleSave();
+            } catch (error: any) {
+                alert(`Download failed: ${error}`);
+                model.progress = undefined;
+            }
+        }
+    }
+
     async function handleRefreshModels() {
-        if (!selectedProvider.apiKey && selectedProvider.id !== 'ollama') {
+        if (!selectedProvider.apiKey && !['ollama', 'mistralrs'].includes(selectedProvider.id)) {
             alert(i18n.t.settings.key_required);
             return;
         }
@@ -198,7 +266,7 @@
                 <select id="active-prov-select" bind:value={activeProviderId} class="styled-select">
                     {#each providers as provider}
                         <option value={provider.id}>{provider.name}</option>
-                    {/each}
+                    {#/each}
                 </select>
             </div>
 
@@ -220,8 +288,8 @@
 
             <div class="section-card">
                 <div class="checkbox-group">
-                    <label for="save-txt-check"><Save size={16} /> {i18n.t.settings.save_txt}</label>
                     <input id="save-txt-check" type="checkbox" bind:checked={saveTxt} />
+                    <label for="save-txt-check"><Save size={16} /> {i18n.t.settings.save_txt}</label>
                 </div>
             </div>
 
@@ -242,8 +310,8 @@
 
             <div class="section-card">
                 <div class="checkbox-group">
-                    <label for="author-sort-check"><Edit size={16} /> {i18n.t.settings.author_sort}</label>
                     <input id="author-sort-check" type="checkbox" bind:checked={authorSortEnabled} />
+                    <label for="author-sort-check"><Edit size={16} /> {i18n.t.settings.author_sort}</label>
                 </div>
             </div>
 
@@ -253,8 +321,8 @@
 
             <div class="section-card">
                 <div class="checkbox-group">
-                    <label for="ocr-check"><Scan size={16} /> {i18n.t.settings.ocr_enabled}</label>
                     <input id="ocr-check" type="checkbox" bind:checked={ocrEnabled} />
+                    <label for="ocr-check"><Scan size={16} /> {i18n.t.settings.ocr_enabled}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.ocr_hint}</p>
             </div>
@@ -286,21 +354,29 @@
                             <div class="local-model-row">
                                 <div class="model-info">
                                     <strong>{model.name}</strong>
-                                    <span class="model-path">{model.path || 'Not linked'}</span>
+                                    <span class="model-path">{model.path || 'Not downloaded yet'}</span>
+                                    {#if model.progress !== undefined}
+                                        <div class="progress-container">
+                                            <div class="progress-bar" style="width: {model.progress}%"></div>
+                                            <span class="progress-text">{model.progress}%</span>
+                                        </div>
+                                    {/if}
                                 </div>
                                 <div class="model-status">
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
-                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)}><Trash2 size={14} /></button>
-                                    {:else}
-                                        <button class="action-btn small primary"><Download size={14} /> Download</button>
+                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title="Delete file"><Trash2 size={14} /></button>
+                                    {:else if model.progress === undefined}
+                                        <button class="action-btn small primary" onclick={() => downloadLocalModel(i)}>
+                                            <Download size={14} /> Download
+                                        </button>
                                         <button class="icon-btn" onclick={() => localModels.splice(i, 1)}><XCircle size={14} /></button>
                                     {/if}
                                 </div>
                             </div>
                         {/each}
                     </div>
-                    <p class="hint">Models are run locally using mistral.rs (Rust/Candle). No API keys required.</p>
+                    <p class="hint">Models run locally via mistral.rs. No external keys required once downloaded.</p>
                 </div>
             {:else}
                 <div class="form-group">
@@ -373,6 +449,7 @@
     .provider-btn { padding: 8px 20px; text-align: left; border: none; background: transparent; cursor: pointer; font-size: 0.875rem; color: #a1a1aa; transition: all 0.2s; display: flex; align-items: center; justify-content: space-between; }
     .provider-btn:hover { background: #27272a; color: white; }
     .provider-btn.active { background: #27272a; color: white; font-weight: 600; border-left: 3px solid #3b82f6; }
+    
     .content { flex: 1; padding: 32px 48px; overflow-y: auto; }
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
@@ -380,7 +457,7 @@
     .save-btn { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 0.875rem; }
     .section-card { background: #18181b; border: 1px solid #27272a; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
     .form-group { margin-bottom: 20px; max-width: 600px; }
-    .checkbox-group { display: flex; align-items: center; gap: 12px; }
+    .checkbox-group { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
     label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; font-weight: 600; margin-bottom: 10px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.02em; }
     input[type="text"], input[type="password"], input[type="number"], .styled-select, .styled-textarea { width: 100%; padding: 8px 12px; border: 1px solid #27272a; border-radius: 6px; font-size: 0.875rem; background: #09090b; color: white; }
     .styled-textarea { font-family: inherit; resize: vertical; }
@@ -397,12 +474,17 @@
     
     .model-manager-list { display: flex; flex-direction: column; gap: 10px; }
     .local-model-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; }
-    .model-info { display: flex; flex-direction: column; gap: 4px; }
-    .model-path { font-size: 0.7rem; color: #71717a; font-family: monospace; }
+    .model-info { display: flex; flex-direction: column; gap: 4px; flex: 1; margin-right: 20px; }
+    .model-path { font-size: 0.7rem; color: #71717a; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
     .model-status { display: flex; align-items: center; gap: 12px; }
     .size-badge { font-size: 0.75rem; background: #27272a; padding: 2px 6px; border-radius: 4px; color: #a1a1aa; }
     
+    .progress-container { margin-top: 8px; height: 16px; background: #18181b; border-radius: 8px; position: relative; overflow: hidden; border: 1px solid #27272a; }
+    .progress-bar { height: 100%; background: #3b82f6; transition: width 0.3s; }
+    .progress-text { position: absolute; top: 0; left: 0; width: 100%; text-align: center; font-size: 0.65rem; line-height: 16px; color: white; font-weight: 700; }
+
     .models-list-view { background: #09090b; border: 1px solid #27272a; border-radius: 8px; padding: 12px; max-height: 250px; overflow: auto; }
+    .models-list-view ul { list-style: none; padding: 0; margin: 0; }
     .models-list-view li { padding: 6px 10px; font-size: 0.8125rem; border-bottom: 1px solid #27272a; color: #d4d4d8; display: flex; justify-content: space-between; align-items: center; }
     .models-list-view li.active-item-row { color: white; background: #27272a; border-radius: 4px; }
     
