@@ -13,6 +13,10 @@
     "fs:read-all",
     "fs:write-all",
     {
+      "identifier": "http:allow-fetch",
+      "allow": [{ "url": "**" }]
+    },
+    {
       "identifier": "fs:scope",
       "allow": [{ "path": "$HOME/**" }, { "path": "/" }, { "path": "/**" }]
     }

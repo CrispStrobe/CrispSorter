@@ -49,17 +49,23 @@ export class LLMClient {
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
+        // Ollama doesn't need a key
         if (!key && providerId !== 'ollama') throw new Error(`API key for ${providerId} is required.`);
         if (!base) throw new Error(`Base URL for ${providerId} is not configured.`);
 
         try {
             console.log(`[LLMClient] Fetching models from ${base}/models`);
+            
+            const headers: Record<string, string> = {
+                'Content-Type': 'application/json'
+            };
+            if (key) {
+                headers['Authorization'] = `Bearer ${key}`;
+            }
+
             const response = await fetch(`${base}/models`, {
                 method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${key}`,
-                    'Content-Type': 'application/json'
-                },
+                headers: headers,
                 connectTimeout: 10000
             });
 
@@ -69,7 +75,7 @@ export class LLMClient {
             }
 
             const data = await response.json();
-            console.log(`[LLMClient] Models received:`, data);
+            console.log(`[LLMClient] Models received for ${providerId}:`, data);
             
             if (providerId === 'ollama') {
                 return data.data ? data.data.map((m: any) => m.id) : data.models?.map((m: any) => m.name) || [];
@@ -95,12 +101,16 @@ export class LLMClient {
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
         try {
+            const headers: Record<string, string> = {
+                'Content-Type': 'application/json'
+            };
+            if (key) {
+                headers['Authorization'] = `Bearer ${key}`;
+            }
+
             const response = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${key}`,
-                    'Content-Type': 'application/json'
-                },
+                headers: headers,
                 body: JSON.stringify({
                     model: modelId,
                     messages: [{ role: 'user', content: prompt }],

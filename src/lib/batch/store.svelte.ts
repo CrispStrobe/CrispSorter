@@ -2,7 +2,7 @@ import { type BatchItem, type BatchStatus, type BatchSession } from '../types';
 import { extractText } from '../extractors'; 
 import { llmClient } from '../llm/client';
 import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
-import { readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { readFile, writeFile, mkdir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 
@@ -47,40 +47,29 @@ export class BatchManager {
         }
         this.isProcessing = true;
 
-        console.log("[BatchManager] Loading providers for LLM analysis");
         const providers = await getSetting('providers', []);
         const activeProvider = (providers as any[]).find(p => p.id === 'ollama') || providers[0];
         const modelId = activeProvider?.models?.[0];
         
-        console.log(`[BatchManager] Active Provider: ${activeProvider?.name || 'None'}, Model: ${modelId || 'None'}`);
+        const globalExportPath = await getSetting('exportPath', '');
+        const globalSaveTxt = await getSetting('saveTxt', true);
 
         for (const item of this.items) {
-            if (item.status !== 'queued' && item.status !== 'error') {
-                console.log(`[BatchManager] Skipping ${item.originalName} (Status: ${item.status})`);
-                continue;
-            }
+            if (item.status !== 'queued' && item.status !== 'error') continue;
             
-            console.log(`[BatchManager] >>> Processing ${item.originalName}`);
             try {
                 // 1. Extraction
                 item.status = 'extracting';
-                console.log(`[BatchManager] [${item.originalName}] Step 1: Reading file from disk...`);
                 const fileData = await readFile(item.originalPath);
-                console.log(`[BatchManager] [${item.originalName}] Step 1: File read success, length: ${fileData.length} bytes`);
-                
-                console.log(`[BatchManager] [${item.originalName}] Step 2: Calling extractText...`);
                 const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
                 item.extractedText = extraction.text;
-                console.log(`[BatchManager] [${item.originalName}] Step 2: Extraction success, text length: ${item.extractedText.length}`);
 
                 // 2. LLM Analysis
                 if (this.isMetadataExtractionEnabled && activeProvider && modelId) {
                     item.status = 'analyzing';
-                    console.log(`[BatchManager] [${item.originalName}] Step 3: Sending to LLM (${activeProvider.id})...`);
                     const prompt = `Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "..." }. Use the first few pages of text: ${item.extractedText.substring(0, 4000)}`;
                     
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
-                    console.log(`[BatchManager] [${item.originalName}] Step 3: LLM Response received: ${response.substring(0, 100)}...`);
                     
                     try {
                         const metadata = JSON.parse(response.replace(/```json|```/g, '').trim());
@@ -90,64 +79,70 @@ export class BatchManager {
                         
                         const safeTitle = (item.suggestedTitle as string).replace(/[\\/:*?"<>|]/g, '');
                         const safeAuthor = (item.suggestedAuthor as string).replace(/[\\/:*?"<>|]/g, '');
-                        const lastSlash = item.originalPath.lastIndexOf('/');
-                        const baseDir = lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.';
                         
+                        const baseDir = globalExportPath || item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
                         item.targetPath = `${baseDir}/Sorted/${safeAuthor}/${item.suggestedYear ? item.suggestedYear + ' - ' : ''}${safeTitle}.${item.extension}`;
-                        console.log(`[BatchManager] [${item.originalName}] Step 4: Target Path generated: ${item.targetPath}`);
+                        
                         item.status = 'review';
                     } catch (e) {
-                        console.error(`[BatchManager] [${item.originalName}] Metadata Parse Error:`, e);
                         item.status = 'error';
                         item.errorMessage = 'Failed to parse LLM JSON';
                     }
                 } else {
-                    console.log(`[BatchManager] [${item.originalName}] AI Sort disabled or no provider, skipping to review`);
+                    // No LLM mode - just set default target path if export path exists
+                    const baseDir = globalExportPath || item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
+                    item.targetPath = `${baseDir}/Extracted/${item.originalName}.txt`;
                     item.status = 'review';
                 }
+
+                // Auto-save TXT if enabled and we are not in AI mode (or even in AI mode if desired)
+                if (globalSaveTxt && item.extractedText) {
+                    // We'll do this during execution to be cleaner, but could do here too.
+                }
+
             } catch (error: any) {
-                console.error(`[BatchManager] [${item.originalName}] CRITICAL ERROR:`, error);
                 item.status = 'error';
                 item.errorMessage = error.message || String(error);
             }
             await this.saveCurrentSession();
         }
         this.isProcessing = false;
-        console.log("[BatchManager] Processing loop finished");
         await this.saveCurrentSession();
     }
 
     async executeBatch() {
-        console.log("[BatchManager] Executing move batch...");
         const toMove = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
-        if (toMove.length === 0) {
-            console.warn("[BatchManager] No items accepted for moving");
-            return;
-        }
+        if (toMove.length === 0) return;
 
+        const globalSaveTxt = await getSetting('saveTxt', true);
         toMove.forEach(i => i.status = 'moving');
-        const moves = toMove.map(i => ({ source: i.originalPath, destination: i.targetPath! }));
-        console.log(`[BatchManager] Requesting Rust to move ${moves.length} files`);
 
-        try {
-            const results: string[] = await invoke('move_files', { moves });
-            console.log("[BatchManager] Rust move results:", results);
-            
-            results.forEach((res, index) => {
-                const item = toMove[index];
-                if (res.startsWith('Success:')) {
+        for (const item of toMove) {
+            try {
+                // 1. Save TXT if enabled
+                if (globalSaveTxt && item.extractedText) {
+                    const txtPath = item.targetPath!.replace(/\.[^.]+$/, '.txt');
+                    const parentDir = txtPath.substring(0, txtPath.lastIndexOf('/'));
+                    try { await mkdir(parentDir, { recursive: true }); } catch(e) {}
+                    const encoder = new TextEncoder();
+                    await writeFile(txtPath, encoder.encode(item.extractedText));
+                }
+
+                // 2. Perform Move/Rename via Rust
+                const results: string[] = await invoke('move_files', { 
+                    moves: [{ source: item.originalPath, destination: item.targetPath! }] 
+                });
+
+                if (results[0].startsWith('Success:')) {
                     item.status = 'done';
                 } else {
                     item.status = 'error';
-                    item.errorMessage = res;
+                    item.errorMessage = results[0];
                 }
-            });
-        } catch (error: any) {
-            console.error("[BatchManager] Rust move execution failed:", error);
-            toMove.forEach(i => {
-                i.status = 'error';
-                i.errorMessage = error.message;
-            });
+            } catch (error: any) {
+                item.status = 'error';
+                item.errorMessage = error.message;
+            }
         }
         await this.saveCurrentSession();
     }
@@ -168,71 +163,55 @@ export class BatchManager {
     }
 
     async loadSession(id: string) {
-        console.log(`[BatchManager] Loading session: ${id}`);
         const sessions = await getFromStore('sessions', {}) as Record<string, BatchSession>;
         const session = sessions[id];
         if (session) {
             this.currentSessionId = session.id;
             this.items = session.items;
-            console.log(`[BatchManager] Session loaded with ${this.items.length} items`);
         }
     }
 
     async resumeLastSession() {
         const sessions = await getFromStore('sessions', {}) as Record<string, BatchSession>;
         const lastSession = Object.values(sessions).sort((a, b) => b.startTime - a.startTime)[0];
-        if (lastSession) {
-            console.log(`[BatchManager] Resuming last session: ${lastSession.id}`);
-            await this.loadSession(lastSession.id);
-        } else {
-            console.log("[BatchManager] No previous session found, creating new");
-            await this.createNewSession();
-        }
+        if (lastSession) await this.loadSession(lastSession.id);
+        else await this.createNewSession();
     }
 
     async exportBatch() {
-        console.log("[BatchManager] Exporting batch...");
         const sessionData = JSON.stringify({
             items: $state.snapshot(this.items),
             isMetadataExtractionEnabled: this.isMetadataExtractionEnabled
         }, null, 2);
-
         const filePath = await save({
             filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }],
             defaultPath: `batch_export_${new Date().toISOString().split('T')[0]}.json`
         });
-
         if (filePath) {
             const encoder = new TextEncoder();
             await writeFile(filePath, encoder.encode(sessionData));
-            console.log(`[BatchManager] Exported to ${filePath}`);
             alert('Batch exported successfully!');
         }
     }
 
     async importBatch() {
-        console.log("[BatchManager] Importing batch...");
         const filePath = await open({
             multiple: false,
             filters: [{ name: 'CrispSorter Batch', extensions: ['json'] }]
         });
-
         if (typeof filePath === 'string') {
             const fileData = await readFile(filePath);
             const decoder = new TextDecoder();
             const data = JSON.parse(decoder.decode(fileData));
-            
             await this.createNewSession();
             this.items = data.items || [];
             this.isMetadataExtractionEnabled = data.isMetadataExtractionEnabled ?? true;
             await this.saveCurrentSession();
-            console.log(`[BatchManager] Imported ${this.items.length} items from ${filePath}`);
             alert('Batch imported successfully!');
         }
     }
 
     clear() {
-        console.log("[BatchManager] Clearing all items");
         this.items = [];
         this.saveCurrentSession();
     }
