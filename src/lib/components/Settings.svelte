@@ -7,7 +7,7 @@
         RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
-        Rocket
+        Rocket, FileText
     } from 'lucide-svelte';
     import { open, save } from '@tauri-apps/plugin-dialog';
     import { stat, remove } from '@tauri-apps/plugin-fs';

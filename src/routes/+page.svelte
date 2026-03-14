@@ -7,9 +7,10 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings'
+    let navCollapsed = $state(false);
 
     onMount(async () => {
         // Load saved language
@@ -29,33 +30,37 @@
 </script>
 
 <div class="app-shell">
-    <nav class="main-nav">
+    <nav class="main-nav" class:collapsed={navCollapsed}>
         <div class="nav-top">
             <div class="logo-area">
                 <div class="logo-icon">C</div>
-                <span class="logo-text">CrispSorter</span>
+                {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
             
-            <button class="nav-item" class:active={activeTab === 'batch'} onclick={() => activeTab = 'batch'}>
+            <button class="nav-item" class:active={activeTab === 'batch'} onclick={() => activeTab = 'batch'} title={i18n.t.nav.batch}>
                 <ListChecks size={20} />
-                <span>{i18n.t.nav.batch}</span>
+                {#if !navCollapsed}<span>{i18n.t.nav.batch}</span>{/if}
             </button>
 
-            <button class="nav-item" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>
+            <button class="nav-item" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'} title={i18n.t.nav.chat}>
                 <MessageSquare size={20} />
-                <span>{i18n.t.nav.chat}</span>
+                {#if !navCollapsed}<span>{i18n.t.nav.chat}</span>{/if}
             </button>
             
-            <button class="nav-item" class:active={activeTab === 'history'} onclick={() => activeTab = 'history'}>
+            <button class="nav-item" class:active={activeTab === 'history'} onclick={() => activeTab = 'history'} title={i18n.t.nav.history}>
                 <Database size={20} />
-                <span>{i18n.t.nav.history}</span>
+                {#if !navCollapsed}<span>{i18n.t.nav.history}</span>{/if}
             </button>
         </div>
 
         <div class="nav-bottom">
-            <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
+            <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'} title={i18n.t.nav.settings}>
                 <SettingsIcon size={20} />
-                <span>{i18n.t.nav.settings}</span>
+                {#if !navCollapsed}<span>{i18n.t.nav.settings}</span>{/if}
+            </button>
+
+            <button class="collapse-toggle" onclick={() => navCollapsed = !navCollapsed}>
+                {#if navCollapsed}<ChevronRight size={16} />{:else}<ChevronLeft size={16} />{/if}
             </button>
         </div>
     </nav>
@@ -83,8 +88,7 @@
     }
 
     .main-nav {
-        width: fit-content; /* Fit to labels as requested */
-        min-width: 180px;
+        width: 200px;
         background: #18181b;
         color: #a1a1aa;
         display: flex;
@@ -93,13 +97,19 @@
         padding: 20px 0;
         border-right: 1px solid #27272a;
         flex-shrink: 0;
+        transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        overflow: hidden;
+    }
+
+    .main-nav.collapsed {
+        width: 64px;
     }
 
     .logo-area {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 0 20px 30px;
+        padding: 0 16px 30px;
     }
 
     .logo-icon {
@@ -128,7 +138,7 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 12px 20px;
+        padding: 12px 22px;
         border: none;
         background: transparent;
         color: #a1a1aa;
@@ -150,6 +160,20 @@
         color: white;
         border-right: 3px solid #3b82f6;
     }
+
+    .collapse-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        margin-top: 10px;
+        border: none;
+        background: transparent;
+        color: #71717a;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+    .collapse-toggle:hover { color: white; }
 
     .main-content {
         flex: 1;
