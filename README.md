@@ -78,5 +78,32 @@ A built-in benchmark (tokens/sec per provider for a standard prompt) is planned 
 ```bash
 npm install
 npm run tauri dev
-npm run tauri build   # produces .dmg / .exe / .deb
 ```
+
+### Building for macOS (.dmg)
+```bash
+npm run tauri build
+# Artifact: src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg
+```
+
+### Building for Windows (.exe) on macOS
+To cross-compile for Windows from a macOS host, you'll need the MSVC target and `cargo-xwin`.
+
+1. **Install requirements:**
+   ```bash
+   rustup target add x86_64-pc-windows-msvc
+   cargo install cargo-xwin
+   ```
+2. **Build binary:**
+   ```bash
+   # Build the frontend first
+   npm run build
+   # Compile the Windows binary
+   cd src-tauri && cargo xwin build --release --target x86_64-pc-windows-msvc
+   # Artifact: src-tauri/target/x86_64-pc-windows-msvc/release/tauri-app.exe
+   ```
+   *Note: Full bundling (MSI/NSIS) is not supported directly on macOS via Tauri CLI without complex setup; the .exe is produced as a standalone binary.*
+
+#### Build Notes
+- **mistralrs**: The `metal` feature is only enabled for macOS targets.
+- **Sidecars**: Ensure appropriate architecture-specific binaries for `llama-server` are present in `src-tauri/bin/` if needed for bundling.

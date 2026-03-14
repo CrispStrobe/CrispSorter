@@ -32,6 +32,11 @@ tauri-plugin-shell = "2.3.5"
 tauri-plugin-process = "2.3.1"
 tokio = { version = "1.50.0", features = ["full"] }
 anyhow = "1.0.102"
-mistralrs = { version = "0.7.0", features = ["metal"] }
 pdf-extract = "0.10.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mistralrs = { version = "0.7.0", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+mistralrs = { version = "0.7.0" }
 
