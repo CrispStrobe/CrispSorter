@@ -125,6 +125,36 @@ async fn extract_pdf_native(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    scan_dir_recursive(Path::new(&folder_path), &extensions, &mut paths)
+        .map_err(|e| e.to_string())?;
+    paths.sort();
+    println!("[Rust] scan_folder: found {} files in {}", paths.len(), folder_path);
+    Ok(paths)
+}
+
+fn scan_dir_recursive(dir: &Path, extensions: &[String], paths: &mut Vec<String>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        // Skip hidden files/dirs (starting with '.')
+        if path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(false) {
+            continue;
+        }
+        if path.is_dir() {
+            scan_dir_recursive(&path, extensions, paths)?;
+        } else if let Some(ext) = path.extension() {
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            if extensions.iter().any(|e| e == &ext_lower) {
+                paths.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn move_files(moves: Vec<MoveRequest>) -> Result<Vec<String>, String> {
     let mut results = Vec::new();
     for req in moves {
@@ -291,8 +321,9 @@ pub fn run() {
             sidecar_process: Mutex::new(None)
         })
         .invoke_handler(tauri::generate_handler![
-            move_files, 
-            download_file, 
+            move_files,
+            scan_folder,
+            download_file,
             run_mistralrs_query,
             start_llamacpp_sidecar,
             stop_llamacpp_sidecar,

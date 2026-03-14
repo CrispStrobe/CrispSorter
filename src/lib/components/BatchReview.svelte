@@ -5,11 +5,13 @@
     import { DEFAULT_PROVIDERS, type LLMProvider } from '../llm/client';
     import { open } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
+    import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
-    import { 
-        Play, Trash2, Check, X, FileSearch, 
-        Loader2, Eye, Edit, Rocket, CheckSquare, 
-        Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp, 
+    import type { BatchItem } from '../types';
+    import {
+        Play, Trash2, Check, X, FileSearch, FolderOpen,
+        Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
+        Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
         RefreshCw, AlertCircle
     } from 'lucide-svelte';
@@ -32,6 +34,12 @@
     let reanalMaxChars = $state(5000);
     let reanalAuthorSort = $state(false);
     let reanalModels = $derived(reanalProviders.find(p => p.id === reanalProviderId)?.models ?? []);
+
+    // Duplicates panel
+    let showDuplicates = $state(false);
+    let duplicateGroups = $state<Array<{ size: number; items: BatchItem[] }>>([]);
+    let checkingDuplicates = $state(false);
+    let deepDupeCheck = $state(false);
 
     // Sorting state
     let sortColumn = $state<string>('file_name');
@@ -153,7 +161,7 @@
     async function handleAddFiles() {
         const selected = await open({
             multiple: true,
-            filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md'] }]
+            filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md', 'epub'] }]
         });
         if (Array.isArray(selected)) {
             selected.forEach(path => {
@@ -161,6 +169,27 @@
                 batchManager.addItem(path, name);
             });
         }
+    }
+
+    async function handleAddFolder() {
+        const selected = await open({ directory: true, multiple: false });
+        if (typeof selected === 'string') {
+            const paths = await invoke<string[]>('scan_folder', {
+                folderPath: selected,
+                extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+            });
+            paths.forEach(path => {
+                const name = path.split(/[\\/]/).pop() || '';
+                batchManager.addItem(path, name);
+            });
+        }
+    }
+
+    async function handleFindDuplicates() {
+        checkingDuplicates = true;
+        duplicateGroups = await batchManager.getDuplicateGroups(deepDupeCheck);
+        checkingDuplicates = false;
+        showDuplicates = true;
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
@@ -331,6 +360,9 @@
                 <button class="icon-btn-main primary" onclick={handleAddFiles} title={i18n.t.batch.add_files}>
                     <Plus size={18} />
                 </button>
+                <button class="icon-btn-main primary" onclick={handleAddFolder} title={i18n.t.batch.add_folder}>
+                    <FolderOpen size={18} />
+                </button>
                 <button class="icon-btn-main danger" onclick={() => batchManager.clear()} title={i18n.t.batch.clear_all}>
                     <Trash2 size={18} />
                 </button>
@@ -382,6 +414,11 @@
         </div>
 
         <div class="right-actions">
+            <button class="action-btn small" onclick={handleFindDuplicates} disabled={checkingDuplicates} title={i18n.t.batch.find_dupes}>
+                <Copy size={14} />
+                {#if checkingDuplicates}<span class="loader-anim"><Loader2 size={14} /></span>{/if}
+            </button>
+
             <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
                 <span class={batchManager.isProcessing ? "loader-anim" : ""}>
                     {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}
@@ -431,6 +468,38 @@
                 <label for="size-filter">{i18n.t.batch.filter_size}</label>
                 <input id="size-filter" type="number" bind:value={batchManager.filterMinSize} min="0" />
             </div>
+        </div>
+    {/if}
+
+    {#if showDuplicates}
+        <div class="dupes-panel">
+            <div class="dupes-header">
+                <span><Copy size={14} /> {i18n.t.batch.find_dupes} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <label class="dupe-deep-label">
+                        <input type="checkbox" bind:checked={deepDupeCheck} onchange={handleFindDuplicates} />
+                        {i18n.t.batch.dupe_deep}
+                    </label>
+                    <button class="close-btn-minimal" onclick={() => showDuplicates = false}>×</button>
+                </div>
+            </div>
+            {#if duplicateGroups.length === 0}
+                <div class="dupes-empty">{i18n.t.batch.dupe_none}</div>
+            {:else}
+                <div class="dupes-list">
+                    {#each duplicateGroups as group}
+                        <div class="dupe-group">
+                            <div class="dupe-size">{(group.size / 1024).toFixed(1)} KB</div>
+                            {#each group.items as item}
+                                <div class="dupe-row" class:selected={selectedIds.includes(item.id)}>
+                                    <span class="dupe-name" title={item.originalPath}>{item.originalName}</span>
+                                    <button class="action-btn small danger" onclick={() => batchManager.removeItems([item.id])}>×</button>
+                                </div>
+                            {/each}
+                        </div>
+                    {/each}
+                </div>
+            {/if}
         </div>
     {/if}
 
@@ -608,6 +677,17 @@
     .action-btn.rocket-btn { background: #8b5cf6; color: white; border-color: #8b5cf6; }
     .action-btn.danger:hover { background: #ef4444; color: white; border-color: #ef4444; }
     .small { padding: 4px 8px; font-size: 0.75rem; }
+
+    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 220px; display: flex; flex-direction: column; }
+    .dupes-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid #1e293b; font-size: 0.8125rem; font-weight: 600; color: #94a3b8; }
+    .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #52525b; }
+    .dupes-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+    .dupe-group { background: #020617; border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
+    .dupe-size { padding: 4px 10px; font-size: 0.65rem; font-weight: 700; color: #f59e0b; background: #1e293b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .dupe-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid #0f172a; }
+    .dupe-row.selected { background: #1e3a8a33; }
+    .dupe-name { font-size: 0.75rem; color: #cbd5e1; font-family: monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-deep-label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; cursor: pointer; }
 
     .main-split { display: flex; flex: 1; overflow: hidden; }
     .table-container { flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column; }

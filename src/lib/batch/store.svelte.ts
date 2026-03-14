@@ -400,7 +400,57 @@ export class BatchManager {
                 item.errorMessage = error.message;
             }
         }
+
+        // Remove successfully moved items from the list
+        const doneIds = new Set(toMove.filter(i => i.status === 'done').map(i => i.id));
+        if (doneIds.size > 0) {
+            this.items = this.items.filter(item => {
+                if (doneIds.has(item.id)) {
+                    this.processingPaths.delete(item.originalPath);
+                    return false;
+                }
+                return true;
+            });
+            console.log(`[BatchManager] Removed ${doneIds.size} done items from batch`);
+        }
         await this.saveCurrentSession();
+    }
+
+    async getDuplicateGroups(checkContent = false): Promise<Array<{ size: number; items: BatchItem[] }>> {
+        // Group by size, skip tiny files
+        const bySize = new Map<number, BatchItem[]>();
+        for (const item of this.items) {
+            if (item.size < 100) continue;
+            if (!bySize.has(item.size)) bySize.set(item.size, []);
+            bySize.get(item.size)!.push(item);
+        }
+
+        const sizeGroups = [...bySize.entries()]
+            .filter(([, items]) => items.length > 1)
+            .map(([size, items]) => ({ size, items }));
+
+        if (!checkContent) return sizeGroups;
+
+        // Content hash (SHA-256) — only for same-size candidates
+        const result: Array<{ size: number; items: BatchItem[] }> = [];
+        for (const group of sizeGroups) {
+            const hashMap = new Map<string, BatchItem[]>();
+            for (const item of group.items) {
+                try {
+                    const data = await readFile(item.originalPath);
+                    const hashBuf = await crypto.subtle.digest('SHA-256', data);
+                    const hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+                    if (!hashMap.has(hash)) hashMap.set(hash, []);
+                    hashMap.get(hash)!.push(item);
+                } catch (e) {
+                    console.warn(`[BatchManager] Could not hash ${item.originalName}:`, e);
+                }
+            }
+            for (const [, items] of hashMap) {
+                if (items.length > 1) result.push({ size: group.size, items });
+            }
+        }
+        return result;
     }
 
     async saveCurrentSession() {

@@ -71,7 +71,12 @@ export const translations = {
             reanalyze_model: 'Model',
             reanalyze_max_chars: 'Max chars',
             reanalyze_author_step: 'Author step',
-            reanalyze_run: 'Run'
+            reanalyze_run: 'Run',
+            add_folder: 'Add Folder',
+            find_dupes: 'Duplicates',
+            dupe_groups: 'groups',
+            dupe_none: 'No duplicates found.',
+            dupe_deep: 'Deep (content hash)'
         },
         history: {
             title: 'History',
@@ -192,7 +197,12 @@ export const translations = {
             reanalyze_model: 'Modell',
             reanalyze_max_chars: 'Max. Zeichen',
             reanalyze_author_step: 'Autor-Schritt',
-            reanalyze_run: 'Ausführen'
+            reanalyze_run: 'Ausführen',
+            add_folder: 'Ordner hinzufügen',
+            find_dupes: 'Duplikate',
+            dupe_groups: 'Gruppen',
+            dupe_none: 'Keine Duplikate gefunden.',
+            dupe_deep: 'Tief (Inhalt prüfen)'
         },
         history: {
             title: 'Verlauf',
