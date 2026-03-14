@@ -15,7 +15,17 @@ export const translations = {
             placeholder: 'Ask something about the documents...',
             send: 'Send',
             no_context: 'No documents selected.',
-            clear: 'Clear Chat'
+            clear: 'Clear Chat',
+            engine: 'Engine',
+            provider: 'Provider',
+            model: 'Model',
+            session_settings: 'Session Settings',
+            system_instructions: 'System Instructions',
+            context_limit: 'Context Limit',
+            temperature: 'Temperature',
+            filter_files: 'Filter files...',
+            docs: 'Docs',
+            history: 'History'
         },
         batch: {
             add_files: 'Add',
@@ -50,7 +60,13 @@ export const translations = {
             filter_type: 'Type',
             filter_size: 'Min KB',
             filter_status: 'Status',
-            columns: 'Columns'
+            columns: 'Columns',
+            reanalyze: 'Re-analyze',
+            reextract: 'Re-extract',
+            remove: 'Remove',
+            confirm: 'Confirm',
+            ignore: 'Ignore',
+            selected_count: '{count} selected'
         },
         history: {
             title: 'History',
@@ -115,7 +131,17 @@ export const translations = {
             placeholder: 'Fragen Sie etwas zu den Dokumenten...',
             send: 'Senden',
             no_context: 'Keine Dokumente ausgewählt.',
-            clear: 'Chat leeren'
+            clear: 'Chat leeren',
+            engine: 'Engine',
+            provider: 'Anbieter',
+            model: 'Modell',
+            session_settings: 'Sitzungs-Optionen',
+            system_instructions: 'System-Anweisung',
+            context_limit: 'Kontext-Limit',
+            temperature: 'Temperatur',
+            filter_files: 'Dateien filtern...',
+            docs: 'Dok.',
+            history: 'Verlauf'
         },
         batch: {
             add_files: 'Hinzufügen',
@@ -150,7 +176,13 @@ export const translations = {
             filter_type: 'Typ',
             filter_size: 'Min KB',
             filter_status: 'Status',
-            columns: 'Spalten'
+            columns: 'Spalten',
+            reanalyze: 'Neu analysieren',
+            reextract: 'Neu extrahieren',
+            remove: 'Entfernen',
+            confirm: 'Bestätigen',
+            ignore: 'Ignorieren',
+            selected_count: '{count} ausgewählt'
         },
         history: {
             title: 'Verlauf',

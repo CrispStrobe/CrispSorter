@@ -5,7 +5,8 @@
     import { i18n } from '../i18n.svelte';
     import { 
         Send, User, Bot, Trash2, FileText, 
-        ChevronRight, ChevronLeft, Cpu, Zap
+        ChevronRight, ChevronLeft, Cpu, Zap, Search, MessageSquare, Brain,
+        Loader2, Info, ChevronDown, ChevronUp
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
     import katex from 'katex';
@@ -22,14 +23,25 @@
     let activeProviderId = $state('ollama');
     let selectedModel = $state('');
     let localModels = $state<any[]>([]);
+    let llmContextLimit = $state(4096);
+    let llmTemperature = $state(0.7);
+    let systemInstruction = $state('You are a helpful AI assistant. Use the provided context to answer questions accurately.');
     
     // UI State
     let selectedIds = $state<string[]>([]);
     let sidebarCollapsed = $state(false);
+    let settingsCollapsed = $state(true);
     let chatElement = $state<any>();
     let chatHistorySize = $state(0);
+    let fileSearchTerm = $state('');
 
     // Derived Context Info
+    const filteredContextItems = $derived.by(() => {
+        if (!fileSearchTerm.trim()) return batchManager.items;
+        const term = fileSearchTerm.toLowerCase();
+        return batchManager.items.filter(i => i.originalName.toLowerCase().includes(term));
+    });
+
     const selectedItems = $derived(batchManager.items.filter(i => selectedIds.includes(i.id)));
     const docContextSize = $derived.by(() => {
         let total = 0;
@@ -85,6 +97,9 @@
         if (savedProviders) providers = savedProviders as LLMProvider[];
         activeProviderId = await getSetting('activeProviderId', 'ollama');
         localModels = await getSetting('localModels', []) as any[];
+        llmContextLimit = await getSetting('llmContextLimit', 4096);
+        llmTemperature = await getSetting('llmTemperature', 0.7);
+        systemInstruction = await getSetting('systemInstruction', 'You are a helpful AI assistant. Use the provided context to answer questions accurately.');
 
         const currentProv = providers.find(p => p.id === activeProviderId);
         if (currentProv) {
@@ -119,15 +134,19 @@
                 return signals.onResponse({ error: "No engine selected." });
             }
 
-            let contextPrompt = "";
+            let contextPrompt = systemInstruction + "\n\n";
             const selectedItems = batchManager.items.filter(i => selectedIds.includes(i.id));
             if (selectedItems.length > 0) {
-                contextPrompt = "Use these contexts to answer:\n\n";
+                contextPrompt += "Use the document contexts below to answer correctly.\n\n";
+                // Evenly distribute context window across selected items
+                const perDocLimit = Math.floor(llmContextLimit / selectedItems.length);
+                const halfLimit = Math.floor(perDocLimit / 2);
+
                 selectedItems.forEach(item => {
                     if (item.extractedText) {
                         let text = item.extractedText;
-                        if (text.length > 3000) {
-                            text = text.substring(0, 1500) + "\n... [TRUNCATED] ...\n" + text.substring(text.length - 1500);
+                        if (text.length > perDocLimit) {
+                            text = text.substring(0, halfLimit) + "\n... [TRUNCATED] ...\n" + text.substring(text.length - halfLimit);
                         }
                         contextPrompt += `--- DOC: ${item.originalName} ---\n${text}\n\n`;
                     }
@@ -135,7 +154,8 @@
                 contextPrompt += "User Question: ";
             }
 
-            const responseText = await llmClient.query(activeProviderId, selectedModel, contextPrompt + userMsg, activeProvider.apiKey);
+            const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
+            const responseText = await llmClient.query(activeProviderId, selectedModel, contextPrompt + userMsg, activeProv.apiKey, llmTemperature);
             
             // Normalize math for Remarkable (Deep Chat)
             let fixedText = responseText
@@ -173,29 +193,56 @@
         </button>
 
         {#if !sidebarCollapsed}
+            <!-- Collapsible Settings Section -->
             <div class="sidebar-section">
-                <div class="sidebar-header"><h3>Engine</h3></div>
-                <div class="engine-selectors">
-                    <div class="select-group">
-                        <label for="chat-prov"><Zap size={12} /> Provider</label>
-                        <select id="chat-prov" bind:value={activeProviderId} class="styled-select chat-select">
-                            {#each providers as provider}<option value={provider.id}>{provider.name}</option>{/each}
-                        </select>
+                <button class="section-toggle-btn" onclick={() => settingsCollapsed = !settingsCollapsed}>
+                    <div class="sidebar-header">
+                        <h3>{i18n.t.chat.session_settings}</h3>
+                        {#if settingsCollapsed}<ChevronDown size={14} />{:else}<ChevronUp size={14} />{/if}
                     </div>
-                    <div class="select-group">
-                        <label for="chat-model"><Cpu size={12} /> Model</label>
-                        <select id="chat-model" bind:value={selectedModel} class="styled-select chat-select">
-                            <option value="">-- Select --</option>
-                            {#each availableModels as model}<option value={model}>{model.split(/[\\/]/).pop()}</option>{/each}
-                        </select>
+                </button>
+
+                {#if !settingsCollapsed}
+                    <div class="engine-selectors">
+                        <div class="select-group">
+                            <label for="chat-prov"><Zap size={12} /> {i18n.t.chat.provider}</label>
+                            <select id="chat-prov" bind:value={activeProviderId} class="styled-select chat-select">
+                                {#each providers as provider}<option value={provider.id}>{provider.name}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="select-group">
+                            <label for="chat-model"><Cpu size={12} /> {i18n.t.chat.model}</label>
+                            <select id="chat-model" bind:value={selectedModel} class="styled-select chat-select">
+                                <option value="">-- {i18n.t.settings.select_model} --</option>
+                                {#each availableModels as model}<option value={model}>{model.split(/[\\/]/).pop()}</option>{/each}
+                            </select>
+                        </div>
+                        <div class="select-group">
+                            <label for="sys-instr"><MessageSquare size={12} /> {i18n.t.chat.system_instructions}</label>
+                            <textarea id="sys-instr" bind:value={systemInstruction} class="chat-area" onchange={() => saveSetting('systemInstruction', systemInstruction)} placeholder="Persona..."></textarea>
+                        </div>
+                        <div class="select-group">
+                            <label for="ctx-lim"><Brain size={12} /> {i18n.t.chat.context_limit} ({llmContextLimit})</label>
+                            <input id="ctx-lim" type="number" bind:value={llmContextLimit} min="1024" step="1024" class="chat-input" onchange={() => saveSetting('llmContextLimit', llmContextLimit)} />
+                        </div>
+                        <div class="select-group">
+                            <label for="temp-slider"><Zap size={12} /> {i18n.t.chat.temperature} ({llmTemperature.toFixed(1)})</label>
+                            <input id="temp-slider" type="range" bind:value={llmTemperature} min="0" max="1.5" step="0.1" class="styled-range" onchange={() => saveSetting('llmTemperature', llmTemperature)} />
+                        </div>
                     </div>
-                </div>
+                {/if}
             </div>
 
             <div class="sidebar-section scrollable">
-                <div class="sidebar-header"><h3>{i18n.t.chat.context}</h3></div>
+                <div class="sidebar-header">
+                    <h3>{i18n.t.chat.context}</h3>
+                    <div class="sidebar-search-box">
+                        <Search size={14} />
+                        <input type="text" bind:value={fileSearchTerm} placeholder={i18n.t.chat.filter_files} class="sidebar-search-input" />
+                    </div>
+                </div>
                 <div class="context-list">
-                    {#each batchManager.items as item}
+                    {#each filteredContextItems as item}
                         <button class="context-item" class:selected={selectedIds.includes(item.id)} onclick={() => toggleContext(item.id)}>
                             <FileText size={14} />
                             <span class="file-name">{item.originalName}</span>
@@ -235,12 +282,20 @@
     .chat-sidebar.collapsed .sidebar-toggle { right: -45px; top: 12px; }
     .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; width: 260px; overflow: hidden; }
     .sidebar-section.scrollable { flex: 1; overflow-y: auto; }
-    .sidebar-header { padding: 16px 20px; }
+    .section-toggle-btn { width: 100%; background: transparent; border: none; padding: 0; cursor: pointer; text-align: left; color: inherit; transition: background 0.2s; }
+    .section-toggle-btn:hover { background: #27272a; }
+    .sidebar-header { padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; }
+    .sidebar-search-box { display: flex; align-items: center; gap: 8px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; padding: 4px 10px; margin-top: 8px; flex: 1; }
+    .sidebar-search-input { background: transparent; border: none; color: white; font-size: 0.75rem; width: 100%; outline: none; }
     .sidebar-header h3 { margin: 0; font-size: 0.75rem; text-transform: uppercase; color: #a1a1aa; letter-spacing: 0.05em; }
     .engine-selectors { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
     .select-group { display: flex; flex-direction: column; gap: 6px; }
     .select-group label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; font-weight: 600; }
     .chat-select { background: #09090b !important; color: white !important; padding: 6px 8px !important; font-size: 0.8125rem !important; border: 1px solid #27272a !important; width: 100% !important; }
+    .chat-area { background: #09090b; color: white; border: 1px solid #27272a; border-radius: 6px; padding: 8px; font-size: 0.75rem; width: 100%; resize: vertical; min-height: 60px; font-family: inherit; }
+    .chat-input { background: #09090b; color: white; border: 1px solid #27272a; border-radius: 6px; padding: 4px 8px; font-size: 0.8125rem; width: 100%; }
+    .styled-range { width: 100%; height: 6px; background: #27272a; border-radius: 3px; appearance: none; outline: none; margin: 10px 0; }
+    .styled-range::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: #3b82f6; border-radius: 50%; cursor: pointer; }
     .context-list { padding: 10px; display: flex; flex-direction: column; gap: 4px; }
     .context-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #a1a1aa; cursor: pointer; text-align: left; font-size: 0.8125rem; width: 100%; }
     .context-item:hover { background: #27272a; color: white; }

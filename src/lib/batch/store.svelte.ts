@@ -92,6 +92,39 @@ export class BatchManager {
         await this.processAll();
     }
 
+    async reextractItems(ids: string[]) {
+        ids.forEach(id => {
+            const item = this.items.find(i => i.id === id);
+            if (item) {
+                item.status = 'queued';
+                item.extractedText = undefined;
+            }
+        });
+        await this.processAll();
+    }
+
+    async removeItems(ids: string[]) {
+        const idSet = new Set(ids);
+        this.items = this.items.filter(item => {
+            if (idSet.has(item.id)) {
+                this.processingPaths.delete(item.originalPath);
+                return false;
+            }
+            return true;
+        });
+        await this.saveCurrentSession();
+    }
+
+    async setAcceptedItems(ids: string[], isAccepted: boolean) {
+        const idSet = new Set(ids);
+        this.items.forEach(item => {
+            if (idSet.has(item.id)) {
+                item.isAccepted = isAccepted;
+            }
+        });
+        await this.saveCurrentSession();
+    }
+
     async processAll() {
         console.log("[BatchManager] Starting processAll loop");
         if (this.isProcessing) return;
@@ -129,11 +162,12 @@ export class BatchManager {
                 item.status = 'extracting';
                 
                 if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust') {
-                    item.extractedText = await invoke('extract_pdf_native', { path: item.originalPath });
+                    const text = await invoke('extract_pdf_native', { path: item.originalPath });
+                    item.extractedText = (text as string).substring(0, llmMaxChars);
                 } else {
                     const fileData = await readFile(item.originalPath);
                     const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
-                    item.extractedText = extraction.text;
+                    item.extractedText = extraction.text.substring(0, llmMaxChars);
                 }
 
                 if (this.isMetadataExtractionEnabled) {

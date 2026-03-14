@@ -99,7 +99,7 @@ export class LLMClient {
         }
     }
 
-    async query(providerId: string, modelId: string, prompt: string, apiKey?: string): Promise<string> {
+    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3): Promise<string> {
         console.log(`[LLMClient] query: provider=${providerId}, model=${modelId}`);
         console.log(`[LLMClient] prompt length: ${prompt.length}`);
         
@@ -142,7 +142,7 @@ export class LLMClient {
                     body: JSON.stringify({
                         model: modelId,
                         messages: [{ role: 'user', content: prompt }],
-                        temperature: 0.3
+                        temperature: temperature
                     }),
                     connectTimeout: 5000 // Shorter timeout for retries
                 });

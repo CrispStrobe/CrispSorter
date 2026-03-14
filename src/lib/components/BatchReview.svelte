@@ -16,7 +16,7 @@
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
     
     // Multi-selection state
-    let selection = $state<Set<string>>(new Set());
+    let selectedIds = $state<string[]>([]);
     let lastClickedId = $state<string | null>(null);
     let showFilters = $state(false);
     let showModeMenu = $state(false);
@@ -126,27 +126,59 @@
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
+        console.log(`[BatchReview] Row Click: ${id}, Shift: ${e.shiftKey}, Meta: ${e.metaKey || e.ctrlKey}`);
+        
         if (e.shiftKey && lastClickedId) {
             const items = sortedItems;
             const start = items.findIndex(i => i.id === lastClickedId);
             const end = items.findIndex(i => i.id === id);
-            const range = items.slice(Math.min(start, end), Math.max(start, end) + 1);
-            range.forEach(i => selection.add(i.id));
+            if (start !== -1 && end !== -1) {
+                const range = items.slice(Math.min(start, end), Math.max(start, end) + 1);
+                const ids = range.map(i => i.id);
+                selectedIds = Array.from(new Set([...selectedIds, ...ids]));
+            }
         } else if (e.metaKey || e.ctrlKey) {
-            if (selection.has(id)) selection.delete(id);
-            else selection.add(id);
+            if (selectedIds.includes(id)) {
+                selectedIds = selectedIds.filter(i => i !== id);
+            } else {
+                selectedIds = [...selectedIds, id];
+            }
         } else {
-            selection.clear();
-            selection.add(id);
+            selectedIds = [id];
             selectedItemId = id;
         }
         lastClickedId = id;
     }
 
+    function selectAllVisible() {
+        if (selectedIds.length === sortedItems.length && sortedItems.length > 0) {
+            selectedIds = [];
+        } else {
+            selectedIds = sortedItems.map(i => i.id);
+        }
+    }
+
     async function handleRedoSelected() {
-        if (selection.size === 0) return;
-        const ids = Array.from(selection);
-        await batchManager.reprocessItems(ids);
+        if (selectedIds.length === 0) return;
+        await batchManager.reprocessItems(selectedIds);
+    }
+
+    async function handleBatchReextract() {
+        if (selectedIds.length === 0) return;
+        await batchManager.reextractItems(selectedIds);
+    }
+
+    async function handleBatchRemove() {
+        if (selectedIds.length === 0) return;
+        if (confirm(i18n.t.history.delete_confirm)) {
+            await batchManager.removeItems(selectedIds);
+            selectedIds = [];
+        }
+    }
+
+    function handleBatchAccept(val: boolean) {
+        if (selectedIds.length === 0) return;
+        batchManager.setAcceptedItems(selectedIds, val);
     }
 
     async function startProcessing() {
@@ -161,12 +193,8 @@
     }
 
     function toggleSelectionAccepted(val: boolean) {
-        const targetIds = selection.size > 0 ? Array.from(selection) : batchManager.filteredItems.map(i => i.id);
-        batchManager.items.forEach(i => {
-            if (targetIds.includes(i.id) && (i.status === 'review' || i.status === 'done' || i.status === 'queued')) {
-                i.isAccepted = val;
-            }
-        });
+        const targetIds = selectedIds.length > 0 ? selectedIds : batchManager.filteredItems.map(i => i.id);
+        batchManager.setAcceptedItems(targetIds, val);
     }
 
     function formatSize(bytes: number) {
@@ -236,11 +264,6 @@
         </div>
 
         <div class="right-actions">
-            {#if selection.size > 0}
-                <button class="action-btn small" onclick={handleRedoSelected} title="Redo Analysis for Selected" disabled={batchManager.isProcessing}>
-                    <RefreshCw size={16} />
-                </button>
-            {/if}
             <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
                 <span class={batchManager.isProcessing ? "loader-anim" : ""}>
                     {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}
@@ -295,10 +318,40 @@
 
     <div class="main-split">
         <div class="table-container">
+            {#if selectedIds.length > 0}
+                <div class="selection-toolbar">
+                    <span class="selection-info">
+                        <CheckSquare size={14} />
+                        {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
+                    </span>
+                    <div class="toolbar-divider"></div>
+                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
+                        <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
+                    </button>
+                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
+                        <FileSearch size={14} /> {i18n.t.batch.reextract}
+                    </button>
+                    <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
+                        <Check size={14} /> {i18n.t.batch.confirm}
+                    </button>
+                    <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
+                        <X size={14} /> {i18n.t.batch.ignore}
+                    </button>
+                    <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
+                        <Trash2 size={14} /> {i18n.t.batch.remove}
+                    </button>
+                    <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
+                </div>
+            {/if}
+
             <table class="dense-table">
                 <thead>
                     <tr>
-                        <th style="width: 35px; min-width: 35px;"></th>
+                        <th style="width: 35px; min-width: 35px; text-align: center;">
+                            <input type="checkbox" 
+                                   checked={selectedIds.length === sortedItems.length && sortedItems.length > 0} 
+                                   onchange={selectAllVisible} />
+                        </th>
                         {#each columns as col, i}
                             {#if col.visible}
                                 <th style="width: {col.width}px; min-width: {col.width}px;">
@@ -329,7 +382,7 @@
                 <tbody>
                     {#each sortedItems as item (item.id)}
                         <tr 
-                            class:selected={selection.has(item.id)}
+                            class:selected={selectedIds.includes(item.id)}
                             class:active-row={selectedItemId === item.id}
                             onclick={(e) => handleRowClick(e, item.id)}
                             onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleRowClick(e, item.id)}
@@ -337,8 +390,11 @@
                             class:status-done={item.status === 'done'}
                             tabindex="0"
                         >
-                            <td onclick={e => e.stopPropagation()} style="width: 35px; text-align: center;">
-                                <input type="checkbox" bind:checked={item.isAccepted} aria-label="Accept item" />
+                            <td onclick={e => { e.stopPropagation(); console.log('TD Clicked'); }} style="width: 35px; text-align: center;">
+                                <input type="checkbox" 
+                                       checked={selectedIds.includes(item.id)} 
+                                       onchange={(e) => { e.stopPropagation(); console.log('Check Change'); if(selectedIds.includes(item.id)) selectedIds = selectedIds.filter(i => i !== item.id); else selectedIds = [...selectedIds, item.id]; }}
+                                       aria-label="Select item" />
                             </td>
                             {#each columns as col}
                                 {#if col.visible}
@@ -456,10 +512,31 @@
     .action-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
     .action-btn.success { background: #10b981; color: white; border-color: #10b981; }
     .action-btn.rocket-btn { background: #8b5cf6; color: white; border-color: #8b5cf6; }
+    .action-btn.danger:hover { background: #ef4444; color: white; border-color: #ef4444; }
     .small { padding: 4px 8px; font-size: 0.75rem; }
 
     .main-split { display: flex; flex: 1; overflow: hidden; }
-    .table-container { flex: 1; overflow: auto; }
+    .table-container { flex: 1; overflow: auto; position: relative; display: flex; flex-direction: column; }
+    
+    .selection-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 16px;
+        background: #1e3a8a;
+        border-bottom: 1px solid #1e40af;
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        animation: slideDown 0.2s ease-out;
+    }
+    @keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+
+    .selection-info { font-size: 0.8125rem; font-weight: 700; color: white; display: flex; align-items: center; gap: 8px; }
+    .toolbar-divider { width: 1px; height: 20px; background: #3b82f666; margin: 0 4px; }
+    .close-btn-minimal { background: transparent; border: none; color: #bfdbfe; cursor: pointer; font-size: 1.25rem; margin-left: auto; padding: 0 4px; }
+    .close-btn-minimal:hover { color: white; }
+
     .dense-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
     .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; }
     .th-content { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 100%; cursor: pointer; }

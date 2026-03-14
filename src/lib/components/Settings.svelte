@@ -7,7 +7,7 @@
         RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
-        Rocket, FileText
+        Rocket, FileText, Brain
     } from 'lucide-svelte';
     import { open, save } from '@tauri-apps/plugin-dialog';
     import { stat, remove } from '@tauri-apps/plugin-fs';
@@ -37,6 +37,7 @@
     
     // LLM & OCR Settings
     let llmMaxChars = $state(5000);
+    let llmContextLimit = $state(4096);
     let llmPrompt = $state(''); // Loaded from store
     let ocrEnabled = $state(false);
     let authorSortEnabled = $state(false);
@@ -118,6 +119,7 @@
         saveTxt = await getSetting('saveTxt', true);
         currentLanguage = await getSetting('language', 'en') as Language;
         llmMaxChars = await getSetting('llmMaxChars', 5000);
+        llmContextLimit = await getSetting('llmContextLimit', 4096);
         parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
         
         const defaultPrompt = parsingFormat === 'xml' 
@@ -176,6 +178,7 @@
         await saveSetting('saveTxt', saveTxt);
         await saveSetting('language', currentLanguage);
         await saveSetting('llmMaxChars', llmMaxChars);
+        await saveSetting('llmContextLimit', llmContextLimit);
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
@@ -406,6 +409,7 @@
             <div class="section-card">
                 <label for="max-chars-input"><MessageSquare size={16} /> {i18n.t.settings.llm_max_chars}</label>
                 <input id="max-chars-input" type="number" bind:value={llmMaxChars} min="500" step="500" class="styled-input" />
+                <p class="hint">Maximum characters to extract per document for analysis.</p>
             </div>
 
             <div class="section-card">
