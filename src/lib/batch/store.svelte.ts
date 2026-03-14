@@ -5,6 +5,7 @@ import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
 import { readFile, writeFile, mkdir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
+import { documentDir, downloadDir } from '@tauri-apps/api/path';
 
 export function getDefaultPrompt(format: 'xml' | 'json', language: string): string {
     const isDE = language === 'de';
@@ -162,7 +163,14 @@ export class BatchManager {
             modelId = activeLocal?.path || modelId;
         }
 
-        const globalExportPath = await getSetting('exportPath', '');
+        let globalExportPath = await getSetting('exportPath', '');
+        if (!globalExportPath) {
+            try { globalExportPath = await documentDir(); } catch(e) { 
+                try { globalExportPath = await downloadDir(); } catch(e2) {}
+            }
+            console.log(`[BatchManager] No exportPath set, using fallback: ${globalExportPath}`);
+        }
+
         const globalSaveTxt = await getSetting('saveTxt', true);
         const llmMaxChars = overrides?.maxChars ?? await getSetting('llmMaxChars', 5000);
         const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
@@ -376,38 +384,63 @@ export class BatchManager {
     }
 
     async executeBatch() {
+        console.log(`[BatchManager] executeBatch: Starting execution for accepted items`);
         const toMove = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
-        if (toMove.length === 0) return;
+        console.log(`[BatchManager] executeBatch: Found ${toMove.length} items to move`);
+        
+        if (toMove.length === 0) {
+            console.log(`[BatchManager] executeBatch: No items to move (either none accepted or targetPath missing)`);
+            return;
+        }
 
         const globalSaveTxt = await getSetting('saveTxt', true);
-        toMove.forEach(i => i.status = 'moving');
+        console.log(`[BatchManager] executeBatch: globalSaveTxt=${globalSaveTxt}`);
 
         for (const item of toMove) {
+            console.log(`[BatchManager] executeBatch: Processing ${item.originalName} -> ${item.targetPath}`);
+            item.status = 'moving';
             try {
                 if (globalSaveTxt && item.extractedText) {
                     const txtPath = item.targetPath!.replace(/\.[^.]+$/, '.txt');
+                    console.log(`[BatchManager] executeBatch: Saving TXT to ${txtPath}`);
                     const lastSlash = txtPath.lastIndexOf('/');
                     const parentDir = lastSlash !== -1 ? txtPath.substring(0, lastSlash) : '.';
-                    try { await mkdir(parentDir, { recursive: true }); } catch(e) {}
+                    try { 
+                        console.log(`[BatchManager] executeBatch: Creating directory ${parentDir}`);
+                        await mkdir(parentDir, { recursive: true }); 
+                    } catch(e) {
+                        console.log(`[BatchManager] executeBatch: mkdir hint (might already exist): ${e}`);
+                    }
                     const encoder = new TextEncoder();
                     await writeFile(txtPath, encoder.encode(item.extractedText));
+                    console.log(`[BatchManager] executeBatch: TXT saved`);
                 }
 
+                console.log(`[BatchManager] executeBatch: Invoking move_files for ${item.originalName}`);
                 const results: string[] = await invoke('move_files', { 
                     moves: [{ source: item.originalPath, destination: item.targetPath! }] 
                 });
+                console.log(`[BatchManager] executeBatch: move_files results:`, results);
 
-                if (results[0].startsWith('Success:')) item.status = 'done';
-                else { item.status = 'error'; item.errorMessage = results[0]; }
+                if (results[0].startsWith('Success:')) {
+                    item.status = 'done';
+                    console.log(`[BatchManager] executeBatch: Successfully moved ${item.originalName}`);
+                } else { 
+                    item.status = 'error'; 
+                    item.errorMessage = results[0]; 
+                    console.error(`[BatchManager] executeBatch: Failed to move ${item.originalName}: ${results[0]}`);
+                }
             } catch (error: any) {
                 item.status = 'error';
                 item.errorMessage = error.message;
+                console.error(`[BatchManager] executeBatch: Catch block error for ${item.originalName}:`, error);
             }
         }
 
         // Remove successfully moved items from the list
         const doneIds = new Set(toMove.filter(i => i.status === 'done').map(i => i.id));
         if (doneIds.size > 0) {
+            console.log(`[BatchManager] executeBatch: Removing ${doneIds.size} successfully moved items from state`);
             this.items = this.items.filter(item => {
                 if (doneIds.has(item.id)) {
                     this.processingPaths.delete(item.originalPath);
@@ -415,9 +448,9 @@ export class BatchManager {
                 }
                 return true;
             });
-            console.log(`[BatchManager] Removed ${doneIds.size} done items from batch`);
         }
         await this.saveCurrentSession();
+        console.log(`[BatchManager] executeBatch: Finished`);
     }
 
     async getDuplicateGroups(checkContent = false): Promise<Array<{ size: number; items: BatchItem[] }>> {
