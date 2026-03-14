@@ -43,6 +43,7 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
 
 export class LLMClient {
     private keys: Record<string, string> = {};
+    noThinking: boolean = false;
 
     constructor(keys: Record<string, string> = {}) {
         this.keys = keys;
@@ -50,6 +51,15 @@ export class LLMClient {
 
     setKeys(keys: Record<string, string>) {
         this.keys = keys;
+    }
+
+    private stripThinking(text: string): string {
+        // <think>…</think>  — DeepSeek R1, Qwen3 leakage
+        // <thinking>…</thinking>  — some other models
+        return text
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+            .trim();
     }
 
     async fetchModels(providerId: string, apiKey?: string, baseUrl?: string): Promise<string[]> {
@@ -110,13 +120,15 @@ export class LLMClient {
             console.log(`[LLMClient] Invoking native mistral.rs engine for local model...`);
             const startTime = Date.now();
             try {
-                const result = await invoke('run_mistralrs_query', { 
+                const result = await invoke('run_mistralrs_query', {
                     modelPath: modelId,
-                    prompt: prompt 
+                    prompt: prompt,
+                    maxTokens: 512,
+                    noThinking: this.noThinking,
                 });
                 const duration = Date.now() - startTime;
                 console.log(`[LLMClient] Native query successful in ${duration}ms. Result length: ${String(result).length}`);
-                return String(result);
+                return this.stripThinking(String(result));
             } catch (error: any) {
                 const duration = Date.now() - startTime;
                 console.error(`[LLMClient] Native query failed after ${duration}ms:`, error);
@@ -130,7 +142,10 @@ export class LLMClient {
         if (!key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) throw new Error(`API key for ${providerId} is required.`);
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
-        const maxRetries = 3;
+        const isLocal = ['ollama', 'llamacpp', 'mlx'].includes(providerId);
+        // Local providers: single attempt, long connect timeout (server is either up or not)
+        // Remote providers: 3 retries with backoff
+        const maxRetries = isLocal ? 1 : 3;
         let lastError = null;
 
         for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -139,15 +154,19 @@ export class LLMClient {
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
                 if (key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) headers['Authorization'] = `Bearer ${key}`;
 
+                const messages: { role: string; content: string }[] = [];
+                if (this.noThinking) messages.push({ role: 'system', content: '/no_think' });
+                messages.push({ role: 'user', content: prompt });
+
                 const response = await fetch(`${baseUrl}/chat/completions`, {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify({
                         model: modelId,
-                        messages: [{ role: 'user', content: prompt }],
+                        messages,
                         temperature: temperature
                     }),
-                    connectTimeout: 5000 // Shorter timeout for retries
+                    connectTimeout: isLocal ? 30000 : 5000
                 });
 
                 if (!response.ok) {
@@ -158,19 +177,23 @@ export class LLMClient {
 
                 const data = await response.json();
                 console.log(`[LLMClient] Query success.`);
-                return data.choices[0].message.content;
+                return this.stripThinking(data.choices[0].message.content);
             } catch (error: any) {
                 lastError = error;
                 console.warn(`[LLMClient] Attempt ${attempt + 1} failed for ${providerId}:`, error.message || error);
                 if (attempt < maxRetries - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2s before retry
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                 }
             }
         }
 
         console.error(`[LLMClient] All ${maxRetries} attempts failed for ${providerId}.`);
-        const errorMsg = typeof lastError === 'object' ? (lastError.message || JSON.stringify(lastError)) : String(lastError);
-        throw new Error(`[${providerId}] ${errorMsg}`);
+        const rawMsg = typeof lastError === 'object' ? (lastError.message || JSON.stringify(lastError)) : String(lastError);
+        // Surface actionable message for connection refused
+        const errorMsg = rawMsg.includes('error sending request') || rawMsg.includes('Connection refused')
+            ? `Server not running (${baseUrl.replace('/v1', '')})`
+            : rawMsg;
+        throw new Error(errorMsg);
     }
 }
 

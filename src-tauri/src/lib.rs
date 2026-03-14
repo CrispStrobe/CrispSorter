@@ -8,7 +8,7 @@ use tauri::Manager;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use mistralrs::{
-    GgufModelBuilder, TextMessageRole, TextMessages, 
+    GgufModelBuilder, TextMessageRole, TextMessages, RequestBuilder,
     best_device, Model, initialize_logging,
     PagedAttentionMetaBuilder
 };
@@ -126,21 +126,126 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
 #[tauri::command]
 async fn start_mlx_server(
     state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
     model_path: String,
     port: u16,
 ) -> Result<String, String> {
     let mut mlx_lock = state.mlx_process.lock().await;
     if let Some(mut child) = mlx_lock.take() {
         let _ = child.kill().await;
+        let _ = child.wait().await;
     }
-    println!("[MLX] Starting mlx_lm.server — model: {}, port: {}", model_path, port);
-    let child = tokio::process::Command::new("mlx_lm.server")
+
+    // Tauri inherits a minimal PATH — augment with common Python install locations
+    let home = std::env::var("HOME").unwrap_or_default();
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let augmented_path = format!(
+        "{home}/.local/bin:{home}/miniconda3/bin:{home}/miniconda3/condabin:{home}/anaconda3/bin:{home}/.pyenv/shims:{home}/.pyenv/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{current_path}"
+    );
+
+    // Resolve the real binary path via login shell (handles conda/pyenv/homebrew)
+    let resolved_bin = tokio::process::Command::new("/bin/zsh")
+        .args(["-l", "-c", "which mlx_lm.server 2>/dev/null"])
+        .env("PATH", &augmented_path)
+        .output()
+        .await
+        .ok()
+        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "mlx_lm.server".to_string());
+
+    println!("[MLX] Resolved binary: '{}' — model: {}, port: {}", resolved_bin, model_path, port);
+
+    let mut child = tokio::process::Command::new(&resolved_bin)
         .args(["--model", &model_path, "--port", &port.to_string(), "--trust-remote-code"])
+        .env("PATH", &augmented_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start mlx_lm.server: {}. Install with: pip install mlx-lm", e))?;
+        .map_err(|e| format!("Failed to start '{}': {}. Install with: pip install mlx-lm", resolved_bin, e))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[MLX] {}", line);
+                let _ = app.emit("mlx-log", &line);
+            }
+        });
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[MLX ERR] {}", line);
+                let _ = app.emit("mlx-log", &line);
+            }
+        });
+    }
+
+    // Poll until server is accepting connections, then emit mlx-ready
+    {
+        let app = app_handle.clone();
+        let health_url = format!("http://localhost:{}/v1/models", port);
+        tokio::spawn(async move {
+            for attempt in 1..=60u32 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                match reqwest::get(&health_url).await {
+                    Ok(r) if r.status().is_success() => {
+                        println!("[MLX] Server ready after {}s", attempt * 2);
+                        let _ = app.emit("mlx-ready", true);
+                        return;
+                    }
+                    _ => {
+                        println!("[MLX] Waiting for server... attempt {}/60", attempt);
+                    }
+                }
+            }
+            println!("[MLX] Server did not become ready within 120s");
+            let _ = app.emit("mlx-log", "[MLX] Server did not respond within 120s — check logs");
+        });
+    }
+
     println!("[MLX] Server spawned (PID: {:?})", child.id());
     *mlx_lock = Some(child);
     Ok(format!("MLX server starting on port {}", port))
+}
+
+#[tauri::command]
+fn get_mlx_cache_dir() -> String {
+    std::env::var("HF_HUB_CACHE")
+        .or_else(|_| std::env::var("HF_HOME").map(|h| format!("{}/hub", h)))
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/.cache/huggingface/hub", home)
+        })
+}
+
+#[tauri::command]
+fn check_mlx_models_cached(repo_ids: Vec<String>) -> Vec<bool> {
+    let hub_dir = std::path::PathBuf::from(get_mlx_cache_dir());
+    repo_ids.iter().map(|repo_id| {
+        let dir_name = format!("models--{}", repo_id.replace('/', "--"));
+        hub_dir.join(&dir_name).exists()
+    }).collect()
+}
+
+#[tauri::command]
+async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
+    let dir_name = format!("models--{}", repo_id.replace('/', "--"));
+    let cache_dir = std::path::PathBuf::from(get_mlx_cache_dir()).join(&dir_name);
+    if cache_dir.exists() {
+        fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        Ok(format!("Deleted: {}", cache_dir.display()))
+    } else {
+        Err(format!("Not found in cache: {}", cache_dir.display()))
+    }
 }
 
 #[tauri::command]
@@ -280,6 +385,8 @@ async fn run_mistralrs_query(
     state: tauri::State<'_, AppState>,
     model_path: String,
     prompt: String,
+    max_tokens: Option<usize>,
+    no_thinking: Option<bool>,
 ) -> Result<String, String> {
     let mut model_lock = state.model.lock().await;
     let mut current_path_lock = state.current_model_path.lock().await;
@@ -346,11 +453,16 @@ async fn run_mistralrs_query(
     // We can unwrap here because we ensured it's Some above
     let model = model_lock.as_ref().unwrap();
     
-    let messages = TextMessages::new()
-        .add_message(TextMessageRole::User, prompt.clone());
+    let max_len = max_tokens.unwrap_or(512);
+    let thinking = !no_thinking.unwrap_or(false);
+    let request = RequestBuilder::from(
+        TextMessages::new().add_message(TextMessageRole::User, prompt.clone())
+    )
+    .set_sampler_max_len(max_len)
+    .enable_thinking(thinking);
 
-    println!("[mistral.rs] Sending chat request (prompt len={})...", prompt.len());
-    let response = model.send_chat_request(messages)
+    println!("[mistral.rs] Sending chat request (prompt len={}, max_tokens={}, thinking={})...", prompt.len(), max_len, thinking);
+    let response = model.send_chat_request(request)
         .await
         .map_err(|e| {
             println!("[mistral.rs] QUERY ERROR: {}", e);
@@ -393,6 +505,9 @@ pub fn run() {
             stop_llamacpp_sidecar,
             start_mlx_server,
             stop_mlx_server,
+            get_mlx_cache_dir,
+            check_mlx_models_cached,
+            delete_mlx_model,
             delete_files,
             extract_pdf_native
         ])
