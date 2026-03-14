@@ -4,56 +4,24 @@
     import { getSetting } from '../store';
     import { i18n } from '../i18n.svelte';
     import { 
-        Send, User, Bot, Trash2, FileText, 
-        ChevronRight, Loader2, Info, Cpu, Zap
+        Bot, Trash2, FileText, ChevronRight, Info, Cpu, Zap
     } from 'lucide-svelte';
     import { onMount } from 'svelte';
-    import { marked } from 'marked';
-    import katex from 'katex';
-    import 'katex/dist/katex.min.css';
+    import 'deep-chat';
 
-    interface Message {
-        role: 'user' | 'assistant';
-        content: string;
-        timestamp: number;
-    }
-
-    let messages = $state<Message[]>([]);
-    let input = $state('');
-    let isTyping = $state(false);
-    
-    // Use an array for selected IDs to ensure clean Svelte 5 reactivity
-    let selectedIds = $state<string[]>([]);
-    let scrollContainer: HTMLDivElement;
-
-    // Chat-specific engine selection
+    // Engine Selection & Models
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
     let activeProviderId = $state('ollama');
     let selectedModel = $state('');
     let localModels = $state<any[]>([]);
-
-    function renderMarkdown(text: string): string {
-        // Handle Block Math: $$...$$ and \[...\]
-        let processed = text.replace(/(\$\$|\\\[)([\s\S]*?)(\$\$|\\\])/g, (match, op, formula) => {
-            try { return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }); }
-            catch (e) { return match; }
-        });
-        
-        // Handle Inline Math: $...$ and \(...\)
-        processed = processed.replace(/(\$|\\\()([\s\S]*?)(\$|\\\))/g, (match, op, formula) => {
-            // Avoid triggering on single $ signs in text
-            if (op === '$' && match.length < 3) return match; 
-            try { return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }); }
-            catch (e) { return match; }
-        });
-        
-        return marked.parse(processed, { async: false }) as string;
-    }
+    
+    // UI State
+    let selectedIds = $state<string[]>([]);
+    let chatElement: any;
 
     onMount(async () => {
         const savedProviders = await getSetting('providers');
         if (savedProviders) providers = savedProviders as LLMProvider[];
-        
         activeProviderId = await getSetting('activeProviderId', 'ollama');
         localModels = await getSetting('localModels', []) as any[];
 
@@ -69,7 +37,8 @@
         if (['mistralrs', 'llamacpp'].includes(activeProviderId)) {
             return localModels.filter(m => m.isDownloaded).map(m => m.path);
         }
-        return activeProvider.models;
+        const activeProv = providers.find(p => p.id === activeProviderId);
+        return activeProv?.models || [];
     });
 
     const selectedItems = $derived(
@@ -84,56 +53,94 @@
         }
     }
 
-    async function handleSend() {
-        if (!input.trim() || isTyping) return;
+    function clearChat() {
+        if (chatElement) chatElement.clearMessages();
+    }
 
-        const userMsg = input.trim();
-        messages.push({ role: 'user', content: userMsg, timestamp: Date.now() });
-        input = '';
-        isTyping = true;
-
+    async function handleRequest(body: any, signals: any) {
         try {
+            console.log("[Chat] Handling request for", activeProviderId);
+            const userMsg = body.messages[body.messages.length - 1].text;
+            
             if (!activeProviderId || !selectedModel) {
-                throw new Error("No AI Provider or Model selected.");
+                return signals.onResponse({ error: "No AI Provider or Model selected in Settings." });
             }
 
-            // Build context with simple compression
             let contextPrompt = "";
             if (selectedItems.length > 0) {
-                contextPrompt = "Use the following document contexts to answer the user question accurately.\n\n";
+                contextPrompt = "Use the document contexts below to answer correctly.\n\n";
                 selectedItems.forEach(item => {
                     if (item.extractedText) {
                         let text = item.extractedText;
                         if (text.length > 3000) {
                             text = text.substring(0, 1500) + "\n... [CONTENT TRUNCATED] ...\n" + text.substring(text.length - 1500);
                         }
-                        contextPrompt += `--- DOCUMENT: ${item.originalName} ---\n${text}\n\n`;
+                        contextPrompt += `--- DOC: ${item.originalName} ---\n${text}\n\n`;
                     }
                 });
-                contextPrompt += "--- END OF CONTEXT ---\n\nUser Question: ";
+                contextPrompt += "User Question: ";
             }
 
             const fullPrompt = contextPrompt + userMsg;
-            const response = await llmClient.query(activeProviderId, selectedModel, fullPrompt, activeProvider.apiKey);
+            const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
             
-            messages.push({ role: 'assistant', content: response, timestamp: Date.now() });
+            const responseText = await llmClient.query(activeProviderId, selectedModel, fullPrompt, activeProv.apiKey);
+            signals.onResponse({ text: responseText });
         } catch (error: any) {
-            messages.push({ role: 'assistant', content: `Error: ${error.message}`, timestamp: Date.now() });
-        } finally {
-            isTyping = false;
-            setTimeout(scrollToBottom, 50);
+            console.error("[Chat] Request error:", error);
+            signals.onResponse({ error: error.message || "Failed to contact AI engine." });
         }
     }
 
-    function scrollToBottom() {
-        if (scrollContainer) {
-            scrollContainer.scrollTop = scrollContainer.scrollHeight;
-        }
-    }
+    // --- Configuration Objects ---
+    const chatStyle = {
+        width: "100%",
+        height: "100%",
+        border: "none",
+        backgroundColor: "#09090b",
+        fontFamily: "Inter, sans-serif"
+    };
 
-    function clearChat() {
-        messages = [];
-    }
+    const messageStyles = {
+        "default": {
+            "shared": {
+                "bubble": {
+                    "maxWidth": "100%", "backgroundColor": "unset", "marginTop": "10px", "marginBottom": "10px", "fontSize": "1rem"
+                }
+            },
+            "user": {
+                "bubble": {
+                    "marginLeft": "0px", "color": "#fafafa", "backgroundColor": "#3b82f6", "padding": "12px 16px", "borderRadius": "12px"
+                }
+            },
+            "ai": {
+                "outerContainer": {
+                    "backgroundColor": "#18181b", "borderTop": "1px solid #27272a", "borderBottom": "1px solid #27272a"
+                },
+                "bubble": {
+                    "color": "#e2e8f0", "padding": "12px 16px"
+                }
+            }
+        }
+    };
+
+    const submitButtonStyles = {
+        "submit": {
+            "container": {
+                "default": {"backgroundColor": "#3b82f6"},
+                "hover": {"backgroundColor": "#2563eb"}
+            },
+            "svg": {
+                "content": '<?xml version="1.0" ?> <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"> <g> <path d="M21.66,12a2,2,0,0,1-1.14,1.81L5.87,20.75A2.08,2.08,0,0,1,5,21a2,2,0,0,1-1.82-2.82L5.46,13H11a1,1,0,0,0,0-2H5.46L3.18,5.87A2,2,0,0,1,5.86,3.25h0l14.65,6.94A2,2,0,0,1,21.66,12Z" fill="white"> </path> </g> </svg>',
+                "styles": { "default": { "width": "1.3em", "marginTop": "0.15em" } }
+            }
+        }
+    };
+
+    const textInputConfig = {
+        "placeholder": {"text": "Send a message...", "style": {"color": "#71717a"}},
+        "style": {"backgroundColor": "#09090b", "color": "white", "border": "1px solid #27272a", "borderRadius": "8px", "fontSize": "1rem"}
+    };
 </script>
 
 <div class="chat-container">
@@ -202,132 +209,54 @@
             </button>
         </div>
 
-        <div class="message-list" bind:this={scrollContainer}>
-            {#if messages.length === 0}
-                <div class="welcome-msg">
-                    <Bot size={48} />
-                    <p>{i18n.t.chat.placeholder}</p>
-                    {#if selectedItems.length === 0}
-                        <div class="warning-box">
-                            <Info size={14} />
-                            <span>{i18n.t.chat.no_context}</span>
-                        </div>
-                    {/if}
-                </div>
-            {/if}
-
-            {#each messages as msg}
-                <div class="message-row" class:user-row={msg.role === 'user'}>
-                    <div class="avatar" class:user-avatar={msg.role === 'user'}>
-                        {#if msg.role === 'user'}<User size={16} />{:else}<Bot size={16} />{/if}
+        <div class="chat-content">
+            <deep-chat
+                bind:this={chatElement}
+                connect={{ handler: handleRequest }}
+                introPanel={{ display: false }}
+                remarkable={{ math: true }}
+                messageStyles={messageStyles}
+                submitButtonStyles={submitButtonStyles}
+                textInput={textInputConfig}
+                style={chatStyle}
+            >
+                {#if selectedItems.length === 0}
+                    <div class="welcome-overlay">
+                        <Bot size={48} color="#71717a" />
+                        <p>{i18n.t.chat.no_context}</p>
                     </div>
-                    <div class="message-bubble">
-                        <div class="msg-content">{@html renderMarkdown(msg.content)}</div>
-                        <div class="msg-meta">{new Date(msg.timestamp).toLocaleTimeString()}</div>
-                    </div>
-                </div>
-            {/each}
-
-            {#if isTyping}
-                <div class="message-row">
-                    <div class="avatar"><Bot size={16} /></div>
-                    <div class="message-bubble typing">
-                        <Loader2 size={16} class="loader-anim" />
-                    </div>
-                </div>
-            {/if}
-        </div>
-
-        <div class="input-area">
-            <textarea 
-                bind:value={input} 
-                placeholder={i18n.t.chat.placeholder}
-                onkeydown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-            ></textarea>
-            <button class="send-btn" onclick={handleSend} disabled={!input.trim() || isTyping}>
-                <Send size={18} />
-            </button>
+                {/if}
+            </deep-chat>
         </div>
     </div>
 </div>
 
 <style>
     .chat-container { display: flex; height: 100%; background: #09090b; }
-    
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; }
     .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; flex-shrink: 0; }
     .sidebar-section.scrollable { flex: 1; overflow-y: auto; }
     .sidebar-header { padding: 16px 20px; }
     .sidebar-header h3 { margin: 0; font-size: 0.75rem; text-transform: uppercase; color: #a1a1aa; letter-spacing: 0.05em; }
     .hint { font-size: 0.7rem; color: #71717a; margin-top: 4px; }
-    
     .engine-selectors { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 12px; }
     .select-group { display: flex; flex-direction: column; gap: 6px; }
     .select-group label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; font-weight: 600; text-transform: uppercase; }
-    
-    /* Fix blank black selectors */
-    .chat-select { 
-        background: #09090b !important; 
-        color: white !important; 
-        padding: 6px 8px !important; 
-        font-size: 0.8125rem !important;
-        border: 1px solid #27272a !important;
-        width: 100% !important;
-        height: auto !important;
-        min-height: 32px !important;
-    }
+    .chat-select { background: #09090b !important; color: white !important; padding: 6px 8px !important; font-size: 0.8125rem !important; border: 1px solid #27272a !important; width: 100% !important; }
     .chat-select option { background: #18181b; color: white; }
-
     .context-list { padding: 10px; display: flex; flex-direction: column; gap: 4px; }
-    .context-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #a1a1aa; cursor: pointer; text-align: left; font-size: 0.8125rem; transition: all 0.2s; }
+    .context-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: #a1a1aa; cursor: pointer; text-align: left; font-size: 0.8125rem; }
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }
     .file-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     :global(.indicator) { color: #3b82f6; }
-    .empty-hint { padding: 20px; text-align: center; color: #71717a; font-size: 0.8125rem; }
-
-    .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; }
+    .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; overflow: hidden; }
     .chat-header { padding: 12px 24px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; }
     .header-info { display: flex; align-items: center; gap: 16px; }
     .header-info h2 { margin: 0; font-size: 1rem; font-weight: 700; }
     .context-count { font-size: 0.75rem; color: #71717a; background: #27272a; padding: 2px 8px; border-radius: 10px; }
-
-    .message-list { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
-    .welcome-msg { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #71717a; gap: 16px; }
-    .warning-box { display: flex; align-items: center; gap: 8px; background: #42200633; color: #fbbf24; padding: 8px 12px; border-radius: 6px; font-size: 0.75rem; border: 1px solid #713f12; }
-
-    .message-row { display: flex; gap: 16px; max-width: 800px; width: 100%; }
-    .user-row { flex-direction: row-reverse; align-self: flex-end; }
-    
-    .avatar { width: 32px; height: 32px; border-radius: 8px; background: #27272a; display: flex; align-items: center; justify-content: center; color: #a1a1aa; flex-shrink: 0; }
-    .user-avatar { background: #3b82f6; color: white; }
-    
-    .message-bubble { display: flex; flex-direction: column; gap: 4px; max-width: calc(100% - 48px); }
-    .msg-content { padding: 12px 16px; background: #18181b; border-radius: 12px; border-top-left-radius: 2px; color: #e2e8f0; font-size: 0.9375rem; line-height: 1.5; word-break: break-word; }
-    .msg-content :global(p) { margin: 0 0 8px 0; }
-    .msg-content :global(p:last-child) { margin-bottom: 0; }
-    .msg-content :global(ul), .msg-content :global(ol) { margin: 8px 0; padding-left: 20px; }
-    .msg-content :global(code) { background: #27272a; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.85em; }
-    .msg-content :global(pre) { background: #09090b; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
-    .msg-content :global(pre code) { background: transparent; padding: 0; border-radius: 0; }
-    .msg-content :global(.katex-display) { margin: 12px 0; overflow-x: auto; overflow-y: hidden; }
-    .user-row .msg-content { background: #3b82f6; color: white; border-radius: 12px; border-top-right-radius: 2px; border-top-left-radius: 12px; }
-    .user-row .msg-content :global(code) { background: #1e3a8a; }
-    .msg-meta { font-size: 0.65rem; color: #71717a; align-self: flex-start; }
-    .user-row .msg-meta { align-self: flex-end; }
-
-    .typing { padding: 8px 16px; }
-    :global(.loader-anim) { animation: spin 1s linear infinite; color: #3b82f6; }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-    .input-area { padding: 20px 24px; background: #18181b; border-top: 1px solid #27272a; display: flex; gap: 12px; align-items: flex-end; }
-    .input-area textarea { flex: 1; background: #09090b; border: 1px solid #27272a; border-radius: 8px; color: white; padding: 12px; font-size: 0.9375rem; resize: none; min-height: 44px; max-height: 200px; font-family: inherit; }
-    .input-area textarea:focus { outline: 2px solid #3b82f6; border-color: transparent; }
-    
-    .send-btn { width: 44px; height: 44px; border-radius: 8px; background: #3b82f6; color: white; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
-    .send-btn:hover:not(:disabled) { background: #2563eb; }
-    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: #27272a; }
-
+    .chat-content { flex: 1; position: relative; }
+    .welcome-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; color: #71717a; gap: 16px; pointer-events: none; z-index: 10; text-align: center; width: 80%; }
     .icon-btn { background: transparent; border: none; color: #71717a; cursor: pointer; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
     .icon-btn:hover { background: #27272a; color: white; }
     .icon-btn.danger:hover { background: #ef444433; color: #ef4444; }

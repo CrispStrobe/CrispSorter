@@ -13,6 +13,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@ai-sdk/svelte": "^4.0.116",
     "@lingo-reader/epub-parser": "^0.4.5",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
@@ -20,6 +21,8 @@
     "@tauri-apps/plugin-http": "^2.5.7",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-store": "^2.4.2",
+    "ai": "^6.0.116",
+    "deep-chat": "^2.4.2",
     "katex": "^0.16.38",
     "lucide-svelte": "^0.577.0",
     "mammoth": "^1.12.0",
