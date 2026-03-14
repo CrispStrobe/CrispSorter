@@ -84,6 +84,14 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
+    async reprocessItems(ids: string[]) {
+        ids.forEach(id => {
+            const item = this.items.find(i => i.id === id);
+            if (item) item.status = 'queued';
+        });
+        await this.processAll();
+    }
+
     async processAll() {
         console.log("[BatchManager] Starting processAll loop");
         if (this.isProcessing) return;
@@ -106,6 +114,7 @@ export class BatchManager {
         const llmMaxChars = await getSetting('llmMaxChars', 5000);
         const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
         const authorSortEnabled = await getSetting('authorSortEnabled', false);
+        const pdfBackend = await getSetting('pdfBackend', 'js');
 
         // Define prompts based on format
         const xmlPrompt = 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>';
@@ -118,9 +127,14 @@ export class BatchManager {
             
             try {
                 item.status = 'extracting';
-                const fileData = await readFile(item.originalPath);
-                const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
-                item.extractedText = extraction.text;
+                
+                if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust') {
+                    item.extractedText = await invoke('extract_pdf_native', { path: item.originalPath });
+                } else {
+                    const fileData = await readFile(item.originalPath);
+                    const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
+                    item.extractedText = extraction.text;
+                }
 
                 if (this.isMetadataExtractionEnabled) {
                     if (!activeProvider || !modelId) {

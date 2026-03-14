@@ -116,6 +116,15 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+async fn extract_pdf_native(path: String) -> Result<String, String> {
+    println!("[Rust] Extracting PDF via pdf-extract: {}", path);
+    pdf_extract::extract_text(&path).map_err(|e| {
+        println!("[Rust] Extraction error: {}", e);
+        e.to_string()
+    })
+}
+
+#[tauri::command]
 async fn move_files(moves: Vec<MoveRequest>) -> Result<Vec<String>, String> {
     let mut results = Vec::new();
     for req in moves {
@@ -286,7 +295,8 @@ pub fn run() {
             download_file, 
             run_mistralrs_query,
             start_llamacpp_sidecar,
-            stop_llamacpp_sidecar
+            stop_llamacpp_sidecar,
+            extract_pdf_native
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

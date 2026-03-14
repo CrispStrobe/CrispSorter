@@ -40,6 +40,7 @@
     let llmPrompt = $state(''); // Loaded from store
     let ocrEnabled = $state(false);
     let authorSortEnabled = $state(false);
+    let pdfBackend = $state<'js' | 'rust'>('js');
     let parsingFormat = $state<'xml' | 'json'>('xml');
 
     // mistral.rs / Local Model Management
@@ -126,6 +127,7 @@
         llmPrompt = await getSetting('llmPrompt', defaultPrompt);
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
+        pdfBackend = await getSetting('pdfBackend', 'js') as 'js' | 'rust';
         
         const savedLocalModels = await getSetting('localModels');
         if (savedLocalModels) {
@@ -177,6 +179,7 @@
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
+        await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
         await saveSetting('localModels', $state.snapshot(localModels));
         i18n.setLanguage(currentLanguage);
@@ -318,8 +321,8 @@
 
     function switchParsingFormat(format: 'xml' | 'json') {
         parsingFormat = format;
-        const xmlPrompt = 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>';
-        const jsonPrompt = 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
+        const xmlPrompt = 'Extract metadata from the provided text and filename. \\nRULES:\\n1. Format as XML tags only. No extra text.\\n2. AUTHOR: Format as "Lastname Firstname". Remove all academic titles (Dr., Prof., PhD, etc.).\\n3. YEAR: 4-digit year. If missing, use "UnknownYear".\\n4. LANGUAGE: 2-letter ISO code. If missing, use "ul".\\n\\nEXAMPLE:\\n<TITLE>Artificial Intelligence in Medicine</TITLE>\\n<YEAR>2024</YEAR>\\n<AUTHOR>Smith John</AUTHOR>\\n<LANGUAGE>en</LANGUAGE>';
+        const jsonPrompt = 'Extract metadata from the provided text and filename.\\nRULES:\\n1. Return a JSON object ONLY.\\n2. AUTHOR: Format as "Lastname Firstname". Remove all academic titles (Dr., Prof., PhD, etc.).\\n3. YEAR: 4-digit year. If missing, use "UnknownYear".\\n4. LANGUAGE: 2-letter ISO code. If missing, use "ul".\\n\\nEXAMPLE:\\n{ "title": "History of Rome", "year": "1998", "author": "Miller Anna", "language": "de" }';
         llmPrompt = format === 'xml' ? xmlPrompt : jsonPrompt;
     }
 </script>
@@ -406,6 +409,19 @@
             </div>
 
             <div class="section-card">
+                <label for="pdf-backend-select"><FileText size={16} /> PDF Extraction Engine</label>
+                <div class="toggle-group">
+                    <button class="toggle-btn" class:active={pdfBackend === 'js'} onclick={() => pdfBackend = 'js'}>
+                        JS-Native (PDF.js)
+                    </button>
+                    <button class="toggle-btn" class:active={pdfBackend === 'rust'} onclick={() => pdfBackend = 'rust'}>
+                        Rust-Native (Fast)
+                    </button>
+                </div>
+                <p class="hint">Rust engine is faster and better at preserving layout, but doesn't support OCR.</p>
+            </div>
+
+            <div class="section-card">
                 <label for="format-select"><Code size={16} /> {i18n.t.settings.parsing_format}</label>
                 <div class="toggle-group">
                     <button class="toggle-btn" class:active={parsingFormat === 'xml'} onclick={() => switchParsingFormat('xml')}>
@@ -419,8 +435,7 @@
 
             <div class="section-card">
                 <label for="prompt-textarea"><MessageSquare size={16} /> {i18n.t.settings.llm_prompt}</label>
-                <textarea id="prompt-textarea" bind:value={llmPrompt} rows="4" class="styled-textarea"></textarea>
-                <p class="hint">{i18n.t.settings.llm_prompt_hint}</p>
+                <textarea id="prompt-textarea" bind:value={llmPrompt} rows="10" class="styled-textarea"></textarea>
             </div>
 
             <div class="section-card">

@@ -88,7 +88,7 @@ export const translations = {
             llm_options: 'LLM Options',
             llm_max_chars: 'Max Chars',
             llm_prompt: 'AI Prompt',
-            llm_prompt_hint: 'Use tags: <TITLE>, <AUTHOR>, <YEAR>, <LANGUAGE>.',
+            llm_prompt_hint: 'Include rules for formatting and provide clear examples.',
             author_sort: 'Enable Author Reformatting',
             author_sort_hint: 'Runs a 2nd step to ensure "Lastname Firstname" format.',
             parsing_format: 'Parsing Format',

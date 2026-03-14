@@ -8,7 +8,8 @@
         Play, Trash2, Check, X, FileSearch, 
         Loader2, Eye, Edit, Rocket, CheckSquare, 
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp, 
-        Plus, Columns, Calendar, FileText, HardDrive, Hash
+        Plus, Columns, Calendar, FileText, HardDrive, Hash,
+        RefreshCw, AlertCircle
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -142,6 +143,12 @@
         lastClickedId = id;
     }
 
+    async function handleRedoSelected() {
+        if (selection.size === 0) return;
+        const ids = Array.from(selection);
+        await batchManager.reprocessItems(ids);
+    }
+
     async function startProcessing() {
         await batchManager.processAll();
     }
@@ -229,6 +236,11 @@
         </div>
 
         <div class="right-actions">
+            {#if selection.size > 0}
+                <button class="action-btn small" onclick={handleRedoSelected} title="Redo Analysis for Selected" disabled={batchManager.isProcessing}>
+                    <RefreshCw size={16} />
+                </button>
+            {/if}
             <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
                 <span class={batchManager.isProcessing ? "loader-anim" : ""}>
                     {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}

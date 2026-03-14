@@ -58,9 +58,28 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
             let pageText = '';
             try {
                 const textContent = await page.getTextContent();
-                pageText = textContent.items
-                    .map((item: any) => item.str || '')
-                    .join(' ');
+                // PDF.js returns items in internal object order, which often breaks headers/columns.
+                // We sort by Y coordinate (top to bottom) and then X coordinate (left to right).
+                const items = textContent.items as any[];
+                
+                // Sort items: higher Y first (top), then lower X (left)
+                items.sort((a, b) => {
+                    const yDiff = b.transform[5] - a.transform[5];
+                    if (Math.abs(yDiff) > 5) return yDiff; // Use a threshold for "same line"
+                    return a.transform[4] - b.transform[4];
+                });
+
+                let lastY = -1;
+                for (const item of items) {
+                    const currentY = item.transform[5];
+                    if (lastY !== -1 && Math.abs(currentY - lastY) > 5) {
+                        pageText += '\n'; // New line if Y changes significantly
+                    } else if (lastY !== -1) {
+                        pageText += ' '; // Space if on same line
+                    }
+                    pageText += item.str || '';
+                    lastY = currentY;
+                }
             } catch (textErr) {
                 console.warn(`[PDFExtractor] Text extraction failed for page ${pageNum}:`, textErr);
             }

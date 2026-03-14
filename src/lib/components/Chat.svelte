@@ -8,6 +8,9 @@
         ChevronRight, Loader2, Info, Cpu, Zap
     } from 'lucide-svelte';
     import { onMount } from 'svelte';
+    import { marked } from 'marked';
+    import katex from 'katex';
+    import 'katex/dist/katex.min.css';
 
     interface Message {
         role: 'user' | 'assistant';
@@ -28,6 +31,24 @@
     let activeProviderId = $state('ollama');
     let selectedModel = $state('');
     let localModels = $state<any[]>([]);
+
+    function renderMarkdown(text: string): string {
+        // Handle Block Math: $$...$$ and \[...\]
+        let processed = text.replace(/(\$\$|\\\[)([\s\S]*?)(\$\$|\\\])/g, (match, op, formula) => {
+            try { return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false }); }
+            catch (e) { return match; }
+        });
+        
+        // Handle Inline Math: $...$ and \(...\)
+        processed = processed.replace(/(\$|\\\()([\s\S]*?)(\$|\\\))/g, (match, op, formula) => {
+            // Avoid triggering on single $ signs in text
+            if (op === '$' && match.length < 3) return match; 
+            try { return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false }); }
+            catch (e) { return match; }
+        });
+        
+        return marked.parse(processed, { async: false }) as string;
+    }
 
     onMount(async () => {
         const savedProviders = await getSetting('providers');
@@ -76,13 +97,17 @@
                 throw new Error("No AI Provider or Model selected.");
             }
 
-            // Build context from selected documents
+            // Build context with simple compression
             let contextPrompt = "";
             if (selectedItems.length > 0) {
-                contextPrompt = "Use the following document context to answer the user's question:\n\n";
+                contextPrompt = "Use the following document contexts to answer the user question accurately.\n\n";
                 selectedItems.forEach(item => {
                     if (item.extractedText) {
-                        contextPrompt += `--- DOCUMENT: ${item.originalName} ---\n${item.extractedText.substring(0, 3000)}\n\n`;
+                        let text = item.extractedText;
+                        if (text.length > 3000) {
+                            text = text.substring(0, 1500) + "\n... [CONTENT TRUNCATED] ...\n" + text.substring(text.length - 1500);
+                        }
+                        contextPrompt += `--- DOCUMENT: ${item.originalName} ---\n${text}\n\n`;
                     }
                 });
                 contextPrompt += "--- END OF CONTEXT ---\n\nUser Question: ";
@@ -197,7 +222,7 @@
                         {#if msg.role === 'user'}<User size={16} />{:else}<Bot size={16} />{/if}
                     </div>
                     <div class="message-bubble">
-                        <div class="msg-content">{@html msg.content.replace(/\n/g, '<br>')}</div>
+                        <div class="msg-content">{@html renderMarkdown(msg.content)}</div>
                         <div class="msg-meta">{new Date(msg.timestamp).toLocaleTimeString()}</div>
                     </div>
                 </div>
@@ -278,8 +303,16 @@
     .user-avatar { background: #3b82f6; color: white; }
     
     .message-bubble { display: flex; flex-direction: column; gap: 4px; max-width: calc(100% - 48px); }
-    .msg-content { padding: 12px 16px; background: #18181b; border-radius: 12px; border-top-left-radius: 2px; color: #e2e8f0; font-size: 0.9375rem; line-height: 1.5; }
-    .user-row .msg-content { background: #3b82f6; color: white; border-radius: 12px; border-top-right-radius: 2px; }
+    .msg-content { padding: 12px 16px; background: #18181b; border-radius: 12px; border-top-left-radius: 2px; color: #e2e8f0; font-size: 0.9375rem; line-height: 1.5; word-break: break-word; }
+    .msg-content :global(p) { margin: 0 0 8px 0; }
+    .msg-content :global(p:last-child) { margin-bottom: 0; }
+    .msg-content :global(ul), .msg-content :global(ol) { margin: 8px 0; padding-left: 20px; }
+    .msg-content :global(code) { background: #27272a; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.85em; }
+    .msg-content :global(pre) { background: #09090b; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
+    .msg-content :global(pre code) { background: transparent; padding: 0; border-radius: 0; }
+    .msg-content :global(.katex-display) { margin: 12px 0; overflow-x: auto; overflow-y: hidden; }
+    .user-row .msg-content { background: #3b82f6; color: white; border-radius: 12px; border-top-right-radius: 2px; border-top-left-radius: 12px; }
+    .user-row .msg-content :global(code) { background: #1e3a8a; }
     .msg-meta { font-size: 0.65rem; color: #71717a; align-self: flex-start; }
     .user-row .msg-meta { align-self: flex-end; }
 
