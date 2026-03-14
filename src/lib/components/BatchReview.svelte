@@ -250,6 +250,7 @@
     }
 
     function selectAllVisible() {
+        console.log(`[BatchReview] selectAllVisible: current count=${selectedIds.length}, total visible=${sortedItems.length}`);
         if (selectedIds.length === sortedItems.length && sortedItems.length > 0) {
             selectedIds = [];
         } else {
@@ -257,12 +258,22 @@
         }
     }
 
+    function toggleId(id: string) {
+        if (selectedIds.includes(id)) {
+            selectedIds = selectedIds.filter(i => i !== id);
+        } else {
+            selectedIds = [...selectedIds, id];
+        }
+    }
+
     async function handleRedoSelected() {
+        console.log(`[BatchReview] handleRedoSelected for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         await batchManager.reprocessItems(selectedIds);
     }
 
     async function handleRedoWithOptions() {
+        console.log(`[BatchReview] handleRedoWithOptions for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         showReanalyzeOpts = false;
         const overrides: ProcessOverrides = {
@@ -280,11 +291,13 @@
     }
 
     async function handleBatchReextract() {
+        console.log(`[BatchReview] handleBatchReextract for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         await batchManager.reextractItems(selectedIds);
     }
 
     async function handleBatchRemove() {
+        console.log(`[BatchReview] handleBatchRemove for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         if (confirm(i18n.t.history.delete_confirm)) {
             await batchManager.removeItems(selectedIds);
@@ -293,23 +306,27 @@
     }
 
     function handleBatchAccept(val: boolean) {
+        console.log(`[BatchReview] handleBatchAccept(${val}) for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         batchManager.setAcceptedItems(selectedIds, val);
     }
 
     async function startProcessing() {
+        console.log('[BatchReview] startProcessing clicked');
         await batchManager.processAll();
     }
 
     async function executeSorting() {
-        const count = batchManager.items.filter(i => i.isAccepted).length;
-        if (confirm(i18n.t.batch.confirm_move.replace('{count}', count.toString()))) {
+        const accepted = batchManager.items.filter(i => i.isAccepted);
+        console.log(`[BatchReview] executeSorting clicked. Accepted count: ${accepted.length}`);
+        if (confirm(i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString()))) {
             await batchManager.executeBatch();
         }
     }
 
     function toggleSelectionAccepted(val: boolean) {
         const targetIds = selectedIds.length > 0 ? selectedIds : batchManager.filteredItems.map(i => i.id);
+        console.log(`[BatchReview] toggleSelectionAccepted(${val}) for ${targetIds.length} items`);
         batchManager.setAcceptedItems(targetIds, val);
     }
 
@@ -607,10 +624,10 @@
                             class:status-done={item.status === 'done'}
                             tabindex="0"
                         >
-                            <td onclick={e => { e.stopPropagation(); console.log('TD Clicked'); }} style="width: 35px; text-align: center;">
+                            <td onclick={e => { e.stopPropagation(); }} style="width: 35px; text-align: center;">
                                 <input type="checkbox" 
                                        checked={selectedIds.includes(item.id)} 
-                                       onchange={(e) => { e.stopPropagation(); console.log('Check Change'); if(selectedIds.includes(item.id)) selectedIds = selectedIds.filter(i => i !== item.id); else selectedIds = [...selectedIds, item.id]; }}
+                                       onchange={(e) => { e.stopPropagation(); toggleId(item.id); }}
                                        aria-label="Select item" />
                             </td>
                             {#each columns as col}
