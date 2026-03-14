@@ -1,8 +1,9 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, onDestroy } from 'svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { getSetting, saveSetting } from '../store';
     import { i18n, type Language } from '../i18n.svelte';
+    import { getDefaultPrompt } from '../batch/store.svelte';
     import { 
         RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
         Loader2, FolderOpen, Save, Languages, MessageSquare, 
@@ -121,12 +122,7 @@
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
-        
-        const defaultPrompt = parsingFormat === 'xml' 
-            ? 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>'
-            : 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
-            
-        llmPrompt = await getSetting('llmPrompt', defaultPrompt);
+        llmPrompt = await getSetting('llmPrompt', getDefaultPrompt(parsingFormat, currentLanguage));
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         pdfBackend = await getSetting('pdfBackend', 'js') as 'js' | 'rust';
@@ -145,16 +141,17 @@
         
         await updateLocalModelSizes();
 
-        const unlisten = await listen('download-progress', (event: any) => {
+        listen('download-progress', (event: any) => {
             const { id, received, total } = event.payload;
             const model = localModels.find(m => m.id === id);
             if (model) {
                 model.progress = Math.round((received / total) * 100);
             }
-        });
-
-        return () => unlisten();
+        }).then(fn => { unlistenDownload = fn; });
     });
+
+    let unlistenDownload: (() => void) | undefined;
+    onDestroy(() => unlistenDownload?.());
 
     async function updateLocalModelSizes() {
         for (let m of localModels) {
@@ -324,9 +321,11 @@
 
     function switchParsingFormat(format: 'xml' | 'json') {
         parsingFormat = format;
-        const xmlPrompt = 'Extract metadata from the provided text and filename. \\nRULES:\\n1. Format as XML tags only. No extra text.\\n2. AUTHOR: Format as "Lastname Firstname". Remove all academic titles (Dr., Prof., PhD, etc.).\\n3. YEAR: 4-digit year. If missing, use "UnknownYear".\\n4. LANGUAGE: 2-letter ISO code. If missing, use "ul".\\n\\nEXAMPLE:\\n<TITLE>Artificial Intelligence in Medicine</TITLE>\\n<YEAR>2024</YEAR>\\n<AUTHOR>Smith John</AUTHOR>\\n<LANGUAGE>en</LANGUAGE>';
-        const jsonPrompt = 'Extract metadata from the provided text and filename.\\nRULES:\\n1. Return a JSON object ONLY.\\n2. AUTHOR: Format as "Lastname Firstname". Remove all academic titles (Dr., Prof., PhD, etc.).\\n3. YEAR: 4-digit year. If missing, use "UnknownYear".\\n4. LANGUAGE: 2-letter ISO code. If missing, use "ul".\\n\\nEXAMPLE:\\n{ "title": "History of Rome", "year": "1998", "author": "Miller Anna", "language": "de" }';
-        llmPrompt = format === 'xml' ? xmlPrompt : jsonPrompt;
+        llmPrompt = getDefaultPrompt(format, currentLanguage);
+    }
+
+    function resetPromptToDefault() {
+        llmPrompt = getDefaultPrompt(parsingFormat, currentLanguage);
     }
 </script>
 
@@ -438,8 +437,14 @@
             </div>
 
             <div class="section-card">
-                <label for="prompt-textarea"><MessageSquare size={16} /> {i18n.t.settings.llm_prompt}</label>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <label for="prompt-textarea" style="margin-bottom:0;"><MessageSquare size={16} /> {i18n.t.settings.llm_prompt}</label>
+                    <button class="action-btn small" onclick={resetPromptToDefault} title={currentLanguage === 'de' ? 'Standard wiederherstellen' : 'Reset to default'}>
+                        <RefreshCw size={12} /> {currentLanguage === 'de' ? 'Standard' : 'Default'}
+                    </button>
+                </div>
                 <textarea id="prompt-textarea" bind:value={llmPrompt} rows="10" class="styled-textarea"></textarea>
+                <p class="hint">{currentLanguage === 'de' ? `Aktuelle Variante: ${parsingFormat.toUpperCase()} / DE` : `Current variant: ${parsingFormat.toUpperCase()} / EN`}</p>
             </div>
 
             <div class="section-card">

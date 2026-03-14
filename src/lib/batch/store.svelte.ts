@@ -1,10 +1,32 @@
 import { type BatchItem, type BatchStatus, type BatchSession } from '../types';
-import { extractText } from '../extractors'; 
+import { extractText } from '../extractors';
 import { llmClient } from '../llm/client';
 import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
 import { readFile, writeFile, mkdir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
+
+export function getDefaultPrompt(format: 'xml' | 'json', language: string): string {
+    const isDE = language === 'de';
+    if (format === 'json') {
+        if (isDE) {
+            return `Du bist ein Metadaten-Extraktionsassistent. Extrahiere bibliografische Metadaten aus dem bereitgestellten Dokumenttext und Dateinamen.\n\nAUSGABE-REGELN:\n- Gib NUR ein gültiges JSON-Objekt zurück. Kein Markdown, keine Erklärungen.\n- Alle Werte müssen Strings sein. Nutze null für fehlende Felder.\n- TITLE: Vollständiger Dokumenttitel aus dem Inhalt (nicht Dateiname).\n- AUTHOR: Format "Nachname Vorname". Alle akademischen Titel entfernen (Dr., Prof., PhD usw.).\n- YEAR: 4-stelliges Erscheinungsjahr. null wenn unbekannt.\n- LANGUAGE: 2-buchstabiger ISO 639-1 Code (z.B. "de", "en"). null wenn unklar.\n\nBEISPIEL-AUSGABE:\n{"title":"Titel des Dokuments","author":"Müller Hans","year":"2023","language":"de"}`;
+        }
+        return `You are a metadata extraction assistant. Extract bibliographic metadata from the provided document text and filename.\n\nOUTPUT RULES:\n- Return a valid JSON object ONLY. No markdown, no explanation, no surrounding text.\n- All values must be strings. Use null for missing fields.\n- TITLE: Full document title from content (not the filename).\n- AUTHOR: "Lastname Firstname" format. Strip all titles (Dr., Prof., PhD, etc.).\n- YEAR: 4-digit publication year. Use null if unknown.\n- LANGUAGE: 2-letter ISO 639-1 code (e.g. "en", "de"). Use null if uncertain.\n\nEXAMPLE OUTPUT:\n{"title":"Artificial Intelligence in Healthcare","author":"Smith John","year":"2023","language":"en"}`;
+    } else {
+        if (isDE) {
+            return `Du bist ein Metadaten-Extraktionsassistent. Extrahiere bibliografische Metadaten aus dem bereitgestellten Dokumenttext und Dateinamen.\n\nAUSGABE-REGELN:\n- Gib NUR XML-Tags zurück. Kein Markdown, keine Erklärungen, kein weiterer Text.\n- TITLE: Vollständiger Dokumenttitel aus dem Inhalt.\n- AUTHOR: Format "Nachname Vorname". Alle akademischen Titel entfernen (Dr., Prof., PhD usw.).\n- YEAR: Nur 4-stellige Jahreszahl. "UnknownYear" wenn unbekannt.\n- LANGUAGE: 2-buchstabiger ISO 639-1 Code. "ul" wenn unklar.\n\nBEISPIEL-AUSGABE:\n<TITLE>Titel des Dokuments</TITLE>\n<YEAR>2023</YEAR>\n<AUTHOR>Müller Hans</AUTHOR>\n<LANGUAGE>de</LANGUAGE>`;
+        }
+        return `You are a metadata extraction assistant. Extract bibliographic metadata from the provided document text and filename.\n\nOUTPUT RULES:\n- Return XML tags ONLY. No markdown, no explanation, no extra text.\n- TITLE: Full document title from content.\n- AUTHOR: "Lastname Firstname" format. Strip all titles (Dr., Prof., PhD, etc.).\n- YEAR: 4-digit year only. Use "UnknownYear" if missing.\n- LANGUAGE: 2-letter ISO 639-1 code. Use "ul" if uncertain.\n\nEXAMPLE OUTPUT:\n<TITLE>Artificial Intelligence in Healthcare</TITLE>\n<YEAR>2023</YEAR>\n<AUTHOR>Smith John</AUTHOR>\n<LANGUAGE>en</LANGUAGE>`;
+    }
+}
+
+export interface ProcessOverrides {
+    providerId?: string;
+    modelId?: string;
+    maxChars?: number;
+    authorSort?: boolean;
+}
 
 export class BatchManager {
     items = $state<BatchItem[]>([]);
@@ -84,12 +106,12 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
-    async reprocessItems(ids: string[]) {
+    async reprocessItems(ids: string[], overrides?: ProcessOverrides) {
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
             if (item) item.status = 'queued';
         });
-        await this.processAll();
+        await this.processAll(overrides);
     }
 
     async reextractItems(ids: string[]) {
@@ -125,18 +147,18 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
-    async processAll() {
-        console.log("[BatchManager] Starting processAll loop");
+    async processAll(overrides?: ProcessOverrides) {
+        console.log("[BatchManager] Starting processAll loop", overrides ? `(overrides: ${JSON.stringify(overrides)})` : '');
         if (this.isProcessing) return;
         this.isProcessing = true;
 
         const providers = await getSetting('providers', []);
-        const activeProviderId = await getSetting('activeProviderId', 'ollama');
+        const activeProviderId = overrides?.providerId || await getSetting('activeProviderId', 'ollama');
         const activeProvider = (providers as any[]).find(p => p.id === activeProviderId) || providers[0];
-        
-        let modelId = activeProvider?.selectedModel || activeProvider?.models?.[0];
-        
-        if (['mistralrs', 'llamacpp'].includes(activeProviderId)) {
+
+        let modelId = overrides?.modelId || activeProvider?.selectedModel || activeProvider?.models?.[0];
+
+        if (!overrides?.modelId && ['mistralrs', 'llamacpp'].includes(activeProviderId)) {
             const localModels = await getSetting('localModels', []) as any[];
             const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
             modelId = activeLocal?.path || modelId;
@@ -144,30 +166,37 @@ export class BatchManager {
 
         const globalExportPath = await getSetting('exportPath', '');
         const globalSaveTxt = await getSetting('saveTxt', true);
-        const llmMaxChars = await getSetting('llmMaxChars', 5000);
+        const llmMaxChars = overrides?.maxChars ?? await getSetting('llmMaxChars', 5000);
         const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
-        const authorSortEnabled = await getSetting('authorSortEnabled', false);
+        const authorSortEnabled = overrides?.authorSort ?? await getSetting('authorSortEnabled', false);
         const pdfBackend = await getSetting('pdfBackend', 'js');
+        const language = await getSetting('language', 'en') as string;
 
-        // Define prompts based on format
-        const xmlPrompt = 'Extract metadata from this document. Respond ONLY in this exact format:\n<TITLE>...</TITLE>\n<YEAR>YYYY</YEAR>\n<AUTHOR>Lastname Firstname</AUTHOR>\n<LANGUAGE>ISO</LANGUAGE>';
-        const jsonPrompt = 'Extract metadata from this document text. Return JSON ONLY. { "title": "...", "author": "...", "year": "...", "language": "..." }.';
-        
-        const basePrompt = await getSetting('llmPrompt', parsingFormat === 'xml' ? xmlPrompt : jsonPrompt);
+        const defaultPrompt = getDefaultPrompt(parsingFormat, language);
+        const basePrompt = await getSetting('llmPrompt', defaultPrompt);
 
+        console.log(`[BatchManager] processAll config: format=${parsingFormat}, language=${language}, provider=${activeProviderId}, model=${modelId}, maxChars=${llmMaxChars}, authorSort=${authorSortEnabled}`);
+        console.log(`[BatchManager] Items to process: ${this.items.filter(i => i.status === 'queued' || i.status === 'error').map(i => i.originalName).join(', ') || 'none'}`);
+
+        try {
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
-            
+
             try {
-                item.status = 'extracting';
-                
-                if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust') {
-                    const text = await invoke('extract_pdf_native', { path: item.originalPath });
-                    item.extractedText = (text as string).substring(0, llmMaxChars);
+                // Skip re-extraction if text already exists (reprocessItems preserves it; reextractItems clears it)
+                if (!item.extractedText) {
+                    item.status = 'extracting';
+                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust') {
+                        const text = await invoke('extract_pdf_native', { path: item.originalPath });
+                        item.extractedText = text as string;
+                    } else {
+                        const fileData = await readFile(item.originalPath);
+                        const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
+                        item.extractedText = extraction.text;
+                    }
+                    console.log(`[BatchManager] Extracted: ${item.originalName} — ${item.extractedText.length} chars (LLM will use first ${llmMaxChars})`);
                 } else {
-                    const fileData = await readFile(item.originalPath);
-                    const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer });
-                    item.extractedText = extraction.text.substring(0, llmMaxChars);
+                    console.log(`[BatchManager] Skipping extraction for ${item.originalName}, using cached ${item.extractedText.length} chars`);
                 }
 
                 if (this.isMetadataExtractionEnabled) {
@@ -182,7 +211,12 @@ export class BatchManager {
                     const textSample = item.extractedText.substring(0, llmMaxChars);
                     const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
                     
+                    console.log(`[BatchManager] Querying AI for: ${item.originalName}`);
+                    console.log(`[BatchManager] PROMPT (Shortened): ${prompt.substring(0, 1500)}...`);
+                    
                     const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
+                    
+                    console.log(`[BatchManager] AI RESPONSE: ${response}`);
                     
                     const metadata = this.parseLLMResponse(response, parsingFormat);
                     item.suggestedTitle = metadata.title || 'Unknown Title';
@@ -190,10 +224,12 @@ export class BatchManager {
                     item.suggestedYear = metadata.year || 'Unknown Year';
 
                     if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
-                        const sortPrompt = `Convert author name to "Lastname Firstname" format. Use <AUTHOR> tags. Name: "${item.suggestedAuthor}"`;
+                        const sortPrompt = `Reformat the following author name to "Lastname Firstname" order (surname first, then given name). Strip ALL academic titles and honorifics (Dr., Prof., PhD, Dipl., Ing., M.D., M.A., etc.). Output ONLY the reformatted name inside <AUTHOR> tags — no explanation, no extra text.\nInput: "${item.suggestedAuthor}"\n<AUTHOR>`;
+                        console.log(`[BatchManager] Author sort prompt: ${sortPrompt}`);
                         const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
-                        const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
-                        if (match) item.suggestedAuthor = match[1].trim();
+                        console.log(`[BatchManager] Author sort response: ${sortRes}`);
+                        const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i) || sortRes.match(/^([^\n<]+)/);
+                        if (match) item.suggestedAuthor = this.cleanAuthorName(match[1].trim()) ?? item.suggestedAuthor;
                     }
                     
                     const safeTitle = (item.suggestedTitle as string).replace(/[\\/:*?"<>|]/g, '');
@@ -212,11 +248,27 @@ export class BatchManager {
             } catch (error: any) {
                 item.status = 'error';
                 item.errorMessage = error.message || String(error);
+                console.error(`[BatchManager] Error processing ${item.originalName}:`, error);
             }
             await this.saveCurrentSession();
         }
-        this.isProcessing = false;
-        await this.saveCurrentSession();
+        } finally {
+            this.isProcessing = false;
+            await this.saveCurrentSession();
+        }
+    }
+
+    private cleanAuthorName(author: string | undefined): string | undefined {
+        if (!author) return undefined;
+        // Strip academic titles that low-capacity models include despite the prompt
+        const cleaned = author
+            .replace(/\b(Prof\.\s*Dr\.-Ing\.|Prof\.\s*Dr\.|Dr\.\s*Prof\.|PD\s+Dr\.|Dipl\.-[A-Za-zäöü]+\.\s*|Prof\.|Dr\.|PhD\.?|M\.D\.?|M\.A\.?|B\.A\.?|B\.Sc\.?|M\.Sc\.?|Mag\.|Ing\.)\s*/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (cleaned && cleaned !== author) {
+            console.log(`[BatchManager] cleanAuthorName: "${author}" → "${cleaned}"`);
+        }
+        return cleaned || author;
     }
 
     private fixMalformedXmlTags(text: string): string {
@@ -228,43 +280,95 @@ export class BatchManager {
             }
             return `<${tag}>${content}</${tag}>`;
         });
-
         // Fix unclosed malformed tags: <TAG=value> -> <TAG>value</TAG>
         fixed = fixed.replace(/<(TITLE|AUTHOR|YEAR|LANGUAGE)[=\s]+([^<>]+?)(?=\s*(?:<|$))/gi, '<$1>$2</$1>');
-        
         return fixed;
     }
 
-    private parseLLMResponse(response: string, format: 'xml' | 'json'): { title?: string, author?: string, year?: string } {
-        if (format === 'json') {
-            try {
-                const cleanJson = response.replace(/```json|```/g, '').trim();
-                const data = JSON.parse(cleanJson);
-                return { title: data.title, author: data.author, year: data.year };
-            } catch (e) {
-                // Fallback to XML parsing if JSON fails even in JSON mode
-                console.warn("[BatchManager] JSON parsing failed, falling back to XML tags");
-            }
+    private tryParseJson(response: string): { title?: string, author?: string, year?: string } | null {
+        // Step 1: Strip markdown code fences
+        let clean = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+        console.log(`[BatchManager] JSON Step 1 (stripped fences): "${clean.substring(0, 200)}"`);
+
+        // Step 2: Strip JS-style comments
+        const preComment = clean;
+        clean = clean.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        if (clean.length !== preComment.length) {
+            console.log(`[BatchManager] JSON Step 2 (stripped comments): removed ${preComment.length - clean.length} chars`);
         }
 
+        // Step 3: Isolate outermost { ... }
+        const start = clean.indexOf('{');
+        const end = clean.lastIndexOf('}');
+        if (start === -1 || end === -1 || end <= start) {
+            console.warn(`[BatchManager] JSON Step 3 FAILED: no valid { } pair found (start=${start}, end=${end})`);
+            return null;
+        }
+        clean = clean.substring(start, end + 1);
+        console.log(`[BatchManager] JSON Step 3 (isolated braces): "${clean}"`);
+
+        // Step 4: Try strict parse
+        try {
+            const data = JSON.parse(clean);
+            console.log(`[BatchManager] JSON Step 4 (parse success):`, data);
+            const year = data.year != null && data.year !== 'null' ? String(data.year) : undefined;
+            return { title: data.title || undefined, author: this.cleanAuthorName(data.author || undefined), year };
+        } catch (e) {
+            console.warn(`[BatchManager] JSON Step 4 (parse error):`, e);
+        }
+
+        // Step 5: Fuzzy regex fallback
+        console.log(`[BatchManager] JSON Step 5 (fuzzy regex fallback)...`);
+        const titleMatch = response.match(/"title"\s*:\s*"([^"]*?)"/i);
+        const authorMatch = response.match(/"author"\s*:\s*"([^"]*?)"/i);
+        const yearMatch = response.match(/"year"\s*:\s*"(\d{4})"/i) || response.match(/"year"\s*:\s*(\d{4})/i);
+        console.log(`[BatchManager] JSON Step 5 results: title=${!!titleMatch}, author=${!!authorMatch}, year=${!!yearMatch}`);
+
+        if (titleMatch || authorMatch || yearMatch) {
+            return { title: titleMatch?.[1], author: this.cleanAuthorName(authorMatch?.[1]), year: yearMatch?.[1] };
+        }
+        return null;
+    }
+
+    private parseXml(response: string): { title?: string, author?: string, year?: string } {
         const cleaned = this.fixMalformedXmlTags(response);
-        
+        console.log(`[BatchManager] XML parsing input (first 300): "${cleaned.substring(0, 300)}"`);
+
         const extractTag = (tag: string) => {
-            const regex = new RegExp(`<${tag}[^>]*>(.*?)<\/${tag}>`, 'i');
+            const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
             const match = cleaned.match(regex);
-            return match ? match[1].trim() : undefined;
+            const val = match ? match[1].trim() : undefined;
+            console.log(`[BatchManager] XML <${tag}>: ${val !== undefined ? `"${val}"` : 'NOT FOUND'}`);
+            return val;
         };
 
-        let title = extractTag('TITLE');
-        const author = extractTag('AUTHOR');
+        const title = extractTag('TITLE') || extractTag('PUBLICATION TITLE') || extractTag('PUBLICATIONTITLE');
+        const author = this.cleanAuthorName(extractTag('AUTHOR'));
         const year = extractTag('YEAR');
+        return { title, author, year };
+    }
 
-        // Handle alternates
-        if (!title) {
-            title = extractTag('PUBLICATION TITLE') || extractTag('PUBLICATIONTITLE');
+    private parseLLMResponse(response: string, format: 'xml' | 'json'): { title?: string, author?: string, year?: string } {
+        console.log(`[BatchManager] parseLLMResponse: preferred format=${format.toUpperCase()}, response length=${response.length}`);
+        console.log(`[BatchManager] Raw response preview: "${response.substring(0, 400)}"`);
+
+        // Auto-detect JSON: try JSON if format is json OR response looks like JSON
+        const stripped = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+        const looksLikeJson = stripped.startsWith('{') || response.includes('```json');
+        console.log(`[BatchManager] Detection: format=${format}, looksLikeJson=${looksLikeJson}`);
+
+        if (format === 'json' || looksLikeJson) {
+            console.log(`[BatchManager] Attempting JSON parsing...`);
+            const result = this.tryParseJson(response);
+            if (result) {
+                console.log(`[BatchManager] JSON parsing succeeded:`, result);
+                return result;
+            }
+            console.warn(`[BatchManager] JSON parsing failed (format=${format}, looksLikeJson=${looksLikeJson}), falling back to XML`);
         }
 
-        return { title, author, year };
+        console.log(`[BatchManager] Attempting XML tag parsing...`);
+        return this.parseXml(response);
     }
 
     async executeBatch() {

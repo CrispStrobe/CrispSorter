@@ -1,6 +1,8 @@
 <script lang="ts">
-    import { batchManager } from '../batch/store.svelte';
+    import { batchManager, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
+    import { getSetting } from '../store';
+    import { DEFAULT_PROVIDERS, type LLMProvider } from '../llm/client';
     import { open } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
     import { onMount } from 'svelte';
@@ -14,13 +16,22 @@
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
-    
+
     // Multi-selection state
     let selectedIds = $state<string[]>([]);
     let lastClickedId = $state<string | null>(null);
     let showFilters = $state(false);
     let showModeMenu = $state(false);
     let showColumnSelector = $state(false);
+
+    // Re-analyze with options dropdown
+    let showReanalyzeOpts = $state(false);
+    let reanalProviders = $state<LLMProvider[]>([]);
+    let reanalProviderId = $state('');
+    let reanalModel = $state('');
+    let reanalMaxChars = $state(5000);
+    let reanalAuthorSort = $state(false);
+    let reanalModels = $derived(reanalProviders.find(p => p.id === reanalProviderId)?.models ?? []);
 
     // Sorting state
     let sortColumn = $state<string>('file_name');
@@ -102,6 +113,13 @@
     });
 
     onMount(async () => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && selectedIds.length > 0) {
+                selectedIds = [];
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+
         const unlisten = await listen('tauri://drag-drop', (event: any) => {
             const paths = event.payload.paths as string[];
             paths.forEach(path => {
@@ -109,7 +127,27 @@
                 batchManager.addItem(path, name);
             });
         });
-        return () => unlisten();
+
+        // Load providers for re-analyze dropdown
+        const savedProviders = await getSetting('providers');
+        const merged = savedProviders
+            ? DEFAULT_PROVIDERS.map(def => {
+                const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
+                return saved ? { ...def, ...saved } : def;
+              })
+            : DEFAULT_PROVIDERS;
+        reanalProviders = merged;
+        const activeId = await getSetting('activeProviderId', 'ollama') as string;
+        reanalProviderId = activeId;
+        const activeProv = merged.find(p => p.id === activeId) || merged[0];
+        reanalModel = activeProv?.selectedModel || activeProv?.models?.[0] || '';
+        reanalMaxChars = await getSetting('llmMaxChars', 5000) as number;
+        reanalAuthorSort = await getSetting('authorSortEnabled', false) as boolean;
+
+        return () => {
+            unlisten();
+            window.removeEventListener('keydown', handleKeyDown);
+        };
     });
 
     async function handleAddFiles() {
@@ -163,6 +201,23 @@
         await batchManager.reprocessItems(selectedIds);
     }
 
+    async function handleRedoWithOptions() {
+        if (selectedIds.length === 0) return;
+        showReanalyzeOpts = false;
+        const overrides: ProcessOverrides = {
+            providerId: reanalProviderId || undefined,
+            modelId: reanalModel || undefined,
+            maxChars: reanalMaxChars || undefined,
+            authorSort: reanalAuthorSort
+        };
+        await batchManager.reprocessItems(selectedIds, overrides);
+    }
+
+    function onReanalProviderChange() {
+        const prov = reanalProviders.find(p => p.id === reanalProviderId);
+        reanalModel = prov?.selectedModel || prov?.models?.[0] || '';
+    }
+
     async function handleBatchReextract() {
         if (selectedIds.length === 0) return;
         await batchManager.reextractItems(selectedIds);
@@ -207,6 +262,69 @@
 </script>
 
 <div class="batch-container" ondragover={e => e.preventDefault()} role="region" aria-label="File drop zone">
+    {#if selectedIds.length > 0}
+        <div class="selection-toolbar">
+            <span class="selection-info">
+                <CheckSquare size={14} />
+                {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
+            </span>
+            <div class="toolbar-divider"></div>
+            <div class="dropdown-container">
+                <div class="split-btn-group">
+                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
+                        <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
+                    </button>
+                    <button class="action-btn small split-caret" onclick={() => showReanalyzeOpts = !showReanalyzeOpts} title="Options">
+                        <ChevronDown size={11} />
+                    </button>
+                </div>
+                {#if showReanalyzeOpts}
+                    <div class="dropdown-menu reanalyze-opts">
+                        <div class="opts-row">
+                            <label for="reanalProvider">{i18n.t.batch.reanalyze_provider}</label>
+                            <select id="reanalProvider" bind:value={reanalProviderId} onchange={onReanalProviderChange}>
+                                {#each reanalProviders as p}
+                                    <option value={p.id}>{p.name}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalModel">{i18n.t.batch.reanalyze_model}</label>
+                            <input id="reanalModel" type="text" bind:value={reanalModel} list="reanalModelList" placeholder="model id..." />
+                            <datalist id="reanalModelList">
+                                {#each reanalModels as m}<option value={m}></option>{/each}
+                            </datalist>
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalMaxChars">{i18n.t.batch.reanalyze_max_chars}</label>
+                            <input id="reanalMaxChars" type="number" bind:value={reanalMaxChars} min="500" step="500" style="width: 80px;" />
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalAuthorSort">{i18n.t.batch.reanalyze_author_step}</label>
+                            <input id="reanalAuthorSort" type="checkbox" bind:checked={reanalAuthorSort} />
+                        </div>
+                        <button class="action-btn small primary opts-run" onclick={handleRedoWithOptions}>
+                            <Play size={12} /> {i18n.t.batch.reanalyze_run} ({selectedIds.length})
+                        </button>
+                    </div>
+                {/if}
+            </div>
+            <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
+                <FileSearch size={14} /> {i18n.t.batch.reextract}
+            </button>
+            <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
+                <Check size={14} /> {i18n.t.batch.confirm}
+            </button>
+            <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
+                <X size={14} /> {i18n.t.batch.ignore}
+            </button>
+            <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
+                <Trash2 size={14} /> {i18n.t.batch.remove}
+            </button>
+            <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
+        </div>
+    {/if}
+
     <div class="toolbar">
         <div class="left-actions">
             <div class="btn-group">
@@ -318,32 +436,6 @@
 
     <div class="main-split">
         <div class="table-container">
-            {#if selectedIds.length > 0}
-                <div class="selection-toolbar">
-                    <span class="selection-info">
-                        <CheckSquare size={14} />
-                        {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
-                    </span>
-                    <div class="toolbar-divider"></div>
-                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
-                        <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
-                    </button>
-                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
-                        <FileSearch size={14} /> {i18n.t.batch.reextract}
-                    </button>
-                    <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
-                        <Check size={14} /> {i18n.t.batch.confirm}
-                    </button>
-                    <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
-                        <X size={14} /> {i18n.t.batch.ignore}
-                    </button>
-                    <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
-                        <Trash2 size={14} /> {i18n.t.batch.remove}
-                    </button>
-                    <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
-                </div>
-            {/if}
-
             <table class="dense-table">
                 <thead>
                     <tr>
@@ -448,26 +540,28 @@
                         <h4>{i18n.t.batch.target_path}</h4>
                         <div class="path-preview">{selectedItem.targetPath || i18n.t.batch.path_hint}</div>
                     </div>
-                    <div class="detail-section">
-                        <h4>{i18n.t.batch.extracted_text}</h4>
-                        <div class="text-preview">{selectedItem.extractedText || i18n.t.batch.extract_hint}</div>
-                    </div>
+                    
                     <div class="detail-section">
                         <h4>{i18n.t.batch.edit_metadata}</h4>
                         <div class="edit-fields">
-                            <label>
-                                {i18n.t.batch.title} 
+                            <div class="field-row">
+                                <span class="field-label">{i18n.t.batch.title}</span>
                                 <input type="text" bind:value={selectedItem.suggestedTitle} />
-                            </label>
-                            <label>
-                                {i18n.t.batch.author} 
+                            </div>
+                            <div class="field-row">
+                                <span class="field-label">{i18n.t.batch.author}</span>
                                 <input type="text" bind:value={selectedItem.suggestedAuthor} />
-                            </label>
-                            <label>
-                                {i18n.t.batch.year} 
+                            </div>
+                            <div class="field-row">
+                                <span class="field-label">{i18n.t.batch.year}</span>
                                 <input type="text" bind:value={selectedItem.suggestedYear} />
-                            </label>
+                            </div>
                         </div>
+                    </div>
+
+                    <div class="detail-section">
+                        <h4>{i18n.t.batch.extracted_text}</h4>
+                        <div class="text-preview">{selectedItem.extractedText || i18n.t.batch.extract_hint}</div>
                     </div>
                 </div>
             </div>
@@ -564,13 +658,33 @@
     .ext-badge { font-size: 0.65rem; background: #27272a; padding: 1px 4px; border-radius: 3px; color: #71717a; text-transform: uppercase; font-weight: 700; }
     .path-text { font-family: monospace; font-size: 0.7rem; color: #71717a; }
 
-    .detail-pane { width: 400px; background: #0f172a; border-left: 1px solid #1e293b; display: flex; flex-direction: column; }
-    .detail-header { padding: 12px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
-    .detail-content { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
-    .path-preview, .text-preview { background: #020617; border: 1px solid #1e293b; padding: 10px; font-family: monospace; font-size: 0.75rem; border-radius: 6px; color: #94a3b8; }
-    .edit-fields label { display: block; font-size: 0.75rem; margin-bottom: 12px; color: #a1a1aa; }
-    .edit-fields input { width: 100%; margin-top: 4px; padding: 6px 10px; border: 1px solid #334155; border-radius: 6px; background: #1e293b; color: white; font-size: 0.8125rem; }
+    .detail-pane { width: 400px; background: #0f172a; border-left: 1px solid #1e293b; display: flex; flex-direction: column; flex-shrink: 0; }
+    .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
+    .detail-content { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    
+    .detail-section h4 { font-size: 0.65rem; text-transform: uppercase; color: #71717a; margin: 0 0 6px 0; letter-spacing: 0.05em; }
+    .path-preview { background: #020617; border: 1px solid #1e293b; padding: 8px; font-family: monospace; font-size: 0.7rem; border-radius: 6px; color: #94a3b8; word-break: break-all; }
+    .text-preview { background: #020617; border: 1px solid #1e293b; padding: 10px; font-family: monospace; font-size: 0.75rem; border-radius: 6px; color: #94a3b8; min-height: 100px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
+    
+    .edit-fields { display: flex; flex-direction: column; gap: 8px; }
+    .field-row { display: flex; align-items: center; gap: 12px; }
+    .field-label { width: 60px; font-size: 0.75rem; color: #a1a1aa; flex-shrink: 0; }
+    .edit-fields input { flex: 1; padding: 4px 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: white; font-size: 0.8125rem; }
+    .edit-fields input:focus { border-color: #3b82f6; outline: none; }
     
     .loader-anim { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .split-btn-group { display: flex; gap: 1px; }
+    .split-btn-group .action-btn { border-radius: 0; }
+    .split-btn-group .action-btn:first-child { border-radius: 6px 0 0 6px; }
+    .split-caret { border-radius: 0 6px 6px 0 !important; padding: 4px 6px !important; border-left-color: #3f3f46 !important; }
+
+    .reanalyze-opts { padding: 12px; min-width: 260px; display: flex; flex-direction: column; gap: 10px; }
+    .opts-row { display: flex; align-items: center; gap: 8px; }
+    .opts-row label { width: 80px; font-size: 0.7rem; font-weight: 600; color: #71717a; text-transform: uppercase; flex-shrink: 0; }
+    .opts-row select, .opts-row input[type="text"], .opts-row input[type="number"] { flex: 1; background: #09090b; border: 1px solid #27272a; color: white; border-radius: 4px; padding: 4px 8px; font-size: 0.75rem; }
+    .opts-row input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; }
+    .opts-run { width: 100%; justify-content: center; margin-top: 4px; }
+    .action-btn.primary { background: #3b82f6; color: white; border-color: #3b82f6; }
 </style>

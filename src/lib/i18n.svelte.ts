@@ -66,7 +66,12 @@ export const translations = {
             remove: 'Remove',
             confirm: 'Confirm',
             ignore: 'Ignore',
-            selected_count: '{count} selected'
+            selected_count: '{count} selected',
+            reanalyze_provider: 'Provider',
+            reanalyze_model: 'Model',
+            reanalyze_max_chars: 'Max chars',
+            reanalyze_author_step: 'Author step',
+            reanalyze_run: 'Run'
         },
         history: {
             title: 'History',
@@ -106,7 +111,7 @@ export const translations = {
             llm_prompt: 'AI Prompt',
             llm_prompt_hint: 'Include rules for formatting and provide clear examples.',
             author_sort: 'Enable Author Reformatting',
-            author_sort_hint: 'Runs a 2nd step to ensure "Lastname Firstname" format.',
+            author_sort_hint: 'Runs a 2nd LLM step to ensure "Lastname Firstname" format and strip titles. Parser also strips Dr./Prof. automatically.',
             parsing_format: 'Parsing Format',
             parsing_xml: 'XML Tags (Robust)',
             parsing_json: 'JSON (Modern)',
@@ -182,7 +187,12 @@ export const translations = {
             remove: 'Entfernen',
             confirm: 'Bestätigen',
             ignore: 'Ignorieren',
-            selected_count: '{count} ausgewählt'
+            selected_count: '{count} ausgewählt',
+            reanalyze_provider: 'Anbieter',
+            reanalyze_model: 'Modell',
+            reanalyze_max_chars: 'Max. Zeichen',
+            reanalyze_author_step: 'Autor-Schritt',
+            reanalyze_run: 'Ausführen'
         },
         history: {
             title: 'Verlauf',
@@ -222,7 +232,7 @@ export const translations = {
             llm_prompt: 'KI Prompt',
             llm_prompt_hint: 'Nutze Tags: <TITLE>, <AUTHOR>, <YEAR>, <LANGUAGE>.',
             author_sort: 'Autor-Reformatierung',
-            author_sort_hint: '2. Schritt für "Nachname Vorname" Format.',
+            author_sort_hint: '2. KI-Schritt für "Nachname Vorname"-Format und Titelbereinigung. Parser entfernt Dr./Prof. auch automatisch.',
             parsing_format: 'Parsing-Format',
             parsing_xml: 'XML Tags (Robust)',
             parsing_json: 'JSON (Modern)',
