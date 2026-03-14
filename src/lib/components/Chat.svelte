@@ -4,14 +4,15 @@
     import { getSetting } from '../store';
     import { i18n } from '../i18n.svelte';
     import { 
-        Bot, Trash2, FileText, ChevronRight, ChevronLeft, Cpu, Zap
+        Send, User, Bot, Trash2, FileText, 
+        ChevronRight, ChevronLeft, Cpu, Zap
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
     import katex from 'katex';
     import 'katex/dist/katex.min.css';
     import 'deep-chat';
 
-    // Set KaTeX globally for Deep Chat native math support
+    // Global KaTeX for Deep Chat
     if (typeof window !== 'undefined') {
         (window as any).katex = katex;
     }
@@ -26,8 +27,25 @@
     let selectedIds = $state<string[]>([]);
     let sidebarCollapsed = $state(false);
     let chatElement = $state<any>();
+    let chatHistorySize = $state(0);
 
-    // --- Configuration Objects ---
+    // Derived Context Info
+    const selectedItems = $derived(batchManager.items.filter(i => selectedIds.includes(i.id)));
+    const docContextSize = $derived.by(() => {
+        let total = 0;
+        selectedItems.forEach(item => {
+            if (item.extractedText) total += new TextEncoder().encode(item.extractedText).length;
+        });
+        return total;
+    });
+
+    function formatSize(bytes: number) {
+        if (bytes === 0) return "0 B";
+        if (bytes < 4096) return `${bytes} B`;
+        return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+
+    // --- Deep Chat Configuration ---
     
     const messageStyles = {
         "default": {
@@ -58,7 +76,7 @@
     };
 
     const textInputConfig = {
-        "placeholder": {"text": "Type your question...", "style": {"color": "#71717a"}},
+        "placeholder": {"text": "Type your message...", "style": {"color": "#71717a"}},
         "style": {"backgroundColor": "#09090b", "color": "white", "border": "1px solid #27272a", "borderRadius": "8px", "fontSize": "1rem", "padding": "12px"}
     };
 
@@ -75,7 +93,6 @@
 
         await tick();
         if (chatElement) {
-            // Apply config ONCE to prevent input clearing on re-render
             chatElement.connect = { handler: handleRequest };
             chatElement.messageStyles = messageStyles;
             chatElement.submitButtonStyles = submitButtonStyles;
@@ -83,6 +100,15 @@
             chatElement.inputAreaStyle = { "backgroundColor": "#18181b", "borderTop": "1px solid #27272a", "padding": "15px" };
             chatElement.introPanel = { display: false };
             chatElement.remarkable = { math: true, html: true, breaks: true };
+            
+            chatElement.onMessage = () => {
+                const msgs = chatElement.getMessages();
+                let size = 0;
+                msgs.forEach((m: any) => {
+                    if (m.text) size += new TextEncoder().encode(m.text).length;
+                });
+                chatHistorySize = size;
+            };
         }
     });
 
@@ -90,7 +116,7 @@
         try {
             const userMsg = body.messages[body.messages.length - 1].text;
             if (!activeProviderId || !selectedModel) {
-                return signals.onResponse({ error: "No AI engine selected." });
+                return signals.onResponse({ error: "No engine selected." });
             }
 
             let contextPrompt = "";
@@ -111,14 +137,11 @@
 
             const responseText = await llmClient.query(activeProviderId, selectedModel, contextPrompt + userMsg, activeProvider.apiKey);
             
-            // Normalize ALL common math delimiters to $ and $$ for Deep Chat Remarkable plugin
+            // Normalize math for Remarkable (Deep Chat)
             let fixedText = responseText
-                // Handle \( ... \) -> $...$
-                .replace(/\\\(([\s\S]*?)\\\)/g, '$$$1$$')
-                // Handle \[ ... \] -> $$$...$$$
-                .replace(/\\\[([\s\S]*?)\\\]/g, '$$$$$1$$$$')
-                // Handle raw [ ... ] blocks if they look like math
-                .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, '$1$$$$$2$$$$$3');
+                .replace(/\\\[([\s\S]*?)\\\]/g, (m, f) => `\n$$\n${f.trim()}\n$$\n`)
+                .replace(/\\\(([\s\S]*?)\\\)/g, (m, f) => `$${f.trim()}$`)
+                .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, (m, pre, f, post) => `${pre}\n$$\n${f.trim()}\n$$\n${post}`);
 
             signals.onResponse({ text: fixedText });
         } catch (error: any) {
@@ -131,7 +154,10 @@
         else selectedIds = [...selectedIds, id];
     }
 
-    function clearChat() { if (chatElement) chatElement.clearMessages(); }
+    function clearChat() { 
+        if (chatElement) chatElement.clearMessages();
+        chatHistorySize = 0;
+    }
 
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
     let availableModels = $derived.by(() => {
@@ -181,32 +207,32 @@
     </div>
 
     <div class="chat-main">
-        <div class="chat-header">
+        <div class="chat-header" class:extra-pad={sidebarCollapsed}>
             <div class="header-info">
                 <h2>{i18n.t.chat.title}</h2>
-                <span class="context-count">{selectedIds.length} context</span>
+                <div class="context-stats">
+                    <span class="stat-badge">Docs: {selectedIds.length} ({formatSize(docContextSize)})</span>
+                    <span class="stat-badge history">Chat: {formatSize(chatHistorySize)}</span>
+                </div>
             </div>
             <button class="icon-btn danger" onclick={clearChat} title="Clear Messages"><Trash2 size={16} /></button>
         </div>
 
         <div class="chat-content">
-            {#if selectedIds.length === 0}
-                <div class="welcome-overlay">
-                    <Bot size={48} color="#71717a" />
-                    <p>{i18n.t.chat.no_context}</p>
-                </div>
-            {/if}
-            <deep-chat bind:this={chatElement} style="width: 100%; height: 100%; border: none; background-color: #09090b;"></deep-chat>
+            <deep-chat 
+                bind:this={chatElement} 
+                style="width: 100%; height: 100%; border: none; background-color: #09090b; position: absolute; top: 0; left: 0;"
+            ></deep-chat>
         </div>
     </div>
 </div>
 
 <style>
-    .chat-container { display: flex; height: 100%; background: #09090b; position: relative; overflow: hidden; }
+    .chat-container { display: flex; height: 100%; width: 100%; background: #09090b; position: relative; overflow: hidden; }
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; transition: width 0.3s ease; position: relative; flex-shrink: 0; }
     .chat-sidebar.collapsed { width: 0; border-right: none; }
     .sidebar-toggle { position: absolute; top: 12px; right: -12px; width: 24px; height: 24px; background: #27272a; border: 1px solid #3f3f46; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #a1a1aa; cursor: pointer; z-index: 100; }
-    .chat-sidebar.collapsed .sidebar-toggle { right: -30px; top: 20px; }
+    .chat-sidebar.collapsed .sidebar-toggle { right: -45px; top: 12px; }
     .sidebar-section { border-bottom: 1px solid #27272a; display: flex; flex-direction: column; width: 260px; overflow: hidden; }
     .sidebar-section.scrollable { flex: 1; overflow-y: auto; }
     .sidebar-header { padding: 16px 20px; }
@@ -220,13 +246,15 @@
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }
     .file-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; overflow: hidden; }
-    .chat-header { padding: 12px 24px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; }
+    .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; height: 100%; width: 100%; overflow: hidden; min-width: 0; position: relative; }
+    .chat-header { height: 64px; padding: 0 24px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; transition: padding-left 0.3s ease; flex-shrink: 0; }
+    .chat-header.extra-pad { padding-left: 64px; }
     .header-info { display: flex; align-items: center; gap: 16px; }
     .header-info h2 { margin: 0; font-size: 1rem; font-weight: 700; }
-    .context-count { font-size: 0.75rem; color: #71717a; background: #27272a; padding: 2px 8px; border-radius: 10px; }
-    .chat-content { flex: 1; position: relative; display: flex; flex-direction: column; }
-    .welcome-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; color: #71717a; gap: 16px; pointer-events: none; z-index: 10; text-align: center; width: 80%; }
+    .context-stats { display: flex; gap: 8px; }
+    .stat-badge { font-size: 0.7rem; color: #a1a1aa; background: #27272a; padding: 2px 8px; border-radius: 10px; white-space: nowrap; border: 1px solid #3f3f46; }
+    .stat-badge.history { color: #3b82f6; border-color: #1e3a8a; }
+    .chat-content { flex: 1; width: 100%; position: relative; min-height: 0; }
     .icon-btn { background: transparent; border: none; color: #71717a; cursor: pointer; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
     .icon-btn:hover { background: #27272a; color: white; }
 </style>
