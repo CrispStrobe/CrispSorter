@@ -23,12 +23,14 @@ export const OPENAI_COMPATIBLE = {
     'poe': 'https://api.poe.com/v1',
     'ollama': 'http://localhost:11434/v1',
     'llamacpp': 'http://localhost:8080/v1',
+    'mlx': 'http://localhost:8000/v1',
 };
 
 export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: [], selectedModel: '', isConfigured: true },
     { id: 'mistralrs', name: 'mistral.rs (Native)', baseUrl: 'local', apiKey: '', models: [], selectedModel: '', isConfigured: true },
     { id: 'llamacpp', name: 'llama.cpp (Sidecar)', baseUrl: 'http://localhost:8080/v1', apiKey: 'no-key', models: [], selectedModel: '', isConfigured: true },
+    { id: 'mlx', name: 'MLX (Apple Silicon)', baseUrl: 'http://localhost:8000/v1', apiKey: 'no-key', models: [], selectedModel: '', isConfigured: true },
     { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
@@ -52,12 +54,13 @@ export class LLMClient {
 
     async fetchModels(providerId: string, apiKey?: string, baseUrl?: string): Promise<string[]> {
         console.log(`[LLMClient] fetchModels for ${providerId}`);
-        if (['mistralrs', 'llamacpp'].includes(providerId)) return [];
+        if (['mistralrs'].includes(providerId)) return [];
 
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
-        if (!key && providerId !== 'ollama') {
+        const localProviders = ['ollama', 'llamacpp', 'mlx'];
+        if (!key && !localProviders.includes(providerId)) {
             console.error(`[LLMClient] Missing API key for ${providerId}`);
             throw new Error(`API key for ${providerId} is required.`);
         }
@@ -86,7 +89,7 @@ export class LLMClient {
             const data = await response.json();
             console.log(`[LLMClient] Models received for ${providerId}`);
             
-            if (providerId === 'ollama') {
+            if (['ollama', 'llamacpp', 'mlx'].includes(providerId)) {
                 return data.data ? data.data.map((m: any) => m.id) : data.models?.map((m: any) => m.name) || [];
             }
             if (data.data && Array.isArray(data.data)) {
@@ -124,7 +127,7 @@ export class LLMClient {
         const key = apiKey || this.keys[providerId];
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
-        if (!key && providerId !== 'ollama') throw new Error(`API key for ${providerId} is required.`);
+        if (!key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) throw new Error(`API key for ${providerId} is required.`);
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
         const maxRetries = 3;
@@ -134,7 +137,7 @@ export class LLMClient {
             try {
                 console.log(`[LLMClient] POST ${baseUrl}/chat/completions (Attempt ${attempt + 1})`);
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-                if (key && providerId !== 'ollama' && providerId !== 'llamacpp') headers['Authorization'] = `Bearer ${key}`;
+                if (key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) headers['Authorization'] = `Bearer ${key}`;
 
                 const response = await fetch(`${baseUrl}/chat/completions`, {
                     method: 'POST',

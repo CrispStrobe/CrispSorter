@@ -19,6 +19,12 @@ pub struct MoveRequest {
     destination: String,
 }
 
+#[derive(Serialize)]
+pub struct FileEntry {
+    path: String,
+    size: u64,
+}
+
 #[derive(Serialize, Clone)]
 struct DownloadProgress {
     id: String,
@@ -30,11 +36,13 @@ struct DownloadProgress {
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
+use tokio::process::Child as TokioChild;
 
 pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
     current_model_path: Mutex<Option<String>>,
     sidecar_process: Mutex<Option<CommandChild>>,
+    mlx_process: Mutex<Option<TokioChild>>,
 }
 
 #[tauri::command]
@@ -116,6 +124,48 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+async fn start_mlx_server(
+    state: tauri::State<'_, AppState>,
+    model_path: String,
+    port: u16,
+) -> Result<String, String> {
+    let mut mlx_lock = state.mlx_process.lock().await;
+    if let Some(mut child) = mlx_lock.take() {
+        let _ = child.kill().await;
+    }
+    println!("[MLX] Starting mlx_lm.server — model: {}, port: {}", model_path, port);
+    let child = tokio::process::Command::new("mlx_lm.server")
+        .args(["--model", &model_path, "--port", &port.to_string(), "--trust-remote-code"])
+        .spawn()
+        .map_err(|e| format!("Failed to start mlx_lm.server: {}. Install with: pip install mlx-lm", e))?;
+    println!("[MLX] Server spawned (PID: {:?})", child.id());
+    *mlx_lock = Some(child);
+    Ok(format!("MLX server starting on port {}", port))
+}
+
+#[tauri::command]
+async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut mlx_lock = state.mlx_process.lock().await;
+    if let Some(mut child) = mlx_lock.take() {
+        let _ = child.kill().await;
+        println!("[MLX] Server stopped");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let mut results = Vec::new();
+    for path in paths {
+        match fs::remove_file(&path) {
+            Ok(_) => results.push(format!("Deleted: {}", path)),
+            Err(e) => results.push(format!("Error deleting {}: {}", path, e)),
+        }
+    }
+    Ok(results)
+}
+
+#[tauri::command]
 async fn extract_pdf_native(path: String) -> Result<String, String> {
     println!("[Rust] Extracting PDF via pdf-extract: {}", path);
     pdf_extract::extract_text(&path).map_err(|e| {
@@ -125,29 +175,42 @@ async fn extract_pdf_native(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<String>, String> {
-    let mut paths = Vec::new();
-    scan_dir_recursive(Path::new(&folder_path), &extensions, &mut paths)
-        .map_err(|e| e.to_string())?;
-    paths.sort();
-    println!("[Rust] scan_folder: found {} files in {}", paths.len(), folder_path);
-    Ok(paths)
+fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<FileEntry>, String> {
+    let mut entries = Vec::new();
+    let path = Path::new(&folder_path);
+    if path.is_file() {
+        if let Some(ext) = path.extension() {
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            if extensions.iter().any(|e| e == &ext_lower) {
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                entries.push(FileEntry { path: folder_path.clone(), size });
+            }
+        }
+    } else if path.is_dir() {
+        scan_dir_recursive(path, &extensions, &mut entries)
+            .map_err(|e| e.to_string())?;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+    } else {
+        return Err(format!("Path does not exist: {}", folder_path));
+    }
+    println!("[Rust] scan_folder: found {} files in/at {}", entries.len(), folder_path);
+    Ok(entries)
 }
 
-fn scan_dir_recursive(dir: &Path, extensions: &[String], paths: &mut Vec<String>) -> std::io::Result<()> {
+fn scan_dir_recursive(dir: &Path, extensions: &[String], entries: &mut Vec<FileEntry>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        // Skip hidden files/dirs (starting with '.')
         if path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(false) {
             continue;
         }
         if path.is_dir() {
-            scan_dir_recursive(&path, extensions, paths)?;
+            scan_dir_recursive(&path, extensions, entries)?;
         } else if let Some(ext) = path.extension() {
             let ext_lower = ext.to_string_lossy().to_lowercase();
             if extensions.iter().any(|e| e == &ext_lower) {
-                paths.push(path.to_string_lossy().into_owned());
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                entries.push(FileEntry { path: path.to_string_lossy().into_owned(), size });
             }
         }
     }
@@ -315,10 +378,11 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
-        .manage(AppState { 
+        .manage(AppState {
             model: Mutex::new(None),
             current_model_path: Mutex::new(None),
-            sidecar_process: Mutex::new(None)
+            sidecar_process: Mutex::new(None),
+            mlx_process: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             move_files,
@@ -327,6 +391,9 @@ pub fn run() {
             run_mistralrs_query,
             start_llamacpp_sidecar,
             stop_llamacpp_sidecar,
+            start_mlx_server,
+            stop_mlx_server,
+            delete_files,
             extract_pdf_native
         ])
         .run(tauri::generate_context!())

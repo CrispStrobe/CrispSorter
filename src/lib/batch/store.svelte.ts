@@ -2,7 +2,7 @@ import { type BatchItem, type BatchStatus, type BatchSession } from '../types';
 import { extractText } from '../extractors';
 import { llmClient } from '../llm/client';
 import { getSetting, saveSetting, getSetting as getFromStore } from '../store';
-import { readFile, writeFile, mkdir, stat } from '@tauri-apps/plugin-fs';
+import { readFile, writeFile, mkdir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 
@@ -31,6 +31,7 @@ export interface ProcessOverrides {
 export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
+    stopRequested = $state(false);
     isMetadataExtractionEnabled = $state(true);
     currentSessionId = $state<string | null>(null);
     
@@ -69,39 +70,29 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
-    async addItem(path: string, name: string) {
+    async addItem(path: string, name: string, size = 0, modifiedAt = Date.now()) {
         if (this.processingPaths.has(path) || this.items.some(i => i.originalPath === path)) {
             console.log(`[BatchManager] Synchronous duplicate block for: ${name}`);
             return;
         }
 
         this.processingPaths.add(path);
-        console.log(`[BatchManager] Adding item: ${name} at ${path}`);
-        
+        console.log(`[BatchManager] Adding item: ${name} at ${path} (${size} bytes)`);
+
         const id = crypto.randomUUID();
         const extension = name.split('.').pop()?.toLowerCase() || '';
-        
-        const newItem: BatchItem = {
+
+        this.items.push({
             id,
             originalPath: path,
             originalName: name,
             extension,
-            size: 0,
-            modifiedAt: Date.now(),
+            size,
+            modifiedAt,
             status: 'queued',
             isAccepted: false,
             isIgnored: false
-        };
-        
-        this.items.push(newItem);
-
-        try {
-            const s = await stat(path);
-            newItem.size = s.size;
-            newItem.modifiedAt = s.mtime?.getTime() || Date.now();
-        } catch(e) {
-            console.warn(`[BatchManager] Failed to stat file ${path}:`, e);
-        }
+        });
 
         await this.saveCurrentSession();
     }
@@ -111,7 +102,7 @@ export class BatchManager {
             const item = this.items.find(i => i.id === id);
             if (item) item.status = 'queued';
         });
-        await this.processAll(overrides);
+        await this.processAll(overrides, new Set(ids));
     }
 
     async reextractItems(ids: string[]) {
@@ -122,7 +113,7 @@ export class BatchManager {
                 item.extractedText = undefined;
             }
         });
-        await this.processAll();
+        await this.processAll(undefined, new Set(ids));
     }
 
     async removeItems(ids: string[]) {
@@ -147,8 +138,15 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
-    async processAll(overrides?: ProcessOverrides) {
-        console.log("[BatchManager] Starting processAll loop", overrides ? `(overrides: ${JSON.stringify(overrides)})` : '');
+    stopAll() {
+        if (this.isProcessing) {
+            this.stopRequested = true;
+            console.log('[BatchManager] Stop requested by user');
+        }
+    }
+
+    async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
+        console.log("[BatchManager] Starting processAll loop", overrides ? `(overrides: ${JSON.stringify(overrides)})` : '', onlyIds ? `(onlyIds: ${onlyIds.size})` : '');
         if (this.isProcessing) return;
         this.isProcessing = true;
 
@@ -181,6 +179,11 @@ export class BatchManager {
         try {
         for (const item of this.items) {
             if (item.status !== 'queued' && item.status !== 'error') continue;
+            if (onlyIds && !onlyIds.has(item.id)) continue;
+            if (this.stopRequested) {
+                console.log(`[BatchManager] Stop requested, halting before: ${item.originalName}`);
+                break;
+            }
 
             try {
                 // Skip re-extraction if text already exists (reprocessItems preserves it; reextractItems clears it)
@@ -254,6 +257,7 @@ export class BatchManager {
         }
         } finally {
             this.isProcessing = false;
+            this.stopRequested = false;
             await this.saveCurrentSession();
         }
     }

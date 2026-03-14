@@ -12,6 +12,16 @@
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings'
     let navCollapsed = $state(false);
 
+    const batchStats = $derived.by(() => {
+        const items = batchManager.items;
+        const counts: Record<string, number> = {};
+        for (const item of items) {
+            const ext = item.extension || 'other';
+            counts[ext] = (counts[ext] || 0) + 1;
+        }
+        return { total: items.length, counts };
+    });
+
     onMount(async () => {
         // Load saved language
         const savedLang = await getSetting('language', 'en') as Language;
@@ -54,6 +64,20 @@
         </div>
 
         <div class="nav-bottom">
+            {#if batchStats.total > 0}
+                <div class="batch-stats" title="Files in current batch">
+                    {#if !navCollapsed}
+                        <div class="stats-total">{batchStats.total} files</div>
+                        <div class="stats-breakdown">
+                            {#each Object.entries(batchStats.counts).sort((a,b) => b[1]-a[1]) as [ext, count]}
+                                <span class="stat-ext">{count} {ext}</span>
+                            {/each}
+                        </div>
+                    {:else}
+                        <span class="stats-badge-collapsed">{batchStats.total}</span>
+                    {/if}
+                </div>
+            {/if}
             <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'} title={i18n.t.nav.settings}>
                 <SettingsIcon size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.settings}</span>{/if}
@@ -180,4 +204,10 @@
         overflow: hidden;
         position: relative;
     }
+
+    .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }
+    .stats-total { font-size: 0.75rem; font-weight: 700; color: #a1a1aa; white-space: nowrap; }
+    .stats-breakdown { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .stat-ext { font-size: 0.65rem; background: #27272a; border-radius: 3px; padding: 1px 5px; color: #71717a; text-transform: uppercase; font-weight: 600; }
+    .stats-badge-collapsed { display: flex; align-items: center; justify-content: center; width: 28px; height: 20px; background: #3b82f633; border-radius: 4px; font-size: 0.7rem; font-weight: 700; color: #60a5fa; margin: 0 auto; }
 </style>

@@ -4,11 +4,11 @@
     import { getSetting, saveSetting } from '../store';
     import { i18n, type Language } from '../i18n.svelte';
     import { getDefaultPrompt } from '../batch/store.svelte';
-    import { 
-        RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu, 
-        Loader2, FolderOpen, Save, Languages, MessageSquare, 
+    import {
+        RefreshCw, CheckCircle, XCircle, Key, Globe, Cpu,
+        Loader2, FolderOpen, Save, Languages, MessageSquare,
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
-        Rocket, FileText, Brain
+        Rocket, FileText, Brain, Square
     } from 'lucide-svelte';
     import { open, save } from '@tauri-apps/plugin-dialog';
     import { stat, remove } from '@tauri-apps/plugin-fs';
@@ -67,6 +67,8 @@
     let loadingModels = $state(false);
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);
+    let mlxPort = $state(8000);
+    let mlxRunning = $state(false);
     let saveIndicator = $state(false);
     let customModelInput = $state('');
 
@@ -274,6 +276,28 @@
         await handleSave();
     }
 
+    async function startMlxServer() {
+        const model = selectedProvider.selectedModel;
+        if (!model) { alert('Select a model first.'); return; }
+        try {
+            mlxRunning = true;
+            const msg = await invoke<string>('start_mlx_server', { modelPath: model, port: mlxPort });
+            setTimeout(() => alert(msg + '\nWait ~5s for the server to initialize, then test connection.'), 100);
+        } catch (e: any) {
+            mlxRunning = false;
+            alert(`MLX start failed: ${e?.message || e}`);
+        }
+    }
+
+    async function stopMlxServer() {
+        try {
+            await invoke('stop_mlx_server');
+            mlxRunning = false;
+        } catch (e: any) {
+            alert(`MLX stop failed: ${e?.message || e}`);
+        }
+    }
+
     async function resetProviders() {
         if (!confirm("Are you sure you want to reset all providers to defaults? This will clear your API keys.")) return;
         providers = JSON.parse(JSON.stringify(DEFAULT_PROVIDERS));
@@ -282,7 +306,8 @@
     }
 
     async function handleRefreshModels() {
-        if (!selectedProvider.apiKey && !['ollama', 'mistralrs'].includes(selectedProvider.id)) {
+        const localProviders = ['ollama', 'mistralrs', 'llamacpp', 'mlx'];
+        if (!selectedProvider.apiKey && !localProviders.includes(selectedProvider.id)) {
             alert(i18n.t.settings.key_required);
             return;
         }
@@ -295,7 +320,8 @@
             }
             await handleSave();
         } catch (error: any) {
-            alert(`${i18n.t.settings.fetch_failed}: ${error.message}`);
+            const msg = error?.message || String(error) || 'Connection refused';
+            alert(`${i18n.t.settings.fetch_failed}: ${msg}`);
         } finally {
             loadingModels = false;
         }
@@ -326,6 +352,66 @@
 
     function resetPromptToDefault() {
         llmPrompt = getDefaultPrompt(parsingFormat, currentLanguage);
+    }
+
+    // Benchmark
+    interface BenchmarkResult {
+        providerId: string;
+        providerName: string;
+        model: string;
+        tokensPerSec: number | null;
+        latencyMs: number;
+        error?: string;
+    }
+    const BENCH_PROMPT = 'List the first 10 prime numbers. Be concise.';
+    let benchmarkRunning = $state(false);
+    let benchmarkProgress = $state('');
+    let benchmarkResults = $state<BenchmarkResult[]>([]);
+
+    async function runBenchmark() {
+        benchmarkRunning = true;
+        benchmarkResults = [];
+
+        const candidates = providers.filter(p => {
+            if (p.selectedModel && p.selectedModel.trim()) return true;
+            if (['mistralrs', 'llamacpp', 'mlx', 'ollama'].includes(p.id) && p.models.length > 0) return true;
+            return false;
+        });
+
+        for (const p of candidates) {
+            const model = p.selectedModel || p.models[0] || '';
+            if (!model) continue;
+            benchmarkProgress = `Testing ${p.name} / ${model.split(/[\\/]/).pop()}...`;
+            const start = performance.now();
+            try {
+                const response = await llmClient.query(p.id, model, BENCH_PROMPT, p.apiKey);
+                const elapsed = performance.now() - start;
+                const approxTokens = Math.max(1, Math.round(response.length / 4));
+                benchmarkResults.push({
+                    providerId: p.id,
+                    providerName: p.name,
+                    model: model.split(/[\\/]/).pop() || model,
+                    tokensPerSec: Math.round(approxTokens / (elapsed / 1000)),
+                    latencyMs: Math.round(elapsed)
+                });
+            } catch (e: any) {
+                benchmarkResults.push({
+                    providerId: p.id,
+                    providerName: p.name,
+                    model: model.split(/[\\/]/).pop() || model,
+                    tokensPerSec: null,
+                    latencyMs: Math.round(performance.now() - start),
+                    error: e.message || String(e)
+                });
+            }
+        }
+
+        if (candidates.length === 0) {
+            benchmarkProgress = 'No providers with a selected model found. Configure a model first.';
+        } else {
+            benchmarkProgress = '';
+        }
+        benchmarkRunning = false;
     }
 </script>
 
@@ -466,6 +552,53 @@
                 <p class="hint">{i18n.t.settings.ocr_hint}</p>
             </div>
 
+            <div class="header" style="margin-top: 40px;">
+                <h1><Zap size={18} /> Benchmark</h1>
+            </div>
+            <div class="section-card">
+                <p class="hint" style="margin-bottom: 12px;">Runs a fixed prompt through every provider that has a model selected. Estimates output tokens/sec (response chars ÷ 4 ÷ seconds). Tests run sequentially for fair comparison.</p>
+                <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 12px;">
+                    <button class="action-btn small primary" onclick={runBenchmark} disabled={benchmarkRunning}>
+                        {#if benchmarkRunning}
+                            <Loader2 size={14} class="loader-spin" /> Running...
+                        {:else}
+                            <Zap size={14} /> Run Benchmark
+                        {/if}
+                    </button>
+                    {#if benchmarkProgress}
+                        <span class="hint" style="margin:0;">{benchmarkProgress}</span>
+                    {/if}
+                </div>
+                {#if benchmarkResults.length > 0}
+                    <table class="bench-table">
+                        <thead>
+                            <tr>
+                                <th>Provider</th>
+                                <th>Model</th>
+                                <th>Latency</th>
+                                <th>Tokens/sec</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {#each benchmarkResults.sort((a,b) => (b.tokensPerSec ?? 0) - (a.tokensPerSec ?? 0)) as r}
+                                <tr class:bench-error={!!r.error}>
+                                    <td>{r.providerName}</td>
+                                    <td class="bench-model">{r.model}</td>
+                                    <td class="bench-num">{r.latencyMs} ms</td>
+                                    <td class="bench-num">
+                                        {#if r.error}
+                                            <span class="bench-err-msg" title={r.error}>error</span>
+                                        {:else}
+                                            <strong>{r.tokensPerSec}</strong>
+                                        {/if}
+                                    </td>
+                                </tr>
+                            {/each}
+                        </tbody>
+                    </table>
+                {/if}
+            </div>
+
         {:else}
             <div class="header">
                 <h1>{selectedProvider.name}</h1>
@@ -482,12 +615,14 @@
                 </div>
             </div>
 
-            {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
+            {#if selectedProvider.id !== 'mistralrs'}
                 <div class="form-group">
                     <label for="base-url-input">{i18n.t.settings.base_url}</label>
                     <input id="base-url-input" type="text" bind:value={selectedProvider.baseUrl} />
                 </div>
+            {/if}
 
+            {#if !['mistralrs', 'llamacpp', 'mlx', 'ollama'].includes(selectedProvider.id)}
                 <div class="form-group">
                     <label for="api-key-input">{i18n.t.settings.api_key}</label>
                     <input id="api-key-input" type="password" bind:value={selectedProvider.apiKey} />
@@ -503,19 +638,36 @@
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>
                         {/each}
                     </select>
-                    {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
+                    {#if selectedProvider.id !== 'mistralrs'}
                         <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
-                    {:else if selectedProvider.id === 'llamacpp'}
-                         <button class="action-btn small primary" onclick={() => setLocalModelActive(selectedProvider.selectedModel)} title="Start Sidecar">
+                    {/if}
+                    {#if selectedProvider.id === 'llamacpp'}
+                        <button class="action-btn small primary" onclick={() => setLocalModelActive(selectedProvider.selectedModel)} title="Start Sidecar">
                             <Rocket size={14} />
                         </button>
                     {/if}
                 </div>
+                {#if selectedProvider.id === 'mlx'}
+                    <div class="mlx-control-row">
+                        <label for="mlx-port-input" style="width:auto; margin:0;">Port</label>
+                        <input id="mlx-port-input" type="number" bind:value={mlxPort} style="width: 80px;" />
+                        {#if mlxRunning}
+                            <button class="action-btn small danger" onclick={stopMlxServer}>
+                                <Square size={14} /> Stop MLX
+                            </button>
+                        {:else}
+                            <button class="action-btn small success" onclick={startMlxServer}>
+                                <Rocket size={14} /> Start MLX
+                            </button>
+                        {/if}
+                    </div>
+                    <p class="hint">Requires: <code>pip install mlx-lm</code>. Model path can be a local directory or HF repo ID (e.g. <code>mlx-community/Mistral-7B-Instruct-v0.3-4bit</code>).</p>
+                {/if}
             </div>
 
-            {#if !['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
+            {#if selectedProvider.id !== 'mistralrs'}
                 <div class="actions">
                     <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
                         <span class={testingConnection ? "loader-spin" : ""}>
@@ -665,4 +817,20 @@
     .hint { font-size: 0.75rem; color: #71717a; margin-top: 6px; display: block; line-height: 1.4; }
     .loader-spin { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .bench-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .bench-table th { text-align: left; padding: 6px 10px; border-bottom: 2px solid #27272a; color: #71717a; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .bench-table td { padding: 6px 10px; border-bottom: 1px solid #1e1e1e; color: #e2e8f0; }
+    .bench-table tr:hover td { background: #1e293b; }
+    .bench-table tr.bench-error td { color: #71717a; }
+    .bench-num { font-family: monospace; text-align: right; }
+    .bench-model { font-family: monospace; font-size: 0.7rem; color: #a1a1aa; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bench-err-msg { color: #ef4444; font-style: italic; cursor: help; }
+    .action-btn.primary { background: #3b82f6; color: white; border-color: #3b82f6; }
+    .action-btn.small { padding: 4px 10px; font-size: 0.75rem; }
+    .action-btn.success { background: #10b981; color: white; border-color: #10b981; }
+    .action-btn.danger { color: #ef4444; }
+    .action-btn.danger:hover { background: #ef444433; }
+    .mlx-control-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+    .mlx-control-row input { padding: 4px 8px; background: #09090b; border: 1px solid #27272a; color: white; border-radius: 4px; font-size: 0.8125rem; }
 </style>

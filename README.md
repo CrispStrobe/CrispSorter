@@ -1,70 +1,82 @@
 # CrispSorter
 
-A cross-platform, robust file content extraction and sorting tool built with SvelteKit, Tauri, and TypeScript.
-This app is the JS-first successor to BiblioForge and ZotBiblioForge, designed to be completely free of Python dependencies.
+A cross-platform, offline-first document sorting tool built with SvelteKit, Tauri v2, and TypeScript.
+Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 
-## 🚀 The Core Workflow
+## Core Workflow
 
-CrispSorter operates in two distinct modes, togglable per batch:
+CrispSorter has two modes, togglable per batch:
 
-### 1. Simple Extraction Mode (.txt)
-- **Goal**: Quickly turn PDFs, DOCX, and Ebooks into searchable text.
-- **Workflow**: 
-  - Add files -> Toggle "Metadata Extraction" to **OFF** -> Start.
-  - The app extracts the text locally using JS-native libraries.
-  - Results are ready for manual review or export to `.txt`.
+### 1. Extraction Mode
+Extract PDFs, DOCX, ebooks to `.txt`. No AI needed.
+Add files → set mode to **Text Only** → Start.
 
-### 2. AI Sorting Mode (Metadata + Rename)
-- **Goal**: Automatically organize a messy library into a clean hierarchy.
-- **Workflow**:
-  - **Configure**: Enter your LLM keys (Ollama, Groq, OpenAI, etc.) in Settings.
-  - **Ingest**: Drag and drop files into the Batch Review grid.
-  - **AI Analysis**: Toggle "Metadata Extraction" to **ON**. The app extracts text, sends a sample to the LLM, and suggests `Title`, `Author`, and `Year`.
-  - **Review**: Use the **Total Commander style grid** to verify suggestions. Click any row to see a split-pane preview of the raw text vs. suggestions.
-  - **Sort**: Bulk-accept verified rows and hit the **Rocket button**. The Rust backend renames and moves files into a clean `Sorted/Author/Year - Title.ext` structure.
+### 2. AI Sort Mode
+Automatically organize a messy library into a clean hierarchy.
+- **Ingest**: Drag-drop files or folders (recursive), or use Add / Add Folder
+- **Analyze**: LLM extracts `Title`, `Author`, `Year` from document text
+- **Re-analyze**: Select rows → click Re-analyze ▾ to override provider/model/context/author-step per run
+- **Review**: Inline editing in the grid; split-pane text preview
+- **Sort**: Accept rows → Rocket button → Rust backend moves files to `Sorted/Author/Year - Title.ext`
 
-## 👁️ OCR Strategy (Handling Scanned Docs)
+## What's Implemented
 
-CrispSorter stays lean by default but offers two paths for OCR:
+| Feature | Status |
+|---|---|
+| PDF / DOCX / TXT / EPUB / MD extraction | ✅ |
+| Rust-native PDF extraction fallback | ✅ |
+| Tesseract.js OCR (WASM) | ✅ |
+| Ollama / OpenAI / Groq / Mistral / Gemini providers | ✅ |
+| mistral.rs in-process backend (GGUF) | ✅ |
+| llama.cpp sidecar backend (Metal, HTTP) | ✅ |
+| Recursive folder import + drag-drop | ✅ |
+| Duplicate detection (size + optional SHA-256) | ✅ |
+| Per-run re-analyze overrides (provider/model/ctx) | ✅ |
+| Selective re-analyze (only selected rows) | ✅ |
+| Stop/resume batch processing | ✅ |
+| Auto author title-stripping (Dr./Prof./PhD) | ✅ |
+| Robust JSON+XML parsing with auto-detection | ✅ |
+| EN/DE prompt variants | ✅ |
+| Session save/resume/export/import | ✅ |
+| Column sorting, resizing, visibility | ✅ |
+| i18n (EN/DE) | ✅ |
 
-1.  **Visual OCR (VLM Path)**: 
-    - If you use a Vision-capable LLM (like GPT-4o, Claude 3.5 Sonnet, or local Ollama with LLaVA), CrispSorter can send document snapshots directly for "Visual Extraction." No local OCR binaries needed.
-2.  **Local OCR (WASM Path)**:
-    - We utilize **Tesseract.js (WASM)** for basic local OCR. This runs entirely in the JS engine and downloads the 50MB language models *only when first needed*, keeping the initial app bundle tiny.
+## Roadmap
 
-## 🗺️ Future Roadmap (Python-Free Expansion)
+1. **Custom output path template** — `{author}/{year} - {title}.{ext}` configurable in Settings
+2. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
+3. **Read PDF metadata** — pre-fill Title/Author/Year from XMP/DocInfo before LLM
+4. **Folder Watcher** — auto-ingest new files from a watched directory
+5. **LanceDB** — persistent embedded library with full-text search
+6. **ONNX / CoreML backend** — run ONNX-format models via `ort` crate with CoreML execution provider for Apple Neural Engine acceleration
+7. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
-### Phase 3: Robust Library Management (LanceDB)
-- Move from JSON state to **LanceDB** (embedded Rust-native DB).
-- Store all extracted text and metadata permanently.
-- Enable high-performance local Full-Text Search (FTS) across your entire sorted library.
+## LLM Backend Comparison (Apple Silicon)
 
-### Phase 4: RAG & NAS Integration
-- **Hybrid Storage**: Support connecting to a **Remote LanceDB/SurrealDB** instance on your NAS.
-- **Cross-Device Sync**: Sync sorting plans and library metadata between your Desktop and NAS.
-- **RAG Tool**: Extension into a "Chat with your Documents" interface using local vectors (via Ollama or Transformers.js WASM).
+| Backend | Format | Acceleration | Notes |
+|---|---|---|---|
+| **llama.cpp sidecar** | GGUF | Metal GPU | Best throughput today; already integrated |
+| **mistral.rs** | GGUF | Metal (candle) | In-process, no HTTP overhead |
+| **Ollama** | GGUF | Metal GPU | Easiest setup; HTTP overhead |
+| **ONNX Runtime + CoreML** | ONNX | ANE / GPU / CPU | Best power efficiency; requires converted models |
+| OpenAI / Groq / etc. | — | Cloud | No local hardware required |
 
-### Phase 5: Local LLM Integration (mistral.rs / llama.cpp)
-- **Zero Configuration**: Bundle **mistral.rs** or a pre-compiled `llama.cpp` sidecar.
-- **Offline UX**: Automatically download small quantized models (like **Ministral in Q4_K_M**) to allow AI sorting without Ollama or Cloud API keys.
-- **Model Management**: Dedicated UI for downloading and switching between bundled GGUF models.
+For batch document sorting on Apple Silicon, **llama.cpp with Metal** currently gives the best tokens/sec. **CoreML/ANE** leads in power efficiency for sustained workloads.
 
-## 🛠️ Architecture
+A built-in benchmark (tokens/sec per provider for a standard prompt) is planned alongside the ONNX backend.
 
-- **Frontend**: Svelte 5 (Runes) + Lucide Icons.
-- **Backend**: Tauri v2 (Rust) for safe file system operations and CORS-free API calls.
-- **Extractors**: `pdfjs-dist` (Legacy Build), `mammoth.js`, `epub-parser`, `Tesseract.js` (OCR).
-- **Persistence**: Automatic session saving and resume support.
+## Architecture
 
-## 🏗️ Development
+- **Frontend**: Svelte 5 (Runes) + Lucide Icons
+- **Backend**: Tauri v2 (Rust) — file ops, sidecar management, PDF extraction
+- **Extractors**: `pdfjs-dist`, `mammoth.js`, `epub-parser`, `Tesseract.js`
+- **LLM clients**: llmClient abstraction over HTTP (Ollama/OpenAI-compat) + mistral.rs in-process
+- **Persistence**: `tauri-plugin-store` with automatic session save/resume
+
+## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Run in development mode
 npm run tauri dev
-
-# Build for production (.dmg, .exe, .deb)
-npm run tauri build
+npm run tauri build   # produces .dmg / .exe / .deb
 ```

@@ -76,7 +76,8 @@ export const translations = {
             find_dupes: 'Duplicates',
             dupe_groups: 'groups',
             dupe_none: 'No duplicates found.',
-            dupe_deep: 'Deep (content hash)'
+            dupe_deep: 'Deep (content hash)',
+            stop: 'Stop'
         },
         history: {
             title: 'History',
@@ -202,7 +203,8 @@ export const translations = {
             find_dupes: 'Duplikate',
             dupe_groups: 'Gruppen',
             dupe_none: 'Keine Duplikate gefunden.',
-            dupe_deep: 'Tief (Inhalt prüfen)'
+            dupe_deep: 'Tief (Inhalt prüfen)',
+            stop: 'Stopp'
         },
         history: {
             title: 'Verlauf',

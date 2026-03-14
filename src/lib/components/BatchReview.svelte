@@ -131,8 +131,12 @@
         const unlisten = await listen('tauri://drag-drop', (event: any) => {
             const paths = event.payload.paths as string[];
             paths.forEach(path => {
-                const name = path.split(/[\\/]/).pop() || '';
-                batchManager.addItem(path, name);
+                invoke<{ path: string; size: number }[]>('scan_folder', {
+                    folderPath: path,
+                    extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                }).then(entries => {
+                    entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+                }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
             });
         });
 
@@ -164,24 +168,25 @@
             filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md', 'epub'] }]
         });
         if (Array.isArray(selected)) {
-            selected.forEach(path => {
-                const name = path.split(/[\\/]/).pop() || '';
-                batchManager.addItem(path, name);
-            });
+            // Route through scan_folder to get size from Rust
+            for (const path of selected) {
+                const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
+                    folderPath: path,
+                    extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                }).catch(() => []);
+                entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+            }
         }
     }
 
     async function handleAddFolder() {
         const selected = await open({ directory: true, multiple: false });
         if (typeof selected === 'string') {
-            const paths = await invoke<string[]>('scan_folder', {
+            const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                 folderPath: selected,
                 extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
             });
-            paths.forEach(path => {
-                const name = path.split(/[\\/]/).pop() || '';
-                batchManager.addItem(path, name);
-            });
+            entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
         }
     }
 
@@ -190,6 +195,33 @@
         duplicateGroups = await batchManager.getDuplicateGroups(deepDupeCheck);
         checkingDuplicates = false;
         showDuplicates = true;
+    }
+
+    async function keepOnlyInGroup(groupIdx: number, keepId: string, deleteFromDisk: boolean) {
+        const group = duplicateGroups[groupIdx];
+        const toRemove = group.items.filter(i => i.id !== keepId);
+        if (deleteFromDisk) {
+            const paths = toRemove.map(i => i.originalPath);
+            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
+        }
+        await batchManager.removeItems(toRemove.map(i => i.id));
+        await handleFindDuplicates();
+    }
+
+    async function keepNewestInGroup(groupIdx: number, deleteFromDisk: boolean) {
+        const group = duplicateGroups[groupIdx];
+        const newest = group.items.reduce((a, b) => (a.modifiedAt > b.modifiedAt ? a : b));
+        await keepOnlyInGroup(groupIdx, newest.id, deleteFromDisk);
+    }
+
+    async function removeAllInGroup(groupIdx: number, deleteFromDisk: boolean) {
+        const group = duplicateGroups[groupIdx];
+        if (deleteFromDisk) {
+            const paths = group.items.map(i => i.originalPath);
+            await invoke('delete_files', { paths }).catch(e => console.error('[Dupes] delete_files error:', e));
+        }
+        await batchManager.removeItems(group.items.map(i => i.id));
+        await handleFindDuplicates();
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
@@ -419,12 +451,16 @@
                 {#if checkingDuplicates}<span class="loader-anim"><Loader2 size={14} /></span>{/if}
             </button>
 
-            <button class="action-btn success small" onclick={startProcessing} disabled={batchManager.isProcessing}>
-                <span class={batchManager.isProcessing ? "loader-anim" : ""}>
-                    {#if batchManager.isProcessing}<Loader2 size={16} />{:else}<Play size={16} />{/if}
-                </span>
-                {i18n.t.batch.start_batch}
-            </button>
+            {#if batchManager.isProcessing}
+                <button class="action-btn danger small" onclick={() => batchManager.stopAll()}>
+                    <Square size={16} /> {i18n.t.batch.stop}
+                </button>
+            {:else}
+                <button class="action-btn success small" onclick={startProcessing}
+                        disabled={batchManager.items.filter(i => i.status === 'queued' || i.status === 'error').length === 0}>
+                    <Play size={16} /> {i18n.t.batch.start_batch}
+                </button>
+            {/if}
 
             <div class="btn-group">
                 <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>
@@ -487,13 +523,33 @@
                 <div class="dupes-empty">{i18n.t.batch.dupe_none}</div>
             {:else}
                 <div class="dupes-list">
-                    {#each duplicateGroups as group}
+                    {#each duplicateGroups as group, gi}
                         <div class="dupe-group">
-                            <div class="dupe-size">{(group.size / 1024).toFixed(1)} KB</div>
+                            <div class="dupe-group-header">
+                                <span class="dupe-size">{(group.size / 1024).toFixed(1)} KB — {group.items.length} files</span>
+                                <div class="dupe-group-actions">
+                                    <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title="Keep newest, remove others from list">
+                                        Newest
+                                    </button>
+                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} title="Keep newest, delete others from disk">
+                                        Newest + 🗑
+                                    </button>
+                                    <button class="action-btn small danger" onclick={() => { if (confirm('Delete ALL files in this group from disk?')) removeAllInGroup(gi, true); }} title="Delete all from disk">
+                                        All 🗑
+                                    </button>
+                                </div>
+                            </div>
                             {#each group.items as item}
                                 <div class="dupe-row" class:selected={selectedIds.includes(item.id)}>
-                                    <span class="dupe-name" title={item.originalPath}>{item.originalName}</span>
-                                    <button class="action-btn small danger" onclick={() => batchManager.removeItems([item.id])}>×</button>
+                                    <div class="dupe-info">
+                                        <span class="dupe-name" title={item.originalPath}>{item.originalName}</span>
+                                        <span class="dupe-meta">{item.originalPath.substring(0, item.originalPath.lastIndexOf('/') + 1)} · {new Date(item.modifiedAt).toLocaleDateString()}</span>
+                                    </div>
+                                    <div class="dupe-item-actions">
+                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title="Keep only this one">Keep</button>
+                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} title="Keep this, delete others from disk">Keep+🗑</button>
+                                        <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title="Remove from list">×</button>
+                                    </div>
                                 </div>
                             {/each}
                         </div>
@@ -678,15 +734,20 @@
     .action-btn.danger:hover { background: #ef4444; color: white; border-color: #ef4444; }
     .small { padding: 4px 8px; font-size: 0.75rem; }
 
-    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 220px; display: flex; flex-direction: column; }
-    .dupes-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid #1e293b; font-size: 0.8125rem; font-weight: 600; color: #94a3b8; }
+    .dupes-panel { background: #0f172a; border-bottom: 1px solid #1e293b; max-height: 320px; display: flex; flex-direction: column; }
+    .dupes-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; border-bottom: 1px solid #1e293b; font-size: 0.8125rem; font-weight: 600; color: #94a3b8; flex-shrink: 0; }
     .dupes-empty { padding: 12px 16px; font-size: 0.8125rem; color: #52525b; }
-    .dupes-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+    .dupes-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
     .dupe-group { background: #020617; border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
-    .dupe-size { padding: 4px 10px; font-size: 0.65rem; font-weight: 700; color: #f59e0b; background: #1e293b; text-transform: uppercase; letter-spacing: 0.05em; }
-    .dupe-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; border-top: 1px solid #0f172a; }
+    .dupe-group-header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px; background: #1e293b; gap: 8px; }
+    .dupe-size { font-size: 0.65rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .dupe-group-actions { display: flex; gap: 4px; }
+    .dupe-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px; border-top: 1px solid #0f172a; gap: 8px; }
     .dupe-row.selected { background: #1e3a8a33; }
-    .dupe-name { font-size: 0.75rem; color: #cbd5e1; font-family: monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-info { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+    .dupe-name { font-size: 0.75rem; color: #cbd5e1; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-meta { font-size: 0.65rem; color: #475569; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dupe-item-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
     .dupe-deep-label { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #71717a; cursor: pointer; }
 
     .main-split { display: flex; flex: 1; overflow: hidden; }
