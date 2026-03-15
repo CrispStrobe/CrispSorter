@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use futures_util::StreamExt;
 use std::io::Write;
 use tauri::Emitter;
@@ -10,14 +10,8 @@ use tokio::sync::Mutex;
 use mistralrs::{
     GgufModelBuilder, TextMessageRole, TextMessages, RequestBuilder,
     best_device, Model, initialize_logging,
-    PagedAttentionMetaBuilder
+    PagedAttentionMetaBuilder, IsqType
 };
-
-#[derive(Deserialize)]
-pub struct MoveRequest {
-    source: String,
-    destination: String,
-}
 
 #[derive(Serialize)]
 pub struct FileEntry {
@@ -34,14 +28,12 @@ struct DownloadProgress {
 
 // Global state to hold the high-level Model instance and current model path
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
-use tauri_plugin_shell::process::CommandChild;
-use tauri_plugin_shell::ShellExt;
 use tokio::process::Child as TokioChild;
 
 pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
     current_model_path: Mutex<Option<String>>,
-    sidecar_process: Mutex<Option<CommandChild>>,
+    sidecar_process: Mutex<Option<TokioChild>>,
     mlx_process: Mutex<Option<TokioChild>>,
 }
 
@@ -50,75 +42,147 @@ async fn start_llamacpp_sidecar(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
     model_path: String,
+    port: u16,
 ) -> Result<String, String> {
     let mut sidecar_lock = state.sidecar_process.lock().await;
-    
+
     // Kill existing process if running
-    if let Some(child) = sidecar_lock.take() {
-        let _ = child.kill();
+    if let Some(mut child) = sidecar_lock.take() {
+        let _ = child.kill().await;
     }
 
-    println!("[Sidecar] Starting llama-server with Metal acceleration...");
+    println!("[Sidecar] Starting llama-server (CPU)...");
     println!("[Sidecar] Model path: {}", model_path);
-    
-    // In dev mode, sidecars are in src-tauri/bin
-    // In production, they are in the resources folder
+
+    // Resolve the bin directory: in dev it's src-tauri/bin, in release it's next to the exe
     let bin_dir = if cfg!(debug_assertions) {
         let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-        // target/debug/tauri-app -> src-tauri/bin
+        // target/debug/tauri-app.exe  →  src-tauri/bin
         exe_path.parent().unwrap().parent().unwrap().parent().unwrap().join("bin")
     } else {
         let resource_dir = app_handle.path().resource_dir().map_err(|e: tauri::Error| e.to_string())?;
         resource_dir.join("bin")
     };
-    
-    let bin_dir_str = bin_dir.to_string_lossy().to_string();
-    println!("[Sidecar] Library path: {}", bin_dir_str);
 
-    let (mut rx, child) = app_handle
-        .shell()
-        .sidecar("llama-server")
-        .map_err(|e| {
-            println!("[Sidecar] DEFINE ERROR: {}", e);
-            e.to_string()
-        })?
-        .args(["-m", &model_path, "--port", "8080", "--host", "0.0.0.0", "-ngl", "99", "--parallel", "1", "-c", "4096"])
-        .env("DYLD_LIBRARY_PATH", &bin_dir_str)
+    let bin_dir_str = bin_dir.to_string_lossy().to_string();
+    println!("[Sidecar] Library/Bin path: {}", bin_dir_str);
+
+    // Locate the llama-server executable (Tauri appends the target triple)
+    let exe_name = if cfg!(windows) {
+        "llama-server-x86_64-pc-windows-msvc.exe"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") { "llama-server-aarch64-apple-darwin" }
+        else { "llama-server-x86_64-apple-darwin" }
+    } else {
+        "llama-server-x86_64-unknown-linux-gnu"
+    };
+
+    let exe_path = bin_dir.join(exe_name);
+    if !exe_path.exists() {
+        return Err(format!("llama-server binary not found at: {}", exe_path.display()));
+    }
+
+    // Build PATH so Windows can find the DLLs next to the exe
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let augmented_path = if cfg!(windows) {
+        format!("{};{}", bin_dir_str, current_path)
+    } else {
+        current_path
+    };
+
+    // Always request maximum GPU offload; llama.cpp silently falls back to CPU if no GPU backend is loaded
+    let ngl_value = "99";
+
+    let mut child = tokio::process::Command::new(&exe_path)
+        .args([
+            "-m", &model_path,
+            "--port", &port.to_string(),
+            "--host", "0.0.0.0",
+            "-ngl", ngl_value,
+            "--parallel", "1",
+            "-c", "4096",
+        ])
+        // Set CWD to bin dir so Windows finds the DLLs relative to the exe
+        .current_dir(&bin_dir)
+        .env("PATH", &augmented_path)
+        // Tells ggml_backend_load_all() where to find backend DLLs
+        .env("GGML_BACKEND_PATH", &bin_dir_str)
+        .env("DYLD_LIBRARY_PATH", &bin_dir_str)  // macOS
+        .env("LD_LIBRARY_PATH", &bin_dir_str)    // Linux
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
             println!("[Sidecar] SPAWN ERROR: {}", e);
             e.to_string()
         })?;
 
-    println!("[Sidecar] Spawned PID: {:?}", child.pid());
+    println!("[Sidecar] Spawned PID: {:?}", child.id());
 
-    // Monitor output in background
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                tauri_plugin_shell::process::CommandEvent::Stdout(line) => {
-                    println!("[llama.cpp] {}", String::from_utf8_lossy(&line));
-                }
-                tauri_plugin_shell::process::CommandEvent::Stderr(line) => {
-                    eprintln!("[llama.cpp] ERR: {}", String::from_utf8_lossy(&line));
-                }
-                tauri_plugin_shell::process::CommandEvent::Terminated(payload) => {
-                    println!("[llama.cpp] Terminated with code: {:?}", payload.code);
-                }
-                _ => {}
+    // Stream stdout
+    if let Some(stdout) = child.stdout.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[llama.cpp] {}", line);
+                let _ = app.emit("sidecar-log", &line);
             }
-        }
-    });
+        });
+    }
+
+    // Stream stderr + detect early exit
+    if let Some(stderr) = child.stderr.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                eprintln!("[llama.cpp] ERR: {}", line);
+                let _ = app.emit("sidecar-log", format!("[ERR] {}", line));
+                // Detect a fatal startup error and surface it immediately
+                if line.contains("no backends are loaded") || line.contains("failed to load model") || line.contains("exiting due to") {
+                    let _ = app.emit("sidecar-failed", &line);
+                }
+            }
+        });
+    }
+
+    // Health-check loop — emits sidecar-ready or sidecar-failed
+    {
+        let app = app_handle.clone();
+        let health_url = format!("http://localhost:{}/health", port);
+        println!("[Sidecar] Health check target: {}", health_url);
+        tokio::spawn(async move {
+            for attempt in 1..=30u32 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                match reqwest::get(&health_url).await {
+                    Ok(r) if r.status().is_success() => {
+                        println!("[Sidecar] llama-server ready after {}s", attempt * 2);
+                        let _ = app.emit("sidecar-ready", true);
+                        return;
+                    }
+                    _ => {
+                        println!("[Sidecar] Waiting for server... attempt {}/30", attempt);
+                    }
+                }
+            }
+            println!("[Sidecar] llama-server did not become ready within 60s");
+            let _ = app.emit("sidecar-failed", "Server did not respond within 60s");
+        });
+    }
 
     *sidecar_lock = Some(child);
-    Ok("Sidecar started".to_string())
+    Ok("Sidecar starting".to_string())
 }
 
 #[tauri::command]
 async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut sidecar_lock = state.sidecar_process.lock().await;
-    if let Some(child) = sidecar_lock.take() {
-        let _ = child.kill();
+    if let Some(mut child) = sidecar_lock.take() {
+        let _ = child.kill().await;
+        println!("[Sidecar] Stopped.");
     }
     Ok(())
 }
@@ -482,48 +546,54 @@ async fn run_mistralrs_query(
 
     if needs_load {
         println!("[mistral.rs] Loading model: {}", model_path);
-        
+
+        let device = best_device(false).map_err(|e| e.to_string())?;
+        println!("[mistral.rs] Target Hardware Device: {:?}", device);
+
+        if model_path.starts_with("\\\\") {
+            println!("[mistral.rs] WARNING: Model path appears to be a UNC network share ('{}').", model_path);
+            println!("[mistral.rs] This will SEVERELY degrade performance even if synced. Please use a local drive (e.g. C:\\).");
+        }
+
         let model = if model_path.ends_with(".gguf") && Path::new(&model_path).exists() {
             // Local GGUF file
             let path = Path::new(&model_path);
             let parent = path.parent().ok_or("Invalid model path")?.to_str().ok_or("Non-UTF8 path")?.to_string();
             let filename = path.file_name().ok_or("Invalid model filename")?.to_str().ok_or("Non-UTF8 filename")?.to_string();
-            
+
             println!("[mistral.rs] Loading local GGUF: ID='{}', File='{}'", parent, filename);
             GgufModelBuilder::new(parent, vec![filename])
-                .with_device(best_device(false).map_err(|e| e.to_string())?)
-                .with_logging()
+                .with_device(device)
+                .with_logging().with_throughput_logging()
                 .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())
                 .map_err(|e| e.to_string())?
                 .build()
                 .await
         } else {
             // Assume it's an HF Repo ID or URL that mistralrs can handle
-            // For GGUF on HF, we usually need the repo_id and the specific file.
-            // If the user provided "repo_id/file.gguf", we split it.
             let parts: Vec<&str> = model_path.split('/').collect();
             if parts.len() >= 3 && model_path.contains(".gguf") {
-                // e.g. "bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
                 let filename = parts.last().unwrap().to_string();
                 let repo_id = parts[..parts.len()-1].join("/");
                 println!("[mistral.rs] Loading remote HF GGUF: Repo='{}', File='{}'", repo_id, filename);
                 GgufModelBuilder::new(repo_id, vec![filename])
-                    .with_device(best_device(false).map_err(|e| e.to_string())?)
-                    .with_logging()
+                    .with_device(device)
+                    .with_logging().with_throughput_logging()
                     .with_paged_attn(|| PagedAttentionMetaBuilder::default().build())
                     .map_err(|e| e.to_string())?
                     .build()
                     .await
             } else {
-                // Fallback to TextModelBuilder if no .gguf extension
                 println!("[mistral.rs] Loading as TextModel (Repo ID): {}", model_path);
                 mistralrs::TextModelBuilder::new(model_path.clone())
-                    .with_device(best_device(false).map_err(|e| e.to_string())?)
-                    .with_logging()
+                    .with_device(device)
+                    .with_logging().with_throughput_logging()
+                    .with_isq(IsqType::Q4K) // Ensure remote models are quantized
                     .build()
                     .await
             }
-        }.map_err(|e| {
+        }
+.map_err(|e| {
             println!("[mistral.rs] LOAD ERROR: {}", e);
             e.to_string()
         })?;
@@ -537,7 +607,9 @@ async fn run_mistralrs_query(
     let model = model_lock.as_ref().unwrap();
     
     let max_len = max_tokens.unwrap_or(512);
-    let thinking = !no_thinking.unwrap_or(false);
+    // User requested thinking=false by default for performance
+    let thinking = if let Some(nt) = no_thinking { !nt } else { false };
+    
     let request = RequestBuilder::from(
         TextMessages::new().add_message(TextMessageRole::User, prompt.clone())
     )
@@ -545,18 +617,29 @@ async fn run_mistralrs_query(
     .enable_thinking(thinking);
 
     println!("[mistral.rs] Sending chat request (prompt len={}, max_tokens={}, thinking={})...", prompt.len(), max_len, thinking);
+    let start_time = std::time::Instant::now();
     let response = model.send_chat_request(request)
         .await
         .map_err(|e| {
             println!("[mistral.rs] QUERY ERROR: {}", e);
             e.to_string()
         })?;
+    let duration = start_time.elapsed();
 
     let content = response.choices[0].message.content.as_ref().cloned().unwrap_or_default();
-    println!("[mistral.rs] Query complete. Response length: {}. Usage: P={}, C={}", 
+    let total_tokens = response.usage.completion_tokens;
+    let tps = if duration.as_secs_f32() > 0.0 {
+        total_tokens as f32 / duration.as_secs_f32()
+    } else {
+        0.0
+    };
+
+    println!("[mistral.rs] Query complete in {:?}. Response length: {}. Usage: P={}, C={}. Speed: {:.2} t/s", 
+        duration,
         content.len(),
         response.usage.prompt_tokens,
-        response.usage.completion_tokens
+        total_tokens,
+        tps
     );
     
     Ok(content)

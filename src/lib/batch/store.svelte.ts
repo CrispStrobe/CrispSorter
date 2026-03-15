@@ -4,6 +4,8 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { documentDir, downloadDir, join, resolve } from '@tauri-apps/api/path';
 import { getSetting, saveSetting } from '../store';
 import { llmClient } from '../llm/client';
+import { getWebLLMLoadedModel } from '../llm/webllm';
+import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import { extractText } from '../extractors';
 
@@ -50,6 +52,7 @@ export class BatchManager {
     });
 
     addItem(path: string, name: string, size: number) {
+        if (this.items.some(i => i.originalPath === path)) return; // skip duplicates
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
         this.items.push({
@@ -127,6 +130,9 @@ export class BatchManager {
             const activeLocal = localModels.find(m => m.isActive && m.isDownloaded);
             modelId = activeLocal?.path || modelId;
         }
+        // For browser-based engines, fall back to the in-memory loaded model
+        if (activeProviderId === 'webllm') modelId = modelId || getWebLLMLoadedModel();
+        if (activeProviderId === 'ort') modelId = modelId || getORTLoadedModel();
 
         const llmMaxChars = overrides?.maxChars ?? await getSetting('llmMaxChars', 5000);
         const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
@@ -134,6 +140,10 @@ export class BatchManager {
         const pdfBackend = await getSetting('pdfBackend', 'js');
         const language = await getSetting('language', 'en') as string;
         const ocrEnabledGlobal = await getSetting('ocrEnabled', false);
+        const noThinking = await getSetting('noThinking', true);
+
+        // Sync llmClient state
+        llmClient.noThinking = noThinking;
 
         const defaultPrompt = getDefaultPrompt(parsingFormat, language);
         const basePrompt = await getSetting('llmPrompt', defaultPrompt);

@@ -1,5 +1,7 @@
 import { fetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
+import { queryWebLLM, getWebLLMLoadedModel } from './webllm';
+import { queryORT, getORTLoadedModel } from './ort';
 
 export interface LLMProvider {
     id: string;
@@ -24,6 +26,7 @@ export const OPENAI_COMPATIBLE = {
     'ollama': 'http://localhost:11434/v1',
     'llamacpp': 'http://localhost:8080/v1',
     'mlx': 'http://localhost:8000/v1',
+    'webllm': 'webllm',
 };
 
 export const DEFAULT_PROVIDERS: LLMProvider[] = [
@@ -31,6 +34,8 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'mistralrs', name: 'mistral.rs (Native)', baseUrl: 'local', apiKey: '', models: [], selectedModel: '', isConfigured: true },
     { id: 'llamacpp', name: 'llama.cpp (Sidecar)', baseUrl: 'http://localhost:8080/v1', apiKey: 'no-key', models: [], selectedModel: '', isConfigured: true },
     { id: 'mlx', name: 'MLX (Apple Silicon)', baseUrl: 'http://localhost:8000/v1', apiKey: 'no-key', models: [], selectedModel: '', isConfigured: true },
+    { id: 'webllm', name: 'WebLLM (Browser GPU)', baseUrl: 'webllm', apiKey: '', models: [], selectedModel: '', isConfigured: true },
+    { id: 'ort', name: 'ORT / Transformers.js', baseUrl: 'ort', apiKey: '', models: [], selectedModel: '', isConfigured: true },
     { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
@@ -64,7 +69,7 @@ export class LLMClient {
 
     async fetchModels(providerId: string, apiKey?: string, baseUrl?: string): Promise<string[]> {
         console.log(`[LLMClient] fetchModels for ${providerId}`);
-        if (['mistralrs'].includes(providerId)) return [];
+        if (['mistralrs', 'webllm', 'ort'].includes(providerId)) return [];
 
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
@@ -116,6 +121,22 @@ export class LLMClient {
         console.log(`[LLMClient] query: provider=${providerId}, model=${modelId}`);
         console.log(`[LLMClient] prompt length: ${prompt.length}`);
         
+        if (providerId === 'webllm') {
+            const loaded = getWebLLMLoadedModel();
+            if (!loaded) throw new Error('WebLLM: no model loaded — open Settings and click Load.');
+            console.log(`[LLMClient] WebLLM query using model: ${loaded}`);
+            const result = await queryWebLLM(prompt);
+            return this.stripThinking(result);
+        }
+
+        if (providerId === 'ort') {
+            const loaded = getORTLoadedModel();
+            if (!loaded) throw new Error('ORT: no model loaded — open Settings and click Load.');
+            console.log(`[LLMClient] ORT query using model: ${loaded}`);
+            const result = await queryORT(prompt);
+            return this.stripThinking(result);
+        }
+
         if (providerId === 'mistralrs') {
             console.log(`[LLMClient] Invoking native mistral.rs engine for local model...`);
             const startTime = Date.now();

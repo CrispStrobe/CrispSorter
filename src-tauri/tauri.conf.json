@@ -27,9 +27,7 @@
     "externalBin": [
       "bin/llama-server"
     ],
-    "resources": [
-      "bin/*.dll"
-    ],
+    "resources": [],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

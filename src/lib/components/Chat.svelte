@@ -9,6 +9,9 @@
         Loader2, Info, ChevronDown, ChevronUp
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
+    import { getWebLLMLoadedModel } from '../llm/webllm';
+    import { getORTLoadedModel } from '../llm/ort';
+    import { saveSetting } from '../store';
     import katex from 'katex';
     import 'katex/dist/katex.min.css';
     import 'deep-chat';
@@ -130,8 +133,15 @@
     async function handleRequest(body: any, signals: any) {
         try {
             const userMsg = body.messages[body.messages.length - 1].text;
-            if (!activeProviderId || !selectedModel) {
-                return signals.onResponse({ error: "No engine selected." });
+            // For browser-based engines, fall back to the loaded model even if selectedModel is empty
+            let effectiveModel = selectedModel;
+            if (activeProviderId === 'webllm') effectiveModel = getWebLLMLoadedModel() || selectedModel;
+            else if (activeProviderId === 'ort') effectiveModel = getORTLoadedModel() || selectedModel;
+            if (!activeProviderId || !effectiveModel) {
+                const noModelMsg = activeProviderId === 'webllm' ? 'WebLLM: no model loaded — open Settings and click Load.'
+                    : activeProviderId === 'ort' ? 'ORT: no model loaded — open Settings and click Load.'
+                    : 'No engine selected.';
+                return signals.onResponse({ error: noModelMsg });
             }
 
             let contextPrompt = systemInstruction + "\n\n";
@@ -155,7 +165,7 @@
             }
 
             const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
-            const responseText = await llmClient.query(activeProviderId, selectedModel, contextPrompt + userMsg, activeProv.apiKey, llmTemperature);
+            const responseText = await llmClient.query(activeProviderId, effectiveModel, contextPrompt + userMsg, activeProv.apiKey, llmTemperature);
             
             // Normalize math for Remarkable (Deep Chat)
             let fixedText = responseText
@@ -182,6 +192,14 @@
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
     let availableModels = $derived.by(() => {
         if (['mistralrs', 'llamacpp'].includes(activeProviderId)) return localModels.filter(m => m.isDownloaded).map(m => m.path);
+        if (activeProviderId === 'webllm') {
+            const loaded = getWebLLMLoadedModel();
+            return loaded ? [loaded] : [];
+        }
+        if (activeProviderId === 'ort') {
+            const loaded = getORTLoadedModel();
+            return loaded ? [loaded] : [];
+        }
         return activeProvider.models;
     });
 </script>
