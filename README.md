@@ -121,4 +121,3 @@ Requires `gh` CLI authenticated (`gh auth login`).
 
 **AGPL-3.0** — see [LICENSE](LICENSE).
 
-*Developed by Christian Ströbele · [crispstro.be](https://crispstro.be)*
