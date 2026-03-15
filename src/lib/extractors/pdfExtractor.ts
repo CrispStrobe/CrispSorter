@@ -30,9 +30,9 @@ if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype.values) {
     ReadableStream.prototype.values = ReadableStream.prototype[Symbol.asyncIterator];
 }
 
-export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
-    console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}`);
-    const ocrEnabled = await getSetting('ocrEnabled', false);
+export async function extractPdf(arrayBuffer: ArrayBuffer, forceOCR: boolean = false): Promise<string> {
+    console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}, forceOCR: ${forceOCR}`);
+    const ocrEnabled = forceOCR || await getSetting('ocrEnabled', false);
     
     try {
         const data = new Uint8Array(arrayBuffer);
@@ -56,37 +56,40 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
             const page = await pdfDocument.getPage(pageNum);
             
             let pageText = '';
-            try {
-                const textContent = await page.getTextContent();
-                // PDF.js returns items in internal object order, which often breaks headers/columns.
-                // We sort by Y coordinate (top to bottom) and then X coordinate (left to right).
-                const items = textContent.items as any[];
-                
-                // Sort items: higher Y first (top), then lower X (left)
-                items.sort((a, b) => {
-                    const yDiff = b.transform[5] - a.transform[5];
-                    if (Math.abs(yDiff) > 5) return yDiff; // Use a threshold for "same line"
-                    return a.transform[4] - b.transform[4];
-                });
+            
+            // If NOT forcing OCR, try to get digital text first
+            if (!forceOCR) {
+                try {
+                    const textContent = await page.getTextContent();
+                    const items = textContent.items as any[];
+                    
+                    items.sort((a, b) => {
+                        const yDiff = b.transform[5] - a.transform[5];
+                        if (Math.abs(yDiff) > 5) return yDiff;
+                        return a.transform[4] - b.transform[4];
+                    });
 
-                let lastY = -1;
-                for (const item of items) {
-                    const currentY = item.transform[5];
-                    if (lastY !== -1 && Math.abs(currentY - lastY) > 5) {
-                        pageText += '\n'; // New line if Y changes significantly
-                    } else if (lastY !== -1) {
-                        pageText += ' '; // Space if on same line
+                    let lastY = -1;
+                    for (const item of items) {
+                        const currentY = item.transform[5];
+                        if (lastY !== -1 && Math.abs(currentY - lastY) > 5) {
+                            pageText += '\n';
+                        } else if (lastY !== -1) {
+                            pageText += ' ';
+                        }
+                        pageText += item.str || '';
+                        lastY = currentY;
                     }
-                    pageText += item.str || '';
-                    lastY = currentY;
+                } catch (textErr) {
+                    console.warn(`[PDFExtractor] Text extraction failed for page ${pageNum}:`, textErr);
                 }
-            } catch (textErr) {
-                console.warn(`[PDFExtractor] Text extraction failed for page ${pageNum}:`, textErr);
+            } else {
+                console.log(`[PDFExtractor] Skipping digital text extraction for page ${pageNum} (forceOCR enabled)`);
             }
             
-            // If no text was found and OCR is enabled, try OCR on this page
-            if (pageText.trim().length < 20 && ocrEnabled) {
-                console.log(`[PDFExtractor] Page ${pageNum} seems empty or scanned. Running OCR...`);
+            // If text is still empty (or we are forcing OCR) and OCR is enabled, run OCR
+            if ((pageText.trim().length < 20 || forceOCR) && ocrEnabled) {
+                console.log(`[PDFExtractor] Page ${pageNum} triggering OCR (forceOCR=${forceOCR}, length=${pageText.trim().length})...`);
                 try {
                     const canvas = document.createElement('canvas');
                     const viewport = page.getViewport({ scale: 2.0 }); 
@@ -102,7 +105,11 @@ export async function extractPdf(arrayBuffer: ArrayBuffer): Promise<string> {
                     const imageData = canvas.toDataURL('image/png');
                     
                     const { data: { text } } = await Tesseract.recognize(imageData, 'deu+eng', {
-                        logger: m => console.log(`[OCR] Page ${pageNum} - ${m.status}: ${Math.round(m.progress * 100)}%`)
+                        logger: m => {
+                            if (m.status === 'recognizing text' && Math.round(m.progress * 100) % 25 === 0) {
+                                console.log(`[OCR] Page ${pageNum} - ${m.status}: ${Math.round(m.progress * 100)}%`);
+                            }
+                        }
                     });
                     pageText = text;
                     console.log(`[PDFExtractor] OCR Success for page ${pageNum}, length: ${pageText.length}`);

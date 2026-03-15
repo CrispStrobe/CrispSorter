@@ -12,7 +12,7 @@ export const translations = {
             title: 'Chat',
             context: 'Context',
             context_hint: 'Select files to include in chat context.',
-            placeholder: 'Ask something about the documents...',
+            placeholder: 'Type your message...',
             send: 'Send',
             no_context: 'No documents selected.',
             clear: 'Clear Chat',
@@ -24,8 +24,11 @@ export const translations = {
             context_limit: 'Context Limit',
             temperature: 'Temperature',
             filter_files: 'Filter files...',
-            docs: 'Docs',
-            history: 'History'
+            docs: 'Docs:',
+            history: 'History',
+            copy_msg: 'Copy message',
+            copy_chat: 'Copy full chat',
+            save_chat: 'Save chat history'
         },
         batch: {
             add_files: 'Add',
@@ -58,7 +61,8 @@ export const translations = {
             path: 'Full Path',
             path_hint: 'Calculated after extraction.',
             extract_hint: 'Run extraction first.',
-            confirm_move: 'Sort {count} files?',
+            confirm_move: 'Move {count} files?',
+            confirm_copy: 'Copy {count} files?',
             search_placeholder: 'Search...',
             filters: 'Filters',
             filter_type: 'Type',
@@ -67,6 +71,8 @@ export const translations = {
             columns: 'Columns',
             reanalyze: 'Re-analyze',
             reextract: 'Re-extract',
+            reextract_ocr: 'Re-extract (with OCR)',
+            enforce_ocr: 'Enforce OCR',
             remove: 'Remove',
             confirm: 'Confirm',
             ignore: 'Ignore',
@@ -100,7 +106,8 @@ export const translations = {
                 last_status: 'Last Execution Status'
             },
             stats_files: '{count} files',
-            use_model: 'Use'
+            use_model: 'Use',
+            selected_status: 'Selected'
         },
         history: {
             title: 'History',
@@ -158,6 +165,8 @@ export const translations = {
             ocr_options: 'Text Extraction/OCR Options',
             ocr_enabled: 'Enable OCR',
             ocr_hint: 'Downloads ~50MB data on first run.',
+            ocr_tesseract_title: 'Tesseract Model Manager',
+            ocr_tesseract_hint: 'Download language data for the Tesseract OCR engine.',
             no_think: 'Suppress thinking mode',
             no_think_hint: 'Sends /no_think as a system message (Qwen3, Qwen3.5) and strips <think>/<thinking> blocks from all responses. Qwen3.5-0.8B is non-thinking by default; larger Qwen3 models think by default and benefit most. DeepSeek-R1 variants leak <think> blocks regardless — stripping handles that. No known model uses /nothink without the underscore.',
             local_model_path: 'Local GGUF Model Path',
@@ -210,7 +219,7 @@ export const translations = {
             title: 'Chat',
             context: 'Kontext',
             context_hint: 'Wählen Sie Dateien für den Kontext aus.',
-            placeholder: 'Fragen Sie etwas zu den Dokumenten...',
+            placeholder: 'Schreiben Sie eine Nachricht...',
             send: 'Senden',
             no_context: 'Keine Dokumente ausgewählt.',
             clear: 'Chat leeren',
@@ -222,8 +231,11 @@ export const translations = {
             context_limit: 'Kontext-Limit',
             temperature: 'Temperatur',
             filter_files: 'Dateien filtern...',
-            docs: 'Dok.',
-            history: 'Verlauf'
+            docs: 'Dok.:',
+            history: 'Verlauf',
+            copy_msg: 'Nachricht kopieren',
+            copy_chat: 'Chat kopieren',
+            save_chat: 'Chatverlauf speichern'
         },
         batch: {
             add_files: 'Hinzufügen',
@@ -256,7 +268,8 @@ export const translations = {
             path: 'Pfad',
             path_hint: 'Wird berechnet.',
             extract_hint: 'Zuerst extrahieren.',
-            confirm_move: '{count} Dateien sortieren?',
+            confirm_move: '{count} Dateien verschieben?',
+            confirm_copy: '{count} Dateien kopieren?',
             search_placeholder: 'Suchen...',
             filters: 'Filter',
             filter_type: 'Typ',
@@ -265,6 +278,8 @@ export const translations = {
             columns: 'Spalten',
             reanalyze: 'Neu analysieren',
             reextract: 'Neu extrahieren',
+            reextract_ocr: 'Neu extrahieren (mit OCR)',
+            enforce_ocr: 'OCR erzwingen',
             remove: 'Entfernen',
             confirm: 'Bestätigen',
             ignore: 'Ignorieren',
@@ -298,7 +313,8 @@ export const translations = {
                 last_status: 'Letzter Ausführungsstatus'
             },
             stats_files: '{count} Dateien',
-            use_model: 'Nutzen'
+            use_model: 'Nutzen',
+            selected_status: 'Ausgewählt'
         },
         history: {
             title: 'Verlauf',
@@ -356,6 +372,8 @@ export const translations = {
             ocr_options: 'Textextraktion/OCR-Optionen',
             ocr_enabled: 'OCR aktivieren',
             ocr_hint: 'Lädt beim ersten Start ca. 50MB Daten nach.',
+            ocr_tesseract_title: 'Tesseract Modell-Manager',
+            ocr_tesseract_hint: 'Sprachdaten für die Tesseract OCR-Engine herunterladen.',
             no_think: 'Thinking-Modus unterdrücken',
             no_think_hint: 'Sendet /no_think als Systemnachricht (Qwen3, Qwen3.5) und entfernt <think> Blöcke. Qwen3.5-0.8B denkt standardmäßig nicht; größere Qwen3 Modelle profitieren am meisten. DeepSeek-R1 Varianten geben <think> Blöcke trotzdem aus - das Filtern fängt dies ab. Kein bekanntes Modell nutzt /nothink ohne Unterstrich.',
             local_model_path: 'Lokaler GGUF Modell-Pfad',
