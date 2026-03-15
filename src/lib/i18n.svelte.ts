@@ -99,7 +99,8 @@ export const translations = {
                 projected_path: 'Target Path (Projected)',
                 last_status: 'Last Execution Status'
             },
-            stats_files: '{count} files'
+            stats_files: '{count} files',
+            use_model: 'Use'
         },
         history: {
             title: 'History',
@@ -165,6 +166,7 @@ export const translations = {
             local_manager_start: 'Start Sidecar',
             local_manager_add: 'Add File',
             local_manager_hf_hint: 'For GGUF on HF use Format: REPO_ID/FILENAME.GGUF (e.g. bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf)',
+            ollama_manager_title: 'Ollama Model Manager',
             mlx_manager_title: 'MLX Model Manager',
             mlx_manager_hint: 'Models auto-download from HuggingFace on first use via mlx_lm.',
             mlx_requires: 'Requires: pip install -U mlx-lm (≥ 0.31.0). Models marked ⚠ require the latest version. Path can be a local dir or HF repo ID.',
@@ -295,7 +297,8 @@ export const translations = {
                 projected_path: 'Zielpfad (Geplant)',
                 last_status: 'Letzter Ausführungsstatus'
             },
-            stats_files: '{count} Dateien'
+            stats_files: '{count} Dateien',
+            use_model: 'Nutzen'
         },
         history: {
             title: 'Verlauf',
@@ -361,6 +364,7 @@ export const translations = {
             local_manager_start: 'Sidecar starten',
             local_manager_add: 'Datei hinzufügen',
             local_manager_hf_hint: 'GGUF auf HF Format: REPO_ID/DATEINAME.GGUF (z.B. bartowski/Llama-3.2-1B-Instruct-GGUF/Llama-3.2-1B-Instruct-Q4_K_M.gguf)',
+            ollama_manager_title: 'Ollama Modell-Manager',
             mlx_manager_title: 'MLX Modell-Manager',
             mlx_manager_hint: 'Modelle werden bei der ersten Nutzung via mlx_lm automatisch von HuggingFace geladen.',
             mlx_requires: 'Benötigt: pip install -U mlx-lm (≥ 0.31.0). Mit ⚠ markierte Modelle benötigen die neueste Version. Pfad kann ein lokales Verzeichnis oder eine HF Repo ID sein.',
