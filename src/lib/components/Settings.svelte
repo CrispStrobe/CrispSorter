@@ -16,6 +16,7 @@
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
+    import { fetch } from '@tauri-apps/plugin-http';
     import { loadWebLLM, unloadWebLLM, getWebLLMLoadedModel, WEBLLM_MODELS } from '../llm/webllm';
     import type { InitProgressReport } from '@mlc-ai/web-llm';
     import { loadORT, unloadORT, getORTLoadedModel, getORTDevice, ORT_MODELS } from '../llm/ort';
@@ -150,6 +151,11 @@
     // Ollama Management
     let ollamaCustomInput = $state('');
     let ollamaPulling = $state<Record<string, number>>({});
+    let ollamaStatus = $state(''); // '', 'starting', 'ready', 'error'
+    let ollamaRunning = $state(false);
+    let ollamaLogs = $state<string[]>([]);
+    let ollamaLogsVisible = $state(false);
+    let ollamaLogEl: HTMLTextAreaElement | null = $state(null);
 
     // Benchmarking
     let benchProviders = $state<string[]>([]);
@@ -244,15 +250,37 @@
             setTimeout(() => { if (sidecarLogEl) sidecarLogEl.scrollTop = sidecarLogEl.scrollHeight; }, 10);
         });
 
+        const unlistenOllamaReady = await listen('ollama-ready', () => {
+            ollamaStatus = 'ready';
+            ollamaRunning = true;
+        });
+        const unlistenOllamaFailed = await listen('ollama-failed', () => {
+            ollamaStatus = 'error';
+            ollamaRunning = false;
+        });
+        const unlistenOllamaLog = await listen('ollama-log', (event: any) => {
+            ollamaLogs = [...ollamaLogs, event.payload].slice(-500);
+            setTimeout(() => { if (ollamaLogEl) ollamaLogEl.scrollTop = ollamaLogEl.scrollHeight; }, 10);
+        });
+
         if (activeProviderId === 'ollama') {
             handleRefreshModels();
         }
+
+        // Check if Ollama is already running
+        try {
+            const r = await fetch('http://localhost:11434/api/tags', { connectTimeout: 1500 });
+            if (r.ok) { ollamaStatus = 'ready'; ollamaRunning = true; }
+        } catch { /* not running */ }
 
         return () => {
             unlistenMlx();
             unlistenSidecar();
             unlistenSidecarFailed();
             unlistenSidecarLog();
+            unlistenOllamaReady();
+            unlistenOllamaFailed();
+            unlistenOllamaLog();
         };
     });
 
@@ -287,6 +315,7 @@
         await saveSetting('llamacppPort', llamacppPort);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
+        llmClient.llamacppPort = llamacppPort;
         i18n.setLanguage(currentLanguage);
     }
 
@@ -643,6 +672,25 @@
         ollamaCustomInput = '';
     }
 
+    async function startOllamaService() {
+        ollamaStatus = 'starting';
+        ollamaLogs = [];
+        try {
+            await invoke('start_ollama');
+        } catch(e) {
+            ollamaStatus = 'error';
+            alert('Failed to start Ollama: ' + e);
+        }
+    }
+
+    async function stopOllamaService() {
+        try {
+            await invoke('stop_ollama');
+            ollamaStatus = '';
+            ollamaRunning = false;
+        } catch(e) { console.error(e); }
+    }
+
     // Benchmarking
     async function runBenchmark() {
         if (benchProviders.length === 0) return alert('Select at least one provider.');
@@ -695,7 +743,10 @@
         if (selectedProvider.id === 'mlx') {
             return mlxModels.map(m => m.repoId);
         }
-        return selectedProvider.models || [];
+        const fetched = selectedProvider.models || [];
+        const saved = selectedProvider.selectedModel;
+        if (saved && !fetched.includes(saved)) return [saved, ...fetched];
+        return fetched;
     });
 
     let ollamaModelsList = $derived.by(() => {
@@ -1071,7 +1122,7 @@
                 </form>
             {/if}
 
-            {#if !['webllm', 'ort'].includes(selectedProvider.id)}
+            {#if !['webllm', 'ort', 'ollama'].includes(selectedProvider.id)}
             <div class="form-group">
                 <label for="model-select-input-{selectedProvider.id}">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
@@ -1091,10 +1142,13 @@
             {/if}
 
             {#if selectedProvider.id !== 'mistralrs'}
+                {#if selectedProvider.id === 'ollama' && selectedProvider.selectedModel}
+                    <p class="hint" style="margin: 8px 0 4px;">Active model: <strong>{selectedProvider.selectedModel}</strong></p>
+                {/if}
                 <div class="actions">
-                    <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection}>
+                    <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection || !selectedProvider.selectedModel}>
                         <span class={testingConnection ? "loader-spin" : ""}>
-                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}    
+                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
                         </span>
                         {i18n.t.settings.test_connection}
                     </button>
@@ -1110,10 +1164,42 @@
                 <div class="section-card" style="margin-top: 24px;">
                     <div class="header">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><Cpu size={16} /> {i18n.t.settings.ollama_manager_title}</h2>
-                        <button class="action-btn small" onclick={handleRefreshModels} aria-label="Refresh Ollama models">
-                            <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> {i18n.t.batch.reanalyze_run}
-                        </button>
+                        <div class="header-actions">
+                            {#if ollamaStatus === 'starting'}
+                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                            {:else if ollamaStatus === 'ready'}
+                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                            {:else if ollamaStatus === 'error'}
+                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                            {/if}
+                            {#if ollamaRunning}
+                                <button class="action-btn small danger" onclick={stopOllamaService}>
+                                    <Square size={14} /> Stop
+                                </button>
+                            {:else}
+                                <button class="action-btn small success" onclick={startOllamaService} disabled={ollamaStatus === 'starting'}>
+                                    <Rocket size={14} /> Start Ollama
+                                </button>
+                            {/if}
+                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Fetch installed Ollama models">
+                                <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> Fetch Installed
+                            </button>
+                        </div>
                     </div>
+                    {#if ollamaLogs.length > 0}
+                        <div style="margin-bottom: 14px;">
+                            <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => ollamaLogsVisible = !ollamaLogsVisible}>
+                                OLLAMA LOGS
+                                {#if ollamaLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
+                            </button>
+                            {#if ollamaLogsVisible}
+                                <div style="margin-top: 8px; position: relative;">
+                                    <textarea bind:this={ollamaLogEl} readonly class="log-viewer" value={ollamaLogs.join('\n')} rows="8" aria-label="Ollama Logs"></textarea>
+                                    <button class="log-clear-btn" onclick={() => ollamaLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                </div>
+                            {/if}
+                        </div>
+                    {/if}
                     
                     <div class="form-group" style="margin-top: 20px;">
                         <label for="ollama-custom-id">Custom Model Tag</label>

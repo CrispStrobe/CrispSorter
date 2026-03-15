@@ -35,6 +35,7 @@ pub struct AppState {
     current_model_path: Mutex<Option<String>>,
     sidecar_process: Mutex<Option<TokioChild>>,
     mlx_process: Mutex<Option<TokioChild>>,
+    ollama_process: Mutex<Option<TokioChild>>,
 }
 
 #[tauri::command]
@@ -310,6 +311,106 @@ async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     } else {
         Err(format!("Not found in cache: {}", cache_dir.display()))
     }
+}
+
+#[tauri::command]
+async fn start_ollama(
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    // Check if Ollama is already running externally
+    if let Ok(r) = reqwest::get("http://localhost:11434/api/tags").await {
+        if r.status().is_success() {
+            let _ = app_handle.emit("ollama-ready", true);
+            return Ok("Ollama already running".to_string());
+        }
+    }
+
+    let mut ollama_lock = state.ollama_process.lock().await;
+    // Kill any previously managed process
+    if let Some(mut child) = ollama_lock.take() {
+        let _ = child.kill().await;
+    }
+
+    // Find ollama binary
+    #[cfg(windows)]
+    let ollama_bin = {
+        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let candidate = std::path::PathBuf::from(&local_app_data)
+            .join("Programs").join("Ollama").join("ollama.exe");
+        if candidate.exists() {
+            candidate.to_string_lossy().to_string()
+        } else {
+            "ollama".to_string()
+        }
+    };
+    #[cfg(not(windows))]
+    let ollama_bin = "ollama".to_string();
+
+    println!("[Ollama] Starting: {} serve", ollama_bin);
+
+    let mut child = tokio::process::Command::new(&ollama_bin)
+        .arg("serve")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start ollama: {}. Is Ollama installed?", e))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[Ollama] {}", line);
+                let _ = app.emit("ollama-log", &line);
+            }
+        });
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[Ollama ERR] {}", line);
+                let _ = app.emit("ollama-log", format!("[ERR] {}", line));
+            }
+        });
+    }
+
+    {
+        let app = app_handle.clone();
+        tokio::spawn(async move {
+            for attempt in 1..=30u32 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                match reqwest::get("http://localhost:11434/api/tags").await {
+                    Ok(r) if r.status().is_success() => {
+                        println!("[Ollama] Ready after {}s", attempt * 2);
+                        let _ = app.emit("ollama-ready", true);
+                        return;
+                    }
+                    _ => println!("[Ollama] Waiting... attempt {}/30", attempt),
+                }
+            }
+            println!("[Ollama] Did not become ready within 60s");
+            let _ = app.emit("ollama-failed", "Ollama did not respond within 60s");
+        });
+    }
+
+    *ollama_lock = Some(child);
+    Ok("Ollama starting".to_string())
+}
+
+#[tauri::command]
+async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut ollama_lock = state.ollama_process.lock().await;
+    if let Some(mut child) = ollama_lock.take() {
+        let _ = child.kill().await;
+        println!("[Ollama] Stopped.");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -661,6 +762,7 @@ pub fn run() {
             current_model_path: Mutex::new(None),
             sidecar_process: Mutex::new(None),
             mlx_process: Mutex::new(None),
+            ollama_process: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             execute_batch,
@@ -671,6 +773,8 @@ pub fn run() {
             stop_llamacpp_sidecar,
             start_mlx_server,
             stop_mlx_server,
+            start_ollama,
+            stop_ollama,
             get_mlx_cache_dir,
             check_mlx_models_cached,
             delete_mlx_model,
