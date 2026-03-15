@@ -83,7 +83,26 @@
     let activeProviderId = $state('ollama');
     let exportPath = $state('');
     let exportPathMode = $state<'absolute' | 'relative'>('absolute');
+    let pathTemplate = $state('{Author}/{Year}/{Title}');
     let saveTxt = $state(true);
+
+    const PATH_TEMPLATE_PRESETS = [
+        { label: 'Author/Year/Title', value: '{Author}/{Year}/{Title}' },
+        { label: 'Author/Year - Title', value: '{Author}/{Year} - {Title}' },
+        { label: 'Author/(Year) Title', value: '{Author}/({Year}) {Title}' },
+        { label: 'Year/Author/Title', value: '{Year}/{Author}/{Title}' },
+        { label: 'Title (flat)', value: '{Title}' },
+    ];
+
+    function pathTemplatePreview(template: string): string {
+        return (template || '{Author}/{Year}/{Title}')
+            .replace(/\{Author\}/gi, 'Doe, Jane')
+            .replace(/\{Year\}/gi, '2024')
+            .replace(/\{Title\}/gi, 'My Document')
+            .replace(/\{Ext\}/gi, 'pdf')
+            .replace(/\{Filename\}/gi, 'original.pdf')
+            + (/\{Ext\}/i.test(template) ? '' : '.pdf');
+    }
     let currentLanguage = $state<Language>('en');
     
     // LLM & OCR Settings
@@ -189,6 +208,7 @@
         activeProviderId = await getSetting('activeProviderId', 'ollama');
         exportPath = await getSetting('exportPath', '');
         exportPathMode = await getSetting('exportPathMode', 'absolute') as any;
+        pathTemplate = await getSetting('pathTemplate', '{Author}/{Year}/{Title}') as string;
         saveTxt = await getSetting('saveTxt', true);
         currentLanguage = await getSetting('language', 'en') as Language;
         i18n.setLanguage(currentLanguage);
@@ -299,6 +319,7 @@
         await saveSetting('activeProviderId', activeProviderId);
         await saveSetting('exportPath', exportPath);
         await saveSetting('exportPathMode', exportPathMode);
+        await saveSetting('pathTemplate', pathTemplate);
         await saveSetting('saveTxt', saveTxt);
         await saveSetting('language', currentLanguage);
         await saveSetting('llmMaxChars', llmMaxChars);
@@ -316,6 +337,7 @@
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
+        llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
     }
 
@@ -330,6 +352,8 @@
     async function handleSaveProvider() {
         console.log(`[Settings] Saving provider settings for: ${selectedProvider.name}`);
         await saveSetting('providers', $state.snapshot(providers));
+        await saveSetting('activeProviderId', activeProviderId);
+        llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         saveIndicator = true;
         setTimeout(() => saveIndicator = false, 2000);
     }
@@ -836,6 +860,31 @@
             </div>
 
             <div class="section-card">
+                <label for="path-template-input">{i18n.t.settings.path_template}</label>
+                <input
+                    id="path-template-input"
+                    type="text"
+                    bind:value={pathTemplate}
+                    placeholder={'{Author}/{Year}/{Title}'}
+                    style="font-family: monospace;"
+                />
+                <div class="preset-chips">
+                    {#each PATH_TEMPLATE_PRESETS as preset}
+                        <button
+                            class="chip"
+                            class:active={pathTemplate === preset.value}
+                            onclick={() => pathTemplate = preset.value}
+                        >{preset.label}</button>
+                    {/each}
+                </div>
+                <p class="hint template-preview">
+                    <span style="opacity:.6">{i18n.t.settings.path_template_preview}:</span>
+                    &nbsp;{pathTemplatePreview(pathTemplate)}
+                </p>
+                <p class="hint">{i18n.t.settings.path_template_hint}</p>
+            </div>
+
+            <div class="section-card">
                 <div class="checkbox-group">
                     <input id="save-txt-check" type="checkbox" bind:checked={saveTxt} />
                     <label for="save-txt-check"><FileText size={16} /> {i18n.t.settings.save_txt}</label>
@@ -1099,9 +1148,9 @@
                 <div class="header-actions">
                     {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
                     <button class="action-btn small" class:active-btn={activeProviderId === selectedProvider.id} onclick={() => setActiveProvider(selectedProvider.id)}>
-                        <Zap size={14} /> {activeProviderId === selectedProvider.id ? i18n.t.batch.selected_status : i18n.t.settings.set_active}   
+                        <Zap size={14} /> {activeProviderId === selectedProvider.id ? i18n.t.batch.selected_status : i18n.t.settings.set_active}
                     </button>
-                    <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                    <button class="save-btn" onclick={handleSaveProvider}>{i18n.t.settings.save_all}</button>
                 </div>
             </div>
 
@@ -1616,6 +1665,11 @@
     .icon-btn.danger:hover { background: #ef444433; color: #ef4444; }
     
     .hint { font-size: 0.75rem; color: #71717a; margin-top: 6px; display: block; line-height: 1.4; }
+    .preset-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip { padding: 3px 10px; border: 1px solid #3f3f46; border-radius: 999px; background: transparent; color: #a1a1aa; font-size: 0.72rem; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+    .chip:hover { border-color: #6366f1; color: #c7d2fe; }
+    .chip.active { border-color: #6366f1; background: #6366f122; color: #c7d2fe; }
+    .template-preview { font-family: monospace; word-break: break-all; }
     .loader-spin { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 

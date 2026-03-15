@@ -50,6 +50,7 @@ export class LLMClient {
     private keys: Record<string, string> = {};
     noThinking: boolean = false;
     llamacppPort: number = 8080;
+    mlxPort: number = 8000;
     private serverReadyAt: Record<string, number> = {};
 
     constructor(keys: Record<string, string> = {}) {
@@ -62,7 +63,7 @@ export class LLMClient {
 
     /** Ensure a local HTTP server is running. Starts it via Tauri if not reachable. */
     async ensureProviderRunning(providerId: string, modelId?: string): Promise<void> {
-        if (!['ollama', 'llamacpp'].includes(providerId)) return;
+        if (!['ollama', 'llamacpp', 'mlx'].includes(providerId)) return;
 
         // Use cached "running" state for 15s to avoid health checks on every query
         const now = Date.now();
@@ -70,6 +71,8 @@ export class LLMClient {
 
         const healthUrl = providerId === 'ollama'
             ? 'http://localhost:11434/api/tags'
+            : providerId === 'mlx'
+            ? `http://localhost:${this.mlxPort}/v1/models`
             : `http://localhost:${this.llamacppPort}/health`;
 
         try {
@@ -82,6 +85,8 @@ export class LLMClient {
             await invoke('start_ollama');
         } else if (providerId === 'llamacpp' && modelId) {
             await invoke('start_llamacpp_sidecar', { modelPath: modelId, port: this.llamacppPort });
+        } else if (providerId === 'mlx' && modelId) {
+            await invoke('start_mlx_server', { modelPath: modelId, port: this.mlxPort });
         } else {
             return; // can't start without model path
         }
