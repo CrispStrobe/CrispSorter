@@ -14,7 +14,7 @@
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
-        RefreshCw, AlertCircle, Code, Info
+        RefreshCw, AlertCircle, Code, Info, Scan
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -29,6 +29,7 @@
 
     // Re-analyze with options dropdown
     let showReanalyzeOpts = $state(false);
+    let showReextractOpts = $state(false);
     let reanalProviders = $state<LLMProvider[]>([]);
     let reanalProviderId = $state('');
     let reanalModel = $state('');
@@ -312,6 +313,11 @@
         }
     }
 
+    async function handleBatchEnforceOcr() {
+        if (selectedIds.length === 0) return;
+        await batchManager.reprocessItems(selectedIds, { enforceOcr: true });
+    }
+
     function handleBatchAccept(val: boolean) {
         if (selectedIds.length === 0) return;
         batchManager.setAcceptedItems(selectedIds, val);
@@ -328,6 +334,7 @@
 
     async function checkFileDetails(item: BatchItem) {
         try {
+            console.log(`[BatchReview] checkFileDetails for ${item.originalName}`);
             const exists = await stat(item.originalPath).then(() => true).catch(() => false);
             const metadata = await stat(item.originalPath).catch(() => null);
             
@@ -340,29 +347,39 @@
                 status: item.status,
                 error: item.errorMessage
             };
+            console.log(`[BatchReview] infoModalData set:`, infoModalData);
             showInfoModal = true;
         } catch (e: any) {
-            console.error('Error checking file:', e);
+            console.error('[BatchReview] Error checking file details:', e);
         }
     }
 
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
         const accepted = batchManager.items.filter(i => i.isAccepted);
-        if (accepted.length === 0) return;
+        if (accepted.length === 0) {
+            console.log(`[BatchReview] No items accepted for sorting.`);
+            return;
+        }
 
-        let confirmMsg = i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
-        if (mode.includes('copy')) confirmMsg = confirmMsg.replace('sort', 'copy');
+        let confirmMsg = mode.includes('copy') 
+            ? i18n.t.batch.confirm_copy.replace('{count}', accepted.length.toString())
+            : i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
 
         if (confirm(confirmMsg)) {
+            console.log(`[BatchReview] Starting executeBatch(${mode}) for ${accepted.length} items`);
             const stats = await batchManager.executeBatch(mode);
             if (stats) {
+                console.log(`[BatchReview] executeBatch finished. Showing report modal with stats:`, stats);
                 lastExecutionStats = stats;
                 showReportModal = true;
+            } else {
+                console.warn(`[BatchReview] executeBatch returned no stats.`);
             }
         }
     }
 
     async function handleReportChoice(choice: 'keep_problematic' | 'empty' | 'keep_all') {
+        console.log(`[BatchReview] handleReportChoice: ${choice}`);
         showReportModal = false;
         if (choice === 'empty') {
             batchManager.items = [];
@@ -429,9 +446,28 @@
                     </div>
                 {/if}
             </div>
-            <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
-                <FileSearch size={14} /> {i18n.t.batch.reextract}
-            </button>
+            
+            <div class="dropdown-container">
+                <div class="split-btn-group">
+                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
+                        <FileSearch size={14} /> {i18n.t.batch.reextract}
+                    </button>
+                    <button class="action-btn small split-caret" onclick={() => showReextractOpts = !showReextractOpts} title="Options">
+                        <ChevronDown size={11} />
+                    </button>
+                </div>
+                {#if showReextractOpts}
+                    <div class="dropdown-menu">
+                        <button onclick={() => { handleBatchReextract(); showReextractOpts = false; }}>
+                            <FileSearch size={14} /> {i18n.t.batch.reextract}
+                        </button>
+                        <button onclick={() => { handleBatchEnforceOcr(); showReextractOpts = false; }}>
+                            <Scan size={14} /> {i18n.t.batch.reextract_ocr}
+                        </button>
+                    </div>
+                {/if}
+            </div>
+
             <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
                 <Check size={14} /> {i18n.t.batch.confirm}
             </button>
@@ -460,7 +496,7 @@
             </div>
 
             <div class="dropdown-container">
-                <button class="mode-select-btn" onclick={() => showModeMenu = !showModeMenu}>
+                <button class="mode-select-btn" onclick={() => showModeMenu = !showModeMenu} aria-label="Extraction Mode">
                     {#if batchManager.isMetadataExtractionEnabled}<Brain size={16} />{:else}<Type size={16} />{/if}
                     <ChevronDown size={14} />
                 </button>
@@ -478,15 +514,15 @@
 
             <div class="search-box">
                 <Search size={14} style="color: #71717a; margin-right: 8px;" />
-                <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} />
+                <input type="text" bind:value={batchManager.searchQuery} placeholder={i18n.t.batch.search_placeholder} aria-label="Search items" />
             </div>
 
-            <button class="action-btn small" onclick={() => showFilters = !showFilters} class:active={showFilters}>
+            <button class="action-btn small" onclick={() => showFilters = !showFilters} class:active={showFilters} aria-label="Show Filters">
                 <Filter size={16} />
             </button>
 
             <div class="dropdown-container">
-                <button class="action-btn small" onclick={() => showColumnSelector = !showColumnSelector} class:active={showColumnSelector}>
+                <button class="action-btn small" onclick={() => showColumnSelector = !showColumnSelector} class:active={showColumnSelector} aria-label="Select Columns">
                     <Columns size={16} />
                 </button>
                 {#if showColumnSelector}
@@ -539,7 +575,8 @@
                     </button>
                     <button class="action-btn rocket-btn small split-caret" 
                             onclick={() => showSortOptions = !showSortOptions}
-                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
+                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}
+                            aria-label="Sort Options">
                         <ChevronDown size={11} />
                     </button>
                 </div>
@@ -596,8 +633,8 @@
             <div class="dupes-header">
                 <span><Copy size={14} /> {i18n.t.batch.find_dupes} — {duplicateGroups.length} {i18n.t.batch.dupe_groups}</span>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <label class="dupe-deep-label">
-                        <input type="checkbox" bind:checked={deepDupeCheck} onchange={handleFindDuplicates} />
+                    <label class="dupe-deep-label" for="deep-dupe-check">
+                        <input type="checkbox" id="deep-dupe-check" bind:checked={deepDupeCheck} onchange={handleFindDuplicates} />
                         {i18n.t.batch.dupe_deep}
                     </label>
                     <button class="close-btn-minimal" onclick={() => showDuplicates = false}>×</button>
@@ -651,7 +688,7 @@
                         <th style="width: 35px; min-width: 35px; text-align: center;">
                             <input type="checkbox" 
                                    checked={selectedIds.length === sortedItems.length && sortedItems.length > 0} 
-                                   onchange={selectAllVisible} />
+                                   onchange={selectAllVisible} aria-label="Select all visible" />
                         </th>
                         {#each columns as col, i}
                             {#if col.visible}
@@ -715,11 +752,11 @@
                                         {:else if col.id === 'file_name'}
                                             <span class="file-name" title={item.originalPath}>{item.originalName}</span>
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} class:fallback={item.suggestedTitle === 'Unknown Title'} />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} class:fallback={item.suggestedTitle === 'Unknown Title'} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} class:fallback={item.suggestedAuthor === 'Unknown Author'} />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} class:fallback={item.suggestedAuthor === 'Unknown Author'} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={e => e.stopPropagation()} style="text-align: center;" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={e => e.stopPropagation()} style="text-align: center;" aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -768,15 +805,15 @@
                         <div class="edit-fields">
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.title}</span>
-                                <input type="text" bind:value={selectedItem.suggestedTitle} />
+                                <input type="text" bind:value={selectedItem.suggestedTitle} aria-label="Edit Title" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.author}</span>
-                                <input type="text" bind:value={selectedItem.suggestedAuthor} />
+                                <input type="text" bind:value={selectedItem.suggestedAuthor} aria-label="Edit Author" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.year}</span>
-                                <input type="text" bind:value={selectedItem.suggestedYear} />
+                                <input type="text" bind:value={selectedItem.suggestedYear} aria-label="Edit Year" />
                             </div>
                         </div>
                     </div>
@@ -801,8 +838,9 @@
 </div>
 
 {#if showReportModal && lastExecutionStats}
-    <div class="modal-overlay" onclick={() => showReportModal = false}>
-        <div class="modal-content report-modal" onclick={e => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="modal-overlay" onclick={() => showReportModal = false} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (showReportModal = false)}>
+        <div class="modal-content report-modal" onclick={e => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="modal-header">
                 <h2><Rocket size={18} /> {i18n.t.batch.report_title}</h2>
             </div>
@@ -840,8 +878,9 @@
 {/if}
 
 {#if showInfoModal && infoModalData}
-    <div class="modal-overlay" onclick={() => showInfoModal = false}>
-        <div class="modal-content info-modal" onclick={e => e.stopPropagation()}>
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="modal-overlay" onclick={() => showInfoModal = false} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (showInfoModal = false)}>
+        <div class="modal-content info-modal" onclick={e => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="modal-header">
                 <h2><Info size={18} /> {i18n.t.batch.item_info.title}</h2>
             </div>

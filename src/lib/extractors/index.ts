@@ -6,8 +6,15 @@ export interface ExtractionResult {
     metadata?: Record<string, any>;
 }
 
-export async function extractText(file: File | { name: string, arrayBuffer: ArrayBuffer }): Promise<ExtractionResult> {
-    console.log(`[ExtractorIndex] Routing file: ${file.name}`);
+export interface ExtractionOptions {
+    forceOCR?: boolean;
+}
+
+export async function extractText(
+    file: File | { name: string, arrayBuffer: ArrayBuffer }, 
+    options: ExtractionOptions = {}
+): Promise<ExtractionResult> {
+    console.log(`[ExtractorIndex] Routing file: ${file.name}, forceOCR: ${options.forceOCR}`);
     let name: string;
     let arrayBuffer: ArrayBuffer;
 
@@ -27,7 +34,7 @@ export async function extractText(file: File | { name: string, arrayBuffer: Arra
     switch (extension) {
         case 'pdf':
             console.log("[ExtractorIndex] Handing off to extractPdf");
-            text = await extractPdf(arrayBuffer);
+            text = await extractPdf(arrayBuffer, options.forceOCR);
             break;
         case 'docx':
             console.log("[ExtractorIndex] Handing off to extractDocx");

@@ -67,7 +67,7 @@
             {#if batchStats.total > 0}
                 <div class="batch-stats" title="Files in current batch">
                     {#if !navCollapsed}
-                        <div class="stats-total">{batchStats.total} files</div>
+                        <div class="stats-total">{i18n.t.batch.stats_files.replace('{count}', batchStats.total.toString())}</div>
                         <div class="stats-breakdown">
                             {#each Object.entries(batchStats.counts).sort((a,b) => b[1]-a[1]) as [ext, count]}
                                 <span class="stat-ext">{count} {ext}</span>
@@ -94,11 +94,12 @@
             <Settings />
         {:else if activeTab === 'batch'}
             <BatchReview />
-        {:else if activeTab === 'chat'}
-            <Chat />
         {:else if activeTab === 'history'}
             <History onResumeBatch={switchToBatch} />
         {/if}
+        <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
+            <Chat />
+        </div>
     </main>
 </div>
 
@@ -203,6 +204,12 @@
         flex: 1;
         overflow: hidden;
         position: relative;
+    }
+
+    .persistent-chat {
+        position: absolute;
+        inset: 0;
+        z-index: 5;
     }
 
     .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }

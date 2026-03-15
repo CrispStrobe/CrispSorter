@@ -143,7 +143,6 @@
         }
 
         activeProviderId = await getSetting('activeProviderId', 'ollama');
-        selectedProviderId = 'global';
         exportPath = await getSetting('exportPath', '');
         exportPathMode = await getSetting('exportPathMode', 'absolute') as any;
         saveTxt = await getSetting('saveTxt', true);
@@ -152,12 +151,21 @@
 
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmContextLimit = await getSetting('llmContextLimit', 4096);
-        llmPrompt = await getSetting('llmPrompt', '');
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
+        
+        console.log(`[Settings] Loading prompt... lang=${currentLanguage}, format=${parsingFormat}`);
+        const savedPrompt = await getSetting('llmPrompt', '');
+        if (savedPrompt) {
+            console.log(`[Settings] Using saved prompt.`);
+            llmPrompt = savedPrompt;
+        } else {
+            console.log(`[Settings] No saved prompt found, generating default.`);
+            llmPrompt = getDefaultPrompt(parsingFormat, currentLanguage);
+        }
 
         localModels = await getSetting('localModels', [
             { id: 'qwen3-0.6b', name: 'Qwen 3 0.6B (Q4_K_M)', path: '', isDownloaded: false, isActive: true, downloadUrl: 'https://huggingface.co/Mungert/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-q4_k_m.gguf' },
@@ -190,7 +198,17 @@
         };
     });
 
+    // Tesseract Management
+    let tesseractModels = $state<{ id: string; name: string; isDownloaded: boolean }[]>([
+        { id: 'eng', name: 'English', isDownloaded: true },
+        { id: 'deu', name: 'German', isDownloaded: true },
+        { id: 'fra', name: 'French', isDownloaded: false },
+        { id: 'spa', name: 'Spanish', isDownloaded: false },
+        { id: 'ita', name: 'Italian', isDownloaded: false },
+    ]);
+
     async function handleSave() {
+        console.log(`[Settings] Saving global settings...`);
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('activeProviderId', activeProviderId);
         await saveSetting('exportPath', exportPath);
@@ -213,6 +231,14 @@
         llmClient.noThinking = noThinking;
         i18n.setLanguage(currentLanguage);
 
+        console.log(`[Settings] All settings saved.`);
+        saveIndicator = true;
+        setTimeout(() => saveIndicator = false, 2000);
+    }
+
+    async function handleSaveProvider() {
+        console.log(`[Settings] Saving provider settings for: ${selectedProvider.name}`);
+        await saveSetting('providers', $state.snapshot(providers));
         saveIndicator = true;
         setTimeout(() => saveIndicator = false, 2000);
     }
@@ -349,6 +375,7 @@
     }
 
     async function setLocalModelActive(path: string) {
+        if (!path) return alert('Select a valid model file first.');
         if (selectedProviderId === 'llamacpp') {
             try {
                 await invoke('stop_llamacpp_sidecar');
@@ -432,6 +459,7 @@
 
     // Ollama Helpers
     async function pullOllamaModel(tag: string) {
+        console.log(`[Settings] Pulling Ollama model: ${tag}`);
         ollamaPulling[tag] = 0;
         try {
             const stream = await llmClient.pullModel('ollama', tag, selectedProvider.baseUrl);
@@ -451,10 +479,11 @@
                     } catch(e) {}
                 }
             }
+            console.log(`[Settings] Ollama pull complete: ${tag}`);
             delete ollamaPulling[tag];
             await handleRefreshModels();
         } catch(e) {
-            console.error('Ollama pull failed:', e);
+            console.error('[Settings] Ollama pull failed:', e);
             alert('Pull failed: ' + e);
             delete ollamaPulling[tag];
         }
@@ -533,36 +562,37 @@
 
 <div class="settings-container">
     <aside class="sidebar">
-        <h2>{i18n.t.settings.app_settings}</h2>
-        <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
-            <Globe size={16} /> {i18n.t.settings.general}
-        </button>
-        <button class="provider-btn" class:active={selectedProviderId === 'llm'} onclick={() => selectedProviderId = 'llm'}>
-            <Zap size={16} /> {i18n.t.settings.llm_options}
-        </button>
-        <button class="provider-btn" class:active={selectedProviderId === 'bench'} onclick={() => selectedProviderId = 'bench'}>
-            <Beaker size={16} /> {i18n.t.settings.benchmark.title}
-        </button>
-        <button class="provider-btn" class:active={selectedProviderId === 'about'} onclick={() => selectedProviderId = 'about'}>
-            <Info size={16} /> {i18n.t.settings.about}
-        </button>
+        <div class="sidebar-scrollable">
+            <h2>{i18n.t.settings.app_settings}</h2>
+            <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
+                <Globe size={16} /> {i18n.t.settings.general}
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'llm'} onclick={() => selectedProviderId = 'llm'}>
+                <Zap size={16} /> {i18n.t.settings.llm_options}
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'bench'} onclick={() => selectedProviderId = 'bench'}>
+                <Beaker size={16} /> {i18n.t.settings.benchmark.title}
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'about'} onclick={() => selectedProviderId = 'about'}>
+                <Info size={16} /> {i18n.t.settings.about}
+            </button>
 
-        <div class="sidebar-divider"></div>
-        <h2>{i18n.t.settings.providers}</h2>
-        <div class="provider-list">
-            {#each providers as p}
-                <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
-                    <span style="display:flex; align-items:center; gap:8px;">
-                        {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
-                        {p.name}
-                    </span>
-                    {#if activeProviderId === p.id}<Zap size={12} style="color: #eab308;" />{/if}
-                </button>
-            {/each}
+            <div class="sidebar-divider"></div>
+            <h2>{i18n.t.settings.providers}</h2>
+            <div class="provider-list">
+                {#each providers as p}
+                    <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
+                        <span style="display:flex; align-items:center; gap:8px;">
+                            {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
+                            {p.name}
+                        </span>
+                        {#if activeProviderId === p.id}<Zap size={12} style="color: #eab308;" />{/if}
+                    </button>
+                {/each}
+            </div>
         </div>
 
-        <div class="nav-spacer" style="flex:1;"></div>
-        <div style="padding: 0 16px 20px;">
+        <div class="sidebar-footer">
             <button class="action-btn secondary reset-nav-btn" style="width:100%; justify-content:center; margin-bottom:8px;" onclick={resetToDefaults}>
                 <RotateCcw size={14} /> {i18n.t.settings.reset_defaults}
             </button>
@@ -617,7 +647,10 @@
         {:else if selectedProviderId === 'llm'}
             <div class="header">
                 <h1>{i18n.t.settings.llm_options}</h1>
-                <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                <div class="save-area">
+                    {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
+                    <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                </div>
             </div>
 
             <div class="section-card">
@@ -627,12 +660,46 @@
             </div>
 
             <div class="section-card">
-                <label>{i18n.t.settings.pdf_engine}</label>
-                <div class="toggle-group">
+                <label for="pdf-engine-select">{i18n.t.settings.pdf_engine}</label>
+                <div class="toggle-group" id="pdf-engine-select">
                     <button class:active={pdfBackend === 'js'} class="toggle-btn" onclick={() => pdfBackend = 'js'}>{i18n.t.settings.pdf_engine_js}</button>
                     <button class:active={pdfBackend === 'rust'} class="toggle-btn" onclick={() => pdfBackend = 'rust'}>{i18n.t.settings.pdf_engine_rust}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.pdf_engine_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="header" style="margin-bottom: 12px;">
+                    <h2 style="font-size: 1rem; color: #a1a1aa;"><Scan size={16} /> {i18n.t.settings.ocr_tesseract_title}</h2>
+                </div>
+                <div class="checkbox-group">
+                    <input id="ocr-enabled-check" type="checkbox" bind:checked={ocrEnabled} />
+                    <label for="ocr-enabled-check">{i18n.t.settings.ocr_enabled}</label>
+                </div>
+                <p class="hint" style="margin-bottom: 16px;">{i18n.t.settings.ocr_tesseract_hint}</p>
+                
+                <div class="models-grid">
+                    {#each tesseractModels as model}
+                        <div class="local-model-row">
+                            <div class="model-info">
+                                <div class="model-title-line">
+                                    <strong>{model.name}</strong>
+                                    <span class="size-badge" style="font-size: 0.6rem;">{model.id}</span>
+                                </div>
+                                <span class="model-path">{model.isDownloaded ? 'Language pack ready' : 'Not installed'}</span>
+                            </div>
+                            <div class="model-status">
+                                {#if model.isDownloaded}
+                                    <span class="save-badge" style="color: #10b981;"><Check size={14} /> Installed</span>
+                                {:else}
+                                    <button class="action-btn small primary">
+                                        <Download size={14} /> Download
+                                    </button>
+                                {/if}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
             </div>
 
             <div class="section-card">
@@ -652,8 +719,8 @@
             </div>
 
             <div class="section-card">
-                <label>{i18n.t.settings.parsing_format}</label>
-                <div class="toggle-group">
+                <label for="parsing-format-select">{i18n.t.settings.parsing_format}</label>
+                <div class="toggle-group" id="parsing-format-select">
                     <button class:active={parsingFormat === 'xml'} class="toggle-btn" onclick={() => { parsingFormat = 'xml'; updatePrompt(); }}>{i18n.t.settings.parsing_xml}</button>
                     <button class:active={parsingFormat === 'json'} class="toggle-btn" onclick={() => { parsingFormat = 'json'; updatePrompt(); }}>{i18n.t.settings.parsing_json}</button>
                 </div>
@@ -677,8 +744,8 @@
                     <div class="bench-providers-grid">
                         {#each providers as p}
                             <div class="bench-provider-card" class:selected={benchProviders.includes(p.id)}>
-                                <label class="bench-check-label">
-                                    <input type="checkbox" bind:group={benchProviders} value={p.id} />
+                                <label class="bench-check-label" for="bench-p-{p.id}">
+                                    <input type="checkbox" id="bench-p-{p.id}" bind:group={benchProviders} value={p.id} />
                                     <span class="p-name">{p.name}</span>
                                 </label>
                                 <select id="bench-model-select-{p.id}" class="bench-model-select" bind:value={benchModels[p.id]} disabled={!benchProviders.includes(p.id)} aria-label="Select benchmark model">
@@ -695,8 +762,8 @@
                     <div style="flex:1;">
                         <div class="bench-file-list">
                             {#each batchManager.items as item}
-                                <label class="bench-check-label file-item">
-                                    <input type="checkbox" bind:group={benchDocuments} value={item.id} />
+                                <label class="bench-check-label file-item" for="bench-doc-{item.id}">
+                                    <input type="checkbox" id="bench-doc-{item.id}" bind:group={benchDocuments} value={item.id} />
                                     <span class="file-name">{item.originalName}</span>
                                     <span class="char-count">{(item.extractedText?.length || 0)} chars</span>
                                 </label>
@@ -804,7 +871,7 @@
                     <h3>{i18n.t.settings.legal.licenses}</h3>
                     <div class="search-box small" style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:0 10px; width:240px; display:flex; align-items:center;">
                         <Search size={14} style="color:#71717a; margin-right:8px;" />
-                        <input type="text" bind:value={licenseSearch} placeholder={i18n.t.settings.legal.search_licenses.replace('{count}', String(automatedLicenses.length))} style="border:none; background:transparent; color:white; padding:6px 0; font-size:0.75rem; width:100%; outline:none;" aria-label="Search licenses" />
+                        <input type="text" id="license-search-input" bind:value={licenseSearch} placeholder={i18n.t.settings.legal.search_licenses.replace('{count}', String(automatedLicenses.length))} style="border:none; background:transparent; color:white; padding:6px 0; font-size:0.75rem; width:100%; outline:none;" aria-label="Search licenses" />
                     </div>
                 </div>
                 <div class="license-list-scrollable">
@@ -833,7 +900,7 @@
                 <div class="header-actions">
                     {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
                     <button class="action-btn small" class:active-btn={activeProviderId === selectedProvider.id} onclick={() => setActiveProvider(selectedProvider.id)}>
-                        <Zap size={14} /> {activeProviderId === selectedProvider.id ? 'Active' : i18n.t.settings.set_active}   
+                        <Zap size={14} /> {activeProviderId === selectedProvider.id ? i18n.t.batch.selected_status : i18n.t.settings.set_active}   
                     </button>
                     <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
                 </div>
@@ -927,7 +994,7 @@
                                 <div class="model-status">
                                     {#if model.isInstalled}
                                         <button class="action-btn small" onclick={() => { selectedProvider.selectedModel = model.tag; handleSave(); }}>
-                                            {selectedProvider.selectedModel === model.tag ? 'Selected' : i18n.t.batch.use_model}   
+                                            {selectedProvider.selectedModel === model.tag ? i18n.t.batch.selected_status : i18n.t.batch.use_model}   
                                         </button>
                                     {:else if ollamaPulling[model.tag] === undefined}
                                         <button class="action-btn small primary" onclick={() => pullOllamaModel(model.tag)}>
@@ -987,7 +1054,7 @@
                                 <div class="model-status">
                                     <span class="size-badge">{model.params}</span>
                                     <button class="action-btn small" onclick={() => setMlxModelActive(model.repoId)}>
-                                        {selectedProvider.selectedModel === model.repoId ? 'Selected' : i18n.t.batch.use_model}   
+                                        {selectedProvider.selectedModel === model.repoId ? i18n.t.batch.selected_status : i18n.t.batch.use_model}   
                                     </button>
                                     {#if mlxModelCached[model.id]}
                                         <button class="icon-btn danger" onclick={() => deleteMlxModelFromDisk(model)} title="Delete from disk"><Trash2 size={14} /></button>
@@ -1001,7 +1068,7 @@
 
                 <div class="section-card" style="margin-top: 16px;">
                     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-                    <div class="section-toggle-flat" onclick={() => mlxLogsVisible = !mlxLogsVisible} role="button" tabindex="0">        
+                    <div class="section-toggle-flat" onclick={() => mlxLogsVisible = !mlxLogsVisible} role="button" tabindex="0" onkeydown={e => e.key === 'Enter' && (mlxLogsVisible = !mlxLogsVisible)}>        
                         <span style="display:flex; align-items:center; gap:8px;">
                             <Brain size={14} /> MLX Server Log
                             {#if mlxRunning}<span class="running-dot"></span>{/if}
@@ -1037,9 +1104,9 @@
                     </div>
 
                     <div class="form-group">
-                        <label for="custom-model-id">Custom HF Repo ID or URL</label>
+                        <label for="custom-model-id-{selectedProvider.id}">Custom HF Repo ID or URL</label>
                         <div class="input-with-action">
-                            <input type="text" id="custom-model-id" placeholder="REPO_ID/FILENAME.GGUF" bind:value={customModelInput} />
+                            <input type="text" id="custom-model-id-{selectedProvider.id}" placeholder="REPO_ID/FILENAME.GGUF" bind:value={customModelInput} />
                             <button class="action-btn small" onclick={addCustomModel}><Plus size={14} /> {i18n.t.batch.add_files}</button>
                         </div>
                         <p class="hint">{i18n.t.settings.local_manager_hf_hint}</p>
@@ -1063,7 +1130,7 @@
                                 </div>
                                 <div class="model-status">
                                     <button class="action-btn small" onclick={() => setLocalModelActive(model.path)}>
-                                        {selectedProvider.selectedModel === model.path && model.path !== '' ? 'Selected' : i18n.t.batch.use_model} 
+                                        {selectedProvider.selectedModel === model.path && model.path !== '' ? i18n.t.batch.selected_status : i18n.t.batch.use_model} 
                                     </button>
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
@@ -1086,8 +1153,8 @@
 
 {#if benchModal}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="bench-modal-overlay" onclick={() => benchModal = null}>
-        <div class="bench-modal" onclick={(e) => e.stopPropagation()}>
+    <div class="bench-modal-overlay" onclick={() => benchModal = null} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (benchModal = null)}>
+        <div class="bench-modal" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="bench-modal-header">
                 <span>{benchModal.title}</span>
                 <button class="bench-modal-close" onclick={() => benchModal = null} aria-label="Close benchmark modal">✕</button>
@@ -1109,7 +1176,8 @@
 
 <style>
     .settings-container { display: flex; height: 100%; background: #09090b; color: #fafafa; font-family: 'Inter', sans-serif; overflow: hidden; }
-    .sidebar { width: 200px; background: #18181b; border-right: 1px solid #27272a; padding: 20px 0; display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar { width: 200px; background: #18181b; border-right: 1px solid #27272a; padding: 0; display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar-scrollable { flex: 1; overflow-y: auto; padding: 20px 0; }
     .sidebar h2 { padding: 0 20px; font-size: 0.75rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; letter-spacing: 0.05em; }
     .sidebar-divider { height: 1px; background: #27272a; margin: 20px 0; }
     .provider-list { display: flex; flex-direction: column; }
@@ -1117,6 +1185,8 @@
     .provider-btn:hover { background: #27272a; color: white; }
     .provider-btn.active { background: #27272a; color: white; font-weight: 600; border-left: 3px solid #3b82f6; }
     
+    .sidebar-footer { padding: 16px; border-top: 1px solid #27272a; }
+
     .content { flex: 1; padding: 32px 48px; overflow-y: auto; }
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
@@ -1140,7 +1210,7 @@
     .toggle-btn.active { background: #27272a; color: white; }
 
     .actions { display: flex; gap: 12px; margin-bottom: 24px; }
-    .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; color: #d4d4d8; transition: background 0.2s; }
+    .action-btn { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid #27272a; background: #18181b; border-radius: 6px; font-size: 0.8125rem; font-weight: 600; color: #d4d4d8; transition: background 0.2s; }
     .action-btn:hover { background: #27272a; }
     .action-btn.active-btn { color: #eab308; border-color: #713f12; background: #42200633; }
     
@@ -1176,7 +1246,6 @@
     .bench-modal-body { padding: 16px 18px; overflow-y: auto; }
     .bench-response-pre { margin: 0; white-space: pre-wrap; font-size: 0.8rem; color: #e2e8f0; font-family: monospace; background: #09090b; padding: 10px; border-radius: 4px; }
 
-    .mlx-control-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }        
     .vision-badge { font-size: 0.6rem; font-weight: 700; background: #7c3aed33; color: #a78bfa; border: 1px solid #7c3aed55; border-radius: 3px; padding: 1px 5px; }
     .cache-dot { width: 7px; height: 7px; border-radius: 50%; background: #3f3f46; }
     .cache-dot.cached { background: #10b981; }
