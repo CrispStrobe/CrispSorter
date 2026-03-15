@@ -61,8 +61,8 @@
                     <div class="session-main">
                         <Clock size={16} />
                         <strong>{new Date(session.startTime).toLocaleString()}</strong>
-                        <span class="badge" class:completed={session.status === 'completed'}>
-                            {session.status}
+                        <span class="badge" class:completed={session.status === 'completed'} class:paused={session.status === 'paused'}>
+                            {session.status === 'paused' ? i18n.t.history.paused : session.status}
                         </span>
                     </div>
                     <div class="session-details">
@@ -125,6 +125,7 @@
 
     .badge { font-size: 0.75rem; padding: 2px 8px; background: #3f3f46; color: #d4d4d8; border-radius: 9999px; text-transform: uppercase; font-weight: 600; }
     .badge.completed { background: #166534; color: #dcfce7; }
+    .badge.paused { background: #450a0a; color: #fca5a5; }
 
     .session-details { display: flex; gap: 20px; font-size: 0.875rem; color: #a1a1aa; }
     .session-details span { display: flex; align-items: center; gap: 4px; }

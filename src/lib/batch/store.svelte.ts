@@ -388,18 +388,43 @@ export class BatchManager {
         return this.parseXml(response);
     }
 
+    private calculateTargetPath(item: BatchItem, globalExportPath: string): string {
+        const safeTitle = (item.suggestedTitle || item.originalName).replace(/[\\/:*?"<>|]/g, '');
+        const safeAuthor = (item.suggestedAuthor || 'Unknown').replace(/[\\/:*?"<>|]/g, '');
+        const yearStr = item.suggestedYear && item.suggestedYear !== 'Unknown Year' ? `${item.suggestedYear} - ` : '';
+        
+        const lastSlash = item.originalPath.lastIndexOf('/');
+        const baseDir = globalExportPath || (lastSlash !== -1 ? item.originalPath.substring(0, lastSlash) : '.');
+        
+        if (this.isMetadataExtractionEnabled) {
+            return `${baseDir}/Sorted/${safeAuthor}/${yearStr}${safeTitle}.${item.extension}`;
+        } else {
+            return `${baseDir}/Extracted/${item.originalName}.txt`;
+        }
+    }
+
     async executeBatch(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
         console.log(`[BatchManager] executeBatch: Starting execution (${mode}) for accepted items`);
-        const toProcess = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
+        const toProcess = this.items.filter(i => i.isAccepted && (i.status === 'review' || i.status === 'error' || i.status === 'queued'));
         console.log(`[BatchManager] executeBatch: Found ${toProcess.length} items to process`);
 
         if (toProcess.length === 0) {
-            console.log(`[BatchManager] executeBatch: No items to process (either none accepted or targetPath missing)`);
-            return null;
+            console.log(`[BatchManager] executeBatch: No items to process (none accepted or wrong status)`);
+            return { success: 0, notFound: 0, notWritable: 0, error: 0, mode };
         }
 
         const globalSaveTxt = await getSetting('saveTxt', true);
+        const exportPath = await getSetting('exportPath', '');
         const exportPathMode = await getSetting('exportPathMode', 'absolute');
+        
+        // Ensure ALL items have a targetPath before sending to backend
+        for (const item of toProcess) {
+            if (!item.targetPath) {
+                console.log(`[BatchManager] Generating default targetPath for ${item.originalName}`);
+                item.targetPath = this.calculateTargetPath(item, exportPath);
+            }
+        }
+
         toProcess.forEach(i => i.status = 'moving');
 
         let stats = {

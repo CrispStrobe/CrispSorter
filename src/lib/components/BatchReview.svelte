@@ -51,6 +51,10 @@
     let lastExecutionStats = $state<any>(null);
     let showReportModal = $state(false);
 
+    // Info Modal
+    let showInfoModal = $state(false);
+    let infoModalData = $state<any>(null);
+
     // Column visibility and width state
     let columns = $state([
         { id: 'status', label: i18n.t.batch.status, width: 90, visible: true, locked: true },
@@ -129,8 +133,10 @@
 
     onMount(async () => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && selectedIds.length > 0) {
-                selectedIds = [];
+            if (e.key === 'Escape') {
+                if (selectedIds.length > 0) selectedIds = [];
+                showReportModal = false;
+                showInfoModal = false;
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -325,19 +331,25 @@
             const exists = await stat(item.originalPath).then(() => true).catch(() => false);
             const metadata = await stat(item.originalPath).catch(() => null);
             
-            alert(`${i18n.t.batch.item_info.title}\n\n` +
-                  `${i18n.t.batch.item_info.exists}: ${exists ? '✅' : '❌'}\n` +
-                  `${i18n.t.batch.item_info.abs_path}: ${item.originalPath}\n` +
-                  `${i18n.t.batch.item_info.size}: ${metadata ? formatSize(metadata.size) : '?'}\n` +
-                  `${i18n.t.batch.item_info.projected_path}: ${item.targetPath || '?'}\n` +
-                  `${i18n.t.batch.item_info.last_status}: ${item.status}${item.errorMessage ? ' (' + item.errorMessage + ')' : ''}`);
+            infoModalData = {
+                id: item.id,
+                exists,
+                originalPath: item.originalPath,
+                size: metadata ? formatSize(metadata.size) : '?',
+                targetPath: item.targetPath || i18n.t.batch.path_hint,
+                status: item.status,
+                error: item.errorMessage
+            };
+            showInfoModal = true;
         } catch (e: any) {
-            alert(`Error checking file: ${e.message}`);
+            console.error('Error checking file:', e);
         }
     }
 
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
         const accepted = batchManager.items.filter(i => i.isAccepted);
+        if (accepted.length === 0) return;
+
         let confirmMsg = i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
         if (mode.includes('copy')) confirmMsg = confirmMsg.replace('sort', 'copy');
 
@@ -777,11 +789,20 @@
             </div>
         {/if}
     </div>
+
+    <div class="status-footer">
+        <div class="stats">
+            <span class="stat-item">
+                <FileText size={14} />
+                {i18n.t.batch.stats_files.replace('{count}', batchManager.items.length.toString())}
+            </span>
+        </div>
+    </div>
 </div>
 
 {#if showReportModal && lastExecutionStats}
-    <div class="modal-overlay">
-        <div class="modal-content report-modal">
+    <div class="modal-overlay" onclick={() => showReportModal = false}>
+        <div class="modal-content report-modal" onclick={e => e.stopPropagation()}>
             <div class="modal-header">
                 <h2><Rocket size={18} /> {i18n.t.batch.report_title}</h2>
             </div>
@@ -813,6 +834,42 @@
                         {i18n.t.batch.report_choice_keep_all}
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+{/if}
+
+{#if showInfoModal && infoModalData}
+    <div class="modal-overlay" onclick={() => showInfoModal = false}>
+        <div class="modal-content info-modal" onclick={e => e.stopPropagation()}>
+            <div class="modal-header">
+                <h2><Info size={18} /> {i18n.t.batch.item_info.title}</h2>
+            </div>
+            <div class="modal-body info-body">
+                <div class="info-grid">
+                    <span class="info-label">{i18n.t.batch.item_info.exists}</span>
+                    <span class="info-val">{infoModalData.exists ? '✅' : '❌'}</span>
+                    
+                    <span class="info-label">{i18n.t.batch.item_info.abs_path}</span>
+                    <span class="info-val mono-path">{infoModalData.originalPath}</span>
+                    
+                    <span class="info-label">{i18n.t.batch.item_info.size}</span>
+                    <span class="info-val">{infoModalData.size}</span>
+                    
+                    <span class="info-label">{i18n.t.batch.item_info.projected_path}</span>
+                    <span class="info-val mono-path">{infoModalData.targetPath}</span>
+                    
+                    <span class="info-label">{i18n.t.batch.item_info.last_status}</span>
+                    <span class="info-val">
+                        <span class="status-badge" class:status-error={infoModalData.status === 'error'}>
+                            {infoModalData.status}
+                        </span>
+                        {#if infoModalData.error}
+                            <div class="error-msg">{infoModalData.error}</div>
+                        {/if}
+                    </span>
+                </div>
+                <button class="action-btn primary" style="margin-top:20px; width:100%; justify-content:center;" onclick={() => showInfoModal = false}>OK</button>
             </div>
         </div>
     </div>
@@ -989,4 +1046,15 @@
     .choice-btn.danger:hover { background: #450a0a66; }
     .choice-btn.secondary { border-color: #27272a; background: #27272a; color: #a1a1aa; }
     .choice-btn.secondary:hover { background: #3f3f46; color: white; }
+
+    .status-footer { padding: 6px 16px; background: #18181b; border-top: 1px solid #27272a; display: flex; align-items: center; font-size: 0.75rem; color: #71717a; }
+    .stats { display: flex; align-items: center; gap: 12px; }
+    .stat-item { display: flex; align-items: center; gap: 6px; }
+
+    .info-modal { width: 500px; }
+    .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 16px; }
+    .info-label { font-size: 0.75rem; color: #71717a; text-transform: uppercase; font-weight: 600; padding-top: 2px; }
+    .info-val { font-size: 0.875rem; color: #f4f4f5; line-height: 1.4; }
+    .mono-path { font-family: monospace; font-size: 0.75rem; color: #94a3b8; word-break: break-all; background: #09090b; padding: 4px 8px; border-radius: 4px; border: 1px solid #27272a; }
+    .error-msg { margin-top: 8px; padding: 8px; background: #450a0a33; border: 1px solid #ef444433; border-radius: 6px; color: #f87171; font-size: 0.8125rem; }
 </style>

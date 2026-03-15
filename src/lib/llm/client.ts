@@ -195,6 +195,25 @@ export class LLMClient {
             : rawMsg;
         throw new Error(errorMsg);
     }
+
+    async pullModel(providerId: string, modelId: string, baseUrl?: string): Promise<ReadableStream<Uint8Array>> {
+        // Ollama uses /api/pull, not /v1/pull
+        const url = `${(baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE]).replace('/v1', '')}/api/pull`;
+        console.log(`[LLMClient] Pulling model ${modelId} from ${url}`);
+        
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: modelId, stream: true })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to pull model: ${errorText}`);
+        }
+
+        return response.body!;
+    }
 }
 
 export const llmClient = new LLMClient();
