@@ -16,6 +16,9 @@
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
+    import { loadWebLLM, unloadWebLLM, getWebLLMLoadedModel, WEBLLM_MODELS } from '../llm/webllm';
+    import type { InitProgressReport } from '@mlc-ai/web-llm';
+    import { loadORT, unloadORT, getORTLoadedModel, getORTDevice, ORT_MODELS } from '../llm/ort';
 
     interface LocalModel {
         id: string;
@@ -95,7 +98,26 @@
     let testingConnection = $state(false);
     let testResult = $state<{ success: boolean; message: string } | null>(null);
     let mlxPort = $state(8000);
+    let llamacppPort = $state(8080);
     let mlxRunning = $state(false);
+    let llamacppRunning = $state(false);
+    let llamacppReady = $state(false);
+
+    // ORT state
+    let ortStatus = $state<'idle' | 'downloading' | 'loading' | 'ready' | 'error'>('idle');
+    let ortProgress = $state(0);
+    let ortProgressText = $state('');
+    let ortSelectedModel = $state(ORT_MODELS[0].id);
+
+    // WebLLM state
+    let webllmStatus = $state<'idle' | 'downloading' | 'loading' | 'ready' | 'error'>('idle');
+    let webllmProgress = $state(0);
+    let webllmProgressText = $state('');
+    let webllmSelectedModel = $state(WEBLLM_MODELS[0].id);
+    let sidecarStatus = $state(''); // '', 'starting', 'ready', 'error'
+    let sidecarLogs = $state<string[]>([]);
+    let sidecarLogsVisible = $state(false);
+    let sidecarLogEl: HTMLTextAreaElement | null = $state(null);
     let mlxReady = $state(false);
     let saveIndicator = $state(false);
     let customModelInput = $state('');
@@ -174,6 +196,7 @@
 
         mlxModels = await getSetting('mlxModels', [...DEFAULT_MLX_MODELS]);
         mlxPort = await getSetting('mlxPort', 8000);
+        llamacppPort = await getSetting('llamacppPort', 8080);
 
         try {
             const resp = await fetch('/licenses.json');
@@ -189,12 +212,31 @@
             setTimeout(() => { if (mlxLogEl) mlxLogEl.scrollTop = mlxLogEl.scrollHeight; }, 10);
         });
 
+        const unlistenSidecar = await listen('sidecar-ready', () => {
+            console.log(`[Settings] Sidecar ready event received!`);
+            llamacppReady = true;
+            sidecarStatus = 'ready';
+        });
+
+        const unlistenSidecarFailed = await listen('sidecar-failed', (event: any) => {
+            console.error(`[Settings] Sidecar failed:`, event.payload);
+            sidecarStatus = 'error';
+        });
+
+        const unlistenSidecarLog = await listen('sidecar-log', (event: any) => {
+            sidecarLogs = [...sidecarLogs, event.payload].slice(-500);
+            setTimeout(() => { if (sidecarLogEl) sidecarLogEl.scrollTop = sidecarLogEl.scrollHeight; }, 10);
+        });
+
         if (activeProviderId === 'ollama') {
             handleRefreshModels();
         }
 
         return () => {
             unlistenMlx();
+            unlistenSidecar();
+            unlistenSidecarFailed();
+            unlistenSidecarLog();
         };
     });
 
@@ -207,8 +249,8 @@
         { id: 'ita', name: 'Italian', isDownloaded: false },
     ]);
 
-    async function handleSave() {
-        console.log(`[Settings] Saving global settings...`);
+    // Save all settings without showing the "Gespeichert!" badge
+    async function saveSettingsSilent() {
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('activeProviderId', activeProviderId);
         await saveSetting('exportPath', exportPath);
@@ -226,11 +268,15 @@
         await saveSetting('localModels', $state.snapshot(localModels));
         await saveSetting('mlxModels', $state.snapshot(mlxModels));
         await saveSetting('mlxPort', mlxPort);
-
+        await saveSetting('llamacppPort', llamacppPort);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
         i18n.setLanguage(currentLanguage);
+    }
 
+    async function handleSave() {
+        console.log(`[Settings] Saving global settings...`);
+        await saveSettingsSilent();
         console.log(`[Settings] All settings saved.`);
         saveIndicator = true;
         setTimeout(() => saveIndicator = false, 2000);
@@ -256,7 +302,9 @@
     }
 
     async function updatePrompt() {
+        console.log(`[Settings] updatePrompt triggered. format=${parsingFormat}, lang=${currentLanguage}`);
         llmPrompt = getDefaultPrompt(parsingFormat, currentLanguage);
+        console.log(`[Settings] Prompt updated to: ${llmPrompt.substring(0, 50)}...`);
     }
 
     async function setActiveProvider(id: string) {
@@ -376,13 +424,26 @@
 
     async function setLocalModelActive(path: string) {
         if (!path) return alert('Select a valid model file first.');
+        console.log(`[Settings] Setting active model: ${path} (Provider: ${selectedProviderId})`);
+
         if (selectedProviderId === 'llamacpp') {
             try {
-                await invoke('stop_llamacpp_sidecar');
-                await invoke('start_llamacpp_sidecar', { modelPath: path });
+                sidecarStatus = 'starting';
+                llamacppReady = false;
+                sidecarLogs = [];
                 selectedProvider.selectedModel = path;
-                await handleSave();
-            } catch(e) { alert('Failed to start sidecar: ' + e); }
+                selectedProvider.baseUrl = `http://localhost:${llamacppPort}/v1`;
+                // Save settings silently — no "Gespeichert!" badge for a server start action
+                await saveSettingsSilent();
+                console.log(`[Settings] Starting llama.cpp sidecar on port ${llamacppPort}...`);
+                await invoke('stop_llamacpp_sidecar');
+                const res = await invoke('start_llamacpp_sidecar', { modelPath: path, port: llamacppPort });
+                console.log(`[Settings] Sidecar invoke result: ${res}`);
+            } catch(e) {
+                sidecarStatus = 'error';
+                console.error(`[Settings] Failed to start sidecar:`, e);
+                alert('Failed to start sidecar: ' + e);
+            }
         } else {
             selectedProvider.selectedModel = path;
             await handleSave();
@@ -447,6 +508,73 @@
             mlxRunning = false;
             mlxReady = false;
         } catch(e) { console.error(e); }
+    }
+
+    // WebLLM Helpers
+    async function handleLoadWebLLM(modelId: string) {
+        webllmStatus = 'downloading';
+        webllmProgress = 0;
+        webllmProgressText = '';
+        try {
+            await loadWebLLM(modelId, (report: InitProgressReport) => {
+                webllmProgress = Math.round(report.progress * 100);
+                webllmProgressText = report.text;
+                // Switch to 'loading' once download phase is done
+                if (report.progress >= 1 && webllmStatus === 'downloading') webllmStatus = 'loading';
+            });
+            webllmStatus = 'ready';
+            webllmSelectedModel = modelId;
+        } catch(e) {
+            webllmStatus = 'error';
+            console.error('[WebLLM] Load failed:', e);
+            alert('WebLLM load failed: ' + e);
+        }
+    }
+
+    function handleUnloadWebLLM() {
+        unloadWebLLM();
+        webllmStatus = 'idle';
+        webllmProgress = 0;
+        webllmProgressText = '';
+    }
+
+    function handleUseWebLLM(modelId: string) {
+        webllmSelectedModel = modelId;
+        selectedProvider.selectedModel = modelId;
+        saveSettingsSilent();
+    }
+
+    // ORT Helpers
+    async function handleLoadORT(modelId: string) {
+        ortStatus = 'downloading';
+        ortProgress = 0;
+        ortProgressText = '';
+        try {
+            await loadORT(modelId, (p: any) => {
+                if (p.progress != null) ortProgress = Math.round(p.progress);
+                if (p.name) ortProgressText = p.name + (p.progress != null ? ` ${Math.round(p.progress)}%` : '');
+                if (p.status === 'ready') ortStatus = 'loading';
+            });
+            ortStatus = 'ready';
+            ortSelectedModel = modelId;
+        } catch(e) {
+            ortStatus = 'error';
+            console.error('[ORT] Load failed:', e);
+            alert('ORT load failed: ' + e);
+        }
+    }
+
+    function handleUnloadORT() {
+        unloadORT();
+        ortStatus = 'idle';
+        ortProgress = 0;
+        ortProgressText = '';
+    }
+
+    function handleUseORT(modelId: string) {
+        ortSelectedModel = modelId;
+        selectedProvider.selectedModel = modelId;
+        saveSettingsSilent();
     }
 
     async function deleteMlxModelFromDisk(model: MlxModel) {
@@ -583,7 +711,7 @@
                 {#each providers as p}
                     <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
                         <span style="display:flex; align-items:center; gap:8px;">
-                            {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
+                            {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs' || p.id === 'webllm' || p.id === 'ort'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
                             {p.name}
                         </span>
                         {#if activeProviderId === p.id}<Zap size={12} style="color: #eab308;" />{/if}
@@ -913,7 +1041,7 @@
                 </div>
             {/if}
 
-            {#if !['mistralrs', 'llamacpp', 'mlx', 'ollama'].includes(selectedProvider.id)}
+            {#if !['mistralrs', 'llamacpp', 'mlx', 'ollama', 'webllm', 'ort'].includes(selectedProvider.id)}
                 <form onsubmit={e => e.preventDefault()}>
                     <input type="text" name="username" value="api-key" style="display:none;" autocomplete="username" />
                     <div class="form-group">
@@ -1087,14 +1215,144 @@
                 </div>
             {/if}
 
+            {#if selectedProvider.id === 'webllm'}
+                <div class="section-card" style="margin-top: 24px;">
+                    <div class="header" style="margin-bottom: 12px;">
+                        <h2 style="font-size: 1rem; color: #a1a1aa;"><Cpu size={16} /> {i18n.t.settings.webllm_manager_title}</h2>
+                        <div class="header-actions">
+                            {#if webllmStatus === 'ready'}
+                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.webllm_ready}: {getWebLLMLoadedModel().split('-q4')[0]}</span>
+                                <button class="action-btn small danger" onclick={handleUnloadWebLLM}>{i18n.t.settings.webllm_unload}</button>
+                            {:else if webllmStatus === 'downloading' || webllmStatus === 'loading'}
+                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {webllmStatus === 'downloading' ? i18n.t.settings.webllm_downloading : i18n.t.settings.webllm_loading} {webllmProgress}%</span>
+                            {:else if webllmStatus === 'error'}
+                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Error</span>
+                            {/if}
+                        </div>
+                    </div>
+                    <p class="hint">{i18n.t.settings.webllm_hint}</p>
+
+                    {#if (webllmStatus === 'downloading' || webllmStatus === 'loading') && webllmProgressText}
+                        <div style="margin: 8px 0 12px;">
+                            <div class="progress-container">
+                                <div class="progress-bar" style="width: {webllmProgress}%"></div>
+                                <span class="progress-text">{webllmProgress}%</span>
+                            </div>
+                            <p class="hint" style="margin-top:4px; font-size:0.7rem; color:#52525b;">{webllmProgressText}</p>
+                        </div>
+                    {/if}
+
+                    <div class="models-grid" style="margin-top: 12px;">
+                        {#each WEBLLM_MODELS as model}
+                            {@const isLoaded = webllmStatus === 'ready' && getWebLLMLoadedModel() === model.id}
+                            {@const isActive = selectedProvider.selectedModel === model.id}
+                            <div class="local-model-row" class:active-model-row={isActive}>
+                                <div class="model-info">
+                                    <div class="model-title-line">
+                                        <strong>{model.name.split(' · ')[0]}</strong>
+                                        {#if isActive}<Zap size={12} style="color: #eab308;" />{/if}
+                                    </div>
+                                    <span class="model-path">{model.name.split(' · ').slice(1).join(' · ')}</span>
+                                </div>
+                                <div class="model-status">
+                                    {#if isLoaded}
+                                        <button class="action-btn small" onclick={() => handleUseWebLLM(model.id)}>
+                                            {isActive ? i18n.t.batch.selected_status : i18n.t.settings.webllm_use}
+                                        </button>
+                                    {:else}
+                                        <button class="action-btn small primary"
+                                            disabled={webllmStatus === 'downloading' || webllmStatus === 'loading'}
+                                            onclick={() => handleLoadWebLLM(model.id)}>
+                                            <Download size={14} /> {i18n.t.settings.webllm_load}
+                                        </button>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                </div>
+            {/if}
+
+            {#if selectedProvider.id === 'ort'}
+                <div class="section-card" style="margin-top: 24px;">
+                    <div class="header" style="margin-bottom: 12px;">
+                        <h2 style="font-size: 1rem; color: #a1a1aa;"><Cpu size={16} /> {i18n.t.settings.ort_manager_title}</h2>
+                        <div class="header-actions">
+                            {#if ortStatus === 'ready'}
+                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.ort_ready}: {getORTLoadedModel().split('/').pop()} ({getORTDevice()})</span>
+                                <button class="action-btn small danger" onclick={handleUnloadORT}>{i18n.t.settings.ort_unload}</button>
+                            {:else if ortStatus === 'downloading' || ortStatus === 'loading'}
+                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {ortStatus === 'downloading' ? i18n.t.settings.ort_downloading : i18n.t.settings.ort_loading} {ortProgress}%</span>
+                            {:else if ortStatus === 'error'}
+                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Error</span>
+                            {/if}
+                        </div>
+                    </div>
+                    <p class="hint">{i18n.t.settings.ort_hint}</p>
+
+                    {#if (ortStatus === 'downloading' || ortStatus === 'loading') && ortProgressText}
+                        <div style="margin: 8px 0 12px;">
+                            <div class="progress-container">
+                                <div class="progress-bar" style="width: {ortProgress}%"></div>
+                                <span class="progress-text">{ortProgress}%</span>
+                            </div>
+                            <p class="hint" style="margin-top:4px; font-size:0.7rem; color:#52525b;">{ortProgressText}</p>
+                        </div>
+                    {/if}
+
+                    <div class="models-grid" style="margin-top: 12px;">
+                        {#each ORT_MODELS as model}
+                            {@const isLoaded = ortStatus === 'ready' && getORTLoadedModel() === model.id}
+                            {@const isActive = selectedProvider.selectedModel === model.id}
+                            <div class="local-model-row" class:active-model-row={isActive}>
+                                <div class="model-info">
+                                    <div class="model-title-line">
+                                        <strong>{model.name.split(' · ')[0]}</strong>
+                                        {#if isActive}<Zap size={12} style="color: #eab308;" />{/if}
+                                    </div>
+                                    <span class="model-path">{model.name.split(' · ').slice(1).join(' · ')}</span>
+                                </div>
+                                <div class="model-status">
+                                    {#if isLoaded}
+                                        <button class="action-btn small" onclick={() => handleUseORT(model.id)}>
+                                            {isActive ? i18n.t.batch.selected_status : i18n.t.settings.ort_use}
+                                        </button>
+                                    {:else}
+                                        <button class="action-btn small primary"
+                                            disabled={ortStatus === 'downloading' || ortStatus === 'loading'}
+                                            onclick={() => handleLoadORT(model.id)}>
+                                            <Download size={14} /> {i18n.t.settings.ort_load}
+                                        </button>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                </div>
+            {/if}
+
             {#if ['mistralrs', 'llamacpp'].includes(selectedProvider.id)}
                 <div class="section-card" style="margin-top: 24px;">
                     <div class="header" style="margin-bottom: 15px;">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><HardDrive size={16} /> {i18n.t.settings.local_manager_title}</h2>
-                        <div class="header-actions" style="display: flex; gap: 8px;">
+                        <div class="header-actions" style="display: flex; gap: 8px; align-items: center;">
                             {#if selectedProvider.id === 'llamacpp'}
-                                <button class="action-btn small primary" onclick={() => setLocalModelActive(selectedProvider.selectedModel)}>
+                                <div style="display:flex; align-items:center; gap:8px; margin-right:8px; background:#09090b; padding:2px 8px; border-radius:6px; border:1px solid #27272a;">
+                                    <span style="font-size:0.7rem; color:#71717a; font-weight:700;">PORT</span>
+                                    <input type="number" bind:value={llamacppPort} style="width: 70px; border:none; padding:2px; height:24px; font-size:0.8125rem;" />
+                                </div>
+                                {#if sidecarStatus === 'starting'}
+                                    <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                                {:else if sidecarStatus === 'ready'}
+                                    <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                                {:else if sidecarStatus === 'error'}
+                                    <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                                {/if}
+                                <button class="action-btn small primary" disabled={sidecarStatus === 'starting'} onclick={() => setLocalModelActive(selectedProvider.selectedModel)}>
                                     <Rocket size={14} /> {i18n.t.settings.local_manager_start}
+                                </button>
+                                <button class="action-btn small danger" onclick={async () => { await invoke('stop_llamacpp_sidecar'); sidecarStatus = ''; llamacppReady = false; }}>
+                                    <Square size={14} /> Stop
                                 </button>
                             {/if}
                             <button class="action-btn small success" onclick={addLocalModel}>
@@ -1102,6 +1360,20 @@
                             </button>
                         </div>
                     </div>
+                    {#if selectedProvider.id === 'llamacpp' && sidecarLogs.length > 0}
+                        <div style="margin-bottom: 14px;">
+                            <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => sidecarLogsVisible = !sidecarLogsVisible}>
+                                SIDECAR LOGS
+                                {#if sidecarLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
+                            </button>
+                            {#if sidecarLogsVisible}
+                                <div style="margin-top: 8px; position: relative;">
+                                    <textarea bind:this={sidecarLogEl} readonly class="log-viewer" value={sidecarLogs.join('\n')} rows="10" aria-label="llama-server Logs"></textarea>
+                                    <button class="log-clear-btn" onclick={() => sidecarLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                </div>
+                            {/if}
+                        </div>
+                    {/if}
 
                     <div class="form-group">
                         <label for="custom-model-id-{selectedProvider.id}">Custom HF Repo ID or URL</label>

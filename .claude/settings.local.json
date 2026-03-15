@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(/c/ProgramData/chocolatey/bin/cargo check:*)",
+      "Bash($CARGO check:*)",
+      "Bash(\"$RUSTUP_CARGO\" check:*)",
+      "Bash(export:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:mlc.ai)",
+      "WebFetch(domain:webllm.mlc.ai)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

@@ -15,7 +15,9 @@
   "license": "MIT",
   "dependencies": {
     "@ai-sdk/svelte": "^4.0.116",
+    "@huggingface/transformers": "^3.8.1",
     "@lingo-reader/epub-parser": "^0.4.5",
+    "@mlc-ai/web-llm": "^0.2.82",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
