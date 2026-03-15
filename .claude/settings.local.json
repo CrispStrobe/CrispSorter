@@ -13,7 +13,8 @@
       "WebFetch(domain:webllm.mlc.ai)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
-      "Bash(npm ls:*)"
+      "Bash(npm ls:*)",
+      "Bash(chmod:*)"
     ]
   }
 }
