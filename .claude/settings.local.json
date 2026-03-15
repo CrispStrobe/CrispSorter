@@ -14,7 +14,8 @@
       "Bash(npm install:*)",
       "Bash(npm run:*)",
       "Bash(npm ls:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(grep:*)"
     ]
   }
 }

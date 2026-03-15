@@ -144,6 +144,17 @@ export class BatchManager {
 
         // Sync llmClient state
         llmClient.noThinking = noThinking;
+        llmClient.llamacppPort = await getSetting('llamacppPort', 8080) as number;
+        llmClient.mlxPort = await getSetting('mlxPort', 8000) as number;
+
+        // Auto-start local server if needed
+        if (['ollama', 'llamacpp', 'mlx'].includes(activeProviderId)) {
+            try {
+                await llmClient.ensureProviderRunning(activeProviderId, modelId);
+            } catch (e) {
+                console.warn(`[BatchManager] Could not auto-start ${activeProviderId}:`, e);
+            }
+        }
 
         const defaultPrompt = getDefaultPrompt(parsingFormat, language);
         const basePrompt = await getSetting('llmPrompt', defaultPrompt);
@@ -226,23 +237,44 @@ export class BatchManager {
         return { title: title?.trim(), author: author?.trim(), year: year?.trim() };
     }
 
+    async recalculateTargetPath(itemId: string) {
+        const item = this.items.find(i => i.id === itemId);
+        if (item) await this.calculateTargetPath(item);
+    }
+
     private async calculateTargetPath(item: BatchItem) {
         const exportPath = await getSetting('exportPath', '');
-        const mode = await getSetting('exportPathMode', 'absolute');
-        const author = item.suggestedAuthor || 'Unknown Author';
-        const year = item.suggestedYear || '0000';
-        const title = item.suggestedTitle || item.originalName;
-        
-        let targetDir = '';
+        const pathTemplate = await getSetting('pathTemplate', '{Author}/{Year}/{Title}') as string;
+
+        const sanitize = (s: string) => s.replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
+        const author   = sanitize(item.suggestedAuthor || 'Unknown Author');
+        const year     = sanitize(item.suggestedYear   || '0000');
+        const title    = sanitize(item.suggestedTitle  || item.originalName);
+        const ext      = item.extension;
+        const filename = item.originalName;
+
+        const hasExtToken = /\{Ext\}/i.test(pathTemplate);
+        let relative = pathTemplate
+            .replace(/\{Author\}/gi,   author)
+            .replace(/\{Year\}/gi,     year)
+            .replace(/\{Title\}/gi,    title)
+            .replace(/\{Ext\}/gi,      ext)
+            .replace(/\{Filename\}/gi, filename);
+
+        if (!hasExtToken) relative = `${relative}.${ext}`;
+
+        // Determine base dir
+        let baseDir: string;
         if (exportPath) {
-            targetDir = await join(exportPath, author, year);
+            baseDir = exportPath;
         } else {
             const parent = item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
-            targetDir = await join(parent, 'Sorted', author, year);
+            baseDir = await join(parent, 'Sorted');
         }
-        
-        const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
-        item.targetPath = await join(targetDir, `${safeTitle}.${item.extension}`);
+
+        // Split on forward-slash (template separator) and join with OS path separator
+        const parts = relative.split('/').filter(Boolean);
+        item.targetPath = await join(baseDir, ...parts);
     }
 
     async saveCurrentSession() {

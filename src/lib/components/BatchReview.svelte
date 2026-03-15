@@ -2,7 +2,7 @@
     import { batchManager, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
-    import { DEFAULT_PROVIDERS, type LLMProvider } from '../llm/client';
+    import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { open } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
@@ -35,7 +35,38 @@
     let reanalModel = $state('');
     let reanalMaxChars = $state(5000);
     let reanalAuthorSort = $state(false);
-    let reanalModels = $derived(reanalProviders.find(p => p.id === reanalProviderId)?.models ?? []);
+    let reanalModelsFetched = $state<string[]>([]);
+    let reanalModelsLoading = $state(false);
+
+    // Detail pane local edit state (buffered — not immediately written to item)
+    let detailTitle  = $state('');
+    let detailAuthor = $state('');
+    let detailYear   = $state('');
+    let detailDirty  = $derived(
+        selectedItem != null && (
+            detailTitle  !== (selectedItem.suggestedTitle  ?? '') ||
+            detailAuthor !== (selectedItem.suggestedAuthor ?? '') ||
+            detailYear   !== (selectedItem.suggestedYear   ?? '')
+        )
+    );
+
+    // Sync local state when the selected item changes
+    $effect(() => {
+        if (selectedItem) {
+            detailTitle  = selectedItem.suggestedTitle  ?? '';
+            detailAuthor = selectedItem.suggestedAuthor ?? '';
+            detailYear   = selectedItem.suggestedYear   ?? '';
+        }
+    });
+
+    async function saveDetailChanges() {
+        if (!selectedItem) return;
+        selectedItem.suggestedTitle  = detailTitle;
+        selectedItem.suggestedAuthor = detailAuthor;
+        selectedItem.suggestedYear   = detailYear;
+        await batchManager.recalculateTargetPath(selectedItem.id);
+        await batchManager.saveCurrentSession();
+    }
 
     // Duplicates panel
     let showDuplicates = $state(false);
@@ -169,6 +200,10 @@
         reanalModel = activeProv?.selectedModel || activeProv?.models?.[0] || '';
         reanalMaxChars = await getSetting('llmMaxChars', 5000) as number;
         reanalAuthorSort = await getSetting('authorSortEnabled', false) as boolean;
+        llmClient.llamacppPort = await getSetting('llamacppPort', 8080) as number;
+        llmClient.mlxPort = await getSetting('mlxPort', 8000) as number;
+        // Pre-fetch models for the active provider
+        onReanalProviderChange();
 
         return () => {
             unlisten();
@@ -295,9 +330,23 @@
         await batchManager.reprocessItems(selectedIds, overrides);
     }
 
-    function onReanalProviderChange() {
+    async function onReanalProviderChange() {
         const prov = reanalProviders.find(p => p.id === reanalProviderId);
         reanalModel = prov?.selectedModel || prov?.models?.[0] || '';
+        reanalModelsFetched = prov?.models ?? [];
+
+        if (['mistralrs', 'webllm', 'ort'].includes(reanalProviderId)) return;
+
+        reanalModelsLoading = true;
+        try {
+            const fetched = await llmClient.fetchModels(reanalProviderId, prov?.apiKey, prov?.baseUrl);
+            reanalModelsFetched = fetched;
+            if (fetched.length > 0 && !reanalModel) reanalModel = fetched[0];
+        } catch {
+            reanalModelsFetched = prov?.models ?? [];
+        } finally {
+            reanalModelsLoading = false;
+        }
     }
 
     async function handleBatchReextract() {
@@ -427,10 +476,17 @@
                         </div>
                         <div class="opts-row">
                             <label for="reanalModel">{i18n.t.batch.reanalyze_model}</label>
-                            <input id="reanalModel" type="text" bind:value={reanalModel} list="reanalModelList" placeholder="model id..." />
-                            <datalist id="reanalModelList">
-                                {#each reanalModels as m}<option value={m}></option>{/each}
-                            </datalist>
+                            {#if reanalModelsLoading}
+                                <span style="display:flex;align-items:center;gap:6px;font-size:0.75rem;color:#a1a1aa;">
+                                    <Loader2 size={12} class="loader-spin" /> Loading…
+                                </span>
+                            {:else if reanalModelsFetched.length > 0}
+                                <select id="reanalModel" bind:value={reanalModel} class="styled-select" style="flex:1;min-width:0;">
+                                    {#each reanalModelsFetched as m}<option value={m}>{m}</option>{/each}
+                                </select>
+                            {:else}
+                                <input id="reanalModel" type="text" bind:value={reanalModel} placeholder="model id…" />
+                            {/if}
                         </div>
                         <div class="opts-row">
                             <label for="reanalMaxChars">{i18n.t.batch.reanalyze_max_chars}</label>
@@ -752,11 +808,11 @@
                                         {:else if col.id === 'file_name'}
                                             <span class="file-name" title={item.originalPath}>{item.originalName}</span>
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={e => e.stopPropagation()} class:fallback={item.suggestedTitle === 'Unknown Title'} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={item.suggestedTitle === 'Unknown Title'} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={e => e.stopPropagation()} class:fallback={item.suggestedAuthor === 'Unknown Author'} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={item.suggestedAuthor === 'Unknown Author'} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={e => e.stopPropagation()} style="text-align: center;" aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} style="text-align: center;" aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -801,19 +857,35 @@
                     </div>
                     
                     <div class="detail-section">
-                        <h4>{i18n.t.batch.edit_metadata}</h4>
+                        <div class="detail-section-header">
+                            <h4>{i18n.t.batch.edit_metadata}</h4>
+                            {#if detailDirty}
+                                <div class="detail-actions">
+                                    <button class="action-btn small danger" onclick={() => {
+                                        detailTitle  = selectedItem!.suggestedTitle  ?? '';
+                                        detailAuthor = selectedItem!.suggestedAuthor ?? '';
+                                        detailYear   = selectedItem!.suggestedYear   ?? '';
+                                    }}>
+                                        <X size={12} /> Revert
+                                    </button>
+                                    <button class="action-btn small success" onclick={saveDetailChanges}>
+                                        <Check size={12} /> Save
+                                    </button>
+                                </div>
+                            {/if}
+                        </div>
                         <div class="edit-fields">
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.title}</span>
-                                <input type="text" bind:value={selectedItem.suggestedTitle} aria-label="Edit Title" />
+                                <input type="text" bind:value={detailTitle} aria-label="Edit Title" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.author}</span>
-                                <input type="text" bind:value={selectedItem.suggestedAuthor} aria-label="Edit Author" />
+                                <input type="text" bind:value={detailAuthor} aria-label="Edit Author" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.year}</span>
-                                <input type="text" bind:value={selectedItem.suggestedYear} aria-label="Edit Year" />
+                                <input type="text" bind:value={detailYear} aria-label="Edit Year" />
                             </div>
                         </div>
                     </div>
@@ -862,9 +934,11 @@
                 </div>
 
                 <div class="report-choices">
-                    <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
-                        {i18n.t.batch.report_choice_keep_problematic}
-                    </button>
+                    {#if (lastExecutionStats.notFound ?? 0) + (lastExecutionStats.notWritable ?? 0) > 0}
+                        <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
+                            {i18n.t.batch.report_choice_keep_problematic}
+                        </button>
+                    {/if}
                     <button class="choice-btn danger" onclick={() => handleReportChoice('empty')}>
                         {i18n.t.batch.report_choice_empty}
                     </button>
@@ -1023,7 +1097,9 @@
     .detail-header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; }
     .detail-content { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
     
-    .detail-section h4 { font-size: 0.65rem; text-transform: uppercase; color: #71717a; margin: 0 0 6px 0; letter-spacing: 0.05em; }
+    .detail-section h4 { font-size: 0.65rem; text-transform: uppercase; color: #71717a; margin: 0; letter-spacing: 0.05em; }
+    .detail-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .detail-actions { display: flex; gap: 6px; }
     .path-preview { background: #020617; border: 1px solid #1e293b; padding: 8px; font-family: monospace; font-size: 0.7rem; border-radius: 6px; color: #94a3b8; word-break: break-all; }
     .text-preview { background: #020617; border: 1px solid #1e293b; padding: 10px; font-family: monospace; font-size: 0.75rem; border-radius: 6px; color: #94a3b8; min-height: 100px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; }
     
