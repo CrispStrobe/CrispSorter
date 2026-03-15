@@ -71,8 +71,11 @@
         'gemma3:1b-it-q4_K_M', 'gemma3:4b'
     ];
 
+    // MLX is Apple Silicon only — hide on Windows/Linux
+    const isMacOS = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
+
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
-    let selectedProviderId = $state('global'); 
+    let selectedProviderId = $state('global');
     let selectedProvider = $derived(providers.find(p => p.id === selectedProviderId) || providers[0]);
 
     // Global App Settings
@@ -725,7 +728,7 @@
             <div class="sidebar-divider"></div>
             <h2>{i18n.t.settings.providers}</h2>
             <div class="provider-list">
-                {#each providers as p}
+                {#each providers.filter(p => isMacOS || p.id !== 'mlx') as p}
                     <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
                         <span style="display:flex; align-items:center; gap:8px;">
                             {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs' || p.id === 'webllm' || p.id === 'ort'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
@@ -887,7 +890,7 @@
                 <div class="bench-config-row">
                     <span class="bench-config-label">{i18n.t.settings.benchmark.providers}</span>
                     <div class="bench-providers-grid">
-                        {#each providers as p}
+                        {#each providers.filter(p => isMacOS || p.id !== 'mlx') as p}
                             <div class="bench-provider-card" class:selected={benchProviders.includes(p.id)}>
                                 <label class="bench-check-label" for="bench-p-{p.id}">
                                     <input type="checkbox" id="bench-p-{p.id}" bind:group={benchProviders} value={p.id} />
