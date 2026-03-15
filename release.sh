@@ -39,12 +39,16 @@ fi
 echo "Artifacts found:"
 for f in "${ARTIFACTS[@]}"; do echo "  - $f"; done
 
-# 4. Create/update GitHub release and upload
+# 4. Detect repo from git remote
+REPO=$(git -C "$SCRIPT_DIR" remote get-url origin | sed 's|.*github.com[:/]\(.*\)\.git|\1|; s|.*github.com[:/]\(.*\)|\1|')
+echo "Target repo: $REPO"
+
+# 5. Create/update GitHub release and upload
 echo "Releasing $VERSION to GitHub..."
-gh release create "$VERSION" --title "CrispSorter $VERSION" \
+gh release create "$VERSION" --repo "$REPO" --title "CrispSorter $VERSION" \
     --notes "Automated release for version $VERSION" 2>/dev/null || true
 
 echo "Uploading artifacts..."
-gh release upload "$VERSION" "${ARTIFACTS[@]}" --clobber
+gh release upload "$VERSION" "${ARTIFACTS[@]}" --repo "$REPO" --clobber
 
 echo "Release $VERSION successfully updated with artifacts!"
