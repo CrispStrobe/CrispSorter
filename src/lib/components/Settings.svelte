@@ -114,6 +114,19 @@
     let webllmProgress = $state(0);
     let webllmProgressText = $state('');
     let webllmSelectedModel = $state(WEBLLM_MODELS[0].id);
+
+    // Restore engine status when navigating back to these providers
+    $effect(() => {
+        if (selectedProviderId === 'webllm' && webllmStatus === 'idle') {
+            const loaded = getWebLLMLoadedModel();
+            if (loaded) { webllmStatus = 'ready'; webllmSelectedModel = loaded; }
+        }
+        if (selectedProviderId === 'ort' && ortStatus === 'idle') {
+            const loaded = getORTLoadedModel();
+            if (loaded) { ortStatus = 'ready'; ortSelectedModel = loaded; }
+        }
+    });
+
     let sidecarStatus = $state(''); // '', 'starting', 'ready', 'error'
     let sidecarLogs = $state<string[]>([]);
     let sidecarLogsVisible = $state(false);
@@ -524,6 +537,8 @@
             });
             webllmStatus = 'ready';
             webllmSelectedModel = modelId;
+            selectedProvider.selectedModel = modelId;
+            saveSettingsSilent();
         } catch(e) {
             webllmStatus = 'error';
             console.error('[WebLLM] Load failed:', e);
@@ -557,6 +572,8 @@
             });
             ortStatus = 'ready';
             ortSelectedModel = modelId;
+            selectedProvider.selectedModel = modelId;
+            saveSettingsSilent();
         } catch(e) {
             ortStatus = 'error';
             console.error('[ORT] Load failed:', e);
@@ -1034,7 +1051,7 @@
                 </div>
             </div>
 
-            {#if selectedProvider.id !== 'mistralrs'}
+            {#if !['mistralrs', 'webllm', 'ort'].includes(selectedProvider.id)}
                 <div class="form-group">
                     <label for="base-url-input-{selectedProvider.id}">{i18n.t.settings.base_url}</label>
                     <input id="base-url-input-{selectedProvider.id}" type="text" bind:value={selectedProvider.baseUrl} />
@@ -1051,6 +1068,7 @@
                 </form>
             {/if}
 
+            {#if !['webllm', 'ort'].includes(selectedProvider.id)}
             <div class="form-group">
                 <label for="model-select-input-{selectedProvider.id}">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
@@ -1061,12 +1079,13 @@
                         {/each}
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
-                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Refresh models"> 
+                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Refresh models">
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
                 </div>
             </div>
+            {/if}
 
             {#if selectedProvider.id !== 'mistralrs'}
                 <div class="actions">
