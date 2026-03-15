@@ -200,7 +200,11 @@
             const loaded = getORTLoadedModel();
             return loaded ? [loaded] : [];
         }
-        return activeProvider.models;
+        const fetched = activeProvider.models || [];
+        // Always keep the saved selectedModel as an option so bind:value doesn't reset to ''
+        const saved = activeProvider.selectedModel;
+        if (saved && !fetched.includes(saved)) return [saved, ...fetched];
+        return fetched;
     });
 </script>
 

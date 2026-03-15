@@ -49,6 +49,8 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
 export class LLMClient {
     private keys: Record<string, string> = {};
     noThinking: boolean = false;
+    llamacppPort: number = 8080;
+    private serverReadyAt: Record<string, number> = {};
 
     constructor(keys: Record<string, string> = {}) {
         this.keys = keys;
@@ -56,6 +58,43 @@ export class LLMClient {
 
     setKeys(keys: Record<string, string>) {
         this.keys = keys;
+    }
+
+    /** Ensure a local HTTP server is running. Starts it via Tauri if not reachable. */
+    async ensureProviderRunning(providerId: string, modelId?: string): Promise<void> {
+        if (!['ollama', 'llamacpp'].includes(providerId)) return;
+
+        // Use cached "running" state for 15s to avoid health checks on every query
+        const now = Date.now();
+        if (now - (this.serverReadyAt[providerId] ?? 0) < 15000) return;
+
+        const healthUrl = providerId === 'ollama'
+            ? 'http://localhost:11434/api/tags'
+            : `http://localhost:${this.llamacppPort}/health`;
+
+        try {
+            const r = await fetch(healthUrl, { method: 'GET', connectTimeout: 1500 });
+            if (r.ok) { this.serverReadyAt[providerId] = now; return; }
+        } catch { /* not running */ }
+
+        console.log(`[LLMClient] ${providerId} not running — starting...`);
+        if (providerId === 'ollama') {
+            await invoke('start_ollama');
+        } else if (providerId === 'llamacpp' && modelId) {
+            await invoke('start_llamacpp_sidecar', { modelPath: modelId, port: this.llamacppPort });
+        } else {
+            return; // can't start without model path
+        }
+
+        // Poll up to 60s for readiness
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                const r = await fetch(healthUrl, { connectTimeout: 2000 });
+                if (r.ok) { this.serverReadyAt[providerId] = Date.now(); return; }
+            } catch { /* keep waiting */ }
+        }
+        throw new Error(`${providerId} failed to start within 60s`);
     }
 
     private stripThinking(text: string): string {
@@ -74,11 +113,6 @@ export class LLMClient {
         const key = apiKey || this.keys[providerId];
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
-        const localProviders = ['ollama', 'llamacpp', 'mlx'];
-        if (!key && !localProviders.includes(providerId)) {
-            console.error(`[LLMClient] Missing API key for ${providerId}`);
-            throw new Error(`API key for ${providerId} is required.`);
-        }
         if (!base) {
             console.error(`[LLMClient] Missing Base URL for ${providerId}`);
             throw new Error(`Base URL for ${providerId} is not configured.`);
@@ -160,7 +194,6 @@ export class LLMClient {
         const key = apiKey || this.keys[providerId];
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
-        if (!key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) throw new Error(`API key for ${providerId} is required.`);
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
         
         const isLocal = ['ollama', 'llamacpp', 'mlx'].includes(providerId);
@@ -185,7 +218,8 @@ export class LLMClient {
                     body: JSON.stringify({
                         model: modelId,
                         messages,
-                        temperature: temperature
+                        temperature: temperature,
+                        stream: false
                     }),
                     connectTimeout: isLocal ? 30000 : 5000
                 });
@@ -198,7 +232,8 @@ export class LLMClient {
 
                 const data = await response.json();
                 console.log(`[LLMClient] Query success.`);
-                return this.stripThinking(data.choices[0].message.content);
+                const content = data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.reasoning_content ?? '';
+                return this.stripThinking(content);
             } catch (error: any) {
                 lastError = error;
                 console.warn(`[LLMClient] Attempt ${attempt + 1} failed for ${providerId}:`, error.message || error);
