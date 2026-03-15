@@ -64,6 +64,7 @@
     // Global App Settings
     let activeProviderId = $state('ollama');
     let exportPath = $state('');
+    let exportPathMode = $state<'absolute' | 'relative'>('absolute');
     let saveTxt = $state(true);
     let currentLanguage = $state<Language>('en');
     
@@ -292,6 +293,7 @@
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('activeProviderId', activeProviderId);
         await saveSetting('exportPath', exportPath);
+        await saveSetting('exportPathMode', exportPathMode);
         await saveSetting('saveTxt', saveTxt);
         await saveSetting('language', currentLanguage);
         await saveSetting('llmMaxChars', llmMaxChars);
@@ -1049,10 +1051,12 @@
             {/if}
 
             {#if !['mistralrs', 'llamacpp', 'mlx', 'ollama'].includes(selectedProvider.id)}
-                <div class="form-group">
-                    <label for="api-key-input">{i18n.t.settings.api_key}</label>
-                    <input id="api-key-input" type="password" bind:value={selectedProvider.apiKey} />
-                </div>
+                <form onsubmit={e => e.preventDefault()}>
+                    <div class="form-group">
+                        <label for="api-key-input">{i18n.t.settings.api_key}</label>
+                        <input id="api-key-input" type="password" bind:value={selectedProvider.apiKey} autocomplete="current-password" />
+                    </div>
+                </form>
             {/if}
 
             <div class="form-group">

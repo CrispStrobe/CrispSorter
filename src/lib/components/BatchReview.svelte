@@ -8,12 +8,13 @@
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
     import type { BatchItem } from '../types';
+    import { stat } from '@tauri-apps/plugin-fs';
     import {
         Play, Trash2, Check, X, FileSearch, FolderOpen,
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
-        RefreshCw, AlertCircle
+        RefreshCw, AlertCircle, Code, Info
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -37,6 +38,7 @@
 
     // Duplicates panel
     let showDuplicates = $state(false);
+    let showSortOptions = $state(false);
     let duplicateGroups = $state<Array<{ size: number; items: BatchItem[] }>>([]);
     let checkingDuplicates = $state(false);
     let deepDupeCheck = $state(false);
@@ -45,9 +47,14 @@
     let sortColumn = $state<string>('file_name');
     let sortDirection = $state<'asc' | 'desc'>('asc');
 
+    // Execution Report
+    let lastExecutionStats = $state<any>(null);
+    let showReportModal = $state(false);
+
     // Column visibility and width state
     let columns = $state([
         { id: 'status', label: i18n.t.batch.status, width: 90, visible: true, locked: true },
+        { id: 'accepted', label: 'OK', width: 45, visible: true, locked: true },
         { id: 'file_name', label: i18n.t.batch.file_name, width: 250, visible: true },
         { id: 'title', label: i18n.t.batch.title, width: 250, visible: true },
         { id: 'author', label: i18n.t.batch.author, width: 180, visible: true },
@@ -168,7 +175,6 @@
             filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md', 'epub'] }]
         });
         if (Array.isArray(selected)) {
-            // Route through scan_folder to get size from Rust
             for (const path of selected) {
                 const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                     folderPath: path,
@@ -225,8 +231,6 @@
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
-        console.log(`[BatchReview] Row Click: ${id}, Shift: ${e.shiftKey}, Meta: ${e.metaKey || e.ctrlKey}`);
-        
         if (e.shiftKey && lastClickedId) {
             const items = sortedItems;
             const start = items.findIndex(i => i.id === lastClickedId);
@@ -249,9 +253,10 @@
         lastClickedId = id;
     }
 
+    let allSelected = $derived(sortedItems.length > 0 && selectedIds.length === sortedItems.length);
+
     function selectAllVisible() {
-        console.log(`[BatchReview] selectAllVisible: current count=${selectedIds.length}, total visible=${sortedItems.length}`);
-        if (selectedIds.length === sortedItems.length && sortedItems.length > 0) {
+        if (allSelected) {
             selectedIds = [];
         } else {
             selectedIds = sortedItems.map(i => i.id);
@@ -267,13 +272,11 @@
     }
 
     async function handleRedoSelected() {
-        console.log(`[BatchReview] handleRedoSelected for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         await batchManager.reprocessItems(selectedIds);
     }
 
     async function handleRedoWithOptions() {
-        console.log(`[BatchReview] handleRedoWithOptions for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         showReanalyzeOpts = false;
         const overrides: ProcessOverrides = {
@@ -291,13 +294,11 @@
     }
 
     async function handleBatchReextract() {
-        console.log(`[BatchReview] handleBatchReextract for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         await batchManager.reextractItems(selectedIds);
     }
 
     async function handleBatchRemove() {
-        console.log(`[BatchReview] handleBatchRemove for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         if (confirm(i18n.t.history.delete_confirm)) {
             await batchManager.removeItems(selectedIds);
@@ -306,28 +307,57 @@
     }
 
     function handleBatchAccept(val: boolean) {
-        console.log(`[BatchReview] handleBatchAccept(${val}) for ${selectedIds.length} items`);
         if (selectedIds.length === 0) return;
         batchManager.setAcceptedItems(selectedIds, val);
     }
 
     async function startProcessing() {
-        console.log('[BatchReview] startProcessing clicked');
         await batchManager.processAll();
     }
 
-    async function executeSorting() {
-        const accepted = batchManager.items.filter(i => i.isAccepted);
-        console.log(`[BatchReview] executeSorting clicked. Accepted count: ${accepted.length}`);
-        if (confirm(i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString()))) {
-            await batchManager.executeBatch();
+    function toggleSelectionAccepted(val: boolean) {
+        const targetIds = batchManager.filteredItems.map(i => i.id);
+        batchManager.setAcceptedItems(targetIds, val);
+    }
+
+    async function checkFileDetails(item: BatchItem) {
+        try {
+            const exists = await stat(item.originalPath).then(() => true).catch(() => false);
+            const metadata = await stat(item.originalPath).catch(() => null);
+            
+            alert(`${i18n.t.batch.item_info.title}\n\n` +
+                  `${i18n.t.batch.item_info.exists}: ${exists ? '✅' : '❌'}\n` +
+                  `${i18n.t.batch.item_info.abs_path}: ${item.originalPath}\n` +
+                  `${i18n.t.batch.item_info.size}: ${metadata ? formatSize(metadata.size) : '?'}\n` +
+                  `${i18n.t.batch.item_info.projected_path}: ${item.targetPath || '?'}\n` +
+                  `${i18n.t.batch.item_info.last_status}: ${item.status}${item.errorMessage ? ' (' + item.errorMessage + ')' : ''}`);
+        } catch (e: any) {
+            alert(`Error checking file: ${e.message}`);
         }
     }
 
-    function toggleSelectionAccepted(val: boolean) {
-        const targetIds = selectedIds.length > 0 ? selectedIds : batchManager.filteredItems.map(i => i.id);
-        console.log(`[BatchReview] toggleSelectionAccepted(${val}) for ${targetIds.length} items`);
-        batchManager.setAcceptedItems(targetIds, val);
+    async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
+        const accepted = batchManager.items.filter(i => i.isAccepted);
+        let confirmMsg = i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
+        if (mode.includes('copy')) confirmMsg = confirmMsg.replace('sort', 'copy');
+
+        if (confirm(confirmMsg)) {
+            const stats = await batchManager.executeBatch(mode);
+            if (stats) {
+                lastExecutionStats = stats;
+                showReportModal = true;
+            }
+        }
+    }
+
+    async function handleReportChoice(choice: 'keep_problematic' | 'empty' | 'keep_all') {
+        showReportModal = false;
+        if (choice === 'empty') {
+            batchManager.items = [];
+        } else if (choice === 'keep_problematic') {
+            batchManager.items = batchManager.items.filter(i => i.status !== 'done');
+        }
+        await batchManager.saveCurrentSession();
     }
 
     function formatSize(bytes: number) {
@@ -488,11 +518,36 @@
                 </button>
             </div>
             
-            <button class="action-btn rocket-btn small" 
-                    onclick={executeSorting} 
-                    disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
-                <Rocket size={16} /> {i18n.t.batch.execute}
-            </button>
+            <div class="dropdown-container">
+                <div class="split-btn-group">
+                    <button class="action-btn rocket-btn small" 
+                            onclick={() => executeSorting('move')} 
+                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
+                        <Rocket size={16} /> {i18n.t.batch.execute}
+                    </button>
+                    <button class="action-btn rocket-btn small split-caret" 
+                            onclick={() => showSortOptions = !showSortOptions}
+                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
+                        <ChevronDown size={11} />
+                    </button>
+                </div>
+                {#if showSortOptions}
+                    <div class="dropdown-menu" style="right: 0; left: auto;">
+                        <button onclick={() => { executeSorting('move'); showSortOptions = false; }}>
+                            <Rocket size={14} /> {i18n.t.batch.execute_move}
+                        </button>
+                        <button onclick={() => { executeSorting('copy'); showSortOptions = false; }}>
+                            <Copy size={14} /> {i18n.t.batch.execute_copy}
+                        </button>
+                        <button onclick={() => { executeSorting('script_move'); showSortOptions = false; }}>
+                            <Code size={14} /> {i18n.t.batch.execute_script_move}
+                        </button>
+                        <button onclick={() => { executeSorting('script_copy'); showSortOptions = false; }}>
+                            <Code size={14} /> {i18n.t.batch.execute_script_copy}
+                        </button>
+                    </div>
+                {/if}
+            </div>
         </div>
     </div>
 
@@ -637,6 +692,14 @@
                                             <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}>
                                                 {item.status}
                                             </span>
+                                        {:else if col.id === 'accepted'}
+                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; batchManager.saveCurrentSession(); }} title="Toggle Accept">
+                                                {#if item.isAccepted}
+                                                    <Check size={16} style="color: #10b981;" />
+                                                {:else}
+                                                    <X size={16} style="color: #ef4444; opacity: 0.5;" />
+                                                {/if}
+                                            </button>
                                         {:else if col.id === 'file_name'}
                                             <span class="file-name" title={item.originalPath}>{item.originalName}</span>
                                         {:else if col.id === 'title'}
@@ -671,7 +734,12 @@
         {#if selectedItem}
             <div class="detail-pane">
                 <div class="detail-header">
-                    <h3>{i18n.t.batch.details}</h3>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <h3>{i18n.t.batch.details}</h3>
+                        <button class="icon-btn-minimal" onclick={() => checkFileDetails(selectedItem!)} title="Detailed Info">
+                            <Info size={14} />
+                        </button>
+                    </div>
                     <button class="close-btn" onclick={() => selectedItemId = null}>×</button>
                 </div>
                 <div class="detail-content">
@@ -710,6 +778,45 @@
         {/if}
     </div>
 </div>
+
+{#if showReportModal && lastExecutionStats}
+    <div class="modal-overlay">
+        <div class="modal-content report-modal">
+            <div class="modal-header">
+                <h2><Rocket size={18} /> {i18n.t.batch.report_title}</h2>
+            </div>
+            <div class="modal-body">
+                <div class="report-stats">
+                    {#if lastExecutionStats.mode.includes('copy')}
+                        <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_copied.replace('{count}', lastExecutionStats.success)}</div>
+                    {:else}
+                        <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_moved.replace('{count}', lastExecutionStats.success)}</div>
+                    {/if}
+                    
+                    {#if lastExecutionStats.notFound > 0}
+                        <div class="stat-line warning"><AlertCircle size={16} /> {i18n.t.batch.report_not_found.replace('{count}', lastExecutionStats.notFound)}</div>
+                    {/if}
+                    
+                    {#if lastExecutionStats.notWritable > 0}
+                        <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_not_writable.replace('{count}', lastExecutionStats.notWritable)}</div>
+                    {/if}
+                </div>
+
+                <div class="report-choices">
+                    <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
+                        {i18n.t.batch.report_choice_keep_problematic}
+                    </button>
+                    <button class="choice-btn danger" onclick={() => handleReportChoice('empty')}>
+                        {i18n.t.batch.report_choice_empty}
+                    </button>
+                    <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
+                        {i18n.t.batch.report_choice_keep_all}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+{/if}
 
 <style>
     .batch-container { display: flex; flex-direction: column; height: 100%; background: #09090b; overflow: hidden; }
@@ -845,4 +952,41 @@
     .opts-row input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; }
     .opts-run { width: 100%; justify-content: center; margin-top: 4px; }
     .action-btn.primary { background: #3b82f6; color: white; border-color: #3b82f6; }
+
+    .ghost-toggle-btn {
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        transition: opacity 0.2s;
+    }
+    .ghost-toggle-btn:hover { opacity: 0.8; }
+
+    .icon-btn-minimal { background: transparent; border: none; color: #71717a; cursor: pointer; display: flex; align-items: center; padding: 4px; border-radius: 4px; }
+    .icon-btn-minimal:hover { color: #3b82f6; background: #1e3a8a33; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+    .modal-content { background: #18181b; border: 1px solid #27272a; border-radius: 12px; width: 450px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); overflow: hidden; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid #27272a; }
+    .modal-header h2 { font-size: 1.1rem; margin: 0; display: flex; align-items: center; gap: 10px; color: #f4f4f5; }
+    .modal-body { padding: 20px; }
+    
+    .report-stats { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+    .stat-line { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 0.9rem; }
+    .stat-line.success { color: #10b981; }
+    .stat-line.warning { color: #f59e0b; }
+    .stat-line.danger { color: #ef4444; }
+
+    .report-choices { display: flex; flex-direction: column; gap: 10px; }
+    .choice-btn { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #3b82f6; background: #1e3a8a33; color: #60a5fa; font-weight: 600; cursor: pointer; text-align: left; transition: all 0.2s; }
+    .choice-btn:hover { background: #1e3a8a66; }
+    .choice-btn.danger { border-color: #ef4444; background: #450a0a33; color: #f87171; }
+    .choice-btn.danger:hover { background: #450a0a66; }
+    .choice-btn.secondary { border-color: #27272a; background: #27272a; color: #a1a1aa; }
+    .choice-btn.secondary:hover { background: #3f3f46; color: white; }
 </style>

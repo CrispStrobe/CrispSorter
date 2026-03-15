@@ -45,19 +45,20 @@ export class BatchManager {
     // Track paths synchronously to prevent rapid drop duplicates
     private processingPaths = new Set<string>();
 
-    filteredItems = $derived(
-        this.items.filter(item => {
-            const matchesSearch = item.originalName.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
-                                 (item.suggestedTitle?.toLowerCase().includes(this.searchQuery.toLowerCase()) ?? false) ||
-                                 (item.suggestedAuthor?.toLowerCase().includes(this.searchQuery.toLowerCase()) ?? false);
+    filteredItems = $derived.by(() => {
+        const query = this.searchQuery.toLowerCase();
+        return this.items.filter(item => {
+            const matchesSearch = item.originalName.toLowerCase().includes(query) ||
+                                 (item.suggestedTitle?.toLowerCase().includes(query) ?? false) ||
+                                 (item.suggestedAuthor?.toLowerCase().includes(query) ?? false);
             
             const matchesExt = this.filterExtension === 'all' || item.extension === this.filterExtension;
             const matchesStatus = this.filterStatus === 'all' || item.status === this.filterStatus;
             const matchesSize = item.size >= this.filterMinSize * 1024;
 
             return matchesSearch && matchesExt && matchesStatus && matchesSize;
-        })
-    );
+        });
+    });
 
     constructor() {
         console.log("[BatchManager] Initialized");
@@ -130,12 +131,16 @@ export class BatchManager {
     }
 
     async setAcceptedItems(ids: string[], isAccepted: boolean) {
+        console.log(`[BatchManager] setAcceptedItems(isAccepted=${isAccepted}) for ${ids.length} ids`);
         const idSet = new Set(ids);
+        let count = 0;
         this.items.forEach(item => {
             if (idSet.has(item.id)) {
                 item.isAccepted = isAccepted;
+                count++;
             }
         });
+        console.log(`[BatchManager] Updated ${count} items to isAccepted=${isAccepted}`);
         await this.saveCurrentSession();
     }
 
@@ -383,74 +388,87 @@ export class BatchManager {
         return this.parseXml(response);
     }
 
-    async executeBatch() {
-        console.log(`[BatchManager] executeBatch: Starting execution for accepted items`);
-        const toMove = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
-        console.log(`[BatchManager] executeBatch: Found ${toMove.length} items to move`);
-        
-        if (toMove.length === 0) {
-            console.log(`[BatchManager] executeBatch: No items to move (either none accepted or targetPath missing)`);
-            return;
+    async executeBatch(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
+        console.log(`[BatchManager] executeBatch: Starting execution (${mode}) for accepted items`);
+        const toProcess = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
+        console.log(`[BatchManager] executeBatch: Found ${toProcess.length} items to process`);
+
+        if (toProcess.length === 0) {
+            console.log(`[BatchManager] executeBatch: No items to process (either none accepted or targetPath missing)`);
+            return null;
         }
 
         const globalSaveTxt = await getSetting('saveTxt', true);
-        console.log(`[BatchManager] executeBatch: globalSaveTxt=${globalSaveTxt}`);
+        const exportPathMode = await getSetting('exportPathMode', 'absolute');
+        toProcess.forEach(i => i.status = 'moving');
 
-        for (const item of toMove) {
-            console.log(`[BatchManager] executeBatch: Processing ${item.originalName} -> ${item.targetPath}`);
-            item.status = 'moving';
-            try {
-                if (globalSaveTxt && item.extractedText) {
-                    const txtPath = item.targetPath!.replace(/\.[^.]+$/, '.txt');
-                    console.log(`[BatchManager] executeBatch: Saving TXT to ${txtPath}`);
-                    const lastSlash = txtPath.lastIndexOf('/');
-                    const parentDir = lastSlash !== -1 ? txtPath.substring(0, lastSlash) : '.';
-                    try { 
-                        console.log(`[BatchManager] executeBatch: Creating directory ${parentDir}`);
-                        await mkdir(parentDir, { recursive: true }); 
-                    } catch(e) {
-                        console.log(`[BatchManager] executeBatch: mkdir hint (might already exist): ${e}`);
-                    }
-                    const encoder = new TextEncoder();
-                    await writeFile(txtPath, encoder.encode(item.extractedText));
-                    console.log(`[BatchManager] executeBatch: TXT saved`);
+        let stats = {
+            success: 0,
+            notFound: 0,
+            notWritable: 0,
+            error: 0,
+            mode
+        };
+
+        try {
+            const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', {
+                payload: {
+                    items: toProcess.map(i => ({
+                        id: i.id,
+                        originalPath: i.originalPath,
+                        targetPath: i.targetPath,
+                        extractedText: i.extractedText
+                    })),
+                    saveTxt: globalSaveTxt,
+                    exportPathMode,
+                    mode
                 }
-
-                console.log(`[BatchManager] executeBatch: Invoking move_files for ${item.originalName}`);
-                const results: string[] = await invoke('move_files', { 
-                    moves: [{ source: item.originalPath, destination: item.targetPath! }] 
-                });
-                console.log(`[BatchManager] executeBatch: move_files results:`, results);
-
-                if (results[0].startsWith('Success:')) {
-                    item.status = 'done';
-                    console.log(`[BatchManager] executeBatch: Successfully moved ${item.originalName}`);
-                } else { 
-                    item.status = 'error'; 
-                    item.errorMessage = results[0]; 
-                    console.error(`[BatchManager] executeBatch: Failed to move ${item.originalName}: ${results[0]}`);
-                }
-            } catch (error: any) {
-                item.status = 'error';
-                item.errorMessage = error.message;
-                console.error(`[BatchManager] executeBatch: Catch block error for ${item.originalName}:`, error);
-            }
-        }
-
-        // Remove successfully moved items from the list
-        const doneIds = new Set(toMove.filter(i => i.status === 'done').map(i => i.id));
-        if (doneIds.size > 0) {
-            console.log(`[BatchManager] executeBatch: Removing ${doneIds.size} successfully moved items from state`);
-            this.items = this.items.filter(item => {
-                if (doneIds.has(item.id)) {
-                    this.processingPaths.delete(item.originalPath);
-                    return false;
-                }
-                return true;
             });
+
+            console.log(`[BatchManager] executeBatch results:`, results);
+
+            for (const item of toProcess) {
+                const res = results[item.id];
+                if (res && res.success) {
+                    item.status = 'done';
+                    item.errorMessage = undefined;
+                    stats.success++;
+                } else {
+                    item.status = 'error';
+                    const err = res?.error || 'Unknown error';
+                    item.errorMessage = err;
+                    
+                    if (err === 'SOURCE_NOT_FOUND') stats.notFound++;
+                    else if (err.startsWith('NOT_WRITABLE')) stats.notWritable++;
+                    else stats.error++;
+                }
+            }
+
+            // Remove successfully moved items from the list
+            if (mode === 'move') {
+                const doneIds = new Set(toProcess.filter(i => i.status === 'done').map(i => i.id));
+                if (doneIds.size > 0) {
+                    console.log(`[BatchManager] executeBatch: Removing ${doneIds.size} successfully moved items from state`);
+                    this.items = this.items.filter(item => {
+                        if (doneIds.has(item.id)) {
+                            this.processingPaths.delete(item.originalPath);
+                            return false;
+                        }
+                        return true;
+                    });
+                }
+            }
+        } catch (e: any) {
+            console.error('[BatchManager] executeBatch failed:', e);
+            toProcess.forEach(i => {
+                i.status = 'error';
+                i.errorMessage = e.toString();
+            });
+            stats.error += toProcess.length;
         }
         await this.saveCurrentSession();
-        console.log(`[BatchManager] executeBatch: Finished`);
+        console.log(`[BatchManager] executeBatch: Finished. Stats:`, stats);
+        return stats;
     }
 
     async getDuplicateGroups(checkContent = false): Promise<Array<{ size: number; items: BatchItem[] }>> {

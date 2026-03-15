@@ -46,25 +46,61 @@ npm install
 npm run tauri dev
 ```
 
-### Building for Windows (.exe / .msi)
-To build a fully bundled Windows installer with the `llama-server` sidecar:
+## Windows Development & Building
 
-1. **Install Rust**: Ensure you have the latest stable Rust (MSVC) installed via `rustup`.
-2. **Setup Sidecar**:
-   - Create `src-tauri/bin/` directory.
-   - Download the `llama-server.exe` binary from [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases).
-   - Rename it to `llama-server-x86_64-pc-windows-msvc.exe`.
-   - Place all required DLLs (e.g., `llama.dll`, `ggml.dll`, `libomp140.x86_64.dll`, etc.) in `src-tauri/bin/`.
-3. **Configure Tauri**:
-   - Ensure `tauri.conf.json` includes `bin/*.dll` in the `bundle > resources` section.
-4. **Build**:
-   ```bash
+### Prerequisites
+1. **Node.js**: Install the latest LTS version.
+2. **Rust**: Install via [rustup.rs](https://rustup.rs/). Ensure the `x86_64-pc-windows-msvc` target is installed.
+3. **C++ Build Tools**: Install "Desktop development with C++" via the [Visual Studio Installer](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+
+### Development Environment
+To run the application in development mode with hot-reloading:
+```powershell
+npm install
+npm run tauri dev
+```
+**What `npm run tauri dev` does:**
+- Compiles the Svelte 5 frontend using Vite.
+- Starts a local development server for the UI (usually on port 1420).
+- Compiles the Rust backend in debug mode.
+- Injects the Tauri API into the frontend.
+- Launches a native Windows window hosting the webview.
+- **Hot-Reloading**: Any changes to `src/` (frontend) or `src-tauri/src/` (backend) will trigger an automatic rebuild and refresh.
+
+### Building a Working .exe / Installer
+To create a production-ready, optimized executable:
+
+1. **Environment Setup**:
+   If you need project-specific tools (like `gh.exe`) in your path, run the helper script:
+   ```powershell
+   .\paths.ps1
+   ```
+
+2. **Generate Licenses (Optional)**:
+   ```powershell
+   npm run licenses:gen
+   ```
+
+3. **Production Build**:
+   ```powershell
    npm run tauri build
    ```
-   *Artifacts*: `src-tauri/target/release/bundle/nsis/CrispSorter_x.x.x_x64-setup.exe` and `.msi`.
+**What `npm run tauri build` does:**
+- **Frontend**: Runs `npm run build` (Vite) to minify and bundle the Svelte application into the `build/` folder.
+- **Backend**: Compiles the Rust code with the `--release` flag, applying maximum optimizations.
+- **Bundling**: 
+  - Collects all frontend assets.
+  - Includes the `llama-server` sidecar and required DLLs from `src-tauri/bin/`.
+  - Packages everything into a standalone `.exe`.
+  - Creates professional installers (`.msi` and `.exe` setup).
 
-### Sidecar Dependencies (Windows)
-The `llama-server` sidecar requires several DLLs from the `llama.cpp` distribution to run correctly within the Tauri bundle. Ensure these are present in `src-tauri/bin/` so they are bundled as resources.
+**Build Artifacts**:
+- **Portable Executable**: `src-tauri\target\release\CrispSorter.exe`
+- **NSIS Installer**: `src-tauri\target\release\bundle\nsis\CrispSorter_x.x.x_x64-setup.exe` (Recommended for users)
+- **MSI Installer**: `src-tauri\target\release\bundle\msi\CrispSorter_x.x.x_x64_en-US.msi`
+
+### Sidecar Dependencies
+The `llama-server` functionality requires specific DLLs to be present in `src-tauri/bin/` during the build process. These are automatically bundled into the final application as resources.
 
 ### Building for macOS (.dmg)
 ```bash

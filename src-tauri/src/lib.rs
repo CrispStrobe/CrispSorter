@@ -322,31 +322,114 @@ fn scan_dir_recursive(dir: &Path, extensions: &[String], entries: &mut Vec<FileE
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchExecutionPayload {
+    items: Vec<BatchExecutionItem>,
+    save_txt: bool,
+    mode: String, // "move", "copy", "script_move", "script_copy"
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchExecutionItem {
+    id: String,
+    original_path: String,
+    target_path: String,
+    extracted_text: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct BatchExecutionResult {
+    success: bool,
+    error: Option<String>,
+}
+
 #[tauri::command]
-async fn move_files(moves: Vec<MoveRequest>) -> Result<Vec<String>, String> {
-    let mut results = Vec::new();
-    for req in moves {
-        let src_path = Path::new(&req.source);
-        let dest_path = Path::new(&req.destination);
-        if !src_path.exists() {
-            results.push(format!("Error: Source file not found: {}", req.source));
+async fn execute_batch(payload: BatchExecutionPayload) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
+    let mut results = std::collections::HashMap::new();
+    let is_script_mode = payload.mode.starts_with("script_");
+    let mut script_content = String::new();
+    
+    // Windows detection for script extension
+    let is_windows = std::env::consts::OS == "windows";
+    let script_name = if is_windows { "sort_files.bat" } else { "sort_files.sh" };
+    
+    if is_script_mode {
+        if is_windows {
+            script_content.push_str("@echo off\n");
+        } else {
+            script_content.push_str("#!/bin/bash\n");
+        }
+    }
+
+    for item in &payload.items {
+        let src = Path::new(&item.original_path);
+        let dest = Path::new(&item.target_path);
+        
+        if is_script_mode {
+            // Script generation mode
+            let cmd = if payload.mode == "script_move" {
+                if is_windows { format!("move \"{}\" \"{}\"\n", item.original_path, item.target_path) }
+                else { format!("mv \"{}\" \"{}\"\n", item.original_path, item.target_path) }
+            } else {
+                if is_windows { format!("copy \"{}\" \"{}\"\n", item.original_path, item.target_path) }
+                else { format!("cp \"{}\" \"{}\"\n", item.original_path, item.target_path) }
+            };
+            script_content.push_str(&cmd);
+            results.insert(item.id.clone(), BatchExecutionResult { success: true, error: None });
             continue;
         }
-        if let Some(parent) = dest_path.parent() {
+
+        // Direct execution mode
+        if !src.exists() {
+            results.insert(item.id.clone(), BatchExecutionResult { success: false, error: Some("SOURCE_NOT_FOUND".to_string()) });
+            continue;
+        }
+
+        if let Some(parent) = dest.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
-                results.push(format!("Error: Failed to create directories for {}: {}", req.destination, e));
+                results.insert(item.id.clone(), BatchExecutionResult { success: false, error: Some(format!("NOT_WRITABLE: {}", e)) });
                 continue;
             }
         }
-        if dest_path.exists() {
-            results.push(format!("Error: Destination already exists: {}", req.destination));
-            continue;
+
+        // 1. Save TXT if requested
+        if payload.save_txt {
+            if let Some(text) = &item.extracted_text {
+                let txt_path = dest.with_extension("txt");
+                if let Err(e) = fs::write(txt_path, text) {
+                    println!("Warning: Failed to save .txt for {}: {}", item.id, e);
+                }
+            }
         }
-        match fs::rename(src_path, dest_path) {
-            Ok(_) => results.push(format!("Success: Moved {} to {}", req.source, req.destination)),
-            Err(e) => results.push(format!("Error: Failed to move {}: {}", req.source, e)),
+
+        // 2. Perform file operation
+        let res = match payload.mode.as_str() {
+            "copy" => fs::copy(src, dest).map(|_| ()),
+            _ => fs::rename(src, dest), // default to move
+        };
+
+        match res {
+            Ok(_) => { results.insert(item.id.clone(), BatchExecutionResult { success: true, error: None }); }
+            Err(e) => { results.insert(item.id.clone(), BatchExecutionResult { success: false, error: Some(e.to_string()) }); }
+        };
+    }
+
+    if is_script_mode && !payload.items.is_empty() {
+        // Save the generated script to the first item's parent directory or a common root if possible.
+        // For simplicity, we'll try to put it in the first item's destination parent.
+        if let Some(first_item) = payload.items.first() {
+            let dest = Path::new(&first_item.target_path);
+            if let Some(parent) = dest.parent() {
+                let script_path = parent.join(script_name);
+                if let Err(e) = fs::write(&script_path, script_content) {
+                    return Err(format!("Failed to save script to {:?}: {}", script_path, e));
+                }
+            }
         }
     }
+
     Ok(results)
 }
 
@@ -497,7 +580,7 @@ pub fn run() {
             mlx_process: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
-            move_files,
+            execute_batch,
             scan_folder,
             download_file,
             run_mistralrs_query,
