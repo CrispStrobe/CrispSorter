@@ -3,12 +3,12 @@
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
-    import { open } from '@tauri-apps/plugin-dialog';
+    import { open, save } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
     import type { BatchItem } from '../types';
-    import { stat } from '@tauri-apps/plugin-fs';
+    import { stat, writeTextFile } from '@tauri-apps/plugin-fs';
     import {
         Play, Trash2, Check, X, FileSearch, FolderOpen,
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
@@ -82,6 +82,14 @@
     // Execution Report
     let lastExecutionStats = $state<any>(null);
     let showReportModal = $state(false);
+    let toastMessage = $state<string | null>(null);
+    let toastTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    function showToast(msg: string) {
+        toastMessage = msg;
+        if (toastTimeout) clearTimeout(toastTimeout);
+        toastTimeout = setTimeout(() => toastMessage = null, 5000);
+    }
 
     // Info Modal
     let showInfoModal = $state(false);
@@ -396,7 +404,7 @@
                 status: item.status,
                 error: item.errorMessage
             };
-            console.log(`[BatchReview] infoModalData set:`, infoModalData);
+            console.log(`[BatchReview] infoModalData set:`, $state.snapshot(infoModalData));
             showInfoModal = true;
         } catch (e: any) {
             console.error('[BatchReview] Error checking file details:', e);
@@ -404,25 +412,25 @@
     }
 
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
-        const accepted = batchManager.items.filter(i => i.isAccepted);
-        if (accepted.length === 0) {
-            console.log(`[BatchReview] No items accepted for sorting.`);
+        // Only count items that executeBatch will actually process
+        const ready = batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
+        if (ready.length === 0) {
+            showToast(i18n.t.batch.no_items_ready);
             return;
         }
 
-        let confirmMsg = mode.includes('copy') 
-            ? i18n.t.batch.confirm_copy.replace('{count}', accepted.length.toString())
-            : i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
+        let confirmMsg = mode.includes('copy')
+            ? i18n.t.batch.confirm_copy.replace('{count}', ready.length.toString())
+            : i18n.t.batch.confirm_move.replace('{count}', ready.length.toString());
 
         if (confirm(confirmMsg)) {
-            console.log(`[BatchReview] Starting executeBatch(${mode}) for ${accepted.length} items`);
+            console.log(`[BatchReview] Starting executeBatch(${mode}) for ${ready.length} items`);
             const stats = await batchManager.executeBatch(mode);
             if (stats) {
-                console.log(`[BatchReview] executeBatch finished. Showing report modal with stats:`, stats);
                 lastExecutionStats = stats;
                 showReportModal = true;
             } else {
-                console.warn(`[BatchReview] executeBatch returned no stats.`);
+                showToast(i18n.t.batch.no_items_ready);
             }
         }
     }
@@ -436,6 +444,24 @@
             batchManager.items = batchManager.items.filter(i => i.status !== 'done');
         }
         await batchManager.saveCurrentSession();
+    }
+
+    async function copyTextToClipboard() {
+        if (!selectedItem?.extractedText) return;
+        await navigator.clipboard.writeText(selectedItem.extractedText);
+        showToast('Copied to clipboard.');
+    }
+
+    async function exportTextFile() {
+        if (!selectedItem?.extractedText) return;
+        const defaultPath = selectedItem.originalName.replace(/\.[^.]+$/, '.txt');
+        const savePath = await save({
+            defaultPath,
+            filters: [{ name: 'Text Files', extensions: ['txt'] }]
+        });
+        if (savePath) {
+            await writeTextFile(savePath, selectedItem.extractedText);
+        }
     }
 
     function formatSize(bytes: number) {
@@ -624,14 +650,18 @@
             
             <div class="dropdown-container">
                 <div class="split-btn-group">
-                    <button class="action-btn rocket-btn small" 
-                            onclick={() => executeSorting('move')} 
-                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}>
-                        <Rocket size={16} /> {i18n.t.batch.execute}
+                    <button class="action-btn rocket-btn small"
+                            onclick={() => executeSorting('move')}
+                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error')).length === 0}>
+                        {#if batchManager.isExecuting}
+                            <span class="loader-anim"><Loader2 size={16} /></span> {i18n.t.batch.executing}
+                        {:else}
+                            <Rocket size={16} /> {i18n.t.batch.execute}
+                        {/if}
                     </button>
-                    <button class="action-btn rocket-btn small split-caret" 
+                    <button class="action-btn rocket-btn small split-caret"
                             onclick={() => showSortOptions = !showSortOptions}
-                            disabled={batchManager.items.filter(i => i.isAccepted).length === 0}
+                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error')).length === 0}
                             aria-label="Sort Options">
                         <ChevronDown size={11} />
                     </button>
@@ -853,7 +883,7 @@
                     {/if}
                     <div class="detail-section">
                         <h4>{i18n.t.batch.target_path}</h4>
-                        <div class="path-preview">{selectedItem.targetPath || i18n.t.batch.path_hint}</div>
+                        <div class="path-preview full-path">{selectedItem.targetPath || i18n.t.batch.path_hint}</div>
                     </div>
                     
                     <div class="detail-section">
@@ -891,7 +921,19 @@
                     </div>
 
                     <div class="detail-section">
-                        <h4>{i18n.t.batch.extracted_text}</h4>
+                        <div class="detail-section-header">
+                            <h4>{i18n.t.batch.extracted_text}</h4>
+                            {#if selectedItem.extractedText}
+                                <div class="detail-actions">
+                                    <button class="action-btn small" onclick={copyTextToClipboard} title={i18n.t.batch.copy_text}>
+                                        <Copy size={12} /> {i18n.t.batch.copy_text}
+                                    </button>
+                                    <button class="action-btn small" onclick={exportTextFile} title={i18n.t.batch.export_text}>
+                                        <FileText size={12} /> {i18n.t.batch.export_text}
+                                    </button>
+                                </div>
+                            {/if}
+                        </div>
                         <div class="text-preview">{selectedItem.extractedText || i18n.t.batch.extract_hint}</div>
                     </div>
                 </div>
@@ -909,6 +951,10 @@
     </div>
 </div>
 
+{#if toastMessage}
+    <div class="toast-message" role="alert">{toastMessage}</div>
+{/if}
+
 {#if showReportModal && lastExecutionStats}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
     <div class="modal-overlay" onclick={() => showReportModal = false} role="button" tabindex="0" onkeydown={e => e.key === 'Escape' && (showReportModal = false)}>
@@ -918,23 +964,33 @@
             </div>
             <div class="modal-body">
                 <div class="report-stats">
-                    {#if lastExecutionStats.mode.includes('copy')}
-                        <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_copied.replace('{count}', lastExecutionStats.success)}</div>
-                    {:else}
-                        <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_moved.replace('{count}', lastExecutionStats.success)}</div>
+                    {#if lastExecutionStats.success > 0}
+                        {#if lastExecutionStats.mode.includes('copy')}
+                            <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_copied.replace('{count}', lastExecutionStats.success)}</div>
+                        {:else}
+                            <div class="stat-line success"><Check size={16} /> {i18n.t.batch.report_moved.replace('{count}', lastExecutionStats.success)}</div>
+                        {/if}
                     {/if}
-                    
-                    {#if lastExecutionStats.notFound > 0}
+
+                    {#if (lastExecutionStats.copiedFallback ?? 0) > 0}
+                        <div class="stat-line warning"><AlertCircle size={16} /> {i18n.t.batch.report_copy_fallback.replace('{count}', lastExecutionStats.copiedFallback)}</div>
+                    {/if}
+
+                    {#if (lastExecutionStats.locked ?? 0) > 0}
+                        <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_locked.replace('{count}', lastExecutionStats.locked)}</div>
+                    {/if}
+
+                    {#if (lastExecutionStats.notFound ?? 0) > 0}
                         <div class="stat-line warning"><AlertCircle size={16} /> {i18n.t.batch.report_not_found.replace('{count}', lastExecutionStats.notFound)}</div>
                     {/if}
-                    
-                    {#if lastExecutionStats.notWritable > 0}
+
+                    {#if (lastExecutionStats.notWritable ?? 0) > 0}
                         <div class="stat-line danger"><X size={16} /> {i18n.t.batch.report_not_writable.replace('{count}', lastExecutionStats.notWritable)}</div>
                     {/if}
                 </div>
 
                 <div class="report-choices">
-                    {#if (lastExecutionStats.notFound ?? 0) + (lastExecutionStats.notWritable ?? 0) > 0}
+                    {#if (lastExecutionStats.notFound ?? 0) + (lastExecutionStats.notWritable ?? 0) + (lastExecutionStats.locked ?? 0) > 0}
                         <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
                             {i18n.t.batch.report_choice_keep_problematic}
                         </button>
@@ -1172,4 +1228,23 @@
     .info-val { font-size: 0.875rem; color: #f4f4f5; line-height: 1.4; }
     .mono-path { font-family: monospace; font-size: 0.75rem; color: #94a3b8; word-break: break-all; background: #09090b; padding: 4px 8px; border-radius: 4px; border: 1px solid #27272a; }
     .error-msg { margin-top: 8px; padding: 8px; background: #450a0a33; border: 1px solid #ef444433; border-radius: 6px; color: #f87171; font-size: 0.8125rem; }
+
+    .full-path { user-select: all; cursor: text; }
+
+    .toast-message {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #3b82f6;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 0.875rem;
+        font-weight: 600;
+        z-index: 2000;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        animation: fadeInUp 0.2s ease-out;
+    }
+    @keyframes fadeInUp { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 </style>

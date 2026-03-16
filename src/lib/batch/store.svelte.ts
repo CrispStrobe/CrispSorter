@@ -32,6 +32,7 @@ export function getDefaultPrompt(format: 'xml' | 'json', lang: string = 'en') {
 export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
+    isExecuting = $state(false);
     searchQuery = $state('');
     filterExtension = $state('all');
     filterStatus = $state('all');
@@ -52,7 +53,8 @@ export class BatchManager {
     });
 
     addItem(path: string, name: string, size: number) {
-        if (this.items.some(i => i.originalPath === path)) return; // skip duplicates
+        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+        if (this.items.some(i => norm(i.originalPath) === norm(path))) return; // skip duplicates (case-insensitive, cross-separator)
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
         this.items.push({
@@ -268,8 +270,13 @@ export class BatchManager {
         if (exportPath) {
             baseDir = exportPath;
         } else {
-            const parent = item.originalPath.substring(0, item.originalPath.lastIndexOf('/'));
-            baseDir = await join(parent, 'Sorted');
+            // Support both / and \ separators (Windows uses backslash)
+            const lastSep = Math.max(
+                item.originalPath.lastIndexOf('/'),
+                item.originalPath.lastIndexOf('\\')
+            );
+            const parent = lastSep >= 0 ? item.originalPath.substring(0, lastSep) : '';
+            baseDir = await join(parent || '.', 'Sorted');
         }
 
         // Split on forward-slash (template separator) and join with OS path separator
@@ -294,7 +301,8 @@ export class BatchManager {
     }
 
     async executeBatch(mode: string = 'move') {
-        const accepted = this.items.filter(i => i.isAccepted && i.status === 'review');
+        // Include 'review' AND 'error' items so previously-failed items can be retried
+        const accepted = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
         if (accepted.length === 0) return null;
 
         const saveTxt = await getSetting('saveTxt', true);
@@ -309,31 +317,46 @@ export class BatchManager {
             mode
         };
 
-        const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
-        
-        let successCount = 0;
-        let notFound = 0;
-        let notWritable = 0;
-        let errorCount = 0;
+        this.isExecuting = true;
+        try {
+            const results = await invoke<Record<string, { success: boolean, error?: string }>>('execute_batch', { payload });
 
-        for (const [id, res] of Object.entries(results)) {
-            const item = this.items.find(i => i.id === id);
-            if (item) {
-                if (res.success) {
-                    item.status = 'done';
-                    successCount++;
-                } else {
-                    item.status = 'error';
-                    item.errorMessage = res.error;
-                    if (res.error === 'SOURCE_NOT_FOUND') notFound++;
-                    else if (res.error?.startsWith('NOT_WRITABLE')) notWritable++;
-                    else errorCount++;
+            let successCount = 0;
+            let notFound = 0;
+            let notWritable = 0;
+            let errorCount = 0;
+            let copiedFallback = 0;
+            let locked = 0;
+
+            for (const [id, res] of Object.entries(results)) {
+                const item = this.items.find(i => i.id === id);
+                if (item) {
+                    if (res.success) {
+                        item.status = 'done';
+                        if (res.error === 'COPY_FALLBACK') {
+                            // Copied to destination but original not deleted (was locked by OS)
+                            item.errorMessage = 'COPY_FALLBACK';
+                            copiedFallback++;
+                        } else {
+                            item.errorMessage = undefined;
+                            successCount++;
+                        }
+                    } else {
+                        item.status = 'error';
+                        item.errorMessage = res.error;
+                        if (res.error === 'SOURCE_NOT_FOUND') notFound++;
+                        else if (res.error?.startsWith('NOT_WRITABLE')) notWritable++;
+                        else if (res.error === 'LOCKED') locked++;
+                        else errorCount++;
+                    }
                 }
             }
-        }
 
-        await this.saveCurrentSession();
-        return { success: successCount, notFound, notWritable, error: errorCount, mode };
+            await this.saveCurrentSession();
+            return { success: successCount, notFound, notWritable, error: errorCount, copiedFallback, locked, mode };
+        } finally {
+            this.isExecuting = false;
+        }
     }
 
     async getDuplicateGroups(deep: boolean = false) {
