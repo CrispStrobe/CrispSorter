@@ -569,16 +569,25 @@ async fn execute_batch(payload: BatchExecutionPayload) -> Result<std::collection
             }
         }
 
-        // 2. Perform file operation
-        let res = match payload.mode.as_str() {
-            "copy" => fs::copy(src, dest).map(|_| ()),
-            _ => fs::rename(src, dest), // default to move
+        // 2. Perform file operation — with locked-file copy fallback for move
+        let exec_result = match payload.mode.as_str() {
+            "copy" => match fs::copy(src, dest) {
+                Ok(_) => BatchExecutionResult { success: true, error: None },
+                Err(e) => BatchExecutionResult { success: false, error: Some(e.to_string()) },
+            },
+            _ => match fs::rename(src, dest) {
+                Ok(()) => BatchExecutionResult { success: true, error: None },
+                Err(ref e) if e.raw_os_error() == Some(32) => {
+                    // File locked by another process (os error 32) — try copy as fallback
+                    match fs::copy(src, dest) {
+                        Ok(_) => BatchExecutionResult { success: true, error: Some("COPY_FALLBACK".to_string()) },
+                        Err(_) => BatchExecutionResult { success: false, error: Some("LOCKED".to_string()) },
+                    }
+                },
+                Err(e) => BatchExecutionResult { success: false, error: Some(e.to_string()) },
+            },
         };
-
-        match res {
-            Ok(_) => { results.insert(item.id.clone(), BatchExecutionResult { success: true, error: None }); }
-            Err(e) => { results.insert(item.id.clone(), BatchExecutionResult { success: false, error: Some(e.to_string()) }); }
-        };
+        results.insert(item.id.clone(), exec_result);
     }
 
     if is_script_mode && !payload.items.is_empty() {
