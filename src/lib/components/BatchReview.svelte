@@ -188,56 +188,62 @@
         });
     });
 
-    onMount(async () => {
-        // Scale columns to fill the available container width
-        await new Promise(r => setTimeout(r, 0));
-        scaleColumnsToContainer();
+    onMount(() => {
+        let cleanup = () => {};
 
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                if (selectedIds.length > 0) selectedIds = [];
-                showReportModal = false;
-                showInfoModal = false;
-            }
-        };
-        window.addEventListener('keydown', handleKeyDown);
+        (async () => {
+            // Scale columns to fill the available container width
+            await new Promise(r => setTimeout(r, 0));
+            scaleColumnsToContainer();
 
-        const unlisten = await listen('tauri://drag-drop', (event: any) => {
-            const paths = event.payload.paths as string[];
-            paths.forEach(path => {
-                invoke<{ path: string; size: number }[]>('scan_folder', {
-                    folderPath: path,
-                    extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
-                }).then(entries => {
-                    entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
-                }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
+            const handleKeyDown = (e: KeyboardEvent) => {
+                if (e.key === 'Escape') {
+                    if (selectedIds.length > 0) selectedIds = [];
+                    showReportModal = false;
+                    showInfoModal = false;
+                }
+            };
+            window.addEventListener('keydown', handleKeyDown);
+
+            const unlisten = await listen('tauri://drag-drop', (event: any) => {
+                const paths = event.payload.paths as string[];
+                paths.forEach(path => {
+                    invoke<{ path: string; size: number }[]>('scan_folder', {
+                        folderPath: path,
+                        extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                    }).then(entries => {
+                        entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+                    }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
+                });
             });
-        });
 
-        // Load providers for re-analyze dropdown
-        const savedProviders = await getSetting('providers');
-        const merged = savedProviders
-            ? DEFAULT_PROVIDERS.map(def => {
-                const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
-                return saved ? { ...def, ...saved } : def;
-              })
-            : DEFAULT_PROVIDERS;
-        reanalProviders = merged;
-        const activeId = await getSetting('activeProviderId', 'ollama') as string;
-        reanalProviderId = activeId;
-        const activeProv = merged.find(p => p.id === activeId) || merged[0];
-        reanalModel = activeProv?.selectedModel || activeProv?.models?.[0] || '';
-        reanalMaxChars = await getSetting('llmMaxChars', 5000) as number;
-        reanalAuthorSort = await getSetting('authorSortEnabled', false) as boolean;
-        llmClient.llamacppPort = await getSetting('llamacppPort', 8080) as number;
-        llmClient.mlxPort = await getSetting('mlxPort', 8000) as number;
-        // Pre-fetch models for the active provider
-        onReanalProviderChange();
+            // Load providers for re-analyze dropdown
+            const savedProviders = await getSetting('providers');
+            const merged = savedProviders
+                ? DEFAULT_PROVIDERS.map(def => {
+                    const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
+                    return saved ? { ...def, ...saved } : def;
+                  })
+                : DEFAULT_PROVIDERS;
+            reanalProviders = merged;
+            const activeId = await getSetting('activeProviderId', 'ollama') as string;
+            reanalProviderId = activeId;
+            const activeProv = merged.find(p => p.id === activeId) || merged[0];
+            reanalModel = activeProv?.selectedModel || activeProv?.models?.[0] || '';
+            reanalMaxChars = await getSetting('llmMaxChars', 5000) as number;
+            reanalAuthorSort = await getSetting('authorSortEnabled', false) as boolean;
+            llmClient.llamacppPort = await getSetting('llamacppPort', 8080) as number;
+            llmClient.mlxPort = await getSetting('mlxPort', 8000) as number;
+            // Pre-fetch models for the active provider
+            onReanalProviderChange();
 
-        return () => {
-            unlisten();
-            window.removeEventListener('keydown', handleKeyDown);
-        };
+            cleanup = () => {
+                unlisten();
+                window.removeEventListener('keydown', handleKeyDown);
+            };
+        })();
+
+        return () => cleanup();
     });
 
     async function handleAddFiles() {

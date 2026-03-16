@@ -1,4 +1,3 @@
-import { $state } from 'svelte/runes';
 
 export interface ChatMessage {
     role: 'user' | 'assistant' | 'system';

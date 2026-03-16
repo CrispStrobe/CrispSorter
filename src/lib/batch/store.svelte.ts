@@ -9,6 +9,7 @@ import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
+import type { BatchSession } from '../types';
 import { extractText } from '../extractors';
 
 export interface ProcessOverrides {
@@ -68,7 +69,8 @@ export class BatchManager {
             status: 'queued',
             extension,
             modifiedAt: Date.now(),
-            isAccepted: true
+            isAccepted: true,
+            isIgnored: false
         });
         this.saveCurrentSession();
     }
@@ -406,6 +408,38 @@ export class BatchManager {
             return { success: successCount, notFound, notWritable, error: errorCount, copiedFallback, locked, mode };
         } finally {
             this.isExecuting = false;
+        }
+    }
+
+    async loadSession(id: string) {
+        const saved = await getSetting('sessions', {}) as Record<string, BatchSession>;
+        const session = saved[id];
+        if (session?.items) {
+            this.items = session.items;
+            await this.saveCurrentSession();
+        }
+    }
+
+    async exportBatch() {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+        const path = await save({ defaultPath: 'batch.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+        if (path) {
+            await writeTextFile(path, JSON.stringify($state.snapshot(this.items), null, 2));
+        }
+    }
+
+    async importBatch() {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const { readTextFile } = await import('@tauri-apps/plugin-fs');
+        const path = await open({ filters: [{ name: 'JSON', extensions: ['json'] }] });
+        if (typeof path === 'string') {
+            const text = await readTextFile(path);
+            const items = JSON.parse(text) as BatchItem[];
+            if (Array.isArray(items)) {
+                this.items = items;
+                await this.saveCurrentSession();
+            }
         }
     }
 

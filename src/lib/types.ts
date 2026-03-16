@@ -20,7 +20,13 @@ export interface BatchItem {
     
     // User edits/acceptance
     isAccepted: boolean;
-    isIgnored: boolean;
+    isIgnored?: boolean;
+}
+
+export interface Metadata {
+    title?: string;
+    author?: string;
+    year?: string;
 }
 
 export interface BatchSession {
