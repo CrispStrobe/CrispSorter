@@ -15,7 +15,12 @@
       "Bash(npm run:*)",
       "Bash(npm ls:*)",
       "Bash(chmod:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(security find-identity:*)",
+      "Bash(cd:*)",
+      "Bash(npx tauri:*)",
+      "Bash(APP=/Users/christianstrobele/code/CrispSorter/src-tauri/target/release/bundle/macos/CrispSorter.app\nOUT=/Users/christianstrobele/code/CrispSorter/src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg\nrm -f \"$OUT\"\ncreate-dmg \\\\\n  --volname \"CrispSorter\" \\\\\n  --volicon \"$APP/Contents/Resources/AppIcon.icns\" \\\\\n  --window-pos 200 120 \\\\\n  --window-size 600 400 \\\\\n  --icon-size 128 \\\\\n  --icon \"CrispSorter.app\" 150 190 \\\\\n  --hide-extension \"CrispSorter.app\" \\\\\n  --app-drop-link 450 190 \\\\\n  \"$OUT\" \\\\\n  \"$APP\" 2>&1)",
+      "Bash(APP=/Users/christianstrobele/code/CrispSorter/src-tauri/target/release/bundle/macos/CrispSorter.app\nOUT=/Users/christianstrobele/code/CrispSorter/src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg\nrm -f \"$OUT\"\ncreate-dmg \\\\\n  --volname \"CrispSorter\" \\\\\n  --volicon \"$APP/Contents/Resources/icon.icns\" \\\\\n  --window-pos 200 120 \\\\\n  --window-size 600 400 \\\\\n  --icon-size 128 \\\\\n  --icon \"CrispSorter.app\" 150 190 \\\\\n  --hide-extension \"CrispSorter.app\" \\\\\n  --app-drop-link 450 190 \\\\\n  \"$OUT\" \\\\\n  \"$APP\" 2>&1)"
     ]
   }
 }
