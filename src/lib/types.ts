@@ -9,6 +9,7 @@ export interface BatchItem {
     modifiedAt: number;
     status: BatchStatus;
     errorMessage?: string;
+    statusDetail?: string;
     extractedText?: string;
     
     // LLM Suggestions

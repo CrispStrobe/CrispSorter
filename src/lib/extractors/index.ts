@@ -8,6 +8,10 @@ export interface ExtractionResult {
 
 export interface ExtractionOptions {
     forceOCR?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (page: number, total: number) => void;
+    maxChars?: number;
+    maxPages?: number;
 }
 
 export async function extractText(
@@ -34,7 +38,7 @@ export async function extractText(
     switch (extension) {
         case 'pdf':
             console.log("[ExtractorIndex] Handing off to extractPdf");
-            text = await extractPdf(arrayBuffer, options.forceOCR);
+            text = await extractPdf(arrayBuffer, options);
             break;
         case 'docx':
             console.log("[ExtractorIndex] Handing off to extractDocx");

@@ -1,3 +1,5 @@
+// src/lib/extractors/pdfExtractor.ts:
+
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import Tesseract from 'tesseract.js';
 import { getSetting } from '../store';
@@ -30,9 +32,9 @@ if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype.values) {
     ReadableStream.prototype.values = ReadableStream.prototype[Symbol.asyncIterator];
 }
 
-export async function extractPdf(arrayBuffer: ArrayBuffer, forceOCR: boolean = false): Promise<string> {
-    console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}, forceOCR: ${forceOCR}`);
-    const ocrEnabled = forceOCR || await getSetting('ocrEnabled', false);
+export async function extractPdf(arrayBuffer: ArrayBuffer, options: { forceOCR?: boolean; signal?: AbortSignal; onProgress?: (page: number, total: number) => void; maxChars?: number; maxPages?: number } = {}): Promise<string> {
+    console.log(`[PDFExtractor] Starting extraction, buffer size: ${arrayBuffer.byteLength}, forceOCR: ${options.forceOCR ?? false}`);
+    const ocrEnabled = (options.forceOCR ?? false) || await getSetting('ocrEnabled', false);
     
     try {
         const data = new Uint8Array(arrayBuffer);
@@ -52,13 +54,30 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, forceOCR: boolean = f
         console.log(`[PDFExtractor] Document loaded successfully, pages: ${numPages}`);
 
         for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+            // Abort signal check
+            if (options.signal?.aborted) {
+                console.log(`[PDFExtractor] Aborted at page ${pageNum}/${numPages}`);
+                break;
+            }
+            // Progress callback
+            options.onProgress?.(pageNum, numPages);
+            // Early stop: enough text already
+            if (options.maxChars && fullText.length >= options.maxChars) {
+                console.log(`[PDFExtractor] Reached maxChars (${options.maxChars}) at page ${pageNum}/${numPages}, stopping early.`);
+                break;
+            }
+            // Page limit
+            if (options.maxPages && pageNum > options.maxPages) {
+                console.log(`[PDFExtractor] Reached maxPages (${options.maxPages}), stopping early.`);
+                break;
+            }
             console.log(`[PDFExtractor] Processing page ${pageNum}/${numPages}...`);
             const page = await pdfDocument.getPage(pageNum);
-            
+
             let pageText = '';
-            
+
             // If NOT forcing OCR, try to get digital text first
-            if (!forceOCR) {
+            if (!(options.forceOCR ?? false)) {
                 try {
                     const textContent = await page.getTextContent();
                     const items = textContent.items as any[];
@@ -86,10 +105,10 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, forceOCR: boolean = f
             } else {
                 console.log(`[PDFExtractor] Skipping digital text extraction for page ${pageNum} (forceOCR enabled)`);
             }
-            
+
             // If text is still empty (or we are forcing OCR) and OCR is enabled, run OCR
-            if ((pageText.trim().length < 20 || forceOCR) && ocrEnabled) {
-                console.log(`[PDFExtractor] Page ${pageNum} triggering OCR (forceOCR=${forceOCR}, length=${pageText.trim().length})...`);
+            if ((pageText.trim().length < 20 || (options.forceOCR ?? false)) && ocrEnabled) {
+                console.log(`[PDFExtractor] Page ${pageNum} triggering OCR (forceOCR=${options.forceOCR ?? false}, length=${pageText.trim().length})...`);
                 try {
                     const canvas = document.createElement('canvas');
                     const viewport = page.getViewport({ scale: 2.0 }); 
@@ -122,8 +141,11 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, forceOCR: boolean = f
         }
 
         console.log(`[PDFExtractor] Extraction complete, total text length: ${fullText.length}`);
+        // Release pdf.js internal resources and any OS file handles
+        await pdfDocument.destroy();
         return fullText.trim();
     } catch (error: any) {
+        if (error?.message === 'EXTRACTION_ABORTED') throw error;
         console.error("[PDFExtractor] CRITICAL ERROR:", error);
         throw new Error(`Failed to extract PDF: ${error.message || String(error)}`);
     }

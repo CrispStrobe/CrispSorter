@@ -1,4 +1,6 @@
 /**
+ * src/lib/llm/orts.ts
+ * 
  * ORT (ONNX Runtime) inference via @huggingface/transformers.
  *
  * Uses WebGPU if available (DirectML on Windows, Metal on macOS), falls back to WASM/CPU.

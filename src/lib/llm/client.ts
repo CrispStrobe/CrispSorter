@@ -51,6 +51,7 @@ export class LLMClient {
     noThinking: boolean = false;
     llamacppPort: number = 8080;
     mlxPort: number = 8000;
+    requestDelayMs: number = 0;
     private serverReadyAt: Record<string, number> = {};
 
     constructor(keys: Record<string, string> = {}) {
@@ -100,6 +101,21 @@ export class LLMClient {
             } catch { /* keep waiting */ }
         }
         throw new Error(`${providerId} failed to start within 60s`);
+    }
+
+    private getRetryAfterMs(headers: Headers, errorText: string): number {
+        // Standard Retry-After header (in seconds)
+        const retryAfterHeader = headers.get('retry-after') || headers.get('Retry-After');
+        if (retryAfterHeader) {
+            const secs = parseFloat(retryAfterHeader);
+            if (!isNaN(secs)) return Math.ceil(secs * 1000) + 200;
+        }
+        // Parse from Groq/OpenAI error body: "Please try again in 847.5ms" or "1.5s"
+        const msMatch = errorText.match(/try again in ([\d.]+)ms/i);
+        if (msMatch) return Math.ceil(parseFloat(msMatch[1])) + 500;
+        const sMatch = errorText.match(/try again in ([\d.]+)s/i);
+        if (sMatch) return Math.ceil(parseFloat(sMatch[1]) * 1000) + 500;
+        return 3000; // default 3s
     }
 
     private stripThinking(text: string): string {
@@ -207,6 +223,9 @@ export class LLMClient {
         const maxRetries = isLocal ? 1 : 3;
         let lastError = null;
 
+        let rateLimitRetries = 0;
+        const MAX_RL_RETRIES = 6;
+
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 console.log(`[LLMClient] POST ${baseUrl}/chat/completions (Attempt ${attempt + 1})`);
@@ -226,8 +245,18 @@ export class LLMClient {
                         temperature: temperature,
                         stream: false
                     }),
-                    connectTimeout: isLocal ? 30000 : 5000
+                    connectTimeout: isLocal ? 30000 : 15000
                 });
+
+                if (response.status === 429 && rateLimitRetries < MAX_RL_RETRIES) {
+                    rateLimitRetries++;
+                    const errorText = await response.text();
+                    const waitMs = this.getRetryAfterMs(response.headers, errorText);
+                    console.warn(`[LLMClient] Rate limited (429). Waiting ${waitMs}ms (rl-retry ${rateLimitRetries}/${MAX_RL_RETRIES})...`);
+                    await new Promise(resolve => setTimeout(resolve, waitMs));
+                    attempt--; // don't consume a regular attempt slot for rate limiting
+                    continue;
+                }
 
                 if (!response.ok) {
                     const errorText = await response.text();

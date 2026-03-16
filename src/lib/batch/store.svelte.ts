@@ -1,3 +1,5 @@
+// src/lib/batch/store.svelte.ts:
+
 import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -39,6 +41,7 @@ export class BatchManager {
     filterMinSize = $state(0);
     isMetadataExtractionEnabled = $state(true);
     private stopRequested = false;
+    private extractionAbort: AbortController | null = null;
 
     filteredItems = $derived.by(() => {
         return this.items.filter(item => {
@@ -83,6 +86,17 @@ export class BatchManager {
 
     stopAll() {
         this.stopRequested = true;
+        this.extractionAbort?.abort();
+    }
+
+    resetStuckItems() {
+        for (const item of this.items) {
+            if (item.status === 'extracting' || item.status === 'analyzing') {
+                item.status = 'queued';
+                item.statusDetail = undefined;
+            }
+        }
+        this.saveCurrentSession();
     }
 
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
@@ -91,6 +105,8 @@ export class BatchManager {
             if (item) {
                 item.extractedText = undefined;
                 item.status = 'queued';
+                item.errorMessage = undefined;
+                item.statusDetail = undefined;
             }
         });
         await this.processAll({ enforceOcr, extractionOnly: true }, new Set(ids));
@@ -101,6 +117,8 @@ export class BatchManager {
             const item = this.items.find(i => i.id === id);
             if (item) {
                 item.status = 'queued';
+                item.errorMessage = undefined;
+                item.statusDetail = undefined;
                 if (overrides?.enforceOcr) item.extractedText = undefined;
             }
         });
@@ -140,6 +158,9 @@ export class BatchManager {
         const parsingFormat = await getSetting('parsingFormat', 'xml') as 'xml' | 'json';
         const authorSortEnabled = overrides?.authorSort ?? await getSetting('authorSortEnabled', false);
         const pdfBackend = await getSetting('pdfBackend', 'js');
+        const extractionMaxPages = await getSetting('extractionMaxPages', 0) as number; // 0 = all pages (no limit)
+        const requestDelayMs = await getSetting('requestDelayMs', 0) as number;
+        llmClient.requestDelayMs = requestDelayMs;
         const language = await getSetting('language', 'en') as string;
         const ocrEnabledGlobal = await getSetting('ocrEnabled', false);
         const noThinking = await getSetting('noThinking', true);
@@ -176,16 +197,32 @@ export class BatchManager {
                     if (!item.extractedText) {
                         item.status = 'extracting';
                         const forceOCR = overrides?.enforceOcr ?? false;
-                        
+
                         if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
                             console.log(`[BatchManager] Using Rust-Native extraction for ${item.originalName}`);
                             const text = await invoke('extract_pdf_native', { path: item.originalPath });
                             item.extractedText = text as string;
                         } else {
                             console.log(`[BatchManager] Using JS-Native extraction for ${item.originalName} (forceOCR=${forceOCR})`);
+                            this.extractionAbort = new AbortController();
                             const fileData = await readFile(item.originalPath);
-                            const extraction = await extractText({ name: item.originalName, arrayBuffer: fileData.buffer }, { forceOCR });
+                            const extraction = await extractText(
+                                { name: item.originalName, arrayBuffer: fileData.buffer },
+                                {
+                                    forceOCR,
+                                    signal: this.extractionAbort.signal,
+                                    maxPages: extractionMaxPages || undefined, // undefined = no page limit
+                                    onProgress: (page, total) => {
+                                        item.statusDetail = `${page}/${total} pages`;
+                                    }
+                                }
+                            );
+                            this.extractionAbort = null;
                             item.extractedText = extraction.text;
+                        }
+                        item.statusDetail = undefined;
+                        if ((item.extractedText?.trim().length ?? 0) < 100) {
+                            item.statusDetail = '⚠ poor extraction';
                         }
                         console.log(`[BatchManager] Extracted: ${item.originalName} — ${item.extractedText?.length} chars`);
                     }
@@ -209,14 +246,23 @@ export class BatchManager {
                             const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                             if (match) item.suggestedAuthor = match[1].trim();
                         }
+
+                        if (requestDelayMs > 0) {
+                            await new Promise(r => setTimeout(r, requestDelayMs));
+                        }
                     }
 
                     item.status = 'review';
                     await this.calculateTargetPath(item);
                 } catch (e: any) {
-                    item.status = 'error';
-                    item.errorMessage = e.message || String(e);
-                    console.error(`[BatchManager] Error processing ${item.originalName}:`, e);
+                    if (e?.message === 'EXTRACTION_ABORTED') {
+                        item.status = 'queued';
+                        item.statusDetail = undefined;
+                    } else {
+                        item.status = 'error';
+                        item.errorMessage = e.message || String(e);
+                        console.error(`[BatchManager] Error processing ${item.originalName}:`, e);
+                    }
                 }
                 await this.saveCurrentSession();
             }
@@ -303,6 +349,8 @@ export class BatchManager {
     async executeBatch(mode: string = 'move') {
         // Include 'review' AND 'error' items so previously-failed items can be retried
         const accepted = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
+        console.log(`[BatchManager] executeBatch(${mode}): ${accepted.length} accepted out of ${this.items.length} total`);
+        this.items.forEach(i => console.log(`  item: ${i.originalName} status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? '✓' : 'MISSING'}`));
         if (accepted.length === 0) return null;
 
         const saveTxt = await getSetting('saveTxt', true);
@@ -336,9 +384,11 @@ export class BatchManager {
                         if (res.error === 'COPY_FALLBACK') {
                             // Copied to destination but original not deleted (was locked by OS)
                             item.errorMessage = 'COPY_FALLBACK';
+                            item.statusDetail = 'copied (orig. kept)';
                             copiedFallback++;
                         } else {
                             item.errorMessage = undefined;
+                            item.statusDetail = mode.includes('copy') ? 'copied' : 'moved';
                             successCount++;
                         }
                     } else {
