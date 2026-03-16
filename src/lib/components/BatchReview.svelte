@@ -3,7 +3,7 @@
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
-    import { open, save } from '@tauri-apps/plugin-dialog';
+    import { open, save, ask } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
@@ -113,6 +113,12 @@
     let resizingColIdx = $state<number | null>(null);
     let startX = 0;
     let startWidth = 0;
+    let tableContainerEl = $state<HTMLElement | null>(null);
+
+    // Total table width (sum of visible columns + checkbox column)
+    let tableWidth = $derived(
+        35 + columns.filter(c => c.visible).reduce((sum, c) => sum + c.width, 0)
+    );
 
     function startResizing(e: MouseEvent, index: number) {
         e.preventDefault();
@@ -127,7 +133,7 @@
     function handleMouseMove(e: MouseEvent) {
         if (resizingColIdx !== null) {
             const diff = e.pageX - startX;
-            columns[resizingColIdx].width = Math.max(50, startWidth + diff);
+            columns[resizingColIdx].width = Math.max(30, startWidth + diff);
         }
     }
 
@@ -135,6 +141,17 @@
         resizingColIdx = null;
         window.removeEventListener('mousemove', handleMouseMove);
         window.removeEventListener('mouseup', stopResizing);
+    }
+
+    function scaleColumnsToContainer() {
+        if (!tableContainerEl) return;
+        const available = tableContainerEl.clientWidth - 35 - 2; // minus checkbox col and borders
+        const visibleCols = columns.filter(c => c.visible);
+        const totalDefault = visibleCols.reduce((sum, c) => sum + c.width, 0);
+        if (available > totalDefault) {
+            const scale = available / totalDefault;
+            visibleCols.forEach(c => { c.width = Math.floor(c.width * scale); });
+        }
     }
 
     // Sorting logic
@@ -172,6 +189,10 @@
     });
 
     onMount(async () => {
+        // Scale columns to fill the available container width
+        await new Promise(r => setTimeout(r, 0));
+        scaleColumnsToContainer();
+
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
                 if (selectedIds.length > 0) selectedIds = [];
@@ -402,6 +423,7 @@
                 size: metadata ? formatSize(metadata.size) : '?',
                 targetPath: item.targetPath || i18n.t.batch.path_hint,
                 status: item.status,
+                statusDetail: item.statusDetail,
                 error: item.errorMessage
             };
             console.log(`[BatchReview] infoModalData set:`, $state.snapshot(infoModalData));
@@ -412,19 +434,24 @@
     }
 
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
-        // Only count items that executeBatch will actually process
-        const ready = batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
-        if (ready.length === 0) {
+        const allDbg = batchManager.items.map(i => ({ name: i.originalName, status: i.status, accepted: i.isAccepted, hasTarget: !!i.targetPath }));
+        console.log('[BatchReview] executeSorting called, mode:', mode, 'items:', allDbg);
+
+        const accepted = batchManager.items.filter(i => i.isAccepted);
+        console.log('[BatchReview] Accepted items:', accepted.length, '/ total:', batchManager.items.length);
+
+        if (accepted.length === 0) {
             showToast(i18n.t.batch.no_items_ready);
             return;
         }
 
-        let confirmMsg = mode.includes('copy')
-            ? i18n.t.batch.confirm_copy.replace('{count}', ready.length.toString())
-            : i18n.t.batch.confirm_move.replace('{count}', ready.length.toString());
+        const confirmMsg = mode.includes('copy')
+            ? i18n.t.batch.confirm_copy.replace('{count}', accepted.length.toString())
+            : i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
 
-        if (confirm(confirmMsg)) {
-            console.log(`[BatchReview] Starting executeBatch(${mode}) for ${ready.length} items`);
+        const confirmed = await ask(confirmMsg, { title: 'CrispSorter', kind: 'warning' });
+        if (confirmed) {
+            console.log(`[BatchReview] Confirmed. Starting executeBatch(${mode}) for ${accepted.length} accepted items`);
             const stats = await batchManager.executeBatch(mode);
             if (stats) {
                 lastExecutionStats = stats;
@@ -435,15 +462,61 @@
         }
     }
 
-    async function handleReportChoice(choice: 'keep_problematic' | 'empty' | 'keep_all') {
-        console.log(`[BatchReview] handleReportChoice: ${choice}`);
+    function isUnknown(v: string | undefined): boolean {
+        if (!v) return false;
+        const u = v.trim().toLowerCase();
+        return u === 'unknown' || u.startsWith('unknown ') || u === '0000' || u === 'unknown year';
+    }
+
+    async function handleReportChoice(choice: 'keep_problematic' | 'remove_done' | 'empty' | 'keep_all') {
         showReportModal = false;
         if (choice === 'empty') {
             batchManager.items = [];
         } else if (choice === 'keep_problematic') {
             batchManager.items = batchManager.items.filter(i => i.status !== 'done');
+        } else if (choice === 'remove_done') {
+            // Remove successfully completed items; keep pending, errors, and copy-fallback that need attention
+            batchManager.items = batchManager.items.filter(i => !(i.status === 'done' && i.errorMessage !== 'COPY_FALLBACK'));
+        }
+        // 'keep_all': do nothing — statuses are already updated (moved/copied stamped on statusDetail)
+        await batchManager.saveCurrentSession();
+    }
+
+    async function checkAndUpdateSources() {
+        console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
+        let missingCount = 0;
+        let missingIds: string[] = [];
+        for (const item of batchManager.items) {
+            console.log('[BatchReview] Checking:', item.originalName, '→', item.originalPath, '(status:', item.status, 'err:', item.errorMessage, ')');
+            const exists = await stat(item.originalPath)
+                .then(() => true)
+                .catch((e: any) => { console.log('[BatchReview] stat failed for', item.originalName, ':', e?.message || String(e)); return false; });
+            console.log('[BatchReview]', item.originalName, '→', exists ? 'EXISTS ✓' : 'MISSING ✗');
+            if (!exists) {
+                missingCount++;
+                // For 'done' items (successfully moved), source being gone is expected — just update the badge
+                if (item.status === 'done' && item.errorMessage !== 'COPY_FALLBACK') {
+                    item.statusDetail = '✓ moved (src gone)';
+                } else {
+                    // Not yet processed or COPY_FALLBACK — source should still exist → flag as error
+                    item.status = 'error';
+                    item.errorMessage = 'SOURCE_NOT_FOUND';
+                    item.statusDetail = '❌ source deleted';
+                    missingIds.push(item.id);
+                }
+            }
         }
         await batchManager.saveCurrentSession();
+        if (missingCount === 0) {
+            showToast(i18n.t.batch.update_sources_ok);
+        } else {
+            const msg = i18n.t.batch.update_sources_missing.replace('{count}', missingCount.toString());
+            if (missingIds.length > 0 && await ask(`${msg}\n\nRemove unprocessed missing files from the batch?`, { title: 'CrispSorter' })) {
+                await batchManager.removeItems(missingIds);
+            } else if (missingIds.length === 0) {
+                showToast(msg + ' (all were already sorted — expected)');
+            }
+        }
     }
 
     async function copyTextToClipboard() {
@@ -461,6 +534,23 @@
         });
         if (savePath) {
             await writeTextFile(savePath, selectedItem.extractedText);
+        }
+    }
+
+    function formatErrorCode(code: string | undefined): string {
+        if (!code) return '';
+        const de = i18n.lang === 'de';
+        switch (code) {
+            case 'COPY_FALLBACK': return de
+                ? 'Kopiert, aber Original nicht gelöscht — Datei war in anderer App geöffnet. Original kann manuell entfernt werden.'
+                : 'Copied but original not deleted — file was in use by another app. You can safely delete the original manually.';
+            case 'SOURCE_NOT_FOUND': return de
+                ? 'Quelldatei nicht gefunden — wurde gelöscht oder verschoben.'
+                : 'Source file not found — it was deleted or moved.';
+            case 'LOCKED': return de
+                ? 'Datei gesperrt (in anderer App geöffnet) — App schließen und erneut versuchen.'
+                : 'File is locked by another app — close it and retry.';
+            default: return code;
         }
     }
 
@@ -577,6 +667,11 @@
                 </button>
             </div>
 
+            <button class="action-btn small" onclick={checkAndUpdateSources} title={i18n.t.batch.update_sources}
+                    disabled={batchManager.items.length === 0 || batchManager.isProcessing}>
+                <RefreshCw size={14} />
+            </button>
+
             <div class="dropdown-container">
                 <button class="mode-select-btn" onclick={() => showModeMenu = !showModeMenu} aria-label="Extraction Mode">
                     {#if batchManager.isMetadataExtractionEnabled}<Brain size={16} />{:else}<Type size={16} />{/if}
@@ -639,6 +734,12 @@
                 </button>
             {/if}
 
+            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing')}
+                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title="Reset stuck items to queued">
+                    <RefreshCw size={14} /> Reset stuck
+                </button>
+            {/if}
+
             <div class="btn-group">
                 <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>
                     <CheckSquare size={14} /> {i18n.t.batch.accept_all}
@@ -652,7 +753,7 @@
                 <div class="split-btn-group">
                     <button class="action-btn rocket-btn small"
                             onclick={() => executeSorting('move')}
-                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error')).length === 0}>
+                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted).length === 0}>
                         {#if batchManager.isExecuting}
                             <span class="loader-anim"><Loader2 size={16} /></span> {i18n.t.batch.executing}
                         {:else}
@@ -661,7 +762,7 @@
                     </button>
                     <button class="action-btn rocket-btn small split-caret"
                             onclick={() => showSortOptions = !showSortOptions}
-                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error')).length === 0}
+                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted).length === 0}
                             aria-label="Sort Options">
                         <ChevronDown size={11} />
                     </button>
@@ -767,8 +868,8 @@
     {/if}
 
     <div class="main-split">
-        <div class="table-container">
-            <table class="dense-table">
+        <div class="table-container" bind:this={tableContainerEl}>
+            <table class="dense-table" style="width: {tableWidth}px;">
                 <thead>
                     <tr>
                         <th style="width: 35px; min-width: 35px; text-align: center;">
@@ -778,7 +879,7 @@
                         </th>
                         {#each columns as col, i}
                             {#if col.visible}
-                                <th style="width: {col.width}px; min-width: {col.width}px;">
+                                <th style="width: {col.width}px;">
                                     <div 
                                         class="th-content" 
                                         onclick={() => toggleSort(col.id)}
@@ -824,9 +925,30 @@
                                 {#if col.visible}
                                     <td style="width: {col.width}px;">
                                         {#if col.id === 'status'}
-                                            <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}>
+                                            <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)} class:status-error={item.status === 'error'}>
                                                 {item.status}
                                             </span>
+                                            {#if item.statusDetail}
+                                                {#if /^\d+\/\d+/.test(item.statusDetail)}
+                                                    <span class="status-detail-badge">{item.statusDetail}</span>
+                                                {:else}
+                                                    <button
+                                                        class="status-icon-btn"
+                                                        title={item.statusDetail}
+                                                        onclick={(e) => { e.stopPropagation(); checkFileDetails(item); }}
+                                                    >
+                                                        {#if item.statusDetail === 'moved' || item.statusDetail === 'copied'}
+                                                            <Check size={10} style="color:#10b981" />
+                                                        {:else if item.statusDetail === 'copied (orig. kept)' || item.statusDetail.includes('poor')}
+                                                            <AlertCircle size={10} style="color:#f59e0b" />
+                                                        {:else if item.statusDetail.startsWith('❌') || item.statusDetail.includes('deleted')}
+                                                            <AlertCircle size={10} style="color:#ef4444" />
+                                                        {:else}
+                                                            <Info size={10} style="color:#60a5fa" />
+                                                        {/if}
+                                                    </button>
+                                                {/if}
+                                            {/if}
                                         {:else if col.id === 'accepted'}
                                             <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; batchManager.saveCurrentSession(); }} title="Toggle Accept">
                                                 {#if item.isAccepted}
@@ -838,11 +960,11 @@
                                         {:else if col.id === 'file_name'}
                                             <span class="file-name" title={item.originalPath}>{item.originalName}</span>
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={item.suggestedTitle === 'Unknown Title'} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={item.suggestedAuthor === 'Unknown Author'} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} style="text-align: center;" aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}
@@ -879,7 +1001,7 @@
                 </div>
                 <div class="detail-content">
                     {#if selectedItem.errorMessage}
-                        <div class="error-box">{selectedItem.errorMessage}</div>
+                        <div class="error-box">{formatErrorCode(selectedItem.errorMessage)}</div>
                     {/if}
                     <div class="detail-section">
                         <h4>{i18n.t.batch.target_path}</h4>
@@ -990,6 +1112,11 @@
                 </div>
 
                 <div class="report-choices">
+                    {#if lastExecutionStats.success > 0}
+                        <button class="choice-btn success" onclick={() => handleReportChoice('remove_done')}>
+                            {i18n.t.batch.report_choice_remove_done}
+                        </button>
+                    {/if}
                     {#if (lastExecutionStats.notFound ?? 0) + (lastExecutionStats.notWritable ?? 0) + (lastExecutionStats.locked ?? 0) > 0}
                         <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
                             {i18n.t.batch.report_choice_keep_problematic}
@@ -1033,8 +1160,13 @@
                         <span class="status-badge" class:status-error={infoModalData.status === 'error'}>
                             {infoModalData.status}
                         </span>
+                        {#if infoModalData.statusDetail}
+                            <span style="font-size:0.75rem; color:#a1a1aa; margin-left:6px;">{infoModalData.statusDetail}</span>
+                        {/if}
                         {#if infoModalData.error}
-                            <div class="error-msg">{infoModalData.error}</div>
+                            <div class="error-msg" class:warn-msg={infoModalData.error === 'COPY_FALLBACK'}>
+                                {formatErrorCode(infoModalData.error)}
+                            </div>
                         {/if}
                     </span>
                 </div>
@@ -1122,8 +1254,8 @@
     .close-btn-minimal { background: transparent; border: none; color: #bfdbfe; cursor: pointer; font-size: 1.25rem; margin-left: auto; padding: 0 4px; }
     .close-btn-minimal:hover { color: white; }
 
-    .dense-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
-    .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; }
+    .dense-table { min-width: 100%; border-collapse: collapse; font-size: 0.8125rem; table-layout: fixed; }
+    .dense-table th { position: sticky; top: 0; z-index: 10; background: #18181b; padding: 0; text-align: left; border-bottom: 2px solid #27272a; color: #71717a; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; height: 32px; overflow: hidden; }
     .th-content { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 100%; cursor: pointer; }
     .th-content:hover { background: #27272a; color: white; }
     .th-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1131,7 +1263,7 @@
     .resizer { position: absolute; right: 0; top: 0; width: 4px; height: 100%; cursor: col-resize; transition: background 0.2s; z-index: 20; }
     .resizer:hover { background: #3b82f6; }
 
-    .dense-table td { padding: 4px 12px; border-bottom: 1px solid #1e1e1e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; height: 32px; vertical-align: middle; }
+    .dense-table td { padding: 4px 12px; border-bottom: 1px solid #1e1e1e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2e8f0; height: 32px; vertical-align: middle; max-width: 0; }
     .dense-table tr:hover { background: #1e293b; }
     .dense-table tr.selected { background: #1e3a8a; }
     .dense-table tr.active-row { border-left: 3px solid #3b82f6; }
@@ -1144,6 +1276,9 @@
     .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; text-transform: capitalize; }
     .status-active { color: #3b82f6; background: #1e3a8a33; }
     .status-error { color: #ef4444; background: #450a0a33; }
+    .status-detail-badge { font-size: 0.6rem; color: #60a5fa; background: #1e3a8a33; padding: 1px 4px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
+    .status-icon-btn { background: transparent; border: none; cursor: pointer; display: inline-flex; align-items: center; padding: 2px 3px; border-radius: 3px; margin-left: 3px; vertical-align: middle; }
+    .status-icon-btn:hover { background: #27272a; }
 
     .mono { font-family: monospace; font-size: 0.75rem; color: #a1a1aa; }
     .ext-badge { font-size: 0.65rem; background: #27272a; padding: 1px 4px; border-radius: 3px; color: #71717a; text-transform: uppercase; font-weight: 700; }
@@ -1213,6 +1348,8 @@
     .report-choices { display: flex; flex-direction: column; gap: 10px; }
     .choice-btn { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #3b82f6; background: #1e3a8a33; color: #60a5fa; font-weight: 600; cursor: pointer; text-align: left; transition: all 0.2s; }
     .choice-btn:hover { background: #1e3a8a66; }
+    .choice-btn.success { border-color: #10b981; background: #064e3b33; color: #34d399; }
+    .choice-btn.success:hover { background: #064e3b66; }
     .choice-btn.danger { border-color: #ef4444; background: #450a0a33; color: #f87171; }
     .choice-btn.danger:hover { background: #450a0a66; }
     .choice-btn.secondary { border-color: #27272a; background: #27272a; color: #a1a1aa; }
@@ -1227,7 +1364,9 @@
     .info-label { font-size: 0.75rem; color: #71717a; text-transform: uppercase; font-weight: 600; padding-top: 2px; }
     .info-val { font-size: 0.875rem; color: #f4f4f5; line-height: 1.4; }
     .mono-path { font-family: monospace; font-size: 0.75rem; color: #94a3b8; word-break: break-all; background: #09090b; padding: 4px 8px; border-radius: 4px; border: 1px solid #27272a; }
+    .error-box { padding: 8px 10px; background: #450a0a33; border: 1px solid #ef444433; border-radius: 6px; color: #f87171; font-size: 0.8125rem; margin-bottom: 4px; }
     .error-msg { margin-top: 8px; padding: 8px; background: #450a0a33; border: 1px solid #ef444433; border-radius: 6px; color: #f87171; font-size: 0.8125rem; }
+    .warn-msg { background: #78350f22 !important; border-color: #f59e0b33 !important; color: #fbbf24 !important; }
 
     .full-path { user-select: all; cursor: text; }
 
