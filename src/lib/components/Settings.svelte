@@ -195,7 +195,9 @@
         l.author?.toLowerCase().includes(licenseSearch.toLowerCase())
     ));
 
-    onMount(async () => {
+    onMount(() => {
+        let cleanup = () => {};
+        (async () => {
         const savedProviders = await getSetting('providers');
         if (savedProviders) {
             const merged = DEFAULT_PROVIDERS.map(def => {
@@ -293,15 +295,17 @@
             if (r.ok) { ollamaStatus = 'ready'; ollamaRunning = true; }
         } catch { /* not running */ }
 
-        return () => {
-            unlistenMlx();
-            unlistenSidecar();
-            unlistenSidecarFailed();
-            unlistenSidecarLog();
-            unlistenOllamaReady();
-            unlistenOllamaFailed();
-            unlistenOllamaLog();
-        };
+            cleanup = () => {
+                unlistenMlx();
+                unlistenSidecar();
+                unlistenSidecarFailed();
+                unlistenSidecarLog();
+                unlistenOllamaReady();
+                unlistenOllamaFailed();
+                unlistenOllamaLog();
+            };
+        })();
+        return () => cleanup();
     });
 
     // Tesseract Management
@@ -1133,7 +1137,7 @@
                                 <span class="lib-type">{lib.license}</span>
                                 <span class="lib-author">{lib.author}</span>
                                 {#if lib.link}
-                                    <button class="inline-link" onclick={() => opener.open(lib.link)}>Source</button>
+                                    <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>Source</button>
                                 {/if}
                             </div>
                         </div>

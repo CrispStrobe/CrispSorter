@@ -8,7 +8,7 @@ import { getSetting } from '../store';
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
 
 // Robust polyfill for async iteration on ReadableStream
-if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.asyncIterator]) {
+if (typeof ReadableStream !== 'undefined' && !(ReadableStream.prototype as any)[Symbol.asyncIterator]) {
     console.log("[PDFExtractor] Polyfilling ReadableStream.prototype[Symbol.asyncIterator]");
     // @ts-ignore
     ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
@@ -26,7 +26,7 @@ if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype[Symbol.as
 }
 
 // Polyfill for values() specifically if that's what's failing
-if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype.values) {
+if (typeof ReadableStream !== 'undefined' && !(ReadableStream.prototype as any).values) {
     console.log("[PDFExtractor] Polyfilling ReadableStream.prototype.values");
     // @ts-ignore
     ReadableStream.prototype.values = ReadableStream.prototype[Symbol.asyncIterator];

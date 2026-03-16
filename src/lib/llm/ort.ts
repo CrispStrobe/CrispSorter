@@ -53,6 +53,7 @@ export async function loadORT(
     loadedDevice = device;
     console.log(`[ORT] Loading "${modelId}" on device=${device}`);
 
+    // @ts-expect-error — dtype union is too complex for TS to resolve here
     generator = await pipeline('text-generation', modelId, {
         device,
         dtype: device === 'webgpu' ? 'q4' : 'q8',
