@@ -27,7 +27,7 @@ use tantivy::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::fts_query::{translate, SearchFields};
+use super::fts_query::{translate, SearchFields, fold_accents};
 use super::schema::SearchFilters;
 
 const WRITER_HEAP_MB: usize = 50;
@@ -97,9 +97,9 @@ impl FtsIndex {
         doc.add_text(self.fields.doc_id,   doc_id);
         doc.add_text(self.fields.owner_id, owner_id);
         doc.add_text(self.fields.language, language);
-        doc.add_text(self.fields.title,    title);
-        doc.add_text(self.fields.headings, headings);
-        doc.add_text(self.fields.body,     body);
+        doc.add_text(self.fields.title,    fold_accents(title));
+        doc.add_text(self.fields.headings, fold_accents(headings));
+        doc.add_text(self.fields.body,     fold_accents(body));
         writer.add_document(doc)?;
         Ok(())
     }
@@ -292,5 +292,147 @@ mod tests {
         let hits = idx.search("Recht", &SearchFilters::default(), 10).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].doc_id, "d1", "Document with 'Recht' in title should outrank document with 'Recht' in body");
+    }
+
+    #[test]
+    fn scenario_recht_ranking_fixed() {
+        let (idx, _dir) = make_index();
+        let mut w = idx.writer().unwrap();
+
+        // 1. Constitutional AI (Bai 2022) — mentions Recht many times in body, but not in title.
+        idx.add_document(&mut w, "constitutional-ai", "u1", "en",
+            "Constitutional AI: Harmlessness from AI Feedback",
+            "Intro",
+            "Recht and safety. The framework of Recht is based on AI feedback. The Recht principles are key. Recht, Recht, Recht, Recht, Recht."
+        ).unwrap();
+
+        // 2. Recht unter Druck (Abstract) — Title HAS 'Recht'.
+        idx.add_document(&mut w, "recht-unter-druck", "u1", "de",
+            "Recht unter Druck_Abstract.docx",
+            "Workshop",
+            "Während Angriffe auf den Rechtsstaat in Europa..."
+        ).unwrap();
+
+        // 3. Akzente (Bistum Essen) — mentions Recht occasionally in body.
+        idx.add_document(&mut w, "akzente", "u1", "de",
+            "2503329_BistumEssen_Akzente63_01-2026.pdf",
+            "Dialog",
+            "Die Rolle Deutschlands in einer Weltordnung. Es geht um Recht und Macht."
+        ).unwrap();
+
+        w.commit().unwrap();
+
+        // Query for 'Recht'
+        let hits = idx.search("Recht", &SearchFilters::default(), 10).unwrap();
+
+        assert!(!hits.is_empty());
+
+        // BEFORE THE FIX: 'constitutional-ai' would rank #1 because it has more body mentions.
+        // AFTER THE FIX: 'recht-unter-druck' should rank #1 due to Title Boosting (3x).
+        assert_eq!(hits[0].doc_id, "recht-unter-druck",
+            "Document with 'Recht' in title should rank first despite fewer body matches");
+
+        // FTS score for the title match should be much higher than the body matches in Constitutional AI
+        println!("Hit 0 (Title): {} score {}", hits[0].doc_id, hits[0].score);
+        println!("Hit 1 (Body ): {} score {}", hits[1].doc_id, hits[1].score);
+    }
+
+    #[test]
+    fn scenario_rueschenschmidt_integration() {
+        let (idx, _dir) = make_index();
+        
+        let doc_id = "rueschenschmidt-2019";
+        let title = "Integration – Dialog – Integrationsdialog? Zeithistorisch akzentuierte Perspektiven auf sozialintegrative Potentiale des christlich-islamischen Dialogs";
+        let _author = "David Rüschenschmidt";
+        
+        // Simulating 3 major sections.
+        let full_text = "
+            Begriffsarbeit. Den christlich-islamischen Dialog fasse ich als intentionale Begegnungen von Christen und Muslimen auf. 
+            Der Soziologe Wilhelm Heitmeyer hat drei grundlegende Dimensionen der Sozialintegration entwickelt: kulturell-expressiver Sozialintegration, kommunikativ-interaktive Sozialintegration und funktionale Systemintegration.
+            Die integrationsrelevante Innendimension. In der evangelischen St. Reinoldi-Kirche trafen sich 1970 Christen und Muslime zu einer Gebetsandacht.
+            Die integrationsrelevante Außendimension. Moscheebauten und Ezan-Ruf in Marl, Gelsenkirchen und Witten.
+            Dialog im Zugriff der Politik. Samuel Huntington formulierte 'Clash of Civilizations'. Die Ahmadiyya-Gemeinde in Münster.
+            Abwägendes Resümee. Der christlich-islamische Dialog weist Ambivalenzen auf.
+        ";
+
+        {
+            let mut w = idx.writer().unwrap();
+            idx.add_document(&mut w, doc_id, "u1", "de", title, "Begriffsarbeit Innendimension Außendimension Resümee", full_text).unwrap();
+            w.commit().unwrap();
+        }
+
+        let f = SearchFilters::default();
+
+        // 1. Search for section header
+        let hits = idx.search("Begriffsarbeit", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, doc_id, "Should find document via section header 'Begriffsarbeit'");
+
+        // 2. Search for specific author + concept
+        let hits = idx.search("Heitmeyer Sozialintegration", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, doc_id, "Should find document via 'Heitmeyer Sozialintegration'");
+
+        // 3. Search for specific location
+        let hits = idx.search("Reinoldi", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, doc_id, "Should find document via 'Reinoldi'");
+
+        // 4. Search for famous concept
+        let hits = idx.search("\"Clash of Civilizations\"", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, doc_id, "Should find document via phrase 'Clash of Civilizations'");
+
+        // 5. Search for specific group
+        let hits = idx.search("Ahmadiyya", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, doc_id, "Should find document via 'Ahmadiyya'");
+        
+        // 6. Search for author name
+        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
+        assert!(hits.is_empty(), "Author name is NOT currently indexed in FTS body/title fields in this test setup unless added to title");
+        
+        // Re-index with author in title to check if that works
+        {
+            let mut w2 = idx.writer().unwrap();
+            idx.add_document(&mut w2, "ruesch-v2", "u1", "de", "David Rüschenschmidt: Integration", "", "text").unwrap();
+            w2.commit().unwrap();
+        }
+        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, "ruesch-v2", "Should find document if author name is in indexed title");
+    }
+
+    #[test]
+    fn scenario_accent_folding() {
+        let (idx, _dir) = make_index();
+        {
+            let mut w = idx.writer().unwrap();
+            idx.add_document(&mut w, "d1", "u1", "de", "David Rüschenschmidt", "", "text content").unwrap();
+            w.commit().unwrap();
+        }
+
+        let f = SearchFilters::default();
+        // Search with 'ü'
+        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
+        assert_eq!(hits.len(), 1, "Should find with exact umlaut");
+
+        // Search with 'u' (folding)
+        let hits2 = idx.search("Ruschenschmidt", &f, 10).unwrap();
+        assert_eq!(hits2.len(), 1, "Should find with folded 'u' instead of 'ü'");
+    }
+
+    #[test]
+    fn scenario_wildcards_allowed() {
+        let (idx, _dir) = make_index();
+        {
+            let mut w = idx.writer().unwrap();
+            idx.add_document(&mut w, "d1", "u1", "de", "Integration und Dialog", "", "text content").unwrap();
+            w.commit().unwrap();
+        }
+
+        let f = SearchFilters::default();
+        
+        // Suffix wildcard
+        let hits = idx.search("Integ*", &f, 10).unwrap();
+        assert_eq!(hits.len(), 1, "Suffix wildcard Integ* should work");
+
+        // Mid wildcard
+        let hits2 = idx.search("Inte?ration", &f, 10).unwrap();
+        assert_eq!(hits2.len(), 1, "Middle wildcard Inte?ration should work");
     }
 }

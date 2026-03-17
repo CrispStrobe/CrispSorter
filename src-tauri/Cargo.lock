@@ -10592,6 +10592,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "async-trait",
+ "deunicode",
  "fastembed",
  "futures-util",
  "lancedb",
