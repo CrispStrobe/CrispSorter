@@ -338,12 +338,12 @@ mod tests {
     }
 
     #[test]
-    fn scenario_rueschenschmidt_integration() {
+    fn scenario_academic_integration() {
         let (idx, _dir) = make_index();
         
-        let doc_id = "rueschenschmidt-2019";
+        let doc_id = "academic-doc-2019";
         let title = "Integration – Dialog – Integrationsdialog? Zeithistorisch akzentuierte Perspektiven auf sozialintegrative Potentiale des christlich-islamischen Dialogs";
-        let _author = "David Rüschenschmidt";
+        let _author = "Academic Author";
         
         // Simulating 3 major sections.
         let full_text = "
@@ -383,18 +383,18 @@ mod tests {
         let hits = idx.search("Ahmadiyya", &f, 10).unwrap();
         assert_eq!(hits[0].doc_id, doc_id, "Should find document via 'Ahmadiyya'");
         
-        // 6. Search for author name
-        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
-        assert!(hits.is_empty(), "Author name is NOT currently indexed in FTS body/title fields in this test setup unless added to title");
+        // 6. Search for generic term
+        let hits = idx.search("Mustermann", &f, 10).unwrap();
+        assert!(hits.is_empty(), "Generic name is NOT currently indexed");
         
-        // Re-index with author in title to check if that works
+        // Re-index with name in title to check if that works
         {
             let mut w2 = idx.writer().unwrap();
-            idx.add_document(&mut w2, "ruesch-v2", "u1", "de", "David Rüschenschmidt: Integration", "", "text").unwrap();
+            idx.add_document(&mut w2, "doc-v2", "u1", "de", "Erika Mustermann: Integration", "", "text").unwrap();
             w2.commit().unwrap();
         }
-        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
-        assert_eq!(hits[0].doc_id, "ruesch-v2", "Should find document if author name is in indexed title");
+        let hits = idx.search("Mustermann", &f, 10).unwrap();
+        assert_eq!(hits[0].doc_id, "doc-v2", "Should find document if name is in indexed title");
     }
 
     #[test]
@@ -402,17 +402,17 @@ mod tests {
         let (idx, _dir) = make_index();
         {
             let mut w = idx.writer().unwrap();
-            idx.add_document(&mut w, "d1", "u1", "de", "David Rüschenschmidt", "", "text content").unwrap();
+            idx.add_document(&mut w, "d1", "u1", "de", "München", "", "text content").unwrap();
             w.commit().unwrap();
         }
 
         let f = SearchFilters::default();
         // Search with 'ü'
-        let hits = idx.search("Rüschenschmidt", &f, 10).unwrap();
+        let hits = idx.search("München", &f, 10).unwrap();
         assert_eq!(hits.len(), 1, "Should find with exact umlaut");
 
         // Search with 'u' (folding)
-        let hits2 = idx.search("Ruschenschmidt", &f, 10).unwrap();
+        let hits2 = idx.search("Munchen", &f, 10).unwrap();
         assert_eq!(hits2.len(), 1, "Should find with folded 'u' instead of 'ü'");
     }
 
@@ -434,5 +434,9 @@ mod tests {
         // Mid wildcard
         let hits2 = idx.search("Inte?ration", &f, 10).unwrap();
         assert_eq!(hits2.len(), 1, "Middle wildcard Inte?ration should work");
+
+        // Leading wildcard
+        let hits3 = idx.search("*tegration", &f, 10).unwrap();
+        assert_eq!(hits3.len(), 1, "Leading wildcard *tegration should work");
     }
 }

@@ -283,11 +283,6 @@ fn wildcard_to_regex(pattern: &str) -> String {
 }
 
 fn build_wildcard(pattern: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    // SECURITY/PERF: Block leading wildcards if they are too expensive.
-    if pattern.starts_with('*') || pattern.starts_with('?') {
-        bail!("Leading wildcards ('{}') are not allowed for performance reasons.", pattern);
-    }
-
     let regex = wildcard_to_regex(pattern);
 
     let title_q = build_boosted_regex(fields.title, &regex, 3.0)?;
@@ -507,15 +502,15 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_leading_blocked() {
+    fn wildcard_leading_allowed() {
         let fields = SearchFields {
             title: tantivy::schema::Field::from_field_id(0),
             headings: tantivy::schema::Field::from_field_id(1),
             body: tantivy::schema::Field::from_field_id(2),
         };
         let res = build_wildcard("*foo", &fields);
-        assert!(res.is_err(), "Leading wildcard * should be blocked");
+        assert!(res.is_ok(), "Leading wildcard * should now be allowed");
         let res2 = build_wildcard("?foo", &fields);
-        assert!(res2.is_err(), "Leading wildcard ? should be blocked");
+        assert!(res2.is_ok(), "Leading wildcard ? should now be allowed");
     }
 }

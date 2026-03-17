@@ -479,11 +479,7 @@ pub async fn init_index(
     let models_dir   = data_dir.join("models");
     let embedder_cfg = EC::new(model, device, models_dir);
 
-    // Embedder::new() blocks the thread (ONNX session init + possible HF download).
-    // Run it on a dedicated blocking thread so the async runtime stays responsive.
-    let embedder = tokio::task::spawn_blocking(move || Embedder::new(embedder_cfg))
-        .await
-        .map_err(|e| anyhow::anyhow!("embedder thread panicked: {e}"))??;
+    let embedder = Embedder::new(embedder_cfg).await?;
 
     emit!("embedder_done", "Embedder geladen", 40);
 
