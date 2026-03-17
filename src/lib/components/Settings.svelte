@@ -408,10 +408,11 @@
     function indexEmbedderToRust(m: string): string {
         return {
             bge_m3:               'bge-m3',
-            multilingual_e5_large:'multilingual-e5-large',
-            multilingual_e5_base: 'multilingual-e5-base',
+            pixie:                'pixie-rune-v1',
+            octen:                'octen-06b-int8',
+            snowflake_l:          'snowflake-arctic-lv2',
+            jina_nano:            'jina-v5-nano',
             multilingual_mini_lm: 'multilingual-mini-lm',
-            bge_small_en:         'bge-small-en',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -1272,10 +1273,11 @@
                 <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
                 <select id="index-model-select" bind:value={indexEmbedderModel} class="styled-select">
                     <option value="bge_m3">{i18n.t.settings.index.model_bge_m3}</option>
-                    <option value="multilingual_e5_large">{i18n.t.settings.index.model_e5_large}</option>
-                    <option value="multilingual_e5_base">{i18n.t.settings.index.model_e5_base}</option>
+                    <option value="pixie">{i18n.t.settings.index.model_pixie}</option>
+                    <option value="octen">{i18n.t.settings.index.model_octen}</option>
+                    <option value="snowflake_l">{i18n.t.settings.index.model_snowflake_l}</option>
+                    <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
                     <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
-                    <option value="bge_small_en">{i18n.t.settings.index.model_bge_small_en}</option>
                 </select>
             </div>
 

@@ -22,6 +22,9 @@ pub mod search;
 pub mod ingest;
 pub mod tauri_commands;
 
+#[cfg(test)]
+pub mod benchmarks;
+
 // Re-export the most commonly used types.
 pub use location::{FileLocation, RetrievalCost};
 pub use schema::{DocumentChunk, SearchResult, SearchFilters, build_schema};
