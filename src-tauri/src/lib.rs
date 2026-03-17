@@ -1,3 +1,5 @@
+pub mod index;
+
 use std::fs;
 use std::path::Path;
 use serde::Serialize;
@@ -36,6 +38,7 @@ pub struct AppState {
     sidecar_process: Mutex<Option<TokioChild>>,
     mlx_process: Mutex<Option<TokioChild>>,
     ollama_process: Mutex<Option<TokioChild>>,
+    pub index: Mutex<index::IndexState>,
 }
 
 #[tauri::command]
@@ -436,6 +439,12 @@ async fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+async fn get_app_data_dir(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn extract_pdf_native(path: String) -> Result<String, String> {
     println!("[Rust] Extracting PDF via pdf-extract: {}", path);
     pdf_extract::extract_text(&path).map_err(|e| {
@@ -502,6 +511,13 @@ struct BatchExecutionItem {
     original_path: String,
     target_path: String,
     extracted_text: Option<String>,
+    /// LanceDB doc_id — set when the document was indexed.  If present and the
+    /// move succeeds, the index location is updated automatically.
+    doc_id: Option<String>,
+    /// Pre-built `crisp+local://...` URI for the destination path.  The
+    /// frontend computes this using the same user/machine UUIDs stored in
+    /// app settings.
+    new_location_uri: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -511,7 +527,10 @@ struct BatchExecutionResult {
 }
 
 #[tauri::command]
-async fn execute_batch(payload: BatchExecutionPayload) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
+async fn execute_batch(
+    state: tauri::State<'_, AppState>,
+    payload: BatchExecutionPayload,
+) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
     let mut results = std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
     let mut script_content = String::new();
@@ -587,6 +606,20 @@ async fn execute_batch(payload: BatchExecutionPayload) -> Result<std::collection
                 Err(e) => BatchExecutionResult { success: false, error: Some(e.to_string()) },
             },
         };
+        // P11: if the move succeeded and the document was indexed, update the location URI.
+        if exec_result.success {
+            if let (Some(doc_id), Some(new_uri)) = (&item.doc_id, &item.new_location_uri) {
+                let lock = state.index.lock().await;
+                if lock.config.enabled {
+                    if let Some(backend) = lock.backend.clone() {
+                        drop(lock);
+                        if let Err(e) = backend.update_location(doc_id, new_uri).await {
+                            println!("[index] update_location failed for {}: {}", doc_id, e);
+                        }
+                    }
+                }
+            }
+        }
         results.insert(item.id.clone(), exec_result);
     }
 
@@ -772,6 +805,7 @@ pub fn run() {
             sidecar_process: Mutex::new(None),
             mlx_process: Mutex::new(None),
             ollama_process: Mutex::new(None),
+            index: Mutex::new(index::IndexState::disabled()),
         })
         .invoke_handler(tauri::generate_handler![
             execute_batch,
@@ -788,7 +822,19 @@ pub fn run() {
             check_mlx_models_cached,
             delete_mlx_model,
             delete_files,
-            extract_pdf_native
+            extract_pdf_native,
+            get_app_data_dir,
+            index::tauri_commands::index_search,
+            index::tauri_commands::index_ingest_document,
+            index::tauri_commands::index_update_location,
+            index::tauri_commands::index_build_ivf_pq,
+            index::tauri_commands::index_get_config,
+            index::tauri_commands::index_set_config,
+            index::tauri_commands::index_init,
+            index::tauri_commands::index_is_ready,
+            index::tauri_commands::index_stats,
+            index::tauri_commands::index_list_documents,
+            index::tauri_commands::index_delete_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

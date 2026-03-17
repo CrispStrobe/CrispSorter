@@ -14,7 +14,7 @@
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
-        RefreshCw, AlertCircle, Code, Info, Scan
+        RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud
     } from 'lucide-svelte';
 
     let selectedItemId = $state<string | null>(null);
@@ -82,6 +82,10 @@
     // Execution Report
     let lastExecutionStats = $state<any>(null);
     let showReportModal = $state(false);
+
+    // Index integration
+    let indexAfterSort     = $state(false);
+    let indexingSelected   = $state(false);
     let toastMessage = $state<string | null>(null);
     let toastTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -407,6 +411,44 @@
         batchManager.setAcceptedItems(selectedIds, val);
     }
 
+    async function addSelectedToIndex() {
+        if (selectedIds.length === 0) return;
+        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
+        if (!cfg.enabled) {
+            showToast('Search index is not enabled. Enable it in Settings → Search Index.');
+            return;
+        }
+        indexingSelected = true;
+        const items = batchManager.items.filter(i => selectedIds.includes(i.id));
+        let ok = 0, fail = 0;
+        for (const item of items) {
+            if (!item.extractedText || item.extractedText.length < 20) { fail++; continue; }
+            try {
+                await invoke('index_ingest_document', {
+                    fullText:    item.extractedText,
+                    fullTextMd:  '',
+                    headings:    [],
+                    title:       item.suggestedTitle  || null,
+                    author:      item.suggestedAuthor || null,
+                    year:        item.suggestedYear   ? parseInt(item.suggestedYear) : null,
+                    filename:    item.originalName,
+                    ext:         item.extension || '',
+                    language:    'de',
+                    locationUri: `crisp+local://local/${item.originalPath}`,
+                    ownerId:     'local',
+                    sourceHash:  item.id,
+                    tags:        [],
+                });
+                ok++;
+            } catch (e) {
+                console.error('[Index] ingest failed for', item.originalName, e);
+                fail++;
+            }
+        }
+        indexingSelected = false;
+        showToast(`Index: ${ok} erfolgreich, ${fail} fehlgeschlagen`);
+    }
+
     async function startProcessing() {
         await batchManager.processAll();
     }
@@ -464,6 +506,13 @@
                 showReportModal = true;
             } else {
                 showToast(i18n.t.batch.no_items_ready);
+            }
+            // Optionally index sorted documents
+            if (indexAfterSort && !mode.startsWith('script')) {
+                const movedIds = accepted.map(i => i.id);
+                selectedIds = movedIds;
+                await addSelectedToIndex();
+                selectedIds = [];
             }
         }
     }
@@ -655,6 +704,16 @@
             <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
                 <Trash2 size={14} /> {i18n.t.batch.remove}
             </button>
+            <div class="toolbar-divider"></div>
+            <button class="action-btn small" onclick={addSelectedToIndex}
+                disabled={indexingSelected}
+                title="Ausgewählte zum Suchindex hinzufügen">
+                {#if indexingSelected}
+                    <Loader2 size={14} class="loader-spin" /> Indexiere …
+                {:else}
+                    <UploadCloud size={14} /> Zum Index
+                {/if}
+            </button>
             <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
         </div>
     {/if}
@@ -787,6 +846,11 @@
                         <button onclick={() => { executeSorting('script_copy'); showSortOptions = false; }}>
                             <Code size={14} /> {i18n.t.batch.execute_script_copy}
                         </button>
+                        <div class="dropdown-separator"></div>
+                        <label class="dropdown-toggle-row" title="Dokumente nach dem Sortieren automatisch in den Suchindex aufnehmen">
+                            <UploadCloud size={13} /> Index nach Sort
+                            <input type="checkbox" bind:checked={indexAfterSort} />
+                        </label>
                     </div>
                 {/if}
             </div>
@@ -1199,6 +1263,11 @@
     .dropdown-menu { position: absolute; top: 100%; left: 0; background: #18181b; border: 1px solid #27272a; border-radius: 6px; box-shadow: 0 10px 15px rgba(0,0,0,0.5); z-index: 100; margin-top: 4px; min-width: 150px; }
     .dropdown-menu button { width: 100%; text-align: left; padding: 8px 12px; background: transparent; border: none; color: #d4d4d8; cursor: pointer; font-size: 0.8125rem; display: flex; align-items: center; gap: 8px; }
     .dropdown-menu button:hover { background: #27272a; color: white; }
+
+    .dropdown-separator { height: 1px; background: #27272a; margin: 4px 0; }
+    .dropdown-toggle-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: #d4d4d8; font-size: 0.8125rem; cursor: pointer; width: 100%; }
+    .dropdown-toggle-row:hover { background: #27272a; color: white; }
+    .dropdown-toggle-row input[type="checkbox"] { margin-left: auto; }
 
     .col-selector { padding: 8px; min-width: 180px; }
     .col-opt { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-radius: 4px; font-size: 0.8125rem; color: #a1a1aa; }

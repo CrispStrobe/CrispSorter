@@ -7,9 +7,11 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud } from 'lucide-svelte';
+    import IndexSearch from '$lib/components/IndexSearch.svelte';
+    import IndexIngest from '$lib/components/IndexIngest.svelte';
 
-    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings'
+    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'index-search', 'index-ingest'
     let navCollapsed = $state(false);
 
     const batchStats = $derived.by(() => {
@@ -61,6 +63,18 @@
                 <Database size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.history}</span>{/if}
             </button>
+
+            <div class="nav-separator"></div>
+
+            <button class="nav-item" class:active={activeTab === 'index-search'} onclick={() => activeTab = 'index-search'} title="Index Suche">
+                <Search size={20} />
+                {#if !navCollapsed}<span>Index Suche</span>{/if}
+            </button>
+
+            <button class="nav-item" class:active={activeTab === 'index-ingest'} onclick={() => activeTab = 'index-ingest'} title="Index Ingest">
+                <UploadCloud size={20} />
+                {#if !navCollapsed}<span>Index Ingest</span>{/if}
+            </button>
         </div>
 
         <div class="nav-bottom">
@@ -96,6 +110,10 @@
             <BatchReview />
         {:else if activeTab === 'history'}
             <History onResumeBatch={switchToBatch} />
+        {:else if activeTab === 'index-search'}
+            <IndexSearch />
+        {:else if activeTab === 'index-ingest'}
+            <IndexIngest />
         {/if}
         <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
             <Chat />
@@ -212,6 +230,7 @@
         z-index: 5;
     }
 
+    .nav-separator { height: 1px; background: #27272a; margin: 8px 16px; }
     .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }
     .stats-total { font-size: 0.75rem; font-weight: 700; color: #a1a1aa; white-space: nowrap; }
     .stats-breakdown { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }

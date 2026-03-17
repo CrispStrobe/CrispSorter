@@ -56,6 +56,138 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 - **Script export** — generate a `.bat` / `.sh` script to review moves before executing them
 - **Customisable output** — author sub-folders on/off, save extracted `.txt` transcript alongside files
 - **Editable grid** — column visibility, width, sort; inline field editing
+- **Search index** — optional semantic + full-text search over all sorted documents (local or remote)
+
+---
+
+## Search index
+
+CrispSorter can build a searchable index of your sorted documents — combining BM25 full-text search (Tantivy) with dense vector search (LanceDB) fused via Reciprocal Rank Fusion (RRF). This lets you ask natural-language questions across your entire library.
+
+### Two backends
+
+#### Local backend (default)
+
+Everything runs on your machine.
+
+```
+Documents
+  └─► Extract text / markdown (PDF, DOCX, TXT, MD)
+  └─► Chunk text (sliding window, configurable size)
+  └─► Embed locally (fastembed — BGE-M3, E5-Large, MiniLM, …)
+  └─► Write to local LanceDB + Tantivy
+  └─► Search via hybrid RRF
+```
+
+Best for: privacy-first use, laptops with enough RAM, small-to-medium libraries.
+
+#### Remote backend (crisp-index-server)
+
+Embedding happens locally; storage and search happen on your self-hosted server.
+
+```
+Documents
+  └─► Extract text / markdown  (same as local)
+  └─► Chunk + embed locally    (fastembed — required even in remote mode)
+  └─► POST /v1/ingest          ──► crisp-index-server VPS
+                                       ├── LanceDB (ANN)
+                                       └── Tantivy (BM25)
+  └─► POST /v1/search          ──► server runs hybrid RRF
+                                       └─► results returned to app
+```
+
+Best for: shared team libraries, very large corpora, keeping client storage small.
+
+No GPU is needed on the server — all neural embedding is done by the client.
+
+---
+
+### GPU acceleration
+
+The local embedder uses ONNX Runtime with automatic execution-provider selection:
+
+| Setting | Backend used |
+|---|---|
+| `Auto` (default) | CoreML + Metal on macOS · CUDA on Windows/Linux · CPU fallback |
+| `Metal` | Apple CoreML / Metal / Neural Engine (macOS only) |
+| `CUDA` | NVIDIA CUDA (Windows/Linux) |
+| `CPU` | Force CPU — lower memory pressure, no GPU required |
+
+On an M-series Mac with BGE-M3, expect ~2–3 GB RAM (ONNX arena + model weights) and ~1–3 s per document for embedding.
+
+---
+
+### Search query syntax
+
+The full-text component of every search mode supports the following syntax:
+
+| Pattern | Meaning | Example |
+|---|---|---|
+| `word` | Exact term (case-insensitive) | `barth` |
+| `word1 word2` | Implicit AND — both terms required | `karl barth` |
+| `word1 AND word2` | Explicit AND | `grace AND theology` |
+| `word1 OR word2` | Either term | `rahner OR barth` |
+| `NOT word` | Exclude term | `NOT nietzsche` |
+| `"phrase"` | Exact phrase | `"grace alone"` |
+| `word*` | Prefix wildcard | `theolog*` matches *theologisch*, *theology*, … |
+| `wor?` | Single-character wildcard | `grac?` |
+| `word~2` | Fuzzy match (edit distance) | `barth~1` also matches *Bart* |
+| `a w/10 b` | *a* within 10 words of *b* (either order) | `grace w/5 faith` |
+| `a pre/5 b` | *a* appears before *b* within 5 words | `sola pre/3 fide` |
+| `(a OR b) w/N c` | Grouped proximity | `(faith OR grace) w/20 works` |
+
+> **Hybrid mode** runs full-text and vector (semantic) search in parallel and fuses them with Reciprocal Rank Fusion. You get both keyword precision and semantic recall.
+
+---
+
+### Supported document formats for indexing
+
+| Format | Plain text | Markdown / headings |
+|---|---|---|
+| PDF | pdfjs-dist text layer | heuristic heading detection |
+| DOCX | mammoth plain-text | `mammoth.convertToMarkdown` |
+| TXT | direct | — |
+| MD / Markdown | direct | `#`/`##`/`###` headings parsed |
+| EPUB | epub-parser text | — |
+
+Headings extracted from DOCX/MD/PDF are stored in the index and boost search relevance.
+
+---
+
+### Settings UI (Settings → Search Index)
+
+| Setting | Description |
+|---|---|
+| **Enable search index** | Toggle indexing on/off globally |
+| **Search mode** | `Text` (BM25 only), `Vector` (ANN only), or `Hybrid` (RRF) |
+| **Backend** | `Local` (on-device LanceDB) or `Remote` (crisp-index-server) |
+| **Remote URL** | Base URL of your crisp-index-server, e.g. `https://crisp.example.com` |
+| **Remote API key** | Bearer token configured on the server (`CRISP_API_KEY`) |
+| **Embedder model** | `BGE-M3` (1024-dim, multilingual, default), `E5-Large`, `E5-Base`, `MiniLM-L6`, `BGE-Small-EN` |
+| **Device** | `Auto`, `CPU`, `Metal` (macOS), `CUDA` (Windows/Linux) |
+| **Data directory** | Where local LanceDB + Tantivy files are stored |
+| **Apply & Init** | Apply settings and (re)initialise the index |
+| **Build IVF-PQ** | Build approximate nearest-neighbour index after bulk ingest (≥ 10 000 rows) |
+
+> The embedder model and dimension **must match** between client and server. Change `EMBED_DIMS` on the server when switching models.
+
+---
+
+### Location tracking
+
+When a file is moved during a sort operation, CrispSorter updates its stored `location_uri` in the index so search results always point to the current file path. URIs follow the scheme:
+
+```
+crisp+local://<machine-uuid>/<user-uuid>/absolute/path/to/file.pdf
+```
+
+Remote backend: the update is sent as `POST /v1/docs/:doc_id/location`.
+
+---
+
+### Building the ANN index (IVF-PQ)
+
+LanceDB performs a flat brute-force scan on small datasets. Once you have indexed ≥ 10 000 chunks, click **Build IVF-PQ** in Settings (or call `POST /v1/admin/build-ivf-pq` on the server) to build an approximate nearest-neighbour index. Vector search becomes ~10–100× faster on large libraries.
 
 ---
 
@@ -114,6 +246,10 @@ Requires `gh` CLI authenticated (`gh auth login`).
 | OCR | Tesseract.js |
 | DOCX | mammoth.js |
 | Persistence | tauri-plugin-store |
+| Embedding (local) | fastembed-rs (BGE-M3 / E5 / MiniLM) |
+| Vector store (local) | LanceDB (embedded) |
+| Full-text (local) | Tantivy |
+| Search server | crisp-index-server (axum + LanceDB + Tantivy) |
 
 ---
 

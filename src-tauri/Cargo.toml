@@ -34,6 +34,26 @@ tokio = { version = "1.50.0", features = ["full"] }
 anyhow = "1.0.102"
 pdf-extract = "0.10.0"
 
+# RAG / Search
+# lancedb 0.26.2 is the latest stable on crates.io.
+# 0.27.0-beta.5 is git-only and adds nothing relevant (JS native arrays, Lance rc bump).
+lancedb      = { version = "0.26.2", default-features = false }
+tantivy      = "0.22"
+# fastembed 5.x has real EmbeddingModel::BGEM3 (8192-token, multilingual) and
+# SparseModel::BGEM3 (multilingual sparse). lancedb has no ort dep so no conflict.
+fastembed    = { version = "5.13.0", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+arrow        = { version = "57", default-features = false }
+arrow-array  = { version = "57", default-features = false }
+arrow-schema = { version = "57", default-features = false }
+arrow-select = { version = "57", default-features = false }
+uuid         = { version = "1", features = ["v4", "serde"] }
+async-trait  = "0.1"
+# ort pinned to match fastembed 5.13.0; used directly only for EP types (CoreML, CUDA).
+ort          = "=2.0.0-rc.11"
+
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 mistralrs = { version = "0.7.0", features = ["metal"] }
 
