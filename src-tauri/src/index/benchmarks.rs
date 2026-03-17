@@ -26,11 +26,11 @@ async fn benchmark_models() {
         // ── Qwen3-Embedding-0.6B (base, decoder with KV-cache) ───────────────
         EmbedderModel::Qwen3EmbeddingInt8,   // onnx-community int8
         EmbedderModel::Qwen3EmbeddingUint8,  // electroglyph uint8 calibrated
-        // ── Octen-Embedding-0.6B (Qwen3 finetune, encoder-style) ─────────────
-        EmbedderModel::Octen06bInt8,         // geoffsee int8 (self-contained)
-        EmbedderModel::Octen06bFp32,         // geoffsee fp32
-        EmbedderModel::Octen06bInt4,         // geoffsee int4
-        EmbedderModel::Octen06bFp16,         // geoffsee fp16 (may fail CPU)
+        // ── Octen-Embedding-0.6B (local exports) ─────────────────────────────
+        EmbedderModel::Octen06bInt8FullLocal, // int8 MatMul+Gather (~570 MB)
+        EmbedderModel::Octen06bInt4Local,     // int4 MatMul-only (~900 MB)
+        EmbedderModel::Octen06bInt8Local,     // int8 MatMul-only (~1.1 GB)
+        EmbedderModel::Octen06bFp32,          // fp32 reference (2.4 GB)
     ];
 
     for model in models {
