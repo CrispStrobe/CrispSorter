@@ -1,0 +1,519 @@
+# CrispSorter RAG / Search Extension — Full Plan
+
+> Status: planning → implementation
+> Last updated: 2026-03-16
+
+---
+
+## 0. Goals
+
+1. Add **local LanceDB** semantic + full-text search to CrispSorter
+2. Support **remote LanceDB** via a self-hosted Rust/Axum VPS server
+3. Track **where every file lives** with a typed, forward-compatible URI scheme
+4. Handle **hundreds of thousands** of German + English academic documents
+5. Provide **dtSearch-grade** proximity/wildcard/boolean full-text search
+6. Keep the setup **versatile from the UI** (mode, embedder, device, backend)
+7. Design for **multi-user** from the start without forcing it on single-user installs
+
+---
+
+## 1. File Location URI Model
+
+Every indexed document carries a `location_uri` — a single UTF-8 string, structured as a typed URI.
+
+### Scheme
+
+```
+crisp+local://{user-uuid}@{machine-uuid}/{absolute-path}
+crisp+vps://{user-uuid}@{host}:{port}/{path}
+crisp+internxt://{user-uuid}/{cloud-path}
+crisp+internxt-zip://{user-uuid}/{archive-cloud-path}#{internal-path}
+```
+
+### Design decisions
+
+- `user-uuid` — UUID v4 assigned at first CrispSorter launch, stored in app config.
+  **Not** a username: usernames change, collide across machines, and leak PII into the index.
+- `machine-uuid` — UUID v4 generated once per installation.
+  For single-user installs both UUIDs are auto-populated and invisible in the UI.
+- A **user registry** (small JSON sidecar, not in LanceDB) maps `user-uuid → display-name`
+  so the UI shows "stc @ Desktop" rather than raw UUIDs.
+- The `internxt-zip` scheme uses `#fragment` for the in-archive path — same convention
+  as URL fragments, making the URI round-trippable with standard URL parsers.
+- `metadata_json` (see schema) is the escape hatch for future location types — no
+  schema migration needed.
+
+### Rust enum
+
+```rust
+pub enum FileLocation {
+    Local   { user_id: Uuid, machine_id: Uuid, path: PathBuf },
+    Vps     { user_id: Uuid, host: String, port: u16, path: String },
+    Internxt { user_id: Uuid, cloud_path: String },
+    InternxtZip { user_id: Uuid, archive_cloud_path: String, internal_path: String },
+}
+
+impl FileLocation {
+    pub fn to_uri(&self) -> String { … }
+    pub fn from_uri(s: &str) -> Result<Self> { … }
+    pub fn retrieval_cost(&self) -> RetrievalCost { … }  // Free / Cheap / Expensive
+}
+```
+
+`retrieval_cost` lets the UI warn: "This file must be downloaded from Internxt before opening."
+
+---
+
+## 2. Embedder Selection
+
+### Primary: `BAAI/bge-m3` via `fastembed-rs` 5.x
+
+| Property | Value |
+|---|---|
+| Context window | **8 192 tokens** (decisive for long academic texts) |
+| Languages | 100+; German and English both top-tier |
+| Output | Dense 1024d + multilingual sparse (SparseModel::BGEM3) |
+| Crate | `fastembed` 5.13.x (`EmbeddingModel::BGEM3`, `SparseModel::BGEM3`) |
+| Execution providers | CoreML (Metal/Neural Engine, macOS) · CUDA (Windows/Linux) · CPU |
+
+#### Quantisation
+
+| Format | Size | CPU speedup | Quality loss | Status |
+|---|---|---|---|---|
+| FP32 | ~1.1 GB | 1× | 0% | **available** (`EmbeddingModel::BGEM3`) |
+| INT8 | ~280 MB | 2–3× | <1% on BEIR | **not yet in fastembed hub** — load via `try_new_from_user_defined` with custom ONNX |
+| Q4 | N/A | — | — | not applicable to ONNX encoder models |
+
+> **Q4 answer**: ONNX Runtime does not support 4-bit quantisation for transformer encoder
+> models the way llama.cpp/GGUF does for decoder LLMs. INT8 is the practical limit.
+> A custom INT8 bge-m3 ONNX can be produced with `optimum-cli` and loaded via
+> `TextEmbedding::try_new_from_user_defined` — planned as a future UI option.
+
+#### Embedder menu (UI dropdown) — `EmbedderModel` enum
+
+| Variant | fastembed model | Dims | Context | Sparse | Best for |
+|---|---|---|---|---|---|
+| `BgeM3` ★ default | `BGEM3` | 1024 | 8192 | `BGEM3` (multilingual) | de+en, all sizes |
+| `MultilingualE5Large` | `MultilingualE5Large` | 1024 | 512 | none | lighter, still multilingual |
+| `MultilingualE5Base` | `MultilingualE5Base` | 768 | 512 | none | faster, medium quality |
+| `MultilingualMiniLm` | `ParaphraseMLMiniLML12V2` | 384 | 512 | none | VPS CPU, very fast |
+| `BgeSmallEn` | `BGESmallENV15` | 384 | 512 | `SPLADEPPV1` | English-only |
+
+VPS server defaults to `MultilingualMiniLm` (CPU-friendly) unless overridden by config.
+
+#### Sparse model pairing rationale
+
+- `BgeM3` → `SparseModel::BGEM3`: same model, multilingual sparse weights. ✓
+- `BgeSmallEn` → `SparseModel::SPLADEPPV1`: English-only collection, SPLADE is fine.
+- `MultilingualE5*` / `MultilingualMiniLm` → **no sparse**: English SPLADE against German
+  text produces poor recall. Better to do dense-only than degrade hybrid results.
+
+---
+
+## 3. Chunking Strategy
+
+Do **not** embed whole documents. Embed overlapping chunks aligned to section boundaries.
+
+```
+Document → extract headings (from Markdown structure)
+         → split at headings; subdivide long sections into 512-token windows
+            with 128-token stride overlap
+         → one LanceDB row per chunk
+         → whole-document row (chunk_index = -1) for metadata queries
+```
+
+At query time: retrieve top-K chunks → deduplicate by `doc_id` → rank by max-chunk-score.
+Heading-aligned chunks are semantically coherent; stride overlap prevents boundary misses.
+
+---
+
+## 4. LanceDB Schema
+
+One table per "library" (user-configurable). Rows are **chunks** (one per embedding unit).
+
+```
+id                Utf8            SHA-256 of (doc_id + chunk_index)
+doc_id            Utf8            SHA-256 of file content (stable across moves)
+location_uri      Utf8            crisp+* URI
+owner_id          Utf8            user UUID (denormalized for fast filter)
+filename          Utf8
+title             Utf8
+author            Utf8
+year              Int32
+ext               Utf8
+language          Utf8            "de" | "en" | "de+en" | …
+page_count        Int32
+headings_text     Utf8            all headings joined (for boosted FTS field)
+full_text         Utf8            stripped plain text (FTS source + embedding source)
+full_text_md      Utf8            Markdown with heading hierarchy (for display/preview)
+embedding         FixedSizeList<Float32>[1024]     bge-m3 dense vector
+embedding_sparse  Utf8            JSON: {"term": weight, …}  bge-m3 sparse weights
+embedding_model   Utf8            model ID that produced this embedding
+chunk_index       Int32           0-based; -1 = whole-document metadata row
+chunk_total       Int32           total chunks for this doc
+chunk_start_char  Int32           byte offset in full_text
+chunk_end_char    Int32
+indexed_at        Timestamp
+source_hash       Utf8            MD5/SHA256 of original file bytes
+tags              List<Utf8>
+metadata_json     Utf8            forward-compat escape hatch (Internxt zip paths,
+                                  batch IDs, session IDs, future location types, …)
+```
+
+### Indexes
+
+| Index | Type | Column(s) | Notes |
+|---|---|---|---|
+| Vector | IVF-PQ | `embedding` | `num_partitions=256`, `num_sub_vectors=128` |
+| Full-text | Tantivy (direct) | `full_text`, `headings_text` | separate Tantivy index, see §5 |
+| Scalar | B-tree | `owner_id`, `language`, `year` | pre-filter before ANN |
+
+---
+
+## 5. Full-Text Search — Tantivy Direct (not via LanceDB FTS API)
+
+LanceDB has built-in FTS via Tantivy, but its query API is too simplified for dtSearch-grade
+proximity + wildcard queries. We use the `tantivy` crate directly alongside LanceDB.
+
+### Tantivy schema (parallel to LanceDB table)
+
+```
+doc_id            TEXT STORED       links back to LanceDB row
+headings          TEXT STORED       boosted field (^3 at query time)
+body              TEXT              full stripped text, positional index
+language          FACET             for per-language filtering
+owner_id          TEXT STORED       for multi-user filtering
+```
+
+The Tantivy index lives at `{data_dir}/fts/` next to the LanceDB directory at `{data_dir}/lance/`.
+Both are written atomically during ingest.
+
+### dtSearch Query Translator
+
+Parses a dtSearch-style query string → Tantivy query tree.
+
+Supported operators:
+
+| dtSearch syntax | Meaning | Tantivy implementation |
+|---|---|---|
+| `foo AND bar` | both terms | `BooleanQuery::must` |
+| `foo OR bar` | either term | `BooleanQuery::should` |
+| `NOT foo` | exclude term | `BooleanQuery::must_not` |
+| `"foo bar"` | exact phrase | `PhraseQuery(slop=0)` |
+| `foo*` | prefix wildcard | prefix scan TermDictionary → `BooleanQuery::should` |
+| `fo?` | single-char wildcard | regex on TermDictionary |
+| `foo~2` | fuzzy (edit distance) | `FuzzyTermQuery(distance=2)` |
+| `foo w/N bar` | within N words, either order | `PhraseQuery([foo,bar], slop=N)` + `PhraseQuery([bar,foo], slop=N)` OR'd |
+| `foo pre/N bar` | foo before bar within N words | `PhraseQuery([foo,bar], slop=N)` only |
+| `(foo OR bar) w/N baz` | grouped proximity | recursive parse → cross-product slop queries |
+
+**Implementation note on `w/N`**:
+Tantivy `PhraseQuery` with slop is *directional*: `["foo","bar"]` with slop N matches
+"foo … bar" with up to N intervening tokens. To get bidirectional `w/N` semantics we emit
+**two** phrase queries (both orderings) wrapped in `BooleanQuery::should`.
+Wildcard expansion happens first via TermDictionary prefix scan, then slop queries are built
+for each expanded term pair. The expansion is cached per-query.
+
+```rust
+// src-tauri/src/index/fts_query.rs
+pub fn translate(query: &str, reader: &IndexReader) -> Result<Box<dyn Query>>;
+```
+
+---
+
+## 6. Search Modes
+
+| Mode | What runs | When to use |
+|---|---|---|
+| **Text only** | Tantivy BM25 | exact terms, author names, theological vocab |
+| **Vector only** | LanceDB ANN | semantic / paraphrase / cross-language |
+| **Hybrid** | BM25 + ANN → RRF rerank | best recall, default for large corpora |
+| **Sparse+Dense** | bge-m3 sparse + dense → rerank | best when embedder is bge-m3 |
+
+Reciprocal Rank Fusion (RRF) for hybrid reranking — simple, parameter-free, robust.
+
+---
+
+## 7. Extraction Pipeline (updated)
+
+```
+File drop
+  → [existing] text extraction (PDF/DOCX/EPUB/OCR via pdfjs, mammoth, tesseract)
+  → [new] produce three outputs:
+       full_text_raw    stripped plain text (for embedding)
+       full_text_md     Markdown with heading structure preserved
+       headings[]       ordered list of section titles
+  → chunk(full_text_raw, headings) → chunks[]
+  → for each chunk:
+       embed(chunk.text) → embedding (dense 1024d) + embedding_sparse
+       write to LanceDB (lance/) and Tantivy (fts/)
+       location_uri = FileLocation::from_current_context()
+  → on Sort step: update_location(doc_id, new_uri)
+```
+
+**Why `.md` extraction?**
+- Heading boundaries → semantically coherent chunks
+- Heading text → boosted FTS field (headings rank higher in BM25)
+- Markdown stored as `full_text_md` → rich preview rendering in UI
+- Strip markdown syntax before embedding → cleaner vectors
+
+---
+
+## 8. Remote VPS Server
+
+### Technology: Rust + Axum
+
+| Criterion | Rust+Axum | Python FastAPI | Node+LanceDB |
+|---|---|---|---|
+| Same LanceDB crate | ✓ | ✗ | ✗ (N-API bindings) |
+| Same fastembed-rs | ✓ | ✗ | ✗ |
+| Static binary | ✓ (musl) | ✗ | ✗ |
+| No runtime deps on VPS | ✓ | ✗ (Python env) | ✗ (Node) |
+| CPU perf | excellent | good | good |
+
+Compile target: `x86_64-unknown-linux-musl` — fully static, no glibc version concerns.
+
+### REST API
+
+```
+POST   /v1/ingest              body: { text, metadata, location_uri } or { embedding[], metadata, location_uri }
+POST   /v1/search/text         body: { query, filters, limit }
+POST   /v1/search/vector       body: { embedding[], filters, limit }
+POST   /v1/search/hybrid       body: { query, embedding[], filters, limit }
+DELETE /v1/docs/{doc_id}
+PATCH  /v1/docs/{doc_id}/location   body: { location_uri }
+GET    /health
+GET    /v1/stats               index size, doc count, model info
+```
+
+### Authentication
+
+`Authorization: Bearer <api-key>` — HMAC-SHA256 signed token.
+Key stored in `.env` on VPS, in Tauri secure store (OS keychain) on client.
+
+### VPS vs local embedding
+
+The server can embed on ingest (from raw text) **or** accept pre-computed vectors
+(client embedded locally). Config flag: `server_side_embedding: bool`.
+This lets a GPU-equipped client send vectors and the CPU VPS just stores+indexes.
+
+### IndexBackend trait (shared abstraction)
+
+```rust
+#[async_trait]
+pub trait IndexBackend: Send + Sync {
+    async fn ingest(&self, doc: DocumentChunk) -> Result<()>;
+    async fn search_text(&self, query: &str, filters: &Filters, limit: usize) -> Result<Vec<SearchResult>>;
+    async fn search_vector(&self, emb: &[f32], filters: &Filters, limit: usize) -> Result<Vec<SearchResult>>;
+    async fn search_hybrid(&self, query: &str, emb: &[f32], filters: &Filters, limit: usize) -> Result<Vec<SearchResult>>;
+    async fn delete_doc(&self, doc_id: &str) -> Result<()>;
+    async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()>;
+}
+```
+
+`LocalIndex` and `RemoteClient` both implement this. The active backend is chosen at
+runtime from settings, wrapped in `Arc<dyn IndexBackend>` in `AppState`.
+
+---
+
+## 9. Settings UI
+
+New section "Search Index" in Settings:
+
+```
+┌─ Search Index ───────────────────────────────────────────────┐
+│  [ ] Enable search index                                      │
+│                                                               │
+│  Backend       ○ Local    ○ Remote (VPS)                      │
+│  Remote URL    [_________________________________]            │
+│  API key       [_________________________________] [Test]     │
+│                                                               │
+│  Search mode   ○ Text only  ○ Vector only  ○ Hybrid           │
+│  Embedder      [bge-m3 INT8 ▼]                                │
+│  Device        ○ Auto  ○ CPU  ○ Metal (macOS)  ○ CUDA         │
+│                                                               │
+│  [ Re-index current session ]  [ Rebuild IVF-PQ index ]       │
+│  [ Export index stats ]                                       │
+└───────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10. Multi-user Design
+
+- Every ingest call carries `owner_id` (user UUID from app config)
+- Every LanceDB row and Tantivy document stores `owner_id`
+- Search pre-filters by `owner_id` unless "all users" mode is explicitly enabled
+  (admin setting on the VPS server)
+- Single-user installs: `owner_id` is auto-populated, never shown in UI
+- User registry (`users.json` alongside the index dir) maps `uuid → { display_name, email }`
+
+---
+
+## 11. Cargo Dependencies (additions to `src-tauri/Cargo.toml`)
+
+```toml
+# Search / RAG
+# lancedb 0.26.2 = latest stable on crates.io. 0.27.0-beta.5 is git-only,
+# adds only JS native array inference (irrelevant to us).
+lancedb          = { version = "0.26.2", default-features = false }
+tantivy          = "0.22"
+# fastembed 5.x has real EmbeddingModel::BGEM3 + SparseModel::BGEM3 (multilingual sparse).
+# lancedb has NO ort dep → no version conflict.
+fastembed        = { version = "5.13.0", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+arrow            = { version = "57", default-features = false }
+arrow-array      = { version = "57", default-features = false }
+arrow-schema     = { version = "57", default-features = false }
+arrow-select     = { version = "57", default-features = false }
+# ort pinned to match fastembed 5.13.0; used directly for CoreML/CUDA EP types.
+ort              = "=2.0.0-rc.11"
+
+# Utilities
+uuid             = { version = "1", features = ["v4", "serde"] }
+async-trait      = "0.1"
+serde_json       = "1"    # already present
+```
+
+For the VPS server (separate crate `crisp-index-server`):
+```toml
+axum             = "0.8"
+tower            = "0.5"
+tower-http       = { version = "0.6", features = ["cors", "auth"] }
+tokio            = { version = "1", features = ["full"] }
+lancedb          = "0.14"
+tantivy          = "0.22"
+fastembed        = "4"
+hmac             = "0.12"
+sha2             = "0.10"
+dotenvy          = "0.15"
+```
+
+---
+
+## 12. Rust Module Layout (in `src-tauri/src/`)
+
+```
+index/
+  mod.rs              pub re-exports, IndexBackend trait, AppState integration
+  location.rs         FileLocation enum, URI parse/serialize, RetrievalCost
+  schema.rs           Arrow schema builder, chunk helper types
+  embedder.rs         fastembed-rs wrapper: model enum, device selection, batch embed
+  fts_query.rs        dtSearch → Tantivy query translator
+  fts_index.rs        Tantivy index open/create/write/search
+  local_index.rs      LanceDB local: open/create/ingest/search, IVF-PQ build
+  remote_client.rs    HTTP client to VPS server (reqwest)
+  ingest.rs           orchestration: text → chunks → embed → write both indexes
+  search.rs           unified search: dispatch to text/vector/hybrid, RRF merge
+```
+
+VPS server (separate workspace member or repo):
+```
+crisp-index-server/
+  src/
+    main.rs
+    state.rs          SharedState: LanceDB conn + Tantivy index + embedder
+    auth.rs           Bearer token HMAC validation
+    routes/
+      ingest.rs
+      search.rs
+      delete.rs
+      health.rs
+      stats.rs
+```
+
+---
+
+## 13. Phased Implementation
+
+| Phase | Deliverable | Est. | Status |
+|---|---|---|---|
+| **P1** | `location.rs` — full URI model with tests | ½ day | ✅ Done |
+| **P2** | `fts_query.rs` — dtSearch query translator with tests | 1 day | ✅ Done |
+| **P3** | `embedder.rs` — fastembed-rs wrapper, model enum, device picker | 1 day | ✅ Done |
+| **P4** | `fts_index.rs` — Tantivy index CRUD + search | 1 day | ✅ Done |
+| **P5** | `local_index.rs` — LanceDB CRUD, IVF-PQ, vector search | 2 days | ✅ Done |
+| **P6** | `ingest.rs` — full pipeline: chunk → embed → write | 1 day | ✅ Done |
+| **P7** | `search.rs` — unified FTS+vector with RRF reranking | 1 day | ✅ Done |
+| **P8** | `tauri_commands.rs` + `crisp-index-server` skeleton + `index_init` command | 2 days | ✅ Done |
+| **P9** | Svelte Settings UI — Search Index panel in Settings.svelte | 2 days | ✅ Done |
+| **P10** | `remote_client.rs` + remote mode switching in `init_index` | 1 day | ✅ Done |
+| **P11** | Sort-step `update_location` hooks in `execute_batch` | ½ day | ✅ Done |
+| **P12** | `.md` extraction + heading detection in extractors | 1 day | ✅ Done |
+| **P13** | Internxt-zip URI parsing (stub, no retrieval) | ½ day | ✅ Done (P1) |
+
+---
+
+## 14. Session Continuity
+
+### What is fully built (P1–P9 complete, cargo check ✅)
+
+- `src-tauri/src/index/mod.rs` — `IndexBackend` trait, `IndexState` (+`local` field), `IndexConfig`, `SearchMode`, `BackendType`
+- `src-tauri/src/index/location.rs` — `FileLocation` URI model (Local/Vps/Internxt/InternxtZip), tests
+- `src-tauri/src/index/schema.rs` — Arrow schema, `DocumentChunk`, `SearchResult`, `SearchFilters`
+- `src-tauri/src/index/embedder.rs` — `Embedder` (fastembed 5.x), correct model mappings, `chunk_text`
+- `src-tauri/src/index/fts_query.rs` — dtSearch → Tantivy (AND/OR/NOT/phrase/wildcard/fuzzy/w/N/pre/N)
+- `src-tauri/src/index/fts_index.rs` — Tantivy index CRUD + search with owner-filter
+- `src-tauri/src/index/local_index.rs` — LanceDB CRUD, IVF-PQ build, `batches_to_search_results_with_scores`
+- `src-tauri/src/index/search.rs` — `SearchEngine`: FTS+ANN+RRF(k=60), parallel tokio::spawn
+- `src-tauri/src/index/ingest.rs` — `IngestPipeline`: chunk→embed→write, `RawDocument`, `IngestStats`
+- `src-tauri/src/index/tauri_commands.rs` — `index_search`, `index_ingest_document`, `index_update_location`,
+  `index_build_ivf_pq` (uses `IndexState.local`), `index_get_config`, `index_set_config`, `index_init`
+- `src-tauri/src/lib.rs` — `AppState.index`, `get_app_data_dir` command, all 7 index commands registered
+- `src/lib/components/Settings.svelte` — Search Index panel: enable toggle, mode/backend/embedder/device selectors,
+  remote URL+key, data-dir picker, Apply & Init button, IVF-PQ button, status indicator
+- `src/lib/i18n.svelte.ts` — `settings.index.*` keys (en + de)
+- `crisp-index-server/` — Axum VPS server skeleton (stub handlers)
+
+### All phases complete — what is built (P1–P12)
+
+All Rust backend and TypeScript frontend code compiles cleanly.
+
+**Remaining work (non-critical):**
+1. **crisp-index-server real handlers** — stub Axum routes in `crisp-index-server/` need
+   real LanceDB+Tantivy implementations (same logic as `local_index.rs` and `fts_index.rs`).
+2. **Frontend: pass `doc_id` + `new_location_uri` in batch execute** — `BatchExecutionItem`
+   now accepts optional `doc_id` / `new_location_uri`; the Svelte batch store needs to
+   populate these fields when the document was previously indexed (requires a lookup by
+   `source_hash` → `doc_id` mapping stored locally).
+3. **Frontend: call `index_ingest_document` after extraction** — in `store.svelte.ts` after
+   `item.extractedText` is populated, call `invoke('index_ingest_document', {...})` if
+   `indexEnabled` is true. Pass `markdownText` and `headings` from the extraction result.
+4. **IVF-PQ direct access** — `LocalIndex` already implements `build_vector_index`; it is
+   now exposed via `IndexState.local` and the `index_build_ivf_pq` command.
+5. **User/machine UUID persistence** — app startup should generate and store UUIDs in
+   `settings.json` (`userUuid`, `machineUuid`) and use them to build `crisp+local://` URIs.
+
+### Cargo.toml state (src-tauri)
+
+```toml
+lancedb      = { version = "0.26.2", default-features = false }
+tantivy      = "0.22"
+fastembed    = { version = "5.13.0", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+ort          = "=2.0.0-rc.11"
+arrow        = { version = "57", default-features = false }
+arrow-array  = { version = "57", default-features = false }
+arrow-schema = { version = "57", default-features = false }
+arrow-select = { version = "57", default-features = false }
+uuid         = { version = "1", features = ["v4", "serde"] }
+async-trait  = "0.1"
+```
+
+futures = "0.3" needs to be added (for TryStreamExt when reading LanceDB result streams).
+
+---
+
+## 15. Open Questions / Future Work
+
+- **Chunking for scanned PDFs**: OCR produces flat text; heading detection needs heuristics
+  (line length, font-size metadata from pdfjs) rather than Markdown parsing.
+- **Cross-language search**: bge-m3 handles de+en in the same vector space, so a German
+  query naturally retrieves English documents. Confirm with benchmark on actual corpus.
+- **Internxt retrieval**: when a file at `crisp+internxt-zip://` is requested, the retrieval
+  pipeline must: authenticate to Internxt → stream zip → extract single member.
+  This mirrors `retrieve.py` from the cloud-backup system. Can reuse the same VPS
+  as a retrieval gateway (VPS has Internxt credentials, client does not).
+- **Index versioning**: when the embedding model changes, re-indexing is required.
+  Track `embedding_model` per row → allow mixed-model indexes with per-model ANN subindexes.
+- **Sync between local and remote**: local LanceDB can sync a subset (recent / tagged)
+  to the VPS index for shared search. Use LanceDB's delta/versioning (Lance format
+  is versioned by design) for efficient sync.

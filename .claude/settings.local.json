@@ -20,7 +20,21 @@
       "Bash(cd:*)",
       "Bash(npx tauri:*)",
       "Bash(APP=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/macos/CrispSorter.app\nOUT=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg\nrm -f \"$OUT\"\ncreate-dmg \\\\\n  --volname \"CrispSorter\" \\\\\n  --volicon \"$APP/Contents/Resources/AppIcon.icns\" \\\\\n  --window-pos 200 120 \\\\\n  --window-size 600 400 \\\\\n  --icon-size 128 \\\\\n  --icon \"CrispSorter.app\" 150 190 \\\\\n  --hide-extension \"CrispSorter.app\" \\\\\n  --app-drop-link 450 190 \\\\\n  \"$OUT\" \\\\\n  \"$APP\" 2>&1)",
-      "Bash(APP=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/macos/CrispSorter.app\nOUT=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg\nrm -f \"$OUT\"\ncreate-dmg \\\\\n  --volname \"CrispSorter\" \\\\\n  --volicon \"$APP/Contents/Resources/icon.icns\" \\\\\n  --window-pos 200 120 \\\\\n  --window-size 600 400 \\\\\n  --icon-size 128 \\\\\n  --icon \"CrispSorter.app\" 150 190 \\\\\n  --hide-extension \"CrispSorter.app\" \\\\\n  --app-drop-link 450 190 \\\\\n  \"$OUT\" \\\\\n  \"$APP\" 2>&1)"
+      "Bash(APP=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/macos/CrispSorter.app\nOUT=/Users/<user>/code/CrispSorter/src-tauri/target/release/bundle/dmg/CrispSorter_0.1.0_aarch64.dmg\nrm -f \"$OUT\"\ncreate-dmg \\\\\n  --volname \"CrispSorter\" \\\\\n  --volicon \"$APP/Contents/Resources/icon.icns\" \\\\\n  --window-pos 200 120 \\\\\n  --window-size 600 400 \\\\\n  --icon-size 128 \\\\\n  --icon \"CrispSorter.app\" 150 190 \\\\\n  --hide-extension \"CrispSorter.app\" \\\\\n  --app-drop-link 450 190 \\\\\n  \"$OUT\" \\\\\n  \"$APP\" 2>&1)",
+      "Read(//Users/<user>/code/cloud-backup/**)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(curl:*)",
+      "Bash(cargo test:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(wc:*)",
+      "Bash(node:*)",
+      "Bash(find:*)",
+      "Bash(npx svelte-check:*)",
+      "Bash(wait:*)",
+      "Bash(cargo add:*)"
     ]
   }
 }

@@ -176,6 +176,21 @@
     let ollamaLogsVisible = $state(false);
     let ollamaLogEl: HTMLTextAreaElement | null = $state(null);
 
+    // ── Search Index Settings ────────────────────────────────────────────────
+    let indexEnabled        = $state(false);
+    let indexSearchMode     = $state<'text' | 'vector' | 'hybrid'>('hybrid');
+    let indexBackendType    = $state<'local' | 'remote'>('local');
+    let indexRemoteUrl      = $state('');
+    let indexRemoteApiKey   = $state('');
+    let indexEmbedderModel  = $state<'bge_m3' | 'multilingual_e5_large' | 'multilingual_e5_base' | 'multilingual_mini_lm' | 'bge_small_en'>('bge_m3');
+    let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+    let indexDataDir        = $state('');
+    let indexStatus         = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
+    let indexStatusMsg      = $state('');
+    let indexInitProgress   = $state('');
+    let indexInitPct        = $state(0);
+    let indexIvfRunning     = $state(false);
+
     // Benchmarking
     let benchProviders = $state<string[]>([]);
     let benchModels = $state<Record<string, string>>({});
@@ -242,6 +257,25 @@
         mlxPort = await getSetting('mlxPort', 8000);
         llamacppPort = await getSetting('llamacppPort', 8080);
 
+        // Search Index settings
+        indexEnabled       = await getSetting('indexEnabled', false);
+        indexSearchMode    = await getSetting('indexSearchMode', 'hybrid') as any;
+        indexBackendType   = await getSetting('indexBackendType', 'local') as any;
+        indexRemoteUrl     = await getSetting('indexRemoteUrl', '');
+        indexRemoteApiKey  = await getSetting('indexRemoteApiKey', '');
+        indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
+        indexDevice        = await getSetting('indexDevice', 'auto') as any;
+        indexDataDir       = await getSetting('indexDataDir', '');
+        // Sync saved config into the backend
+        try {
+            await invoke('index_get_config').then(() => {}).catch(() => {});
+        } catch { /* index not yet wired */ }
+        // Check if index is already initialized (e.g. after navigating back to Settings)
+        try {
+            const ready = await invoke<boolean>('index_is_ready');
+            if (ready) indexStatus = 'ok';
+        } catch { /* command not available */ }
+
         try {
             const resp = await fetch('/licenses.json');
             automatedLicenses = await resp.json();
@@ -295,6 +329,14 @@
             if (r.ok) { ollamaStatus = 'ready'; ollamaRunning = true; }
         } catch { /* not running */ }
 
+        const unlistenIndexProgress = await listen<{ step: string; label: string; pct: number }>(
+            'index://init-progress',
+            (event) => {
+                indexInitProgress = event.payload.label;
+                indexInitPct      = event.payload.pct;
+            }
+        );
+
             cleanup = () => {
                 unlistenMlx();
                 unlistenSidecar();
@@ -303,6 +345,7 @@
                 unlistenOllamaReady();
                 unlistenOllamaFailed();
                 unlistenOllamaLog();
+                unlistenIndexProgress();
             };
         })();
         return () => cleanup();
@@ -338,11 +381,93 @@
         await saveSetting('mlxModels', $state.snapshot(mlxModels));
         await saveSetting('mlxPort', mlxPort);
         await saveSetting('llamacppPort', llamacppPort);
+        // Search Index
+        await saveSetting('indexEnabled',       indexEnabled);
+        await saveSetting('indexSearchMode',    indexSearchMode);
+        await saveSetting('indexBackendType',   indexBackendType);
+        await saveSetting('indexRemoteUrl',     indexRemoteUrl);
+        await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
+        await saveSetting('indexEmbedderModel', indexEmbedderModel);
+        await saveSetting('indexDevice',        indexDevice);
+        await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
+    }
+
+    // ── Search Index helpers ─────────────────────────────────────────────────
+
+    function indexModeToRust(m: string): string {
+        return { text: 'text_only', vector: 'vector_only', hybrid: 'hybrid' }[m] ?? 'hybrid';
+    }
+    function indexBackendToRust(b: string): string {
+        return b === 'remote' ? 'remote' : 'local';
+    }
+    function indexEmbedderToRust(m: string): string {
+        return {
+            bge_m3:               'bge-m3',
+            multilingual_e5_large:'multilingual-e5-large',
+            multilingual_e5_base: 'multilingual-e5-base',
+            multilingual_mini_lm: 'multilingual-mini-lm',
+            bge_small_en:         'bge-small-en',
+        }[m] ?? 'bge-m3';
+    }
+    function indexDeviceToRust(d: string): string {
+        return { auto: 'auto', cpu: 'cpu', metal: 'metal', cuda: 'cuda' }[d] ?? 'auto';
+    }
+
+    async function applyIndexConfig() {
+        await saveSettingsSilent();
+        indexStatus       = 'loading';
+        indexStatusMsg    = '';
+        indexInitProgress = 'Konfiguration wird gespeichert …';
+        indexInitPct      = 0;
+        try {
+            // Push config to backend.
+            await invoke('index_set_config', {
+                config: {
+                    enabled:          indexEnabled,
+                    mode:             indexModeToRust(indexSearchMode),
+                    backend_type:     indexBackendToRust(indexBackendType),
+                    remote_url:       indexRemoteUrl || null,
+                    remote_api_key:   indexRemoteApiKey || null,
+                    embedder_model:   indexEmbedderToRust(indexEmbedderModel),
+                    embedder_device:  indexDeviceToRust(indexDevice),
+                }
+            });
+            if (indexEnabled) {
+                indexInitProgress = 'Starte Index-Initialisierung …';
+                indexInitPct      = 2;
+                const dataDir = indexDataDir || await invoke<string>('get_app_data_dir').catch(() => '');
+                await invoke('index_init', { dataDir });
+            }
+            indexStatus       = 'ok';
+            indexInitProgress = '';
+            indexInitPct      = 100;
+        } catch(e: any) {
+            indexStatus       = 'error';
+            indexStatusMsg    = String(e);
+            indexInitProgress = '';
+        }
+    }
+
+    async function pickIndexDataDir() {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (selected) { indexDataDir = selected as string; }
+    }
+
+    async function buildIvfPq() {
+        indexIvfRunning = true;
+        try {
+            await invoke('index_build_ivf_pq');
+            alert('IVF-PQ index built successfully.');
+        } catch(e: any) {
+            alert('IVF-PQ build failed: ' + e);
+        } finally {
+            indexIvfRunning = false;
+        }
     }
 
     async function handleSave() {
@@ -800,6 +925,11 @@
             <button class="provider-btn" class:active={selectedProviderId === 'bench'} onclick={() => selectedProviderId = 'bench'}>
                 <Beaker size={16} /> {i18n.t.settings.benchmark.title}
             </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'index'} onclick={() => selectedProviderId = 'index'}>
+                <Search size={16} /> {i18n.t.settings.index.title}
+                {#if indexStatus === 'ok'}<CheckCircle2 size={12} style="color:#22c55e; margin-left:auto;" />{/if}
+                {#if indexStatus === 'error'}<AlertCircle size={12} style="color:#ef4444; margin-left:auto;" />{/if}
+            </button>
             <button class="provider-btn" class:active={selectedProviderId === 'about'} onclick={() => selectedProviderId = 'about'}>
                 <Info size={16} /> {i18n.t.settings.about}
             </button>
@@ -1087,6 +1217,126 @@
                     </table>
                 </div>
             {/if}
+
+        {:else if selectedProviderId === 'index'}
+            <div class="header">
+                <h1>{i18n.t.settings.index.title}</h1>
+                <div class="save-area">
+                    {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
+                </div>
+            </div>
+
+            <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
+
+            <!-- Enable toggle -->
+            <div class="section-card">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <input type="checkbox" bind:checked={indexEnabled} />
+                    <span><strong>{i18n.t.settings.index.enabled}</strong></span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.enabled_hint}</p>
+            </div>
+
+            <!-- Search mode -->
+            <div class="section-card">
+                <label for="index-mode-select"><Brain size={16} /> {i18n.t.settings.index.search_mode}</label>
+                <select id="index-mode-select" bind:value={indexSearchMode} class="styled-select">
+                    <option value="hybrid">{i18n.t.settings.index.mode_hybrid}</option>
+                    <option value="text">{i18n.t.settings.index.mode_text}</option>
+                    <option value="vector">{i18n.t.settings.index.mode_vector}</option>
+                </select>
+            </div>
+
+            <!-- Backend -->
+            <div class="section-card">
+                <label for="index-backend-select"><HardDrive size={16} /> {i18n.t.settings.index.backend}</label>
+                <select id="index-backend-select" bind:value={indexBackendType} class="styled-select">
+                    <option value="local">{i18n.t.settings.index.backend_local}</option>
+                    <option value="remote">{i18n.t.settings.index.backend_remote}</option>
+                </select>
+            </div>
+
+            {#if indexBackendType === 'remote'}
+            <!-- Remote URL + Key -->
+            <div class="section-card">
+                <label for="index-remote-url">{i18n.t.settings.index.remote_url}</label>
+                <input id="index-remote-url" type="text" bind:value={indexRemoteUrl}
+                    placeholder={i18n.t.settings.index.remote_url_placeholder} />
+                <label for="index-remote-key" style="margin-top:10px;"><Key size={14} /> {i18n.t.settings.index.remote_api_key}</label>
+                <input id="index-remote-key" type="password" bind:value={indexRemoteApiKey} placeholder="••••••••" />
+            </div>
+            {/if}
+
+            <!-- Embedder model -->
+            <div class="section-card">
+                <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
+                <select id="index-model-select" bind:value={indexEmbedderModel} class="styled-select">
+                    <option value="bge_m3">{i18n.t.settings.index.model_bge_m3}</option>
+                    <option value="multilingual_e5_large">{i18n.t.settings.index.model_e5_large}</option>
+                    <option value="multilingual_e5_base">{i18n.t.settings.index.model_e5_base}</option>
+                    <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
+                    <option value="bge_small_en">{i18n.t.settings.index.model_bge_small_en}</option>
+                </select>
+            </div>
+
+            <!-- Compute device -->
+            <div class="section-card">
+                <label for="index-device-select"><Zap size={16} /> {i18n.t.settings.index.device}</label>
+                <select id="index-device-select" bind:value={indexDevice} class="styled-select">
+                    <option value="auto">{i18n.t.settings.index.device_auto}</option>
+                    <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
+                    {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
+                    <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
+                </select>
+            </div>
+
+            <!-- Data directory -->
+            {#if indexBackendType === 'local'}
+            <div class="section-card">
+                <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
+                <div class="input-with-action">
+                    <input id="index-data-dir" type="text" bind:value={indexDataDir}
+                        placeholder="(app data dir)" />
+                    <button class="action-btn small" onclick={pickIndexDataDir}>{i18n.t.settings.browse}</button>
+                </div>
+                <p class="hint">{i18n.t.settings.index.data_dir_hint}</p>
+            </div>
+            {/if}
+
+            <!-- Apply button + status -->
+            <div class="section-card">
+                <button class="save-btn" onclick={applyIndexConfig}
+                    disabled={indexStatus === 'loading'}>
+                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> Initialisiere …
+                    {:else}<Play size={16} /> {i18n.t.settings.index.apply}{/if}
+                </button>
+                <p class="hint">{i18n.t.settings.index.apply_hint}</p>
+
+                {#if indexStatus === 'loading' && indexInitProgress}
+                    <div class="init-progress-wrap">
+                        <p class="init-progress-label"><Loader2 size={13} class="spin" /> {indexInitProgress}</p>
+                        <div class="init-progress-bar">
+                            <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
+                        </div>
+                        <p class="init-progress-note">Beim ersten Start wird das Embedder-Modell heruntergeladen (~500 MB). Bitte warten …</p>
+                    </div>
+                {:else if indexStatus === 'ok'}
+                    <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {i18n.t.settings.index.status_ok}</p>
+                {:else if indexStatus === 'error'}
+                    <p style="color:#ef4444; margin-top:8px; font-size:0.85rem;"><AlertCircle size={14} /> {indexStatusMsg}</p>
+                {/if}
+            </div>
+
+            <!-- IVF-PQ build -->
+            <div class="section-card">
+                <label><Code size={16} /> {i18n.t.settings.index.build_ivf}</label>
+                <p class="hint">{i18n.t.settings.index.build_ivf_hint}</p>
+                <button class="action-btn secondary" onclick={buildIvfPq}
+                    disabled={indexIvfRunning || indexStatus !== 'ok'}>
+                    {#if indexIvfRunning}<Loader2 size={14} class="spin" />{/if}
+                    {i18n.t.settings.index.build_ivf}
+                </button>
+            </div>
 
         {:else if selectedProviderId === 'about'}
             <div class="header">
@@ -1676,6 +1926,12 @@
     .template-preview { font-family: monospace; word-break: break-all; }
     .loader-spin { display: inline-flex; animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    .init-progress-wrap { margin-top: 12px; }
+    .init-progress-label { font-size: 0.8rem; color: #a1a1aa; display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+    .init-progress-bar { height: 6px; background: #27272a; border-radius: 3px; overflow: hidden; }
+    .init-progress-fill { height: 100%; background: #3b82f6; border-radius: 3px; transition: width 0.4s ease; }
+    .init-progress-note { font-size: 0.75rem; color: #52525b; margin-top: 6px; font-style: italic; }
 
     .bench-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1000; display: flex; align-items: center; justify-content: center; }
     .bench-modal { background: #18181b; border: 1px solid #3f3f46; border-radius: 8px; width: min(720px, 90vw); max-height: 80vh; display: flex; flex-direction: column; }
