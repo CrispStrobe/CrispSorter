@@ -39,6 +39,7 @@ pdf-extract = "0.10.0"
 # 0.27.0-beta.5 is git-only and adds nothing relevant (JS native arrays, Lance rc bump).
 lancedb      = { version = "0.26.2", default-features = false }
 tantivy      = "0.22"
+deunicode    = "1.6.0"
 # fastembed 5.x has real EmbeddingModel::BGEM3 (8192-token, multilingual) and
 # SparseModel::BGEM3 (multilingual sparse). lancedb has no ort dep so no conflict.
 fastembed    = { version = "5.13.0", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }

@@ -31,6 +31,7 @@ use tantivy::{
     Term,
 };
 use anyhow::{Result, bail, anyhow};
+use deunicode::deunicode;
 
 /// Fields that the translator can target.
 pub struct SearchFields {
@@ -229,24 +230,24 @@ impl<'a> Parser<'a> {
 /// - `foo~N`        → FuzzyTermQuery
 /// - `foo`          → TermQuery on body + headings + title (weighted via BoostQuery)
 fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    let lower = word.to_lowercase();
+    let folded = fold_accents(word);
 
     // Fuzzy: foo~N
-    if let Some(tilde_pos) = lower.rfind('~') {
-        let term_str = &lower[..tilde_pos];
-        let dist: u8 = lower[tilde_pos + 1..].parse().unwrap_or(1);
+    if let Some(tilde_pos) = folded.rfind('~') {
+        let term_str = &folded[..tilde_pos];
+        let dist: u8 = folded[tilde_pos + 1..].parse().unwrap_or(1);
         return build_fuzzy(term_str, dist, fields);
     }
 
     // Wildcard: foo* or fo?
-    if lower.contains('*') || lower.contains('?') {
-        return build_wildcard(&lower, fields);
+    if folded.contains('*') || folded.contains('?') {
+        return build_wildcard(&folded, fields);
     }
 
     // Exact term across fields with boosting.
-    let title_q = build_boosted_term(fields.title, &lower, 3.0);
-    let head_q  = build_boosted_term(fields.headings, &lower, 2.0);
-    let body_q  = build_boosted_term(fields.body, &lower, 1.0);
+    let title_q = build_boosted_term(fields.title, &folded, 3.0);
+    let head_q  = build_boosted_term(fields.headings, &folded, 2.0);
+    let body_q  = build_boosted_term(fields.body, &folded, 1.0);
 
     Ok(Box::new(BooleanQuery::new(vec![
         (Occur::Should, title_q),
@@ -421,9 +422,14 @@ fn extract_body_terms(query: &dyn Query, field: Field) -> Vec<Term> {
 /// Naive whitespace + lowercase tokenizer for phrase query construction.
 pub fn simple_tokenize(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|t| t.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+        .map(|t| fold_accents(t).trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
         .filter(|t| !t.is_empty())
         .collect()
+}
+
+/// Normalise text to ASCII-ish (lowercase + accent folding).
+pub fn fold_accents(text: &str) -> String {
+    deunicode(text).to_lowercase()
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
