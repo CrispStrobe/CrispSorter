@@ -154,6 +154,45 @@ Headings extracted from DOCX/MD/PDF are stored in the index and boost search rel
 
 ---
 
+### Embedding models
+
+CrispSorter ships with a carefully benchmarked set of embedding models. All run entirely on-device via ONNX Runtime with optional CoreML / CUDA acceleration.
+
+#### Benchmark results
+
+Measured on Apple M-series (CPU-only, batch=32, 3 documents, hybrid search).
+`ch/s` = document-chunks embedded per second · `Acc` = top-1 retrieval accuracy (0–1) · `RSS` = resident memory while the model is loaded.
+
+| Model | Dims | ch/s | Acc | RSS MB | Notes |
+|---|---|---|---|---|---|
+| Jina-v2 Small EN | 512 | 8.56 | 1.00 | 2421 | Fast encoder, English |
+| Multilingual MiniLM | 384 | 6.10 | 1.00 | 2505 | Fastest multilingual; lower quality |
+| Qwen3-Emb uint8 (calibrated) | 1024 | 6.01 | 1.00 | 1407 | Compact, calibrated quant |
+| **Octen-0.6B INT8** (default) | 1024 | 6.09 | 1.00 | 1348 | ✅ Best balance; recommended |
+| Qwen3-Emb INT8 | 1024 | 5.78 | 0.50 | 1857 | Lower accuracy on hybrid test |
+| Jina-v2 Base EN | 768 | 6.85 | 1.00 | 2843 | Solid English encoder |
+| Snowflake Arctic-L v2 | 1024 | 5.77 | 1.00 | 2479 | |
+| BGE-M3 | 1024 | 2.39 | 1.00 | 3266 | Also produces sparse vectors for hybrid BM25+dense fusion |
+| **Octen-0.6B INT4** | 1024 | 2.62 | 1.00 | 1151 | 🔋 Lowest RAM; good for constrained machines |
+| PIXIE-Rune-v1.0 | 1024 | 4.04 | 1.00 | 3489 | 74 languages |
+| Octen-0.6B FP32 | 1024 | 3.89 | 1.00 | 2590 | Reference; no accuracy gain over INT8 |
+| Jina-v5 Nano | 768 | 1.98 | 1.00 | 2051 | 32k context |
+| Jina-v3 | 1024 | 0.16 | 1.00 | 5153 | Multilingual, very slow on CPU |
+
+#### About the Octen models
+
+**Octen-Embedding-0.6B** is a Qwen3-0.6B fine-tune trained specifically for semantic search and retrieval. The FP32, INT8, and INT4 ONNX files are produced by our own `export_octen_onnx.py` / `quantize_octen_int8.py` / `quantize_octen_int4.py` scripts from the original `Octen/Octen-Embedding-0.6B` safetensors — no third-party ONNX conversions.
+
+| Variant | File size | Quantisation method | RAM (RSS) |
+|---|---|---|---|
+| FP32 | 2.38 GB | none (reference) | ~2.6 GB |
+| INT8 | 1.06 GB | ORT dynamic, MatMul-only, per-tensor | ~1.3 GB |
+| INT4 | 0.90 GB | ORT `MatMulNBits`, block_size=32, symmetric | ~1.2 GB |
+
+The embedding layer (token lookup table, ~600 MB) is intentionally left in FP32 in all quantised variants — quantising it saves memory but measurably degrades multilingual quality.
+
+Both INT8 and INT4 maintain **1.00 retrieval accuracy** on the benchmark suite. INT4 is ~15% smaller than INT8 but runs at roughly half the throughput on CPU due to the dequantisation overhead of `MatMulNBits`. Choose INT8 for speed, INT4 if you need to minimise resident memory.
+
 ### Settings UI (Settings → Search Index)
 
 | Setting | Description |
@@ -163,7 +202,7 @@ Headings extracted from DOCX/MD/PDF are stored in the index and boost search rel
 | **Backend** | `Local` (on-device LanceDB) or `Remote` (crisp-index-server) |
 | **Remote URL** | Base URL of your crisp-index-server, e.g. `https://crisp.example.com` |
 | **Remote API key** | Bearer token configured on the server (`CRISP_API_KEY`) |
-| **Embedder model** | `BGE-M3` (1024-dim, multilingual, default), `E5-Large`, `E5-Base`, `MiniLM-L6`, `BGE-Small-EN` |
+| **Embedder model** | See table above; default is Octen-0.6B INT8 |
 | **Device** | `Auto`, `CPU`, `Metal` (macOS), `CUDA` (Windows/Linux) |
 | **Data directory** | Where local LanceDB + Tantivy files are stored |
 | **Apply & Init** | Apply settings and (re)initialise the index |

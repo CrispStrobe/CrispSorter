@@ -84,18 +84,19 @@ pub enum EmbedderModel {
     /// electroglyph/Qwen3-Embedding-0.6B-onnx-uint8 — 1024d, calibrated uint8.
     Qwen3EmbeddingUint8,
 
-    // ── Octen-Embedding-0.6B (Qwen3 finetune by geoffsee, encoder-style ONNX) ─
-    /// geoffsee/octen-embedding-0.6b-onnx-fp32 — 1024d, 32k ctx.
+    // ── Octen-Embedding-0.6B — local torch.onnx.export of Octen/Octen-Embedding-0.6B ─
+    /// Our own fp32 ONNX export — 1024d, 32k ctx, last-token pool.
     Octen06bFp32,
 
-    /// geoffsee/octen-embedding-0.6b-onnx-fp16 — 1024d, 32k ctx.
-    Octen06bFp16,
+    /// Our own dynamic-INT8 ONNX export (MatMul-only quant, ~1.1 GB) — 1024d, 32k ctx.
+    Octen06bInt8Local,
 
-    /// geoffsee/octen-embedding-0.6b-onnx-int8 — 1024d, 32k ctx.
-    Octen06bInt8,
+    /// Our own INT4 ONNX export (MatMulNBits block_size=32, ~900 MB) — 1024d, 32k ctx.
+    Octen06bInt4Local,
 
-    /// geoffsee/octen-embedding-0.6b-onnx-int4 — 1024d, 32k ctx.
-    Octen06bInt4,
+    /// Our own dynamic-INT8 ONNX export including Gather (embedding table) — ~570 MB total.
+    /// Smaller than Int8Local but the embedding lookup table is also quantized.
+    Octen06bInt8FullLocal,
 }
 
 impl EmbedderModel {
@@ -113,10 +114,10 @@ impl EmbedderModel {
             EmbedderModel::Qwen3Embedding       => "Qwen3-Embedding-0.6B fp32 (32k ctx, 1024d)",
             EmbedderModel::Qwen3EmbeddingInt8   => "Qwen3-Embedding-0.6B int8 (32k ctx, 1024d)",
             EmbedderModel::Qwen3EmbeddingUint8  => "Qwen3-Embedding-0.6B uint8 calibrated (1024d)",
-            EmbedderModel::Octen06bFp32         => "Octen-0.6B fp32 local export (1024d, last-token pool)",
-            EmbedderModel::Octen06bFp16         => "Octen-0.6B fp16 (Qwen3 finetune, 1024d)",
-            EmbedderModel::Octen06bInt8         => "Octen-0.6B int8 (Qwen3 finetune, 1024d)",
-            EmbedderModel::Octen06bInt4         => "Octen-0.6B int4 (Qwen3 finetune, 1024d)",
+            EmbedderModel::Octen06bFp32         => "Octen-0.6B fp32 local export (1024d, last-token pool, ~2.4 GB)",
+            EmbedderModel::Octen06bInt8Local    => "Octen-0.6B int8 local export (1024d, last-token pool, ~1.1 GB)",
+            EmbedderModel::Octen06bInt4Local    => "Octen-0.6B int4 local export (1024d, last-token pool, ~900 MB)",
+            EmbedderModel::Octen06bInt8FullLocal => "Octen-0.6B int8 full local export incl. embedding table (~570 MB)",
         }
     }
 
@@ -146,9 +147,9 @@ impl EmbedderModel {
             | EmbedderModel::Qwen3EmbeddingInt8
             | EmbedderModel::Qwen3EmbeddingUint8
             | EmbedderModel::Octen06bFp32
-            | EmbedderModel::Octen06bFp16
-            | EmbedderModel::Octen06bInt8
-            | EmbedderModel::Octen06bInt4    => 32768,
+            | EmbedderModel::Octen06bInt8Local
+            | EmbedderModel::Octen06bInt4Local
+            | EmbedderModel::Octen06bInt8FullLocal => 32768,
         }
     }
 
@@ -220,9 +221,9 @@ impl EmbedderModel {
             // These are encoder-style ONNX exports with built-in pooling.
             // Output: pre-pooled `embeddings [batch, 1024]` — no KV-cache needed.
             //
-            // Octen06bFp32: our own torch.onnx.export of Octen/Octen-Embedding-0.6B.
-            // Inputs: input_ids, attention_mask → last_hidden_state [batch, seq, 1024].
-            // Uses last-token pooling (Qwen3 causal base model, bidirectional-like finetune).
+            // Octen06bFp32 / Octen06bInt8Local: our own torch.onnx.export of
+            // Octen/Octen-Embedding-0.6B.  Inputs: input_ids, attention_mask →
+            // last_hidden_state [batch, seq, 1024].  Uses last-token pooling.
             EmbedderModel::Octen06bFp32 => Some(ModelSpec::new(
                 "Octen/Octen-Embedding-0.6B",  // informational only (local_subdir used instead)
                 "model.onnx",
@@ -230,26 +231,33 @@ impl EmbedderModel {
              .with_additional_files(vec!["model.onnx.data"])
              .force_last_token_pool()),
 
-            EmbedderModel::Octen06bFp16 => Some(ModelSpec::new(
-                "geoffsee/octen-embedding-0.6b-onnx-fp16",
-                "model.fp16.onnx",
-            ).with_additional_files(vec!["model.fp16.onnx.data"])
-             .with_tokenizer_prefix("tokenizer/")
-             .force_pre_pooled()),
-
-            EmbedderModel::Octen06bInt8 => Some(ModelSpec::new(
-                "geoffsee/octen-embedding-0.6b-onnx-int8",
+            // Dynamic INT8 quantisation of the same export (MatMul-only, ~1.1 GB).
+            // Architecture identical to Fp32 — last-token pool, external data.
+            EmbedderModel::Octen06bInt8Local => Some(ModelSpec::new(
+                "Octen/Octen-Embedding-0.6B",  // informational only
                 "model.int8.onnx",
-            ).with_tokenizer_prefix("tokenizer/")
-             .force_ort_path()
-             .force_pre_pooled()),
+            ).with_local_subdir("octen-embedding-0.6b-int8")
+             .with_additional_files(vec!["model.int8.onnx.data"])
+             .force_last_token_pool()),
 
-            EmbedderModel::Octen06bInt4 => Some(ModelSpec::new(
-                "geoffsee/octen-embedding-0.6b-onnx-int4",
+            // MatMulNBits INT4 (block_size=32, symmetric) — ~900 MB.
+            // Uses contrib op MatMulNBits; ORT resolves it automatically.
+            EmbedderModel::Octen06bInt4Local => Some(ModelSpec::new(
+                "Octen/Octen-Embedding-0.6B",  // informational only
                 "model.int4.onnx",
-            ).with_additional_files(vec!["model.int4.onnx.data"])
-             .with_tokenizer_prefix("tokenizer/")
-             .force_pre_pooled()),
+            ).with_local_subdir("octen-embedding-0.6b-int4")
+             .with_additional_files(vec!["model.int4.onnx.data"])
+             .force_last_token_pool()),
+
+            // INT8 with ALL node types quantized (MatMul + Gather) — ~570 MB total.
+            // The embedding table (~600 MB FP32) is also quantized, saving ~450 MB vs Int8Local.
+            // Stored inside the int8 directory so the tokenizer and config are shared.
+            EmbedderModel::Octen06bInt8FullLocal => Some(ModelSpec::new(
+                "Octen/Octen-Embedding-0.6B",  // informational only
+                "model.int8_full.onnx",
+            ).with_local_subdir("octen-embedding-0.6b-int8/model_int8_full")
+             .with_additional_files(vec!["model.int8_full.onnx.data"])
+             .force_last_token_pool()),
 
             EmbedderModel::SnowflakeArcticLv2 => Some(ModelSpec::new(
                 "Snowflake/snowflake-arctic-embed-l-v2.0",
@@ -1102,9 +1110,9 @@ mod tests {
         assert!(EmbedderModel::Qwen3EmbeddingInt8.to_model_spec().unwrap().needs_ort_path());
         assert!(EmbedderModel::Qwen3EmbeddingUint8.to_model_spec().unwrap().needs_ort_path());
         assert!(EmbedderModel::Octen06bFp32.to_model_spec().unwrap().needs_ort_path());
-        assert!(EmbedderModel::Octen06bFp16.to_model_spec().unwrap().needs_ort_path());
-        assert!(EmbedderModel::Octen06bInt8.to_model_spec().unwrap().needs_ort_path());
-        assert!(EmbedderModel::Octen06bInt4.to_model_spec().unwrap().needs_ort_path());
+        assert!(EmbedderModel::Octen06bInt8Local.to_model_spec().unwrap().needs_ort_path());
+        assert!(EmbedderModel::Octen06bInt4Local.to_model_spec().unwrap().needs_ort_path());
+        assert!(EmbedderModel::Octen06bInt8FullLocal.to_model_spec().unwrap().needs_ort_path());
 
         // Fastembed UserDefined backend (self-contained ONNX + config.json present)
         assert!(!EmbedderModel::JinaV2Small.to_model_spec().unwrap().needs_ort_path());
@@ -1119,10 +1127,10 @@ mod tests {
         assert!(EmbedderModel::JinaV3.to_model_spec().unwrap().has_external_onnx_data());
         assert!(EmbedderModel::Qwen3Embedding.to_model_spec().unwrap().has_external_onnx_data());
         assert!(EmbedderModel::Octen06bFp32.to_model_spec().unwrap().has_external_onnx_data());
-        assert!(EmbedderModel::Octen06bFp16.to_model_spec().unwrap().has_external_onnx_data());
-        assert!(EmbedderModel::Octen06bInt4.to_model_spec().unwrap().has_external_onnx_data());
+        assert!(EmbedderModel::Octen06bInt8Local.to_model_spec().unwrap().has_external_onnx_data());
+        assert!(EmbedderModel::Octen06bInt4Local.to_model_spec().unwrap().has_external_onnx_data());
+        assert!(EmbedderModel::Octen06bInt8FullLocal.to_model_spec().unwrap().has_external_onnx_data());
         // Self-contained ONNX (no external data file)
-        assert!(!EmbedderModel::Octen06bInt8.to_model_spec().unwrap().has_external_onnx_data());
         assert!(!EmbedderModel::Qwen3EmbeddingInt8.to_model_spec().unwrap().has_external_onnx_data());
     }
 

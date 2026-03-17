@@ -409,7 +409,7 @@
         return {
             bge_m3:               'bge-m3',
             pixie:                'pixie-rune-v1',
-            octen:                'octen-06b-int8',
+            octen:                'octen-06b-int8-local',
             snowflake_l:          'snowflake-arctic-lv2',
             jina_nano:            'jina-v5-nano',
             multilingual_mini_lm: 'multilingual-mini-lm',
