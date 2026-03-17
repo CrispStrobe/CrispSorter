@@ -34,6 +34,7 @@ use anyhow::{Result, bail, anyhow};
 
 /// Fields that the translator can target.
 pub struct SearchFields {
+    pub title: Field,
     pub body: Field,
     pub headings: Field,
 }
@@ -226,7 +227,7 @@ impl<'a> Parser<'a> {
 /// Build a query for a single term word.
 /// - `foo*` / `fo?` → RegexQuery (wildcard)
 /// - `foo~N`        → FuzzyTermQuery
-/// - `foo`          → TermQuery on body + headings (headings boosted via should)
+/// - `foo`          → TermQuery on body + headings + title (weighted via BoostQuery)
 fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
     let lower = word.to_lowercase();
 
@@ -242,37 +243,34 @@ fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>>
         return build_wildcard(&lower, fields);
     }
 
-    // Exact term — body + headings as should (headings naturally boosts due to IDF)
-    let body_q: Box<dyn Query> = Box::new(TermQuery::new(
-        Term::from_field_text(fields.body, &lower),
-        IndexRecordOption::WithFreqsAndPositions,
-    ));
-    let head_q: Box<dyn Query> = Box::new(TermQuery::new(
-        Term::from_field_text(fields.headings, &lower),
-        IndexRecordOption::WithFreqsAndPositions,
-    ));
+    // Exact term across fields with boosting.
+    let title_q = build_boosted_term(fields.title, &lower, 3.0);
+    let head_q  = build_boosted_term(fields.headings, &lower, 2.0);
+    let body_q  = build_boosted_term(fields.body, &lower, 1.0);
+
     Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, body_q),
+        (Occur::Should, title_q),
         (Occur::Should, head_q),
+        (Occur::Should, body_q),
     ])))
 }
 
-/// Convert a wildcard pattern to a regex string, matching Tantivy's own
-/// `wildcard_query_to_regex_str` convention:
-///   `*` → `.*`   (zero or more of any character)
-///   `?` → `.`    (exactly one character)
-///   other regex metacharacters are escaped with `\`
-///
-/// **No anchors are added** — tantivy-fst applies implicit full-match anchoring
-/// when scanning the TermDictionary, and it does not support explicit `^`/`$`
-/// Look assertions.
+fn build_boosted_term(field: Field, text: &str, boost: f32) -> Box<dyn Query> {
+    use tantivy::query::BoostQuery;
+    let tq = Box::new(TermQuery::new(
+        Term::from_field_text(field, text),
+        IndexRecordOption::WithFreqsAndPositions,
+    ));
+    if (boost - 1.0).abs() < 0.001 { tq } else { Box::new(BoostQuery::new(tq, boost)) }
+}
+
+/// Convert a wildcard pattern to a regex string.
 fn wildcard_to_regex(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len() * 2);
     for c in pattern.chars() {
         match c {
             '*'  => out.push_str(".*"),
             '?'  => out.push('.'),
-            // Escape regex metacharacters
             '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
                 out.push('\\');
                 out.push(c);
@@ -284,53 +282,76 @@ fn wildcard_to_regex(pattern: &str) -> String {
 }
 
 fn build_wildcard(pattern: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
+    // SECURITY/PERF: Block leading wildcards if they are too expensive.
+    if pattern.starts_with('*') || pattern.starts_with('?') {
+        bail!("Leading wildcards ('{}') are not allowed for performance reasons.", pattern);
+    }
+
     let regex = wildcard_to_regex(pattern);
-    let body_q: Box<dyn Query> = Box::new(
-        RegexQuery::from_pattern(&regex, fields.body)
-            .map_err(|e| anyhow!("Wildcard regex error on '{}': {:?}", pattern, e))?
-    );
-    let head_q: Box<dyn Query> = Box::new(
-        RegexQuery::from_pattern(&regex, fields.headings)
-            .map_err(|e| anyhow!("Wildcard regex error on '{}': {:?}", pattern, e))?
-    );
+
+    let title_q = build_boosted_regex(fields.title, &regex, 3.0)?;
+    let head_q  = build_boosted_regex(fields.headings, &regex, 2.0)?;
+    let body_q  = build_boosted_regex(fields.body, &regex, 1.0)?;
+
     Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, body_q),
+        (Occur::Should, title_q),
         (Occur::Should, head_q),
+        (Occur::Should, body_q),
     ])))
 }
 
+fn build_boosted_regex(field: Field, regex: &str, boost: f32) -> Result<Box<dyn Query>> {
+    use tantivy::query::BoostQuery;
+    let rq = Box::new(RegexQuery::from_pattern(regex, field)
+        .map_err(|e| anyhow!("Wildcard regex error: {:?}", e))?);
+
+    if (boost - 1.0).abs() < 0.001 { Ok(rq) } else { Ok(Box::new(BoostQuery::new(rq, boost))) }
+}
+
 fn build_fuzzy(term: &str, distance: u8, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    let body_q: Box<dyn Query> = Box::new(FuzzyTermQuery::new(
-        Term::from_field_text(fields.body, term), distance, true,
-    ));
-    let head_q: Box<dyn Query> = Box::new(FuzzyTermQuery::new(
-        Term::from_field_text(fields.headings, term), distance, true,
-    ));
+    use tantivy::query::BoostQuery;
+    let title_q = Box::new(BoostQuery::new(Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.title, term), distance, true)), 3.0));
+    let head_q  = Box::new(BoostQuery::new(Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.headings, term), distance, true)), 2.0));
+    let body_q  = Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.body, term), distance, true));
+
     Ok(Box::new(BooleanQuery::new(vec![
-        (Occur::Should, body_q),
+        (Occur::Should, title_q),
         (Occur::Should, head_q),
+        (Occur::Should, body_q),
     ])))
 }
 
 /// Build an exact or slop phrase query on the body field.
 fn build_phrase_query(text: &str, slop: u32, fields: &SearchFields) -> Result<Box<dyn Query>> {
-    let terms: Vec<Term> = simple_tokenize(text)
-        .into_iter()
-        .map(|t| Term::from_field_text(fields.body, &t))
-        .collect();
+    let tokens = simple_tokenize(text);
+    if tokens.is_empty() { bail!("Empty phrase query"); }
 
-    if terms.is_empty() { bail!("Empty phrase query"); }
-    if terms.len() == 1 {
-        return Ok(Box::new(TermQuery::new(
-            terms.into_iter().next().unwrap(),
-            IndexRecordOption::WithFreqsAndPositions,
-        )));
-    }
+    // For phrases, we also try matching title/headings, but with lower slop or higher boost.
+    let title_q = build_boosted_phrase(fields.title, &tokens, slop, 3.0);
+    let head_q  = build_boosted_phrase(fields.headings, &tokens, slop, 2.0);
+    let body_q  = build_boosted_phrase(fields.body, &tokens, slop, 1.0);
 
-    let phrase_terms: Vec<(usize, Term)> = terms.into_iter().enumerate().collect();
-    let mut pq = PhraseQuery::new_with_offset(phrase_terms);
-    pq.set_slop(slop);
-    Ok(Box::new(pq))
+    Ok(Box::new(BooleanQuery::new(vec![
+        (Occur::Should, title_q),
+        (Occur::Should, head_q),
+        (Occur::Should, body_q),
+    ])))
+}
+
+fn build_boosted_phrase(field: Field, tokens: &[String], slop: u32, boost: f32) -> Box<dyn Query> {
+    use tantivy::query::BoostQuery;
+    let terms: Vec<Term> = tokens.iter().map(|t| Term::from_field_text(field, t)).collect();
+
+    let pq: Box<dyn Query> = if terms.len() == 1 {
+        Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::WithFreqsAndPositions))
+    } else {
+        let phrase_terms: Vec<(usize, Term)> = terms.into_iter().enumerate().collect();
+        let mut pq = PhraseQuery::new_with_offset(phrase_terms);
+        pq.set_slop(slop);
+        Box::new(pq)
+    };
+
+    if (boost - 1.0).abs() < 0.001 { pq } else { Box::new(BoostQuery::new(pq, boost)) }
 }
 
 /// Build a proximity query for `lhs w/N rhs` or `lhs pre/N rhs`.
@@ -468,8 +489,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let idx = FtsIndex::open_or_create(dir.path()).unwrap();
         let mut w = idx.writer().unwrap();
-        idx.add_document(&mut w, "d1", "u1", "en", "", "Karl Barth schrieb über Gnade").unwrap();
-        idx.add_document(&mut w, "d2", "u1", "en", "", "Karl Marx schrieb über Kapital").unwrap();
+        idx.add_document(&mut w, "d1", "u1", "en", "", "", "Karl Barth schrieb über Gnade").unwrap();
+        idx.add_document(&mut w, "d2", "u1", "en", "", "", "Karl Marx schrieb über Kapital").unwrap();
         w.commit().unwrap();
 
         use crate::index::schema::SearchFilters;
@@ -477,5 +498,18 @@ mod tests {
         // d1 contains both Karl AND Barth; d2 only has Karl — implicit AND must exclude d2
         assert_eq!(hits.len(), 1, "implicit AND should require both terms");
         assert_eq!(hits[0].doc_id, "d1");
+    }
+
+    #[test]
+    fn wildcard_leading_blocked() {
+        let fields = SearchFields {
+            title: tantivy::schema::Field::from_field_id(0),
+            headings: tantivy::schema::Field::from_field_id(1),
+            body: tantivy::schema::Field::from_field_id(2),
+        };
+        let res = build_wildcard("*foo", &fields);
+        assert!(res.is_err(), "Leading wildcard * should be blocked");
+        let res2 = build_wildcard("?foo", &fields);
+        assert!(res2.is_err(), "Leading wildcard ? should be blocked");
     }
 }

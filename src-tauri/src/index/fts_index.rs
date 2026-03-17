@@ -41,6 +41,7 @@ pub struct FtsIndex {
 pub struct IndexFields {
     pub doc_id:   Field,
     pub owner_id: Field,
+    pub title:    Field,
     pub headings: Field,
     pub body:     Field,
     pub language: Field,
@@ -70,7 +71,11 @@ impl FtsIndex {
 
     /// Return `SearchFields` for the dtSearch query translator.
     pub fn search_fields(&self) -> SearchFields {
-        SearchFields { body: self.fields.body, headings: self.fields.headings }
+        SearchFields {
+            title:    self.fields.title,
+            headings: self.fields.headings,
+            body:     self.fields.body,
+        }
     }
 
     pub fn writer(&self) -> Result<IndexWriter> {
@@ -84,6 +89,7 @@ impl FtsIndex {
         doc_id: &str,
         owner_id: &str,
         language: &str,
+        title: &str,
         headings: &str,
         body: &str,
     ) -> Result<()> {
@@ -91,6 +97,7 @@ impl FtsIndex {
         doc.add_text(self.fields.doc_id,   doc_id);
         doc.add_text(self.fields.owner_id, owner_id);
         doc.add_text(self.fields.language, language);
+        doc.add_text(self.fields.title,    title);
         doc.add_text(self.fields.headings, headings);
         doc.add_text(self.fields.body,     body);
         writer.add_document(doc)?;
@@ -174,10 +181,11 @@ fn build_schema() -> (Schema, IndexFields) {
             .set_index_option(IndexRecordOption::WithFreqsAndPositions),
     );
 
+    let title    = sb.add_text_field("title",    text_positional.clone());
     let headings = sb.add_text_field("headings", text_positional.clone());
     let body     = sb.add_text_field("body",     text_positional);
 
-    (sb.build(), IndexFields { doc_id, owner_id, headings, body, language })
+    (sb.build(), IndexFields { doc_id, owner_id, title, headings, body, language })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -204,10 +212,8 @@ mod tests {
     fn write_and_search_basic() {
         let (idx, _dir) = make_index();
         let mut w = idx.writer().unwrap();
-        idx.add_document(&mut w, "doc1", "user1", "en",
-            "Introduction", "The theology of Karl Rahner explores grace.").unwrap();
-        idx.add_document(&mut w, "doc2", "user1", "de",
-            "Einleitung", "Karl Barth und die Gnadenlehre der Kirche.").unwrap();
+        idx.add_document(&mut w, "doc1", "user1", "en", "Introduction", "", "The theology of Karl Rahner explores grace.").unwrap();
+        idx.add_document(&mut w, "doc2", "user1", "de", "Einleitung", "", "Karl Barth und die Gnadenlehre der Kirche.").unwrap();
         w.commit().unwrap();
 
         let hits = idx.search("rahner", &SearchFilters::default(), 10).unwrap();
@@ -219,8 +225,8 @@ mod tests {
     fn owner_filter() {
         let (idx, _dir) = make_index();
         let mut w = idx.writer().unwrap();
-        idx.add_document(&mut w, "d1", "user1", "en", "", "grace theology rahner").unwrap();
-        idx.add_document(&mut w, "d2", "user2", "en", "", "grace theology barth").unwrap();
+        idx.add_document(&mut w, "d1", "user1", "en", "", "", "grace theology rahner").unwrap();
+        idx.add_document(&mut w, "d2", "user2", "en", "", "", "grace theology barth").unwrap();
         w.commit().unwrap();
 
         let f = SearchFilters { owner_id: Some("user1".to_owned()), ..Default::default() };
@@ -234,7 +240,7 @@ mod tests {
         let (idx, _dir) = make_index();
         {
             let mut w = idx.writer().unwrap();
-            idx.add_document(&mut w, "d1", "u1", "en", "", "rahner anonymous theology").unwrap();
+            idx.add_document(&mut w, "d1", "u1", "en", "", "", "rahner anonymous theology").unwrap();
             w.commit().unwrap();
         } // drop writer to release the lockfile before creating a second one
 
@@ -250,7 +256,7 @@ mod tests {
     fn wildcard_search() {
         let (idx, _dir) = make_index();
         let mut w = idx.writer().unwrap();
-        idx.add_document(&mut w, "d1", "u1", "en", "",
+        idx.add_document(&mut w, "d1", "u1", "en", "", "",
             "anonymity anonymous anonymously").unwrap();
         w.commit().unwrap();
         let hits = idx.search("anon*", &SearchFilters::default(), 10).unwrap();
@@ -262,14 +268,29 @@ mod tests {
         let (idx, _dir) = make_index();
         let mut w = idx.writer().unwrap();
         // "rahner" and "anonymous" are 3 words apart
-        idx.add_document(&mut w, "d1", "u1", "en", "",
+        idx.add_document(&mut w, "d1", "u1", "en", "", "",
             "rahner writes about the anonymous christian concept").unwrap();
         // Control: rahner appears but anonymous does not
-        idx.add_document(&mut w, "d2", "u1", "en", "", "rahner wrote about grace").unwrap();
+        idx.add_document(&mut w, "d2", "u1", "en", "", "", "rahner wrote about grace").unwrap();
         w.commit().unwrap();
 
         let hits = idx.search("rahner w/50 anonymous", &SearchFilters::default(), 10).unwrap();
         let ids: Vec<_> = hits.iter().map(|h| h.doc_id.as_str()).collect();
         assert!(ids.contains(&"d1"), "d1 should match w/50 query");
+    }
+
+    #[test]
+    fn title_boosting() {
+        let (idx, _dir) = make_index();
+        let mut w = idx.writer().unwrap();
+        // d1 has "Recht" in title
+        idx.add_document(&mut w, "d1", "u1", "de", "Recht unter Druck", "", "Abstract text...").unwrap();
+        // d2 has "Recht" only in body
+        idx.add_document(&mut w, "d2", "u1", "de", "Other Title", "", "This document mentions Recht once.").unwrap();
+        w.commit().unwrap();
+
+        let hits = idx.search("Recht", &SearchFilters::default(), 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].doc_id, "d1", "Document with 'Recht' in title should outrank document with 'Recht' in body");
     }
 }

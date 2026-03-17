@@ -166,6 +166,7 @@ impl IngestPipeline {
                 &doc_id,
                 &raw.owner_id,
                 &raw.language,
+                raw.title.as_deref().unwrap_or(""),
                 &headings_joined,
                 &raw.full_text,
             )?;

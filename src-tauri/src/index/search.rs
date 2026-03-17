@@ -195,12 +195,27 @@ fn rrf_merge(
 ) -> Vec<(String, f32)> {
     let mut scores: HashMap<String, f32> = HashMap::new();
 
+    // Deduplicate docs per source: only the BEST rank for a document in each source
+    // should contribute to its RRF score. Summing multiple chunks from the same doc
+    // (bloat) incorrectly inflates its rank.
+
+    let mut seen_fts = HashMap::new();
     for (rank, hit) in fts_hits.iter().enumerate() {
-        let entry = scores.entry(hit.doc_id.clone()).or_insert(0.0);
+        // Since fts_hits is already sorted, first occurrence is best rank.
+        seen_fts.entry(hit.doc_id.clone()).or_insert(rank);
+    }
+    for (doc_id, rank) in seen_fts {
+        let entry = scores.entry(doc_id).or_insert(0.0);
         *entry += 1.0 / (k + rank + 1) as f32;
     }
+
+    let mut seen_vec = HashMap::new();
     for (rank, hit) in vec_hits.iter().enumerate() {
-        let entry = scores.entry(hit.doc_id.clone()).or_insert(0.0);
+        // Since vec_hits is already sorted, first occurrence is best rank.
+        seen_vec.entry(hit.doc_id.clone()).or_insert(rank);
+    }
+    for (doc_id, rank) in seen_vec {
+        let entry = scores.entry(doc_id).or_insert(0.0);
         *entry += 1.0 / (k + rank + 1) as f32;
     }
 
@@ -237,9 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn rrf_summation_bug_demonstration() {
+    fn rrf_summation_bug_fixed() {
         // Doc A has 10 chunks in top vector results
-        // Doc B has 1 chunk at rank 0 in FTS and 1 chunk at rank 0 in Vector
+        // Doc B has 1 chunk at rank 0 in FTS and 1 chunk at rank 10 in Vector
         let fts = make_fts_hits(&["b"]); // b is #1
         let mut vec = Vec::new();
         for _ in 0..10 {
@@ -272,9 +287,9 @@ mod tests {
         println!("Doc A score (10 vector chunks): {}", a_score);
         println!("Doc B score (1 FTS rank 0, 1 Vector rank 10): {}", b_score);
 
-        // Doc A should NOT outrank Doc B just because it has many chunks,
-        // but currently it does.
-        assert!(a_score > b_score, "BUG: Doc A outranks Doc B because of summed chunk scores");
+        // Doc B should now outrank Doc A because B appeared at the top of FTS,
+        // and A's multiple chunks are no longer being summed.
+        assert!(b_score > a_score, "Doc B should outrank Doc A after RRF fix");
     }
 
     #[test]
