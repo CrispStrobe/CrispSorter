@@ -8,11 +8,27 @@
     "source": "Frontend"
   },
   {
+    "name": "@huggingface/transformers",
+    "version": "3.8.1",
+    "license": "Apache-2.0",
+    "author": "Hugging Face",
+    "link": "https://www.npmjs.com/package/@huggingface/transformers",
+    "source": "Frontend"
+  },
+  {
     "name": "@lingo-reader/epub-parser",
     "version": "0.4.5",
     "license": "MIT",
     "author": "hhk-png <fangfangluo3@qq.com>",
     "link": "https://www.npmjs.com/package/@lingo-reader/epub-parser",
+    "source": "Frontend"
+  },
+  {
+    "name": "@mlc-ai/web-llm",
+    "version": "0.2.82",
+    "license": "Apache-2.0",
+    "author": "n/a",
+    "link": "https://www.npmjs.com/package/@mlc-ai/web-llm",
     "source": "Frontend"
   },
   {
@@ -248,6 +264,14 @@
     "source": "Backend"
   },
   {
+    "name": "arc-swap",
+    "version": "1.8.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Michal 'vorner' Vaner <vorner@vorner.cz>",
+    "link": "https://github.com/vorner/arc-swap",
+    "source": "Backend"
+  },
+  {
     "name": "arg_enum_proc_macro",
     "version": "0.3.4",
     "license": "MIT",
@@ -264,11 +288,131 @@
     "source": "Backend"
   },
   {
+    "name": "arrayref",
+    "version": "0.3.9",
+    "license": "BSD-2-Clause",
+    "author": "David Roundy <roundyd@physics.oregonstate.edu>",
+    "link": "https://github.com/droundy/arrayref",
+    "source": "Backend"
+  },
+  {
     "name": "arrayvec",
     "version": "0.7.6",
     "license": "Apache-2.0 OR MIT",
     "author": "bluss",
     "link": "https://github.com/bluss/arrayvec",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-arith",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-array",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-buffer",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-cast",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-csv",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-data",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-ipc",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-json",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-ord",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-row",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-schema",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-select",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "arrow-string",
+    "version": "57.3.0",
+    "license": "Apache-2.0",
+    "author": "Apache Arrow <dev@arrow.apache.org>",
+    "link": "https://github.com/apache/arrow-rs",
     "source": "Backend"
   },
   {
@@ -288,6 +432,14 @@
     "source": "Backend"
   },
   {
+    "name": "async_cell",
+    "version": "0.2.3",
+    "license": "MIT",
+    "author": "Sam Sartor <me@samsartor.com>",
+    "link": "https://gitlab.com/samsartor/async_cell",
+    "source": "Backend"
+  },
+  {
     "name": "async-broadcast",
     "version": "0.7.2",
     "license": "Apache-2.0 OR MIT",
@@ -301,6 +453,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Stjepan Glavina <stjepang@gmail.com>",
     "link": "https://github.com/smol-rs/async-channel",
+    "source": "Backend"
+  },
+  {
+    "name": "async-compression",
+    "version": "0.4.41",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Wim Looman <wim@nemo157.com>, Allen Bui <fairingrey@gmail.com>",
+    "link": "https://github.com/Nullus157/async-compression",
     "source": "Backend"
   },
   {
@@ -384,6 +544,14 @@
     "source": "Backend"
   },
   {
+    "name": "atoi",
+    "version": "2.0.0",
+    "license": "MIT",
+    "author": "Markus Klein",
+    "link": "https://github.com/pacman82/atoi-rs",
+    "source": "Backend"
+  },
+  {
     "name": "atomic-waker",
     "version": "1.1.2",
     "license": "Apache-2.0 OR MIT",
@@ -464,6 +632,30 @@
     "source": "Backend"
   },
   {
+    "name": "base64ct",
+    "version": "1.8.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "RustCrypto Developers",
+    "link": "https://github.com/RustCrypto/formats",
+    "source": "Backend"
+  },
+  {
+    "name": "bigdecimal",
+    "version": "0.4.10",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Andrew Kubera",
+    "link": "https://github.com/akubera/bigdecimal-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "bindgen_cuda",
+    "version": "0.1.6",
+    "license": "MIT",
+    "author": "Nicolas Patry <patry.nicolas@protonmail.com>",
+    "link": "https://github.com/Narsil/bindgen_cuda",
+    "source": "Backend"
+  },
+  {
     "name": "bit_field",
     "version": "0.10.3",
     "license": "Apache-2.0 OR MIT",
@@ -520,11 +712,43 @@
     "source": "Backend"
   },
   {
+    "name": "bitpacking",
+    "version": "0.9.3",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/bitpacking",
+    "source": "Backend"
+  },
+  {
     "name": "bitstream-io",
     "version": "4.9.0",
     "license": "Apache-2.0 OR MIT",
     "author": "Brian Langenberger <bjl@usa.net>",
     "link": "https://github.com/tuffy/bitstream-io",
+    "source": "Backend"
+  },
+  {
+    "name": "bitvec",
+    "version": "1.0.1",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/bitvecto-rs/bitvec",
+    "source": "Backend"
+  },
+  {
+    "name": "blake2",
+    "version": "0.10.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "RustCrypto Developers",
+    "link": "https://github.com/RustCrypto/hashes",
+    "source": "Backend"
+  },
+  {
+    "name": "blake3",
+    "version": "1.8.3",
+    "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR CC0-1.0",
+    "author": "Jack O'Connor <oconnor663@gmail.com>, Samuel Neves",
+    "link": "https://github.com/BLAKE3-team/BLAKE3",
     "source": "Backend"
   },
   {
@@ -573,6 +797,22 @@
     "license": "MIT",
     "author": "Michael <michael@ramyun.co.uk>",
     "link": "https://github.com/Michael-JB/bm25",
+    "source": "Backend"
+  },
+  {
+    "name": "bon",
+    "version": "3.9.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/elastio/bon",
+    "source": "Backend"
+  },
+  {
+    "name": "bon-macros",
+    "version": "3.9.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/elastio/bon",
     "source": "Backend"
   },
   {
@@ -720,6 +960,14 @@
     "source": "Backend"
   },
   {
+    "name": "candle-kernels",
+    "version": "0.9.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/huggingface/candle",
+    "source": "Backend"
+  },
+  {
     "name": "candle-metal-kernels",
     "version": "0.9.2",
     "license": "Apache-2.0 OR MIT",
@@ -792,6 +1040,14 @@
     "source": "Backend"
   },
   {
+    "name": "census",
+    "version": "0.4.2",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-inc/census",
+    "source": "Backend"
+  },
+  {
     "name": "cesu8",
     "version": "1.1.0",
     "license": "Apache-2.0 OR MIT",
@@ -853,6 +1109,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
     "link": "https://github.com/chronotope/chrono",
+    "source": "Backend"
+  },
+  {
+    "name": "chrono-tz",
+    "version": "0.10.4",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/chronotope/chrono-tz",
     "source": "Backend"
   },
   {
@@ -928,11 +1192,35 @@
     "source": "Backend"
   },
   {
+    "name": "comfy-table",
+    "version": "7.2.2",
+    "license": "MIT",
+    "author": "Arne Beer <contact@arne.beer>",
+    "link": "https://github.com/nukesor/comfy-table",
+    "source": "Backend"
+  },
+  {
     "name": "compact_str",
     "version": "0.9.0",
     "license": "MIT",
     "author": "Parker Timmerman <parker@parkertimmerman.com>",
     "link": "https://github.com/ParkMyCar/compact_str",
+    "source": "Backend"
+  },
+  {
+    "name": "compression-codecs",
+    "version": "0.4.37",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Wim Looman <wim@nemo157.com>, Allen Bui <fairingrey@gmail.com>",
+    "link": "https://github.com/Nullus157/async-compression",
+    "source": "Backend"
+  },
+  {
+    "name": "compression-core",
+    "version": "0.4.31",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Wim Looman <wim@nemo157.com>, Allen Bui <fairingrey@gmail.com>",
+    "link": "https://github.com/Nullus157/async-compression",
     "source": "Backend"
   },
   {
@@ -957,6 +1245,30 @@
     "license": "MIT",
     "author": "Various",
     "link": "https://github.com/console-rs/console",
+    "source": "Backend"
+  },
+  {
+    "name": "const-random",
+    "version": "0.1.18",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Tom Kaitchuck <Tom.Kaitchuck@gmail.com>",
+    "link": "https://github.com/tkaitchuck/constrandom",
+    "source": "Backend"
+  },
+  {
+    "name": "const-random-macro",
+    "version": "0.1.16",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Tom Kaitchuck <Tom.Kaitchuck@gmail.com>",
+    "link": "https://github.com/tkaitchuck/constrandom",
+    "source": "Backend"
+  },
+  {
+    "name": "constant_time_eq",
+    "version": "0.4.2",
+    "license": "Apache-2.0 OR CC0-1.0 OR MIT-0",
+    "author": "Cesar Eduardo Barros <cesarb@cesarb.eti.br>",
+    "link": "https://github.com/cesarb/constant_time_eq",
     "source": "Backend"
   },
   {
@@ -1088,6 +1400,14 @@
     "source": "Backend"
   },
   {
+    "name": "crossbeam-queue",
+    "version": "0.3.12",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/crossbeam-rs/crossbeam",
+    "source": "Backend"
+  },
+  {
     "name": "crossbeam-utils",
     "version": "0.8.21",
     "license": "Apache-2.0 OR MIT",
@@ -1173,6 +1493,22 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Matt Mastracci <matthew@mastracci.com>",
     "link": "https://github.com/mmastrac/rust-ctor",
+    "source": "Backend"
+  },
+  {
+    "name": "cudarc",
+    "version": "0.17.8",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Corey Lowman <clowman1993@gmail.com>",
+    "link": "https://github.com/coreylowman/cudarc",
+    "source": "Backend"
+  },
+  {
+    "name": "cudarc",
+    "version": "0.19.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Chelsea Lowman <clowman1993@gmail.com>",
+    "link": "https://github.com/chelsea0x3b/cudarc",
     "source": "Backend"
   },
   {
@@ -1280,6 +1616,14 @@
     "source": "Backend"
   },
   {
+    "name": "dashmap",
+    "version": "6.1.0",
+    "license": "MIT",
+    "author": "Acrimon <joel.wejdenstal@gmail.com>",
+    "link": "https://github.com/xacrimon/dashmap",
+    "source": "Backend"
+  },
+  {
     "name": "data-encoding",
     "version": "2.10.0",
     "license": "MIT",
@@ -1296,6 +1640,246 @@
     "source": "Backend"
   },
   {
+    "name": "datafusion",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-catalog",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-catalog-listing",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-common",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-common-runtime",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-datasource",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-datasource-arrow",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-datasource-csv",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-datasource-json",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-doc",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-execution",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-expr",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-expr-common",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-aggregate",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-aggregate-common",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-nested",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-table",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-window",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-functions-window-common",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-macros",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-optimizer",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-physical-expr",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-physical-expr-adapter",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-physical-expr-common",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-physical-optimizer",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-physical-plan",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-pruning",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-session",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "datafusion-sql",
+    "version": "51.0.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion",
+    "source": "Backend"
+  },
+  {
     "name": "deep-chat",
     "version": "2.4.2",
     "license": "MIT",
@@ -1304,11 +1888,35 @@
     "source": "Frontend"
   },
   {
+    "name": "deepsize",
+    "version": "0.2.0",
+    "license": "MIT",
+    "author": "Aeledfyr <aeledfyr@gmail.com>",
+    "link": "https://github.com/Aeledfyr/deepsize/",
+    "source": "Backend"
+  },
+  {
+    "name": "deepsize_derive",
+    "version": "0.1.2",
+    "license": "MIT",
+    "author": "Aeledfyr <aeledfyr@gmail.com>",
+    "link": "https://github.com/Aeledfyr/deepsize/",
+    "source": "Backend"
+  },
+  {
     "name": "defmac",
     "version": "0.1.3",
     "license": "Apache-2.0 OR MIT",
     "author": "bluss",
     "link": "https://github.com/bluss/defmac",
+    "source": "Backend"
+  },
+  {
+    "name": "der",
+    "version": "0.7.10",
+    "license": "Apache-2.0 OR MIT",
+    "author": "RustCrypto Developers",
+    "link": "https://github.com/RustCrypto/formats/tree/master/der",
     "source": "Backend"
   },
   {
@@ -1472,6 +2080,22 @@
     "source": "Backend"
   },
   {
+    "name": "downcast-rs",
+    "version": "1.2.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Ashish Myles <marcianx@gmail.com>, Runji Wang <wangrunji0408@163.com>",
+    "link": "https://github.com/marcianx/downcast-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "downcast-rs",
+    "version": "2.0.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/marcianx/downcast-rs",
+    "source": "Backend"
+  },
+  {
     "name": "dpi",
     "version": "0.1.2",
     "license": "Apache-2.0 AND MIT",
@@ -1525,6 +2149,14 @@
     "license": "MIT",
     "author": "sarah quiñones<sarah@veganb.tw>",
     "link": "https://github.com/kitegi/dynstack/",
+    "source": "Backend"
+  },
+  {
+    "name": "earcutr",
+    "version": "0.4.3",
+    "license": "ISC",
+    "author": "Various",
+    "link": "https://github.com/frewsxcv/earcutr/",
     "source": "Backend"
   },
   {
@@ -1680,6 +2312,14 @@
     "source": "Backend"
   },
   {
+    "name": "ethnum",
+    "version": "1.5.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Nicholas Rodrigues Lordello <nlordell@gmail.com>",
+    "link": "https://github.com/nlordell/ethnum-rs",
+    "source": "Backend"
+  },
+  {
     "name": "euclid",
     "version": "0.20.14",
     "license": "Apache-2.0 OR MIT",
@@ -1736,6 +2376,30 @@
     "source": "Backend"
   },
   {
+    "name": "fast-float2",
+    "version": "0.2.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Ivan Smirnov <i.s.smirnov@gmail.com>, Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/fast-float-rust",
+    "source": "Backend"
+  },
+  {
+    "name": "fastdivide",
+    "version": "0.4.2",
+    "license": "MIT OR zlib-acknowledgement",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/fulmicoton/fastdivide",
+    "source": "Backend"
+  },
+  {
+    "name": "fastembed",
+    "version": "5.13.0",
+    "license": "Apache-2.0",
+    "author": "Anush008 <anushshetty90@gmail.com>, Josh Niemelä <josh@jniemela.dk>, GrisiaEvy <a115020115@gmail.com>, George MacKerron <georgemackerron@neon.tech>, Timon Vonk <mail@timonv.nl>, Luya Wang <luya.wang@qq.com>, Tri <tri@triandco.com>, Denny Wong <denwong47@hotmail.com>, Alex Rozgo <alex.rozgo@gmail.com>",
+    "link": "https://github.com/Anush008/fastembed-rs",
+    "source": "Backend"
+  },
+  {
     "name": "fastrand",
     "version": "2.3.0",
     "license": "Apache-2.0 OR MIT",
@@ -1784,6 +2448,22 @@
     "source": "Backend"
   },
   {
+    "name": "fixedbitset",
+    "version": "0.5.7",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss",
+    "link": "https://github.com/petgraph/fixedbitset",
+    "source": "Backend"
+  },
+  {
+    "name": "flatbuffers",
+    "version": "25.12.19",
+    "license": "Apache-2.0",
+    "author": "Robert Winslow <hello@rwinslow.com>, FlatBuffers Maintainers",
+    "link": "https://github.com/google/flatbuffers",
+    "source": "Backend"
+  },
+  {
     "name": "flate2",
     "version": "1.1.9",
     "license": "Apache-2.0 OR MIT",
@@ -1792,8 +2472,24 @@
     "source": "Backend"
   },
   {
+    "name": "float_next_after",
+    "version": "1.0.0",
+    "license": "MIT",
+    "author": "Bronson Brown-deVost <bronsonbdevost@gmail.com>",
+    "link": "https://gitlab.com/bronsonbdevost/next_afterf",
+    "source": "Backend"
+  },
+  {
     "name": "float8",
     "version": "0.6.1",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/EricLBuehler/float8",
+    "source": "Backend"
+  },
+  {
+    "name": "float8",
+    "version": "0.7.0",
     "license": "MIT",
     "author": "Various",
     "link": "https://github.com/EricLBuehler/float8",
@@ -1825,6 +2521,14 @@
   },
   {
     "name": "foreign-types",
+    "version": "0.3.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/sfackler/foreign-types",
+    "source": "Backend"
+  },
+  {
+    "name": "foreign-types",
     "version": "0.5.0",
     "license": "Apache-2.0 OR MIT",
     "author": "Steven Fackler <sfackler@gmail.com>",
@@ -1834,6 +2538,14 @@
   {
     "name": "foreign-types-macros",
     "version": "0.2.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/sfackler/foreign-types",
+    "source": "Backend"
+  },
+  {
+    "name": "foreign-types-shared",
+    "version": "0.1.1",
     "license": "Apache-2.0 OR MIT",
     "author": "Steven Fackler <sfackler@gmail.com>",
     "link": "https://github.com/sfackler/foreign-types",
@@ -1861,6 +2573,38 @@
     "license": "MIT",
     "author": "Denis Kurilenko <webdesus@gmail.com>",
     "link": "https://github.com/webdesus/fs_extra",
+    "source": "Backend"
+  },
+  {
+    "name": "fs4",
+    "version": "0.8.4",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Dan Burkert <dan@danburkert.com>, Al Liu <scygliu1@gmail.com>",
+    "link": "https://github.com/al8n/fs4-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "fsst",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "fst",
+    "version": "0.4.7",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/fst",
+    "source": "Backend"
+  },
+  {
+    "name": "funty",
+    "version": "2.0.0",
+    "license": "MIT",
+    "author": "myrrlyn <self@myrrlyn.dev>",
+    "link": "https://github.com/myrrlyn/funty",
     "source": "Backend"
   },
   {
@@ -1941,6 +2685,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
     "link": "https://github.com/rust-lang/futures-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "futures-timer",
+    "version": "3.0.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Crichton <alex@alexcrichton.com>",
+    "link": "https://github.com/async-rs/futures-timer",
     "source": "Backend"
   },
   {
@@ -2136,11 +2888,91 @@
     "source": "Backend"
   },
   {
+    "name": "generator",
+    "version": "0.8.8",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Xudong Huang <huangxu008@hotmail.com>",
+    "link": "https://github.com/Xudong-Huang/generator-rs.git",
+    "source": "Backend"
+  },
+  {
     "name": "generic-array",
     "version": "0.14.7",
     "license": "MIT",
     "author": "Bartłomiej Kamiński <fizyk20@gmail.com>, Aaron Trent <novacrazy@gmail.com>",
     "link": "https://github.com/fizyk20/generic-array.git",
+    "source": "Backend"
+  },
+  {
+    "name": "geo",
+    "version": "0.31.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/georust/geo",
+    "source": "Backend"
+  },
+  {
+    "name": "geo-traits",
+    "version": "0.3.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/georust/geo",
+    "source": "Backend"
+  },
+  {
+    "name": "geo-types",
+    "version": "0.7.18",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/georust/geo",
+    "source": "Backend"
+  },
+  {
+    "name": "geoarrow-array",
+    "version": "0.7.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Kyle Barron <kylebarron2@gmail.com>",
+    "link": "https://github.com/geoarrow/geoarrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "geoarrow-expr-geo",
+    "version": "0.7.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Kyle Barron <kylebarron2@gmail.com>",
+    "link": "https://github.com/geoarrow/geoarrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "geoarrow-schema",
+    "version": "0.7.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Kyle Barron <kylebarron2@gmail.com>",
+    "link": "https://github.com/geoarrow/geoarrow-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "geodatafusion",
+    "version": "0.2.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Kyle Barron <kylebarron2@gmail.com>",
+    "link": "https://github.com/datafusion-contrib/geodatafusion",
+    "source": "Backend"
+  },
+  {
+    "name": "geographiclib-rs",
+    "version": "0.2.7",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/georust/geographiclib-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "geohash",
+    "version": "0.13.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Ning Sun <sunng@about.me>",
+    "link": "https://github.com/georust/geohash.rs",
     "source": "Backend"
   },
   {
@@ -2288,8 +3120,24 @@
     "source": "Backend"
   },
   {
+    "name": "hash32",
+    "version": "0.3.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jorge Aparicio <jorge@japaric.io>",
+    "link": "https://github.com/japaric/hash32",
+    "source": "Backend"
+  },
+  {
     "name": "hashbrown",
     "version": "0.12.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Amanieu d'Antras <amanieu@gmail.com>",
+    "link": "https://github.com/rust-lang/hashbrown",
+    "source": "Backend"
+  },
+  {
+    "name": "hashbrown",
+    "version": "0.14.5",
     "license": "Apache-2.0 OR MIT",
     "author": "Amanieu d'Antras <amanieu@gmail.com>",
     "link": "https://github.com/rust-lang/hashbrown",
@@ -2309,6 +3157,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Amanieu d'Antras <amanieu@gmail.com>",
     "link": "https://github.com/rust-lang/hashbrown",
+    "source": "Backend"
+  },
+  {
+    "name": "heapless",
+    "version": "0.8.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jorge Aparicio <jorge@japaric.io>, Per Lindgren <per.lindgren@ltu.se>, Emil Fresk <emil.fresk@gmail.com>",
+    "link": "https://github.com/rust-embedded/heapless",
     "source": "Backend"
   },
   {
@@ -2352,6 +3208,14 @@
     "source": "Backend"
   },
   {
+    "name": "hmac-sha256",
+    "version": "1.1.14",
+    "license": "ISC",
+    "author": "Frank Denis <github@pureftpd.org>",
+    "link": "https://github.com/jedisct1/rust-hmac-sha256",
+    "source": "Backend"
+  },
+  {
     "name": "hound",
     "version": "3.5.1",
     "license": "Apache-2.0",
@@ -2392,6 +3256,14 @@
     "source": "Backend"
   },
   {
+    "name": "htmlescape",
+    "version": "0.3.1",
+    "license": "Apache-2.0 OR MIT OR MPL-2.0",
+    "author": "Viktor Dahl <pazaconyoman@gmail.com>",
+    "link": "https://github.com/veddan/rust-htmlescape",
+    "source": "Backend"
+  },
+  {
     "name": "http",
     "version": "1.4.0",
     "license": "Apache-2.0 OR MIT",
@@ -2424,6 +3296,14 @@
     "source": "Backend"
   },
   {
+    "name": "humantime",
+    "version": "2.3.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/chronotope/humantime",
+    "source": "Backend"
+  },
+  {
     "name": "hyper",
     "version": "1.8.1",
     "license": "MIT",
@@ -2440,11 +3320,67 @@
     "source": "Backend"
   },
   {
+    "name": "hyper-tls",
+    "version": "0.6.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Sean McArthur <sean@seanmonstar.com>",
+    "link": "https://github.com/hyperium/hyper-tls",
+    "source": "Backend"
+  },
+  {
     "name": "hyper-util",
     "version": "0.1.20",
     "license": "MIT",
     "author": "Sean McArthur <sean@seanmonstar.com>",
     "link": "https://github.com/hyperium/hyper-util",
+    "source": "Backend"
+  },
+  {
+    "name": "hyperloglogplus",
+    "version": "0.4.1",
+    "license": "MIT",
+    "author": "Tasos Bakogiannis <t.bakogiannis@gmail.com>",
+    "link": "https://github.com/tabac/hyperloglog.rs",
+    "source": "Backend"
+  },
+  {
+    "name": "i_float",
+    "version": "1.15.0",
+    "license": "MIT",
+    "author": "Nail Sharipov <nailxsharipov@gmail.com>",
+    "link": "https://github.com/iShape-Rust/iFloat",
+    "source": "Backend"
+  },
+  {
+    "name": "i_key_sort",
+    "version": "0.6.0",
+    "license": "MIT",
+    "author": "Nail Sharipov <nailxsharipov@gmail.com>",
+    "link": "https://github.com/iShape-Rust/iKeySort",
+    "source": "Backend"
+  },
+  {
+    "name": "i_overlay",
+    "version": "4.0.7",
+    "license": "MIT",
+    "author": "Nail Sharipov <nailxsharipov@gmail.com>",
+    "link": "https://github.com/iShape-Rust/iOverlay",
+    "source": "Backend"
+  },
+  {
+    "name": "i_shape",
+    "version": "1.14.0",
+    "license": "MIT",
+    "author": "Nail Sharipov <nailxsharipov@gmail.com>",
+    "link": "https://github.com/iShape-Rust/iShape",
+    "source": "Backend"
+  },
+  {
+    "name": "i_tree",
+    "version": "0.16.0",
+    "license": "MIT",
+    "author": "Nail Sharipov <nailxsharipov@gmail.com>",
+    "link": "https://github.com/iShape-Rust/iTree",
     "source": "Backend"
   },
   {
@@ -2640,6 +3576,14 @@
     "source": "Backend"
   },
   {
+    "name": "instant",
+    "version": "0.1.13",
+    "license": "BSD-3-Clause",
+    "author": "sebcrozet <developer@crozet.re>",
+    "link": "https://github.com/sebcrozet/instant",
+    "source": "Backend"
+  },
+  {
     "name": "interpolate_name",
     "version": "0.2.4",
     "license": "MIT",
@@ -2697,6 +3641,30 @@
   },
   {
     "name": "itertools",
+    "version": "0.11.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss",
+    "link": "https://github.com/rust-itertools/itertools",
+    "source": "Backend"
+  },
+  {
+    "name": "itertools",
+    "version": "0.12.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss",
+    "link": "https://github.com/rust-itertools/itertools",
+    "source": "Backend"
+  },
+  {
+    "name": "itertools",
+    "version": "0.13.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss",
+    "link": "https://github.com/rust-itertools/itertools",
+    "source": "Backend"
+  },
+  {
+    "name": "itertools",
     "version": "0.14.0",
     "license": "Apache-2.0 OR MIT",
     "author": "bluss",
@@ -2725,6 +3693,38 @@
     "license": "MIT",
     "author": "The Gtk-rs Project Developers",
     "link": "https://github.com/tauri-apps/javascriptcore-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "jiff",
+    "version": "0.2.23",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/jiff",
+    "source": "Backend"
+  },
+  {
+    "name": "jiff-static",
+    "version": "0.2.23",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/jiff",
+    "source": "Backend"
+  },
+  {
+    "name": "jiff-tzdb",
+    "version": "0.1.6",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/jiff",
+    "source": "Backend"
+  },
+  {
+    "name": "jiff-tzdb-platform",
+    "version": "0.1.3",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/jiff",
     "source": "Backend"
   },
   {
@@ -2768,6 +3768,14 @@
     "source": "Backend"
   },
   {
+    "name": "jsonb",
+    "version": "0.5.5",
+    "license": "Apache-2.0",
+    "author": "Databend Authors <opensource@datafuselabs.com>",
+    "link": "https://github.com/databendlabs/jsonb",
+    "source": "Backend"
+  },
+  {
     "name": "jsonptr",
     "version": "0.6.3",
     "license": "Apache-2.0 OR MIT",
@@ -2800,6 +3808,150 @@
     "source": "Backend"
   },
   {
+    "name": "lance",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-arrow",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-bitpacking",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-core",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-datafusion",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-datagen",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-encoding",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-file",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-geo",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-index",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-io",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-linalg",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-namespace",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-namespace-impls",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-namespace-reqwest-client",
+    "version": "0.4.5",
+    "license": "Apache-2.0",
+    "author": "OpenAPI Generator team and contributors",
+    "link": "https://crates.io/crates/lance-namespace-reqwest-client",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-table",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lance-testing",
+    "version": "2.0.0",
+    "license": "Apache-2.0",
+    "author": "Lance Devs <dev@lance.org>",
+    "link": "https://github.com/lance-format/lance",
+    "source": "Backend"
+  },
+  {
+    "name": "lancedb",
+    "version": "0.26.2",
+    "license": "Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/lancedb/lancedb",
+    "source": "Backend"
+  },
+  {
     "name": "lazy_static",
     "version": "1.5.0",
     "license": "Apache-2.0 OR MIT",
@@ -2821,6 +3973,62 @@
     "license": "BSD-3-Clause",
     "author": "johannesvollmer <contact@johannesvollmer.com>",
     "link": "https://github.com/johannesvollmer/lebe",
+    "source": "Backend"
+  },
+  {
+    "name": "levenshtein_automata",
+    "version": "0.2.1",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/tantivy-search/levenshtein-automata",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-core",
+    "version": "1.0.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-parse-float",
+    "version": "1.0.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-parse-integer",
+    "version": "1.0.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-util",
+    "version": "1.0.7",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-write-float",
+    "version": "1.0.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
+    "source": "Backend"
+  },
+  {
+    "name": "lexical-write-integer",
+    "version": "1.0.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Huszagh <ahuszagh@gmail.com>",
+    "link": "https://github.com/Alexhuszagh/rust-lexical",
     "source": "Backend"
   },
   {
@@ -2872,6 +4080,14 @@
     "source": "Backend"
   },
   {
+    "name": "libloading",
+    "version": "0.9.0",
+    "license": "ISC",
+    "author": "Simonas Kazlauskas <libloading@kazlauskas.me>",
+    "link": "https://github.com/nagisa/rust_libloading/",
+    "source": "Backend"
+  },
+  {
     "name": "libm",
     "version": "0.2.16",
     "license": "MIT",
@@ -2885,6 +4101,14 @@
     "license": "MIT",
     "author": "4lDO2 <4lDO2@protonmail.com>",
     "link": "https://gitlab.redox-os.org/redox-os/libredox.git",
+    "source": "Backend"
+  },
+  {
+    "name": "linux-raw-sys",
+    "version": "0.4.15",
+    "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+    "author": "Dan Gohman <dev@sunfishcode.online>",
+    "link": "https://github.com/sunfishcode/linux-raw-sys",
     "source": "Backend"
   },
   {
@@ -2936,6 +4160,14 @@
     "source": "Backend"
   },
   {
+    "name": "loom",
+    "version": "0.7.2",
+    "license": "MIT",
+    "author": "Carl Lerche <me@carllerche.com>",
+    "link": "https://github.com/tokio-rs/loom",
+    "source": "Backend"
+  },
+  {
     "name": "loop9",
     "version": "0.1.5",
     "license": "MIT",
@@ -2960,6 +4192,14 @@
     "source": "Backend"
   },
   {
+    "name": "lru",
+    "version": "0.12.5",
+    "license": "MIT",
+    "author": "Jerome Froelich <jeromefroelic@hotmail.com>",
+    "link": "https://github.com/jeromefroe/lru-rs.git",
+    "source": "Backend"
+  },
+  {
     "name": "lru-slab",
     "version": "0.1.2",
     "license": "Apache-2.0 OR MIT OR Zlib",
@@ -2974,6 +4214,46 @@
     "author": "Eric Fennis",
     "link": "https://www.npmjs.com/package/lucide-svelte",
     "source": "Frontend"
+  },
+  {
+    "name": "lz4",
+    "version": "1.28.1",
+    "license": "MIT",
+    "author": "Jens Heyens <jens.heyens@ewetel.net>, Artem V. Navrotskiy <bozaro@buzzsoft.ru>, Patrick Marks <pmarks@gmail.com>",
+    "link": "https://github.com/10xGenomics/lz4-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "lz4_flex",
+    "version": "0.11.6",
+    "license": "MIT",
+    "author": "Pascal Seitz <pascal.seitz@gmail.com>, Arthur Silva <arthurprs@gmail.com>, ticki <Ticki@users.noreply.github.com>",
+    "link": "https://github.com/pseitz/lz4_flex",
+    "source": "Backend"
+  },
+  {
+    "name": "lz4_flex",
+    "version": "0.12.1",
+    "license": "MIT",
+    "author": "Pascal Seitz <pascal.seitz@gmail.com>, Arthur Silva <arthurprs@gmail.com>, ticki <Ticki@users.noreply.github.com>",
+    "link": "https://github.com/pseitz/lz4_flex",
+    "source": "Backend"
+  },
+  {
+    "name": "lz4-sys",
+    "version": "1.11.1+lz4-1.10.0",
+    "license": "MIT",
+    "author": "Jens Heyens <jens.heyens@ewetel.net>, Artem V. Navrotskiy <bozaro@buzzsoft.ru>, Patrick Marks <pmarks@gmail.com>",
+    "link": "https://github.com/10xGenomics/lz4-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "lzma-rust2",
+    "version": "0.15.7",
+    "license": "Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/hasenbanck/lzma-rust2/",
+    "source": "Backend"
   },
   {
     "name": "mac",
@@ -3093,6 +4373,22 @@
     "license": "Apache-2.0 OR MIT",
     "author": "RustCrypto Developers",
     "link": "https://github.com/RustCrypto/hashes",
+    "source": "Backend"
+  },
+  {
+    "name": "measure_time",
+    "version": "0.8.3",
+    "license": "MIT",
+    "author": "Pascal Seitz <pascal.seitz@gmail.com>",
+    "link": "https://github.com/PSeitz/rust_measure_time",
+    "source": "Backend"
+  },
+  {
+    "name": "measure_time",
+    "version": "0.9.0",
+    "license": "MIT",
+    "author": "Pascal Seitz <pascal.seitz@gmail.com>",
+    "link": "https://github.com/PSeitz/rust_measure_time",
     "source": "Backend"
   },
   {
@@ -3256,6 +4552,22 @@
     "source": "Backend"
   },
   {
+    "name": "mock_instant",
+    "version": "0.6.0",
+    "license": "0BSD",
+    "author": "museun <museun@outlook.com>",
+    "link": "https://github.com/museun/mock_instant",
+    "source": "Backend"
+  },
+  {
+    "name": "moka",
+    "version": "0.12.14",
+    "license": "(Apache-2.0 OR MIT) AND Apache-2.0",
+    "author": "Various",
+    "link": "https://github.com/moka-rs/moka",
+    "source": "Backend"
+  },
+  {
     "name": "monostate",
     "version": "0.1.18",
     "license": "Apache-2.0 OR MIT",
@@ -3288,11 +4600,51 @@
     "source": "Backend"
   },
   {
+    "name": "multimap",
+    "version": "0.10.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Håvar Nøvik <havar.novik@gmail.com>",
+    "link": "https://github.com/havarnov/multimap",
+    "source": "Backend"
+  },
+  {
+    "name": "murmurhash32",
+    "version": "0.3.1",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-inc/murmurhash32",
+    "source": "Backend"
+  },
+  {
     "name": "nalgebra",
     "version": "0.33.2",
     "license": "Apache-2.0",
     "author": "Sébastien Crozet <developer@crozet.re>",
     "link": "https://github.com/dimforge/nalgebra",
+    "source": "Backend"
+  },
+  {
+    "name": "native-tls",
+    "version": "0.2.18",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/rust-native-tls/rust-native-tls",
+    "source": "Backend"
+  },
+  {
+    "name": "ndarray",
+    "version": "0.16.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Ulrik Sverdrup \"bluss\", Jim Turner",
+    "link": "https://github.com/rust-ndarray/ndarray",
+    "source": "Backend"
+  },
+  {
+    "name": "ndarray",
+    "version": "0.17.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Ulrik Sverdrup \"bluss\", Jim Turner",
+    "link": "https://github.com/rust-ndarray/ndarray",
     "source": "Backend"
   },
   {
@@ -3616,6 +4968,14 @@
     "source": "Backend"
   },
   {
+    "name": "object_store",
+    "version": "0.12.5",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/apache/arrow-rs-object-store",
+    "source": "Backend"
+  },
+  {
     "name": "once_cell",
     "version": "1.21.4",
     "license": "Apache-2.0 OR MIT",
@@ -3629,6 +4989,30 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
     "link": "https://github.com/polyfill-rs/once_cell_polyfill",
+    "source": "Backend"
+  },
+  {
+    "name": "oneshot",
+    "version": "0.1.13",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Linus Färnstrand <faern@faern.net>",
+    "link": "https://github.com/faern/oneshot",
+    "source": "Backend"
+  },
+  {
+    "name": "onig",
+    "version": "6.5.1",
+    "license": "MIT",
+    "author": "Will Speak <will@willspeak.me>, Ivan Ivashchenko <defuz@me.com>",
+    "link": "https://github.com/iwillspeak/rust-onig",
+    "source": "Backend"
+  },
+  {
+    "name": "onig_sys",
+    "version": "69.9.1",
+    "license": "MIT",
+    "author": "Will Speak <will@willspeak.me>, Ivan Ivashchenko <defuz@me.com>",
+    "link": "https://github.com/iwillspeak/rust-onig",
     "source": "Backend"
   },
   {
@@ -3648,11 +5032,35 @@
     "source": "Backend"
   },
   {
+    "name": "openssl",
+    "version": "0.10.76",
+    "license": "Apache-2.0",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/rust-openssl/rust-openssl",
+    "source": "Backend"
+  },
+  {
+    "name": "openssl-macros",
+    "version": "0.1.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://crates.io/crates/openssl-macros",
+    "source": "Backend"
+  },
+  {
     "name": "openssl-probe",
     "version": "0.2.1",
     "license": "Apache-2.0 OR MIT",
     "author": "Alex Crichton <alex@alexcrichton.com>",
     "link": "https://github.com/rustls/openssl-probe",
+    "source": "Backend"
+  },
+  {
+    "name": "openssl-sys",
+    "version": "0.9.112",
+    "license": "MIT",
+    "author": "Alex Crichton <alex@alexcrichton.com>, Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/rust-openssl/rust-openssl",
     "source": "Backend"
   },
   {
@@ -3680,11 +5088,43 @@
     "source": "Backend"
   },
   {
+    "name": "ort",
+    "version": "2.0.0-rc.11",
+    "license": "Apache-2.0 OR MIT",
+    "author": "pyke.io <contact@pyke.io>, Nicolas Bigaouette <nbigaouette@gmail.com>",
+    "link": "https://github.com/pykeio/ort",
+    "source": "Backend"
+  },
+  {
+    "name": "ort-sys",
+    "version": "2.0.0-rc.11",
+    "license": "Apache-2.0 OR MIT",
+    "author": "pyke.io <contact@pyke.io>",
+    "link": "https://github.com/pykeio/ort",
+    "source": "Backend"
+  },
+  {
     "name": "os_pipe",
     "version": "1.2.3",
     "license": "MIT",
     "author": "Jack O'Connor",
     "link": "https://github.com/oconnor663/os_pipe.rs",
+    "source": "Backend"
+  },
+  {
+    "name": "ownedbytes",
+    "version": "0.7.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul@quickwit.io>, Pascal Seitz <pascal@quickwit.io>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "ownedbytes",
+    "version": "0.9.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul@quickwit.io>, Pascal Seitz <pascal@quickwit.io>",
+    "link": "https://github.com/quickwit-oss/tantivy",
     "source": "Backend"
   },
   {
@@ -3752,6 +5192,14 @@
     "source": "Backend"
   },
   {
+    "name": "path_abs",
+    "version": "0.5.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Rett Berg <googberg@gmail.com>",
+    "link": "https://github.com/vitiral/path_abs",
+    "source": "Backend"
+  },
+  {
     "name": "pathdiff",
     "version": "0.2.3",
     "license": "Apache-2.0 OR MIT",
@@ -3776,11 +5224,35 @@
     "source": "Frontend"
   },
   {
+    "name": "pem-rfc7468",
+    "version": "0.7.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "RustCrypto Developers",
+    "link": "https://github.com/RustCrypto/formats/tree/master/pem-rfc7468",
+    "source": "Backend"
+  },
+  {
     "name": "percent-encoding",
     "version": "2.3.2",
     "license": "Apache-2.0 OR MIT",
     "author": "The rust-url developers",
     "link": "https://github.com/servo/rust-url/",
+    "source": "Backend"
+  },
+  {
+    "name": "permutation",
+    "version": "0.4.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jeremy Salwen <jeremysalwen@gmail.com>",
+    "link": "https://github.com/jeremysalwen/rust-permutations",
+    "source": "Backend"
+  },
+  {
+    "name": "petgraph",
+    "version": "0.8.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss, mitchmindtree",
+    "link": "https://github.com/petgraph/petgraph",
     "source": "Backend"
   },
   {
@@ -3809,6 +5281,14 @@
   },
   {
     "name": "phf",
+    "version": "0.12.1",
+    "license": "MIT",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/rust-phf/rust-phf",
+    "source": "Backend"
+  },
+  {
+    "name": "phf",
     "version": "0.13.1",
     "license": "MIT",
     "author": "Steven Fackler <sfackler@gmail.com>",
@@ -3921,10 +5401,34 @@
   },
   {
     "name": "phf_shared",
+    "version": "0.12.1",
+    "license": "MIT",
+    "author": "Steven Fackler <sfackler@gmail.com>",
+    "link": "https://github.com/rust-phf/rust-phf",
+    "source": "Backend"
+  },
+  {
+    "name": "phf_shared",
     "version": "0.13.1",
     "license": "MIT",
     "author": "Steven Fackler <sfackler@gmail.com>",
     "link": "https://github.com/rust-phf/rust-phf",
+    "source": "Backend"
+  },
+  {
+    "name": "pin-project",
+    "version": "1.1.11",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/taiki-e/pin-project",
+    "source": "Backend"
+  },
+  {
+    "name": "pin-project-internal",
+    "version": "1.1.11",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/taiki-e/pin-project",
     "source": "Backend"
   },
   {
@@ -4005,6 +5509,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
     "link": "https://github.com/taiki-e/portable-atomic",
+    "source": "Backend"
+  },
+  {
+    "name": "portable-atomic-util",
+    "version": "0.2.6",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/taiki-e/portable-atomic-util",
     "source": "Backend"
   },
   {
@@ -4136,6 +5648,38 @@
     "source": "Backend"
   },
   {
+    "name": "prost",
+    "version": "0.14.3",
+    "license": "Apache-2.0",
+    "author": "Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/prost",
+    "source": "Backend"
+  },
+  {
+    "name": "prost-build",
+    "version": "0.14.3",
+    "license": "Apache-2.0",
+    "author": "Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/prost",
+    "source": "Backend"
+  },
+  {
+    "name": "prost-derive",
+    "version": "0.14.3",
+    "license": "Apache-2.0",
+    "author": "Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/prost",
+    "source": "Backend"
+  },
+  {
+    "name": "prost-types",
+    "version": "0.14.3",
+    "license": "Apache-2.0",
+    "author": "Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/prost",
+    "source": "Backend"
+  },
+  {
     "name": "psl-types",
     "version": "2.0.11",
     "license": "Apache-2.0 OR MIT",
@@ -4256,6 +5800,14 @@
     "source": "Backend"
   },
   {
+    "name": "radium",
+    "version": "0.7.0",
+    "license": "MIT",
+    "author": "Nika Layzell <nika@thelayzells.com>, myrrlyn <self@myrrlyn.dev>",
+    "link": "https://github.com/bitvecto-rs/radium",
+    "source": "Backend"
+  },
+  {
     "name": "radix_trie",
     "version": "0.3.0",
     "license": "MIT",
@@ -4373,6 +5925,22 @@
     "license": "Apache-2.0 OR MIT",
     "author": "The Rand Project Developers",
     "link": "https://github.com/rust-random/rand",
+    "source": "Backend"
+  },
+  {
+    "name": "rand_xoshiro",
+    "version": "0.7.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "The Rand Project Developers",
+    "link": "https://github.com/rust-random/rngs",
+    "source": "Backend"
+  },
+  {
+    "name": "random_word",
+    "version": "0.5.2",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/MitchellRhysHall/random_word",
     "source": "Backend"
   },
   {
@@ -4528,6 +6096,14 @@
     "source": "Backend"
   },
   {
+    "name": "relative-path",
+    "version": "1.9.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "John-John Tedro <udoprog@tedro.se>",
+    "link": "https://github.com/udoprog/relative-path",
+    "source": "Backend"
+  },
+  {
     "name": "reqwest",
     "version": "0.12.28",
     "license": "Apache-2.0 OR MIT",
@@ -4565,6 +6141,46 @@
     "license": "Apache-2.0 AND ISC",
     "author": "Various",
     "link": "https://github.com/briansmith/ring",
+    "source": "Backend"
+  },
+  {
+    "name": "roaring",
+    "version": "0.10.12",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Wim Looman <wim@nemo157.com>, Kerollmops <kero@meilisearch.com>",
+    "link": "https://github.com/RoaringBitmap/roaring-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "robust",
+    "version": "1.2.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "The Spade Developers, The GeoRust Developers",
+    "link": "https://github.com/georust/robust",
+    "source": "Backend"
+  },
+  {
+    "name": "rstar",
+    "version": "0.12.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Stefan Altmayer <stoeoef@gmail.com>, The Georust Developers <mods@georust.org>",
+    "link": "https://github.com/georust/rstar",
+    "source": "Backend"
+  },
+  {
+    "name": "rstest",
+    "version": "0.26.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Michele d'Amico <michele.damico@gmail.com>",
+    "link": "https://github.com/la10736/rstest",
+    "source": "Backend"
+  },
+  {
+    "name": "rstest_macros",
+    "version": "0.26.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Michele d'Amico <michele.damico@gmail.com>",
+    "link": "https://github.com/la10736/rstest",
     "source": "Backend"
   },
   {
@@ -4621,6 +6237,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Allen Welkie <allen.welkie at gmail>, Elliott Mahler <join.together at gmail>",
     "link": "https://github.com/ejmahler/RustFFT",
+    "source": "Backend"
+  },
+  {
+    "name": "rustix",
+    "version": "0.38.44",
+    "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+    "author": "Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>",
+    "link": "https://github.com/bytecodealliance/rustix",
     "source": "Backend"
   },
   {
@@ -4781,6 +6405,14 @@
     "license": "MIT",
     "author": "Graham Esau <gesau@hotmail.co.uk>",
     "link": "https://github.com/GREsau/schemars",
+    "source": "Backend"
+  },
+  {
+    "name": "scoped-tls",
+    "version": "1.0.1",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alex Crichton <alex@alexcrichton.com>",
+    "link": "https://github.com/alexcrichton/scoped-tls",
     "source": "Backend"
   },
   {
@@ -5040,6 +6672,14 @@
     "source": "Backend"
   },
   {
+    "name": "shellexpand",
+    "version": "3.1.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Vladimir Matveev <vmatveev@citrine.cc>, Ian Jackson <iwj@torproject.org>",
+    "link": "https://gitlab.com/ijackson/rust-shellexpand",
+    "source": "Backend"
+  },
+  {
     "name": "shlex",
     "version": "1.3.0",
     "license": "Apache-2.0 OR MIT",
@@ -5104,6 +6744,14 @@
     "source": "Backend"
   },
   {
+    "name": "simdutf8",
+    "version": "0.1.5",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Hans Kratz <hans@appfour.com>",
+    "link": "https://github.com/rusticstuff/simdutf8",
+    "source": "Backend"
+  },
+  {
     "name": "siphasher",
     "version": "0.3.11",
     "license": "Apache-2.0 OR MIT",
@@ -5117,6 +6765,22 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Frank Denis <github@pureftpd.org>",
     "link": "https://github.com/jedisct1/rust-siphash",
+    "source": "Backend"
+  },
+  {
+    "name": "sketches-ddsketch",
+    "version": "0.2.2",
+    "license": "Apache-2.0",
+    "author": "Mike Heffner <mikeh@fesnel.com>",
+    "link": "https://github.com/mheffner/rust-sketches-ddsketch",
+    "source": "Backend"
+  },
+  {
+    "name": "sketches-ddsketch",
+    "version": "0.3.1",
+    "license": "Apache-2.0",
+    "author": "Mike Heffner <mikeh@fesnel.com>",
+    "link": "https://github.com/mheffner/rust-sketches-ddsketch",
     "source": "Backend"
   },
   {
@@ -5141,6 +6805,22 @@
     "license": "Apache-2.0 OR MIT",
     "author": "The Servo Project Developers",
     "link": "https://github.com/servo/rust-smallvec",
+    "source": "Backend"
+  },
+  {
+    "name": "snafu",
+    "version": "0.8.9",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jake Goulding <jake.goulding@gmail.com>",
+    "link": "https://github.com/shepmaster/snafu",
+    "source": "Backend"
+  },
+  {
+    "name": "snafu-derive",
+    "version": "0.8.9",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jake Goulding <jake.goulding@gmail.com>",
+    "link": "https://github.com/shepmaster/snafu",
     "source": "Backend"
   },
   {
@@ -5184,6 +6864,14 @@
     "source": "Backend"
   },
   {
+    "name": "spade",
+    "version": "2.15.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Stefan Altmayer <stoeoef@gmail.com>",
+    "link": "https://github.com/Stoeoef/spade",
+    "source": "Backend"
+  },
+  {
     "name": "sparsevec",
     "version": "0.2.2",
     "license": "Apache-2.0 OR MIT",
@@ -5197,6 +6885,22 @@
     "license": "Apache-2.0",
     "author": "Nicolas Patry <patry.nicolas@protonmail.com>",
     "link": "https://github.com/huggingface/spm_precompiled",
+    "source": "Backend"
+  },
+  {
+    "name": "sqlparser",
+    "version": "0.59.0",
+    "license": "Apache-2.0",
+    "author": "Apache DataFusion <dev@datafusion.apache.org>",
+    "link": "https://github.com/apache/datafusion-sqlparser-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "sqlparser_derive",
+    "version": "0.3.0",
+    "license": "Apache-2.0",
+    "author": "sqlparser-rs authors",
+    "link": "https://github.com/sqlparser-rs/sqlparser-rs",
     "source": "Backend"
   },
   {
@@ -5221,6 +6925,22 @@
     "license": "MIT",
     "author": "Michael Ma",
     "link": "https://github.com/statrs-dev/statrs",
+    "source": "Backend"
+  },
+  {
+    "name": "std_prelude",
+    "version": "0.2.12",
+    "license": "MIT",
+    "author": "Garrett Berg <vitiral@gmail.com>",
+    "link": "https://github.com/vitiral/std_prelude",
+    "source": "Backend"
+  },
+  {
+    "name": "stfu8",
+    "version": "0.2.7",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Garrett Berg <googberg@gmail.com>",
+    "link": "https://github.com/vitiral/stfu8",
     "source": "Backend"
   },
   {
@@ -5297,7 +7017,23 @@
   },
   {
     "name": "strum",
+    "version": "0.26.3",
+    "license": "MIT",
+    "author": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "link": "https://github.com/Peternator7/strum",
+    "source": "Backend"
+  },
+  {
+    "name": "strum",
     "version": "0.27.2",
+    "license": "MIT",
+    "author": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
+    "link": "https://github.com/Peternator7/strum",
+    "source": "Backend"
+  },
+  {
+    "name": "strum_macros",
+    "version": "0.26.4",
     "license": "MIT",
     "author": "Peter Glotfelty <peter.glotfelty@microsoft.com>",
     "link": "https://github.com/Peternator7/strum",
@@ -5457,6 +7193,14 @@
   },
   {
     "name": "sysinfo",
+    "version": "0.33.1",
+    "license": "MIT",
+    "author": "Guillaume Gomez <guillaume1.gomez@gmail.com>",
+    "link": "https://github.com/GuillaumeGomez/sysinfo",
+    "source": "Backend"
+  },
+  {
+    "name": "sysinfo",
     "version": "0.36.1",
     "license": "MIT",
     "author": "Guillaume Gomez <guillaume1.gomez@gmail.com>",
@@ -5488,6 +7232,150 @@
     "source": "Backend"
   },
   {
+    "name": "tagptr",
+    "version": "0.2.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Oliver Giersch",
+    "link": "https://github.com/oliver-giersch/tagptr.git",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy",
+    "version": "0.22.1",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy",
+    "version": "0.24.2",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-bitpacker",
+    "version": "0.6.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-bitpacker",
+    "version": "0.8.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-columnar",
+    "version": "0.3.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-columnar",
+    "version": "0.5.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-common",
+    "version": "0.7.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul@quickwit.io>, Pascal Seitz <pascal@quickwit.io>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-common",
+    "version": "0.9.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul@quickwit.io>, Pascal Seitz <pascal@quickwit.io>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-fst",
+    "version": "0.5.0",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/quickwit-inc/fst",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-query-grammar",
+    "version": "0.22.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-query-grammar",
+    "version": "0.24.0",
+    "license": "MIT",
+    "author": "Paul Masurel <paul.masurel@gmail.com>",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-sstable",
+    "version": "0.3.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-sstable",
+    "version": "0.5.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-stacker",
+    "version": "0.3.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-stacker",
+    "version": "0.5.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-tokenizer-api",
+    "version": "0.3.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
+    "name": "tantivy-tokenizer-api",
+    "version": "0.5.0",
+    "license": "MIT",
+    "author": "Various",
+    "link": "https://github.com/quickwit-oss/tantivy",
+    "source": "Backend"
+  },
+  {
     "name": "tao",
     "version": "0.34.6",
     "license": "Apache-2.0",
@@ -5501,6 +7389,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Tauri Programme within The Commons Conservancy",
     "link": "https://github.com/tauri-apps/tao",
+    "source": "Backend"
+  },
+  {
+    "name": "tap",
+    "version": "1.0.1",
+    "license": "MIT",
+    "author": "Elliott Linder <elliott.darfink@gmail.com>, myrrlyn <self@myrrlyn.dev>",
+    "link": "https://github.com/myrrlyn/tap",
     "source": "Backend"
   },
   {
@@ -5728,6 +7624,14 @@
     "source": "Backend"
   },
   {
+    "name": "thread-tree",
+    "version": "0.3.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "bluss <>",
+    "link": "https://github.com/bluss/thread-tree",
+    "source": "Backend"
+  },
+  {
     "name": "tiff",
     "version": "0.11.3",
     "license": "MIT",
@@ -5757,6 +7661,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Jacob Pratt <open-source@jhpratt.dev>, Time contributors",
     "link": "https://github.com/time-rs/time",
+    "source": "Backend"
+  },
+  {
+    "name": "tiny-keccak",
+    "version": "2.0.2",
+    "license": "CC0-1.0",
+    "author": "debris <marek.kotewicz@gmail.com>",
+    "link": "https://crates.io/crates/tiny-keccak",
     "source": "Backend"
   },
   {
@@ -5792,6 +7704,14 @@
     "source": "Backend"
   },
   {
+    "name": "tokenizers",
+    "version": "0.22.2",
+    "license": "Apache-2.0",
+    "author": "Anthony MOI <m.anthony.moi@gmail.com>, Nicolas Patry <patry.nicolas@protonmail.com>",
+    "link": "https://github.com/huggingface/tokenizers",
+    "source": "Backend"
+  },
+  {
     "name": "tokio",
     "version": "1.50.0",
     "license": "MIT",
@@ -5808,6 +7728,14 @@
     "source": "Backend"
   },
   {
+    "name": "tokio-native-tls",
+    "version": "0.3.1",
+    "license": "MIT",
+    "author": "Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/tls",
+    "source": "Backend"
+  },
+  {
     "name": "tokio-rayon",
     "version": "2.1.0",
     "license": "MIT",
@@ -5821,6 +7749,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
     "link": "https://github.com/rustls/tokio-rustls",
+    "source": "Backend"
+  },
+  {
+    "name": "tokio-stream",
+    "version": "0.1.18",
+    "license": "MIT",
+    "author": "Tokio Contributors <team@tokio.rs>",
+    "link": "https://github.com/tokio-rs/tokio",
     "source": "Backend"
   },
   {
@@ -6056,6 +7992,14 @@
     "source": "Backend"
   },
   {
+    "name": "twox-hash",
+    "version": "2.1.2",
+    "license": "MIT",
+    "author": "Jake Goulding <jake.goulding@gmail.com>",
+    "link": "https://github.com/shepmaster/twox-hash",
+    "source": "Backend"
+  },
+  {
     "name": "type1-encoding-parser",
     "version": "0.1.0",
     "license": "MIT",
@@ -6097,6 +8041,14 @@
   },
   {
     "name": "ug",
+    "version": "0.5.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/LaurentMazare/ug",
+    "source": "Backend"
+  },
+  {
+    "name": "ug-cuda",
     "version": "0.5.0",
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
@@ -6264,6 +8216,22 @@
     "source": "Backend"
   },
   {
+    "name": "ureq",
+    "version": "3.2.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Martin Algesten <martin@algesten.se>, Jacob Hoffman-Andrews <ureq@hoffman-andrews.com>",
+    "link": "https://github.com/algesten/ureq",
+    "source": "Backend"
+  },
+  {
+    "name": "ureq-proto",
+    "version": "0.5.3",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Martin Algesten <martin@algesten.se>",
+    "link": "https://github.com/algesten/ureq-proto",
+    "source": "Backend"
+  },
+  {
     "name": "url",
     "version": "2.5.8",
     "license": "Apache-2.0 OR MIT",
@@ -6301,6 +8269,14 @@
     "license": "Apache-2.0 OR MIT",
     "author": "Henri Sivonen <hsivonen@hsivonen.fi>",
     "link": "https://github.com/hsivonen/utf8_iter",
+    "source": "Backend"
+  },
+  {
+    "name": "utf8-ranges",
+    "version": "1.0.5",
+    "license": "MIT OR Unlicense",
+    "author": "Andrew Gallant <jamslam@gmail.com>",
+    "link": "https://github.com/BurntSushi/utf8-ranges",
     "source": "Backend"
   },
   {
@@ -6365,6 +8341,14 @@
     "license": "MIT",
     "author": "Luke Roberts <lukeroberts.j@gmail.com>",
     "link": "https://github.com/luker-os/variantly",
+    "source": "Backend"
+  },
+  {
+    "name": "vcpkg",
+    "version": "0.2.15",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Jim McGrath <jimmc2@gmail.com>",
+    "link": "https://github.com/mcgoo/vcpkg-rs",
     "source": "Backend"
   },
   {
@@ -6689,6 +8673,14 @@
   },
   {
     "name": "windows",
+    "version": "0.57.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Microsoft",
+    "link": "https://github.com/microsoft/windows-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "windows",
     "version": "0.61.3",
     "license": "Apache-2.0 OR MIT",
     "author": "Microsoft",
@@ -6945,6 +8937,14 @@
   },
   {
     "name": "windows-core",
+    "version": "0.57.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Microsoft",
+    "link": "https://github.com/microsoft/windows-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "windows-core",
     "version": "0.61.2",
     "license": "Apache-2.0 OR MIT",
     "author": "Microsoft",
@@ -6969,9 +8969,25 @@
   },
   {
     "name": "windows-implement",
+    "version": "0.57.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Microsoft",
+    "link": "https://github.com/microsoft/windows-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "windows-implement",
     "version": "0.60.2",
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
+    "link": "https://github.com/microsoft/windows-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "windows-interface",
+    "version": "0.57.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Microsoft",
     "link": "https://github.com/microsoft/windows-rs",
     "source": "Backend"
   },
@@ -7012,6 +9028,14 @@
     "version": "0.6.1",
     "license": "Apache-2.0 OR MIT",
     "author": "Various",
+    "link": "https://github.com/microsoft/windows-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "windows-result",
+    "version": "0.1.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Microsoft",
     "link": "https://github.com/microsoft/windows-rs",
     "source": "Backend"
   },
@@ -7216,6 +9240,22 @@
     "source": "Backend"
   },
   {
+    "name": "wkb",
+    "version": "0.9.2",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Kyle Barron <kylebarron2@gmail.com>",
+    "link": "https://github.com/georust/wkb",
+    "source": "Backend"
+  },
+  {
+    "name": "wkt",
+    "version": "0.14.0",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Various",
+    "link": "https://github.com/georust/wkt",
+    "source": "Backend"
+  },
+  {
     "name": "writeable",
     "version": "0.6.2",
     "license": "Unicode-3.0",
@@ -7232,6 +9272,14 @@
     "source": "Backend"
   },
   {
+    "name": "wyz",
+    "version": "0.5.1",
+    "license": "MIT",
+    "author": "myrrlyn <self@myrrlyn.dev>",
+    "link": "https://github.com/myrrlyn/wyz",
+    "source": "Backend"
+  },
+  {
     "name": "x11",
     "version": "2.21.0",
     "license": "MIT",
@@ -7245,6 +9293,14 @@
     "license": "MIT",
     "author": "daggerbot <daggerbot@gmail.com>, Erle Pereira <erle@erlepereira.com>, AltF02 <contact@altf2.dev>",
     "link": "https://github.com/AltF02/x11-rs.git",
+    "source": "Backend"
+  },
+  {
+    "name": "xxhash-rust",
+    "version": "0.8.15",
+    "license": "BSL-1.0",
+    "author": "Douman <douman@gmx.se>",
+    "link": "https://github.com/DoumanAsh/xxhash-rust",
     "source": "Backend"
   },
   {
@@ -7389,6 +9445,30 @@
     "license": "MIT",
     "author": "David Tolnay <dtolnay@gmail.com>",
     "link": "https://github.com/dtolnay/zmij",
+    "source": "Backend"
+  },
+  {
+    "name": "zstd",
+    "version": "0.13.3",
+    "license": "MIT",
+    "author": "Alexandre Bury <alexandre.bury@gmail.com>",
+    "link": "https://github.com/gyscos/zstd-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "zstd-safe",
+    "version": "7.2.4",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alexandre Bury <alexandre.bury@gmail.com>",
+    "link": "https://github.com/gyscos/zstd-rs",
+    "source": "Backend"
+  },
+  {
+    "name": "zstd-sys",
+    "version": "2.0.16+zstd.1.5.7",
+    "license": "Apache-2.0 OR MIT",
+    "author": "Alexandre Bury <alexandre.bury@gmail.com>",
+    "link": "https://github.com/gyscos/zstd-rs",
     "source": "Backend"
   },
   {
