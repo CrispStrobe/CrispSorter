@@ -1,3 +1,8 @@
+pub mod embedder;
+pub mod fts_index;
+pub mod fts_query;
+pub mod ingest;
+pub mod local_index;
 /// CrispSorter search / RAG index module.
 ///
 /// Sub-modules:
@@ -10,32 +15,28 @@
 ///   remote_client — HTTP client to VPS server (coming in P9)
 ///   ingest      — orchestration pipeline (coming in P6)
 ///   search      — unified search with RRF reranking (coming in P5)
-
 pub mod location;
-pub mod schema;
-pub mod embedder;
-pub mod fts_query;
-pub mod fts_index;
-pub mod local_index;
 pub mod remote_client;
+pub mod schema;
 pub mod search;
-pub mod ingest;
 pub mod tauri_commands;
 
 #[cfg(test)]
 pub mod benchmarks;
 
 // Re-export the most commonly used types.
-pub use location::{FileLocation, RetrievalCost};
-pub use schema::{DocumentChunk, SearchResult, SearchFilters, build_schema};
-pub use embedder::{Embedder, EmbedderConfig, EmbedderModel, EmbedderDevice, TextChunk, chunk_text};
+pub use embedder::{
+    chunk_text, Embedder, EmbedderConfig, EmbedderDevice, EmbedderModel, TextChunk,
+};
 pub use fts_index::FtsIndex;
+pub use ingest::{IngestConfig, IngestPipeline, IngestStats, RawDocument};
 pub use local_index::LocalIndex;
+pub use location::{FileLocation, RetrievalCost};
+pub use schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
 pub use search::SearchEngine;
-pub use ingest::{IngestPipeline, IngestConfig, RawDocument, IngestStats};
 
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
 /// Abstraction over local and remote index backends.
 ///
@@ -77,7 +78,7 @@ pub trait IndexBackend: Send + Sync {
 pub struct IndexState {
     pub backend: Option<std::sync::Arc<dyn IndexBackend>>,
     /// Raw `LocalIndex` kept separately so `index_build_ivf_pq` can call it.
-    pub local:   Option<std::sync::Arc<LocalIndex>>,
+    pub local: Option<std::sync::Arc<LocalIndex>>,
     pub fts: Option<std::sync::Arc<FtsIndex>>,
     /// Embedder behind Mutex because fastembed 5.x embed() takes &mut self.
     pub embedder: Option<std::sync::Arc<tokio::sync::Mutex<Embedder>>>,
@@ -91,13 +92,13 @@ pub struct IndexState {
 impl IndexState {
     pub fn disabled() -> Self {
         IndexState {
-            backend:  None,
-            local:    None,
-            fts:      None,
+            backend: None,
+            local: None,
+            fts: None,
             embedder: None,
-            engine:   None,
+            engine: None,
             pipeline: None,
-            config:   IndexConfig::default(),
+            config: IndexConfig::default(),
         }
     }
 }

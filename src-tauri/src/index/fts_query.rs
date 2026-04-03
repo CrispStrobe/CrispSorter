@@ -1,3 +1,5 @@
+use anyhow::{anyhow, bail, Result};
+use deunicode::deunicode;
 /// Boolean query translator → Tantivy query tree.
 ///
 /// Supported syntax:
@@ -20,18 +22,10 @@
 /// anchoring (`^…$`) when scanning the TermDictionary, so no explicit anchors
 /// are added here (they are not supported by the FST regex engine).
 use tantivy::{
-    IndexReader,
-    query::{
-        BooleanQuery, Occur,
-        FuzzyTermQuery, PhraseQuery,
-        TermQuery, Query,
-        RegexQuery,
-    },
+    query::{BooleanQuery, FuzzyTermQuery, Occur, PhraseQuery, Query, RegexQuery, TermQuery},
     schema::{Field, IndexRecordOption},
-    Term,
+    IndexReader, Term,
 };
-use anyhow::{Result, bail, anyhow};
-use deunicode::deunicode;
 
 /// Fields that the translator can target.
 pub struct SearchFields {
@@ -55,8 +49,8 @@ pub fn translate(
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
-    Word(String),       // bare term (may contain * ? ~ modifiers)
-    Phrase(String),     // "quoted phrase"
+    Word(String),   // bare term (may contain * ? ~ modifiers)
+    Phrase(String), // "quoted phrase"
     And,
     Or,
     Not,
@@ -96,15 +90,17 @@ fn lex(input: &str) -> Result<Vec<Token>> {
                 }
                 match word.to_uppercase().as_str() {
                     "AND" => tokens.push(Token::And),
-                    "OR"  => tokens.push(Token::Or),
+                    "OR" => tokens.push(Token::Or),
                     "NOT" => tokens.push(Token::Not),
                     upper if upper.starts_with("W/") => {
-                        let n = word[2..].parse::<u32>()
+                        let n = word[2..]
+                            .parse::<u32>()
                             .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
                         tokens.push(Token::Within(n, false));
                     }
                     upper if upper.starts_with("PRE/") => {
-                        let n = word[4..].parse::<u32>()
+                        let n = word[4..]
+                            .parse::<u32>()
                             .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
                         tokens.push(Token::Within(n, true));
                     }
@@ -127,7 +123,11 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(tokens: Vec<Token>, fields: &'a SearchFields) -> Self {
-        Parser { tokens, pos: 0, fields }
+        Parser {
+            tokens,
+            pos: 0,
+            fields,
+        }
     }
 
     fn peek(&self) -> &Token {
@@ -164,7 +164,10 @@ impl<'a> Parser<'a> {
                     (Occur::Must, lhs),
                     (Occur::Must, rhs),
                 ]));
-            } else if matches!(self.peek(), Token::Word(_) | Token::Phrase(_) | Token::LParen | Token::Not) {
+            } else if matches!(
+                self.peek(),
+                Token::Word(_) | Token::Phrase(_) | Token::LParen | Token::Not
+            ) {
                 // Implicit AND: adjacent terms without an explicit operator
                 let rhs = self.parse_not()?;
                 lhs = Box::new(BooleanQuery::new(vec![
@@ -182,9 +185,7 @@ impl<'a> Parser<'a> {
         if matches!(self.peek(), Token::Not) {
             self.consume();
             let operand = self.parse_proximity()?;
-            Ok(Box::new(BooleanQuery::new(vec![
-                (Occur::MustNot, operand),
-            ])))
+            Ok(Box::new(BooleanQuery::new(vec![(Occur::MustNot, operand)])))
         } else {
             self.parse_proximity()
         }
@@ -206,7 +207,9 @@ impl<'a> Parser<'a> {
             Token::LParen => {
                 self.consume();
                 let inner = self.parse_expr()?;
-                if matches!(self.peek(), Token::RParen) { self.consume(); }
+                if matches!(self.peek(), Token::RParen) {
+                    self.consume();
+                }
                 Ok(inner)
             }
             Token::Phrase(text) => {
@@ -246,8 +249,8 @@ fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>>
 
     // Exact term across fields with boosting.
     let title_q = build_boosted_term(fields.title, &folded, 3.0);
-    let head_q  = build_boosted_term(fields.headings, &folded, 2.0);
-    let body_q  = build_boosted_term(fields.body, &folded, 1.0);
+    let head_q = build_boosted_term(fields.headings, &folded, 2.0);
+    let body_q = build_boosted_term(fields.body, &folded, 1.0);
 
     Ok(Box::new(BooleanQuery::new(vec![
         (Occur::Should, title_q),
@@ -262,7 +265,11 @@ fn build_boosted_term(field: Field, text: &str, boost: f32) -> Box<dyn Query> {
         Term::from_field_text(field, text),
         IndexRecordOption::WithFreqsAndPositions,
     ));
-    if (boost - 1.0).abs() < 0.001 { tq } else { Box::new(BoostQuery::new(tq, boost)) }
+    if (boost - 1.0).abs() < 0.001 {
+        tq
+    } else {
+        Box::new(BoostQuery::new(tq, boost))
+    }
 }
 
 /// Convert a wildcard pattern to a regex string.
@@ -270,8 +277,8 @@ fn wildcard_to_regex(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len() * 2);
     for c in pattern.chars() {
         match c {
-            '*'  => out.push_str(".*"),
-            '?'  => out.push('.'),
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
             '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
                 out.push('\\');
                 out.push(c);
@@ -286,8 +293,8 @@ fn build_wildcard(pattern: &str, fields: &SearchFields) -> Result<Box<dyn Query>
     let regex = wildcard_to_regex(pattern);
 
     let title_q = build_boosted_regex(fields.title, &regex, 3.0)?;
-    let head_q  = build_boosted_regex(fields.headings, &regex, 2.0)?;
-    let body_q  = build_boosted_regex(fields.body, &regex, 1.0)?;
+    let head_q = build_boosted_regex(fields.headings, &regex, 2.0)?;
+    let body_q = build_boosted_regex(fields.body, &regex, 1.0)?;
 
     Ok(Box::new(BooleanQuery::new(vec![
         (Occur::Should, title_q),
@@ -298,17 +305,41 @@ fn build_wildcard(pattern: &str, fields: &SearchFields) -> Result<Box<dyn Query>
 
 fn build_boosted_regex(field: Field, regex: &str, boost: f32) -> Result<Box<dyn Query>> {
     use tantivy::query::BoostQuery;
-    let rq = Box::new(RegexQuery::from_pattern(regex, field)
-        .map_err(|e| anyhow!("Wildcard regex error: {:?}", e))?);
+    let rq = Box::new(
+        RegexQuery::from_pattern(regex, field)
+            .map_err(|e| anyhow!("Wildcard regex error: {:?}", e))?,
+    );
 
-    if (boost - 1.0).abs() < 0.001 { Ok(rq) } else { Ok(Box::new(BoostQuery::new(rq, boost))) }
+    if (boost - 1.0).abs() < 0.001 {
+        Ok(rq)
+    } else {
+        Ok(Box::new(BoostQuery::new(rq, boost)))
+    }
 }
 
 fn build_fuzzy(term: &str, distance: u8, fields: &SearchFields) -> Result<Box<dyn Query>> {
     use tantivy::query::BoostQuery;
-    let title_q = Box::new(BoostQuery::new(Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.title, term), distance, true)), 3.0));
-    let head_q  = Box::new(BoostQuery::new(Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.headings, term), distance, true)), 2.0));
-    let body_q  = Box::new(FuzzyTermQuery::new(Term::from_field_text(fields.body, term), distance, true));
+    let title_q = Box::new(BoostQuery::new(
+        Box::new(FuzzyTermQuery::new(
+            Term::from_field_text(fields.title, term),
+            distance,
+            true,
+        )),
+        3.0,
+    ));
+    let head_q = Box::new(BoostQuery::new(
+        Box::new(FuzzyTermQuery::new(
+            Term::from_field_text(fields.headings, term),
+            distance,
+            true,
+        )),
+        2.0,
+    ));
+    let body_q = Box::new(FuzzyTermQuery::new(
+        Term::from_field_text(fields.body, term),
+        distance,
+        true,
+    ));
 
     Ok(Box::new(BooleanQuery::new(vec![
         (Occur::Should, title_q),
@@ -320,12 +351,14 @@ fn build_fuzzy(term: &str, distance: u8, fields: &SearchFields) -> Result<Box<dy
 /// Build an exact or slop phrase query on the body field.
 fn build_phrase_query(text: &str, slop: u32, fields: &SearchFields) -> Result<Box<dyn Query>> {
     let tokens = simple_tokenize(text);
-    if tokens.is_empty() { bail!("Empty phrase query"); }
+    if tokens.is_empty() {
+        bail!("Empty phrase query");
+    }
 
     // For phrases, we also try matching title/headings, but with lower slop or higher boost.
     let title_q = build_boosted_phrase(fields.title, &tokens, slop, 3.0);
-    let head_q  = build_boosted_phrase(fields.headings, &tokens, slop, 2.0);
-    let body_q  = build_boosted_phrase(fields.body, &tokens, slop, 1.0);
+    let head_q = build_boosted_phrase(fields.headings, &tokens, slop, 2.0);
+    let body_q = build_boosted_phrase(fields.body, &tokens, slop, 1.0);
 
     Ok(Box::new(BooleanQuery::new(vec![
         (Occur::Should, title_q),
@@ -336,10 +369,16 @@ fn build_phrase_query(text: &str, slop: u32, fields: &SearchFields) -> Result<Bo
 
 fn build_boosted_phrase(field: Field, tokens: &[String], slop: u32, boost: f32) -> Box<dyn Query> {
     use tantivy::query::BoostQuery;
-    let terms: Vec<Term> = tokens.iter().map(|t| Term::from_field_text(field, t)).collect();
+    let terms: Vec<Term> = tokens
+        .iter()
+        .map(|t| Term::from_field_text(field, t))
+        .collect();
 
     let pq: Box<dyn Query> = if terms.len() == 1 {
-        Box::new(TermQuery::new(terms[0].clone(), IndexRecordOption::WithFreqsAndPositions))
+        Box::new(TermQuery::new(
+            terms[0].clone(),
+            IndexRecordOption::WithFreqsAndPositions,
+        ))
     } else {
         let phrase_terms: Vec<(usize, Term)> = terms.into_iter().enumerate().collect();
         let mut pq = PhraseQuery::new_with_offset(phrase_terms);
@@ -347,7 +386,11 @@ fn build_boosted_phrase(field: Field, tokens: &[String], slop: u32, boost: f32) 
         Box::new(pq)
     };
 
-    if (boost - 1.0).abs() < 0.001 { pq } else { Box::new(BoostQuery::new(pq, boost)) }
+    if (boost - 1.0).abs() < 0.001 {
+        pq
+    } else {
+        Box::new(BoostQuery::new(pq, boost))
+    }
 }
 
 /// Build a proximity query for `lhs w/N rhs` or `lhs pre/N rhs`.
@@ -378,19 +421,15 @@ fn build_proximity(
     for lt in &lhs_terms {
         for rt in &rhs_terms {
             // Forward: lt … rt
-            let mut fwd = PhraseQuery::new_with_offset(vec![
-                (0usize, lt.clone()),
-                (1usize, rt.clone()),
-            ]);
+            let mut fwd =
+                PhraseQuery::new_with_offset(vec![(0usize, lt.clone()), (1usize, rt.clone())]);
             fwd.set_slop(slop);
             clauses.push((Occur::Should, Box::new(fwd)));
 
             if !ordered {
                 // Backward: rt … lt  (bidirectional w/N)
-                let mut bwd = PhraseQuery::new_with_offset(vec![
-                    (0usize, rt.clone()),
-                    (1usize, lt.clone()),
-                ]);
+                let mut bwd =
+                    PhraseQuery::new_with_offset(vec![(0usize, rt.clone()), (1usize, lt.clone())]);
                 bwd.set_slop(slop);
                 clauses.push((Occur::Should, Box::new(bwd)));
             }
@@ -405,7 +444,9 @@ fn extract_body_terms(query: &dyn Query, field: Field) -> Vec<Term> {
     let mut out = Vec::new();
     if let Some(tq) = query.as_any().downcast_ref::<TermQuery>() {
         let t = tq.term();
-        if t.field() == field { out.push(t.clone()); }
+        if t.field() == field {
+            out.push(t.clone());
+        }
     } else if let Some(bq) = query.as_any().downcast_ref::<BooleanQuery>() {
         for (_, sub) in bq.clauses() {
             out.extend(extract_body_terms(sub.as_ref(), field));
@@ -417,7 +458,11 @@ fn extract_body_terms(query: &dyn Query, field: Field) -> Vec<Term> {
 /// Naive whitespace + lowercase tokenizer for phrase query construction.
 pub fn simple_tokenize(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|t| fold_accents(t).trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+        .map(|t| {
+            fold_accents(t)
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_owned()
+        })
         .filter(|t| !t.is_empty())
         .collect()
 }
@@ -455,19 +500,25 @@ mod tests {
     #[test]
     fn lex_phrase() {
         let tokens = lex("\"heiliger geist\"").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Phrase(p) if p == "heiliger geist")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Phrase(p) if p == "heiliger geist")));
     }
 
     #[test]
     fn lex_fuzzy() {
         let tokens = lex("gnade~2").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w.contains('~'))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Word(w) if w.contains('~'))));
     }
 
     #[test]
     fn lex_wildcard() {
         let tokens = lex("anon*").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w.contains('*'))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Word(w) if w.contains('*'))));
     }
 
     #[test]
@@ -485,17 +536,41 @@ mod tests {
     #[test]
     fn implicit_and_multi_word() {
         // "Karl Barth" should parse as Karl AND Barth (not just Karl)
+        use crate::index::fts_index::{FtsIndex, TantivyInput};
         use tempfile::TempDir;
-        use crate::index::fts_index::FtsIndex;
         let dir = TempDir::new().unwrap();
         let idx = FtsIndex::open_or_create(dir.path()).unwrap();
         let mut w = idx.writer().unwrap();
-        idx.add_document(&mut w, "d1", "u1", "en", "", "", "Karl Barth schrieb über Gnade").unwrap();
-        idx.add_document(&mut w, "d2", "u1", "en", "", "", "Karl Marx schrieb über Kapital").unwrap();
+        idx.add_document(
+            &mut w,
+            TantivyInput {
+                doc_id: "d1",
+                owner_id: "u1",
+                language: "en",
+                title: "",
+                headings: "",
+                body: "Karl Barth schrieb über Gnade",
+            },
+        )
+        .unwrap();
+        idx.add_document(
+            &mut w,
+            TantivyInput {
+                doc_id: "d2",
+                owner_id: "u1",
+                language: "en",
+                title: "",
+                headings: "",
+                body: "Karl Marx schrieb über Kapital",
+            },
+        )
+        .unwrap();
         w.commit().unwrap();
 
         use crate::index::schema::SearchFilters;
-        let hits = idx.search("Karl Barth", &SearchFilters::default(), 10).unwrap();
+        let hits = idx
+            .search("Karl Barth", &SearchFilters::default(), 10)
+            .unwrap();
         // d1 contains both Karl AND Barth; d2 only has Karl — implicit AND must exclude d2
         assert_eq!(hits.len(), 1, "implicit AND should require both terms");
         assert_eq!(hits[0].doc_id, "d1");

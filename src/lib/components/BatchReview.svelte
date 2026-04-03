@@ -425,19 +425,21 @@
             if (!item.extractedText || item.extractedText.length < 20) { fail++; continue; }
             try {
                 await invoke('index_ingest_document', {
-                    fullText:    item.extractedText,
-                    fullTextMd:  '',
-                    headings:    [],
-                    title:       item.suggestedTitle  || null,
-                    author:      item.suggestedAuthor || null,
-                    year:        item.suggestedYear   ? parseInt(item.suggestedYear) : null,
-                    filename:    item.originalName,
-                    ext:         item.extension || '',
-                    language:    'de',
-                    locationUri: `crisp+local://local/${item.originalPath}`,
-                    ownerId:     'local',
-                    sourceHash:  item.id,
-                    tags:        [],
+                    input: {
+                        fullText:    item.extractedText,
+                        fullTextMd:  '',
+                        headings:    [],
+                        title:       item.suggestedTitle  || null,
+                        author:      item.suggestedAuthor || null,
+                        year:        item.suggestedYear   ? parseInt(item.suggestedYear) : null,
+                        filename:    item.originalName,
+                        ext:         item.extension || '',
+                        language:    'de',
+                        locationUri: `crisp+local://local/${item.originalPath}`,
+                        ownerId:     'local',
+                        sourceHash:  item.id,
+                        tags:        [],
+                    }
                 });
                 ok++;
             } catch (e) {

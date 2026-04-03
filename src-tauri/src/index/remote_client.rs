@@ -41,27 +41,27 @@ use super::{DocumentChunk, IndexBackend};
 /// side so the server does not need a GPU or fastembed.
 #[derive(Debug, Serialize)]
 struct IngestPayload<'a> {
-    doc_id:       &'a str,
-    chunk_index:  i32,
-    full_text:    &'a str,
+    doc_id: &'a str,
+    chunk_index: i32,
+    full_text: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     full_text_md: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    headings:     Option<&'a [String]>,
-    embedding:    &'a [f32],          // pre-computed dense vector
+    headings: Option<&'a [String]>,
+    embedding: &'a [f32], // pre-computed dense vector
     #[serde(skip_serializing_if = "Option::is_none")]
-    title:        Option<&'a str>,
+    title: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    author:       Option<&'a str>,
+    author: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    year:         Option<i32>,
-    filename:     &'a str,
-    ext:          &'a str,
-    language:     &'a str,
+    year: Option<i32>,
+    filename: &'a str,
+    ext: &'a str,
+    language: &'a str,
     location_uri: &'a str,
-    owner_id:     &'a str,
-    source_hash:  &'a str,
-    tags:         &'a [String],
+    owner_id: &'a str,
+    source_hash: &'a str,
+    tags: &'a [String],
 }
 
 /// Search request — one of three modes.
@@ -69,11 +69,11 @@ struct IngestPayload<'a> {
 #[derive(Debug, Serialize)]
 struct SearchPayload<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    query:    Option<&'a str>,
+    query: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<&'a [f32]>,
-    mode:     &'a str,           // "text" | "vector" | "hybrid"
-    limit:    usize,
+    mode: &'a str, // "text" | "vector" | "hybrid"
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -93,16 +93,16 @@ struct UpdateLocationPayload<'a> {
 
 pub struct RemoteClient {
     base_url: String,
-    api_key:  String,
-    client:   Client,
+    api_key: String,
+    client: Client,
 }
 
 impl RemoteClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         RemoteClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
-            api_key:  api_key.into(),
-            client:   Client::new(),
+            api_key: api_key.into(),
+            client: Client::new(),
         }
     }
 
@@ -111,7 +111,8 @@ impl RemoteClient {
     }
 
     async fn post_json<T: Serialize>(&self, path: &str, body: &T) -> Result<reqwest::Response> {
-        let resp = self.client
+        let resp = self
+            .client
             .post(self.url(path))
             .bearer_auth(&self.api_key)
             .json(body)
@@ -120,7 +121,7 @@ impl RemoteClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text   = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("remote index {status}: {text}"));
         }
         Ok(resp)
@@ -139,22 +140,22 @@ impl IndexBackend for RemoteClient {
     async fn ingest(&self, doc: DocumentChunk) -> Result<()> {
         let embedding = doc.embedding.as_deref().unwrap_or(&[]);
         let payload = IngestPayload {
-            doc_id:       &doc.doc_id,
-            chunk_index:  doc.chunk_index,
-            full_text:    doc.full_text.as_deref().unwrap_or(""),
+            doc_id: &doc.doc_id,
+            chunk_index: doc.chunk_index,
+            full_text: doc.full_text.as_deref().unwrap_or(""),
             full_text_md: doc.full_text_md.as_deref(),
-            headings:     None, // headings stored in full_text_md already
+            headings: None, // headings stored in full_text_md already
             embedding,
-            title:        doc.title.as_deref(),
-            author:       doc.author.as_deref(),
-            year:         doc.year,
-            filename:     doc.filename.as_deref().unwrap_or(""),
-            ext:          doc.ext.as_deref().unwrap_or(""),
-            language:     doc.language.as_deref().unwrap_or(""),
+            title: doc.title.as_deref(),
+            author: doc.author.as_deref(),
+            year: doc.year,
+            filename: doc.filename.as_deref().unwrap_or(""),
+            ext: doc.ext.as_deref().unwrap_or(""),
+            language: doc.language.as_deref().unwrap_or(""),
             location_uri: &doc.location_uri,
-            owner_id:     &doc.owner_id,
-            source_hash:  &doc.source_hash,
-            tags:         &doc.tags,
+            owner_id: &doc.owner_id,
+            source_hash: &doc.source_hash,
+            tags: &doc.tags,
         };
         self.post_json("/v1/ingest", &payload).await?;
         Ok(())
@@ -167,9 +168,9 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = SearchPayload {
-            query:    Some(query),
+            query: Some(query),
             embedding: None,
-            mode:     "text",
+            mode: "text",
             limit,
             owner_id: filters.owner_id.as_deref(),
             language: filters.language.as_deref(),
@@ -187,9 +188,9 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = SearchPayload {
-            query:    None,
+            query: None,
             embedding: Some(embedding),
-            mode:     "vector",
+            mode: "vector",
             limit,
             owner_id: filters.owner_id.as_deref(),
             language: filters.language.as_deref(),
@@ -208,9 +209,9 @@ impl IndexBackend for RemoteClient {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let payload = SearchPayload {
-            query:    Some(query),
+            query: Some(query),
             embedding: Some(embedding),
-            mode:     "hybrid",
+            mode: "hybrid",
             limit,
             owner_id: filters.owner_id.as_deref(),
             language: filters.language.as_deref(),
@@ -222,7 +223,8 @@ impl IndexBackend for RemoteClient {
     }
 
     async fn delete_doc(&self, doc_id: &str) -> Result<()> {
-        let resp = self.client
+        let resp = self
+            .client
             .delete(self.url(&format!("/v1/docs/{doc_id}")))
             .bearer_auth(&self.api_key)
             .send()
@@ -230,7 +232,7 @@ impl IndexBackend for RemoteClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text   = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("delete_doc {doc_id} failed {status}: {text}"));
         }
         Ok(())
@@ -238,7 +240,8 @@ impl IndexBackend for RemoteClient {
 
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
         let payload = UpdateLocationPayload { new_uri };
-        self.post_json(&format!("/v1/docs/{doc_id}/location"), &payload).await?;
+        self.post_json(&format!("/v1/docs/{doc_id}/location"), &payload)
+            .await?;
         Ok(())
     }
 }

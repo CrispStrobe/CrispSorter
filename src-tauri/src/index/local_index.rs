@@ -10,21 +10,20 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{
-    Array, FixedSizeListArray, Int32Array, RecordBatch, StringArray,
-    TimestampMillisecondArray,
+    builder::{ListBuilder, StringBuilder},
+    Float32Array,
 };
-use arrow_array::{Float32Array, builder::{ListBuilder, StringBuilder}};
+use arrow_array::{
+    Array, FixedSizeListArray, Int32Array, RecordBatch, StringArray, TimestampMillisecondArray,
+};
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use lancedb::{
-    connect, Connection, Table,
-    index::{
-        Index,
-        vector::IvfPqIndexBuilder,
-    },
+    connect,
+    index::{vector::IvfPqIndexBuilder, Index},
     query::{ExecutableQuery, QueryBase},
-    DistanceType,
+    Connection, DistanceType, Table,
 };
 
 use super::schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
@@ -53,7 +52,9 @@ impl LocalIndex {
             .with_context(|| format!("creating LanceDB dir {}", lance_dir.display()))?;
 
         let uri = lance_dir.to_string_lossy().into_owned();
-        let db = connect(&uri).execute().await
+        let db = connect(&uri)
+            .execute()
+            .await
             .with_context(|| format!("connecting to LanceDB at {uri}"))?;
 
         let table = match db.open_table(TABLE_NAME).execute().await {
@@ -68,7 +69,11 @@ impl LocalIndex {
             Err(e) => return Err(e).context("opening LanceDB table"),
         };
 
-        Ok(LocalIndex { _db: db, table, dims })
+        Ok(LocalIndex {
+            _db: db,
+            table,
+            dims,
+        })
     }
 
     // ── Ingest ─────────────────────────────────────────────────────────────
@@ -80,13 +85,19 @@ impl LocalIndex {
 
     /// Batch-insert a slice of chunks into LanceDB.
     pub async fn ingest_batch(&self, chunks: &[DocumentChunk]) -> Result<()> {
-        if chunks.is_empty() { return Ok(()); }
+        if chunks.is_empty() {
+            return Ok(());
+        }
 
         let schema = build_schema(self.dims);
-        let batch  = chunks_to_record_batch(chunks, self.dims, &schema)?;
+        let batch = chunks_to_record_batch(chunks, self.dims, &schema)?;
 
         let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
-        self.table.add(reader).execute().await.context("LanceDB add")?;
+        self.table
+            .add(reader)
+            .execute()
+            .await
+            .context("LanceDB add")?;
         Ok(())
     }
 
@@ -120,11 +131,13 @@ impl LocalIndex {
     /// Falls back to `chunk_index = 0` when no terms are given.
     pub async fn fetch_best_chunk_per_doc(
         &self,
-        doc_ids:       &[String],
-        query_terms:   &[&str],
-        score_map:     &std::collections::HashMap<String, f32>,
+        doc_ids: &[String],
+        query_terms: &[&str],
+        score_map: &std::collections::HashMap<String, f32>,
     ) -> Result<Vec<SearchResult>> {
-        if doc_ids.is_empty() { return Ok(vec![]); }
+        if doc_ids.is_empty() {
+            return Ok(vec![]);
+        }
 
         let quoted: Vec<String> = doc_ids
             .iter()
@@ -133,7 +146,10 @@ impl LocalIndex {
 
         let (filter, per_doc) = if query_terms.is_empty() {
             // No terms to score → just grab chunk_index=0
-            (format!("doc_id IN ({}) AND chunk_index = 0", quoted.join(", ")), 1usize)
+            (
+                format!("doc_id IN ({}) AND chunk_index = 0", quoted.join(", ")),
+                1usize,
+            )
         } else {
             // Fetch several chunks so we can pick the best one
             (format!("doc_id IN ({})", quoted.join(", ")), 8usize)
@@ -161,13 +177,14 @@ impl LocalIndex {
 
         for result in all {
             let text_lower = result.snippet.to_lowercase();
-            let hits = query_terms.iter()
+            let hits = query_terms
+                .iter()
                 .filter(|&&t| text_lower.contains(t))
                 .count();
 
             let is_better = match best.get(&result.doc_id) {
-                None                      => true,
-                Some((_, prev))           => hits > *prev,
+                None => true,
+                Some((_, prev)) => hits > *prev,
             };
             if is_better {
                 best.insert(result.doc_id.clone(), (result, hits));
@@ -183,7 +200,9 @@ impl LocalIndex {
     /// of how many chunks were ingested, which avoids the N×chunks limit problem
     /// and makes result deduplication trivial.
     pub async fn fetch_by_doc_ids(&self, doc_ids: &[String]) -> Result<Vec<RecordBatch>> {
-        if doc_ids.is_empty() { return Ok(vec![]); }
+        if doc_ids.is_empty() {
+            return Ok(vec![]);
+        }
 
         let quoted: Vec<String> = doc_ids
             .iter()
@@ -214,7 +233,7 @@ impl LocalIndex {
 
     /// Update the `location_uri` column for all rows of a document.
     pub async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
-        let filter  = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
+        let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         let new_val = format!("'{}'", new_uri.replace('\'', "''"));
         self.table
             .update()
@@ -255,7 +274,10 @@ impl LocalIndex {
 
     /// Number of unique documents (rows with chunk_index = 0).
     pub async fn count_docs(&self) -> Result<usize> {
-        Ok(self.table.count_rows(Some("chunk_index = 0".to_owned())).await?)
+        Ok(self
+            .table
+            .count_rows(Some("chunk_index = 0".to_owned()))
+            .await?)
     }
 
     /// List all indexed documents: one row per document (chunk_index = 0).
@@ -288,7 +310,9 @@ impl IndexBackend for LocalIndex {
         _filters: &SearchFilters,
         _limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        Err(anyhow!("use FtsIndex for text search; wire via SearchEngine"))
+        Err(anyhow!(
+            "use FtsIndex for text search; wire via SearchEngine"
+        ))
     }
 
     async fn search_vector(
@@ -332,21 +356,21 @@ pub fn batches_to_search_results_with_scores(
 
     for batch in batches {
         let n = batch.num_rows();
-        let doc_id_col       = str_col(batch, "doc_id")?;
+        let doc_id_col = str_col(batch, "doc_id")?;
         let location_uri_col = str_col(batch, "location_uri")?;
-        let owner_id_col     = str_col(batch, "owner_id")?;
-        let title_col        = str_col_opt(batch, "title");
-        let author_col       = str_col_opt(batch, "author");
-        let year_col         = i32_col_opt(batch, "year");
-        let filename_col     = str_col_opt(batch, "filename");
-        let ext_col          = str_col_opt(batch, "ext");
-        let language_col     = str_col_opt(batch, "language");
-        let chunk_idx_col    = i32_col(batch, "chunk_index")?;
-        let full_text_col    = str_col_opt(batch, "full_text");
+        let owner_id_col = str_col(batch, "owner_id")?;
+        let title_col = str_col_opt(batch, "title");
+        let author_col = str_col_opt(batch, "author");
+        let year_col = i32_col_opt(batch, "year");
+        let filename_col = str_col_opt(batch, "filename");
+        let ext_col = str_col_opt(batch, "ext");
+        let language_col = str_col_opt(batch, "language");
+        let chunk_idx_col = i32_col(batch, "chunk_index")?;
+        let full_text_col = str_col_opt(batch, "full_text");
 
         for i in 0..n {
-            let doc_id = str_val(&doc_id_col, i);
-            let score  = *score_map.get(&doc_id).unwrap_or(&0.0);
+            let doc_id = str_val(doc_id_col, i);
+            let score = *score_map.get(&doc_id).unwrap_or(&0.0);
 
             let full_text = full_text_col
                 .as_ref()
@@ -356,17 +380,23 @@ pub fn batches_to_search_results_with_scores(
 
             results.push(SearchResult {
                 doc_id,
-                location_uri: str_val(&location_uri_col, i),
-                owner_id:     str_val(&owner_id_col, i),
-                title:        str_col_val_opt(&title_col, i),
-                author:       str_col_val_opt(&author_col, i),
-                year:         year_col.as_ref().and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) }),
-                filename:     str_col_val_opt(&filename_col, i),
-                ext:          str_col_val_opt(&ext_col, i),
-                language:     str_col_val_opt(&language_col, i),
+                location_uri: str_val(location_uri_col, i),
+                owner_id: str_val(owner_id_col, i),
+                title: str_col_val_opt(&title_col, i),
+                author: str_col_val_opt(&author_col, i),
+                year: year_col.as_ref().and_then(|c| {
+                    if c.is_null(i) {
+                        None
+                    } else {
+                        Some(c.value(i))
+                    }
+                }),
+                filename: str_col_val_opt(&filename_col, i),
+                ext: str_col_val_opt(&ext_col, i),
+                language: str_col_val_opt(&language_col, i),
                 snippet,
                 score,
-                chunk_index:  chunk_idx_col.value(i),
+                chunk_index: chunk_idx_col.value(i),
             });
         }
     }
@@ -386,35 +416,36 @@ fn chunks_to_record_batch(
     let n = chunks.len();
 
     // ── Identity ─────────────────────────────────────────────────────────
-    let ids:           StringArray = chunks.iter().map(|c| Some(c.id.as_str())).collect();
-    let doc_ids:       StringArray = chunks.iter().map(|c| Some(c.doc_id.as_str())).collect();
-    let location_uris: StringArray = chunks.iter().map(|c| Some(c.location_uri.as_str())).collect();
-    let owner_ids:     StringArray = chunks.iter().map(|c| Some(c.owner_id.as_str())).collect();
+    let ids: StringArray = chunks.iter().map(|c| Some(c.id.as_str())).collect();
+    let doc_ids: StringArray = chunks.iter().map(|c| Some(c.doc_id.as_str())).collect();
+    let location_uris: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.location_uri.as_str()))
+        .collect();
+    let owner_ids: StringArray = chunks.iter().map(|c| Some(c.owner_id.as_str())).collect();
 
     // ── Document metadata ─────────────────────────────────────────────────
     let filenames: StringArray = chunks.iter().map(|c| c.filename.as_deref()).collect();
-    let titles:    StringArray = chunks.iter().map(|c| c.title.as_deref()).collect();
-    let authors:   StringArray = chunks.iter().map(|c| c.author.as_deref()).collect();
-    let years:     Int32Array  = chunks.iter().map(|c| c.year).collect();
-    let exts:      StringArray = chunks.iter().map(|c| c.ext.as_deref()).collect();
+    let titles: StringArray = chunks.iter().map(|c| c.title.as_deref()).collect();
+    let authors: StringArray = chunks.iter().map(|c| c.author.as_deref()).collect();
+    let years: Int32Array = chunks.iter().map(|c| c.year).collect();
+    let exts: StringArray = chunks.iter().map(|c| c.ext.as_deref()).collect();
     let languages: StringArray = chunks.iter().map(|c| c.language.as_deref()).collect();
     let page_counts: Int32Array = chunks.iter().map(|c| c.page_count).collect();
 
     // ── Text content ──────────────────────────────────────────────────────
-    let headings:    StringArray = chunks.iter().map(|c| c.headings_text.as_deref()).collect();
-    let full_texts:  StringArray = chunks.iter().map(|c| c.full_text.as_deref()).collect();
-    let full_mds:    StringArray = chunks.iter().map(|c| c.full_text_md.as_deref()).collect();
+    let headings: StringArray = chunks.iter().map(|c| c.headings_text.as_deref()).collect();
+    let full_texts: StringArray = chunks.iter().map(|c| c.full_text.as_deref()).collect();
+    let full_mds: StringArray = chunks.iter().map(|c| c.full_text_md.as_deref()).collect();
 
     // ── Embedding ─────────────────────────────────────────────────────────
     // FixedSizeList<Float32>
     let embedding_col: Arc<dyn Array> = {
         let flat: Vec<Option<f32>> = chunks
             .iter()
-            .flat_map(|c| {
-                match &c.embedding {
-                    Some(v) => v.iter().map(|&x| Some(x)).collect::<Vec<_>>(),
-                    None    => vec![None; dims],
-                }
+            .flat_map(|c| match &c.embedding {
+                Some(v) => v.iter().map(|&x| Some(x)).collect::<Vec<_>>(),
+                None => vec![None; dims],
             })
             .collect();
         Arc::new(FixedSizeListArray::from_iter_primitive::<
@@ -422,32 +453,41 @@ fn chunks_to_record_batch(
             _,
             _,
         >(
-            flat.chunks(dims).map(|chunk| {
-                Some(chunk.iter().copied())
-            }),
+            flat.chunks(dims).map(|chunk| Some(chunk.iter().copied())),
             dims as i32,
         ))
     };
 
-    let emb_sparse: StringArray = chunks.iter().map(|c| c.embedding_sparse.as_deref()).collect();
-    let emb_models: StringArray = chunks.iter().map(|c| c.embedding_model.as_deref()).collect();
+    let emb_sparse: StringArray = chunks
+        .iter()
+        .map(|c| c.embedding_sparse.as_deref())
+        .collect();
+    let emb_models: StringArray = chunks
+        .iter()
+        .map(|c| c.embedding_model.as_deref())
+        .collect();
 
     // ── Chunking ──────────────────────────────────────────────────────────
-    let chunk_indexes:      Int32Array = chunks.iter().map(|c| Some(c.chunk_index)).collect();
-    let chunk_totals:       Int32Array = chunks.iter().map(|c| Some(c.chunk_total)).collect();
-    let chunk_start_chars:  Int32Array = chunks.iter().map(|c| c.chunk_start_char).collect();
-    let chunk_end_chars:    Int32Array = chunks.iter().map(|c| c.chunk_end_char).collect();
+    let chunk_indexes: Int32Array = chunks.iter().map(|c| Some(c.chunk_index)).collect();
+    let chunk_totals: Int32Array = chunks.iter().map(|c| Some(c.chunk_total)).collect();
+    let chunk_start_chars: Int32Array = chunks.iter().map(|c| c.chunk_start_char).collect();
+    let chunk_end_chars: Int32Array = chunks.iter().map(|c| c.chunk_end_char).collect();
 
     // ── Provenance ────────────────────────────────────────────────────────
-    let indexed_ats:  TimestampMillisecondArray =
+    let indexed_ats: TimestampMillisecondArray =
         chunks.iter().map(|c| Some(c.indexed_at)).collect();
-    let source_hashes: StringArray = chunks.iter().map(|c| Some(c.source_hash.as_str())).collect();
+    let source_hashes: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.source_hash.as_str()))
+        .collect();
 
     // tags: List<Utf8>
     let tags_col: Arc<dyn Array> = {
         let mut lb = ListBuilder::new(StringBuilder::new());
         for chunk in chunks {
-            for tag in &chunk.tags { lb.values().append_value(tag); }
+            for tag in &chunk.tags {
+                lb.values().append_value(tag);
+            }
             lb.append(true);
         }
         Arc::new(lb.finish())
@@ -459,7 +499,7 @@ fn chunks_to_record_batch(
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(ids)           as Arc<dyn Array>,
+            Arc::new(ids) as Arc<dyn Array>,
             Arc::new(doc_ids),
             Arc::new(location_uris),
             Arc::new(owner_ids),
@@ -499,17 +539,17 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
 
     for batch in batches {
         let n = batch.num_rows();
-        let doc_id_col       = str_col(batch, "doc_id")?;
+        let doc_id_col = str_col(batch, "doc_id")?;
         let location_uri_col = str_col(batch, "location_uri")?;
-        let owner_id_col     = str_col(batch, "owner_id")?;
-        let title_col        = str_col_opt(batch, "title");
-        let author_col       = str_col_opt(batch, "author");
-        let year_col         = i32_col_opt(batch, "year");
-        let filename_col     = str_col_opt(batch, "filename");
-        let ext_col          = str_col_opt(batch, "ext");
-        let language_col     = str_col_opt(batch, "language");
-        let chunk_idx_col    = i32_col(batch, "chunk_index")?;
-        let full_text_col    = str_col_opt(batch, "full_text");
+        let owner_id_col = str_col(batch, "owner_id")?;
+        let title_col = str_col_opt(batch, "title");
+        let author_col = str_col_opt(batch, "author");
+        let year_col = i32_col_opt(batch, "year");
+        let filename_col = str_col_opt(batch, "filename");
+        let ext_col = str_col_opt(batch, "ext");
+        let language_col = str_col_opt(batch, "language");
+        let chunk_idx_col = i32_col(batch, "chunk_index")?;
+        let full_text_col = str_col_opt(batch, "full_text");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -527,18 +567,24 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
             let score = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
 
             results.push(SearchResult {
-                doc_id:       str_val(&doc_id_col, i),
-                location_uri: str_val(&location_uri_col, i),
-                owner_id:     str_val(&owner_id_col, i),
-                title:        str_col_val_opt(&title_col, i),
-                author:       str_col_val_opt(&author_col, i),
-                year:         year_col.as_ref().map(|c| if c.is_null(i) { None } else { Some(c.value(i)) }).flatten(),
-                filename:     str_col_val_opt(&filename_col, i),
-                ext:          str_col_val_opt(&ext_col, i),
-                language:     str_col_val_opt(&language_col, i),
+                doc_id: str_val(doc_id_col, i),
+                location_uri: str_val(location_uri_col, i),
+                owner_id: str_val(owner_id_col, i),
+                title: str_col_val_opt(&title_col, i),
+                author: str_col_val_opt(&author_col, i),
+                year: year_col.as_ref().and_then(|c| {
+                    if c.is_null(i) {
+                        None
+                    } else {
+                        Some(c.value(i))
+                    }
+                }),
+                filename: str_col_val_opt(&filename_col, i),
+                ext: str_col_val_opt(&ext_col, i),
+                language: str_col_val_opt(&language_col, i),
                 snippet,
                 score,
-                chunk_index:  chunk_idx_col.value(i),
+                chunk_index: chunk_idx_col.value(i),
             });
         }
     }
@@ -549,7 +595,8 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
 // ── Column extraction helpers ──────────────────────────────────────────────
 
 fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
-    let col = batch.column_by_name(name)
+    let col = batch
+        .column_by_name(name)
         .ok_or_else(|| anyhow!("missing column: {name}"))?;
     col.as_any()
         .downcast_ref::<StringArray>()
@@ -557,11 +604,15 @@ fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
 }
 
 fn str_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
-    batch.column_by_name(name)?.as_any().downcast_ref::<StringArray>()
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<StringArray>()
 }
 
 fn i32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array> {
-    let col = batch.column_by_name(name)
+    let col = batch
+        .column_by_name(name)
         .ok_or_else(|| anyhow!("missing column: {name}"))?;
     col.as_any()
         .downcast_ref::<Int32Array>()
@@ -569,20 +620,34 @@ fn i32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array> {
 }
 
 fn i32_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Int32Array> {
-    batch.column_by_name(name)?.as_any().downcast_ref::<Int32Array>()
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<Int32Array>()
 }
 
 fn f32_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Float32Array> {
-    batch.column_by_name(name)?.as_any().downcast_ref::<Float32Array>()
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<Float32Array>()
 }
 
 fn str_val(arr: &StringArray, i: usize) -> String {
-    if arr.is_null(i) { String::new() } else { arr.value(i).to_owned() }
+    if arr.is_null(i) {
+        String::new()
+    } else {
+        arr.value(i).to_owned()
+    }
 }
 
 fn str_col_val_opt(arr: &Option<&StringArray>, i: usize) -> Option<String> {
     arr.as_ref().and_then(|c| {
-        if c.is_null(i) { None } else { Some(c.value(i).to_owned()) }
+        if c.is_null(i) {
+            None
+        } else {
+            Some(c.value(i).to_owned())
+        }
     })
 }
 

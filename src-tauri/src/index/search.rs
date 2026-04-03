@@ -16,14 +16,22 @@ use super::schema::{SearchFilters, SearchResult};
 // ── SearchEngine ────────────────────────────────────────────────────────────
 
 pub struct SearchEngine {
-    pub fts:      Arc<FtsIndex>,
-    pub vector:   Arc<LocalIndex>,
+    pub fts: Arc<FtsIndex>,
+    pub vector: Arc<LocalIndex>,
     pub embedder: Arc<Mutex<Embedder>>,
 }
 
 impl SearchEngine {
-    pub fn new(fts: Arc<FtsIndex>, vector: Arc<LocalIndex>, embedder: Arc<Mutex<Embedder>>) -> Self {
-        SearchEngine { fts, vector, embedder }
+    pub fn new(
+        fts: Arc<FtsIndex>,
+        vector: Arc<LocalIndex>,
+        embedder: Arc<Mutex<Embedder>>,
+    ) -> Self {
+        SearchEngine {
+            fts,
+            vector,
+            embedder,
+        }
     }
 
     // ── Text-only search ───────────────────────────────────────────────────
@@ -38,7 +46,9 @@ impl SearchEngine {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let hits = self.fts.search(query, filters, limit)?;
-        if hits.is_empty() { return Ok(vec![]); }
+        if hits.is_empty() {
+            return Ok(vec![]);
+        }
 
         let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
         let score_map: HashMap<String, f32> =
@@ -47,16 +57,25 @@ impl SearchEngine {
         // Extract query terms for best-chunk selection (words ≥ 3 chars).
         let terms: Vec<String> = query
             .split_whitespace()
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_owned()
+            })
             .filter(|w| w.len() >= 3)
             .collect();
         let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
 
-        let mut results = self.vector
+        let mut results = self
+            .vector
             .fetch_best_chunk_per_doc(&doc_ids, &term_refs, &score_map)
             .await?;
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         Ok(results)
     }
@@ -93,18 +112,19 @@ impl SearchEngine {
         // Embed first, then run both searches concurrently.
         let embedding = self.embed_query(query_text).await?;
 
-        let fts_clone    = self.fts.clone();
-        let vec_clone    = self.vector.clone();
-        let q_owned      = query_text.to_owned();
-        let filters_fts  = filters.clone();
-        let filters_vec  = filters.clone();
-        let emb_clone    = embedding.clone();
+        let fts_clone = self.fts.clone();
+        let vec_clone = self.vector.clone();
+        let q_owned = query_text.to_owned();
+        let filters_fts = filters.clone();
+        let filters_vec = filters.clone();
+        let emb_clone = embedding.clone();
 
-        let fts_task = tokio::spawn(async move {
-            fts_clone.search(&q_owned, &filters_fts, limit * 2)
-        });
+        let fts_task =
+            tokio::spawn(async move { fts_clone.search(&q_owned, &filters_fts, limit * 2) });
         let vec_task = tokio::spawn(async move {
-            vec_clone.search_vector(&emb_clone, &filters_vec, limit * 2).await
+            vec_clone
+                .search_vector(&emb_clone, &filters_vec, limit * 2)
+                .await
         });
 
         let (fts_result, vec_result) = tokio::try_join!(fts_task, vec_task)?;
@@ -113,20 +133,22 @@ impl SearchEngine {
 
         // RRF merge → (doc_id, rrf_score)
         let merged = rrf_merge(&fts_hits, &vec_hits, 60, limit);
-        if merged.is_empty() { return Ok(vec![]); }
+        if merged.is_empty() {
+            return Ok(vec![]);
+        }
         let score_map: HashMap<String, f32> = merged.iter().cloned().collect();
 
         // Index vector results by doc_id (first/best chunk per doc from ANN).
         // Vec search is already sorted best-chunk-first by cosine similarity.
-        let vec_by_doc: HashMap<String, SearchResult> = vec_hits
-            .into_iter()
-            .fold(HashMap::new(), |mut map, r| {
+        let vec_by_doc: HashMap<String, SearchResult> =
+            vec_hits.into_iter().fold(HashMap::new(), |mut map, r| {
                 map.entry(r.doc_id.clone()).or_insert(r);
                 map
             });
 
         // FTS-only doc_ids need hydration from LanceDB.
-        let fts_only_ids: Vec<String> = merged.iter()
+        let fts_only_ids: Vec<String> = merged
+            .iter()
             .map(|(id, _)| id.clone())
             .filter(|id| !vec_by_doc.contains_key(id))
             .collect();
@@ -135,17 +157,25 @@ impl SearchEngine {
         if !fts_only_ids.is_empty() {
             let terms: Vec<String> = query_text
                 .split_whitespace()
-                .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+                .map(|w| {
+                    w.to_lowercase()
+                        .trim_matches(|c: char| !c.is_alphanumeric())
+                        .to_owned()
+                })
                 .filter(|w| w.len() >= 3)
                 .collect();
             let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
-            let fts_score_sub: HashMap<String, f32> = fts_only_ids.iter()
+            let fts_score_sub: HashMap<String, f32> = fts_only_ids
+                .iter()
                 .filter_map(|id| score_map.get(id).map(|&s| (id.clone(), s)))
                 .collect();
-            let hydrated = self.vector
+            let hydrated = self
+                .vector
                 .fetch_best_chunk_per_doc(&fts_only_ids, &term_refs, &fts_score_sub)
                 .await?;
-            for r in hydrated { fts_hydrated.insert(r.doc_id.clone(), r); }
+            for r in hydrated {
+                fts_hydrated.insert(r.doc_id.clone(), r);
+            }
         }
 
         // Assemble final results in RRF rank order.
@@ -162,7 +192,11 @@ impl SearchEngine {
             }
         }
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         Ok(results)
     }
@@ -172,7 +206,10 @@ impl SearchEngine {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
         let mut emb = self.embedder.lock().await;
         let dense = emb.embed_dense(vec![text.to_owned()])?;
-        dense.vectors.into_iter().next()
+        dense
+            .vectors
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("embedder returned no vectors"))
     }
 }
@@ -188,8 +225,8 @@ impl SearchEngine {
 /// Returns a list of (doc_id, rrf_score) sorted by score descending, truncated
 /// to `limit` entries.
 fn rrf_merge(
-    fts_hits:  &[super::fts_index::FtsHit],
-    vec_hits:  &[SearchResult],
+    fts_hits: &[super::fts_index::FtsHit],
+    vec_hits: &[SearchResult],
     k: usize,
     limit: usize,
 ) -> Vec<(String, f32)> {
@@ -233,22 +270,33 @@ mod tests {
     use crate::index::fts_index::FtsHit;
 
     fn make_fts_hits(ids: &[&str]) -> Vec<FtsHit> {
-        ids.iter().enumerate()
-            .map(|(i, id)| FtsHit { doc_id: id.to_string(), score: (ids.len() - i) as f32 })
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| FtsHit {
+                doc_id: id.to_string(),
+                score: (ids.len() - i) as f32,
+            })
             .collect()
     }
 
     fn make_vec_hits(ids: &[&str]) -> Vec<SearchResult> {
-        ids.iter().enumerate().map(|(i, id)| SearchResult {
-            doc_id: id.to_string(),
-            location_uri: String::new(),
-            owner_id: String::new(),
-            title: None, author: None, year: None,
-            filename: None, ext: None, language: None,
-            snippet: String::new(),
-            score: 1.0 / (i + 1) as f32,
-            chunk_index: 0,
-        }).collect()
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| SearchResult {
+                doc_id: id.to_string(),
+                location_uri: String::new(),
+                owner_id: String::new(),
+                title: None,
+                author: None,
+                year: None,
+                filename: None,
+                ext: None,
+                language: None,
+                snippet: String::new(),
+                score: 1.0 / (i + 1) as f32,
+                chunk_index: 0,
+            })
+            .collect()
     }
 
     #[test]
@@ -262,8 +310,12 @@ mod tests {
                 doc_id: "a".to_string(),
                 location_uri: String::new(),
                 owner_id: String::new(),
-                title: None, author: None, year: None,
-                filename: None, ext: None, language: None,
+                title: None,
+                author: None,
+                year: None,
+                filename: None,
+                ext: None,
+                language: None,
                 snippet: String::new(),
                 score: 0.9,
                 chunk_index: 0,
@@ -273,8 +325,12 @@ mod tests {
             doc_id: "b".to_string(),
             location_uri: String::new(),
             owner_id: String::new(),
-            title: None, author: None, year: None,
-            filename: None, ext: None, language: None,
+            title: None,
+            author: None,
+            year: None,
+            filename: None,
+            ext: None,
+            language: None,
             snippet: String::new(),
             score: 0.95,
             chunk_index: 0,
@@ -289,7 +345,10 @@ mod tests {
 
         // Doc B should now outrank Doc A because B appeared at the top of FTS,
         // and A's multiple chunks are no longer being summed.
-        assert!(b_score > a_score, "Doc B should outrank Doc A after RRF fix");
+        assert!(
+            b_score > a_score,
+            "Doc B should outrank Doc A after RRF fix"
+        );
     }
 
     #[test]
@@ -306,7 +365,10 @@ mod tests {
         // a appears in both lists → should score higher than b (fts-only)
         let a_score = merged.iter().find(|(id, _)| id == "a").unwrap().1;
         let b_score = merged.iter().find(|(id, _)| id == "b").unwrap().1;
-        assert!(a_score > b_score, "a (in both lists) should outscore b (fts-only)");
+        assert!(
+            a_score > b_score,
+            "a (in both lists) should outscore b (fts-only)"
+        );
     }
 
     #[test]
