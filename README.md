@@ -169,6 +169,7 @@ Measured on Apple M-series (CPU-only, batch=32, 3 documents, hybrid search).
 | Multilingual MiniLM | 384 | 6.10 | 1.00 | 2505 | Fastest multilingual; lower quality |
 | Qwen3-Emb uint8 (calibrated) | 1024 | 6.01 | 1.00 | 1407 | Compact, calibrated quant |
 | **Octen-0.6B INT8** (default) | 1024 | 6.09 | 1.00 | 1348 | ✅ Best balance; recommended |
+| Octen-0.6B INT8 Full | 1024 | 6.35 | 1.00 | 1207 | Smallest RAM (~1.2 GB); embedding table also quantized; 570 MB file |
 | Qwen3-Emb INT8 | 1024 | 5.78 | 0.50 | 1857 | Lower accuracy on hybrid test |
 | Jina-v2 Base EN | 768 | 6.85 | 1.00 | 2843 | Solid English encoder |
 | Snowflake Arctic-L v2 | 1024 | 5.77 | 1.00 | 2479 | |
@@ -187,11 +188,25 @@ Measured on Apple M-series (CPU-only, batch=32, 3 documents, hybrid search).
 |---|---|---|---|
 | FP32 | 2.38 GB | none (reference) | ~2.6 GB |
 | INT8 | 1.06 GB | ORT dynamic, MatMul-only, per-tensor | ~1.3 GB |
+| INT8 Full | 0.57 GB | ORT dynamic, MatMul + Gather (embedding table) | ~1.4 GB |
 | INT4 | 0.90 GB | ORT `MatMulNBits`, block_size=32, symmetric | ~1.2 GB |
 
-The embedding layer (token lookup table, ~600 MB) is intentionally left in FP32 in all quantised variants — quantising it saves memory but measurably degrades multilingual quality.
+The embedding layer (token lookup table, ~600 MB) is intentionally left in FP32 in the INT8 and INT4 variants — quantising it saves memory but measurably degrades multilingual quality. The INT8 Full variant does quantise the embedding table, saving ~450 MB vs INT8.
 
-Both INT8 and INT4 maintain **1.00 retrieval accuracy** on the benchmark suite. INT4 is ~15% smaller than INT8 but runs at roughly half the throughput on CPU due to the dequantisation overhead of `MatMulNBits`. Choose INT8 for speed, INT4 if you need to minimise resident memory.
+All four variants maintain **1.00 retrieval accuracy** on the benchmark suite (top-1 hybrid search). INT4 is ~15% smaller than INT8 but runs at roughly half the throughput on CPU due to `MatMulNBits` dequantisation overhead. Choose INT8 for speed, INT4 if you need to minimise resident memory.
+
+#### Quantization quality metrics
+
+Measured on Apple M-series (CPU, batch=1, 8 texts across 3 language-topic pairs).
+`Cosine drift` = mean cosine similarity between quantized and FP32 embeddings (1.0 = identical) · `Min drift` = worst-case per-vector cosine · `Triplet margin` = mean (sim(anchor,positive) − sim(anchor,negative)) · `Anisotropy` = avg pairwise cosine over 8 diverse texts (lower = more uniform embedding space).
+
+| Variant | Cosine drift (mean) | Cosine drift (min) | Ordering (3/3) | Triplet margin | Anisotropy | Unit-norm |
+|---|---|---|---|---|---|---|
+| INT8 (MatMul-only) | 0.8301 | 0.6737 | ✅ 3/3 | 0.2398 | 0.2358 | ✅ |
+| INT8 Full (+ Gather) | 0.8382 | 0.6975 | ✅ 3/3 | 0.2604 | 0.2245 | ✅ |
+| INT4 (MatMulNBits) | **0.9451** | **0.9303** | ✅ 3/3 | 0.2412 | 0.2333 | ✅ |
+
+**Notable finding:** INT4 has *higher* cosine fidelity to FP32 than INT8, because `MatMulNBits` uses fine-grained block-wise quantisation (block_size=32) while dynamic INT8 uses coarser per-tensor calibration. All three quantised variants correctly rank semantically related pairs above unrelated ones across English and German texts.
 
 ### Settings UI (Settings → Search Index)
 

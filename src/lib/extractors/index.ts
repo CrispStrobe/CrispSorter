@@ -1,5 +1,6 @@
 import { extractPdf } from './pdfExtractor';
 import { extractDocx } from './docxExtractor';
+import { extractEpub } from './epubExtractor';
 
 export interface ExtractionResult {
     text: string;
@@ -59,6 +60,10 @@ export async function extractText(
         case 'docx':
             console.log("[ExtractorIndex] Handing off to extractDocx");
             ({ text, markdownText, headings } = await extractDocx(arrayBuffer));
+            break;
+        case 'epub':
+            console.log("[ExtractorIndex] Handing off to extractEpub");
+            ({ text, markdownText, headings } = await extractEpub(arrayBuffer, name, options));
             break;
         case 'txt': {
             console.log("[ExtractorIndex] Handling txt internally");
