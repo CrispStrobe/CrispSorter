@@ -275,19 +275,21 @@
                 const stats_res = await invoke<{ chunk_count: number; embed_time_ms: number; write_time_ms: number }>(
                     'index_ingest_document',
                     {
-                        fullText:    result.text,
-                        fullTextMd:  result.markdownText ?? '',
-                        headings:    result.headings ?? [],
-                        title:       result.metadata?.title  ?? null,
-                        author:      result.metadata?.author ?? null,
-                        year:        result.metadata?.year   ? Number(result.metadata.year) : null,
-                        filename:    entry.filename,
-                        ext:         entry.ext,
-                        language,
-                        locationUri: entry.path,   // use raw absolute path as URI
-                        ownerId:     'local',
-                        sourceHash,
-                        tags:        [],
+                        input: {
+                            fullText:    result.text,
+                            fullTextMd:  result.markdownText ?? '',
+                            headings:    result.headings ?? [],
+                            title:       result.metadata?.title  ?? null,
+                            author:      result.metadata?.author ?? null,
+                            year:        result.metadata?.year   ? Number(result.metadata.year) : null,
+                            filename:    entry.filename,
+                            ext:         entry.ext,
+                            language,
+                            locationUri: entry.path,   // use raw absolute path as URI
+                            ownerId:     'local',
+                            sourceHash,
+                            tags:        [],
+                        }
                     }
                 );
 

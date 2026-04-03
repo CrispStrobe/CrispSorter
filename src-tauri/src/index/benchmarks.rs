@@ -1,21 +1,24 @@
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
 
 use super::{
-    Embedder, EmbedderConfig, EmbedderModel, EmbedderDevice,
-    FtsIndex, LocalIndex, SearchEngine, IngestPipeline, IngestConfig,
-    RawDocument, SearchFilters
+    Embedder, EmbedderConfig, EmbedderDevice, EmbedderModel, FtsIndex, IngestConfig,
+    IngestPipeline, LocalIndex, RawDocument, SearchEngine, SearchFilters,
 };
 
 // ── embedding quality helpers ───────────────────────────────────────────────
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    let dot:  f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-    let na:   f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let nb:   f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
 }
 
 fn l2_norm(v: &[f32]) -> f32 {
@@ -37,8 +40,8 @@ async fn benchmark_models() {
         EmbedderModel::JinaV3,
         EmbedderModel::PixieRuneV1,
         // ── Qwen3-Embedding-0.6B (base, decoder with KV-cache) ───────────────
-        EmbedderModel::Qwen3EmbeddingInt8,   // onnx-community int8
-        EmbedderModel::Qwen3EmbeddingUint8,  // electroglyph uint8 calibrated
+        EmbedderModel::Qwen3EmbeddingInt8,  // onnx-community int8
+        EmbedderModel::Qwen3EmbeddingUint8, // electroglyph uint8 calibrated
         // ── Octen-Embedding-0.6B (local exports) ─────────────────────────────
         EmbedderModel::Octen06bInt8FullLocal, // int8 MatMul+Gather (~570 MB)
         EmbedderModel::Octen06bInt4Local,     // int4 MatMul-only (~900 MB)
@@ -71,7 +74,12 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
     let fts = Arc::new(FtsIndex::open_or_create(&data_dir.path().join("fts"))?);
     let local = Arc::new(LocalIndex::open_or_create(data_dir.path(), model.dims()).await?);
     let engine = SearchEngine::new(fts.clone(), local.clone(), embedder_arc.clone());
-    let pipeline = IngestPipeline::new(fts.clone(), local.clone(), embedder_arc.clone(), IngestConfig::default());
+    let pipeline = IngestPipeline::new(
+        fts.clone(),
+        local.clone(),
+        embedder_arc.clone(),
+        IngestConfig::default(),
+    );
 
     // 2. Ingestion Performance & Accuracy Data
     let docs = vec![
@@ -129,24 +137,36 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
         total_chunks += stats.chunk_count;
     }
     let ingest_duration = start_ingest.elapsed();
-    println!("Ingest Speed: {:.2} chunks/sec", total_chunks as f64 / ingest_duration.as_secs_f64());
+    println!(
+        "Ingest Speed: {:.2} chunks/sec",
+        total_chunks as f64 / ingest_duration.as_secs_f64()
+    );
 
     // 3. Search Latency
     let queries = vec!["Rahner", "Recht", "integration", "theology", "Druck"];
     let start_hybrid = Instant::now();
     for q in &queries {
-        let _ = engine.search_hybrid(q, &SearchFilters::default(), 10).await?;
+        let _ = engine
+            .search_hybrid(q, &SearchFilters::default(), 10)
+            .await?;
     }
-    println!("Avg Hybrid Latency: {:?}", start_hybrid.elapsed() / queries.len() as u32);
+    println!(
+        "Avg Hybrid Latency: {:?}",
+        start_hybrid.elapsed() / queries.len() as u32
+    );
 
     // 4. Accuracy (0.0 – 1.0) — check top-1 result for each test query.
     let mut score = 0.0f64;
 
-    let res1 = engine.search_hybrid("Recht unter Druck", &SearchFilters::default(), 1).await?;
+    let res1 = engine
+        .search_hybrid("Recht unter Druck", &SearchFilters::default(), 1)
+        .await?;
     if res1.first().map(|r| r.title.as_deref().unwrap_or("")) == Some("Recht unter Druck") {
         score += 0.5;
     }
-    let res2 = engine.search_hybrid("Integrationsdialog Heitmeyer", &SearchFilters::default(), 1).await?;
+    let res2 = engine
+        .search_hybrid("Integrationsdialog Heitmeyer", &SearchFilters::default(), 1)
+        .await?;
     if res2.first().map(|r| r.title.as_deref().unwrap_or("")) == Some("Integration - Dialog") {
         score += 0.5;
     }
@@ -154,7 +174,7 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
 
     // 5. Memory Usage
     {
-        use sysinfo::{System, RefreshKind};
+        use sysinfo::{RefreshKind, System};
         let mut sys = System::new_with_specifics(RefreshKind::everything());
         sys.refresh_all();
         if let Ok(pid) = sysinfo::get_current_pid() {
@@ -211,10 +231,19 @@ async fn embedding_quality_metrics() {
         let cfg = cfg_for(EmbedderModel::Octen06bFp32);
         match Embedder::new(cfg).await {
             Ok(mut e) => match e.embed_dense(texts.clone()) {
-                Ok(d) => { println!("FP32 baseline loaded."); Some(d.vectors) }
-                Err(err) => { println!("FP32 embed failed (drift skipped): {err:#}"); None }
+                Ok(d) => {
+                    println!("FP32 baseline loaded.");
+                    Some(d.vectors)
+                }
+                Err(err) => {
+                    println!("FP32 embed failed (drift skipped): {err:#}");
+                    None
+                }
             },
-            Err(err) => { println!("FP32 load failed (drift skipped): {err:#}"); None }
+            Err(err) => {
+                println!("FP32 load failed (drift skipped): {err:#}");
+                None
+            }
         }
     };
 
@@ -231,46 +260,80 @@ async fn embedding_quality_metrics() {
         let vecs: Vec<Vec<f32>> = match Embedder::new(cfg).await {
             Ok(mut e) => match e.embed_dense(texts.clone()) {
                 Ok(d) => d.vectors,
-                Err(err) => { println!("SKIPPED — embed failed: {err:#}"); continue; }
+                Err(err) => {
+                    println!("SKIPPED — embed failed: {err:#}");
+                    continue;
+                }
             },
-            Err(err) => { println!("SKIPPED — load failed: {err:#}"); continue; }
+            Err(err) => {
+                println!("SKIPPED — load failed: {err:#}");
+                continue;
+            }
         };
 
         // 1. Cosine drift vs FP32 (mean and min) — only when baseline loaded
         if let Some(ref fp32_vecs) = fp32_vecs {
-            let drifts: Vec<f32> = vecs.iter().zip(fp32_vecs)
+            let drifts: Vec<f32> = vecs
+                .iter()
+                .zip(fp32_vecs)
                 .map(|(q, fp)| cosine(q, fp))
                 .collect();
             let mean_drift: f32 = drifts.iter().sum::<f32>() / drifts.len() as f32;
-            let min_drift:  f32 = drifts.iter().cloned().fold(f32::MAX, f32::min);
-            println!("  Cosine drift vs FP32 — mean: {:.4}  min: {:.4}  (1.0 = identical)", mean_drift, min_drift);
+            let min_drift: f32 = drifts.iter().cloned().fold(f32::MAX, f32::min);
+            println!(
+                "  Cosine drift vs FP32 — mean: {:.4}  min: {:.4}  (1.0 = identical)",
+                mean_drift, min_drift
+            );
         } else {
             println!("  Cosine drift vs FP32 — n/a (FP32 model unavailable)");
         }
 
         // 2. Unit-norm compliance
         let norms: Vec<f32> = vecs.iter().map(|v| l2_norm(v)).collect();
-        let max_norm_err = norms.iter().map(|n| (n - 1.0f32).abs()).fold(0.0f32, f32::max);
-        println!("  Unit-norm max deviation: {:.6}  (< 1e-4 = compliant)", max_norm_err);
+        let max_norm_err = norms
+            .iter()
+            .map(|n| (n - 1.0f32).abs())
+            .fold(0.0f32, f32::max);
+        println!(
+            "  Unit-norm max deviation: {:.6}  (< 1e-4 = compliant)",
+            max_norm_err
+        );
 
         // 3. Semantic ordering: related pair cosine > unrelated pair cosine
         let mut ordering_pass = 0usize;
         for &(a, p, n) in triplets {
             let sim_pos = cosine(&vecs[a], &vecs[p]);
             let sim_neg = cosine(&vecs[a], &vecs[n]);
-            if sim_pos > sim_neg { ordering_pass += 1; }
-            println!("    triplet ({},{},{}) pos={:.4} neg={:.4} {}", a, p, n, sim_pos, sim_neg,
-                     if sim_pos > sim_neg { "✓" } else { "✗" });
+            if sim_pos > sim_neg {
+                ordering_pass += 1;
+            }
+            println!(
+                "    triplet ({},{},{}) pos={:.4} neg={:.4} {}",
+                a,
+                p,
+                n,
+                sim_pos,
+                sim_neg,
+                if sim_pos > sim_neg { "✓" } else { "✗" }
+            );
         }
-        println!("  Semantic ordering: {}/{} passed", ordering_pass, triplets.len());
+        println!(
+            "  Semantic ordering: {}/{} passed",
+            ordering_pass,
+            triplets.len()
+        );
 
         // 4. Triplet margin: sim(a,p) - sim(a,n) for each triplet
-        let margins: Vec<f32> = triplets.iter().map(|&(a, p, n)| {
-            cosine(&vecs[a], &vecs[p]) - cosine(&vecs[a], &vecs[n])
-        }).collect();
+        let margins: Vec<f32> = triplets
+            .iter()
+            .map(|&(a, p, n)| cosine(&vecs[a], &vecs[p]) - cosine(&vecs[a], &vecs[n]))
+            .collect();
         let mean_margin: f32 = margins.iter().sum::<f32>() / margins.len() as f32;
-        let min_margin:  f32 = margins.iter().cloned().fold(f32::MAX, f32::min);
-        println!("  Triplet margin — mean: {:.4}  min: {:.4}  (> 0 = correct ordering)", mean_margin, min_margin);
+        let min_margin: f32 = margins.iter().cloned().fold(f32::MAX, f32::min);
+        println!(
+            "  Triplet margin — mean: {:.4}  min: {:.4}  (> 0 = correct ordering)",
+            mean_margin, min_margin
+        );
 
         // 5. Anisotropy: average pairwise cosine over all unique pairs
         //    Low anisotropy (near 0) means embeddings spread uniformly over the sphere.
@@ -284,6 +347,9 @@ async fn embedding_quality_metrics() {
             }
         }
         let anisotropy = pair_sum / pair_count as f32;
-        println!("  Anisotropy (avg pairwise cos): {:.4}  (< 0.3 = well-spread space)", anisotropy);
+        println!(
+            "  Anisotropy (avg pairwise cos): {:.4}  (< 0.3 = well-spread space)",
+            anisotropy
+        );
     }
 }

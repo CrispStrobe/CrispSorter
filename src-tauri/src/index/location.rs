@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+use std::fmt;
 /// File location URI model.
 ///
 /// Every indexed document carries exactly one `location_uri` string. It is a typed URI
@@ -12,8 +14,6 @@
 /// Single-user installs: both UUIDs are auto-populated from config; they never appear in UI.
 /// The `#fragment` convention for InternxtZip mirrors standard URL fragments.
 use std::path::PathBuf;
-use std::fmt;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// How expensive it is to physically retrieve this file right now.
@@ -70,11 +70,13 @@ impl FileLocation {
     /// Encode to the canonical URI string stored in the index.
     pub fn to_uri(&self) -> String {
         match self {
-            FileLocation::Local { user_id, machine_id, path } => {
+            FileLocation::Local {
+                user_id,
+                machine_id,
+                path,
+            } => {
                 // Normalise path separators to forward-slash for cross-platform URIs.
-                let path_str = path
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let path_str = path.to_string_lossy().replace('\\', "/");
                 // Ensure the path component starts with a leading slash.
                 let path_str = if path_str.starts_with('/') {
                     path_str
@@ -83,7 +85,12 @@ impl FileLocation {
                 };
                 format!("crisp+local://{}@{}{}", user_id, machine_id, path_str)
             }
-            FileLocation::Vps { user_id, host, port, path } => {
+            FileLocation::Vps {
+                user_id,
+                host,
+                port,
+                path,
+            } => {
                 let path_str = if path.starts_with('/') {
                     path.clone()
                 } else {
@@ -91,7 +98,10 @@ impl FileLocation {
                 };
                 format!("crisp+vps://{}@{}:{}{}", user_id, host, port, path_str)
             }
-            FileLocation::Internxt { user_id, cloud_path } => {
+            FileLocation::Internxt {
+                user_id,
+                cloud_path,
+            } => {
                 let path_str = if cloud_path.starts_with('/') {
                     cloud_path.clone()
                 } else {
@@ -99,13 +109,20 @@ impl FileLocation {
                 };
                 format!("crisp+internxt://{}{}", user_id, path_str)
             }
-            FileLocation::InternxtZip { user_id, archive_cloud_path, internal_path } => {
+            FileLocation::InternxtZip {
+                user_id,
+                archive_cloud_path,
+                internal_path,
+            } => {
                 let archive_str = if archive_cloud_path.starts_with('/') {
                     archive_cloud_path.clone()
                 } else {
                     format!("/{}", archive_cloud_path)
                 };
-                format!("crisp+internxt-zip://{}{}#{}", user_id, archive_str, internal_path)
+                format!(
+                    "crisp+internxt-zip://{}{}#{}",
+                    user_id, archive_str, internal_path
+                )
             }
         }
     }
@@ -151,14 +168,12 @@ impl FileLocation {
             FileLocation::Local { path, .. } => {
                 path.file_name().map(|n| n.to_string_lossy().into_owned())
             }
-            FileLocation::Vps { path, .. } => {
-                path.split('/').last().map(str::to_owned)
-            }
+            FileLocation::Vps { path, .. } => path.split('/').next_back().map(str::to_owned),
             FileLocation::Internxt { cloud_path, .. } => {
-                cloud_path.split('/').last().map(str::to_owned)
+                cloud_path.split('/').next_back().map(str::to_owned)
             }
             FileLocation::InternxtZip { internal_path, .. } => {
-                internal_path.split('/').last().map(str::to_owned)
+                internal_path.split('/').next_back().map(str::to_owned)
             }
         }
     }
@@ -166,7 +181,11 @@ impl FileLocation {
     /// Convenience: build a Local location from an absolute path and the current
     /// machine's identity (user_id and machine_id come from app config).
     pub fn local(user_id: Uuid, machine_id: Uuid, path: impl Into<PathBuf>) -> Self {
-        FileLocation::Local { user_id, machine_id, path: path.into() }
+        FileLocation::Local {
+            user_id,
+            machine_id,
+            path: path.into(),
+        }
     }
 }
 
@@ -187,7 +206,11 @@ fn parse_local(rest: &str) -> anyhow::Result<FileLocation> {
     let user_id = Uuid::parse_str(user_str)?;
     let machine_id = Uuid::parse_str(machine_str)?;
     let path = decode_path(path_str);
-    Ok(FileLocation::Local { user_id, machine_id, path })
+    Ok(FileLocation::Local {
+        user_id,
+        machine_id,
+        path,
+    })
 }
 
 /// Parse the part after `crisp+vps://`
@@ -202,7 +225,12 @@ fn parse_vps(rest: &str) -> anyhow::Result<FileLocation> {
         .ok_or_else(|| anyhow::anyhow!("crisp+vps URI missing port: {}", rest))?;
     let port: u16 = port_str.parse()?;
     let path = format!("/{}", path_str);
-    Ok(FileLocation::Vps { user_id, host: host.to_owned(), port, path })
+    Ok(FileLocation::Vps {
+        user_id,
+        host: host.to_owned(),
+        port,
+        path,
+    })
 }
 
 /// Parse the part after `crisp+internxt://`
@@ -220,7 +248,8 @@ fn parse_internxt(rest: &str) -> anyhow::Result<FileLocation> {
 /// Format: `{user-uuid}/{archive-cloud-path}#{internal-path}`
 fn parse_internxt_zip(rest: &str) -> anyhow::Result<FileLocation> {
     // Fragment separator '#' appears somewhere after the authority.
-    let (before_hash, internal_path) = rest.split_once('#')
+    let (before_hash, internal_path) = rest
+        .split_once('#')
         .ok_or_else(|| anyhow::anyhow!("crisp+internxt-zip URI missing '#': {}", rest))?;
     let (user_str, archive_path_str) = split_authority_path(before_hash)?;
     let user_id = Uuid::parse_str(user_str)?;
@@ -266,8 +295,12 @@ fn decode_path(s: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    fn uid() -> Uuid { Uuid::parse_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap() }
-    fn mid() -> Uuid { Uuid::parse_str("b2c3d4e5-f6a7-8901-bcde-f01234567891").unwrap() }
+    fn uid() -> Uuid {
+        Uuid::parse_str("a1b2c3d4-e5f6-7890-abcd-ef1234567890").unwrap()
+    }
+    fn mid() -> Uuid {
+        Uuid::parse_str("b2c3d4e5-f6a7-8901-bcde-f01234567891").unwrap()
+    }
 
     #[test]
     fn local_roundtrip_unix() {
@@ -326,13 +359,20 @@ mod tests {
     #[test]
     fn retrieval_cost() {
         assert_eq!(
-            FileLocation::Local { user_id: uid(), machine_id: mid(), path: PathBuf::from("/tmp/f") }
-                .retrieval_cost(),
+            FileLocation::Local {
+                user_id: uid(),
+                machine_id: mid(),
+                path: PathBuf::from("/tmp/f")
+            }
+            .retrieval_cost(),
             RetrievalCost::Free
         );
         assert_eq!(
-            FileLocation::Internxt { user_id: uid(), cloud_path: "/x".to_owned() }
-                .retrieval_cost(),
+            FileLocation::Internxt {
+                user_id: uid(),
+                cloud_path: "/x".to_owned()
+            }
+            .retrieval_cost(),
             RetrievalCost::Expensive
         );
     }

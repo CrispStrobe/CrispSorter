@@ -3,8 +3,8 @@
 /// One row = one chunk (chunk_index >= 0).
 /// A whole-document metadata row uses chunk_index = -1.
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Build the Arrow schema for the `documents` LanceDB table.
 /// The embedding dimension is runtime-configurable (depends on the chosen model).
@@ -20,48 +20,49 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
 
     Arc::new(Schema::new(vec![
         // ── Identity ─────────────────────────────────────────────────────
-        Field::new("id",               DataType::Utf8, false), // SHA-256(doc_id + chunk_index)
-        Field::new("doc_id",           DataType::Utf8, false), // SHA-256 of file content
-        Field::new("location_uri",     DataType::Utf8, false), // crisp+* URI
-        Field::new("owner_id",         DataType::Utf8, false), // user UUID (for multi-user filter)
-
+        Field::new("id", DataType::Utf8, false), // SHA-256(doc_id + chunk_index)
+        Field::new("doc_id", DataType::Utf8, false), // SHA-256 of file content
+        Field::new("location_uri", DataType::Utf8, false), // crisp+* URI
+        Field::new("owner_id", DataType::Utf8, false), // user UUID (for multi-user filter)
         // ── Document metadata ─────────────────────────────────────────────
-        Field::new("filename",         DataType::Utf8, true),
-        Field::new("title",            DataType::Utf8, true),
-        Field::new("author",           DataType::Utf8, true),
-        Field::new("year",             DataType::Int32, true),
-        Field::new("ext",              DataType::Utf8, true),
-        Field::new("language",         DataType::Utf8, true),  // "de" | "en" | "de+en"
-        Field::new("page_count",       DataType::Int32, true),
-
+        Field::new("filename", DataType::Utf8, true),
+        Field::new("title", DataType::Utf8, true),
+        Field::new("author", DataType::Utf8, true),
+        Field::new("year", DataType::Int32, true),
+        Field::new("ext", DataType::Utf8, true),
+        Field::new("language", DataType::Utf8, true), // "de" | "en" | "de+en"
+        Field::new("page_count", DataType::Int32, true),
         // ── Text content ──────────────────────────────────────────────────
-        Field::new("headings_text",    DataType::Utf8, true),  // all headings joined (FTS boosted)
-        Field::new("full_text",        DataType::Utf8, true),  // stripped plain text (FTS + embedding)
-        Field::new("full_text_md",     DataType::Utf8, true),  // Markdown with structure (display)
-
+        Field::new("headings_text", DataType::Utf8, true), // all headings joined (FTS boosted)
+        Field::new("full_text", DataType::Utf8, true),     // stripped plain text (FTS + embedding)
+        Field::new("full_text_md", DataType::Utf8, true),  // Markdown with structure (display)
         // ── Embedding ─────────────────────────────────────────────────────
         embedding_field,
-        Field::new("embedding_sparse", DataType::Utf8, true),  // JSON {indices:[], values:[]}
-        Field::new("embedding_model",  DataType::Utf8, true),  // model ID string
-
+        Field::new("embedding_sparse", DataType::Utf8, true), // JSON {indices:[], values:[]}
+        Field::new("embedding_model", DataType::Utf8, true),  // model ID string
         // ── Chunking ──────────────────────────────────────────────────────
-        Field::new("chunk_index",      DataType::Int32, false), // -1 = whole-doc metadata row
-        Field::new("chunk_total",      DataType::Int32, false),
+        Field::new("chunk_index", DataType::Int32, false), // -1 = whole-doc metadata row
+        Field::new("chunk_total", DataType::Int32, false),
         Field::new("chunk_start_char", DataType::Int32, true),
-        Field::new("chunk_end_char",   DataType::Int32, true),
-
+        Field::new("chunk_end_char", DataType::Int32, true),
         // ── Provenance ───────────────────────────────────────────────────
-        Field::new("indexed_at",       DataType::Timestamp(TimeUnit::Millisecond, None), false),
-        Field::new("source_hash",      DataType::Utf8, false), // hash of original file bytes
-        Field::new("tags",             DataType::List(Arc::new(
-                                           Field::new("item", DataType::Utf8, true))), true),
-
+        Field::new(
+            "indexed_at",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            false,
+        ),
+        Field::new("source_hash", DataType::Utf8, false), // hash of original file bytes
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            true,
+        ),
         // ── Forward-compatibility escape hatch ────────────────────────────
         // Store anything not yet in the schema here as JSON.
         // Future location types, batch IDs, session IDs, Internxt-zip archive
         // paths, CrispSorter session links, etc. all live here without schema
         // migrations. Once a field stabilises, promote it to a first-class column.
-        Field::new("metadata_json",    DataType::Utf8, true),
+        Field::new("metadata_json", DataType::Utf8, true),
     ]))
 }
 
@@ -92,7 +93,7 @@ pub struct DocumentChunk {
 
     // Embedding (filled by embedder step)
     pub embedding: Option<Vec<f32>>,
-    pub embedding_sparse: Option<String>,  // JSON
+    pub embedding_sparse: Option<String>, // JSON
     pub embedding_model: Option<String>,
 
     // Chunking
@@ -102,7 +103,7 @@ pub struct DocumentChunk {
     pub chunk_end_char: Option<i32>,
 
     // Provenance
-    pub indexed_at: i64,   // Unix ms
+    pub indexed_at: i64, // Unix ms
     pub source_hash: String,
     pub tags: Vec<String>,
 
@@ -156,7 +157,11 @@ impl SearchFilters {
         if let Some(ymax) = self.year_max {
             parts.push(format!("year <= {}", ymax));
         }
-        if !parts.is_empty() { Some(parts.join(" AND ")) } else { None }
+        if !parts.is_empty() {
+            Some(parts.join(" AND "))
+        } else {
+            None
+        }
     }
 }
 
@@ -168,7 +173,10 @@ mod tests {
     fn schema_has_embedding_field() {
         let s = build_schema(1024);
         let field = s.field_with_name("embedding").unwrap();
-        assert!(matches!(field.data_type(), DataType::FixedSizeList(_, 1024)));
+        assert!(matches!(
+            field.data_type(),
+            DataType::FixedSizeList(_, 1024)
+        ));
     }
 
     #[test]
