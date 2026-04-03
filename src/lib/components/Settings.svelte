@@ -11,7 +11,7 @@
         Rocket, FileText, Brain, Square, ChevronUp, ChevronDown, Info,
         RotateCcw, Search, CheckCircle2, AlertCircle, Beaker, Play, Check
     } from 'lucide-svelte';
-    import { open as openDialog, save } from '@tauri-apps/plugin-dialog';
+    import { open as openDialog, save, ask } from '@tauri-apps/plugin-dialog';
     import * as opener from '@tauri-apps/plugin-opener';
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
@@ -182,8 +182,24 @@
     let indexBackendType    = $state<'local' | 'remote'>('local');
     let indexRemoteUrl      = $state('');
     let indexRemoteApiKey   = $state('');
-    let indexEmbedderModel  = $state<'bge_m3' | 'multilingual_e5_large' | 'multilingual_e5_base' | 'multilingual_mini_lm' | 'bge_small_en'>('bge_m3');
+    let indexEmbedderModel  = $state<string>('bge_m3');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+
+    async function handleEmbedderChange(e: Event) {
+        const val = (e.target as HTMLSelectElement).value;
+        if (val === 'jina_nano') {
+            const confirmed = await ask(i18n.t.settings.index.non_commercial_confirm, { 
+                title: 'Jina-v5 License Confirmation',
+                kind: 'warning'
+            });
+            if (!confirmed) {
+                // Revert to previous value or default if user cancels
+                (e.target as HTMLSelectElement).value = indexEmbedderModel;
+                return;
+            }
+        }
+        indexEmbedderModel = val;
+    }
     let indexDataDir        = $state('');
     let indexStatus         = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
     let indexStatusMsg      = $state('');
@@ -1280,7 +1296,7 @@
             <!-- Embedder model -->
             <div class="section-card">
                 <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
-                <select id="index-model-select" bind:value={indexEmbedderModel} class="styled-select">
+                <select id="index-model-select" value={indexEmbedderModel} onchange={handleEmbedderChange} class="styled-select">
                     <option value="bge_m3">{i18n.t.settings.index.model_bge_m3}</option>
                     <optgroup label="PIXIE-Rune-v1.0 (cstr/PIXIE-Rune-v1.0-ONNX)">
                         <option value="pixie_q">{i18n.t.settings.index.model_pixie_q}</option>
