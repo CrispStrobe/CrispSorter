@@ -407,12 +407,21 @@
     }
     function indexEmbedderToRust(m: string): string {
         return {
-            bge_m3:               'bge-m3',
-            pixie:                'pixie-rune-v1',
-            octen:                'octen-06b-int8-local',
-            snowflake_l:          'snowflake-arctic-lv2',
-            jina_nano:            'jina-v5-nano',
-            multilingual_mini_lm: 'multilingual-mini-lm',
+            bge_m3:                       'bge-m3',
+            pixie:                        'pixie-rune-v1',
+            pixie_q:                      'pixie-rune-v1-q',
+            pixie_int4:                   'pixie-rune-v1-int4',
+            pixie_int4_full:              'pixie-rune-v1-int4-full',
+            octen:                        'octen-06b-int8-local',
+            snowflake_l:                  'snowflake-arctic-lv2',
+            snowflake_l_fp16:             'snowflake-arctic-lv2-fp16',
+            snowflake_l_int8:             'snowflake-arctic-lv2-int8',
+            snowflake_l_q4:               'snowflake-arctic-lv2-q4',
+            snowflake_l_q4f16:            'snowflake-arctic-lv2-q4-f16',
+            snowflake_l_o4:               'snowflake-arctic-lv2-o4',
+            snowflake_l_fp32:             'snowflake-arctic-lv2-fp32',
+            jina_nano:                    'jina-v5-nano',
+            multilingual_mini_lm:         'multilingual-mini-lm',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -1273,9 +1282,22 @@
                 <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
                 <select id="index-model-select" bind:value={indexEmbedderModel} class="styled-select">
                     <option value="bge_m3">{i18n.t.settings.index.model_bge_m3}</option>
-                    <option value="pixie">{i18n.t.settings.index.model_pixie}</option>
+                    <optgroup label="PIXIE-Rune-v1.0 (cstr/PIXIE-Rune-v1.0-ONNX)">
+                        <option value="pixie_q">{i18n.t.settings.index.model_pixie_q}</option>
+                        <option value="pixie_int4">{i18n.t.settings.index.model_pixie_int4}</option>
+                        <option value="pixie_int4_full">{i18n.t.settings.index.model_pixie_int4_full}</option>
+                        <option value="pixie">{i18n.t.settings.index.model_pixie}</option>
+                    </optgroup>
+                    <optgroup label="Snowflake Arctic Embed L v2.0">
+                        <option value="snowflake_l">{i18n.t.settings.index.model_snowflake_l}</option>
+                        <option value="snowflake_l_int8">{i18n.t.settings.index.model_snowflake_l_int8}</option>
+                        <option value="snowflake_l_fp16">{i18n.t.settings.index.model_snowflake_l_fp16}</option>
+                        <option value="snowflake_l_q4">{i18n.t.settings.index.model_snowflake_l_q4}</option>
+                        <option value="snowflake_l_q4f16">{i18n.t.settings.index.model_snowflake_l_q4f16}</option>
+                        <option value="snowflake_l_o4">{i18n.t.settings.index.model_snowflake_l_o4}</option>
+                        <option value="snowflake_l_fp32">{i18n.t.settings.index.model_snowflake_l_fp32}</option>
+                    </optgroup>
                     <option value="octen">{i18n.t.settings.index.model_octen}</option>
-                    <option value="snowflake_l">{i18n.t.settings.index.model_snowflake_l}</option>
                     <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
                     <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
                 </select>
