@@ -51,11 +51,11 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           mkdir -p src-tauri/bin
-          # Download llama.cpp release b8340 for macOS
-          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.zip -O llama-mac-arm64.zip
-          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.zip -O llama-mac-x64.zip
-          unzip -o llama-mac-arm64.zip -d mac-arm64
-          unzip -o llama-mac-x64.zip -d mac-x64
+          # Download llama.cpp release b8340 for macOS (tar.gz)
+          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.tar.gz -O llama-mac-arm64.tar.gz
+          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.tar.gz -O llama-mac-x64.tar.gz
+          mkdir mac-arm64 && tar -xzf llama-mac-arm64.tar.gz -C mac-arm64
+          mkdir mac-x64 && tar -xzf llama-mac-x64.tar.gz -C mac-x64
           # Move and rename to match expected sidecar names
           cp mac-arm64/bin/llama-server src-tauri/bin/llama-server-aarch64-apple-darwin
           cp mac-x64/bin/llama-server src-tauri/bin/llama-server-x86_64-apple-darwin
@@ -71,11 +71,12 @@ jobs:
           $BuildTag = "b8340"
           $BaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$BuildTag"
           
-          # Download main server
+          # Download main server (CPU/Vulkan build contains the base server)
           Invoke-WebRequest -Uri "$BaseUrl/llama-$BuildTag-bin-win-vulkan-x64.zip" -OutFile llama-win.zip
           Expand-Archive -Path llama-win.zip -DestinationPath win-bin -Force
-          Copy-Item win-bin/bin/llama-server.exe src-tauri/bin/llama-server-x86_64-pc-windows-msvc.exe
-          Copy-Item win-bin/bin/*.dll src-tauri/bin/
+          # llama-server.exe is in the root of the zip
+          Copy-Item win-bin/llama-server.exe src-tauri/bin/llama-server-x86_64-pc-windows-msvc.exe
+          Copy-Item win-bin/*.dll src-tauri/bin/
           
           # Download CUDA runtime for Windows
           Invoke-WebRequest -Uri "$BaseUrl/cudart-llama-bin-win-cuda-13.1-x64.zip" -OutFile cudart.zip
