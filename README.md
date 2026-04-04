@@ -283,7 +283,22 @@ npm run tauri build
 ./release.sh
 ```
 
-Requires `gh` CLI authenticated (`gh auth login`).
+Requires `gh` CLI authenticated (`gh auth login`) and `create-dmg` (`brew install create-dmg`).
+
+---
+
+## Troubleshooting
+
+### Missing CLI Logs
+By default, Tauri 2 does not pipe frontend `console.log` to the terminal. To see these:
+1. **Developer Tools**: Right-click in the app and select **Inspect Element** (or `Cmd+Opt+I` on macOS) to open the WebView console.
+2. **Rust Logs**: For backend/sidecar logs, run with:
+   ```bash
+   RUST_LOG=debug npm run tauri dev
+   ```
+
+### EPUB Extraction / "process is not defined"
+If EPUB extraction fails with a reference to the Node.js `process` global, ensure the global shim in `src/app.html` is present. CrispSorter includes a built-in shim for `process.env`, `process.version`, and `process.cwd()` to support browser-incompatible libraries.
 
 ---
 

@@ -5,6 +5,15 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tauri + SvelteKit + Typescript App</title>
+    <script>
+      // Global process shim for libraries that expect it (like @lingo-reader/epub-parser)
+      window.process = window.process || {
+        env: { NODE_DEBUG: false },
+        version: 'v16.0.0',
+        nextTick: (fn) => setTimeout(fn, 0),
+        cwd: () => '/'
+      };
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

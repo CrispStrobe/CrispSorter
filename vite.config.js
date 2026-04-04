@@ -1,11 +1,14 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
-const host = /** @type {string | undefined} */ (process.env.TAURI_DEV_HOST);
-
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
+
+  define: {
+    'process.env': {},
+    'process.version': '"v16.0.0"',
+  },
 
   // @huggingface/transformers uses WASM + Web Workers — must not be pre-bundled by Vite
   optimizeDeps: {
@@ -20,14 +23,8 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
+    host: false,
+    hmr: undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
