@@ -57,11 +57,12 @@ jobs:
           mkdir mac-arm64 && tar -xzf llama-mac-arm64.tar.gz -C mac-arm64
           mkdir mac-x64 && tar -xzf llama-mac-x64.tar.gz -C mac-x64
           # Move and rename to match expected sidecar names
-          cp mac-arm64/bin/llama-server src-tauri/bin/llama-server-aarch64-apple-darwin
-          cp mac-x64/bin/llama-server src-tauri/bin/llama-server-x86_64-apple-darwin
+          # Note: The tarball extracts into a folder named llama-b8340/
+          cp mac-arm64/llama-b8340/llama-server src-tauri/bin/llama-server-aarch64-apple-darwin
+          cp mac-x64/llama-b8340/llama-server src-tauri/bin/llama-server-x86_64-apple-darwin
           # Also copy dylibs to bin/ so they are bundled as resources
-          cp mac-arm64/bin/*.dylib src-tauri/bin/ || true
-          cp mac-x64/bin/*.dylib src-tauri/bin/ || true
+          cp mac-arm64/llama-b8340/*.dylib src-tauri/bin/ || true
+          cp mac-x64/llama-b8340/*.dylib src-tauri/bin/ || true
 
       - name: Download llama-server binaries (Windows)
         if: matrix.platform == 'windows-latest'
