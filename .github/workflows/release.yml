@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest' # Apple Silicon (M1+)
+            args: '--target aarch64-apple-darwin'
+          - platform: 'macos-latest' # Intel
+            args: '--target x86_64-apple-darwin'
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Download llama-server binaries (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          mkdir -p src-tauri/bin
+          # Download llama.cpp release b8340 for macOS
+          # Note: We need both aarch64 and x86_64 depending on target
+          # For simplicity in this demo, we'll download both and let Tauri bundle them
+          curl -L https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.zip -o llama-mac-arm64.zip
+          curl -L https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.zip -o llama-mac-x64.zip
+          unzip -o llama-mac-arm64.zip -d mac-arm64
+          unzip -o llama-mac-x64.zip -d mac-x64
+          # Move and rename to match expected sidecar names
+          cp mac-arm64/bin/llama-server src-tauri/bin/llama-server-aarch64-apple-darwin
+          cp mac-x64/bin/llama-server src-tauri/bin/llama-server-x86_64-apple-darwin
+          # Also copy dylibs to bin/ so they are bundled as resources
+          cp mac-arm64/bin/*.dylib src-tauri/bin/ || true
+          cp mac-x64/bin/*.dylib src-tauri/bin/ || true
+
+      - name: Download llama-server binaries (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/bin
+          $BuildTag = "b8340"
+          $BaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$BuildTag"
+          
+          # Download main server
+          Invoke-WebRequest -Uri "$BaseUrl/llama-$BuildTag-bin-win-vulkan-x64.zip" -OutFile llama-win.zip
+          Expand-Archive -Path llama-win.zip -DestinationPath win-bin -Force
+          Copy-Item win-bin/bin/llama-server.exe src-tauri/bin/llama-server-x86_64-pc-windows-msvc.exe
+          Copy-Item win-bin/bin/*.dll src-tauri/bin/
+          
+          # Download CUDA runtime for Windows
+          Invoke-WebRequest -Uri "$BaseUrl/cudart-llama-bin-win-cuda-13.1-x64.zip" -OutFile cudart.zip
+          Expand-Archive -Path cudart.zip -DestinationPath cudart -Force
+          Copy-Item cudart/*.dll src-tauri/bin/
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # the Action will replace this with the app version
+          releaseName: 'CrispSorter v__VERSION__'
+          releaseBody: 'Automated release from GitHub Actions.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
