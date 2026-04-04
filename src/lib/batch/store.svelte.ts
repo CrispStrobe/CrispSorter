@@ -3,7 +3,7 @@
 import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
-import { documentDir, downloadDir, join, resolve } from '@tauri-apps/api/path';
+import { join } from '@tauri-apps/api/path';
 import { getSetting, saveSetting } from '../store';
 import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
