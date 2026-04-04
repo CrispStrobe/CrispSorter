@@ -52,10 +52,8 @@ jobs:
         run: |
           mkdir -p src-tauri/bin
           # Download llama.cpp release b8340 for macOS
-          # Note: We need both aarch64 and x86_64 depending on target
-          # For simplicity in this demo, we'll download both and let Tauri bundle them
-          curl -L https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.zip -o llama-mac-arm64.zip
-          curl -L https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.zip -o llama-mac-x64.zip
+          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.zip -O llama-mac-arm64.zip
+          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.zip -O llama-mac-x64.zip
           unzip -o llama-mac-arm64.zip -d mac-arm64
           unzip -o llama-mac-x64.zip -d mac-x64
           # Move and rename to match expected sidecar names
