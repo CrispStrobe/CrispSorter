@@ -37,9 +37,9 @@ jobs:
 
       - name: Install CUDA Toolkit (Windows)
         if: matrix.platform == 'windows-latest'
-        uses: jimderoert/setup-cuda@v2
+        uses: Jimver/cuda-toolkit@v0.2.21
         with:
-          cuda_version: '12.4.1'
+          cuda: '12.4.1'
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
