@@ -92,6 +92,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fix for Windows build failing on candle-kernels/cudarc trying to run nvidia-smi
+          CUDA_COMPUTE_CAP: 80 
         with:
           tagName: v__VERSION__ # the Action will replace this with the app version
           releaseName: 'CrispSorter v__VERSION__'
