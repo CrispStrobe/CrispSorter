@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.19"
+version = "0.1.20"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -61,11 +61,11 @@ tempfile = "3"
 sysinfo = "0.33"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "=2.0.0-rc.11" } # Rely on default features
+ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows
 mistralrs = { version = "0.7.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "=2.0.0-rc.11", features = ["download-binaries"] } # Explicitly use download-binaries for macos
+ort = { version = "=2.0.0-rc.11", features = ["coreml"] } # Use coreml feature for macOS targets
 mistralrs = { version = "0.7.0", features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
