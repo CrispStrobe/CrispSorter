@@ -16,7 +16,7 @@ jobs:
         include:
           - platform: 'macos-latest' # Apple Silicon (M1+)
             args: '--target aarch64-apple-darwin'
-          # - platform: 'macos-latest' # Intel - Temporarily disabling due to ort binary issues
+          # - platform: 'macos-latest' # Intel - Temporarily disabling due to ort prebuilt binary issues
           #   args: '--target x86_64-apple-darwin'
           - platform: 'windows-latest'
             args: ''
