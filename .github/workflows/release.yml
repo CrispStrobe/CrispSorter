@@ -30,14 +30,28 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Set up MSVC (Windows)
+      - name: Install protoc and MSVC (Windows)
         if: matrix.platform == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          # Install protoc
+          choco install protoc --version=21.12 --install-arguments="'/SILENT /DIR=C:\ProgramData\protobuf'"
+          # Set PROTOC environment variable for build scripts
+          $env:PROTOC = "C:\ProgramData\protobuf\bin\protoc.exe"
+          Write-Host "Protoc installed at: $env:PROTOC"
+          
+          # Set up MSVC
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+
+      - name: Install protoc (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install protobuf
+
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.4.1'
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -90,6 +104,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fix for Windows build failing on candle-kernels/cudarc trying to run nvidia-smi
+          CUDA_COMPUTE_CAP: 80 
         with:
           tagName: v__VERSION__ # the Action will replace this with the app version
           releaseName: 'CrispSorter v__VERSION__'
