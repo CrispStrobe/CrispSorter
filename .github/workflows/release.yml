@@ -18,8 +18,8 @@ jobs:
             args: '--target aarch64-apple-darwin'
           - platform: 'macos-latest' # Intel
             args: '--target x86_64-apple-darwin'
-          # - platform: 'windows-latest'
-          #   args: ''
+          - platform: 'windows-latest'
+            args: ''
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -34,6 +34,10 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Set up MSVC (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -62,6 +66,39 @@ jobs:
           # Also copy dylibs to bin/ so they are bundled as resources
           cp mac-arm64/llama-b8340/*.dylib src-tauri/bin/ || true
           cp mac-x64/llama-b8340/*.dylib src-tauri/bin/ || true
+
+      - name: Download llama-server binaries (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/bin
+          $BuildTag = "b8340"
+          $BaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$BuildTag"
+          
+          # Download main server (CPU/Vulkan build contains the base server)
+          Invoke-WebRequest -Uri "$BaseUrl/llama-$BuildTag-bin-win-vulkan-x64.zip" -OutFile llama-win.zip
+          Expand-Archive -Path llama-win.zip -DestinationPath win-bin -Force
+          # llama-server.exe is in the root of the zip
+          Copy-Item win-bin/llama-server.exe src-tauri/bin/llama-server-x86_64-pc-windows-msvc.exe
+          Copy-Item win-bin/*.dll src-tauri/bin/
+          
+          # Download CUDA runtime for Windows
+          Invoke-WebRequest -Uri "$BaseUrl/cudart-llama-bin-win-cuda-13.1-x64.zip" -OutFile cudart.zip
+          Expand-Archive -Path cudart.zip -DestinationPath cudart -Force
+          Copy-Item cudart/*.dll src-tauri/bin/
+
+      - name: Build ORT from source (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+            # Set environment variables to build ORT from source
+            $env:ORT_STRATEGY = "source"
+            $env:ORT_SOURCE_DIR = "$env:GITHUB_WORKSPACE/onnxruntime"
+            git clone --depth 1 --branch v1.17.3 https://github.com/microsoft/onnxruntime.git $env:ORT_SOURCE_DIR
+            cd $env:ORT_SOURCE_DIR
+            # Build with static /MT linkage
+            ./build.bat --config Release --build_shared_lib --parallel --cmake_generator "Visual Studio 17 2022" --cmake_extra_defines "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+            cd $env:GITHUB_WORKSPACE
 
       - uses: tauri-apps/tauri-action@v0
         env:
