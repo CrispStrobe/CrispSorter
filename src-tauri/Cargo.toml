@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.12"
+version = "0.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -51,7 +51,7 @@ arrow-select = { version = "57", default-features = false }
 uuid         = { version = "1", features = ["v4", "serde"] }
 async-trait  = "0.1"
 # ort pinned to match fastembed 5.13.0; used directly for EP types and path-based ONNX loading.
-ort          = { version = "=2.0.0-rc.11", features = ["static-execution-providers"] }
+ort          = { version = "=2.0.0-rc.11", features = ["download-binaries"] }
 # tokenizers + ndarray are transitive via fastembed; listed explicitly for OrtPathEmbedder.
 tokenizers   = { version = "0.22", default-features = false, features = ["onig"] }
 ndarray      = "0.17"
