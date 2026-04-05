@@ -87,19 +87,6 @@ jobs:
           Expand-Archive -Path cudart.zip -DestinationPath cudart -Force
           Copy-Item cudart/*.dll src-tauri/bin/
 
-      - name: Build ORT from source (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-            # Set environment variables to build ORT from source
-            $env:ORT_STRATEGY = "source"
-            $env:ORT_SOURCE_DIR = "$env:GITHUB_WORKSPACE/onnxruntime"
-            git clone --depth 1 --branch v1.17.3 https://github.com/microsoft/onnxruntime.git $env:ORT_SOURCE_DIR
-            cd $env:ORT_SOURCE_DIR
-            # Build with static /MT linkage
-            ./build.bat --config Release --build_shared_lib --parallel --cmake_generator "Visual Studio 17 2022" --cmake_extra_defines "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
-            cd $env:GITHUB_WORKSPACE
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
