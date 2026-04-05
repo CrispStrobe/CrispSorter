@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.14"
+version = "0.1.15"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -60,9 +60,15 @@ ndarray      = "0.17"
 tempfile = "3"
 sysinfo = "0.33"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "=2.0.0-rc.11", features = ["winml"] }
+mistralrs = { version = "0.7.0" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
+ort = "=2.0.0-rc.11"
 mistralrs = { version = "0.7.0", features = ["metal"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-mistralrs = { version = "0.7.0", features = ["cuda"] }
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+mistralrs = { version = "0.7.0" }
+ort = "=2.0.0-rc.11"
 
