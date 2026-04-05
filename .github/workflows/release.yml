@@ -16,8 +16,8 @@ jobs:
         include:
           - platform: 'macos-latest' # Apple Silicon (M1+)
             args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest' # Intel
-            args: '--target x86_64-apple-darwin'
+          # - platform: 'macos-latest' # Intel - Temporarily disabling due to ort binary issues
+          #   args: '--target x86_64-apple-darwin'
           - platform: 'windows-latest'
             args: ''
 
@@ -30,19 +30,33 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Set up MSVC (Windows)
+      - name: Install protoc and MSVC (Windows)
         if: matrix.platform == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          # Install protoc
+          choco install protoc --version=21.12 --install-arguments="'/SILENT /DIR=C:\ProgramData\protobuf'"
+          # Set PROTOC environment variable for build scripts
+          $env:PROTOC = "C:\ProgramData\protobuf\bin\protoc.exe"
+          Write-Host "Protoc installed at: $env:PROTOC"
+          
+          # Set up MSVC
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+
+      - name: Install protoc (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install protobuf
+
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '12.4.1'
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: install frontend dependencies
         run: npm install
@@ -83,6 +97,7 @@ jobs:
           Copy-Item win-bin/*.dll src-tauri/bin/
           
           # Download CUDA runtime for Windows (only needed if CUDA feature is enabled in Cargo.toml)
+          # This is currently not enabled by default for Windows ort build.
           # Invoke-WebRequest -Uri "$BaseUrl/cudart-llama-bin-win-cuda-13.1-x64.zip" -OutFile cudart.zip
           # Expand-Archive -Path cudart.zip -DestinationPath cudart -Force
           # Copy-Item cudart/*.dll src-tauri/bin/
