@@ -65,7 +65,7 @@ ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows
 mistralrs = { version = "0.7.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "=2.0.0-rc.11", features = ["coreml"] } # Use coreml feature for macOS targets
+ort = { version = "=2.0.0-rc.11" } # Rely on default features for macOS
 mistralrs = { version = "0.7.0", features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
