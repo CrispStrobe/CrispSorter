@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.17"
+version = "0.1.18"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -61,7 +61,7 @@ tempfile = "3"
 sysinfo = "0.33"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "=2.0.0-rc.11", features = ["winml"] }
+ort = { version = "=2.0.0-rc.11" } # Rely on default features, which include download-binaries and detection of OS features like WinML/DirectML
 mistralrs = { version = "0.7.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -69,6 +69,6 @@ ort = { version = "=2.0.0-rc.11", features = ["download-binaries"] }
 mistralrs = { version = "0.7.0", features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+ort = { version = "=2.0.0-rc.11" } # Rely on default features for Linux
 mistralrs = { version = "0.7.0" }
-ort = { version = "=2.0.0-rc.11", features = ["download-binaries"] }
 
