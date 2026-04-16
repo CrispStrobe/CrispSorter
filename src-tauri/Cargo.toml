@@ -61,11 +61,18 @@ tempfile = "3"
 sysinfo = "0.33"
 
 # ── Feature flags ───────────────────────────────────────────────────────────
-# `crispembed` enables the GGUF-based CrispEmbed alternative dense backend.
-# Flip this on once the `crispembed` FFI crate is wired into [dependencies].
+# `crispembed*` features enable the GGUF-based CrispEmbed alternative backend.
+# Pick exactly one backend sub-feature for GGML acceleration:
+#   crispembed          — CPU only
+#   crispembed-vulkan   — Vulkan (Windows / Linux / anything with a GPU driver)
+#   crispembed-metal    — Metal (macOS)
+#   crispembed-cuda     — CUDA (NVIDIA)
 [features]
 default = []
-crispembed = []
+crispembed        = ["dep:crispembed"]
+crispembed-vulkan = ["crispembed", "crispembed/vulkan"]
+crispembed-metal  = ["crispembed", "crispembed/metal"]
+crispembed-cuda   = ["crispembed", "crispembed/cuda"]
 
 # ── Dev build size ──────────────────────────────────────────────────────────
 # Strip debug info from third-party deps only (keep it for our own crate).
@@ -84,4 +91,13 @@ mistralrs = { version = "0.7.0", features = ["metal"] }
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Linux
 mistralrs = { version = "0.7.0" }
+
+# ── CrispEmbed (optional, GGUF dense/sparse/ColBERT/reranker backend) ───────
+# Path dep to the sibling repo. The `crispembed` cargo feature opts this in;
+# sub-features pick the GGML backend (defaults to CPU). Enable locally with:
+#   cargo build --features crispembed-vulkan   (Windows / Linux)
+#   cargo build --features crispembed-metal    (macOS)
+[dependencies.crispembed]
+path     = "../../CrispEmbed/crispembed"
+optional = true
 

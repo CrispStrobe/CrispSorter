@@ -1674,6 +1674,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "crispembed"
+version = "0.1.0"
+dependencies = [
+ "crispembed-sys",
+]
+
+[[package]]
+name = "crispembed-sys"
+version = "0.1.0"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10540,6 +10554,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "async-trait",
+ "crispembed",
  "deunicode",
  "fastembed",
  "futures-util",

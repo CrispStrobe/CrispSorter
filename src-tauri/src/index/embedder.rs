@@ -231,29 +231,54 @@ impl EmbedderModel {
     /// collapsed to their base model for this check — the GGUF side uses its
     /// own quant (Q8_0 / Q4_K / etc.) selected separately.
     pub fn supports_gguf(&self) -> bool {
-        matches!(
-            self,
-            EmbedderModel::PixieRuneV1
-                | EmbedderModel::PixieRuneV1Q
-                | EmbedderModel::PixieRuneV1Int4
-                | EmbedderModel::PixieRuneV1Int4Full
-                | EmbedderModel::SnowflakeArcticLv2
-                | EmbedderModel::SnowflakeArcticLv2Fp16
-                | EmbedderModel::SnowflakeArcticLv2Int8
-                | EmbedderModel::SnowflakeArcticLv2Q4
-                | EmbedderModel::SnowflakeArcticLv2Q4F16
-                | EmbedderModel::SnowflakeArcticLv2O4
-                | EmbedderModel::SnowflakeArcticLv2Fp32
-                | EmbedderModel::JinaV5Small
-                | EmbedderModel::JinaV5Nano
-                | EmbedderModel::Qwen3Embedding
-                | EmbedderModel::Qwen3EmbeddingInt8
-                | EmbedderModel::Qwen3EmbeddingUint8
-                | EmbedderModel::Octen06bFp32
-                | EmbedderModel::Octen06bInt8Local
-                | EmbedderModel::Octen06bInt4Local
-                | EmbedderModel::Octen06bInt8FullLocal
-        )
+        self.gguf_registry_name().is_some()
+    }
+
+    /// Shared short-name used by the `cstr/<name>-GGUF` HuggingFace registry
+    /// (mirrors `CrispEmbed/examples/cli/model_mgr.cpp`). All ONNX quant
+    /// variants of the same base model map to the same GGUF — the GGUF side
+    /// uses its own quant (Q8_0 by default).
+    fn gguf_registry_name(&self) -> Option<&'static str> {
+        use EmbedderModel::*;
+        Some(match self {
+            PixieRuneV1 | PixieRuneV1Q | PixieRuneV1Int4 | PixieRuneV1Int4Full => {
+                "pixie-rune-v1"
+            }
+            SnowflakeArcticLv2
+            | SnowflakeArcticLv2Fp16
+            | SnowflakeArcticLv2Int8
+            | SnowflakeArcticLv2Q4
+            | SnowflakeArcticLv2Q4F16
+            | SnowflakeArcticLv2O4
+            | SnowflakeArcticLv2Fp32 => "arctic-embed-l-v2",
+            JinaV5Small => "jina-v5-small",
+            JinaV5Nano => "jina-v5-nano",
+            Qwen3Embedding | Qwen3EmbeddingInt8 | Qwen3EmbeddingUint8 => "qwen3-embed-0.6b",
+            Octen06bFp32 | Octen06bInt8Local | Octen06bInt4Local | Octen06bInt8FullLocal => {
+                "octen-0.6b"
+            }
+            _ => return None,
+        })
+    }
+
+    /// GGUF source for CrispEmbed — HF repo id + filename. Only models with a
+    /// verified conversion in the `cstr/*-GGUF` registry return `Some`.
+    ///
+    /// The filename follows the registry convention: unquantized models use
+    /// `<name>.gguf`, decoder-based models default to `<name>-q8_0.gguf`
+    /// (Q8_0 is universally verified, Q4_K fails for a few).
+    #[cfg(feature = "crispembed")]
+    pub(crate) fn to_gguf_spec(&self) -> Option<GgufSpec> {
+        let name = self.gguf_registry_name()?;
+        // BERT/XLM-R encoders ship the base .gguf; Qwen3/Gemma3 decoders ship -q8_0.
+        let file = match name {
+            "pixie-rune-v1" | "arctic-embed-l-v2" => format!("{name}.gguf"),
+            _ => format!("{name}-q8_0.gguf"),
+        };
+        Some(GgufSpec {
+            repo: format!("cstr/{name}-GGUF"),
+            file,
+        })
     }
 
     pub fn to_model_spec(&self) -> Option<ModelSpec> {
@@ -1240,26 +1265,66 @@ enum DenseBackend {
 }
 
 // ── CrispEmbed backend (GGUF via libcrispembed) ────────────────────────────
-// Thin wrapper around the `crispembed` FFI crate. Activated with the
-// `crispembed` cargo feature. The real crate will expose a `CrispEmbed` model
-// handle; this module keeps a stub definition so the rest of the code
-// compiles once the feature flips on.
+// Thin wrapper around the `crispembed` safe crate. Activated with the
+// `crispembed` cargo feature.
 #[cfg(feature = "crispembed")]
 pub(crate) struct CrispEmbedBackend {
-    // TODO: replace with concrete `crispembed::CrispEmbedModel` once
-    // the crispembed-sys / crispembed crate lands.
-    _inner: (),
-    _dims: usize,
+    model: crispembed::CrispEmbed,
 }
 
 #[cfg(feature = "crispembed")]
 impl CrispEmbedBackend {
-    fn embed(&mut self, _texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        bail!(
-            "CrispEmbed backend is compiled in but not wired up yet — \
-             waiting on the crispembed FFI crate"
-        )
+    fn load(gguf_path: &Path) -> Result<Self> {
+        let p = gguf_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF8 GGUF path: {:?}", gguf_path))?;
+        println!("[embedder] Loading GGUF via CrispEmbed: {}", p);
+        let model = crispembed::CrispEmbed::new(p, 0)
+            .map_err(|e| anyhow::anyhow!("crispembed load failed: {e}"))?;
+        Ok(Self { model })
     }
+
+    fn embed(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let vecs = self.model.encode_batch(&refs);
+        if vecs.len() != texts.len() {
+            bail!(
+                "CrispEmbed returned {} vectors for {} inputs",
+                vecs.len(),
+                texts.len()
+            );
+        }
+        Ok(vecs)
+    }
+}
+
+/// Pre-converted GGUF hosted by cstr/ on HuggingFace. Mirrors the registry
+/// in `CrispEmbed/examples/cli/model_mgr.cpp`.
+#[cfg(feature = "crispembed")]
+#[derive(Debug, Clone)]
+pub struct GgufSpec {
+    /// HF repo id, e.g. "cstr/pixie-rune-v1-GGUF".
+    pub repo: String,
+    /// File inside the repo, e.g. "pixie-rune-v1.gguf".
+    pub file: String,
+}
+
+#[cfg(feature = "crispembed")]
+async fn ensure_gguf_on_disk(spec: &GgufSpec, cache_dir: &Path) -> Result<PathBuf> {
+    let api = ApiBuilder::new()
+        .with_cache_dir(cache_dir.to_path_buf())
+        .build()
+        .context("Failed to build hf-hub Api")?;
+    let model_api = api.model(spec.repo.clone());
+    println!("[embedder] Fetching GGUF: {}/{} …", spec.repo, spec.file);
+    let path = model_api
+        .get(&spec.file)
+        .await
+        .with_context(|| format!("failed to get {}/{}", spec.repo, spec.file))?;
+    Ok(path)
 }
 
 // ── Embedder ────────────────────────────────────────────────────────────────
@@ -1279,18 +1344,21 @@ impl Embedder {
         // known-good GGUF equivalent. Otherwise we fall through to the normal
         // ONNX paths.
         #[cfg(feature = "crispembed")]
-        let gguf_backend: Option<DenseBackend> =
-            if matches!(config.backend, EmbedderBackend::Gguf) && config.model.supports_gguf() {
-                // TODO: feed the model path / quant level into CrispEmbedBackend
-                // once the `crispembed` crate's init API is known. Keep the
-                // plumbing here so callers don't need to change.
-                Some(DenseBackend::CrispEmbed(CrispEmbedBackend {
-                    _inner: (),
-                    _dims: config.model.dims(),
-                }))
-            } else {
-                None
+        let gguf_backend: Option<DenseBackend> = 'gguf: {
+            if !matches!(config.backend, EmbedderBackend::Gguf) {
+                break 'gguf None;
+            }
+            let Some(spec) = config.model.to_gguf_spec() else {
+                eprintln!(
+                    "[embedder] GGUF requested for {:?} but no GGUF spec available — falling back to ONNX",
+                    config.model
+                );
+                break 'gguf None;
             };
+            let gguf_path = ensure_gguf_on_disk(&spec, &config.cache_dir).await?;
+            let backend = CrispEmbedBackend::load(&gguf_path)?;
+            Some(DenseBackend::CrispEmbed(backend))
+        };
         #[cfg(not(feature = "crispembed"))]
         let gguf_backend: Option<DenseBackend> = None;
 
