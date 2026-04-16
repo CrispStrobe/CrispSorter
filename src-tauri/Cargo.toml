@@ -67,6 +67,12 @@ sysinfo = "0.33"
 default = []
 crispembed = []
 
+# ── Dev build size ──────────────────────────────────────────────────────────
+# Strip debug info from third-party deps only (keep it for our own crate).
+# Cuts `target/debug/` on Windows by ~5–10 GB (MSVC PDBs are large).
+[profile.dev.package."*"]
+debug = 0
+
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows
 mistralrs = { version = "0.7.0" }

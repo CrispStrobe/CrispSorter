@@ -812,7 +812,6 @@ fn ep_cuda() -> Vec<ExecutionProviderDispatch> {
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Which dense-embedding implementation to run.
 ///
 /// `Onnx` (default) routes through fastembed or `OrtPathEmbedder` as before.
@@ -827,6 +826,7 @@ pub enum EmbedderBackend {
     Gguf,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedderConfig {
     pub model: EmbedderModel,
     pub device: EmbedderDevice,
