@@ -26,7 +26,8 @@ pub mod benchmarks;
 
 // Re-export the most commonly used types.
 pub use embedder::{
-    chunk_text, Embedder, EmbedderConfig, EmbedderDevice, EmbedderModel, TextChunk,
+    chunk_text, Embedder, EmbedderBackend, EmbedderConfig, EmbedderDevice, EmbedderModel,
+    TextChunk,
 };
 pub use fts_index::FtsIndex;
 pub use ingest::{IngestConfig, IngestPipeline, IngestStats, RawDocument};
@@ -113,6 +114,8 @@ pub struct IndexConfig {
     pub remote_api_key: Option<String>,
     pub embedder_model: EmbedderModel,
     pub embedder_device: EmbedderDevice,
+    #[serde(default)]
+    pub embedder_backend: EmbedderBackend,
 }
 
 impl Default for IndexConfig {
@@ -125,6 +128,7 @@ impl Default for IndexConfig {
             remote_api_key: None,
             embedder_model: EmbedderModel::BgeM3,
             embedder_device: EmbedderDevice::Auto,
+            embedder_backend: EmbedderBackend::Onnx,
         }
     }
 }

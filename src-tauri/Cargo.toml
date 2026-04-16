@@ -60,6 +60,13 @@ ndarray      = "0.17"
 tempfile = "3"
 sysinfo = "0.33"
 
+# ── Feature flags ───────────────────────────────────────────────────────────
+# `crispembed` enables the GGUF-based CrispEmbed alternative dense backend.
+# Flip this on once the `crispembed` FFI crate is wired into [dependencies].
+[features]
+default = []
+crispembed = []
+
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows
 mistralrs = { version = "0.7.0" }

@@ -223,6 +223,39 @@ impl EmbedderModel {
         )
     }
 
+    /// Whether this model has a known-good GGUF equivalent shipped through
+    /// CrispEmbed. Used to gate the ONNX/GGUF backend toggle in the UI.
+    ///
+    /// Verified bit-identical (cos > 0.999 F32, Q8_0 > 0.99) per CrispEmbed
+    /// accuracy report. ONNX-only quant variants (e.g. `*Int8`, `*Fp16`) are
+    /// collapsed to their base model for this check — the GGUF side uses its
+    /// own quant (Q8_0 / Q4_K / etc.) selected separately.
+    pub fn supports_gguf(&self) -> bool {
+        matches!(
+            self,
+            EmbedderModel::PixieRuneV1
+                | EmbedderModel::PixieRuneV1Q
+                | EmbedderModel::PixieRuneV1Int4
+                | EmbedderModel::PixieRuneV1Int4Full
+                | EmbedderModel::SnowflakeArcticLv2
+                | EmbedderModel::SnowflakeArcticLv2Fp16
+                | EmbedderModel::SnowflakeArcticLv2Int8
+                | EmbedderModel::SnowflakeArcticLv2Q4
+                | EmbedderModel::SnowflakeArcticLv2Q4F16
+                | EmbedderModel::SnowflakeArcticLv2O4
+                | EmbedderModel::SnowflakeArcticLv2Fp32
+                | EmbedderModel::JinaV5Small
+                | EmbedderModel::JinaV5Nano
+                | EmbedderModel::Qwen3Embedding
+                | EmbedderModel::Qwen3EmbeddingInt8
+                | EmbedderModel::Qwen3EmbeddingUint8
+                | EmbedderModel::Octen06bFp32
+                | EmbedderModel::Octen06bInt8Local
+                | EmbedderModel::Octen06bInt4Local
+                | EmbedderModel::Octen06bInt8FullLocal
+        )
+    }
+
     pub fn to_model_spec(&self) -> Option<ModelSpec> {
         match self {
             // ── external data (OrtPath backend) ─────────────────────────────
@@ -780,11 +813,26 @@ fn ep_cuda() -> Vec<ExecutionProviderDispatch> {
 // ── Config ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Which dense-embedding implementation to run.
+///
+/// `Onnx` (default) routes through fastembed or `OrtPathEmbedder` as before.
+/// `Gguf` routes through CrispEmbed — only available under the `crispembed`
+/// cargo feature and only for models whose GGUF equivalent is known-good.
+/// Callers must gate selection on `EmbedderModel::supports_gguf()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EmbedderBackend {
+    #[default]
+    Onnx,
+    Gguf,
+}
+
 pub struct EmbedderConfig {
     pub model: EmbedderModel,
     pub device: EmbedderDevice,
     pub cache_dir: PathBuf,
     pub batch_size: usize,
+    pub backend: EmbedderBackend,
 }
 
 impl EmbedderConfig {
@@ -794,7 +842,13 @@ impl EmbedderConfig {
             device,
             cache_dir,
             batch_size: 32,
+            backend: EmbedderBackend::Onnx,
         }
+    }
+
+    pub fn with_backend(mut self, backend: EmbedderBackend) -> Self {
+        self.backend = backend;
+        self
     }
 }
 
@@ -1181,6 +1235,31 @@ fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
 enum DenseBackend {
     Fastembed(TextEmbedding),
     OrtPath(OrtPathEmbedder),
+    #[cfg(feature = "crispembed")]
+    CrispEmbed(CrispEmbedBackend),
+}
+
+// ── CrispEmbed backend (GGUF via libcrispembed) ────────────────────────────
+// Thin wrapper around the `crispembed` FFI crate. Activated with the
+// `crispembed` cargo feature. The real crate will expose a `CrispEmbed` model
+// handle; this module keeps a stub definition so the rest of the code
+// compiles once the feature flips on.
+#[cfg(feature = "crispembed")]
+pub(crate) struct CrispEmbedBackend {
+    // TODO: replace with concrete `crispembed::CrispEmbedModel` once
+    // the crispembed-sys / crispembed crate lands.
+    _inner: (),
+    _dims: usize,
+}
+
+#[cfg(feature = "crispembed")]
+impl CrispEmbedBackend {
+    fn embed(&mut self, _texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        bail!(
+            "CrispEmbed backend is compiled in but not wired up yet — \
+             waiting on the crispembed FFI crate"
+        )
+    }
 }
 
 // ── Embedder ────────────────────────────────────────────────────────────────
@@ -1195,7 +1274,29 @@ impl Embedder {
     pub async fn new(config: EmbedderConfig) -> Result<Self> {
         let eps = config.device.execution_providers();
 
-        let dense = if config.model.is_native() {
+        // Try the GGUF path first — only produces Some when the `crispembed`
+        // cargo feature is on AND the caller asked for it AND the model has a
+        // known-good GGUF equivalent. Otherwise we fall through to the normal
+        // ONNX paths.
+        #[cfg(feature = "crispembed")]
+        let gguf_backend: Option<DenseBackend> =
+            if matches!(config.backend, EmbedderBackend::Gguf) && config.model.supports_gguf() {
+                // TODO: feed the model path / quant level into CrispEmbedBackend
+                // once the `crispembed` crate's init API is known. Keep the
+                // plumbing here so callers don't need to change.
+                Some(DenseBackend::CrispEmbed(CrispEmbedBackend {
+                    _inner: (),
+                    _dims: config.model.dims(),
+                }))
+            } else {
+                None
+            };
+        #[cfg(not(feature = "crispembed"))]
+        let gguf_backend: Option<DenseBackend> = None;
+
+        let dense = if let Some(g) = gguf_backend {
+            g
+        } else if config.model.is_native() {
             // ── fastembed built-in model ────────────────────────────────────
             let opts = TextInitOptions::new(config.model.to_fastembed_dense())
                 .with_cache_dir(config.cache_dir.clone())
@@ -1264,6 +1365,8 @@ impl Embedder {
         let vectors = match &mut self.dense {
             DenseBackend::Fastembed(fe) => fe.embed(texts, Some(self.config.batch_size))?,
             DenseBackend::OrtPath(op) => op.embed(texts)?,
+            #[cfg(feature = "crispembed")]
+            DenseBackend::CrispEmbed(ce) => ce.embed(texts)?,
         };
         Ok(DenseEmbedding { vectors })
     }

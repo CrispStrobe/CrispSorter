@@ -183,7 +183,20 @@
     let indexRemoteUrl      = $state('');
     let indexRemoteApiKey   = $state('');
     let indexEmbedderModel  = $state<string>('bge_m3');
+    let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+
+    // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
+    // sync with `EmbedderModel::supports_gguf()` on the Rust side.
+    const GGUF_CAPABLE_MODELS = new Set([
+        'pixie', 'pixie_q', 'pixie_int4', 'pixie_int4_full',
+        'snowflake_l', 'snowflake_l_fp16', 'snowflake_l_int8',
+        'snowflake_l_q4', 'snowflake_l_q4f16', 'snowflake_l_o4', 'snowflake_l_fp32',
+        'octen', 'jina_nano',
+    ]);
+    function supportsGguf(uiModel: string): boolean {
+        return GGUF_CAPABLE_MODELS.has(uiModel);
+    }
 
     async function handleEmbedderChange(e: Event) {
         const val = (e.target as HTMLSelectElement).value;
@@ -280,6 +293,7 @@
         indexRemoteUrl     = await getSetting('indexRemoteUrl', '');
         indexRemoteApiKey  = await getSetting('indexRemoteApiKey', '');
         indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
+        indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
         indexDataDir       = await getSetting('indexDataDir', '');
         // Sync saved config into the backend
@@ -404,6 +418,7 @@
         await saveSetting('indexRemoteUrl',     indexRemoteUrl);
         await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
+        await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
@@ -461,6 +476,7 @@
                     remote_api_key:   indexRemoteApiKey || null,
                     embedder_model:   indexEmbedderToRust(indexEmbedderModel),
                     embedder_device:  indexDeviceToRust(indexDevice),
+                    embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
                 }
             });
             if (indexEnabled) {
@@ -1317,6 +1333,19 @@
                     <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
                     <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
                 </select>
+
+                {#if supportsGguf(indexEmbedderModel)}
+                    <label for="index-backend-select" style="margin-top:10px;">
+                        <Cpu size={14} /> Inference Backend
+                    </label>
+                    <select id="index-backend-select" bind:value={indexEmbedderBackend} class="styled-select">
+                        <option value="onnx">ONNX (fastembed / ORT)</option>
+                        <option value="gguf">GGUF (CrispEmbed, experimental)</option>
+                    </select>
+                    <div style="font-size: 12px; color: var(--muted, #888); margin-top: 4px;">
+                        GGUF reuses the llama.cpp GPU backends (Vulkan/Metal/CUDA) — smaller files, unified GPU stack. Only available for models with a verified GGUF equivalent.
+                    </div>
+                {/if}
             </div>
 
             <!-- Compute device -->

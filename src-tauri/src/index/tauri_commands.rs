@@ -515,7 +515,7 @@ pub async fn init_index(
     );
 
     let models_dir = data_dir.join("models");
-    let embedder_cfg = EC::new(model, device, models_dir);
+    let embedder_cfg = EC::new(model, device, models_dir).with_backend(config.embedder_backend);
 
     let embedder = Embedder::new(embedder_cfg).await?;
 
