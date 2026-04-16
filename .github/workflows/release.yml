@@ -14,101 +14,130 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest' # Apple Silicon (M1+)
-            args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest' # Intel
-            args: '--target x86_64-apple-darwin'
-          - platform: 'windows-latest'
-            args: ''
+          - platform: macos-14
+            rust_target: aarch64-apple-darwin
+            llama_asset: llama-b8340-bin-macos-arm64.tar.gz
+            sidecar_name: llama-server-aarch64-apple-darwin
+            tauri_args: '--target aarch64-apple-darwin'
+          - platform: macos-13
+            rust_target: x86_64-apple-darwin
+            llama_asset: llama-b8340-bin-macos-x64.tar.gz
+            sidecar_name: llama-server-x86_64-apple-darwin
+            tauri_args: '--target x86_64-apple-darwin'
+          - platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            llama_asset: llama-b8340-bin-win-vulkan-x64.zip
+            sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
+            tauri_args: ''
+          - platform: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
+            sidecar_name: llama-server-x86_64-unknown-linux-gnu
+            tauri_args: '--bundles deb,appimage'
 
     runs-on: ${{ matrix.platform }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: setup node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
+          cache: npm
 
-      - name: Install protoc and MSVC (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         run: |
-          # Install protoc
-          choco install protoc --version=21.12 --install-arguments="'/SILENT /DIR=C:\ProgramData\protobuf'"
-          # Set PROTOC environment variable for build scripts
-          $env:PROTOC = "C:\ProgramData\protobuf\bin\protoc.exe"
-          Write-Host "Protoc installed at: $env:PROTOC"
-          
-          # Set up MSVC
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            protobuf-compiler \
+            build-essential \
+            curl \
+            wget \
+            file
 
-      - name: Install protoc (macOS)
-        if: matrix.platform == 'macos-latest'
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Install CUDA Toolkit (Windows)
-        if: matrix.platform == 'windows-latest'
-        uses: Jimver/cuda-toolkit@v0.2.21
-        with:
-          cuda: '12.4.1'
-
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: install frontend dependencies
-        run: npm install
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Download llama-server binaries (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          mkdir -p src-tauri/bin
-          # Download llama.cpp release b8340 for macOS (tar.gz)
-          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-arm64.tar.gz -O llama-mac-arm64.tar.gz
-          wget https://github.com/ggml-org/llama.cpp/releases/download/b8340/llama-b8340-bin-macos-x64.tar.gz -O llama-mac-x64.tar.gz
-          mkdir mac-arm64 && tar -xzf llama-mac-arm64.tar.gz -C mac-arm64
-          mkdir mac-x64 && tar -xzf llama-mac-x64.tar.gz -C mac-x64
-          # Move and rename to match expected sidecar names
-          # Note: The tarball extracts into a folder named llama-b8340/
-          cp mac-arm64/llama-b8340/llama-server src-tauri/bin/llama-server-aarch64-apple-darwin
-          cp mac-x64/llama-b8340/llama-server src-tauri/bin/llama-server-x86_64-apple-darwin
-          # Also copy dylibs to bin/ so they are bundled as resources
-          cp mac-arm64/llama-b8340/*.dylib src-tauri/bin/ || true
-          cp mac-x64/llama-b8340/*.dylib src-tauri/bin/ || true
-
-      - name: Download llama-server binaries (Windows)
-        if: matrix.platform == 'windows-latest'
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/bin
-          $BuildTag = "b8340"
-          $BaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$BuildTag"
-          
-          # Download main server (CPU/Vulkan build contains the base server)
-          Invoke-WebRequest -Uri "$BaseUrl/llama-$BuildTag-bin-win-vulkan-x64.zip" -OutFile llama-win.zip
-          Expand-Archive -Path llama-win.zip -DestinationPath win-bin -Force
-          # llama-server.exe is in the root of the zip
-          Copy-Item win-bin/llama-server.exe src-tauri/bin/llama-server-x86_64-pc-windows-msvc.exe
-          Copy-Item win-bin/*.dll src-tauri/bin/
-          
-          # Download CUDA runtime for Windows (only needed if CUDA feature is enabled in Cargo.toml)
-          # This is currently not enabled by default for Windows ort build.
-          # Invoke-WebRequest -Uri "$BaseUrl/cudart-llama-bin-win-cuda-13.1-x64.zip" -OutFile cudart.zip
-          # Expand-Archive -Path cudart.zip -DestinationPath cudart -Force
-          # Copy-Item cudart/*.dll src-tauri/bin/
+          choco install protoc -y
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: ${{ matrix.rust_target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Download llama-server sidecar (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/bin
+          URL="https://github.com/ggml-org/llama.cpp/releases/download/b8340/${{ matrix.llama_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o llama.tar.gz "$URL"
+          mkdir -p llama-extract
+          tar -xzf llama.tar.gz -C llama-extract
+          SRV=$(find llama-extract -type f -name llama-server | head -n1)
+          if [ -z "$SRV" ]; then
+            echo "ERROR: llama-server not found in tarball"
+            find llama-extract -maxdepth 3 -type f
+            exit 1
+          fi
+          cp "$SRV" "src-tauri/bin/${{ matrix.sidecar_name }}"
+          chmod +x "src-tauri/bin/${{ matrix.sidecar_name }}"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            find llama-extract -type f -name '*.dylib' -exec cp {} src-tauri/bin/ \;
+          else
+            find llama-extract -type f \( -name '*.so' -o -name '*.so.*' \) -exec cp {} src-tauri/bin/ \;
+          fi
+          echo "Contents of src-tauri/bin:"
+          ls -la src-tauri/bin/
+
+      - name: Download llama-server sidecar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/bin | Out-Null
+          $Url = "https://github.com/ggml-org/llama.cpp/releases/download/b8340/${{ matrix.llama_asset }}"
+          Write-Host "Downloading $Url"
+          Invoke-WebRequest -Uri $Url -OutFile llama.zip
+          Expand-Archive -Path llama.zip -DestinationPath llama-extract -Force
+          $Srv = Get-ChildItem -Path llama-extract -Recurse -Filter llama-server.exe | Select-Object -First 1
+          if (-not $Srv) { throw "llama-server.exe not found in zip" }
+          Copy-Item $Srv.FullName "src-tauri/bin/${{ matrix.sidecar_name }}"
+          Get-ChildItem -Path llama-extract -Recurse -Filter *.dll | ForEach-Object {
+            Copy-Item $_.FullName src-tauri/bin/
+          }
+          Write-Host "Contents of src-tauri/bin:"
+          Get-ChildItem src-tauri/bin
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__ # the Action will replace this with the app version
+          tagName: v__VERSION__
           releaseName: 'CrispSorter v__VERSION__'
           releaseBody: 'Automated release from GitHub Actions.'
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.tauri_args }}
