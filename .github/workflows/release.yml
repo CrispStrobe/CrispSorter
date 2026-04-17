@@ -86,6 +86,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Needed by scripts/generate-licenses.js, which runs automatically
+      # during `npm run build` via the `prebuild` hook. Without this, the
+      # About → Open Source Licenses screen ships a stale list.
+      - name: Install cargo-license
+        run: cargo install --locked cargo-license
+
       - name: Download llama-server sidecar (Unix)
         if: runner.os != 'Windows'
         shell: bash

@@ -231,12 +231,17 @@
     let benchRunning = $state(false);
     let benchModal = $state<any>(null);
 
-    // Automated Licenses
+    // Automated Licenses. `scripts/generate-licenses.js` writes either the
+    // legacy bare-array shape or the newer `{generatedAt, counts, licenses}`
+    // wrapper — we accept both so an older static/licenses.json on disk
+    // doesn't break a freshly-built app.
     let automatedLicenses = $state<any[]>([]);
+    let licensesGeneratedAt = $state<string | null>(null);
     let licenseSearch = $state('');
-    let filteredLicenses = $derived(automatedLicenses.filter(l => 
-        l.name.toLowerCase().includes(licenseSearch.toLowerCase()) || 
-        l.author?.toLowerCase().includes(licenseSearch.toLowerCase())
+    let filteredLicenses = $derived(automatedLicenses.filter(l =>
+        l.name.toLowerCase().includes(licenseSearch.toLowerCase()) ||
+        l.author?.toLowerCase().includes(licenseSearch.toLowerCase()) ||
+        (l.license ?? '').toLowerCase().includes(licenseSearch.toLowerCase())
     ));
 
     onMount(() => {
@@ -308,7 +313,17 @@
 
         try {
             const resp = await fetch('/licenses.json');
-            automatedLicenses = await resp.json();
+            const raw = await resp.json();
+            if (Array.isArray(raw)) {
+                // Legacy shape: bare array of license entries.
+                automatedLicenses = raw;
+                licensesGeneratedAt = null;
+            } else if (raw && Array.isArray(raw.licenses)) {
+                automatedLicenses = raw.licenses;
+                licensesGeneratedAt = raw.generatedAt ?? null;
+            } else {
+                console.warn('Unexpected licenses.json shape', raw);
+            }
         } catch(e) { console.error('Failed to load automated licenses', e); }
 
         checkMlxModelsCache();
