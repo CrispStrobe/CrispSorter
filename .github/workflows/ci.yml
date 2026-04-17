@@ -75,41 +75,7 @@ jobs:
           path: repos/CrispSorter/static/licenses.json
           retention-days: 14
 
-  # Confirm the Rust side compiles on Linux without actually producing a
-  # Tauri bundle. Fastest possible backend smoke-test.
-  cargo-check:
-    name: cargo check (linux)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out CrispSorter
-        uses: actions/checkout@v4
-        with:
-          path: repos/CrispSorter
-
-      - name: Check out sibling CrispEmbed
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_REF }}
-          path: repos/CrispEmbed
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: './repos/CrispSorter/src-tauri -> target'
-
-      - name: Install Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            protobuf-compiler \
-            build-essential
-
-      - name: cargo check
-        working-directory: repos/CrispSorter/src-tauri
-        run: cargo check --all-targets --no-default-features
+  # Rust / Tauri compile coverage is already done by release.yml; a separate
+  # `cargo check` step was tried but Tauri's build script requires the
+  # llama-server sidecars under src-tauri/bin/ which only the release build
+  # downloads. Not worth duplicating that download just for CI.
