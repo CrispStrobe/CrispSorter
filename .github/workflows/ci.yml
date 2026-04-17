@@ -10,6 +10,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Sibling repo referenced by src-tauri/Cargo.toml as `../../CrispEmbed/crispembed`.
+  # Checked out alongside CrispSorter so cargo metadata / cargo-license /
+  # cargo check can all resolve the path dep even on a clean runner.
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: main
+
 jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
   # Tauri builds live in release.yml and only fire on version tags.
@@ -17,12 +24,23 @@ jobs:
     name: Frontend check + licenses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
 
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -30,17 +48,21 @@ jobs:
         run: cargo install --locked cargo-license
 
       - name: npm ci
+        working-directory: repos/CrispSorter
         run: npm ci
 
       - name: svelte-check
+        working-directory: repos/CrispSorter
         run: npm run check
 
       - name: Regenerate licenses.json
+        working-directory: repos/CrispSorter
         run: npm run licenses:gen
 
       - name: Assert license list is non-trivial
         # Sanity check so we don't silently ship an empty list if the scan
         # tools break on a runner.
+        working-directory: repos/CrispSorter
         run: |
           COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('static/licenses.json','utf8')).counts.total)")
           echo "Total licenses: $COUNT"
@@ -50,7 +72,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: licenses-json
-          path: static/licenses.json
+          path: repos/CrispSorter/static/licenses.json
           retention-days: 14
 
   # Confirm the Rust side compiles on Linux without actually producing a
@@ -59,13 +81,23 @@ jobs:
     name: cargo check (linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: './repos/CrispSorter/src-tauri -> target'
 
       - name: Install Linux system deps
         run: |
@@ -79,5 +111,5 @@ jobs:
             build-essential
 
       - name: cargo check
-        working-directory: src-tauri
+        working-directory: repos/CrispSorter/src-tauri
         run: cargo check --all-targets --no-default-features

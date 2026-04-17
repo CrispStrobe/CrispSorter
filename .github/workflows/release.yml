@@ -37,8 +37,42 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
 
+    env:
+      # Sibling repo referenced by src-tauri/Cargo.toml as
+      # `path = "../../CrispEmbed/crispembed"`. We check it out inside the
+      # workspace and rewrite the path dep at CI time so cargo metadata
+      # resolves on a clean runner.
+      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+      CRISPEMBED_REF: main
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: _sibling/CrispEmbed
+
+      - name: Rewrite CrispEmbed path dep for CI layout
+        shell: bash
+        run: |
+          # Committed path is `../../CrispEmbed/crispembed` (sibling-of-parent
+          # layout used for local dev). In CI both repos live inside
+          # $GITHUB_WORKSPACE, so point the path at the in-workspace copy.
+          python -c "
+          import re, pathlib
+          p = pathlib.Path('src-tauri/Cargo.toml')
+          s = p.read_text()
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/crispembed\"',
+              'path = \"../_sibling/CrispEmbed/crispembed\"',
+              s,
+          )
+          p.write_text(s)
+          print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
+          "
 
       - name: Setup Node
         uses: actions/setup-node@v4
