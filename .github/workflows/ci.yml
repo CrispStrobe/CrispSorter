@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, index-test]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, cheap checks that run on every push + PR. Full cross-platform
+  # Tauri builds live in release.yml and only fire on version tags.
+  frontend:
+    name: Frontend check + licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-license
+        run: cargo install --locked cargo-license
+
+      - name: npm ci
+        run: npm ci
+
+      - name: svelte-check
+        run: npm run check
+
+      - name: Regenerate licenses.json
+        run: npm run licenses:gen
+
+      - name: Assert license list is non-trivial
+        # Sanity check so we don't silently ship an empty list if the scan
+        # tools break on a runner.
+        run: |
+          COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('static/licenses.json','utf8')).counts.total)")
+          echo "Total licenses: $COUNT"
+          test "$COUNT" -gt 100
+
+      - name: Upload licenses.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: licenses-json
+          path: static/licenses.json
+          retention-days: 14
+
+  # Confirm the Rust side compiles on Linux without actually producing a
+  # Tauri bundle. Fastest possible backend smoke-test.
+  cargo-check:
+    name: cargo check (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            protobuf-compiler \
+            build-essential
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --all-targets --no-default-features
