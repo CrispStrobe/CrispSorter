@@ -257,6 +257,20 @@ impl EmbedderModel {
             Octen06bFp32 | Octen06bInt8Local | Octen06bInt4Local | Octen06bInt8FullLocal => {
                 "octen-0.6b"
             }
+            // New models from CrispEmbed v0.2.2+
+            AllMiniLML6V2 | AllMiniLML6V2Q => "all-MiniLM-L6-v2",
+            AllMiniLML12V2 => "all-MiniLM-L12-v2",
+            BgeSmallEnV15 | BgeSmallEnV15Q => "bge-small-en-v1.5",
+            BgeBaseEnV15 | BgeBaseEnV15Q => "bge-base-en-v1.5",
+            BgeLargeEnV15 | BgeLargeEnV15Q => "bge-large-en-v1.5",
+            NomicEmbedTextV1_5 | NomicEmbedTextV1_5Q => "nomic-embed-text-v1.5",
+            AllMpnetBaseV2 => "all-mpnet-base-v2",
+            MxbaiEmbedLargeV1 | MxbaiEmbedLargeV1Q => "mxbai-embed-large-v1",
+            MultilingualE5Small => "multilingual-e5-small",
+            MultilingualE5Base => "multilingual-e5-base",
+            MultilingualE5Large => "multilingual-e5-large",
+            SnowflakeArcticEmbedM | SnowflakeArcticEmbedMV2 => "snowflake-arctic-embed-m",
+            GteSmall => "gte-small",
             _ => return None,
         })
     }
@@ -270,10 +284,16 @@ impl EmbedderModel {
     #[cfg(feature = "crispembed")]
     pub(crate) fn to_gguf_spec(&self) -> Option<GgufSpec> {
         let name = self.gguf_registry_name()?;
-        // BERT/XLM-R encoders ship the base .gguf; Qwen3/Gemma3 decoders ship -q8_0.
+        // BERT/XLM-R/MPNet/NomicBERT encoders: F32 .gguf
+        // Qwen3/Gemma3 decoders: -q8_0.gguf (smaller, verified quality)
         let file = match name {
-            "pixie-rune-v1" | "arctic-embed-l-v2" => format!("{name}.gguf"),
-            _ => format!("{name}-q8_0.gguf"),
+            // Decoder models → Q8_0
+            "octen-0.6b" | "qwen3-embed-0.6b" | "jina-v5-small" | "jina-v5-nano"
+            | "harrier-0.6b" | "harrier-270m" | "f2llm-v2-0.6b" => {
+                format!("{name}-q8_0.gguf")
+            }
+            // Encoder models → F32
+            _ => format!("{name}.gguf"),
         };
         Some(GgufSpec {
             repo: format!("cstr/{name}-GGUF"),
@@ -1298,6 +1318,46 @@ impl CrispEmbedBackend {
             );
         }
         Ok(vecs)
+    }
+
+    /// Set prompt prefix (e.g. "query: " for E5, "search_query: " for Nomic)
+    fn set_prefix(&mut self, prefix: &str) {
+        self.model.set_prefix(prefix);
+    }
+
+    /// Set Matryoshka output dimension (0 = model default)
+    fn set_dim(&mut self, dim: i32) {
+        self.model.set_dim(dim);
+    }
+
+    /// Check if model supports sparse retrieval (BGE-M3, SPLADE)
+    fn has_sparse(&self) -> bool {
+        self.model.has_sparse()
+    }
+
+    /// Sparse encode (BGE-M3 / SPLADE)
+    fn encode_sparse(&mut self, text: &str) -> Vec<(i32, f32)> {
+        self.model.encode_sparse(text)
+    }
+
+    /// Check if model is a cross-encoder reranker
+    fn is_reranker(&self) -> bool {
+        self.model.is_reranker()
+    }
+
+    /// Cross-encoder reranking score
+    fn rerank(&mut self, query: &str, document: &str) -> f32 {
+        self.model.rerank(query, document)
+    }
+
+    /// Bi-encoder reranking via cosine similarity
+    fn rerank_biencoder(
+        &mut self,
+        query: &str,
+        documents: &[&str],
+        top_n: Option<usize>,
+    ) -> Vec<(usize, f32)> {
+        self.model.rerank_biencoder(query, documents, top_n)
     }
 }
 
