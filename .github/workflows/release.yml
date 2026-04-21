@@ -44,6 +44,12 @@ jobs:
       # resolves on a clean runner.
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       CRISPEMBED_REF: main
+      # linuxdeploy / AppImage tools are themselves AppImages that need FUSE
+      # to self-extract. GitHub Actions runners don't have FUSE, so tell them
+      # to extract to a temp dir instead.
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      # Prevent strip from failing on cross-compiled or unusual binaries.
+      NO_STRIP: 'true'
 
     steps:
       - uses: actions/checkout@v4
