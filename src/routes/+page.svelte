@@ -7,12 +7,14 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal } from 'lucide-svelte';
     import IndexSearch from '$lib/components/IndexSearch.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
+    import LogPanel from '$lib/components/LogPanel.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'index-search', 'index-ingest'
     let navCollapsed = $state(false);
+    let showLogs = $state(false);
 
     const batchStats = $derived.by(() => {
         const items = batchManager.items;
@@ -92,6 +94,11 @@
                     {/if}
                 </div>
             {/if}
+            <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title="Logs">
+                <Terminal size={20} />
+                {#if !navCollapsed}<span>Logs</span>{/if}
+            </button>
+
             <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'} title={i18n.t.nav.settings}>
                 <SettingsIcon size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.settings}</span>{/if}
@@ -103,21 +110,28 @@
         </div>
     </nav>
 
-    <main class="main-content">
-        {#if activeTab === 'settings'}
-            <Settings />
-        {:else if activeTab === 'batch'}
-            <BatchReview />
-        {:else if activeTab === 'history'}
-            <History onResumeBatch={switchToBatch} />
-        {:else if activeTab === 'index-search'}
-            <IndexSearch />
-        {:else if activeTab === 'index-ingest'}
-            <IndexIngest />
-        {/if}
-        <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
-            <Chat />
+    <main class="main-content" class:with-logs={showLogs}>
+        <div class="content-area">
+            {#if activeTab === 'settings'}
+                <Settings />
+            {:else if activeTab === 'batch'}
+                <BatchReview />
+            {:else if activeTab === 'history'}
+                <History onResumeBatch={switchToBatch} />
+            {:else if activeTab === 'index-search'}
+                <IndexSearch />
+            {:else if activeTab === 'index-ingest'}
+                <IndexIngest />
+            {/if}
+            <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
+                <Chat />
+            </div>
         </div>
+        {#if showLogs}
+            <div class="log-drawer">
+                <LogPanel />
+            </div>
+        {/if}
     </main>
 </div>
 
@@ -222,6 +236,22 @@
         flex: 1;
         overflow: hidden;
         position: relative;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .content-area {
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+        min-height: 0;
+    }
+
+    .log-drawer {
+        height: 220px;
+        border-top: 1px solid #27272a;
+        flex-shrink: 0;
+        overflow: hidden;
     }
 
     .persistent-chat {

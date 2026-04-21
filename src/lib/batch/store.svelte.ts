@@ -89,6 +89,7 @@ export class BatchManager {
     stopAll() {
         this.stopRequested = true;
         this.extractionAbort?.abort();
+        console.log('[BatchManager] Stop requested by user');
     }
 
     resetStuckItems() {
@@ -203,11 +204,23 @@ export class BatchManager {
                         if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
                             console.log(`[BatchManager] Using Rust-Native extraction for ${item.originalName}`);
                             const text = await invoke('extract_pdf_native', { path: item.originalPath });
+                            // Check stop after Rust call (can't cancel mid-extraction,
+                            // but we can discard the result and stop the loop)
+                            if (this.stopRequested) {
+                                item.extractedText = text as string; // keep what we got
+                                item.status = 'queued';
+                                break;
+                            }
                             item.extractedText = text as string;
                         } else {
                             console.log(`[BatchManager] Using JS-Native extraction for ${item.originalName} (forceOCR=${forceOCR})`);
                             this.extractionAbort = new AbortController();
                             const fileData = await readFile(item.originalPath);
+                            if (this.stopRequested) {
+                                this.extractionAbort = null;
+                                item.status = 'queued';
+                                break;
+                            }
                             const extraction = await extractText(
                                 { name: item.originalName, arrayBuffer: fileData.buffer },
                                 {
@@ -220,6 +233,10 @@ export class BatchManager {
                                 }
                             );
                             this.extractionAbort = null;
+                            if (this.stopRequested) {
+                                item.status = 'queued';
+                                break;
+                            }
                             item.extractedText = extraction.text;
                         }
                         item.statusDetail = undefined;
@@ -229,15 +246,18 @@ export class BatchManager {
                         console.log(`[BatchManager] Extracted: ${item.originalName} — ${item.extractedText?.length} chars`);
                     }
 
+                    if (this.stopRequested) { item.status = 'queued'; break; }
+
                     // Metadata Analysis
                     if (this.isMetadataExtractionEnabled && !overrides?.extractionOnly) {
                         item.status = 'analyzing';
                         const textSample = item.extractedText?.substring(0, llmMaxChars) || '';
                         const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
-                        
+
                         const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
+                        if (this.stopRequested) { item.status = 'queued'; break; }
                         const metadata = this.parseLLMResponse(response, parsingFormat);
-                        
+
                         item.suggestedTitle = metadata.title || 'Unknown Title';
                         item.suggestedAuthor = metadata.author || 'Unknown Author';
                         item.suggestedYear = metadata.year || 'Unknown Year';
@@ -245,6 +265,7 @@ export class BatchManager {
                         if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
                             const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
                             const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
+                            if (this.stopRequested) { item.status = 'queued'; break; }
                             const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                             if (match) item.suggestedAuthor = match[1].trim();
                         }
@@ -257,7 +278,7 @@ export class BatchManager {
                     item.status = 'review';
                     await this.calculateTargetPath(item);
                 } catch (e: any) {
-                    if (e?.message === 'EXTRACTION_ABORTED') {
+                    if (this.stopRequested || e?.message === 'EXTRACTION_ABORTED') {
                         item.status = 'queued';
                         item.statusDetail = undefined;
                     } else {

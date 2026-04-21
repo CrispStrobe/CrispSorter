@@ -54,10 +54,11 @@ export async function extractPdf(arrayBuffer: ArrayBuffer, options: { forceOCR?:
         console.log(`[PDFExtractor] Document loaded successfully, pages: ${numPages}`);
 
         for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-            // Abort signal check
+            // Abort signal check — throw so the caller can distinguish abort from success
             if (options.signal?.aborted) {
                 console.log(`[PDFExtractor] Aborted at page ${pageNum}/${numPages}`);
-                break;
+                await pdfDocument.destroy();
+                throw new Error('EXTRACTION_ABORTED');
             }
             // Progress callback
             options.onProgress?.(pageNum, numPages);

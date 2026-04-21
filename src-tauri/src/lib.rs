@@ -14,6 +14,86 @@ use tauri::Emitter;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+// ── App-wide log relay ────────────────────────────────────────────────────
+// Ring buffer of recent log messages + Tauri event emission so the frontend
+// can display a live log panel.  Works even when there is no console
+// (Windows release builds with `windows_subsystem = "windows"`).
+
+use std::sync::LazyLock;
+
+/// In-memory ring buffer of the most recent log messages.
+static LOG_BUFFER: LazyLock<std::sync::Mutex<LogRing>> =
+    LazyLock::new(|| std::sync::Mutex::new(LogRing::new(500)));
+
+struct LogRing {
+    entries: Vec<LogEntry>,
+    max: usize,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct LogEntry {
+    pub ts: f64,       // seconds since UNIX epoch
+    pub level: String, // "info", "warn", "error"
+    pub msg: String,
+}
+
+impl LogRing {
+    fn new(max: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(max),
+            max,
+        }
+    }
+    fn push(&mut self, entry: LogEntry) {
+        if self.entries.len() >= self.max {
+            self.entries.remove(0);
+        }
+        self.entries.push(entry);
+    }
+    fn snapshot(&self) -> Vec<LogEntry> {
+        self.entries.clone()
+    }
+}
+
+/// Global app handle set once in `run()`, used by `app_log!` from anywhere.
+static APP_HANDLE: LazyLock<std::sync::Mutex<Option<tauri::AppHandle>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Log a message to stderr, the ring buffer, and the frontend (via Tauri event).
+pub fn app_log(level: &str, msg: String) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    eprintln!("[{level}] {msg}");
+    let entry = LogEntry {
+        ts,
+        level: level.to_string(),
+        msg,
+    };
+    if let Ok(mut buf) = LOG_BUFFER.lock() {
+        buf.push(entry.clone());
+    }
+    if let Ok(guard) = APP_HANDLE.lock() {
+        if let Some(ref handle) = *guard {
+            let _ = handle.emit("app-log", &entry);
+        }
+    }
+}
+
+/// Convenience macro: `app_log!("info", "loaded model {}", name);`
+#[macro_export]
+macro_rules! app_log {
+    ($level:expr, $($arg:tt)*) => {
+        $crate::app_log($level, format!($($arg)*))
+    };
+}
+
+#[tauri::command]
+fn get_logs() -> Vec<LogEntry> {
+    LOG_BUFFER.lock().map(|b| b.snapshot()).unwrap_or_default()
+}
+
 #[derive(Serialize)]
 pub struct FileEntry {
     path: String,
@@ -54,8 +134,8 @@ async fn start_llamacpp_sidecar(
         let _ = child.kill().await;
     }
 
-    println!("[Sidecar] Starting llama-server (CPU)...");
-    println!("[Sidecar] Model path: {}", model_path);
+    app_log!("info", "Starting llama-server sidecar, port={}", port);
+    app_log!("info", "Model path: {}", model_path);
 
     // Resolve the bin directory: in dev it's src-tauri/bin, in release it's next to the exe
     let bin_dir = if cfg!(debug_assertions) {
@@ -501,9 +581,9 @@ async fn get_app_data_dir(app_handle: tauri::AppHandle) -> Result<String, String
 
 #[tauri::command]
 async fn extract_pdf_native(path: String) -> Result<String, String> {
-    println!("[Rust] Extracting PDF via pdf-extract: {}", path);
+    app_log!("info", "Extracting PDF (Rust-native): {}", path);
     pdf_extract::extract_text(&path).map_err(|e| {
-        println!("[Rust] Extraction error: {}", e);
+        app_log!("error", "PDF extraction failed: {} — {}", path, e);
         e.to_string()
     })
 }
@@ -604,6 +684,7 @@ async fn execute_batch(
     state: tauri::State<'_, AppState>,
     payload: BatchExecutionPayload,
 ) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
+    app_log!("info", "execute_batch: {} items, mode={}", payload.items.len(), payload.mode);
     let mut results = std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
     let mut script_content = String::new();
@@ -808,10 +889,10 @@ async fn run_mistralrs_query(
     };
 
     if needs_load {
-        println!("[mistral.rs] Loading model: {}", model_path);
+        app_log!("info", "Loading LLM model: {}", model_path);
 
         let device = best_device(false).map_err(|e| e.to_string())?;
-        println!("[mistral.rs] Target Hardware Device: {:?}", device);
+        app_log!("info", "Target hardware device: {:?}", device);
 
         if model_path.starts_with("\\\\") {
             println!(
@@ -882,13 +963,13 @@ async fn run_mistralrs_query(
             }
         }
         .map_err(|e| {
-            println!("[mistral.rs] LOAD ERROR: {}", e);
+            app_log!("error", "LLM load failed: {}", e);
             e.to_string()
         })?;
 
         *model_lock = Some(Arc::new(model));
         *current_path_lock = Some(model_path.clone());
-        println!("[mistral.rs] Model loaded successfully.");
+        app_log!("info", "LLM model loaded successfully");
     }
 
     // We can unwrap here because we ensured it's Some above
@@ -916,7 +997,7 @@ async fn run_mistralrs_query(
     );
     let start_time = std::time::Instant::now();
     let response = model.send_chat_request(request).await.map_err(|e| {
-        println!("[mistral.rs] QUERY ERROR: {}", e);
+        app_log!("error", "LLM query failed: {}", e);
         e.to_string()
     })?;
     let duration = start_time.elapsed();
@@ -956,6 +1037,14 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            // Store global handle so app_log!() works from any thread.
+            if let Ok(mut h) = APP_HANDLE.lock() {
+                *h = Some(app.handle().clone());
+            }
+            app_log!("info", "CrispSorter v{} starting", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        })
         .manage(AppState {
             model: Mutex::new(None),
             current_model_path: Mutex::new(None),
@@ -965,6 +1054,7 @@ pub fn run() {
             index: Mutex::new(index::IndexState::disabled()),
         })
         .invoke_handler(tauri::generate_handler![
+            get_logs,
             execute_batch,
             scan_folder,
             download_file,
