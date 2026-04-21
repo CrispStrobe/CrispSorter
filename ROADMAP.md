@@ -127,6 +127,20 @@ Different decoder-based embedding models use different pooling:
 6. If GGUF-capable: add the option value to `GGUF_CAPABLE_MODELS` set
 7. Add i18n label in `src/lib/i18n/en.ts` and `de.ts`
 
+## AppImage bundling on GitHub Actions (ubuntu-24.04)
+
+`linuxdeploy` and its plugins (`linuxdeploy-plugin-appimage`,
+`linuxdeploy-plugin-gtk`) are themselves AppImages. They need FUSE to
+self-extract. GitHub Actions ubuntu-24.04 runners don't have FUSE, so the
+AppImage bundling step fails with the unhelpful error `failed to run linuxdeploy`.
+
+**Fix**: Set `APPIMAGE_EXTRACT_AND_RUN=1` as an environment variable in the
+workflow. This tells AppImage tools to extract to a temp dir instead of using
+FUSE. Also useful: `NO_STRIP=true` to prevent strip from failing on unusual
+binaries.
+
+The .deb bundle is unaffected — it doesn't use linuxdeploy.
+
 ## Snowflake Arctic model variants
 
 Snowflake Arctic Embed L v2.0 has 7 ONNX variants on HuggingFace, all in the
