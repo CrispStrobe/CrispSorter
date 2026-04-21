@@ -33,7 +33,7 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
             sidecar_name: llama-server-x86_64-unknown-linux-gnu
-            tauri_args: '--bundles deb,appimage'
+            tauri_args: '--bundles deb'
 
     runs-on: ${{ matrix.platform }}
 
