@@ -191,18 +191,14 @@
     // Models with GGUF counterpart in CrispEmbed (v0.2.2+, 10 architectures).
     // Kept in sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
     const GGUF_CAPABLE_MODELS = new Set([
+        // Only models that exist in the EmbedderModel enum AND have a GGUF
+        // equivalent in CrispEmbed.  Additional GGUF-only models can be added
+        // here once corresponding ONNX enum variants are created.
         'pixie', 'pixie_q', 'pixie_int4', 'pixie_int4_full',
         'snowflake_l', 'snowflake_l_fp16', 'snowflake_l_int8',
         'snowflake_l_q4', 'snowflake_l_q4f16', 'snowflake_l_o4', 'snowflake_l_fp32',
-        'snowflake_m',
         'octen', 'jina_nano', 'jina_small',
         'qwen3_embed', 'qwen3_embed_int8', 'qwen3_embed_uint8',
-        'minilm_l6', 'minilm_l6_q', 'minilm_l12',
-        'bge_small', 'bge_small_q', 'bge_base', 'bge_base_q', 'bge_large', 'bge_large_q',
-        'nomic_v1_5', 'nomic_v1_5_q',
-        'mpnet', 'mxbai_large', 'mxbai_large_q',
-        'e5_small', 'e5_base', 'e5_large',
-        'gte_small', 'bge_m3',
     ]);
     function supportsGguf(uiModel: string): boolean {
         return GGUF_CAPABLE_MODELS.has(uiModel);

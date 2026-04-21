@@ -257,20 +257,8 @@ impl EmbedderModel {
             Octen06bFp32 | Octen06bInt8Local | Octen06bInt4Local | Octen06bInt8FullLocal => {
                 "octen-0.6b"
             }
-            // New models from CrispEmbed v0.2.2+
-            AllMiniLML6V2 | AllMiniLML6V2Q => "all-MiniLM-L6-v2",
-            AllMiniLML12V2 => "all-MiniLM-L12-v2",
-            BgeSmallEnV15 | BgeSmallEnV15Q => "bge-small-en-v1.5",
-            BgeBaseEnV15 | BgeBaseEnV15Q => "bge-base-en-v1.5",
-            BgeLargeEnV15 | BgeLargeEnV15Q => "bge-large-en-v1.5",
-            NomicEmbedTextV1_5 | NomicEmbedTextV1_5Q => "nomic-embed-text-v1.5",
-            AllMpnetBaseV2 => "all-mpnet-base-v2",
-            MxbaiEmbedLargeV1 | MxbaiEmbedLargeV1Q => "mxbai-embed-large-v1",
-            MultilingualE5Small => "multilingual-e5-small",
-            MultilingualE5Base => "multilingual-e5-base",
-            MultilingualE5Large => "multilingual-e5-large",
-            SnowflakeArcticEmbedM | SnowflakeArcticEmbedMV2 => "snowflake-arctic-embed-m",
-            GteSmall => "gte-small",
+            // Models below only have GGUF (CrispEmbed) — no ONNX variant in
+            // the EmbedderModel enum yet, so they're handled by the wildcard.
             _ => return None,
         })
     }
