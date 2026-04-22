@@ -187,3 +187,26 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.tauri_args }}
+
+  # Publish the draft release once all matrix jobs have finished (success OR
+  # failure). This means a slow/unavailable runner (e.g. macos-13) won't
+  # block the release from going live — whatever artifacts are ready get
+  # published immediately.
+  publish:
+    needs: release
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish release draft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          TAG="v${VERSION}"
+          echo "Publishing release ${TAG}…"
+          gh release edit "${TAG}" --draft=false --latest
+          echo "✓ Published ${TAG}"
