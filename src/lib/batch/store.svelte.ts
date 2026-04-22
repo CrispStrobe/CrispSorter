@@ -189,7 +189,24 @@ export class BatchManager {
         const defaultPrompt = getDefaultPrompt(parsingFormat, language);
         const basePrompt = await getSetting('llmPrompt', defaultPrompt);
 
-        flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars}`);
+        // Build round-robin provider list: active provider first, then user-defined fallbacks.
+        // Each entry: { id, modelId, apiKey }. Used in phase 2 to switch on provider failure.
+        const roundRobinIds: string[] = (await getSetting('roundRobinProviders', [])) as string[];
+        type RRProvider = { id: string; modelId: string; apiKey: string };
+        const rrProviders: RRProvider[] = [
+            { id: activeProvider.id, modelId, apiKey: activeProvider.apiKey || '' },
+            ...roundRobinIds
+                .filter(id => id !== activeProviderId)
+                .map(id => {
+                    const p = (providers as any[]).find(pp => pp.id === id);
+                    if (!p) return null;
+                    return { id, modelId: p.selectedModel || p.models?.[0] || '', apiKey: p.apiKey || '' };
+                })
+                .filter((p): p is RRProvider => p !== null),
+        ];
+        let rrIdx = 0; // advances when a provider exhausts its retries
+
+        flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
 
         // Two-phase: EXTRACT all → ANALYZE all.
         // This decouples text extraction from LLM analysis so a stalled LLM
@@ -304,8 +321,29 @@ export class BatchManager {
                     const textSample = item.extractedText!.substring(0, llmMaxChars);
                     const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
 
+                    // Try providers in round-robin order; advance index on non-abort failure.
+                    const queryRR = async (p: string): Promise<string> => {
+                        let lastErr: any = null;
+                        for (let i = rrIdx; i < rrProviders.length; i++) {
+                            const rr = rrProviders[i];
+                            try {
+                                const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, this.llmAbort?.signal);
+                                rrIdx = i; // stick with this provider for subsequent items
+                                return res;
+                            } catch (e: any) {
+                                if (e?.name === 'AbortError' || e?.message?.includes('LLM_TIMEOUT')) throw e;
+                                lastErr = e;
+                                flog('warn', `Provider ${rr.id} failed — trying next fallback (${i + 1}/${rrProviders.length}): ${e.message}`);
+                                rrIdx = i + 1;
+                            }
+                        }
+                        // All providers exhausted — reset index and throw last error
+                        rrIdx = 0;
+                        throw lastErr ?? new Error('All LLM providers exhausted');
+                    };
+
                     flog('info', `LLM analyze: ${item.originalName}`);
-                    const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
+                    const response = await queryRR(prompt);
                     if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
                     const metadata = this.parseLLMResponse(response, parsingFormat);
 
@@ -316,7 +354,7 @@ export class BatchManager {
 
                     if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
-                        const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
+                        const sortRes = await queryRR(sortPrompt);
                         if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
                         const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
                         if (match) item.suggestedAuthor = match[1].trim();
@@ -472,6 +510,13 @@ export class BatchManager {
                             item.errorMessage = undefined;
                             item.statusDetail = mode.includes('copy') ? 'copied' : 'moved';
                             successCount++;
+                            // Update search index location if the file was moved (not copied)
+                            if (!mode.includes('copy') && item.targetPath) {
+                                invoke('index_update_location_by_path', {
+                                    oldPath: item.originalPath,
+                                    newPath: item.targetPath,
+                                }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
+                            }
                         }
                     } else {
                         item.status = 'error';

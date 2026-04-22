@@ -150,6 +150,9 @@
         }
     });
 
+    // Rate-limit round-robin fallback providers (ordered list of provider IDs)
+    let roundRobinProviders = $state<string[]>([]);
+
     let sidecarStatus = $state(''); // '', 'starting', 'ready', 'error'
     let sidecarLogs = $state<string[]>([]);
     let sidecarLogsVisible = $state(false);
@@ -275,6 +278,7 @@
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
+        roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
         
@@ -426,6 +430,7 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
+        await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
         await saveSetting('localModels', $state.snapshot(localModels));
@@ -447,6 +452,31 @@
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
+    }
+
+    // ── Round-robin helpers ──────────────────────────────────────────────────
+    // Remote providers only — local servers don't rate-limit
+    const REMOTE_PROVIDER_IDS = ['groq','openrouter','mistral','openai','nebius','scaleway','anthropic','google','poe'];
+    let rrCandidates = $derived(providers.filter(p => REMOTE_PROVIDER_IDS.includes(p.id) && (p.apiKey || p.isConfigured)));
+
+    function rrToggle(id: string) {
+        if (roundRobinProviders.includes(id)) {
+            roundRobinProviders = roundRobinProviders.filter(x => x !== id);
+        } else {
+            roundRobinProviders = [...roundRobinProviders, id];
+        }
+    }
+    function rrMoveUp(idx: number) {
+        if (idx === 0) return;
+        const arr = [...roundRobinProviders];
+        [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+        roundRobinProviders = arr;
+    }
+    function rrMoveDown(idx: number) {
+        if (idx >= roundRobinProviders.length - 1) return;
+        const arr = [...roundRobinProviders];
+        [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]];
+        roundRobinProviders = arr;
     }
 
     // ── Search Index helpers ─────────────────────────────────────────────────
@@ -1169,6 +1199,37 @@
                     <button class:active={parsingFormat === 'xml'} class="toggle-btn" onclick={() => { parsingFormat = 'xml'; updatePrompt(); }}>{i18n.t.settings.parsing_xml}</button>
                     <button class:active={parsingFormat === 'json'} class="toggle-btn" onclick={() => { parsingFormat = 'json'; updatePrompt(); }}>{i18n.t.settings.parsing_json}</button>
                 </div>
+            </div>
+
+            <div class="section-card">
+                <div class="header" style="margin-bottom: 12px;">
+                    <h2 style="font-size: 1rem; color: #a1a1aa;"><RefreshCw size={16} /> {i18n.t.settings.roundrobin_title}</h2>
+                </div>
+                <p class="hint" style="margin-top: 0; margin-bottom: 12px;">{i18n.t.settings.roundrobin_hint}</p>
+
+                {#if rrCandidates.length === 0}
+                    <p class="hint">{i18n.t.settings.roundrobin_no_providers}</p>
+                {:else}
+                    <div class="rr-list">
+                        {#each rrCandidates as p}
+                            {@const rrPos = roundRobinProviders.indexOf(p.id)}
+                            {@const isEnabled = rrPos !== -1}
+                            <div class="rr-row" class:rr-enabled={isEnabled}>
+                                <label class="rr-label" for="rr-{p.id}">
+                                    <input type="checkbox" id="rr-{p.id}" checked={isEnabled} onchange={() => rrToggle(p.id)} />
+                                    <span>{p.name}</span>
+                                </label>
+                                {#if isEnabled}
+                                    <div class="rr-order">
+                                        <span class="rr-idx">#{rrPos + 1}</span>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveUp(rrPos)} disabled={rrPos === 0} title="Move up">▲</button>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveDown(rrPos)} disabled={rrPos === roundRobinProviders.length - 1} title="Move down">▼</button>
+                                    </div>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
             </div>
 
             <div class="section-card">
@@ -2068,4 +2129,15 @@
     .runs-select-grid .r-text { font-size: 0.65rem; text-transform: uppercase; font-weight: 600; opacity: 0.8; }
     
     .large-bench-btn { height: 50px; font-size: 1rem; margin-top: 20px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 12px; }
+
+    .rr-list { display: flex; flex-direction: column; gap: 4px; }
+    .rr-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; }
+    .rr-row.rr-enabled { border-color: #27272a; background: #1c1c1f; }
+    .rr-label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: #a1a1aa; cursor: pointer; }
+    .rr-label input { cursor: pointer; }
+    .rr-order { display: flex; align-items: center; gap: 4px; }
+    .rr-idx { font-size: 0.7rem; color: #52525b; width: 20px; text-align: right; }
+    .icon-btn-tiny { background: transparent; border: none; color: #52525b; cursor: pointer; padding: 2px 4px; border-radius: 3px; font-size: 0.65rem; line-height: 1; }
+    .icon-btn-tiny:hover:not(:disabled) { color: #a1a1aa; background: #27272a; }
+    .icon-btn-tiny:disabled { opacity: 0.3; cursor: not-allowed; }
 </style>

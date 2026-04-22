@@ -245,6 +245,20 @@ impl LocalIndex {
         Ok(())
     }
 
+    /// Update `location_uri` by matching the old URI (no doc_id required).
+    pub async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        let filter = format!("location_uri = '{}'", old_uri.replace('\'', "''"));
+        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
+        self.table
+            .update()
+            .only_if(filter)
+            .column("location_uri", new_val)
+            .execute()
+            .await
+            .context("LanceDB update_location_by_uri")?;
+        Ok(())
+    }
+
     // ── Index building ─────────────────────────────────────────────────────
 
     /// Build an IVF-PQ ANN index on the `embedding` column.
@@ -340,6 +354,10 @@ impl IndexBackend for LocalIndex {
 
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
         self.update_location(doc_id, new_uri).await
+    }
+
+    async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        self.update_location_by_uri(old_uri, new_uri).await
     }
 }
 

@@ -238,6 +238,7 @@ export const translations = {
             },
             roundrobin_title: 'Rate-limit Fallback',
             roundrobin_hint: 'If the active provider hits its rate limit, fall back to providers in this order.',
+            roundrobin_no_providers: 'No remote providers configured. Add an API key under Providers first.',
             about: 'About CrispSorter',
             index: {
                 title: 'Search Index',
@@ -535,6 +536,7 @@ export const translations = {
             },
             roundrobin_title: 'Rate-Limit Ausweich-Anbieter',
             roundrobin_hint: 'Falls der aktive Anbieter das Rate-Limit erreicht, wird auf diese Anbieter ausgewichen.',
+            roundrobin_no_providers: 'Keine Remote-Anbieter konfiguriert. Zuerst einen API-Schlüssel unter Anbieter hinzufügen.',
             about: 'Über CrispSorter',
             index: {
                 title: 'Such-Index',

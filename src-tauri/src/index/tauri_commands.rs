@@ -390,6 +390,30 @@ pub async fn index_update_location(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn index_update_location_by_path(
+    state: State<'_, AppState>,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Ok(());
+    }
+    let backend = lock
+        .backend
+        .as_ref()
+        .ok_or("Index backend not initialised")?
+        .clone();
+    drop(lock);
+    let old_uri = format!("crisp+local://local/{}", old_path);
+    let new_uri = format!("crisp+local://local/{}", new_path);
+    backend
+        .update_location_by_uri(&old_uri, &new_uri)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Index management ──────────────────────────────────────────────────────────
 
 #[tauri::command]

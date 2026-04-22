@@ -291,11 +291,11 @@
             <div class="header-info">
                 <h2>{i18n.t.chat.title}</h2>
                 <div class="context-stats">
-                    <span class="stat-badge">Docs: {selectedIds.length} ({formatSize(docContextSize)})</span>
-                    <span class="stat-badge history">Chat: {formatSize(chatHistorySize)}</span>
+                    <span class="stat-badge">{i18n.t.chat.docs} {selectedIds.length} ({formatSize(docContextSize)})</span>
+                    <span class="stat-badge history">{i18n.t.chat.history}: {formatSize(chatHistorySize)}</span>
                 </div>
             </div>
-            <button class="icon-btn danger" onclick={clearChat} title="Clear Messages"><Trash2 size={16} /></button>
+            <button class="icon-btn danger" onclick={clearChat} title={i18n.t.chat.clear}><Trash2 size={16} /></button>
         </div>
 
         <div class="chat-content">

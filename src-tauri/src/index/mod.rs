@@ -73,6 +73,9 @@ pub trait IndexBackend: Send + Sync {
 
     /// Update the stored location URI for a document (called when Sort moves a file).
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()>;
+
+    /// Update location URI by matching the old URI (no doc_id required).
+    async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()>;
 }
 
 /// Active index configuration held in Tauri `AppState`.

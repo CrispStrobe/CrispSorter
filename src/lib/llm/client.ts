@@ -109,14 +109,23 @@ export class LLMClient {
         const retryAfterHeader = headers.get('retry-after') || headers.get('Retry-After');
         if (retryAfterHeader) {
             const secs = parseFloat(retryAfterHeader);
-            if (!isNaN(secs)) return Math.ceil(secs * 1000) + 200;
+            if (!isNaN(secs)) return Math.min(Math.ceil(secs * 1000) + 200, 90_000);
         }
         // Parse from Groq/OpenAI error body: "Please try again in 847.5ms" or "1.5s"
         const msMatch = errorText.match(/try again in ([\d.]+)ms/i);
-        if (msMatch) return Math.ceil(parseFloat(msMatch[1])) + 500;
+        if (msMatch) return Math.min(Math.ceil(parseFloat(msMatch[1])) + 500, 90_000);
         const sMatch = errorText.match(/try again in ([\d.]+)s/i);
-        if (sMatch) return Math.ceil(parseFloat(sMatch[1]) * 1000) + 500;
+        if (sMatch) return Math.min(Math.ceil(parseFloat(sMatch[1]) * 1000) + 500, 90_000);
         return 3000; // default 3s
+    }
+
+    // Sleep that unblocks immediately when signal fires.
+    private abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+            const t = setTimeout(resolve, ms);
+            signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+        });
     }
 
     private stripThinking(text: string): string {
@@ -275,7 +284,7 @@ export class LLMClient {
                     const errorText = await response.text();
                     const waitMs = this.getRetryAfterMs(response.headers, errorText);
                     flog('warn', `Rate limited (429). Waiting ${waitMs}ms (rl-retry ${rateLimitRetries}/${MAX_RL_RETRIES})`);
-                    await new Promise(resolve => setTimeout(resolve, waitMs));
+                    await this.abortableSleep(waitMs, signal);
                     attempt--;
                     continue;
                 }
@@ -299,7 +308,7 @@ export class LLMClient {
                 lastError = error;
                 flog('warn', `LLM attempt ${attempt + 1} failed (${providerId}): ${error.message || error}`);
                 if (attempt < maxRetries - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await this.abortableSleep(2000, signal);
                 }
             }
         }

@@ -1074,6 +1074,7 @@ pub fn run() {
             index::tauri_commands::index_search,
             index::tauri_commands::index_ingest_document,
             index::tauri_commands::index_update_location,
+            index::tauri_commands::index_update_location_by_path,
             index::tauri_commands::index_build_ivf_pq,
             index::tauri_commands::index_get_config,
             index::tauri_commands::index_set_config,
