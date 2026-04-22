@@ -7,7 +7,7 @@
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
-    import type { BatchItem } from '../types';
+    import type { BatchItem, BatchStatus } from '../types';
     import { stat, writeTextFile } from '@tauri-apps/plugin-fs';
     import {
         Play, Trash2, Check, X, FileSearch, FolderOpen,
@@ -58,6 +58,22 @@
             detailYear   = selectedItem.suggestedYear   ?? '';
         }
     });
+
+    function statusLabel(status: BatchStatus): string {
+        const t = i18n.t.batch;
+        const map: Record<BatchStatus, string> = {
+            queued: t.status_queued,
+            extracting: t.status_extracting,
+            analyzing: t.status_analyzing,
+            review: t.status_review,
+            ready: t.status_ready,
+            unfinished: t.status_unfinished,
+            moving: t.status_moving,
+            done: t.status_done,
+            error: t.status_error,
+        };
+        return map[status] ?? status;
+    }
 
     async function saveDetailChanges() {
         if (!selectedItem) return;
@@ -801,9 +817,9 @@
                 </button>
             {/if}
 
-            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing')}
-                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title="Reset stuck items to queued">
-                    <RefreshCw size={14} /> Reset stuck
+            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing' || i.status === 'unfinished')}
+                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title={i18n.t.batch.reset_stuck}>
+                    <RefreshCw size={14} /> {i18n.t.batch.reset_stuck}
                 </button>
             {/if}
 
@@ -874,10 +890,13 @@
                 <label for="status-filter">{i18n.t.batch.filter_status}</label>
                 <select id="status-filter" bind:value={batchManager.filterStatus}>
                     <option value="all">All</option>
-                    <option value="queued">Queued</option>
-                    <option value="review">Review</option>
-                    <option value="done">Done</option>
-                    <option value="error">Error</option>
+                    <option value="queued">{i18n.t.batch.status_queued}</option>
+                    <option value="unfinished">{i18n.t.batch.status_unfinished}</option>
+                    <option value="extracting">{i18n.t.batch.status_extracting}</option>
+                    <option value="analyzing">{i18n.t.batch.status_analyzing}</option>
+                    <option value="review">{i18n.t.batch.status_review}</option>
+                    <option value="done">{i18n.t.batch.status_done}</option>
+                    <option value="error">{i18n.t.batch.status_error}</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -997,8 +1016,11 @@
                                 {#if col.visible}
                                     <td style="width: {col.width}px;">
                                         {#if col.id === 'status'}
-                                            <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)} class:status-error={item.status === 'error'}>
-                                                {item.status}
+                                            <span class="status-badge"
+                                                class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
+                                                class:status-unfinished={item.status === 'unfinished'}
+                                                class:status-error={item.status === 'error'}>
+                                                {statusLabel(item.status)}
                                             </span>
                                             {#if item.statusDetail}
                                                 {#if /^\d+\/\d+/.test(item.statusDetail)}
@@ -1143,26 +1165,30 @@
             </span>
             {#if batchManager.isProcessing}
                 {@const processed = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
-                {@const total = batchManager.items.filter(i => i.status !== 'done').length}
                 {@const extracting = batchManager.items.filter(i => i.status === 'extracting').length}
                 {@const analyzing = batchManager.items.filter(i => i.status === 'analyzing').length}
                 <span class="stat-divider">·</span>
                 <span class="stat-item stat-processing">
                     <Loader2 size={13} class="loader-spin" />
-                    {processed}/{batchManager.items.length} done
-                    {#if extracting > 0}<span class="stat-sub">· extracting {extracting}</span>{/if}
-                    {#if analyzing > 0}<span class="stat-sub">· analyzing {analyzing}</span>{/if}
+                    {i18n.t.batch.processing_stats.replace('{done}', processed.toString()).replace('{total}', batchManager.items.length.toString())}
+                    {#if extracting > 0}<span class="stat-sub">· {i18n.t.batch.status_extracting} {extracting}</span>{/if}
+                    {#if analyzing > 0}<span class="stat-sub">· {i18n.t.batch.status_analyzing} {analyzing}</span>{/if}
                 </span>
             {:else}
                 {@const done = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const unfinished = batchManager.items.filter(i => i.status === 'unfinished').length}
                 {@const errors = batchManager.items.filter(i => i.status === 'error').length}
                 {#if done > 0}
                     <span class="stat-divider">·</span>
-                    <span class="stat-item stat-ready">{done} ready</span>
+                    <span class="stat-item stat-ready">{done} {i18n.t.batch.status_review}</span>
+                {/if}
+                {#if unfinished > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-unfinished">{unfinished} {i18n.t.batch.status_unfinished}</span>
                 {/if}
                 {#if errors > 0}
                     <span class="stat-divider">·</span>
-                    <span class="stat-item stat-err">{errors} errors</span>
+                    <span class="stat-item stat-err">{errors} {i18n.t.batch.status_error}</span>
                 {/if}
             {/if}
         </div>
@@ -1376,7 +1402,9 @@
     
     .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; text-transform: capitalize; }
     .status-active { color: #3b82f6; background: #1e3a8a33; }
+    .status-unfinished { color: #f59e0b; background: #78350f33; }
     .status-error { color: #ef4444; background: #450a0a33; }
+    .stat-unfinished { color: #f59e0b; }
     .status-detail-badge { font-size: 0.6rem; color: #60a5fa; background: #1e3a8a33; padding: 1px 4px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
     .status-icon-btn { background: transparent; border: none; cursor: pointer; display: inline-flex; align-items: center; padding: 2px 3px; border-radius: 3px; margin-left: 3px; vertical-align: middle; }
     .status-icon-btn:hover { background: #27272a; }

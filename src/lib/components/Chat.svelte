@@ -268,8 +268,16 @@
                         <button class="context-item" class:selected={selectedIds.includes(item.id)} onclick={() => toggleContext(item.id)}>
                             <FileText size={14} />
                             <div class="context-item-info">
-                                <span class="file-name">{item.originalName}</span>
-                                <span class="file-size-hint">{item.size > 0 ? formatSize(item.size) : (item.extractedText ? formatSize(item.extractedText.length) : '—')}</span>
+                                {#if item.suggestedTitle}
+                                    <span class="file-name">{item.suggestedTitle}</span>
+                                    {#if item.suggestedAuthor}
+                                        <span class="file-meta-hint">{item.suggestedAuthor}</span>
+                                    {/if}
+                                    <span class="file-size-hint">{item.originalName}</span>
+                                {:else}
+                                    <span class="file-name">{item.originalName}</span>
+                                    <span class="file-size-hint">{item.size > 0 ? formatSize(item.size) : (item.extractedText ? formatSize(item.extractedText.length) : '—')}</span>
+                                {/if}
                             </div>
                         </button>
                     {/each}
@@ -326,7 +334,8 @@
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }
     .context-item-info { display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; flex: 1; }
-    .file-size-hint { font-size: 0.65rem; color: #52525b; margin-top: 1px; }
+    .file-size-hint { font-size: 0.65rem; color: #52525b; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+    .file-meta-hint { font-size: 0.65rem; color: #71717a; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; height: 100%; width: 100%; overflow: hidden; min-width: 0; position: relative; }
     .chat-header { height: 64px; padding: 0 24px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; transition: padding-left 0.3s ease; flex-shrink: 0; }

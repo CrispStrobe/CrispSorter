@@ -117,7 +117,18 @@ export const translations = {
             },
             stats_files: '{count} files',
             use_model: 'Use',
-            selected_status: 'Selected'
+            selected_status: 'Selected',
+            status_queued: 'Queued',
+            status_extracting: 'Extracting',
+            status_analyzing: 'Analyzing',
+            status_review: 'Review',
+            status_ready: 'Ready',
+            status_unfinished: 'Unfinished',
+            status_moving: 'Moving',
+            status_done: 'Done',
+            status_error: 'Error',
+            reset_stuck: 'Reset stuck',
+            processing_stats: '{done}/{total} done'
         },
         history: {
             title: 'History',
@@ -225,6 +236,8 @@ export const translations = {
                 run_cold_warm: 'cold + warm',
                 run_cold_2warm: 'cold + 2× warm'
             },
+            roundrobin_title: 'Rate-limit Fallback',
+            roundrobin_hint: 'If the active provider hits its rate limit, fall back to providers in this order.',
             about: 'About CrispSorter',
             index: {
                 title: 'Search Index',
@@ -401,7 +414,18 @@ export const translations = {
             },
             stats_files: '{count} Dateien',
             use_model: 'Nutzen',
-            selected_status: 'Ausgewählt'
+            selected_status: 'Ausgewählt',
+            status_queued: 'Wartend',
+            status_extracting: 'Extrahieren',
+            status_analyzing: 'Analysieren',
+            status_review: 'Prüfen',
+            status_ready: 'Bereit',
+            status_unfinished: 'Unterbrochen',
+            status_moving: 'Verschieben',
+            status_done: 'Erledigt',
+            status_error: 'Fehler',
+            reset_stuck: 'Hänger zurücksetzen',
+            processing_stats: '{done}/{total} erledigt'
         },
         history: {
             title: 'Verlauf',
@@ -509,6 +533,8 @@ export const translations = {
                 run_cold_warm: 'Cold + Warm',
                 run_cold_2warm: 'Cold + 2× Warm'
             },
+            roundrobin_title: 'Rate-Limit Ausweich-Anbieter',
+            roundrobin_hint: 'Falls der aktive Anbieter das Rate-Limit erreicht, wird auf diese Anbieter ausgewichen.',
             about: 'Über CrispSorter',
             index: {
                 title: 'Such-Index',

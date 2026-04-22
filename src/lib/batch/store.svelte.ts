@@ -97,7 +97,7 @@ export class BatchManager {
 
     resetStuckItems() {
         for (const item of this.items) {
-            if (item.status === 'extracting' || item.status === 'analyzing') {
+            if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
                 item.status = 'queued';
                 item.statusDetail = undefined;
             }
@@ -191,126 +191,152 @@ export class BatchManager {
 
         flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars}`);
 
+        // Two-phase: EXTRACT all → ANALYZE all.
+        // This decouples text extraction from LLM analysis so a stalled LLM
+        // queue never blocks extraction of remaining items.
+        const needsProcessing = (item: BatchItem) =>
+            (item.status === 'queued' || item.status === 'error' || item.status === 'unfinished') &&
+            (!onlyIds || onlyIds.has(item.id));
+
+        const PAGE_WATCHDOG_MS = 30_000; // abort if no page progress for 30 s
+        const RUST_EXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
+
         try {
+            // ── Phase 1: extraction ─────────────────────────────────────────
             for (const item of this.items) {
-                if (item.status !== 'queued' && item.status !== 'error') continue;
-                if (onlyIds && !onlyIds.has(item.id)) continue;
-                if (this.stopRequested) {
-                    flog('info', 'Stop requested, halting batch loop');
+                if (!needsProcessing(item) || item.extractedText) continue;
+                if (this.stopRequested) { flog('info', 'Stop requested, halting extraction phase'); break; }
+
+                item.status = 'extracting';
+                const forceOCR = overrides?.enforceOcr ?? false;
+
+                try {
+                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
+                        flog('info', `Rust extraction: ${item.originalName}`);
+                        const text = await Promise.race([
+                            invoke<string>('extract_pdf_native', { path: item.originalPath }),
+                            new Promise<never>((_, reject) =>
+                                setTimeout(() => reject(new Error('EXTRACT_TIMEOUT')), RUST_EXTRACT_TIMEOUT_MS)
+                            )
+                        ]);
+                        item.extractedText = text;
+                    } else {
+                        flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
+                        this.extractionAbort = new AbortController();
+                        // Per-page watchdog: abort if no page progress for PAGE_WATCHDOG_MS
+                        let watchdogId: ReturnType<typeof setTimeout> | null = null;
+                        const resetWatchdog = () => {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            watchdogId = setTimeout(() => {
+                                this.extractionAbort?.abort(new Error('EXTRACT_PAGE_TIMEOUT'));
+                                flog('warn', `Page watchdog fired (${PAGE_WATCHDOG_MS / 1000}s no progress): ${item.originalName}`);
+                            }, PAGE_WATCHDOG_MS);
+                        };
+                        resetWatchdog(); // start watchdog immediately
+
+                        const fileData = await readFile(item.originalPath);
+                        if (this.stopRequested) {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            this.extractionAbort = null;
+                            item.status = 'queued';
+                            break;
+                        }
+                        let extraction;
+                        try {
+                            extraction = await extractText(
+                                { name: item.originalName, arrayBuffer: fileData.buffer },
+                                {
+                                    forceOCR,
+                                    signal: this.extractionAbort.signal,
+                                    maxPages: extractionMaxPages || undefined,
+                                    onProgress: (page, total) => {
+                                        item.statusDetail = `${page}/${total} pages`;
+                                        resetWatchdog();
+                                    }
+                                }
+                            );
+                        } finally {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            this.extractionAbort = null;
+                        }
+                        if (this.stopRequested) { item.status = 'queued'; break; }
+                        item.extractedText = extraction.text;
+                    }
+                    item.statusDetail = (item.extractedText?.trim().length ?? 0) < 100 ? '⚠ poor extraction' : undefined;
+                    // Park at 'queued' with text so phase 2 picks it up (unless extraction-only)
+                    item.status = overrides?.extractionOnly ? 'review' : 'queued';
+                    if (overrides?.extractionOnly) await this.calculateTargetPath(item);
+                    flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
+                } catch (e: any) {
+                    const isAbort = this.stopRequested || e?.name === 'AbortError' || e?.message?.includes('EXTRACT');
+                    if (isAbort) {
+                        item.status = 'unfinished';
+                        item.statusDetail = 'interrupted';
+                        flog('warn', `Extraction interrupted: ${item.originalName}`);
+                        if (this.stopRequested) break;
+                    } else {
+                        item.status = 'error';
+                        item.errorMessage = e.message || String(e);
+                        flog('error', `Extraction error: ${item.originalName}: ${e.message || e}`);
+                    }
+                }
+                await this.saveCurrentSession();
+            }
+
+            if (overrides?.extractionOnly) return; // done after phase 1
+
+            // ── Phase 2: LLM analysis ───────────────────────────────────────
+            if (!this.isMetadataExtractionEnabled) return;
+
+            for (const item of this.items) {
+                // Analyze items that have text but no metadata yet, or were previously queued/unfinished
+                const needsAnalysis = (item.status === 'queued' || item.status === 'unfinished') &&
+                    item.extractedText &&
+                    (!onlyIds || onlyIds.has(item.id));
+                if (!needsAnalysis) continue;
+                if (this.stopRequested || this.llmAbort?.signal.aborted) {
+                    flog('info', 'Stop requested, halting analysis phase');
                     break;
                 }
 
+                item.status = 'analyzing';
                 try {
-                    if (!item.extractedText) {
-                        item.status = 'extracting';
-                        const forceOCR = overrides?.enforceOcr ?? false;
+                    const textSample = item.extractedText!.substring(0, llmMaxChars);
+                    const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
 
-                        const EXTRACT_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per file
+                    flog('info', `LLM analyze: ${item.originalName}`);
+                    const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
+                    if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
+                    const metadata = this.parseLLMResponse(response, parsingFormat);
 
-                        if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
-                            flog('info', `Rust-native extraction: ${item.originalName}`);
-                            const invokePromise = invoke<string>('extract_pdf_native', { path: item.originalPath });
-                            const text = await Promise.race([
-                                invokePromise,
-                                new Promise<never>((_, reject) =>
-                                    setTimeout(() => reject(new Error('EXTRACT_TIMEOUT: Rust PDF extraction took >5 min')), EXTRACT_TIMEOUT_MS)
-                                )
-                            ]);
-                            if (this.stopRequested) {
-                                item.extractedText = text;
-                                item.status = 'queued';
-                                break;
-                            }
-                            item.extractedText = text;
-                        } else {
-                            flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
-                            this.extractionAbort = new AbortController();
-                            // Auto-timeout abort after 5 min
-                            const extractTimeoutId = setTimeout(() => {
-                                this.extractionAbort?.abort(new Error('EXTRACT_TIMEOUT'));
-                                flog('warn', `Extraction timeout (5 min): ${item.originalName}`);
-                            }, EXTRACT_TIMEOUT_MS);
-                            const fileData = await readFile(item.originalPath);
-                            if (this.stopRequested) {
-                                clearTimeout(extractTimeoutId);
-                                this.extractionAbort = null;
-                                item.status = 'queued';
-                                break;
-                            }
-                            let extraction;
-                            try {
-                                extraction = await extractText(
-                                    { name: item.originalName, arrayBuffer: fileData.buffer },
-                                    {
-                                        forceOCR,
-                                        signal: this.extractionAbort.signal,
-                                        maxPages: extractionMaxPages || undefined,
-                                        onProgress: (page, total) => {
-                                            item.statusDetail = `${page}/${total} pages`;
-                                        }
-                                    }
-                                );
-                            } finally {
-                                clearTimeout(extractTimeoutId);
-                                this.extractionAbort = null;
-                            }
-                            if (this.stopRequested) {
-                                item.status = 'queued';
-                                break;
-                            }
-                            item.extractedText = extraction.text;
-                        }
-                        item.statusDetail = undefined;
-                        if ((item.extractedText?.trim().length ?? 0) < 100) {
-                            item.statusDetail = '⚠ poor extraction';
-                        }
-                        flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
-                    }
+                    item.suggestedTitle = metadata.title || 'Unknown Title';
+                    item.suggestedAuthor = metadata.author || 'Unknown Author';
+                    item.suggestedYear = metadata.year || 'Unknown Year';
+                    flog('info', `Analyzed: ${item.originalName} → "${item.suggestedTitle}" / ${item.suggestedAuthor}`);
 
-                    if (this.stopRequested) { item.status = 'queued'; break; }
-
-                    // Metadata Analysis
-                    if (this.isMetadataExtractionEnabled && !overrides?.extractionOnly) {
-                        item.status = 'analyzing';
-                        const textSample = item.extractedText?.substring(0, llmMaxChars) || '';
-                        const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
-
-                        flog('info', `LLM analyze: ${item.originalName}`);
-                        const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
+                    if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
+                        const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
+                        const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
                         if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
-                        const metadata = this.parseLLMResponse(response, parsingFormat);
-
-                        item.suggestedTitle = metadata.title || 'Unknown Title';
-                        item.suggestedAuthor = metadata.author || 'Unknown Author';
-                        item.suggestedYear = metadata.year || 'Unknown Year';
-                        flog('info', `Analyzed: ${item.originalName} → "${item.suggestedTitle}" / ${item.suggestedAuthor}`);
-
-                        if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
-                            const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
-                            const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey, 0.3, this.llmAbort?.signal);
-                            if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
-                            const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
-                            if (match) item.suggestedAuthor = match[1].trim();
-                        }
-
-                        if (requestDelayMs > 0) {
-                            await new Promise(r => setTimeout(r, requestDelayMs));
-                        }
+                        const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
+                        if (match) item.suggestedAuthor = match[1].trim();
                     }
 
                     item.status = 'review';
                     await this.calculateTargetPath(item);
+
+                    if (requestDelayMs > 0) await new Promise(r => setTimeout(r, requestDelayMs));
                 } catch (e: any) {
-                    const isAbort = this.stopRequested || e?.name === 'AbortError' || e?.message === 'EXTRACTION_ABORTED';
+                    const isAbort = this.stopRequested || e?.name === 'AbortError';
                     if (isAbort) {
                         item.status = 'queued';
                         item.statusDetail = undefined;
-                        flog('info', `Item stopped: ${item.originalName}`);
+                        flog('info', `Analysis stopped: ${item.originalName}`);
                         break;
                     } else {
                         item.status = 'error';
                         item.errorMessage = e.message || String(e);
-                        flog('error', `Error processing ${item.originalName}: ${e.message || e}`);
+                        flog('error', `Analysis error: ${item.originalName}: ${e.message || e}`);
                     }
                 }
                 await this.saveCurrentSession();
@@ -393,7 +419,12 @@ export class BatchManager {
     async resumeLastSession() {
         const last = await getSetting('lastSession');
         if (last && (last as any).items) {
-            this.items = (last as any).items;
+            this.items = (last as any).items.map((item: any) => {
+                if (item.status === 'extracting' || item.status === 'analyzing') {
+                    return { ...item, status: 'unfinished', statusDetail: undefined };
+                }
+                return item;
+            });
         }
     }
 

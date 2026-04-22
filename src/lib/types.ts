@@ -1,4 +1,4 @@
-export type BatchStatus = 'queued' | 'extracting' | 'analyzing' | 'review' | 'ready' | 'moving' | 'done' | 'error';
+export type BatchStatus = 'queued' | 'unfinished' | 'extracting' | 'analyzing' | 'review' | 'ready' | 'moving' | 'done' | 'error';
 
 export interface BatchItem {
     id: string;
