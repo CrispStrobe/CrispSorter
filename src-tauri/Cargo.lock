@@ -1676,16 +1676,6 @@ dependencies = [
 [[package]]
 name = "crispembed"
 version = "0.1.0"
-dependencies = [
- "crispembed-sys",
-]
-
-[[package]]
-name = "crispembed-sys"
-version = "0.1.0"
-dependencies = [
- "cmake",
-]
 
 [[package]]
 name = "crossbeam-channel"

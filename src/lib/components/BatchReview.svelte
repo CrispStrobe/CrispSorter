@@ -1141,6 +1141,30 @@
                 <FileText size={14} />
                 {i18n.t.batch.stats_files.replace('{count}', batchManager.items.length.toString())}
             </span>
+            {#if batchManager.isProcessing}
+                {@const processed = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const total = batchManager.items.filter(i => i.status !== 'done').length}
+                {@const extracting = batchManager.items.filter(i => i.status === 'extracting').length}
+                {@const analyzing = batchManager.items.filter(i => i.status === 'analyzing').length}
+                <span class="stat-divider">·</span>
+                <span class="stat-item stat-processing">
+                    <Loader2 size={13} class="loader-spin" />
+                    {processed}/{batchManager.items.length} done
+                    {#if extracting > 0}<span class="stat-sub">· extracting {extracting}</span>{/if}
+                    {#if analyzing > 0}<span class="stat-sub">· analyzing {analyzing}</span>{/if}
+                </span>
+            {:else}
+                {@const done = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const errors = batchManager.items.filter(i => i.status === 'error').length}
+                {#if done > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-ready">{done} ready</span>
+                {/if}
+                {#if errors > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-err">{errors} errors</span>
+                {/if}
+            {/if}
         </div>
     </div>
 </div>
@@ -1433,8 +1457,13 @@
     .choice-btn.secondary:hover { background: #3f3f46; color: white; }
 
     .status-footer { padding: 6px 16px; background: #18181b; border-top: 1px solid #27272a; display: flex; align-items: center; font-size: 0.75rem; color: #71717a; }
-    .stats { display: flex; align-items: center; gap: 12px; }
+    .stats { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .stat-item { display: flex; align-items: center; gap: 6px; }
+    .stat-divider { color: #3f3f46; }
+    .stat-processing { color: #60a5fa; font-weight: 600; }
+    .stat-sub { color: #4b5563; font-weight: 400; }
+    .stat-ready { color: #34d399; font-weight: 600; }
+    .stat-err { color: #f87171; font-weight: 600; }
 
     .info-modal { width: 500px; }
     .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 16px; }
