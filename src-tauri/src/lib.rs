@@ -1,4 +1,45 @@
+pub mod asr;
 pub mod index;
+
+/// Transcribe Float32 PCM 16 kHz mono audio to text via CrispASR.
+///
+/// Lazy-initializes the ASR handle on first call (the handle's first
+/// `transcribe()` then triggers the model download + load). The model
+/// cache is shared with the embedder via the same `model_cache_dir`
+/// resolution flow.
+#[tauri::command]
+async fn asr_transcribe(
+    state: tauri::State<'_, AppState>,
+    pcm: Vec<f32>,
+) -> Result<String, String> {
+    if pcm.is_empty() {
+        return Ok(String::new());
+    }
+    // Resolve model cache from the active IndexConfig (so voice and
+    // embedder share the same external-volume override) with a sane
+    // app-data fallback when the index is disabled.
+    let cache_dir = {
+        let idx = state.index.lock().await;
+        let data_dir_for_default = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|h| h.join(".cache").join("crispsorter"))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        index::resolve_model_cache_dir(&idx.config, &data_dir_for_default)
+    };
+
+    let handle = {
+        let mut slot = state.asr.lock().await;
+        if slot.is_none() {
+            *slot = Some(asr::AsrHandle::new(asr::AsrModel::default(), cache_dir));
+        }
+        slot.as_ref().unwrap().clone()
+    };
+
+    handle
+        .transcribe(pcm)
+        .await
+        .map_err(|e| format!("ASR transcribe failed: {e:#}"))
+}
 
 use futures_util::StreamExt;
 use mistralrs::{
@@ -118,6 +159,9 @@ pub struct AppState {
     mlx_process: Mutex<Option<TokioChild>>,
     ollama_process: Mutex<Option<TokioChild>>,
     pub index: Mutex<index::IndexState>,
+    /// Speech-to-text handle. Lazy-loaded on first `asr_transcribe` call.
+    /// `None` until the user invokes voice input; `Some` thereafter.
+    pub asr: Mutex<Option<asr::AsrHandle>>,
 }
 
 #[tauri::command]
@@ -1052,6 +1096,7 @@ pub fn run() {
             mlx_process: Mutex::new(None),
             ollama_process: Mutex::new(None),
             index: Mutex::new(index::IndexState::disabled()),
+            asr: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -1083,6 +1128,7 @@ pub fn run() {
             index::tauri_commands::index_stats,
             index::tauri_commands::index_list_documents,
             index::tauri_commands::index_delete_document,
+            asr_transcribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

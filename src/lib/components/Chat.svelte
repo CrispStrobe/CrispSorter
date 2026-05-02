@@ -3,12 +3,14 @@
     import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
     import { getSetting } from '../store';
     import { i18n } from '../i18n.svelte';
-    import { 
-        Send, User, Bot, Trash2, FileText, 
+    import {
+        Send, User, Bot, Trash2, FileText,
         ChevronRight, ChevronLeft, Cpu, Zap, Search, MessageSquare, Brain,
-        Loader2, Info, ChevronDown, ChevronUp
+        Loader2, Info, ChevronDown, ChevronUp,
+        Mic, MicOff
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
+    import { invoke } from '@tauri-apps/api/core';
     import { getWebLLMLoadedModel } from '../llm/webllm';
     import { getORTLoadedModel } from '../llm/ort';
     import { saveSetting } from '../store';
@@ -184,9 +186,121 @@
         else selectedIds = [...selectedIds, id];
     }
 
-    function clearChat() { 
+    function clearChat() {
         if (chatElement) chatElement.clearMessages();
         chatHistorySize = 0;
+    }
+
+    // ── Voice input (CrispASR push-to-talk) ──────────────────────────────────
+    // The mic button captures via WebAudio, resamples to 16 kHz mono Float32
+    // PCM (the format CrispASR expects), invokes the asr_transcribe Tauri
+    // command, and submits the result through deep-chat. Backend availability
+    // depends on the `crispasr*` cargo feature being enabled at build time;
+    // the Rust command returns a clear error otherwise so the user gets a
+    // toast instead of a silent no-op.
+
+    let asrState = $state<'idle' | 'recording' | 'transcribing'>('idle');
+    let asrAudioCtx: AudioContext | null = null;
+    let asrMediaStream: MediaStream | null = null;
+    let asrSamples: Float32Array[] = [];
+    let asrSampleRate = 48000;
+    let asrError = $state<string | null>(null);
+
+    async function startVoiceCapture() {
+        asrError = null;
+        try {
+            asrMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e: any) {
+            asrError = `Microphone access denied: ${e?.message ?? e}`;
+            return;
+        }
+
+        // Use a single AudioContext per recording session; the browser may
+        // pick its own native rate (typically 48000) which we resample on stop.
+        asrAudioCtx = new AudioContext();
+        asrSampleRate = asrAudioCtx.sampleRate;
+        asrSamples = [];
+
+        const source = asrAudioCtx.createMediaStreamSource(asrMediaStream);
+        // ScriptProcessorNode is deprecated but universally supported and
+        // sufficient for short PTT clips. AudioWorklet would be cleaner for
+        // streaming but adds a worklet-module load which complicates packaging.
+        const processor = asrAudioCtx.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (ev) => {
+            const ch = ev.inputBuffer.getChannelData(0);
+            // Copy because the buffer gets reused across callbacks.
+            asrSamples.push(new Float32Array(ch));
+        };
+        source.connect(processor);
+        processor.connect(asrAudioCtx.destination);
+
+        asrState = 'recording';
+    }
+
+    async function stopVoiceCapture() {
+        if (asrState !== 'recording') return;
+        asrState = 'transcribing';
+
+        // Tear down the capture pipeline before resampling — frees the mic LED.
+        try { asrMediaStream?.getTracks().forEach(t => t.stop()); } catch {}
+        asrMediaStream = null;
+
+        // Concatenate captured chunks.
+        const total = asrSamples.reduce((n, c) => n + c.length, 0);
+        const merged = new Float32Array(total);
+        let off = 0;
+        for (const chunk of asrSamples) {
+            merged.set(chunk, off);
+            off += chunk.length;
+        }
+        asrSamples = [];
+
+        try {
+            // Resample to 16 kHz via OfflineAudioContext — handles
+            // anti-aliasing properly. Typical mic rate is 48000.
+            const targetRate = 16000;
+            let pcm16k: Float32Array = merged;
+            if (Math.abs(asrSampleRate - targetRate) > 1) {
+                const offline = new OfflineAudioContext(
+                    1,
+                    Math.max(1, Math.ceil((merged.length * targetRate) / asrSampleRate)),
+                    targetRate
+                );
+                const buf = offline.createBuffer(1, merged.length, asrSampleRate);
+                buf.copyToChannel(merged, 0);
+                const src = offline.createBufferSource();
+                src.buffer = buf;
+                src.connect(offline.destination);
+                src.start();
+                const rendered = await offline.startRendering();
+                pcm16k = rendered.getChannelData(0);
+            }
+
+            // tauri's invoke serializes Float32Array as Vec<f32> on the Rust
+            // side, so this just works without an intermediate JSON encode.
+            const text = await invoke<string>('asr_transcribe', { pcm: Array.from(pcm16k) });
+            const trimmed = (text ?? '').trim();
+            if (trimmed && chatElement) {
+                // deep-chat exposes submitUserMessage to inject a chat-as-user
+                // message that goes through the normal request handler.
+                try { chatElement.submitUserMessage({ text: trimmed }); }
+                catch (e) { console.warn('[asr] submitUserMessage failed', e); }
+            } else if (!trimmed) {
+                asrError = 'No speech detected';
+            }
+        } catch (e: any) {
+            asrError = `Transcription failed: ${e?.message ?? e}`;
+            console.error('[asr]', e);
+        } finally {
+            try { asrAudioCtx?.close(); } catch {}
+            asrAudioCtx = null;
+            asrState = 'idle';
+        }
+    }
+
+    function toggleVoiceCapture() {
+        if (asrState === 'idle') startVoiceCapture();
+        else if (asrState === 'recording') stopVoiceCapture();
     }
 
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
@@ -295,8 +409,27 @@
                     <span class="stat-badge history">{i18n.t.chat.history}: {formatSize(chatHistorySize)}</span>
                 </div>
             </div>
-            <button class="icon-btn danger" onclick={clearChat} title={i18n.t.chat.clear}><Trash2 size={16} /></button>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <button
+                    class="icon-btn"
+                    class:asr-recording={asrState === 'recording'}
+                    onclick={toggleVoiceCapture}
+                    disabled={asrState === 'transcribing'}
+                    title={asrState === 'recording' ? i18n.t.chat.voice_stop : (asrState === 'transcribing' ? i18n.t.chat.voice_busy : i18n.t.chat.voice_start)}>
+                    {#if asrState === 'transcribing'}
+                        <Loader2 size={16} class="spin" />
+                    {:else if asrState === 'recording'}
+                        <MicOff size={16} />
+                    {:else}
+                        <Mic size={16} />
+                    {/if}
+                </button>
+                <button class="icon-btn danger" onclick={clearChat} title={i18n.t.chat.clear}><Trash2 size={16} /></button>
+            </div>
         </div>
+        {#if asrError}
+            <div class="asr-error" role="alert">{asrError}</div>
+        {/if}
 
         <div class="chat-content">
             <deep-chat 
@@ -348,4 +481,10 @@
     .chat-content { flex: 1; width: 100%; position: relative; min-height: 0; }
     .icon-btn { background: transparent; border: none; color: #71717a; cursor: pointer; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
     .icon-btn:hover { background: #27272a; color: white; }
+    .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .icon-btn.asr-recording { color: #ef4444; background: #7f1d1d33; }
+    .icon-btn.asr-recording:hover { background: #7f1d1d55; }
+    .asr-error { padding: 6px 16px; background: #7f1d1d33; color: #fca5a5; font-size: 0.75rem; border-bottom: 1px solid #7f1d1d; }
+    :global(.spin) { animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

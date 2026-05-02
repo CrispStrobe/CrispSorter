@@ -25,15 +25,6 @@
 
 ### P3 — Voice chat (CrispASR integration)
 
-- [ ] **CrispASR sidecar for voice input** — let the user dictate prompts /
-  rename suggestions / chat messages. Mirrors the `crispembed` optional path
-  dep pattern: `../../CrispASR/crispasr` + cargo features
-  (`crispasr`, `crispasr-metal`, `crispasr-cuda`, `crispasr-vulkan`). One
-  Rust thread holds the model; Tauri command takes an audio buffer or a
-  recording session handle.
-- [ ] **Push-to-talk in Chat UI** — mic button in `Chat.svelte`. WebAudio
-  capture → Float32 PCM 16 kHz mono → `invoke('asr_transcribe', { pcm })`.
-  Stop button must abort mid-recording and mid-decode.
 - [ ] **TTS for LLM answers** — voice the analysis result / chat reply back.
   Decide: native macOS `say` / Windows SAPI for v1 (zero deps), or a small
   GGUF TTS (Piper / Kokoro) sidecar for cross-platform consistency.
@@ -59,6 +50,19 @@
 
 ## Recent changes
 
+- [x] **CrispASR voice input — sidecar + push-to-talk (May 2026, v0.1.29)** —
+  optional `crispasr` path dep at `../../CrispASR/crispasr` with cargo features
+  `crispasr`, `crispasr-metal`, `crispasr-cuda`, `crispasr-vulkan` mirroring
+  the CrispEmbed pattern. New `src-tauri/src/asr/mod.rs` wraps `crispasr::Session`
+  with auto-download via `cache_ensure_file`. `AsrHandle` is a cheap-clonable
+  lazy-load handle on `AppState`. New `asr_transcribe` Tauri command takes
+  Float32 PCM 16kHz mono and returns concatenated transcription text.
+  `Chat.svelte` has a mic button next to Clear: WebAudio capture →
+  OfflineAudioContext resample to 16 kHz → `invoke('asr_transcribe')` →
+  `chatElement.submitUserMessage`. Stub-on-feature-off path so users without
+  the `crispasr*` feature flag get a clean error toast. CI: release.yml now
+  also checks out `CrispStrobe/CrispASR` as a sibling and rewrites the path
+  dep, parallel to the existing CrispEmbed handling.
 - [x] **Matryoshka dimension selection (May 2026, v0.1.28)** — new
   `IndexConfig.matryoshka_dim: Option<u32>` threads through
   `EmbedderConfig.with_matryoshka_dim` to `CrispEmbedBackend::set_dim` at

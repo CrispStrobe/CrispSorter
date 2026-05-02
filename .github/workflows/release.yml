@@ -35,6 +35,8 @@ jobs:
     env:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       CRISPEMBED_REF: main
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      CRISPASR_REF: main
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -48,7 +50,14 @@ jobs:
           ref: ${{ env.CRISPEMBED_REF }}
           path: _sibling/CrispEmbed
 
-      - name: Rewrite CrispEmbed path dep for CI layout
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+
+      - name: Rewrite sibling path deps for CI layout
         shell: bash
         run: |
           python -c "
@@ -60,8 +69,14 @@ jobs:
               'path = \"../_sibling/CrispEmbed/crispembed\"',
               s,
           )
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/crispasr\"',
+              'path = \"../_sibling/CrispASR/crispasr\"',
+              s,
+          )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr]')+200])
           "
 
       - name: Setup Node
@@ -190,6 +205,8 @@ jobs:
     env:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       CRISPEMBED_REF: main
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      CRISPASR_REF: main
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -203,7 +220,14 @@ jobs:
           ref: ${{ env.CRISPEMBED_REF }}
           path: _sibling/CrispEmbed
 
-      - name: Rewrite CrispEmbed path dep for CI layout
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+
+      - name: Rewrite sibling path deps for CI layout
         shell: bash
         run: |
           python -c "
@@ -215,8 +239,14 @@ jobs:
               'path = \"../_sibling/CrispEmbed/crispembed\"',
               s,
           )
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/crispasr\"',
+              'path = \"../_sibling/CrispASR/crispasr\"',
+              s,
+          )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr]')+200])
           "
 
       - name: Setup Node

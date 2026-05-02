@@ -28,7 +28,10 @@ export const translations = {
             history: 'History',
             copy_msg: 'Copy message',
             copy_chat: 'Copy full chat',
-            save_chat: 'Save chat history'
+            save_chat: 'Save chat history',
+            voice_start: 'Push to talk',
+            voice_stop: 'Stop & transcribe',
+            voice_busy: 'Transcribing…'
         },
         batch: {
             add_files: 'Add',
@@ -350,7 +353,10 @@ export const translations = {
             history: 'Verlauf',
             copy_msg: 'Nachricht kopieren',
             copy_chat: 'Chat kopieren',
-            save_chat: 'Chatverlauf speichern'
+            save_chat: 'Chatverlauf speichern',
+            voice_start: 'Push-to-Talk',
+            voice_stop: 'Stopp & transkribieren',
+            voice_busy: 'Transkribiere…'
         },
         batch: {
             add_files: 'Hinzufügen',

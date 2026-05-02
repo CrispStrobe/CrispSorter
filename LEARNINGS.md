@@ -6,6 +6,20 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ## Build & CI
 
+### Two sibling path deps now: CrispEmbed AND CrispASR
+
+The `crispembed` and `crispasr` optional path-deps both live as siblings
+of the CrispSorter checkout (`../../CrispEmbed/crispembed` and
+`../../CrispASR/crispasr` from `src-tauri/`). Cargo metadata resolves
+both at every build, so a missing checkout breaks even default-feature
+builds. `release.yml` now checks out both via the `actions/checkout`
+sibling pattern under `_sibling/CrispEmbed` and `_sibling/CrispASR`,
+and a single Python rewrite step retargets both path deps to the
+`_sibling/...` layout. Adding a third sibling dep in the future means
+extending that rewrite — keep the regex anchors tight (`\.\./\.\./X/y`)
+so unrelated `path = "..."` strings in Cargo.toml aren't accidentally
+rewritten.
+
 ### `crispembed` optional path dep still needs to resolve
 `src-tauri/Cargo.toml` has `crispembed` as an optional dep at path `../../CrispEmbed/crispembed`.
 Cargo resolves ALL path deps (even optional ones) during `cargo metadata`, so if the sibling repo
