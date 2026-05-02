@@ -280,6 +280,40 @@ export class BatchManager {
                         item.extractedText = extraction.text;
                     }
                     item.statusDetail = (item.extractedText?.trim().length ?? 0) < 100 ? '⚠ poor extraction' : undefined;
+
+                    // PDF metadata pre-fill — read /Info dict on the Rust side
+                    // and populate suggestedTitle/Author/Year before phase 2.
+                    // The LLM (when enabled) will overwrite these in phase 2,
+                    // so this is purely a fallback for users who skip the LLM
+                    // or for runs where phase 2 errors out. See lib.rs
+                    // extract_pdf_metadata for the lopdf decoding details.
+                    const isPdf = item.originalName.toLowerCase().endsWith('.pdf');
+                    if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
+                        try {
+                            const meta = await invoke<{
+                                title?: string | null;
+                                author?: string | null;
+                                year?: number | null;
+                            }>('extract_pdf_metadata', { path: item.originalPath });
+                            if (meta?.title && !item.suggestedTitle) {
+                                item.suggestedTitle = meta.title.trim();
+                            }
+                            if (meta?.author && !item.suggestedAuthor) {
+                                item.suggestedAuthor = meta.author.trim();
+                            }
+                            if (typeof meta?.year === 'number' && !item.suggestedYear) {
+                                item.suggestedYear = String(meta.year);
+                            }
+                            if (meta?.title || meta?.author || meta?.year) {
+                                flog('info', `PDF metadata prefilled: ${item.originalName}`);
+                            }
+                        } catch (e) {
+                            // Non-fatal — most PDFs have an Info dict, but
+                            // missing or malformed ones shouldn't break extraction.
+                            flog('warn', `PDF metadata read failed: ${item.originalName}: ${e}`);
+                        }
+                    }
+
                     // Park at 'queued' with text so phase 2 picks it up (unless extraction-only)
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);

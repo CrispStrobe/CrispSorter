@@ -6002,21 +6002,25 @@ dependencies = [
  "aes",
  "bitflags 2.11.0",
  "cbc",
+ "chrono",
  "ecb",
  "encoding_rs",
  "flate2",
  "getrandom 0.3.4",
  "indexmap 2.13.0",
  "itoa",
+ "jiff",
  "log",
  "md-5",
  "nom 8.0.0",
  "nom_locate",
  "rand 0.9.2",
  "rangemap",
+ "rayon",
  "sha2",
  "stringprep",
  "thiserror 2.0.18",
+ "time",
  "ttf-parser",
  "weezl",
 ]
@@ -10554,7 +10558,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "0.1.30"
+version = "0.1.31"
 dependencies = [
  "anyhow",
  "arrow",
@@ -10569,6 +10573,7 @@ dependencies = [
  "futures-util",
  "hf-hub",
  "lancedb",
+ "lopdf",
  "mistralrs",
  "ndarray 0.17.2",
  "ort",

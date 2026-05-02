@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.30"
+version = "0.1.31"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -33,6 +33,10 @@ tauri-plugin-process = "2.3.1"
 tokio = { version = "1.50.0", features = ["full"] }
 anyhow = "1.0.102"
 pdf-extract = "0.10.0"
+# `lopdf` is a transitive dep of pdf-extract; pinned here to read the
+# /Info dictionary (Title / Author / Subject / Keywords / CreationDate)
+# directly. Used by the extract_pdf_metadata Tauri command.
+lopdf       = "0.38"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

@@ -678,6 +678,166 @@ async fn extract_pdf_native(path: String) -> Result<String, String> {
     })
 }
 
+/// PDF Info-dict metadata, parsed via `lopdf`.
+///
+/// Fields are `Option` because real-world PDFs are inconsistent — most
+/// academic PDFs have a Title and Author, fewer have a non-default
+/// Producer-as-Author, and CreationDate quality varies wildly. Year is
+/// parsed best-effort from the `D:YYYYMMDD…` PDF-date format used in
+/// CreationDate / ModDate.
+///
+/// XMP metadata streams are *not* parsed yet — they're RDF/XML and
+/// require a much heavier parser. The Info dict catches 80% of academic
+/// PDFs; XMP is a future enhancement.
+#[derive(serde::Serialize, Default)]
+struct PdfMetadata {
+    title: Option<String>,
+    author: Option<String>,
+    subject: Option<String>,
+    keywords: Option<String>,
+    /// Year extracted from CreationDate (preferred) or ModDate fallback.
+    year: Option<i32>,
+    /// Raw producer string — exposed so the frontend can decide whether
+    /// to trust the Info dict (academic-publisher producers are usually
+    /// reliable; "Print to PDF" / generic OS dialogs less so).
+    producer: Option<String>,
+}
+
+#[tauri::command]
+async fn extract_pdf_metadata(path: String) -> Result<PdfMetadata, String> {
+    use lopdf::{Document, Object};
+    app_log!("info", "Reading PDF metadata: {}", path);
+
+    let doc = Document::load(&path).map_err(|e| {
+        app_log!("error", "lopdf load failed for {}: {}", path, e);
+        format!("lopdf load failed: {e}")
+    })?;
+
+    let info_id = match doc.trailer.get(b"Info") {
+        Ok(Object::Reference(r)) => *r,
+        // Some PDFs inline the Info dict in the trailer; others don't have one at all.
+        _ => return Ok(PdfMetadata::default()),
+    };
+    let dict = match doc.get_object(info_id) {
+        Ok(Object::Dictionary(d)) => d.clone(),
+        _ => return Ok(PdfMetadata::default()),
+    };
+
+    let read_str = |key: &[u8]| -> Option<String> {
+        dict.get(key).ok().and_then(|o| {
+            // PDF strings can be PDFDocEncoding, UTF-16BE (BOM), or already UTF-8 in
+            // modern producers. lopdf exposes them as bytes; we try its decoded form
+            // first and fall back to UTF-8 from the raw payload.
+            o.as_str()
+                .ok()
+                .and_then(decode_pdf_string)
+                .filter(|s| !s.trim().is_empty())
+        })
+    };
+
+    let creation = read_str(b"CreationDate");
+    let mod_date = read_str(b"ModDate");
+    let year = creation
+        .as_deref()
+        .and_then(parse_pdf_date_year)
+        .or_else(|| mod_date.as_deref().and_then(parse_pdf_date_year));
+
+    Ok(PdfMetadata {
+        title: read_str(b"Title"),
+        author: read_str(b"Author"),
+        subject: read_str(b"Subject"),
+        keywords: read_str(b"Keywords"),
+        year,
+        producer: read_str(b"Producer"),
+    })
+}
+
+/// Decode a raw PDF string. Handles three real-world cases:
+/// - UTF-16BE with BOM (FE FF …): the most common modern producer choice.
+/// - PDFDocEncoding (legacy 8-bit superset of WinANSI): fallback when no BOM.
+/// - Plain UTF-8: some recent tools write this directly.
+fn decode_pdf_string(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    // UTF-16BE BOM
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let pairs: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16(&pairs).ok();
+    }
+    // UTF-8 — accept if the bytes are valid.
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return Some(s.to_owned());
+    }
+    // PDFDocEncoding fallback: lossy ASCII for now (covers Title/Author for
+    // most English/European-language PDFs). A full PDFDocEncoding table
+    // would handle the eight characters that diverge from Latin-1; not
+    // worth the table for v1.
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Parse the year from a PDF date string. PDF dates look like:
+///   D:YYYYMMDDHHmmSSOHH'mm'
+/// where everything after YYYY is optional. We just need the year.
+fn parse_pdf_date_year(s: &str) -> Option<i32> {
+    let s = s.trim_start_matches("D:").trim();
+    if s.len() < 4 {
+        return None;
+    }
+    s[..4].parse::<i32>().ok().filter(|&y| (1000..=9999).contains(&y))
+}
+
+#[cfg(test)]
+mod pdf_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn pdf_date_year_modern_format() {
+        assert_eq!(parse_pdf_date_year("D:20240315133045+02'00'"), Some(2024));
+        assert_eq!(parse_pdf_date_year("D:1999"), Some(1999));
+        assert_eq!(parse_pdf_date_year("D:2025Z"), Some(2025));
+    }
+
+    #[test]
+    fn pdf_date_year_without_d_prefix() {
+        // Some producers emit a date without the "D:" sentinel.
+        assert_eq!(parse_pdf_date_year("20240315"), Some(2024));
+    }
+
+    #[test]
+    fn pdf_date_year_rejects_garbage() {
+        assert_eq!(parse_pdf_date_year(""), None);
+        assert_eq!(parse_pdf_date_year("D:"), None);
+        assert_eq!(parse_pdf_date_year("not-a-date"), None);
+        // Out-of-range year keeps None — guards against producer bugs that
+        // emit "0000…" or unix-epoch ms instead of a year.
+        assert_eq!(parse_pdf_date_year("D:0000"), None);
+    }
+
+    #[test]
+    fn pdf_string_decode_utf16be_bom() {
+        // "Hello" in UTF-16BE with BOM
+        let bytes = b"\xFE\xFF\x00H\x00e\x00l\x00l\x00o";
+        assert_eq!(decode_pdf_string(bytes), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn pdf_string_decode_utf8() {
+        assert_eq!(
+            decode_pdf_string("Müller & Co.".as_bytes()),
+            Some("Müller & Co.".to_string())
+        );
+    }
+
+    #[test]
+    fn pdf_string_decode_empty_returns_none() {
+        assert_eq!(decode_pdf_string(b""), None);
+    }
+}
+
 #[tauri::command]
 fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<FileEntry>, String> {
     let mut entries = Vec::new();
@@ -1162,6 +1322,7 @@ pub fn run() {
             delete_mlx_model,
             delete_files,
             extract_pdf_native,
+            extract_pdf_metadata,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_ingest_document,

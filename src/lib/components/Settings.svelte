@@ -118,6 +118,10 @@
     // `say` / Windows SAPI / Linux espeak). Off by default — voice mode
     // is opt-in.
     let autoSpeakReplies = $state(false);
+    // Pre-fill suggestedTitle/Author/Year from the PDF /Info dict before
+    // (or in lieu of) running the LLM. Default on — most academic PDFs
+    // have decent embedded metadata, and the LLM still wins when it runs.
+    let pdfMetadataPrefill = $state(true);
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
@@ -299,6 +303,7 @@
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
+        pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
         roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
@@ -456,6 +461,7 @@
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
+        await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
@@ -1258,6 +1264,14 @@
                     <label for="auto-speak-check">{i18n.t.settings.auto_speak}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.auto_speak_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="pdf-metadata-check" type="checkbox" bind:checked={pdfMetadataPrefill} />
+                    <label for="pdf-metadata-check">{i18n.t.settings.pdf_metadata_prefill}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.pdf_metadata_prefill_hint}</p>
             </div>
 
             <div class="section-card">

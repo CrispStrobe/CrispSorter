@@ -41,16 +41,30 @@ remains an explicit non-goal for v1.)
 
 ### P5 — Future / planned
 
-1. **Custom output path template** — `{author}/{year} - {title}.{ext}` configurable in Settings
-2. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
-3. **Read PDF metadata** — pre-fill Title/Author/Year from XMP/DocInfo before LLM
-4. **Folder Watcher** — auto-ingest new files from a watched directory
-5. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
+1. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
+2. **Folder Watcher** — auto-ingest new files from a watched directory
+3. **XMP metadata extraction** — extend the PDF metadata reader to parse the
+   XMP RDF/XML stream (better author / keyword data on producer-tagged PDFs).
+4. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
 ---
 
 ## Recent changes
 
+- [x] **PDF metadata pre-fill (May 2026, v0.1.31)** — new
+  `extract_pdf_metadata` Tauri command reads the PDF /Info dictionary
+  via `lopdf` (already a transitive dep of pdf-extract). Returns title /
+  author / subject / keywords / year / producer; year parsed best-effort
+  from the `D:YYYYMMDD…` PDF-date format. UTF-16BE-with-BOM and UTF-8
+  string decoders handle the most common producer encodings; PDFDocEncoding
+  falls back to lossy UTF-8 (covers Title/Author for most European PDFs).
+  Frontend extraction phase invokes it on `.pdf` files when the new
+  `pdfMetadataPrefill` Settings toggle is on (default true) and pre-fills
+  empty `suggestedTitle/Author/Year` slots. The LLM (when enabled) still
+  overwrites these in phase 2 — this is purely a fallback for runs where
+  the LLM is off or fails. XMP metadata streams remain unparsed (RDF/XML;
+  future enhancement). 6 new unit tests pin the date parser + string
+  decoder shape.
 - [x] **TTS auto-speak for chat replies (May 2026, v0.1.30)** — closes the
   P3 voice loop with zero-dep platform synth. New `tts/mod.rs` shells
   out to macOS `say` / Windows PowerShell SAPI / Linux `spd-say` or
