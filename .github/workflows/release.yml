@@ -64,19 +64,22 @@ jobs:
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
           s = p.read_text()
+          # Handle both '../../CrispEmbed/<sub>' and '../../CrispASR/<sub>'.
+          # The capture group lets us cover crispasr, crispasr-sys, crispembed,
+          # crispembed-sys, etc. without per-sub regex churn.
           s = re.sub(
-              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/crispembed\"',
-              'path = \"../_sibling/CrispEmbed/crispembed\"',
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispEmbed/\1\"',
               s,
           )
           s = re.sub(
-              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/crispasr\"',
-              'path = \"../_sibling/CrispASR/crispasr\"',
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispASR/\1\"',
               s,
           )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
-          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
           "
 
       - name: Setup Node
@@ -234,19 +237,22 @@ jobs:
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
           s = p.read_text()
+          # Handle both '../../CrispEmbed/<sub>' and '../../CrispASR/<sub>'.
+          # The capture group lets us cover crispasr, crispasr-sys, crispembed,
+          # crispembed-sys, etc. without per-sub regex churn.
           s = re.sub(
-              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/crispembed\"',
-              'path = \"../_sibling/CrispEmbed/crispembed\"',
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispEmbed/\1\"',
               s,
           )
           s = re.sub(
-              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/crispasr\"',
-              'path = \"../_sibling/CrispASR/crispasr\"',
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispASR/\1\"',
               s,
           )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
-          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
           "
 
       - name: Setup Node

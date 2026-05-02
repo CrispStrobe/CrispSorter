@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-04-17T10:09:42.353Z",
+  "generatedAt": "2026-05-02T19:53:08.046Z",
   "counts": {
     "frontend": 18,
-    "backend": 1165,
-    "total": 1183
+    "backend": 1172,
+    "total": 1190
   },
   "licenses": [
     {
@@ -2551,6 +2551,14 @@
       "source": "Backend"
     },
     {
+      "name": "fsevent-sys",
+      "version": "4.1.0",
+      "license": "MIT",
+      "author": "Pierre Baillet <pierre@baillet.name>",
+      "link": "https://github.com/octplane/fsevent-rust/tree/master/fsevent-sys",
+      "source": "Backend"
+    },
+    {
       "name": "fsst",
       "version": "2.0.0",
       "license": "Apache-2.0",
@@ -3535,6 +3543,22 @@
       "source": "Backend"
     },
     {
+      "name": "inotify",
+      "version": "0.11.1",
+      "license": "ISC",
+      "author": "Hanno Braun <mail@hannobraun.de>, Félix Saparelli <me@passcod.name>, Cristian Kubis <cristian.kubis@tsunix.de>, Frank Denis <github@pureftpd.org>",
+      "link": "https://github.com/hannobraun/inotify",
+      "source": "Backend"
+    },
+    {
+      "name": "inotify-sys",
+      "version": "0.1.5",
+      "license": "ISC",
+      "author": "Hanno Braun <hb@hannobraun.de>",
+      "link": "https://github.com/hannobraun/inotify-sys",
+      "source": "Backend"
+    },
+    {
       "name": "inout",
       "version": "0.1.4",
       "license": "Apache-2.0 OR MIT",
@@ -3764,6 +3788,22 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Pyfisch <pyfisch@posteo.org>",
       "link": "https://github.com/pyfisch/keyboard-types",
+      "source": "Backend"
+    },
+    {
+      "name": "kqueue",
+      "version": "1.1.1",
+      "license": "MIT",
+      "author": "William Orr <will@worrbase.com>",
+      "link": "https://gitlab.com/rust-kqueue/rust-kqueue",
+      "source": "Backend"
+    },
+    {
+      "name": "kqueue-sys",
+      "version": "1.0.4",
+      "license": "MIT",
+      "author": "William Orr <will@worrbase.com>, Daniel (dmilith) Dettlaff <dmilith@me.com>",
+      "link": "https://gitlab.com/rust-kqueue/rust-kqueue-sys",
       "source": "Backend"
     },
     {
@@ -4692,6 +4732,22 @@
       "license": "MIT",
       "author": "Luca Barbato <lu_zero@gentoo.org>",
       "link": "https://github.com/lu-zero/noop_proc_macro",
+      "source": "Backend"
+    },
+    {
+      "name": "notify",
+      "version": "8.2.0",
+      "license": "CC0-1.0",
+      "author": "Félix Saparelli <me@passcod.name>, Daniel Faust <hessijames@gmail.com>, Aron Heinecke <Ox0p54r36@t-online.de>",
+      "link": "https://github.com/notify-rs/notify.git",
+      "source": "Backend"
+    },
+    {
+      "name": "notify-types",
+      "version": "2.1.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Daniel Faust <hessijames@gmail.com>",
+      "link": "https://github.com/notify-rs/notify.git",
       "source": "Backend"
     },
     {
@@ -7376,7 +7432,7 @@
     },
     {
       "name": "tauri-app",
-      "version": "0.1.20",
+      "version": "0.1.35",
       "license": "Unknown",
       "author": "you",
       "link": "https://crates.io/crates/tauri-app",
