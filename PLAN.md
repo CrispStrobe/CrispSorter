@@ -21,12 +21,11 @@
 
 ### P2 — Search index / RAG
 
-- [ ] **CrispEmbed sparse encoding into search** — BGE-M3/SPLADE sparse
-  vectors via the GGUF backend (already in `CrispEmbedBackend::encode_sparse`,
-  not yet routed through `IngestPipeline` / `SearchEngine`).
 - [ ] **Matryoshka dimension selection** — expose `CrispEmbed::set_dim()` in
   Settings for smaller/faster embeddings (saved per index, locks the value
-  for the lifetime of that index).
+  for the lifetime of that index). Note: the LanceDB `embedding` column is a
+  `FixedSizeList<Float32>[1024]` — schema migration on the LanceDB side is
+  the actual cost, not the `set_dim` call.
 
 ### P3 — Voice chat (CrispASR integration)
 
@@ -64,6 +63,18 @@
 
 ## Recent changes
 
+- [x] **Sparse retrieval + Octen auto-download (May 2026, v0.1.27)** — BGE-M3
+  / SPLADE sparse vectors are now used at query time as a 3rd RRF channel
+  alongside FTS + dense ANN. `LocalIndex::search_sparse_in_pool` scores the
+  union of FTS+ANN candidates by sparse dot product (two-pointer merge for
+  sorted indices, hash-join fallback otherwise) and `SearchEngine::maybe_sparse_search`
+  fuses the result via the new generalized `rrf_merge_n`. Auto-on when the
+  embedder has a sparse head (BGE-M3, BGE-small en-v1.5 with SPLADE++);
+  silently skipped otherwise. Octen 0.6B variants (FP32, INT4, INT8-Full)
+  switched from local-only `with_local_subdir` to fastembed-native
+  auto-download via `cstr/Octen-Embedding-0.6B-ONNX*` HF repos. The
+  matMul-only INT8 variant stays local-only (no fastembed equivalent —
+  dropped in fastembed-rs 77cc2e45 due to platform-dependent checksums).
 - [x] **Configurable model cache dir (May 2026, v0.1.25)** — new
   `IndexConfig.model_cache_dir: Option<String>` + `resolve_model_cache_dir`
   helper picks: `CRISPSORTER_MODEL_CACHE_DIR` env > UI override >

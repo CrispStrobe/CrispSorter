@@ -124,6 +124,28 @@ hf-hub layout (`models--<repo>--<sha>/...`). Note: fastembed-rs's own
 only fully shareable with hf-hub-using tools — fastembed will re-download
 into its own subtree under the chosen dir.
 
+### Sparse retrieval is a 3rd RRF channel, not a primary modality
+
+LanceDB has no native sparse-vector ANN, and an inverted index over
+`embedding_sparse` would duplicate work Tantivy already does for term
+matching. Instead `LocalIndex::search_sparse_in_pool` scores the union of
+FTS+ANN candidates by sparse dot product against the query's sparse vector,
+and `SearchEngine::search_hybrid` fuses the result as a third RRF channel
+via the generalized `rrf_merge_n`. Trade-offs:
+
+- **No corpus-wide sparse retrieval** — chunks that didn't show up in
+  either FTS or dense ANN can't be promoted by sparse alone. For an
+  academic-doc corpus where dense and sparse usually agree on candidate
+  selection, this is a feature: it stops sparse from amplifying lexical
+  noise. For a true SPLADE-as-primary-modality use case, a separate
+  inverted index is needed.
+- **Two-pointer merge when both inputs are sorted** (the common case for
+  BGE-M3 / SPLADE outputs) — O(|a|+|b|), zero allocation. Hash-join
+  fallback for unsorted inputs. `is_sorted_ascending` is the gate.
+- **Sparse ingestion path was already wired** before this — every chunk
+  has an `embedding_sparse` JSON column when the active embedder has a
+  sparse head. The new query-side retrieval just *reads* that column.
+
 ### Cross-encoder reranking: lazy-load handle + NaN-safe fallback
 Rerankers double the search-side memory (separate `crispembed::CrispEmbed`
 instance with its own GGUF) and add ~100–500ms of first-query latency for
