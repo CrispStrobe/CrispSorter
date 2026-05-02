@@ -18,7 +18,16 @@ jobs:
             rust_target: aarch64-apple-darwin
             llama_asset: llama-b8340-bin-macos-arm64.tar.gz
             sidecar_name: llama-server-aarch64-apple-darwin
-            tauri_args: '--target aarch64-apple-darwin'
+            # crispasr-metal turns on the on-device ASR backend; the
+            # libcrispasr.dylib + ggml libs come from CrispASR's
+            # release asset (downloaded below). Linux + Windows
+            # follow as Phase 2 once those lib bundles ship.
+            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal'
+            # When set, the matching libcrispasr-{arch}.tar.gz is
+            # downloaded from CrispASR's release and extracted into
+            # _sibling/CrispASR/build-flutter-bundle/ — the path
+            # crispasr-sys's `try_existing_build` auto-discovers.
+            crispasr_lib_asset: libcrispasr-macos-arm64.tar.gz
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
@@ -36,7 +45,11 @@ jobs:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       CRISPEMBED_REF: main
       CRISPASR_REPO: CrispStrobe/CrispASR
-      CRISPASR_REF: main
+      # Pin the CrispASR ref to the release tag whose libcrispasr
+      # bundle we're consuming below. Keeps source-side cargo metadata
+      # (which still needs the sibling checkout for the path-dep
+      # resolution) in lockstep with the binary lib we link against.
+      CRISPASR_REF: v0.5.6
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -56,6 +69,29 @@ jobs:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
           path: _sibling/CrispASR
+
+      - name: Download libcrispasr bundle
+        if: matrix.crispasr_lib_asset != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pull the per-platform libcrispasr.{dylib,so,dll} bundle that
+          # CrispASR's release publishes (alongside its CLI binaries) and
+          # extract it into the path that crispasr-sys's `try_existing_build`
+          # walks first — so cargo build skips its own cmake step entirely
+          # and just links against the pre-built lib.
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispASR/build-flutter-bundle
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip
+          # it so contents land directly under build-flutter-bundle/.
+          tar -xzf crispasr-libs.tar.gz \
+            -C _sibling/CrispASR/build-flutter-bundle \
+            --strip-components=1
+          echo "Extracted libs:"
+          find _sibling/CrispASR/build-flutter-bundle/src      -name "lib*" 2>/dev/null | head
+          find _sibling/CrispASR/build-flutter-bundle/ggml/src -name "libggml*" 2>/dev/null | head
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash
@@ -187,6 +223,54 @@ jobs:
           prerelease: false
           args: ${{ matrix.tauri_args }}
 
+      # ── Patch native libs into the bundled .app (macOS arm64 only) ────
+      #
+      # tauri-action ships the freshly-bundled .app + .dmg without
+      # libcrispasr inside Contents/Frameworks, so the binary's
+      # @rpath/libcrispasr.1.dylib lookup fails on a clean user
+      # machine. Run the bundle script to copy the libs in (recursively
+      # walking transitives), then repack the .dmg + .app.tar.gz from
+      # the patched .app and `gh release upload --clobber` the
+      # replacements over what tauri-action already pushed.
+      - name: Patch native libs into .app + repack .dmg / .app.tar.gz
+        if: matrix.crispasr_lib_asset != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_DIR=src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos
+          APP=$(find "$APP_DIR" -maxdepth 1 -name '*.app' -type d | head -1)
+          if [ -z "$APP" ]; then echo "ERROR: no .app under $APP_DIR"; exit 1; fi
+          REPACK_DMG=1 ./scripts/bundle_macos_native_libs.sh "$APP"
+          # tauri also produces an .app.tar.gz alongside (used by the
+          # Tauri updater + as a download alternative to .dmg). Recreate
+          # it from the patched .app so users updating via tar get the
+          # fix too.
+          TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f | head -1)
+          if [ -n "$TAR_GZ" ]; then
+            echo "Repacking $TAR_GZ"
+            ( cd "$APP_DIR" && tar -czf "$TAR_GZ" "$(basename "$APP")" )
+          fi
+
+      - name: Re-upload patched assets over tauri-action's drafts
+        if: matrix.crispasr_lib_asset != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          TAG="v${VERSION}"
+          DMG=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg -name '*.dmg' -type f | head -1)
+          TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f | head -1)
+          if [ -n "$DMG" ]; then
+            echo "Uploading patched $DMG → $TAG"
+            gh release upload "$TAG" "$DMG" --clobber --repo "${{ github.repository }}"
+          fi
+          if [ -n "$TAR_GZ" ]; then
+            echo "Uploading patched $TAR_GZ → $TAG"
+            gh release upload "$TAG" "$TAR_GZ" --clobber --repo "${{ github.repository }}"
+          fi
+
   # macOS Intel (x86_64) — runs in parallel but does NOT block publish.
   # macos-13 runners are chronically queue-starved on GitHub-hosted Actions;
   # decoupling them prevents a stuck queue from holding the release indefinitely.
@@ -209,7 +293,11 @@ jobs:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       CRISPEMBED_REF: main
       CRISPASR_REPO: CrispStrobe/CrispASR
-      CRISPASR_REF: main
+      # Pin the CrispASR ref to the release tag whose libcrispasr
+      # bundle we're consuming below. Keeps source-side cargo metadata
+      # (which still needs the sibling checkout for the path-dep
+      # resolution) in lockstep with the binary lib we link against.
+      CRISPASR_REF: v0.5.6
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -229,6 +317,29 @@ jobs:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
           path: _sibling/CrispASR
+
+      - name: Download libcrispasr bundle
+        if: matrix.crispasr_lib_asset != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pull the per-platform libcrispasr.{dylib,so,dll} bundle that
+          # CrispASR's release publishes (alongside its CLI binaries) and
+          # extract it into the path that crispasr-sys's `try_existing_build`
+          # walks first — so cargo build skips its own cmake step entirely
+          # and just links against the pre-built lib.
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispASR/build-flutter-bundle
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip
+          # it so contents land directly under build-flutter-bundle/.
+          tar -xzf crispasr-libs.tar.gz \
+            -C _sibling/CrispASR/build-flutter-bundle \
+            --strip-components=1
+          echo "Extracted libs:"
+          find _sibling/CrispASR/build-flutter-bundle/src      -name "lib*" 2>/dev/null | head
+          find _sibling/CrispASR/build-flutter-bundle/ggml/src -name "libggml*" 2>/dev/null | head
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash

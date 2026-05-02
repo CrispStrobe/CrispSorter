@@ -1675,14 +1675,14 @@ dependencies = [
 
 [[package]]
 name = "crispasr"
-version = "0.5.4"
+version = "0.5.6"
 dependencies = [
  "crispasr-sys",
 ]
 
 [[package]]
 name = "crispasr-sys"
-version = "0.5.4"
+version = "0.5.6"
 
 [[package]]
 name = "crispembed"
@@ -10635,7 +10635,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "arrow",

@@ -138,6 +138,71 @@ in the workflow to make AppImage tools extract to a temp dir instead of using FU
 `NO_STRIP=true` to prevent `strip` from failing on unusual binaries. The `.deb` bundle is
 unaffected — it doesn't use linuxdeploy.
 
+### Bundling native wrappers (libcrispasr / libcrispembed) into the .app
+
+Five-step recipe that finally got `cargo tauri build --features
+crispasr-metal` to produce a self-contained `.app` (PLAN P3.5 phase 1):
+
+1. **Sibling-repo source-of-truth.** `crispasr-sys` (and `crispembed-sys`)
+   are direct optional cargo deps with `links = "crispasr"`. Their
+   `build.rs` runs cmake on the parent repo (or finds a pre-built tree
+   under `../<repo>/build*` — `build-flutter-bundle` matches what
+   CrisperWeaver already produces) and emits `cargo:LIB_DIR=<absolute
+   path>` so consuming crates' `build.rs` see `DEP_<NAME>_LIB_DIR`.
+2. **Direct-dep is mandatory.** Cargo only forwards `links` metadata to
+   *immediate* dependents — a transitive path drops the `cargo:LIB_DIR=`
+   silently. So `crispasr-sys` has to be in `[dependencies.crispasr-sys]`
+   alongside the safe `crispasr` wrapper, even though we don't import
+   it from Rust.
+3. **rpath has to be emitted from the consumer's build.rs.**
+   `cargo:rustc-link-arg=-Wl,-rpath,…` from a transitive lib's build
+   script is silently dropped. Read `DEP_CRISPASR_LIB_DIR` in the
+   consumer's `build.rs` and emit four entries on macOS: the absolute
+   build dir + `<build>/ggml/src` (so `cargo run` works out of the
+   workspace), plus `@executable_path/../Frameworks` + `@loader_path/
+   ../Frameworks` (so the bundled `.app` resolves them post-bundling).
+4. **The .app must be patched after `tauri build` finishes.** Tauri 2
+   has no hook between "create .app" and "create .dmg", so post-process:
+   copy `lib*.dylib` from `<build>/src/` and recursively from `<build>/
+   ggml/src/` (per-backend subdirs `ggml-metal/`, `ggml-blas/`, …) into
+   `Contents/Frameworks/` with the SOVERSION-1 symlink alias
+   (`libcrispasr.1.dylib → libcrispasr.dylib`); recursively bundle every
+   `/opt/homebrew/...` / `/usr/local/...` transitive (espeak-ng pulls
+   pcaudiolib on kokoro builds) with their `LC_ID_DYLIB` rewritten to
+   `@rpath/<basename>`; **delete every absolute `LC_RPATH` entry from
+   libcrispasr** (cmake bakes `/opt/homebrew/Cellar/espeak-ng/...` and
+   the build-tree path in, both leak the dev machine and crowd out the
+   bundled `@loader_path` lookup) and add `@loader_path/.` as the only
+   rpath; ad-hoc codesign; finally `hdiutil create` a fresh .dmg from
+   the patched .app and `gh release upload --clobber` the new .dmg
+   *and* `.app.tar.gz` over what `tauri-action` already pushed.
+5. **Verify with a clean-machine simulation.** `mv build-flutter-bundle
+   build-flutter-bundle.HIDDEN; DYLD_PRINT_LIBRARIES=1 …app/Contents/
+   MacOS/<bin>` should show *every* dylib loading from `…app/Contents/
+   Frameworks/…`. If you see `/opt/homebrew/...` paths in the trace,
+   you missed an `LC_RPATH` cleanup or a transitive walk.
+
+The `links` metadata channel is the keystone — without it you have no
+clean way to discover the cmake build dir at the consumer's build time,
+and `cargo:rustc-link-arg` from the wrong place is a silent no-op. The
+debugging path goes: `cargo build -vv | grep "tauri_app .*--crate-type
+bin"` → look for `-C link-arg=-Wl,-rpath,...` in the final rustc
+invocation, then `otool -l <bin> | grep -A2 LC_RPATH` on the result.
+
+### CrispASR ships per-platform `libcrispasr-{arch}.tar.gz` bundles
+
+Mirroring `llama.cpp`'s release-asset layout: CrispASR's `release.yml`
+publishes a tarball per (platform, GGML-backend) combo containing
+`libcrispasr.{dylib,so,dll}` + `libggml*.{dylib,so,dll}` + headers under
+the same directory shape that `crispasr-sys`'s `try_existing_build`
+walks (`<bundle>/src/lib*` + `<bundle>/ggml/src/libggml*`). CrispSorter's
+release.yml downloads + extracts the matching tarball into
+`_sibling/CrispASR/build-flutter-bundle/` and `crispasr-sys`'s build
+script then bypasses its cmake fallback. Saves ~10 min per CrispSorter
+release per platform vs. building from source in our own CI; reusable
+for CrisperWeaver / Python wrapper / future Node-Go bindings (one
+upstream lib build feeds many consumer apps).
+
 ---
 
 ## Frontend (Svelte 5 + Tauri)
