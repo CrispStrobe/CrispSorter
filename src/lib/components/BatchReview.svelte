@@ -14,8 +14,9 @@
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
-        RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud
+        RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud, FileDown
     } from 'lucide-svelte';
+    import { buildBibFile } from '../export/bibtex';
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
@@ -555,6 +556,42 @@
         await batchManager.saveCurrentSession();
     }
 
+    async function exportBibtex() {
+        const items = batchManager.items;
+        if (items.length === 0) return;
+
+        const sources = items
+            // Skip ignored items — user explicitly opted them out of the
+            // sorted output, so they shouldn't end up in the citation file.
+            .filter(it => !it.isIgnored)
+            .map(it => ({
+                title: it.suggestedTitle,
+                author: it.suggestedAuthor,
+                year: it.suggestedYear,
+                filename: it.originalName,
+                path: it.targetPath || it.originalPath,
+            }));
+
+        if (sources.length === 0) return;
+
+        const defaultName = `crispsorter-${new Date().toISOString().slice(0, 10)}.bib`;
+        const savePath = await save({
+            defaultPath: defaultName,
+            filters: [{ name: 'BibTeX', extensions: ['bib'] }],
+        });
+        if (!savePath) return;
+
+        const content = buildBibFile(sources);
+        try {
+            await writeTextFile(savePath, content);
+        } catch (e: any) {
+            await ask(`Failed to write .bib file: ${e?.message ?? e}`, {
+                title: 'Export failed',
+                kind: 'error',
+            });
+        }
+    }
+
     async function checkAndUpdateSources() {
         console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
         let missingCount = 0;
@@ -753,6 +790,11 @@
             <button class="action-btn small" onclick={checkAndUpdateSources} title={i18n.t.batch.update_sources}
                     disabled={batchManager.items.length === 0 || batchManager.isProcessing}>
                 <RefreshCw size={14} />
+            </button>
+
+            <button class="action-btn small" onclick={exportBibtex} title={i18n.t.batch.export_bibtex}
+                    disabled={batchManager.items.length === 0}>
+                <FileDown size={14} />
             </button>
 
             <div class="dropdown-container">

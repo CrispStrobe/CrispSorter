@@ -41,8 +41,7 @@ remains an explicit non-goal for v1.)
 
 ### P5 — Future / planned
 
-1. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
-2. **XMP metadata extraction** — extend the PDF metadata reader to parse the
+1. **XMP metadata extraction** — extend the PDF metadata reader to parse the
    XMP RDF/XML stream (better author / keyword data on producer-tagged PDFs).
 3. **Multi-folder watcher** — extend v0.1.32 from single-folder to a list,
    with per-folder enable + recursive depth controls.
@@ -55,6 +54,20 @@ remains an explicit non-goal for v1.)
 
 ## Recent changes
 
+- [x] **BibTeX export (May 2026, v0.1.33)** — pure-TS `buildBibFile` in
+  `src/lib/export/bibtex.ts`. Citation key = sanitized `{LastName}{Year}`,
+  numeric suffix on collisions. Author lastname extracted from "Smith,
+  John" or "John Q. Smith"; falls back to "anon". Year regex-matched to
+  the first 4-digit substring (handles "2023-03", "approx. 2019"). LaTeX
+  special chars (`\ & % $ # _ { } ^ ~`) escaped per the BibTeX spec;
+  capitalized words in titles wrapped in `{…}` so case-folding styles
+  preserve them. All entries emit as `@misc` (universally accepted; we
+  don't have enough metadata to differentiate article/book/report yet).
+  Placeholder values (`Unknown Title`, `n/a`, `?`, `-`) are skipped
+  rather than emitted as data. Export button in BatchReview header
+  next to the source-update button; saves via Tauri dialog with
+  `crispsorter-YYYY-MM-DD.bib` default name. Skips items the user
+  marked Ignored. EN+DE.
 - [x] **Folder watcher v1 (May 2026, v0.1.32)** — drop a file into the
   watched folder and it lands in the batch. New `watcher/` module wraps
   `notify` (FSEvents on macOS, inotify on Linux, `ReadDirectoryChangesW`
