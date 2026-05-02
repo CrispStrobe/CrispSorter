@@ -1,5 +1,48 @@
 pub mod asr;
 pub mod index;
+pub mod tts;
+
+/// Speak `text` aloud via the platform's native TTS synth.
+///
+/// Replaces any in-flight utterance — calling `tts_speak` twice in a row
+/// kills the first synth and starts the second. The Rust handler returns
+/// as soon as the synth process is spawned; speaking happens in the
+/// background. Use `tts_stop` to interrupt mid-utterance (e.g. on the
+/// chat Stop button).
+#[tauri::command]
+async fn tts_speak(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    // Stop any current utterance first — overlapping synths make the
+    // output unintelligible and the user's mental model is "speak this
+    // now, not after the previous reply finishes".
+    {
+        let mut slot = state.tts_process.lock().await;
+        if let Some(mut prev) = slot.take() {
+            tts::kill_quietly(&mut prev).await;
+        }
+    }
+    let child = tts::spawn_speak(&text)
+        .await
+        .map_err(|e| format!("TTS spawn failed: {e:#}"))?;
+    let mut slot = state.tts_process.lock().await;
+    *slot = Some(child);
+    Ok(())
+}
+
+/// Stop any in-flight TTS utterance. No-op when nothing is speaking.
+#[tauri::command]
+async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut slot = state.tts_process.lock().await;
+    if let Some(mut child) = slot.take() {
+        tts::kill_quietly(&mut child).await;
+    }
+    Ok(())
+}
 
 /// Transcribe Float32 PCM 16 kHz mono audio to text via CrispASR.
 ///
@@ -162,6 +205,9 @@ pub struct AppState {
     /// Speech-to-text handle. Lazy-loaded on first `asr_transcribe` call.
     /// `None` until the user invokes voice input; `Some` thereafter.
     pub asr: Mutex<Option<asr::AsrHandle>>,
+    /// Currently-speaking TTS child process, if any. Held so `tts_stop`
+    /// can kill it mid-utterance.
+    pub tts_process: Mutex<Option<TokioChild>>,
 }
 
 #[tauri::command]
@@ -1097,6 +1143,7 @@ pub fn run() {
             ollama_process: Mutex::new(None),
             index: Mutex::new(index::IndexState::disabled()),
             asr: Mutex::new(None),
+            tts_process: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -1129,6 +1176,8 @@ pub fn run() {
             index::tauri_commands::index_list_documents,
             index::tauri_commands::index_delete_document,
             asr_transcribe,
+            tts_speak,
+            tts_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

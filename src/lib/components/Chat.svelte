@@ -7,7 +7,7 @@
         Send, User, Bot, Trash2, FileText,
         ChevronRight, ChevronLeft, Cpu, Zap, Search, MessageSquare, Brain,
         Loader2, Info, ChevronDown, ChevronUp,
-        Mic, MicOff
+        Mic, MicOff, VolumeX
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
@@ -105,6 +105,7 @@
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         llmTemperature = await getSetting('llmTemperature', 0.7);
         systemInstruction = await getSetting('systemInstruction', 'You are a helpful AI assistant. Use the provided context to answer questions accurately.');
+        autoSpeakReplies = await getSetting('autoSpeakReplies', false);
 
         const currentProv = providers.find(p => p.id === activeProviderId);
         if (currentProv) {
@@ -128,6 +129,24 @@
                     if (m.text) size += new TextEncoder().encode(m.text).length;
                 });
                 chatHistorySize = size;
+
+                // Auto-speak: fire on the first onMessage tick that lands a
+                // bot reply we haven't spoken yet. Skips streaming partials
+                // by keying on stable index transitions; mid-stream updates
+                // either don't trigger onMessage (deep-chat dispatches only
+                // for completed messages by default) or land at the same
+                // index and are safely no-op'd by the lastSpokenIndex check.
+                if (autoSpeakReplies && msgs.length > 0) {
+                    const lastIdx = msgs.length - 1;
+                    const last = msgs[lastIdx];
+                    const role = (last?.role ?? '').toLowerCase();
+                    const isBot = role === 'ai' || role === 'assistant';
+                    const text = (last?.text ?? '').trim();
+                    if (isBot && text && lastIdx > lastSpokenIndex) {
+                        lastSpokenIndex = lastIdx;
+                        speakBotReply(text);
+                    }
+                }
             };
         }
     });
@@ -205,6 +224,15 @@
     let asrSamples: Float32Array[] = [];
     let asrSampleRate = 48000;
     let asrError = $state<string | null>(null);
+
+    // ── TTS auto-speak state ─────────────────────────────────────────────────
+    // Watches deep-chat onMessage and, when the toggle is on, ships the
+    // latest bot reply to the platform-native synth (macOS say / Windows
+    // SAPI / Linux espeak). The Rust handler kills any in-flight utterance
+    // when a new one arrives.
+    let autoSpeakReplies = $state(false);
+    let ttsSpeaking = $state(false);
+    let lastSpokenIndex = -1;
 
     async function startVoiceCapture() {
         asrError = null;
@@ -301,6 +329,56 @@
     function toggleVoiceCapture() {
         if (asrState === 'idle') startVoiceCapture();
         else if (asrState === 'recording') stopVoiceCapture();
+    }
+
+    // ── TTS bridge ───────────────────────────────────────────────────────────
+    // Strips Markdown/HTML before handing off so the synth pronounces words,
+    // not asterisks and angle brackets. Crude but good enough for chat replies;
+    // a fully native speech-friendly transformation would need a proper MD AST.
+    function plainifyForSpeech(text: string): string {
+        return text
+            // Code fences and inline code
+            .replace(/```[\s\S]*?```/g, ' ')
+            .replace(/`([^`]+)`/g, '$1')
+            // Headings + emphasis
+            .replace(/^#{1,6}\s*/gm, '')
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/\*([^*]+)\*/g, '$1')
+            .replace(/__([^_]+)__/g, '$1')
+            .replace(/_([^_]+)_/g, '$1')
+            // Links: keep the link text only
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+            // HTML tags
+            .replace(/<[^>]+>/g, ' ')
+            // Collapse whitespace
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    async function speakBotReply(text: string) {
+        const clean = plainifyForSpeech(text);
+        if (!clean) return;
+        try {
+            ttsSpeaking = true;
+            await invoke('tts_speak', { text: clean });
+        } catch (e) {
+            console.warn('[tts] speak failed', e);
+        } finally {
+            // We can't cleanly tell when the synth finishes (it runs detached
+            // on the Rust side). Reset the flag a moment later so the Stop
+            // button stays enabled while plausibly speaking.
+            setTimeout(() => { ttsSpeaking = false; }, 500);
+        }
+    }
+
+    async function stopSpeaking() {
+        try {
+            await invoke('tts_stop');
+        } catch (e) {
+            console.warn('[tts] stop failed', e);
+        } finally {
+            ttsSpeaking = false;
+        }
     }
 
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
@@ -410,6 +488,14 @@
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
+                {#if ttsSpeaking}
+                    <button
+                        class="icon-btn tts-speaking"
+                        onclick={stopSpeaking}
+                        title={i18n.t.chat.tts_stop}>
+                        <VolumeX size={16} />
+                    </button>
+                {/if}
                 <button
                     class="icon-btn"
                     class:asr-recording={asrState === 'recording'}
@@ -484,6 +570,8 @@
     .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .icon-btn.asr-recording { color: #ef4444; background: #7f1d1d33; }
     .icon-btn.asr-recording:hover { background: #7f1d1d55; }
+    .icon-btn.tts-speaking { color: #3b82f6; background: #1e3a8a33; }
+    .icon-btn.tts-speaking:hover { background: #1e3a8a55; }
     .asr-error { padding: 6px 16px; background: #7f1d1d33; color: #fca5a5; font-size: 0.75rem; border-bottom: 1px solid #7f1d1d; }
     :global(.spin) { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

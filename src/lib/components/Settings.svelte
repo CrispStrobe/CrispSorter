@@ -114,6 +114,10 @@
     let noThinking = $state(true);
     let pdfBackend = $state<'js' | 'rust'>('js');
     let parsingFormat = $state<'xml' | 'json'>('xml');
+    // Auto-speak chat replies via the platform's native TTS synth (macOS
+    // `say` / Windows SAPI / Linux espeak). Off by default — voice mode
+    // is opt-in.
+    let autoSpeakReplies = $state(false);
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
@@ -294,6 +298,7 @@
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
+        autoSpeakReplies = await getSetting('autoSpeakReplies', false);
         roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
@@ -450,6 +455,7 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
+        await saveSetting('autoSpeakReplies', autoSpeakReplies);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
@@ -1244,6 +1250,14 @@
                     <label for="no-think-check">{i18n.t.settings.no_think}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.no_think_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="auto-speak-check" type="checkbox" bind:checked={autoSpeakReplies} />
+                    <label for="auto-speak-check">{i18n.t.settings.auto_speak}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.auto_speak_hint}</p>
             </div>
 
             <div class="section-card">

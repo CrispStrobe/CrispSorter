@@ -25,7 +25,8 @@
 
 ### P3 — Voice chat (CrispASR integration)
 
-- [ ] **TTS for LLM answers** — voice the analysis result / chat reply back.
+(All in-scope P3 items shipped — see Recent changes. Hotword gating
+remains an explicit non-goal for v1.)
   Decide: native macOS `say` / Windows SAPI for v1 (zero deps), or a small
   GGUF TTS (Piper / Kokoro) sidecar for cross-platform consistency.
   Settings: voice picker, rate, "auto-speak replies" toggle.
@@ -50,6 +51,19 @@
 
 ## Recent changes
 
+- [x] **TTS auto-speak for chat replies (May 2026, v0.1.30)** — closes the
+  P3 voice loop with zero-dep platform synth. New `tts/mod.rs` shells
+  out to macOS `say` / Windows PowerShell SAPI / Linux `spd-say` or
+  `espeak` (whichever is on PATH), piping text via stdin so arbitrary
+  chat content needs no argv quoting. `tts_speak` and `tts_stop` Tauri
+  commands. AppState holds the running child so `tts_stop` (and a fresh
+  `tts_speak`) can kill it mid-utterance — no overlapping voices.
+  Settings adds an "Auto-speak chat replies" toggle (default off).
+  Chat.svelte detects new bot messages via the deep-chat `onMessage`
+  delta, strips Markdown/HTML, and pipes plaintext to the synth. Mute
+  button appears in the chat header while speaking. The contract is
+  identical for a future GGUF Piper/Kokoro sidecar — only the spawn
+  function would change.
 - [x] **CrispASR voice input — sidecar + push-to-talk (May 2026, v0.1.29)** —
   optional `crispasr` path dep at `../../CrispASR/crispasr` with cargo features
   `crispasr`, `crispasr-metal`, `crispasr-cuda`, `crispasr-vulkan` mirroring

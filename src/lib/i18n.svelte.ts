@@ -31,7 +31,8 @@ export const translations = {
             save_chat: 'Save chat history',
             voice_start: 'Push to talk',
             voice_stop: 'Stop & transcribe',
-            voice_busy: 'Transcribing…'
+            voice_busy: 'Transcribing…',
+            tts_stop: 'Stop speaking'
         },
         batch: {
             add_files: 'Add',
@@ -196,6 +197,8 @@ export const translations = {
             ocr_tesseract_hint: 'Download language data for the Tesseract OCR engine.',
             no_think: 'Suppress thinking mode',
             no_think_hint: 'Sends /no_think as a system message (Qwen3, Qwen3.5) and strips <think>/<thinking> blocks from all responses. Qwen3.5-0.8B is non-thinking by default; larger Qwen3 models think by default and benefit most. DeepSeek-R1 variants leak <think> blocks regardless — stripping handles that. No known model uses /nothink without the underscore.',
+            auto_speak: 'Auto-speak chat replies',
+            auto_speak_hint: 'Read every assistant reply aloud via the platform\'s native speech synth (macOS `say`, Windows SAPI, Linux espeak/spd-say). Markdown and HTML get stripped before synthesis. The mute button in the chat header stops mid-utterance. No external dependencies, no network calls.',
             local_model_path: 'Local GGUF Model Path',
             local_model_hint: 'Path to your .gguf file (e.g., Qwen 0.8B).',
             local_manager_title: 'Local Model Manager',
@@ -356,7 +359,8 @@ export const translations = {
             save_chat: 'Chatverlauf speichern',
             voice_start: 'Push-to-Talk',
             voice_stop: 'Stopp & transkribieren',
-            voice_busy: 'Transkribiere…'
+            voice_busy: 'Transkribiere…',
+            tts_stop: 'Sprache stoppen'
         },
         batch: {
             add_files: 'Hinzufügen',
@@ -521,6 +525,8 @@ export const translations = {
             ocr_tesseract_hint: 'Sprachdaten für die Tesseract OCR-Engine herunterladen.',
             no_think: 'Thinking-Modus unterdrücken',
             no_think_hint: 'Sendet /no_think als Systemnachricht (Qwen3, Qwen3.5) und entfernt <think> Blöcke. Qwen3.5-0.8B denkt standardmäßig nicht; größere Qwen3 Modelle profitieren am meisten. DeepSeek-R1 Varianten geben <think> Blöcke trotzdem aus - das Filtern fängt dies ab. Kein bekanntes Modell nutzt /nothink ohne Unterstrich.',
+            auto_speak: 'Antworten automatisch vorlesen',
+            auto_speak_hint: 'Liest jede Assistent-Antwort über die plattform-eigene Sprachsynthese vor (macOS `say`, Windows SAPI, Linux espeak/spd-say). Markdown und HTML werden vor der Ausgabe entfernt. Die Stummschalt-Taste im Chat-Header bricht ab. Keine externen Abhängigkeiten, keine Netzwerkaufrufe.',
             local_model_path: 'Lokaler GGUF Modell-Pfad',
             local_model_hint: 'Pfad zu Ihrer .gguf Datei (z.B. Qwen 0.8B).',
             local_manager_title: 'Lokaler Modell-Manager',

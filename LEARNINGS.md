@@ -6,6 +6,27 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ## Build & CI
 
+### Native TTS over stdin avoids argv-quoting nightmares
+
+`say` (macOS), `espeak`/`spd-say` (Linux), and PowerShell SAPI (Windows)
+all read text from stdin when invoked correctly. Piping the text instead
+of argv-passing dodges the quoting fan-out that arbitrary chat content
+would otherwise require — code blocks, smart quotes, embedded newlines,
+single + double quotes side by side, etc. The Windows path uses a
+PowerShell one-liner that calls `[Console]::OpenStandardInput().ReadToEnd()`
+and feeds the result into the SAPI synthesizer; never embed user text in
+the script string itself or you reintroduce the quoting problem.
+
+`AppState.tts_process` holds the spawned `tokio::process::Child`. Both
+`tts_speak` (when called while another utterance is in flight) and
+`tts_stop` call `Child::kill().await` then `wait().await` to ensure the
+synth process is reaped before returning — otherwise rapid speak/stop
+cycles leave zombies. The frontend doesn't track utterance lifetime
+precisely (the synth runs detached); `ttsSpeaking` flips back to
+`false` on a 500ms timer after the spawn returns, which is good enough
+to keep the Mute button visible during plausible speech without holding
+it forever after a 1-word utterance finishes.
+
 ### Two sibling path deps now: CrispEmbed AND CrispASR
 
 The `crispembed` and `crispasr` optional path-deps both live as siblings
