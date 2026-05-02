@@ -547,8 +547,10 @@ pub async fn init_index(
     let models_dir = super::resolve_model_cache_dir(&config, data_dir);
     println!("[index] Model cache: {}", models_dir.display());
 
-    let embedder_cfg =
-        EC::new(model, device, models_dir.clone()).with_backend(config.embedder_backend);
+    let embedder_cfg = EC::new(model, device, models_dir.clone())
+        .with_backend(config.embedder_backend)
+        .with_matryoshka_dim(config.matryoshka_dim);
+    let effective_dim = embedder_cfg.effective_dim();
 
     let embedder = Embedder::new(embedder_cfg).await?;
 
@@ -587,7 +589,9 @@ pub async fn init_index(
         }
 
         BackendType::Local => {
-            let dims = model.dims();
+            // Use the matryoshka-aware effective dim so the LanceDB column
+            // width matches what the embedder will actually emit.
+            let dims = effective_dim;
             let fts_dir = data_dir.join("fts");
 
             emit!("fts_start", "Öffne Volltext-Index (Tantivy) …", 55);

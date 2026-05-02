@@ -124,6 +124,32 @@ hf-hub layout (`models--<repo>--<sha>/...`). Note: fastembed-rs's own
 only fully shareable with hf-hub-using tools — fastembed will re-download
 into its own subtree under the chosen dir.
 
+### Matryoshka truncation is GGUF-only and pinned by index schema
+
+`CrispEmbed::set_dim(N)` truncates the model output vector to N dims;
+`fastembed-rs` exposes no equivalent hook. So `EmbedderConfig.matryoshka_dim`
+is honored only when the active backend is `EmbedderBackend::Gguf` — ONNX
+paths silently fall back to the model's nominal dim regardless of the
+config. The Settings UI gate (`indexEmbedderBackend === 'gguf'`) keeps
+the field invisible elsewhere so users don't set it expecting an ONNX
+effect.
+
+The LanceDB `embedding` column is `FixedSizeList<Float32>[N]` — a single
+fixed width per index. `EmbedderConfig::effective_dim()` is the source of
+truth: it clamps `matryoshka_dim` to `model.dims()` (so a too-large value
+is silently corrected) and treats `Some(0)` as `None` (model default,
+common UI sentinel). `tauri_commands::init_index` reads it once and
+passes to both `Embedder::new` *and* `LocalIndex::open_or_create` so the
+two stay in lockstep.
+
+Changing `matryoshka_dim` on an existing index is a schema-incompatible
+migration: LanceDB cannot resize a `FixedSizeList` column in place. The
+UI hint warns about re-ingestion; the runtime would fail at write time
+with a column-width mismatch otherwise. Quality also depends on the
+model — only MRL-trained models (BGE-M3, Snowflake Arctic L v2,
+PIXIE-Rune) preserve relative similarity at smaller dims; non-MRL models
+will silently produce poorer embeddings.
+
 ### Sparse retrieval is a 3rd RRF channel, not a primary modality
 
 LanceDB has no native sparse-vector ANN, and an inverted index over

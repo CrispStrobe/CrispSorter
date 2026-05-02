@@ -1022,6 +1022,12 @@ pub struct EmbedderConfig {
     pub cache_dir: PathBuf,
     pub batch_size: usize,
     pub backend: EmbedderBackend,
+    /// Matryoshka truncation dim. `None` (or `Some(0)`) means use the
+    /// model's default. Only honored on the CrispEmbed (GGUF) backend —
+    /// fastembed has no per-call truncation hook. Quality only holds for
+    /// MRL-trained models (BGE-M3, Snowflake Arctic L v2, PIXIE-Rune).
+    #[serde(default)]
+    pub matryoshka_dim: Option<u32>,
 }
 
 impl EmbedderConfig {
@@ -1032,12 +1038,27 @@ impl EmbedderConfig {
             cache_dir,
             batch_size: 32,
             backend: EmbedderBackend::Onnx,
+            matryoshka_dim: None,
         }
     }
 
     pub fn with_backend(mut self, backend: EmbedderBackend) -> Self {
         self.backend = backend;
         self
+    }
+
+    pub fn with_matryoshka_dim(mut self, dim: Option<u32>) -> Self {
+        self.matryoshka_dim = dim.filter(|&d| d > 0);
+        self
+    }
+
+    /// Effective output dim: matryoshka_dim if set and ≤ model's nominal
+    /// dim, else the model default. Use this anywhere you need to size a
+    /// LanceDB column or pre-allocate per-vector buffers.
+    pub fn effective_dim(&self) -> usize {
+        self.matryoshka_dim
+            .map(|d| (d as usize).min(self.model.dims()))
+            .unwrap_or_else(|| self.model.dims())
     }
 }
 
@@ -1475,7 +1496,6 @@ impl CrispEmbedBackend {
     // feature lands; deleting and re-adding them on each task adds churn.
 
     /// Set Matryoshka output dimension (0 = model default)
-    #[allow(dead_code)]
     fn set_dim(&mut self, dim: i32) {
         self.model.set_dim(dim);
     }
@@ -1586,7 +1606,22 @@ impl Embedder {
                 break 'gguf None;
             };
             let gguf_path = ensure_gguf_on_disk(&spec, &config.cache_dir).await?;
-            let backend = CrispEmbedBackend::load(&gguf_path)?;
+            let mut backend = CrispEmbedBackend::load(&gguf_path)?;
+            // Matryoshka: only the GGUF backend exposes the underlying
+            // crispembed::CrispEmbed::set_dim hook; fastembed and OrtPath
+            // ignore the field. set_dim(0) = model default, so a None config
+            // is a no-op.
+            if let Some(d) = config.matryoshka_dim {
+                if d > 0 {
+                    let nominal = config.model.dims() as u32;
+                    let clamped = d.min(nominal) as i32;
+                    println!(
+                        "[embedder] Matryoshka set_dim({}) (nominal {})",
+                        clamped, nominal
+                    );
+                    backend.set_dim(clamped);
+                }
+            }
             Some(DenseBackend::CrispEmbed(backend))
         };
         #[cfg(not(feature = "crispembed"))]
@@ -1719,7 +1754,11 @@ impl Embedder {
     }
 
     pub fn dims(&self) -> usize {
-        self.config.model.dims()
+        // Matryoshka, when configured + supported by backend (GGUF only),
+        // truncates the output. The LanceDB column must match this dim,
+        // so callers (LocalIndex, callers passing dims into schemas) must
+        // use this rather than `model.dims()` directly.
+        self.config.effective_dim()
     }
     pub fn model(&self) -> EmbedderModel {
         self.config.model
@@ -1912,6 +1951,30 @@ mod tests {
             EmbedderModel::MultilingualMiniLm.to_fastembed_dense(),
             EmbeddingModel::ParaphraseMLMiniLML12V2
         ));
+    }
+
+    #[test]
+    fn matryoshka_effective_dim() {
+        let cfg = EmbedderConfig::new(
+            EmbedderModel::BgeM3,
+            EmbedderDevice::Cpu,
+            std::path::PathBuf::from("/tmp"),
+        );
+        // Default: model.dims()
+        assert_eq!(cfg.effective_dim(), 1024);
+        // Set: returns the requested value
+        let cfg2 = cfg.clone().with_matryoshka_dim(Some(256));
+        assert_eq!(cfg2.effective_dim(), 256);
+        // Clamp: requesting > nominal returns nominal
+        let cfg3 = cfg.clone().with_matryoshka_dim(Some(4096));
+        assert_eq!(cfg3.effective_dim(), 1024);
+        // Some(0) is treated as None (model default)
+        let cfg4 = cfg.clone().with_matryoshka_dim(Some(0));
+        assert_eq!(cfg4.matryoshka_dim, None);
+        assert_eq!(cfg4.effective_dim(), 1024);
+        // None is preserved
+        let cfg5 = cfg.with_matryoshka_dim(None);
+        assert_eq!(cfg5.matryoshka_dim, None);
     }
 
     #[test]

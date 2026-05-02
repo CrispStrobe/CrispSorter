@@ -21,11 +21,7 @@
 
 ### P2 — Search index / RAG
 
-- [ ] **Matryoshka dimension selection** — expose `CrispEmbed::set_dim()` in
-  Settings for smaller/faster embeddings (saved per index, locks the value
-  for the lifetime of that index). Note: the LanceDB `embedding` column is a
-  `FixedSizeList<Float32>[1024]` — schema migration on the LanceDB side is
-  the actual cost, not the `set_dim` call.
+(All P2 items shipped — see Recent changes.)
 
 ### P3 — Voice chat (CrispASR integration)
 
@@ -63,6 +59,18 @@
 
 ## Recent changes
 
+- [x] **Matryoshka dimension selection (May 2026, v0.1.28)** — new
+  `IndexConfig.matryoshka_dim: Option<u32>` threads through
+  `EmbedderConfig.with_matryoshka_dim` to `CrispEmbedBackend::set_dim` at
+  load. `EmbedderConfig::effective_dim()` clamps to the model's nominal
+  dim and treats `Some(0)` as `None` (model default). The LanceDB column
+  width now uses the effective dim so the schema matches what the embedder
+  emits — changing `matryoshka_dim` on an existing index requires
+  re-ingestion (warned in the UI hint). UI: number-select (128/256/384/512/768)
+  appears under "Inference Backend" only when GGUF is selected and the
+  model has a GGUF spec — fastembed has no per-call truncation hook so
+  ONNX paths ignore the field. Quality only holds for MRL-trained models
+  (BGE-M3, Snowflake Arctic L v2, PIXIE-Rune); the hint flags this.
 - [x] **Sparse retrieval + Octen auto-download (May 2026, v0.1.27)** — BGE-M3
   / SPLADE sparse vectors are now used at query time as a 3rd RRF channel
   alongside FTS + dense ANN. `LocalIndex::search_sparse_in_pool` scores the

@@ -141,6 +141,12 @@ pub struct IndexConfig {
     /// The env var `CRISPSORTER_MODEL_CACHE_DIR` overrides this when set.
     #[serde(default)]
     pub model_cache_dir: Option<String>,
+    /// Matryoshka truncation dim. `None` or `Some(0)` = model default.
+    /// Only applied on the CrispEmbed (GGUF) backend; ignored otherwise.
+    /// The LanceDB schema is built around the effective dim, so changing
+    /// this on an existing index requires re-ingestion.
+    #[serde(default)]
+    pub matryoshka_dim: Option<u32>,
 }
 
 fn default_rerank_top_n() -> usize {
@@ -195,6 +201,7 @@ impl Default for IndexConfig {
             reranker_model: None,
             rerank_top_n: default_rerank_top_n(),
             model_cache_dir: None,
+            matryoshka_dim: None,
         }
     }
 }

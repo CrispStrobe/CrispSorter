@@ -196,6 +196,10 @@
     // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
     // downloads, so one setting controls every model weight on disk.
     let indexModelCacheDir  = $state<string>('');
+    // Matryoshka truncation dim. 0 = use model default (no truncation).
+    // Honored only on GGUF backend; ignored otherwise. Quality only holds
+    // for MRL-trained models.
+    let indexMatryoshkaDim  = $state<number>(0);
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
     // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
@@ -325,6 +329,7 @@
         indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
+        indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
         indexDataDir       = await getSetting('indexDataDir', '');
         // Sync saved config into the backend
         try {
@@ -464,6 +469,7 @@
         await saveSetting('indexRerankerModel', indexRerankerModel);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
+        await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -575,6 +581,9 @@
                     reranker_model:   rerankerToRust(indexRerankerModel),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
                     model_cache_dir:  indexModelCacheDir.trim() || null,
+                    matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
+                        ? Number(indexMatryoshkaDim)
+                        : null,
                 }
             });
             if (indexEnabled) {
@@ -1497,6 +1506,21 @@
                     <div style="font-size: 12px; color: var(--muted, #888); margin-top: 4px;">
                         GGUF reuses the llama.cpp GPU backends (Vulkan/Metal/CUDA) — smaller files, unified GPU stack. Only available for models with a verified GGUF equivalent.
                     </div>
+
+                    {#if indexEmbedderBackend === 'gguf'}
+                        <label for="index-matryoshka-dim" style="margin-top:10px;">
+                            {i18n.t.settings.index.matryoshka_dim}
+                        </label>
+                        <select id="index-matryoshka-dim" bind:value={indexMatryoshkaDim} class="styled-select">
+                            <option value={0}>{i18n.t.settings.index.matryoshka_default}</option>
+                            <option value={128}>128</option>
+                            <option value={256}>256</option>
+                            <option value={384}>384</option>
+                            <option value={512}>512</option>
+                            <option value={768}>768</option>
+                        </select>
+                        <p class="hint">{i18n.t.settings.index.matryoshka_hint}</p>
+                    {/if}
                 {/if}
             </div>
 
