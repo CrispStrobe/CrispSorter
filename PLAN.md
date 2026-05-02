@@ -34,6 +34,87 @@ remains an explicit non-goal for v1.)
   thread should be designed so a separate small KWS model can gate full-ASR
   decoding when this lands.
 
+### P3.5 — Bundling CrispEmbed / CrispASR native wrappers
+
+Both `crispembed` and `crispasr` are currently `optional = true` cargo
+path-deps. The default release binary doesn't link them — users get the
+ONNX/fastembed embedder and no on-device ASR. To actually ship these
+features we have to bundle their native shared libraries
+(`libcrispembed`, `libcrispasr`, plus ggml backends) into the Tauri app
+per platform. The sidecar/server alternative was explored and rejected:
+it doesn't work on mobile (iOS/Android sandbox forbids spawning helper
+processes), and the wrapper approach already has a proven cross-platform
+recipe in CrisperWeaver (sibling Flutter app, same C library).
+
+**Proven pattern (from CrisperWeaver `scripts/build_*` + `bundle_*` helpers):**
+
+1. **Build `lib{crispasr,crispembed}.{so,dylib,dll}` from source per
+   platform** with `-DBUILD_SHARED_LIBS=ON` plus the right GGML backend
+   (`-DGGML_METAL=ON` / `-DGGML_VULKAN=ON` / `-DGGML_CUDA=ON`).
+2. **Bundle libs into the per-platform app dir** — macOS
+   `.app/Contents/Frameworks/`, Linux `bundle/lib/`, Windows next to
+   the exe.
+3. **Symlink aliases** so both `lib{crispasr,crispembed}` and
+   `lib{whisper,...}` names resolve, plus the SONAME-versioned alias
+   (`lib*.so.1` / `lib*.1.dylib`).
+4. **Patch install names / RPATH** so the loader finds them at `@rpath`
+   / `$ORIGIN`.
+5. **Bundle Homebrew transitives** (e.g., kokoro pulls espeak-ng on
+   macOS) + ad-hoc codesign.
+6. **Repeat for ggml shared libs** (libggml.so, libggml-base.so,
+   libggml-cpu.so).
+
+For Tauri the only difference vs Flutter is the per-platform "lib dir":
+`tauri.conf.json > bundle.macOS.frameworks` for macOS, `bundle.resources`
++ RPATH patching for Linux .deb, DLL colocation for Windows.
+
+**Scope estimate per platform:**
+
+| Platform       | Risk   | Effort | Notes                                                                  |
+| -------------- | ------ | ------ | ---------------------------------------------------------------------- |
+| macOS arm64    | low    | ~3-4h  | CrisperWeaver scripts adapt directly; Metal built-in                   |
+| macOS x86_64   | low    | ~1h    | once arm64 works, just a target swap (still queue-starved on macos-13) |
+| Linux x86_64   | medium | ~4-6h  | Tauri .deb + RPATH + Vulkan SDK install; less prior art                |
+| Windows x86_64 | medium | ~4-6h  | DLL placement + Vulkan SDK install + signing                           |
+
+Plus a change in `crispasr-sys`: its `build.rs` currently only emits
+link directives, expecting a system-installed lib. It needs to do what
+`crispembed-sys` already does — run cmake on the parent CrispASR repo
+with `BUILD_SHARED_LIBS=ON` and emit the right
+`cargo:rustc-link-search`. CrispEmbed-side `CRISPEMBED_BUILD_SHARED=ON`
+is already correct, but its output dylib still needs the bundling
+treatment.
+
+**Phased rollout:**
+
+- [ ] **Phase 1 — macOS arm64 only** (~3-4h)
+  1. Patch `crispasr-sys/build.rs` to cmake-build `libcrispasr.dylib`
+     (mirror `crispembed-sys`).
+  2. Add a Tauri `afterBuildCommand` (or post-build script) that
+     locates the cmake-built dylibs, copies them to
+     `Contents/Frameworks/` with the right symlinks, patches install
+     names, and re-codesigns.
+  3. Make `crispasr` and `crispembed` features default-on for macOS
+     arm64 in release.yml.
+  4. Ship v0.1.36 and verify the .dmg actually launches with ASR
+     working on a clean machine.
+  5. Commit the proven recipe to LEARNINGS.md.
+
+- [ ] **Phase 2 — extend to Linux + Windows** (~8-12h, separate session)
+  Once Phase 1 is proven, mirror the pattern. Linux .deb + RPATH +
+  Vulkan SDK; Windows DLL colocation + Vulkan SDK + signing. Each
+  platform likely needs 1-2 release iterations to settle.
+
+- [ ] **Phase 3 — mobile (iOS / Android)** (deferred)
+  Only relevant if/when CrispSorter targets mobile. CrisperWeaver
+  already has the recipe for both.
+
+**Why not sidecar/server?** Mobile sandboxes (iOS, Android) forbid
+spawning helper processes; the wrapper (linked-library) approach is the
+only one that works cross-platform. Server-based IPC remains a viable
+*option* for desktop power-users wanting CUDA on demand, but not as the
+default.
+
 ### P4 — Code quality / maintenance
 
 - [ ] Audit remaining hardcoded UI strings in `Settings.svelte` (model manager sections)
