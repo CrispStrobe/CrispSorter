@@ -53,10 +53,14 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 - **Duplicate detection** — content hashing identifies near-identical files across a batch
 - **Session persistence** — auto-save and resume; full session history
 - **Built-in AI chat** — query across the documents in your current batch using any configured provider
+- **Voice chat (push-to-talk + auto-speak)** — mic button transcribes speech via on-device CrispASR; replies are read back through the platform's native synth (macOS `say`, Windows SAPI, Linux espeak/spd-say). All offline; opt-in.
+- **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
+- **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs; useful fallback when you skip the LLM or it fails
+- **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
 - **Script export** — generate a `.bat` / `.sh` script to review moves before executing them
-- **Customisable output** — author sub-folders on/off, save extracted `.txt` transcript alongside files
+- **Customisable output** — `{Author}/{Year}/{Title}` template configurable in Settings, save extracted `.txt` transcript alongside files
 - **Editable grid** — column visibility, width, sort; inline field editing
-- **Search index** — optional semantic + full-text search over all sorted documents (local or remote)
+- **Search index** — optional semantic + full-text search over all sorted documents (local or remote), with optional cross-encoder reranking, sparse retrieval (BGE-M3/SPLADE), and Matryoshka dim truncation
 
 ---
 
@@ -213,12 +217,16 @@ Measured on Apple M-series (CPU, batch=1, 8 texts across 3 language-topic pairs)
 | Setting | Description |
 |---|---|
 | **Enable search index** | Toggle indexing on/off globally |
-| **Search mode** | `Text` (BM25 only), `Vector` (ANN only), or `Hybrid` (RRF) |
+| **Search mode** | `Text` (BM25 only), `Vector` (ANN only), or `Hybrid` (RRF + optional sparse) |
 | **Backend** | `Local` (on-device LanceDB) or `Remote` (crisp-index-server) |
 | **Remote URL** | Base URL of your crisp-index-server, e.g. `https://crisp.example.com` |
 | **Remote API key** | Bearer token configured on the server (`CRISP_API_KEY`) |
-| **Embedder model** | See table above; default is Octen-0.6B INT8 |
+| **Embedder model** | 36 variants spanning BGE / E5 / MiniLM / Nomic / Mxbai / Snowflake / PIXIE / Qwen3 / Octen / Jina / GTE / EmbeddingGemma. Asymmetric query/passage prefixes auto-applied per model. |
+| **Inference Backend** | `ONNX` (fastembed/ORT) or `GGUF` (CrispEmbed — Metal/Vulkan/CUDA via llama.cpp); only shown for models with both backends |
+| **Reranker** | Optional cross-encoder rerank pass over the top-N hybrid hits (BGE-Reranker v2-m3 / base, Jina-Reranker v2 multilingual). GGUF only. |
+| **Matryoshka dim** | Truncate embeddings to a smaller dim (128/256/384/512/768) — only meaningful for MRL-trained models (BGE-M3, Snowflake Arctic L v2, PIXIE-Rune). GGUF only. |
 | **Device** | `Auto`, `CPU`, `Metal` (macOS), `CUDA` (Windows/Linux) |
+| **Model cache directory** | Where downloaded weights live (ONNX + GGUF + reranker). External-volume override survives app re-installs. Honours `CRISPSORTER_MODEL_CACHE_DIR` env var. |
 | **Data directory** | Where local LanceDB + Tantivy files are stored |
 | **Apply & Init** | Apply settings and (re)initialise the index |
 | **Build IVF-PQ** | Build approximate nearest-neighbour index after bulk ingest (≥ 10 000 rows) |
@@ -315,9 +323,14 @@ If EPUB extraction fails with a reference to the Node.js `process` global, ensur
 | OCR | Tesseract.js |
 | DOCX | mammoth.js |
 | Persistence | tauri-plugin-store |
-| Embedding (local) | fastembed-rs (BGE-M3 / E5 / MiniLM) |
+| Embedding (local) | fastembed-rs (ONNX) — fork at `CrispStrobe/fastembed-rs` `feat/new-model-entries` |
+| Embedding (GGUF) | [CrispEmbed](https://github.com/CrispStrobe/CrispEmbed) — optional sibling crate; Metal/Vulkan/CUDA via llama.cpp |
+| Speech-to-text | [CrispASR](https://github.com/CrispStrobe/CrispASR) — optional sibling crate (Whisper/Qwen3-ASR/FastConformer) |
+| Text-to-speech | Native platform synth — `say` (macOS), SAPI (Windows), `spd-say`/`espeak` (Linux) |
 | Vector store (local) | LanceDB (embedded) |
-| Full-text (local) | Tantivy |
+| Full-text (local) | Tantivy (with ASCII-folding for German umlaut search) |
+| Folder watcher | `notify` (FSEvents/inotify/ReadDirectoryChangesW) |
+| PDF metadata | `lopdf` (/Info dict) + `quick-xml` (XMP packet) |
 | Search server | crisp-index-server (axum + LanceDB + Tantivy) |
 
 ---
