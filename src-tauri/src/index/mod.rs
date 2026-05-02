@@ -134,10 +134,51 @@ pub struct IndexConfig {
     /// Default 50; smaller is faster, larger trades latency for recall.
     #[serde(default = "default_rerank_top_n")]
     pub rerank_top_n: usize,
+    /// Override location for downloaded model weights (ONNX + GGUF).
+    /// `None` (= empty in the UI) defaults to `{data_dir}/models/`. Useful
+    /// for pointing at an external volume shared with CrispEmbed CLI or
+    /// other projects, so models don't get re-downloaded per app install.
+    /// The env var `CRISPSORTER_MODEL_CACHE_DIR` overrides this when set.
+    #[serde(default)]
+    pub model_cache_dir: Option<String>,
 }
 
 fn default_rerank_top_n() -> usize {
     50
+}
+
+/// Pick the effective model-cache directory, in priority order:
+///   1. `CRISPSORTER_MODEL_CACHE_DIR` env var (machine-wide override)
+///   2. `IndexConfig.model_cache_dir` (UI setting)
+///   3. `{data_dir}/models/` (default, app-data-relative)
+///
+/// Always returns a path; creates the directory if absent so downstream
+/// hf-hub / fastembed callers don't fail on missing dirs.
+pub fn resolve_model_cache_dir(
+    config: &IndexConfig,
+    data_dir: &std::path::Path,
+) -> std::path::PathBuf {
+    let path = std::env::var("CRISPSORTER_MODEL_CACHE_DIR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            config
+                .model_cache_dir
+                .as_ref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+        })
+        .unwrap_or_else(|| data_dir.join("models"));
+    if let Err(e) = std::fs::create_dir_all(&path) {
+        eprintln!(
+            "[index] Could not create model cache dir {}: {} — fastembed/hf-hub will retry",
+            path.display(),
+            e
+        );
+    }
+    path
 }
 
 impl Default for IndexConfig {
@@ -153,6 +194,60 @@ impl Default for IndexConfig {
             embedder_backend: EmbedderBackend::Onnx,
             reranker_model: None,
             rerank_top_n: default_rerank_top_n(),
+            model_cache_dir: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod resolve_cache_tests {
+    use super::*;
+
+    fn cfg_with(model_cache_dir: Option<String>) -> IndexConfig {
+        IndexConfig {
+            model_cache_dir,
+            ..IndexConfig::default()
+        }
+    }
+
+    /// Env var beats UI override beats default. We can't easily mutate
+    /// process env in parallel tests, so the env-var arm is exercised
+    /// only when the variable is already set (skip otherwise).
+    #[test]
+    fn falls_through_to_default() {
+        if std::env::var_os("CRISPSORTER_MODEL_CACHE_DIR").is_some() {
+            return; // env var present — covered by env_override test
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_with(None);
+        let resolved = resolve_model_cache_dir(&cfg, tmp.path());
+        assert_eq!(resolved, tmp.path().join("models"));
+        assert!(resolved.is_dir(), "models dir should be created");
+    }
+
+    #[test]
+    fn ui_override_wins_over_default() {
+        if std::env::var_os("CRISPSORTER_MODEL_CACHE_DIR").is_some() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("custom-cache");
+        let cfg = cfg_with(Some(target.to_string_lossy().into_owned()));
+        let resolved = resolve_model_cache_dir(&cfg, tmp.path());
+        assert_eq!(resolved, target);
+        assert!(resolved.is_dir());
+    }
+
+    #[test]
+    fn empty_or_whitespace_override_falls_back_to_default() {
+        if std::env::var_os("CRISPSORTER_MODEL_CACHE_DIR").is_some() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        for s in ["", "   ", "\t"] {
+            let cfg = cfg_with(Some(s.to_owned()));
+            let resolved = resolve_model_cache_dir(&cfg, tmp.path());
+            assert_eq!(resolved, tmp.path().join("models"));
         }
     }
 }

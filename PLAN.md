@@ -64,6 +64,16 @@
 
 ## Recent changes
 
+- [x] **Configurable model cache dir (May 2026, v0.1.25)** — new
+  `IndexConfig.model_cache_dir: Option<String>` + `resolve_model_cache_dir`
+  helper picks: `CRISPSORTER_MODEL_CACHE_DIR` env > UI override >
+  `{data_dir}/models/`. Single dir is shared by fastembed (ONNX), hf-hub
+  (external-data ONNX + GGUF embedder + GGUF reranker), so one setting
+  controls every weight on disk. Settings.svelte adds a "Model cache
+  directory" picker; an external volume like
+  `<external-volume>/ai/crispsorter-models` lets the cache survive app
+  re-installs and (partially) share with CrispEmbed CLI. Three unit tests
+  pin the resolve precedence.
 - [x] **Cross-encoder reranking pipeline (May 2026, v0.1.25)** — new
   `RerankerModel` enum (`BgeRerankerV2M3`, `BgeRerankerBase`,
   `JinaRerankerV2BaseMultilingual`) + `Reranker` wrapper around

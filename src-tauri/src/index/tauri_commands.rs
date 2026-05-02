@@ -540,7 +540,13 @@ pub async fn init_index(
         5
     );
 
-    let models_dir = data_dir.join("models");
+    // Resolve model cache: env override > UI setting > {data_dir}/models.
+    // Same dir is used by fastembed (ONNX), hf-hub (external-data ONNX +
+    // GGUF embedder + GGUF reranker) — so a single configurable path
+    // controls every downloaded weight.
+    let models_dir = super::resolve_model_cache_dir(&config, data_dir);
+    println!("[index] Model cache: {}", models_dir.display());
+
     let embedder_cfg =
         EC::new(model, device, models_dir.clone()).with_backend(config.embedder_backend);
 

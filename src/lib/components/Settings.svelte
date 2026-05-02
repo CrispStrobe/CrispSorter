@@ -192,6 +192,10 @@
     // Other values are UI keys; mapped to Rust kebab-case via rerankerToRust.
     let indexRerankerModel  = $state<string>('');
     let indexRerankerTopN   = $state<number>(50);
+    // Empty = use default ({data_dir}/models). Override is shared by
+    // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
+    // downloads, so one setting controls every model weight on disk.
+    let indexModelCacheDir  = $state<string>('');
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
     // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
@@ -320,6 +324,7 @@
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
         indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
+        indexModelCacheDir = await getSetting('indexModelCacheDir', '');
         indexDataDir       = await getSetting('indexDataDir', '');
         // Sync saved config into the backend
         try {
@@ -458,6 +463,7 @@
         await saveSetting('indexDevice',        indexDevice);
         await saveSetting('indexRerankerModel', indexRerankerModel);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
+        await saveSetting('indexModelCacheDir', indexModelCacheDir);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -568,6 +574,7 @@
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
                     reranker_model:   rerankerToRust(indexRerankerModel),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
+                    model_cache_dir:  indexModelCacheDir.trim() || null,
                 }
             });
             if (indexEnabled) {
@@ -589,6 +596,11 @@
     async function pickIndexDataDir() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (selected) { indexDataDir = selected as string; }
+    }
+
+    async function pickIndexModelCacheDir() {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (selected) { indexModelCacheDir = selected as string; }
     }
 
     async function buildIvfPq() {
@@ -1516,6 +1528,19 @@
                         bind:value={indexRerankerTopN} />
                     <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
                 {/if}
+            </div>
+
+            <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->
+            <div class="section-card">
+                <label for="index-model-cache-dir">
+                    <FolderOpen size={16} /> {i18n.t.settings.index.model_cache_dir}
+                </label>
+                <div class="input-with-action">
+                    <input id="index-model-cache-dir" type="text" bind:value={indexModelCacheDir}
+                        placeholder="(default: app data dir / models)" />
+                    <button class="action-btn small" onclick={pickIndexModelCacheDir}>{i18n.t.settings.browse}</button>
+                </div>
+                <p class="hint">{i18n.t.settings.index.model_cache_dir_hint}</p>
             </div>
 
             <!-- Data directory -->

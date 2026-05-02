@@ -101,6 +101,29 @@ Or use `import { get } from 'svelte/store'` for one-shot reads.
 
 ## Search / FTS
 
+### Model cache directory is configurable, shared across all download paths
+
+Five different code paths download model weights into the same dir:
+fastembed native (ONNX), fastembed UserDefined (ONNX), OrtPath (external
+ONNX data), CrispEmbed GGUF embedder, CrispEmbed GGUF reranker. The single
+`resolve_model_cache_dir(config, data_dir)` helper picks the path in this
+order:
+
+1. `CRISPSORTER_MODEL_CACHE_DIR` env var (machine-wide override; useful
+   for CI runners and shared multi-user installs).
+2. `IndexConfig.model_cache_dir` (Settings UI override; persisted via
+   the standard `saveSetting` flow as `indexModelCacheDir`).
+3. `{data_dir}/models/` (default).
+
+The directory is created eagerly on resolve so hf-hub / fastembed don't
+fail on the very first download. Pointing this at an external volume
+(e.g. `<external-volume>/ai/crispsorter-models`) lets the cache survive app
+re-installs and be shared with `CrispEmbed` CLI when both use the same
+hf-hub layout (`models--<repo>--<sha>/...`). Note: fastembed-rs's own
+`fastembed_cache/` layout is *not* the same as hf-hub's, so the cache is
+only fully shareable with hf-hub-using tools — fastembed will re-download
+into its own subtree under the chosen dir.
+
 ### Cross-encoder reranking: lazy-load handle + NaN-safe fallback
 Rerankers double the search-side memory (separate `crispembed::CrispEmbed`
 instance with its own GGUF) and add ~100–500ms of first-query latency for
