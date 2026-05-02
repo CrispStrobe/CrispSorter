@@ -42,15 +42,34 @@ remains an explicit non-goal for v1.)
 ### P5 — Future / planned
 
 1. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
-2. **Folder Watcher** — auto-ingest new files from a watched directory
-3. **XMP metadata extraction** — extend the PDF metadata reader to parse the
+2. **XMP metadata extraction** — extend the PDF metadata reader to parse the
    XMP RDF/XML stream (better author / keyword data on producer-tagged PDFs).
-4. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
+3. **Multi-folder watcher** — extend v0.1.32 from single-folder to a list,
+   with per-folder enable + recursive depth controls.
+4. **Auto-process toggle on watch detection** — risky (auto-moves files
+   without review); needs a confirmation step or a "watch + queue, don't
+   auto-move" mode that's distinct from full auto.
+5. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
 ---
 
 ## Recent changes
 
+- [x] **Folder watcher v1 (May 2026, v0.1.32)** — drop a file into the
+  watched folder and it lands in the batch. New `watcher/` module wraps
+  `notify` (FSEvents on macOS, inotify on Linux, `ReadDirectoryChangesW`
+  on Windows). `watch_start` / `watch_stop` / `watch_status` Tauri
+  commands; single-folder invariant for v1 (multi-folder is future
+  work). Per-path 2-second debounce kills the duplicate events common
+  to atomic-save patterns. Extension allowlist matches the rest of
+  the app (pdf, epub, djvu, txt, md, rtf, doc, docx, odt); editor
+  swap files (`.tmp`, `.crdownload`, dotfiles, `~`-suffixed) get
+  dropped. Settings UI: folder picker + enable toggle + Apply button.
+  `+page.svelte` owns the global `folder-watch:added` listener — calls
+  `batchManager.addItem` with path/name/size; `addItem` already dedupes
+  on path so retried events stay benign. **No auto-process** in v1:
+  files queue up, user still presses Start. The architecture supports
+  auto-process as a future toggle — flagged as risky in PLAN P5.
 - [x] **PDF metadata pre-fill (May 2026, v0.1.31)** — new
   `extract_pdf_metadata` Tauri command reads the PDF /Info dictionary
   via `lopdf` (already a transitive dep of pdf-extract). Returns title /

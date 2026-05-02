@@ -6,6 +6,47 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ## Build & CI
 
+### `notify` event handlers run on a non-tokio thread
+
+`notify::recommended_watcher`'s callback runs on a notify-internal thread,
+not a tokio worker. That means: no `await`, no tokio-mutex `lock().await`
+directly. Two clean patterns:
+
+1. Pass an `Arc<Mutex<…>>` into the closure and `tokio::spawn` an async
+   block from inside the callback — the spawn returns immediately, the
+   async work runs on the runtime, and emit-to-frontend stays well-formed.
+2. Use a sync `std::sync::Mutex` instead of `tokio::sync::Mutex` for
+   small bookkeeping inside the callback.
+
+Pattern (1) is what `watcher::handle_event` uses for the dedup map +
+`AppHandle::emit` call. Pattern (2) would be slightly faster but mixes
+sync/async primitives in a way that's harder to reason about — every
+async caller would need to use `blocking_lock` to coordinate with the
+sync callback.
+
+### `onMount` cleanup with async work needs a sync wrapper
+
+Svelte's `onMount` accepts a sync function returning either nothing or
+a sync cleanup. An `async () => …` returning a cleanup typechecks as
+`Promise<() => void>`, which is *not* the same as the expected
+`() => void`. Pattern that works in Svelte 5 + TypeScript:
+
+```ts
+onMount(() => {
+    let cleanup = () => {};
+    (async () => {
+        // ... await work ...
+        cleanup = () => unlisten();
+    })();
+    return () => cleanup();
+});
+```
+
+The IIFE runs as a side-effect; the cleanup closure is captured by
+reference and gets the real implementation once the async setup
+finishes. If `onMount`'s return runs *before* the IIFE assigns
+`cleanup`, the no-op default fires, which is harmless.
+
 ### Native TTS over stdin avoids argv-quoting nightmares
 
 `say` (macOS), `espeak`/`spd-say` (Linux), and PowerShell SAPI (Windows)

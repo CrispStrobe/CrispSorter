@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.31"
+version = "0.1.32"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -37,6 +37,10 @@ pdf-extract = "0.10.0"
 # /Info dictionary (Title / Author / Subject / Keywords / CreationDate)
 # directly. Used by the extract_pdf_metadata Tauri command.
 lopdf       = "0.38"
+# Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
+# ReadDirectoryChangesW on Windows). Used by the folder-watcher
+# feature to auto-add new files into the batch.
+notify      = "8"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

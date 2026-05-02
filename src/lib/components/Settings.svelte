@@ -122,6 +122,13 @@
     // (or in lieu of) running the LLM. Default on — most academic PDFs
     // have decent embedded metadata, and the LLM still wins when it runs.
     let pdfMetadataPrefill = $state(true);
+    // Folder watcher: single path for v1, single toggle. The Rust side
+    // canonicalizes the path before installing the watcher and emits
+    // 'folder-watch:added' Tauri events; +page.svelte owns the global
+    // listener that calls batchManager.addItem.
+    let watchEnabled = $state(false);
+    let watchFolder  = $state('');
+    let watchStatusMsg = $state('');
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
@@ -304,6 +311,13 @@
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
         pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
+        watchEnabled = await getSetting('watchEnabled', false);
+        watchFolder  = await getSetting('watchFolder', '');
+        try {
+            const cur = await invoke<string | null>('watch_status');
+            if (cur && !watchFolder) watchFolder = cur;
+            if (cur) watchStatusMsg = `Active: ${cur}`;
+        } catch { /* command not yet wired */ }
         roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
@@ -462,6 +476,8 @@
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
         await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
+        await saveSetting('watchEnabled', watchEnabled);
+        await saveSetting('watchFolder',  watchFolder);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
@@ -622,6 +638,38 @@
     async function pickIndexModelCacheDir() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (selected) { indexModelCacheDir = selected as string; }
+    }
+
+    // ── Folder watcher controls ──────────────────────────────────────────────
+    async function pickWatchFolder() {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (selected) {
+            watchFolder = selected as string;
+            // Persist immediately so the next app start can resume even if
+            // the user doesn't click the global Save button.
+            await saveSetting('watchFolder', watchFolder);
+        }
+    }
+
+    async function applyWatch() {
+        watchStatusMsg = '';
+        try {
+            if (watchEnabled) {
+                if (!watchFolder) {
+                    watchStatusMsg = 'Pick a folder first.';
+                    return;
+                }
+                await invoke('watch_start', { folder: watchFolder });
+                watchStatusMsg = `Watching: ${watchFolder}`;
+            } else {
+                await invoke('watch_stop');
+                watchStatusMsg = 'Watcher stopped.';
+            }
+            await saveSetting('watchEnabled', watchEnabled);
+            await saveSetting('watchFolder',  watchFolder);
+        } catch (e: any) {
+            watchStatusMsg = `Watcher error: ${e?.message ?? e}`;
+        }
     }
 
     async function buildIvfPq() {
@@ -1272,6 +1320,26 @@
                     <label for="pdf-metadata-check">{i18n.t.settings.pdf_metadata_prefill}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.pdf_metadata_prefill_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <label for="watch-folder-input"><FolderOpen size={16} /> {i18n.t.settings.watch_folder}</label>
+                <div class="input-with-action">
+                    <input id="watch-folder-input" type="text" bind:value={watchFolder}
+                        placeholder="(none)" />
+                    <button class="action-btn small" onclick={pickWatchFolder}>{i18n.t.settings.browse}</button>
+                </div>
+                <div class="checkbox-group" style="margin-top:8px;">
+                    <input id="watch-enabled-check" type="checkbox" bind:checked={watchEnabled} />
+                    <label for="watch-enabled-check">{i18n.t.settings.watch_enabled}</label>
+                </div>
+                <button class="action-btn small" style="margin-top:8px;" onclick={applyWatch}>
+                    {i18n.t.settings.watch_apply}
+                </button>
+                {#if watchStatusMsg}
+                    <p class="hint" style="margin-top:6px;">{watchStatusMsg}</p>
+                {/if}
+                <p class="hint">{i18n.t.settings.watch_hint}</p>
             </div>
 
             <div class="section-card">

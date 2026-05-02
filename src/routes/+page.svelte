@@ -1,5 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { invoke } from '@tauri-apps/api/core';
+    import { listen } from '@tauri-apps/api/event';
+    import { stat } from '@tauri-apps/plugin-fs';
     import Settings from '$lib/components/Settings.svelte';
     import BatchReview from '$lib/components/BatchReview.svelte';
     import History from '$lib/components/History.svelte';
@@ -7,6 +10,7 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
+    import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal } from 'lucide-svelte';
     import IndexSearch from '$lib/components/IndexSearch.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
@@ -26,16 +30,61 @@
         return { total: items.length, counts };
     });
 
-    onMount(async () => {
-        // Load saved language
-        const savedLang = await getSetting('language', 'en') as Language;
-        i18n.setLanguage(savedLang);
+    onMount(() => {
+        let cleanup = () => {};
+        (async () => {
+            // Load saved language
+            const savedLang = await getSetting('language', 'en') as Language;
+            i18n.setLanguage(savedLang);
 
-        try {
-            await batchManager.resumeLastSession();
-        } catch (e) {
-            console.error("Session resume failed:", e);
-        }
+            try {
+                await batchManager.resumeLastSession();
+            } catch (e) {
+                console.error("Session resume failed:", e);
+            }
+
+            // ── Folder watcher ──────────────────────────────────────────
+            // Single global listener for folder-watch:added events. The
+            // Rust watcher emits one event per new file (debounced 2s);
+            // we stat for size and append to the batch. addItem dedupes
+            // on path, so re-emitted events don't create duplicate rows.
+            const unlistenWatch = await listen<{ path: string }>(
+                'folder-watch:added',
+                async (event) => {
+                    const path = event.payload?.path;
+                    if (!path) return;
+                    const name = path.split(/[\\/]/).pop() || path;
+                    let size = 0;
+                    try {
+                        const info = await stat(path);
+                        size = Number((info as any).size ?? 0);
+                    } catch {
+                        /* file may have been moved between detection and
+                           stat — ignore and import with size=0 */
+                    }
+                    batchManager.addItem(path, name, size);
+                    flog('info', `Watcher added: ${name}`);
+                }
+            );
+
+            // Resume the watcher if the user had it enabled previously.
+            try {
+                const enabled = (await getSetting('watchEnabled', false)) as boolean;
+                const folder = (await getSetting('watchFolder', '')) as string;
+                if (enabled && folder) {
+                    await invoke('watch_start', { folder });
+                    flog('info', `Watcher resumed: ${folder}`);
+                }
+            } catch (e) {
+                flog('warn', `Watcher resume failed: ${e}`);
+            }
+
+            cleanup = () => {
+                unlistenWatch();
+                invoke('watch_stop').catch(() => {});
+            };
+        })();
+        return () => cleanup();
     });
 
     function switchToBatch() {

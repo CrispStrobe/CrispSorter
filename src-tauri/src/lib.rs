@@ -1,6 +1,7 @@
 pub mod asr;
 pub mod index;
 pub mod tts;
+pub mod watcher;
 
 /// Speak `text` aloud via the platform's native TTS synth.
 ///
@@ -32,6 +33,38 @@ async fn tts_speak(
     let mut slot = state.tts_process.lock().await;
     *slot = Some(child);
     Ok(())
+}
+
+/// Start (or replace) the folder watcher. `folder` is canonicalized
+/// before installation; an existing watcher is dropped first to enforce
+/// the single-folder invariant.
+#[tauri::command]
+async fn watch_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    folder: String,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(folder);
+    let mut guard = state.watcher.lock().await;
+    watcher::start(&mut guard, app, path).map_err(|e| format!("watch_start failed: {e:#}"))
+}
+
+/// Stop watching. No-op when nothing is being watched.
+#[tauri::command]
+async fn watch_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.watcher.lock().await;
+    watcher::stop(&mut guard);
+    Ok(())
+}
+
+/// Returns the currently watched path, or `None` when idle.
+#[tauri::command]
+async fn watch_status(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+    let guard = state.watcher.lock().await;
+    Ok(guard
+        .current_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned()))
 }
 
 /// Stop any in-flight TTS utterance. No-op when nothing is speaking.
@@ -208,6 +241,10 @@ pub struct AppState {
     /// Currently-speaking TTS child process, if any. Held so `tts_stop`
     /// can kill it mid-utterance.
     pub tts_process: Mutex<Option<TokioChild>>,
+    /// Folder-watcher state. Single watched directory for v1; the
+    /// `notify::RecommendedWatcher` lives inside the state and gets
+    /// dropped when the user changes folders or stops watching.
+    pub watcher: Mutex<watcher::WatcherState>,
 }
 
 #[tauri::command]
@@ -1304,6 +1341,7 @@ pub fn run() {
             index: Mutex::new(index::IndexState::disabled()),
             asr: Mutex::new(None),
             tts_process: Mutex::new(None),
+            watcher: Mutex::new(watcher::WatcherState::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -1339,6 +1377,9 @@ pub fn run() {
             asr_transcribe,
             tts_speak,
             tts_stop,
+            watch_start,
+            watch_stop,
+            watch_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
