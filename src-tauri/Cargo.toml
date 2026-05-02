@@ -88,10 +88,10 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
-crispasr          = ["dep:crispasr"]
-crispasr-vulkan   = ["crispasr", "crispasr/vulkan"]
-crispasr-metal    = ["crispasr", "crispasr/metal"]
-crispasr-cuda     = ["crispasr", "crispasr/cuda"]
+crispasr          = ["dep:crispasr", "dep:crispasr-sys"]
+crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
+crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
+crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 
 # ── Dev build size ──────────────────────────────────────────────────────────
 # Strip debug info from third-party deps only (keep it for our own crate).
@@ -128,5 +128,17 @@ optional = true
 #   cargo build --features crispasr-metal    (macOS)
 [dependencies.crispasr]
 path     = "../../CrispASR/crispasr"
+optional = true
+
+# Direct dep on crispasr-sys (mirrors `crispasr`'s own dep) so this
+# package's build.rs sees `DEP_CRISPASR_LIB_DIR`, which crispasr-sys's
+# build script publishes via its `links = "crispasr"` metadata channel.
+# We need that to emit the right `cargo:rustc-link-arg=-Wl,-rpath,…`
+# entries for the final binary — Cargo only forwards `links` metadata
+# to *direct* dependents, so a transitive path won't work. The crate
+# itself is unused from our Rust code; `crispasr` re-exports what we
+# need.
+[dependencies.crispasr-sys]
+path     = "../../CrispASR/crispasr-sys"
 optional = true
 

@@ -10644,6 +10644,7 @@ dependencies = [
  "arrow-select",
  "async-trait",
  "crispasr",
+ "crispasr-sys",
  "crispembed",
  "deunicode",
  "fastembed",
