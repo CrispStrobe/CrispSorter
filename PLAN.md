@@ -41,17 +41,27 @@ remains an explicit non-goal for v1.)
 
 ### P5 — Future / planned
 
-1. **XMP metadata extraction** — extend the PDF metadata reader to parse the
-   XMP RDF/XML stream (better author / keyword data on producer-tagged PDFs).
-3. **Auto-process toggle on watch detection** — risky (auto-moves files
+1. **Auto-process toggle on watch detection** — risky (auto-moves files
    without review); needs a confirmation step or a "watch + queue, don't
    auto-move" mode that's distinct from full auto.
-4. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
+2. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
 ---
 
 ## Recent changes
 
+- [x] **XMP metadata extraction (May 2026, v0.1.35)** — `extract_pdf_metadata`
+  now reads the catalog's `/Metadata` stream (XMP RDF/XML) in addition to
+  the `/Info` dict. XMP fields win when present (better-curated by
+  publisher tooling); `/Info` fills any gaps via the new `merge_in`
+  helper. quick-xml-based event walker tracks `dc:title`, `dc:creator`,
+  `dc:subject`, `dc:description`, and `xmp:CreateDate`/`ModifyDate`/
+  `MetadataDate` — handles the typical RDF wrapping (`Alt`/`Seq`/`Bag` >
+  `li`). Multiple creators get joined with `" and "` (BibTeX-friendly
+  format). Uses quick-xml's `xml_content()` to decode + unescape XML
+  entities in one step. 5 new unit tests cover the dc:Alt/Seq pattern,
+  Bag keywords, XMP-with-only-Producer (returns None — no merge needed),
+  truncated input resilience, and the merge precedence.
 - [x] **Multi-folder watcher (May 2026, v0.1.34)** — extends v0.1.32
   from single-folder to a list. `WatcherState` now holds
   `HashMap<PathBuf, RecommendedWatcher>` keyed by canonical path; one
@@ -103,9 +113,8 @@ remains an explicit non-goal for v1.)
   `pdfMetadataPrefill` Settings toggle is on (default true) and pre-fills
   empty `suggestedTitle/Author/Year` slots. The LLM (when enabled) still
   overwrites these in phase 2 — this is purely a fallback for runs where
-  the LLM is off or fails. XMP metadata streams remain unparsed (RDF/XML;
-  future enhancement). 6 new unit tests pin the date parser + string
-  decoder shape.
+  the LLM is off or fails. (XMP metadata streams added in v0.1.35.)
+  6 new unit tests pin the date parser + string decoder shape.
 - [x] **TTS auto-speak for chat replies (May 2026, v0.1.30)** — closes the
   P3 voice loop with zero-dep platform synth. New `tts/mod.rs` shells
   out to macOS `say` / Windows PowerShell SAPI / Linux `spd-say` or

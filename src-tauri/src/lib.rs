@@ -724,18 +724,15 @@ async fn extract_pdf_native(path: String) -> Result<String, String> {
     })
 }
 
-/// PDF Info-dict metadata, parsed via `lopdf`.
+/// PDF metadata, merged from the legacy `/Info` dictionary and the
+/// modern XMP packet. Where both are present, XMP wins (it's typically
+/// richer and better-curated by publisher tooling); `/Info` fills any
+/// gaps.
 ///
 /// Fields are `Option` because real-world PDFs are inconsistent — most
 /// academic PDFs have a Title and Author, fewer have a non-default
-/// Producer-as-Author, and CreationDate quality varies wildly. Year is
-/// parsed best-effort from the `D:YYYYMMDD…` PDF-date format used in
-/// CreationDate / ModDate.
-///
-/// XMP metadata streams are *not* parsed yet — they're RDF/XML and
-/// require a much heavier parser. The Info dict catches 80% of academic
-/// PDFs; XMP is a future enhancement.
-#[derive(serde::Serialize, Default)]
+/// Producer-as-Author, and CreationDate quality varies wildly.
+#[derive(serde::Serialize, Default, Clone, Debug)]
 struct PdfMetadata {
     title: Option<String>,
     author: Option<String>,
@@ -744,14 +741,39 @@ struct PdfMetadata {
     /// Year extracted from CreationDate (preferred) or ModDate fallback.
     year: Option<i32>,
     /// Raw producer string — exposed so the frontend can decide whether
-    /// to trust the Info dict (academic-publisher producers are usually
+    /// to trust the metadata (academic-publisher producers are usually
     /// reliable; "Print to PDF" / generic OS dialogs less so).
     producer: Option<String>,
 }
 
+impl PdfMetadata {
+    /// Merge `other` into `self`, taking `other`'s values where they're
+    /// present. Used to layer XMP (preferred) on top of `/Info` (fallback).
+    fn merge_in(&mut self, other: PdfMetadata) {
+        if other.title.is_some() {
+            self.title = other.title;
+        }
+        if other.author.is_some() {
+            self.author = other.author;
+        }
+        if other.subject.is_some() {
+            self.subject = other.subject;
+        }
+        if other.keywords.is_some() {
+            self.keywords = other.keywords;
+        }
+        if other.year.is_some() {
+            self.year = other.year;
+        }
+        if other.producer.is_some() {
+            self.producer = other.producer;
+        }
+    }
+}
+
 #[tauri::command]
 async fn extract_pdf_metadata(path: String) -> Result<PdfMetadata, String> {
-    use lopdf::{Document, Object};
+    use lopdf::Document;
     app_log!("info", "Reading PDF metadata: {}", path);
 
     let doc = Document::load(&path).map_err(|e| {
@@ -759,21 +781,29 @@ async fn extract_pdf_metadata(path: String) -> Result<PdfMetadata, String> {
         format!("lopdf load failed: {e}")
     })?;
 
+    // Start with the legacy Info dict and layer XMP on top — XMP fields,
+    // when present, are typically better-curated by publisher tooling
+    // (Springer / Elsevier / IEEE all write good XMP). Info fills gaps.
+    let mut meta = read_info_dict(&doc);
+    if let Some(xmp) = read_xmp_packet(&doc) {
+        meta.merge_in(xmp);
+    }
+    Ok(meta)
+}
+
+fn read_info_dict(doc: &lopdf::Document) -> PdfMetadata {
+    use lopdf::Object;
     let info_id = match doc.trailer.get(b"Info") {
         Ok(Object::Reference(r)) => *r,
-        // Some PDFs inline the Info dict in the trailer; others don't have one at all.
-        _ => return Ok(PdfMetadata::default()),
+        _ => return PdfMetadata::default(),
     };
     let dict = match doc.get_object(info_id) {
         Ok(Object::Dictionary(d)) => d.clone(),
-        _ => return Ok(PdfMetadata::default()),
+        _ => return PdfMetadata::default(),
     };
 
     let read_str = |key: &[u8]| -> Option<String> {
         dict.get(key).ok().and_then(|o| {
-            // PDF strings can be PDFDocEncoding, UTF-16BE (BOM), or already UTF-8 in
-            // modern producers. lopdf exposes them as bytes; we try its decoded form
-            // first and fall back to UTF-8 from the raw payload.
             o.as_str()
                 .ok()
                 .and_then(decode_pdf_string)
@@ -788,14 +818,171 @@ async fn extract_pdf_metadata(path: String) -> Result<PdfMetadata, String> {
         .and_then(parse_pdf_date_year)
         .or_else(|| mod_date.as_deref().and_then(parse_pdf_date_year));
 
-    Ok(PdfMetadata {
+    PdfMetadata {
         title: read_str(b"Title"),
         author: read_str(b"Author"),
         subject: read_str(b"Subject"),
         keywords: read_str(b"Keywords"),
         year,
         producer: read_str(b"Producer"),
-    })
+    }
+}
+
+/// Locate the catalog's `/Metadata` stream and parse its XMP payload.
+/// Returns `None` when the PDF has no XMP packet, when decompression
+/// fails, or when the XML doesn't expose any of the dc:/xmp: fields
+/// we know about. Failures are non-fatal — a missing XMP just means
+/// the caller falls back to the /Info dict.
+fn read_xmp_packet(doc: &lopdf::Document) -> Option<PdfMetadata> {
+    use lopdf::Object;
+    // Catalog: trailer/Root → dict → /Metadata stream.
+    let root_id = match doc.trailer.get(b"Root").ok()? {
+        Object::Reference(r) => *r,
+        _ => return None,
+    };
+    let catalog = match doc.get_object(root_id).ok()? {
+        Object::Dictionary(d) => d,
+        _ => return None,
+    };
+    let meta_id = match catalog.get(b"Metadata").ok()? {
+        Object::Reference(r) => *r,
+        _ => return None,
+    };
+    let stream = match doc.get_object(meta_id).ok()? {
+        Object::Stream(s) => s,
+        _ => return None,
+    };
+    let bytes = stream
+        .decompressed_content()
+        .ok()
+        .unwrap_or_else(|| stream.content.clone());
+    if bytes.is_empty() {
+        return None;
+    }
+    parse_xmp_xml(&bytes)
+}
+
+/// Minimal XMP/RDF walker. We only care about a handful of fields and
+/// the document layout is well-constrained, so a state-machine over
+/// `quick-xml` events stays much smaller than pulling in a full RDF
+/// parser. Handles the typical wrapping:
+///
+/// ```xml
+/// <dc:title><rdf:Alt><rdf:li xml:lang="x-default">…</rdf:li></rdf:Alt></dc:title>
+/// <dc:creator><rdf:Seq><rdf:li>…</rdf:li><rdf:li>…</rdf:li></rdf:Seq></dc:creator>
+/// <xmp:CreateDate>2023-03-15T10:30:00Z</xmp:CreateDate>
+/// ```
+fn parse_xmp_xml(xml: &[u8]) -> Option<PdfMetadata> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Field {
+        Title,
+        Creator,
+        Subject,
+        Description,
+        Date,
+    }
+
+    let mut reader = Reader::from_reader(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+
+    let mut stack: Vec<Field> = Vec::new();
+    let mut out = PdfMetadata::default();
+    let mut creators: Vec<String> = Vec::new();
+    let mut subjects: Vec<String> = Vec::new();
+
+    let field_for = |prefix: Option<&[u8]>, local: &[u8]| -> Option<Field> {
+        match (prefix, local) {
+            (Some(b"dc"), b"title") => Some(Field::Title),
+            (Some(b"dc"), b"creator") => Some(Field::Creator),
+            (Some(b"dc"), b"subject") => Some(Field::Subject),
+            (Some(b"dc"), b"description") => Some(Field::Description),
+            (Some(b"xmp"), b"CreateDate")
+            | (Some(b"xmp"), b"ModifyDate")
+            | (Some(b"xmp"), b"MetadataDate") => Some(Field::Date),
+            _ => None,
+        }
+    };
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let prefix = e.name().prefix().map(|p| p.as_ref().to_vec());
+                let local = e.local_name().as_ref().to_vec();
+                if let Some(f) = field_for(prefix.as_deref(), &local) {
+                    stack.push(f);
+                }
+            }
+            Ok(Event::End(e)) => {
+                let prefix = e.name().prefix().map(|p| p.as_ref().to_vec());
+                let local = e.local_name().as_ref().to_vec();
+                if field_for(prefix.as_deref(), &local).is_some() {
+                    stack.pop();
+                }
+            }
+            Ok(Event::Text(e)) => {
+                // quick-xml 0.38: xml_content() decodes the bytes and
+                // unescapes XML entities (&amp; &lt; etc.) in one step.
+                let Ok(decoded) = e.xml_content() else {
+                    continue;
+                };
+                let trimmed = decoded.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let Some(field) = stack.last() else {
+                    continue;
+                };
+                match field {
+                    Field::Title => {
+                        if out.title.is_none() {
+                            out.title = Some(trimmed.to_owned());
+                        }
+                    }
+                    Field::Creator => creators.push(trimmed.to_owned()),
+                    Field::Subject => subjects.push(trimmed.to_owned()),
+                    Field::Description => {
+                        if out.subject.is_none() {
+                            out.subject = Some(trimmed.to_owned());
+                        }
+                    }
+                    Field::Date => {
+                        if out.year.is_none() {
+                            // ISO-8601 dates lead with YYYY — same as the
+                            // PDF /Info dict path. Reuse the same parser.
+                            if let Some(y) = parse_pdf_date_year(trimmed) {
+                                out.year = Some(y);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if !creators.is_empty() {
+        out.author = Some(creators.join(" and "));
+    }
+    if !subjects.is_empty() {
+        out.keywords = Some(subjects.join(", "));
+    }
+
+    if out.title.is_none()
+        && out.author.is_none()
+        && out.subject.is_none()
+        && out.keywords.is_none()
+        && out.year.is_none()
+    {
+        return None;
+    }
+    Some(out)
 }
 
 /// Decode a raw PDF string. Handles three real-world cases:
@@ -881,6 +1068,114 @@ mod pdf_metadata_tests {
     #[test]
     fn pdf_string_decode_empty_returns_none() {
         assert_eq!(decode_pdf_string(b""), None);
+    }
+
+    #[test]
+    fn xmp_parses_dc_alt_title_and_seq_creator() {
+        let xml = br#"<?xml version="1.0"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/"
+                     xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <dc:title>
+        <rdf:Alt><rdf:li xml:lang="x-default">A Theory of Everything</rdf:li></rdf:Alt>
+      </dc:title>
+      <dc:creator>
+        <rdf:Seq>
+          <rdf:li>Smith, John</rdf:li>
+          <rdf:li>Doe, Jane</rdf:li>
+        </rdf:Seq>
+      </dc:creator>
+      <xmp:CreateDate>2023-03-15T10:30:00Z</xmp:CreateDate>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        let m = parse_xmp_xml(xml).expect("XMP must parse");
+        assert_eq!(m.title.as_deref(), Some("A Theory of Everything"));
+        assert_eq!(m.author.as_deref(), Some("Smith, John and Doe, Jane"));
+        assert_eq!(m.year, Some(2023));
+    }
+
+    #[test]
+    fn xmp_parses_subject_and_keywords() {
+        let xml = br#"<?xml version="1.0"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:description>
+        <rdf:Alt><rdf:li xml:lang="x-default">An abstract about cats and physics.</rdf:li></rdf:Alt>
+      </dc:description>
+      <dc:subject>
+        <rdf:Bag>
+          <rdf:li>cats</rdf:li>
+          <rdf:li>physics</rdf:li>
+        </rdf:Bag>
+      </dc:subject>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        let m = parse_xmp_xml(xml).expect("XMP must parse");
+        assert_eq!(
+            m.subject.as_deref(),
+            Some("An abstract about cats and physics.")
+        );
+        assert_eq!(m.keywords.as_deref(), Some("cats, physics"));
+    }
+
+    #[test]
+    fn xmp_returns_none_when_no_known_fields() {
+        // Only contains pdf:Producer which we don't read from XMP — Info
+        // dict covers Producer. Should return None to signal "nothing
+        // to merge".
+        let xml = br#"<?xml version="1.0"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
+      <pdf:Producer>Acrobat Distiller 11</pdf:Producer>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>"#;
+        assert!(parse_xmp_xml(xml).is_none());
+    }
+
+    #[test]
+    fn xmp_parser_resilient_to_truncated_input() {
+        // Real-world XMP packets sometimes get cut off mid-stream. We
+        // should still return whatever we managed to parse rather than
+        // panic.
+        let xml = br#"<?xml version="1.0"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:title>
+        <rdf:Alt><rdf:li xml:lang="x-default">Stub</rdf:li></rdf:Alt>
+      </dc:title>"#;
+        // Truncated: missing closing tags. quick-xml returns Err on EOF
+        // mid-element; parse_xmp_xml maps that to None (no partial
+        // metadata, since we can't trust what we collected up to a parse
+        // failure).
+        let _ = parse_xmp_xml(xml);
+    }
+
+    #[test]
+    fn merge_in_xmp_wins_when_present() {
+        let mut info = PdfMetadata {
+            title: Some("Info Title".into()),
+            author: Some("Info Author".into()),
+            year: Some(2020),
+            ..Default::default()
+        };
+        let xmp = PdfMetadata {
+            title: Some("XMP Title".into()),
+            year: None, // XMP didn't carry a date — Info should win
+            ..Default::default()
+        };
+        info.merge_in(xmp);
+        assert_eq!(info.title.as_deref(), Some("XMP Title"));
+        // Author wasn't touched by XMP → Info value persists
+        assert_eq!(info.author.as_deref(), Some("Info Author"));
+        // Year wasn't touched by XMP → Info value persists
+        assert_eq!(info.year, Some(2020));
     }
 }
 

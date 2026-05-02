@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.34"
+version = "0.1.35"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -41,6 +41,10 @@ lopdf       = "0.38"
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.
 notify      = "8"
+# Streaming XML parser used to read the XMP metadata stream embedded in
+# PDFs. quick-xml is already a transitive dep; pinning it explicitly
+# guards against future churn from indirect upgrades.
+quick-xml   = "0.38"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

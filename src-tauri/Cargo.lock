@@ -10635,7 +10635,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "0.1.34"
+version = "0.1.35"
 dependencies = [
  "anyhow",
  "arrow",
@@ -10656,6 +10656,7 @@ dependencies = [
  "notify",
  "ort",
  "pdf-extract",
+ "quick-xml",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
