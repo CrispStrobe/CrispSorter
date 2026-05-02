@@ -214,7 +214,7 @@ remains an explicit non-goal for v1.)
   `Gte{Base,Large}EnV15`). Each wired through both ONNX (native fastembed-rs
   via `CrispStrobe/fastembed-rs@feat/new-model-entries`) and GGUF (CrispEmbed
   `cstr/*-GGUF` registry). `BgeSmallEnV15` paired with `SparseModel::SPLADEPPV1`
-  per `rag_plan.md` §2 rationale. Serde kebab-case test pins frontend mapper.
+  per `HISTORY.md` §2 rationale. Serde kebab-case test pins frontend mapper.
 - [x] Stop button — wires `AbortController` through extraction and LLM queries (v0.1.22)
 - [x] Per-request LLM timeout — 3 min local / 60 s remote via `Promise.race` (v0.1.22)
 - [x] Extraction hang timeout — 5 min auto-abort on `extractionAbort` controller (v0.1.22)

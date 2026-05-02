@@ -607,7 +607,7 @@ impl EmbedderModel {
     fn to_fastembed_sparse(self) -> Option<SparseModel> {
         match self {
             EmbedderModel::BgeM3 => Some(SparseModel::BGEM3),
-            // BGE-small + SPLADE++ pairing per rag_plan §2: SPLADE on English
+            // BGE-small + SPLADE++ pairing per HISTORY.md §2: SPLADE on English
             // text only; multilingual sparse stays exclusive to BGE-M3.
             EmbedderModel::BgeSmallEnV15 => Some(SparseModel::SPLADEPPV1),
             _ => None,

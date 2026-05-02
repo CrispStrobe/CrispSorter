@@ -1,7 +1,23 @@
-# CrispSorter RAG / Search Extension — Full Plan
+# CrispSorter — History & Archived Plans
 
-> Status: planning → implementation
-> Last updated: 2026-03-16
+This file collects historical planning documents that are no longer
+"living" but are still useful as context — explanations of *why* parts
+of the codebase look the way they do.
+
+For active development plans, see [PLAN.md](PLAN.md).
+For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
+
+---
+
+## RAG / Search Extension — Original Plan (March 2026)
+
+> Originally `rag_plan.md`. Phases P1–P13 are all shipped; this section
+> remains as the design rationale for the search-index architecture
+> (LanceDB + Tantivy + dtSearch query syntax + URI-based location
+> tracking + multi-user-from-day-one). When the code references
+> "§N rationale" it points at the corresponding section below.
+>
+> Original status: planning → implementation. Last edited 2026-03-16.
 
 ---
 
