@@ -125,8 +125,9 @@ impl IngestPipeline {
             let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
 
             let (dense, sparse) = {
+                use super::embedder::EmbedRole;
                 let mut emb = self.embedder.lock().await;
-                emb.embed_full(texts)?
+                emb.embed_full(texts, EmbedRole::Passage)?
             };
 
             let model_id = {

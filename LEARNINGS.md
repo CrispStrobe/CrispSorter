@@ -14,6 +14,37 @@ doesn't have the Rust crate, the build fails even when the `crispembed` feature 
 **Local dev fix:** A minimal stub crate lives at `/Users/<user>/code/CrispEmbed/crispembed/`.
 **CI fix:** The release workflow checks out `CrispStrobe/CrispEmbed` and rewrites the Cargo.toml path.
 
+In CI/release, both repos live inside `$GITHUB_WORKSPACE`. A Python regex rewrites the path dep
+from `../../CrispEmbed/crispembed` to `../_sibling/CrispEmbed/crispembed` at build time. This is
+**fragile** — if the path format changes in Cargo.toml, the regex silently fails and `cargo metadata`
+breaks. Always verify the rewrite output in CI logs.
+
+### Release workflow: CrispEmbed checkout is load-bearing for `npm prebuild`
+The `generate-licenses.js` prebuild hook runs `cargo-license --json`, which calls `cargo metadata`.
+That resolves ALL path dependencies in Cargo.toml — including the optional `crispembed` dep.
+Without the sibling checkout + path rewrite, the build fails at the **npm prebuild** step, not at
+Rust compilation. The error message ("failed to resolve patches") doesn't obviously point to
+CrispEmbed.
+
+### llama-server sidecar binary naming
+Tauri sidecar binaries must be named `{name}-{target_triple}[.exe]` and placed in `src-tauri/bin/`.
+The release workflow downloads pre-built llama-server binaries from the ggml-org/llama.cpp
+releases and renames them to match. On macOS/Linux, shared libraries (`.dylib`/`.so`) from the
+tarball are also copied to `src-tauri/bin/` so they're bundled alongside the sidecar.
+
+### serde `rename_all = "kebab-case"` and digit boundaries — pin with a test
+Heck (the kebab-case algorithm serde uses) splits between letter↔digit, but the
+exact split is not always intuitive. Examples produced by serde for our enum:
+- `BgeSmallEnV15` → `bge-small-en-v15`  *(no dash before `15`; `V` and `15` stay together)*
+- `AllMiniLmL6V2` → `all-mini-lm-l6-v2`  *(splits `Mini`+`Lm`, `L6`+`V2`)*
+- `EmbeddingGemma300M` → `embedding-gemma300-m`  *(`Gemma300` is one token; trailing `M` splits off)*
+- `MxbaiEmbedLargeV1` → `mxbai-embed-large-v1`
+
+The frontend `Settings.svelte::indexEmbedderToRust` hand-writes these strings.
+A mismatch silently falls back to `bge-m3` (the `?? 'bge-m3'` default). Always
+add new variants to the `embedder_model_serde_strings` test in `embedder.rs`
+to lock the wire format the frontend has to match.
+
 ### `src-tauri/target` is a symlink to `<external-volume>`
 The Cargo build dir is symlinked to an external volume. If that volume is not mounted, `cargo` fails
 with "Not a directory". Fix: `rm src-tauri/target && mkdir src-tauri/target`.
@@ -24,8 +55,12 @@ has a separate `publish` job with `if: always()` that publishes the draft as soo
 matrix jobs finish — macOS 13 can catch up later or be skipped without blocking the release.
 
 ### AppImage requires `APPIMAGE_EXTRACT_AND_RUN=1` on GitHub runners
-Linux AppImage tools (linuxdeploy etc.) are themselves AppImages. GitHub runners have no FUSE
-mount capability, so they must extract-and-run. Set the env var in the workflow.
+Linux AppImage tools (`linuxdeploy`, `linuxdeploy-plugin-appimage`, `linuxdeploy-plugin-gtk`) are
+themselves AppImages. GitHub Actions ubuntu-24.04 runners have no FUSE, so the AppImage bundling
+step fails with the unhelpful error `failed to run linuxdeploy`. Set `APPIMAGE_EXTRACT_AND_RUN=1`
+in the workflow to make AppImage tools extract to a temp dir instead of using FUSE. Also useful:
+`NO_STRIP=true` to prevent `strip` from failing on unusual binaries. The `.deb` bundle is
+unaffected — it doesn't use linuxdeploy.
 
 ---
 
@@ -61,6 +96,120 @@ $effect(() => {
 });
 ```
 Or use `import { get } from 'svelte/store'` for one-shot reads.
+
+---
+
+## Search / FTS
+
+### Tantivy ASCII-folding must happen on both sides
+Query-side folding alone (via `fts_query::fold_accents`) is not enough — the
+indexed terms also have to be folded, otherwise `München` (indexed as
+`münchen`, since the `default` tokenizer only lowercases) never matches a
+folded query `munchen`. The fix is a custom tokenizer
+`ascii_folding = SimpleTokenizer + RemoveLong(40) + LowerCaser + AsciiFoldingFilter`
+registered on the index in `register_tokenizers()` and used by the schema for
+`title`, `headings`, `body`. The query-side `fold_accents` (`deunicode +
+to_lowercase`) covers substitutions Tantivy's `AsciiFoldingFilter` does not
+(e.g. `ø` → `o`), so keep both.
+
+**Breaking change for existing FTS dirs**: indexes written before this fix
+have `münchen`-flavored terms that won't match queries passing through the
+new tokenizer. Re-ingestion is required — there is no in-place migration
+because Tantivy stores tokens, not raw text. Document this when bumping the
+release that ships the fix.
+
+---
+
+## Embedder / Model registry
+
+### Rust enum match arms and non-existent variants
+
+In a `match` on a Rust enum, if you write a variant name that doesn't exist in the enum, Rust treats it as a **variable binding** (catches everything), not a compile error for a missing variant. Combined with `|` (or) patterns this produces E0408 "variable not bound in all patterns" — confusing unless you know the root cause.
+
+Example that fails:
+```rust
+fn gguf_registry_name(&self) -> Option<&'static str> {
+    use EmbedderModel::*;
+    Some(match self {
+        // BgeSmallEnV15 doesn't exist in the enum yet — Rust binds it as a variable!
+        BgeSmallEnV15 | BgeSmallEnV15Q => "bge-small-en-v1.5",
+        _ => return None,
+    })
+}
+```
+
+**Rule**: Never add match arms for model variants that don't exist in the enum yet. The wildcard `_ => return None` handles them. Add enum variants first, then add match arms.
+
+### `GGUF_CAPABLE_MODELS` must mirror the `EmbedderModel` enum
+
+The `GGUF_CAPABLE_MODELS` set in `Settings.svelte` gates the ONNX/GGUF backend toggle in the UI. Entries that don't correspond to actual `<option>` values in the model dropdown are dead weight — they'll never match. Keep the set in sync with models that have both:
+1. An `EmbedderModel` enum variant (Rust side)
+2. An `<option>` in the Settings dropdown (Svelte side)
+
+### OrtPath vs Fastembed backend selection
+
+Two conditions force the OrtPath backend (bypassing fastembed's `UserDefined`):
+1. **External ONNX data** — `.onnx_data` companion files that ORT must resolve by relative path (loading from bytes breaks this).
+2. **No config.json** — fastembed's `UserDefinedEmbeddingModel` requires a `config.json`; repos like Octen don't have one.
+
+Models with KV-cache (Qwen3-Embedding) also use OrtPath because they need custom input tensor construction (empty `past_key_values` tensors).
+
+### Decoder model pooling strategies
+
+Different decoder-based embedding models use different pooling:
+- **Qwen3-Embedding (KV-cache ONNX)**: last-token pooling on the EOS position. Empty KV-cache tensors `[batch, kv_heads, 0, head_dim]` are passed — ndarray supports zero-sized dims but ort's raw-data path does not, so use `ndarray::Array4::zeros()`.
+- **Octen-0.6B (no KV-cache ONNX)**: also last-token pooling, but the ONNX export has no `past_key_values` inputs — set `force_last_token_pool()`.
+- **electroglyph uint8 export**: pre-pooled uint8 output requires dequantization: `f32 = (u8 - zero_point) * scale`.
+
+### Snowflake Arctic L v2.0 ONNX variants
+
+Same `Snowflake/snowflake-arctic-embed-l-v2.0` HF repo, all under `onnx/`:
+- `model_quantized.onnx` (INT8, default — smallest practical)
+- `model_int8.onnx` (INT8 via different quantization)
+- `model_fp16.onnx`, `model_q4.onnx`, `model_q4f16.onnx`, `model_O4.onnx`
+- `model.onnx` + `model.onnx_data` (FP32 reference, ~1.7 GB, needs OrtPath)
+
+Only the FP32 variant has external data — the quantized ones are self-contained and can use the fastembed UserDefined path.
+
+### Asymmetric retrieval prefixes are model-specific and silent on mistakes
+
+Different model families train with different (or no) prefixes. The mapping
+lives in `EmbedderModel::prefix(EmbedRole)`:
+
+| Model family | Query prefix | Passage prefix |
+|---|---|---|
+| E5 (multilingual + English) | `query: ` | `passage: ` |
+| Nomic v1.5 | `search_query: ` | `search_document: ` |
+| BGE en-v1.5 + Mxbai | `Represent this sentence for searching relevant passages: ` | (none) |
+| Jina v5 (Small + Nano) | `Query: ` | `Document: ` |
+| EmbeddingGemma 300M | `task: search result \| query: ` | `title: none \| text: ` |
+| BGE-M3, Qwen3, Octen, PIXIE-Rune, Snowflake Arctic-L v2, GTE en-v1.5, Jina v2/v3, MiniLM, BERT bases | (none) | (none) |
+
+A wrong prefix degrades retrieval quality silently — vectors stay valid but
+score against the wrong manifold. When in doubt, default to no prefix; it's
+a smaller hit than picking the wrong one. The `prefix_table` test in
+`embedder.rs` pins the mapping so changes are explicit.
+
+The CrispEmbed (GGUF) backend has a native `set_prefix` that applies the
+prefix inside tokenization (no max-token competition with chunk text). The
+fastembed and OrtPath backends prepend in Rust — so a long prefix (BGE's is
+~14 tokens) does eat into the chunker's `max_tokens` budget; truncation
+silently drops the chunk tail. Acceptable for typical 256–512-token chunks
+but worth re-checking for very small windows.
+
+Sparse models (BGE-M3, SPLADE++) are trained without prefixes — `embed_sparse`
+passes texts through unprefixed.
+
+### Adding a new model to CrispSorter — checklist
+
+1. Add variant to `EmbedderModel` enum in `embedder.rs`.
+2. Add `display_name()`, `dims()`, `max_tokens()` match arms.
+3. Add `to_model_spec()` with HF repo + ONNX filename + any special config — or return `None` if it's a native fastembed model.
+4. Update `is_native()` (native fastembed) and `to_fastembed_dense()` / `to_fastembed_sparse()` mappings as applicable.
+5. If GGUF equivalent exists: add match arm to `gguf_registry_name()`. The decoder vs encoder branch in `to_gguf_spec()` already picks the right `<name>-q8_0.gguf` vs `<name>.gguf` filename.
+6. Add the new variant to the `embedder_model_serde_strings` test so the kebab-case wire format is locked.
+7. Add `<option value="...">` to the model dropdown in `Settings.svelte`. If GGUF-capable, add the option value to `GGUF_CAPABLE_MODELS`. Add the entry to `indexEmbedderToRust` matching the kebab-case from the test.
+8. Add i18n labels (`model_*`) in `src/lib/i18n.svelte.ts` for both `en` and `de` blocks.
 
 ---
 

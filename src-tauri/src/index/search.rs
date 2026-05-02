@@ -204,8 +204,9 @@ impl SearchEngine {
     // ── Private helpers ────────────────────────────────────────────────────
 
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        use super::embedder::EmbedRole;
         let mut emb = self.embedder.lock().await;
-        let dense = emb.embed_dense(vec![text.to_owned()])?;
+        let dense = emb.embed_dense(vec![text.to_owned()], EmbedRole::Query)?;
         dense
             .vectors
             .into_iter()

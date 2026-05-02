@@ -117,6 +117,44 @@ pub enum EmbedderModel {
     /// Our own dynamic-INT8 ONNX export including Gather (embedding table) — ~570 MB total.
     /// Smaller than Int8Local but the embedding lookup table is also quantized.
     Octen06bInt8FullLocal,
+
+    // ── intfloat/multilingual-e5 (fastembed-native + GGUF) ──────────────────
+    /// intfloat/multilingual-e5-small — 384d, 512 ctx, 100+ languages.
+    MultilingualE5Small,
+    /// intfloat/multilingual-e5-base — 768d, 512 ctx, 100+ languages.
+    MultilingualE5Base,
+    /// intfloat/multilingual-e5-large — 1024d, 512 ctx, 100+ languages.
+    MultilingualE5Large,
+
+    // ── BAAI/bge-en-v1.5 (fastembed-native + GGUF) ──────────────────────────
+    /// BAAI/bge-small-en-v1.5 — 384d, 512 ctx, English. SPLADE++ sparse pair.
+    BgeSmallEnV15,
+    /// BAAI/bge-base-en-v1.5 — 768d, 512 ctx, English.
+    BgeBaseEnV15,
+    /// BAAI/bge-large-en-v1.5 — 1024d, 512 ctx, English.
+    BgeLargeEnV15,
+
+    // ── nomic-ai/nomic-embed-text-v1.5 (fastembed-native + GGUF) ────────────
+    /// nomic-ai/nomic-embed-text-v1.5 — 768d, 8192 ctx, English.
+    NomicEmbedTextV15,
+
+    // ── mixedbread-ai/mxbai-embed-large-v1 (fastembed-native + GGUF) ────────
+    /// mixedbread-ai/mxbai-embed-large-v1 — 1024d, 512 ctx, English.
+    MxbaiEmbedLargeV1,
+
+    // ── sentence-transformers/all-MiniLM-L6-v2 (fastembed-native + GGUF) ────
+    /// all-MiniLM-L6-v2 — 384d, 256 ctx, English. Tiny CPU baseline.
+    AllMiniLmL6V2,
+
+    // ── google/embeddinggemma-300m (fastembed-native + GGUF) ────────────────
+    /// google/embeddinggemma-300m — 768d, 2048 ctx, multilingual.
+    EmbeddingGemma300M,
+
+    // ── Alibaba-NLP/gte-en-v1.5 (fastembed-native + GGUF) ───────────────────
+    /// Alibaba-NLP/gte-base-en-v1.5 — 768d, 8192 ctx, English.
+    GteBaseEnV15,
+    /// Alibaba-NLP/gte-large-en-v1.5 — 1024d, 8192 ctx, English.
+    GteLargeEnV15,
 }
 
 impl EmbedderModel {
@@ -167,6 +205,18 @@ impl EmbedderModel {
             EmbedderModel::Octen06bInt8FullLocal => {
                 "Octen-0.6B int8 full local export incl. embedding table (~570 MB)"
             }
+            EmbedderModel::MultilingualE5Small => "Multilingual-E5 Small (512 ctx, 384d, ~120 MB)",
+            EmbedderModel::MultilingualE5Base => "Multilingual-E5 Base (512 ctx, 768d, ~280 MB)",
+            EmbedderModel::MultilingualE5Large => "Multilingual-E5 Large (512 ctx, 1024d, ~570 MB)",
+            EmbedderModel::BgeSmallEnV15 => "BGE-small-en-v1.5 (512 ctx, 384d, English)",
+            EmbedderModel::BgeBaseEnV15 => "BGE-base-en-v1.5 (512 ctx, 768d, English)",
+            EmbedderModel::BgeLargeEnV15 => "BGE-large-en-v1.5 (512 ctx, 1024d, English)",
+            EmbedderModel::NomicEmbedTextV15 => "Nomic-Embed Text v1.5 (8k ctx, 768d, English)",
+            EmbedderModel::MxbaiEmbedLargeV1 => "Mxbai-Embed Large v1 (512 ctx, 1024d, English)",
+            EmbedderModel::AllMiniLmL6V2 => "all-MiniLM-L6-v2 (256 ctx, 384d, English, tiny)",
+            EmbedderModel::EmbeddingGemma300M => "EmbeddingGemma 300M (2k ctx, 768d, Multilingual)",
+            EmbedderModel::GteBaseEnV15 => "GTE Base en v1.5 (8k ctx, 768d, English)",
+            EmbedderModel::GteLargeEnV15 => "GTE Large en v1.5 (8k ctx, 1024d, English)",
         }
     }
 
@@ -176,6 +226,17 @@ impl EmbedderModel {
             EmbedderModel::JinaV2Small => 512,
             EmbedderModel::JinaV2Base => 768,
             EmbedderModel::JinaV5Nano => 768,
+            EmbedderModel::MultilingualE5Small => 384,
+            EmbedderModel::MultilingualE5Base => 768,
+            EmbedderModel::BgeSmallEnV15 => 384,
+            EmbedderModel::BgeBaseEnV15 => 768,
+            EmbedderModel::NomicEmbedTextV15 => 768,
+            EmbedderModel::AllMiniLmL6V2 => 384,
+            EmbedderModel::EmbeddingGemma300M => 768,
+            EmbedderModel::GteBaseEnV15 => 768,
+            // 1024d models hit the fall-through below:
+            // BgeM3, MultilingualE5Large, BgeLargeEnV15, MxbaiEmbedLargeV1,
+            // GteLargeEnV15, all PIXIE/Snowflake/Jina-v3/v5-Small/Qwen3/Octen variants.
             _ => 1024,
         }
     }
@@ -208,6 +269,22 @@ impl EmbedderModel {
             | EmbedderModel::Octen06bInt8Local
             | EmbedderModel::Octen06bInt4Local
             | EmbedderModel::Octen06bInt8FullLocal => 32768,
+            // 512-token encoders
+            EmbedderModel::MultilingualE5Small
+            | EmbedderModel::MultilingualE5Base
+            | EmbedderModel::MultilingualE5Large
+            | EmbedderModel::BgeSmallEnV15
+            | EmbedderModel::BgeBaseEnV15
+            | EmbedderModel::BgeLargeEnV15
+            | EmbedderModel::MxbaiEmbedLargeV1 => 512,
+            // 256-token encoder
+            EmbedderModel::AllMiniLmL6V2 => 256,
+            // 8k-context encoders
+            EmbedderModel::NomicEmbedTextV15
+            | EmbedderModel::GteBaseEnV15
+            | EmbedderModel::GteLargeEnV15 => 8192,
+            // 2k-context Gemma encoder
+            EmbedderModel::EmbeddingGemma300M => 2048,
         }
     }
 
@@ -215,11 +292,26 @@ impl EmbedderModel {
         matches!(self, EmbedderModel::BgeM3)
     }
 
-    /// Native fastembed models — loaded via `TextEmbedding::try_new` (no hf-hub fetch needed).
+    /// Native fastembed models — loaded via `TextEmbedding::try_new` (no manual ONNX path).
+    /// All models listed here have an entry in fastembed-rs's `EmbeddingModel` enum
+    /// (CrispStrobe/fastembed-rs `feat/new-model-entries` branch).
     pub fn is_native(&self) -> bool {
         matches!(
             self,
-            EmbedderModel::BgeM3 | EmbedderModel::MultilingualMiniLm
+            EmbedderModel::BgeM3
+                | EmbedderModel::MultilingualMiniLm
+                | EmbedderModel::MultilingualE5Small
+                | EmbedderModel::MultilingualE5Base
+                | EmbedderModel::MultilingualE5Large
+                | EmbedderModel::BgeSmallEnV15
+                | EmbedderModel::BgeBaseEnV15
+                | EmbedderModel::BgeLargeEnV15
+                | EmbedderModel::NomicEmbedTextV15
+                | EmbedderModel::MxbaiEmbedLargeV1
+                | EmbedderModel::AllMiniLmL6V2
+                | EmbedderModel::EmbeddingGemma300M
+                | EmbedderModel::GteBaseEnV15
+                | EmbedderModel::GteLargeEnV15
         )
     }
 
@@ -257,6 +349,18 @@ impl EmbedderModel {
             Octen06bFp32 | Octen06bInt8Local | Octen06bInt4Local | Octen06bInt8FullLocal => {
                 "octen-0.6b"
             }
+            MultilingualE5Small => "multilingual-e5-small",
+            MultilingualE5Base => "multilingual-e5-base",
+            MultilingualE5Large => "multilingual-e5-large",
+            BgeSmallEnV15 => "bge-small-en-v1.5",
+            BgeBaseEnV15 => "bge-base-en-v1.5",
+            BgeLargeEnV15 => "bge-large-en-v1.5",
+            NomicEmbedTextV15 => "nomic-embed-text-v1.5",
+            MxbaiEmbedLargeV1 => "mxbai-embed-large-v1",
+            AllMiniLmL6V2 => "all-MiniLM-L6-v2",
+            EmbeddingGemma300M => "embeddinggemma-300m",
+            GteBaseEnV15 => "gte-base-en-v1.5",
+            GteLargeEnV15 => "gte-large-en-v1.5",
             // Models below only have GGUF (CrispEmbed) — no ONNX variant in
             // the EmbedderModel enum yet, so they're handled by the wildcard.
             _ => return None,
@@ -270,7 +374,7 @@ impl EmbedderModel {
     /// `<name>.gguf`, decoder-based models default to `<name>-q8_0.gguf`
     /// (Q8_0 is universally verified, Q4_K fails for a few).
     #[cfg(feature = "crispembed")]
-    pub(crate) fn to_gguf_spec(&self) -> Option<GgufSpec> {
+    pub(crate) fn to_gguf_spec(self) -> Option<GgufSpec> {
         let name = self.gguf_registry_name()?;
         // BERT/XLM-R/MPNet/NomicBERT encoders: F32 .gguf
         // Qwen3/Gemma3 decoders: -q8_0.gguf (smaller, verified quality)
@@ -289,7 +393,7 @@ impl EmbedderModel {
         })
     }
 
-    pub fn to_model_spec(&self) -> Option<ModelSpec> {
+    pub fn to_model_spec(self) -> Option<ModelSpec> {
         match self {
             // ── external data (OrtPath backend) ─────────────────────────────
             EmbedderModel::PixieRuneV1 => Some(
@@ -480,8 +584,21 @@ impl EmbedderModel {
                 "model.onnx",
             )),
 
-            // Native fastembed models — no spec needed.
-            EmbedderModel::BgeM3 | EmbedderModel::MultilingualMiniLm => None,
+            // Native fastembed models — no spec needed (loaded via `TextEmbedding::try_new`).
+            EmbedderModel::BgeM3
+            | EmbedderModel::MultilingualMiniLm
+            | EmbedderModel::MultilingualE5Small
+            | EmbedderModel::MultilingualE5Base
+            | EmbedderModel::MultilingualE5Large
+            | EmbedderModel::BgeSmallEnV15
+            | EmbedderModel::BgeBaseEnV15
+            | EmbedderModel::BgeLargeEnV15
+            | EmbedderModel::NomicEmbedTextV15
+            | EmbedderModel::MxbaiEmbedLargeV1
+            | EmbedderModel::AllMiniLmL6V2
+            | EmbedderModel::EmbeddingGemma300M
+            | EmbedderModel::GteBaseEnV15
+            | EmbedderModel::GteLargeEnV15 => None,
         }
     }
 
@@ -489,6 +606,18 @@ impl EmbedderModel {
         match self {
             EmbedderModel::BgeM3 => EmbeddingModel::BGEM3,
             EmbedderModel::MultilingualMiniLm => EmbeddingModel::ParaphraseMLMiniLML12V2,
+            EmbedderModel::MultilingualE5Small => EmbeddingModel::MultilingualE5Small,
+            EmbedderModel::MultilingualE5Base => EmbeddingModel::MultilingualE5Base,
+            EmbedderModel::MultilingualE5Large => EmbeddingModel::MultilingualE5Large,
+            EmbedderModel::BgeSmallEnV15 => EmbeddingModel::BGESmallENV15,
+            EmbedderModel::BgeBaseEnV15 => EmbeddingModel::BGEBaseENV15,
+            EmbedderModel::BgeLargeEnV15 => EmbeddingModel::BGELargeENV15,
+            EmbedderModel::NomicEmbedTextV15 => EmbeddingModel::NomicEmbedTextV15,
+            EmbedderModel::MxbaiEmbedLargeV1 => EmbeddingModel::MxbaiEmbedLargeV1,
+            EmbedderModel::AllMiniLmL6V2 => EmbeddingModel::AllMiniLML6V2,
+            EmbedderModel::EmbeddingGemma300M => EmbeddingModel::EmbeddingGemma300M,
+            EmbedderModel::GteBaseEnV15 => EmbeddingModel::GTEBaseENV15,
+            EmbedderModel::GteLargeEnV15 => EmbeddingModel::GTELargeENV15,
             _ => EmbeddingModel::BGEM3,
         }
     }
@@ -496,9 +625,54 @@ impl EmbedderModel {
     fn to_fastembed_sparse(self) -> Option<SparseModel> {
         match self {
             EmbedderModel::BgeM3 => Some(SparseModel::BGEM3),
+            // BGE-small + SPLADE++ pairing per rag_plan §2: SPLADE on English
+            // text only; multilingual sparse stays exclusive to BGE-M3.
+            EmbedderModel::BgeSmallEnV15 => Some(SparseModel::SPLADEPPV1),
             _ => None,
         }
     }
+
+    /// Asymmetric retrieval prefix for this model. Returns `""` when the
+    /// model was trained without prefixes (BGE-M3, Qwen3, Octen, PIXIE-Rune,
+    /// Snowflake Arctic-L v2, Jina v2/v3, GTE v1.5, MiniLM, BERT bases).
+    ///
+    /// Sources: model cards on HuggingFace, fastembed-rs `model_code` notes,
+    /// CrispEmbed `--prefix` examples in README. When in doubt, default to
+    /// no prefix — a wrong prefix degrades retrieval quality more than a
+    /// missing one.
+    pub fn prefix(&self, role: EmbedRole) -> &'static str {
+        use EmbedRole::*;
+        use EmbedderModel::*;
+        match (self, role) {
+            // E5 family: symmetric "query: " / "passage: ".
+            (MultilingualE5Small | MultilingualE5Base | MultilingualE5Large, Query) => "query: ",
+            (MultilingualE5Small | MultilingualE5Base | MultilingualE5Large, Passage) => "passage: ",
+            // Nomic v1.5: asymmetric "search_query: " / "search_document: ".
+            (NomicEmbedTextV15, Query) => "search_query: ",
+            (NomicEmbedTextV15, Passage) => "search_document: ",
+            // BGE en-v1.5 + Mxbai: query-only prefix; passages get nothing.
+            (
+                BgeSmallEnV15 | BgeBaseEnV15 | BgeLargeEnV15 | MxbaiEmbedLargeV1,
+                Query,
+            ) => "Represent this sentence for searching relevant passages: ",
+            // Jina v5 family: asymmetric "Query: " / "Document: " (per fastembed-rs).
+            (JinaV5Small | JinaV5Nano, Query) => "Query: ",
+            (JinaV5Small | JinaV5Nano, Passage) => "Document: ",
+            // EmbeddingGemma 300M: task-templated prefixes.
+            (EmbeddingGemma300M, Query) => "task: search result | query: ",
+            (EmbeddingGemma300M, Passage) => "title: none | text: ",
+            _ => "",
+        }
+    }
+}
+
+/// Whether a text is being embedded as a search query or a stored passage.
+/// Asymmetric models (E5, Nomic, BGE en-v1.5, Jina v5, EmbeddingGemma) use
+/// different prefixes for each side; symmetric models ignore the role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedRole {
+    Query,
+    Passage,
 }
 
 // ── ModelSpec ──────────────────────────────────────────────────────────────
@@ -1313,32 +1487,43 @@ impl CrispEmbedBackend {
         self.model.set_prefix(prefix);
     }
 
+    // The methods below are placeholders for upcoming P2 work tracked in
+    // PLAN.md (Matryoshka dim selection, sparse routing into search,
+    // reranking pipeline). Suppress dead_code until the corresponding
+    // feature lands; deleting and re-adding them on each task adds churn.
+
     /// Set Matryoshka output dimension (0 = model default)
+    #[allow(dead_code)]
     fn set_dim(&mut self, dim: i32) {
         self.model.set_dim(dim);
     }
 
     /// Check if model supports sparse retrieval (BGE-M3, SPLADE)
+    #[allow(dead_code)]
     fn has_sparse(&self) -> bool {
         self.model.has_sparse()
     }
 
     /// Sparse encode (BGE-M3 / SPLADE)
+    #[allow(dead_code)]
     fn encode_sparse(&mut self, text: &str) -> Vec<(i32, f32)> {
         self.model.encode_sparse(text)
     }
 
     /// Check if model is a cross-encoder reranker
+    #[allow(dead_code)]
     fn is_reranker(&self) -> bool {
         self.model.is_reranker()
     }
 
     /// Cross-encoder reranking score
+    #[allow(dead_code)]
     fn rerank(&mut self, query: &str, document: &str) -> f32 {
         self.model.rerank(query, document)
     }
 
     /// Bi-encoder reranking via cosine similarity
+    #[allow(dead_code)]
     fn rerank_biencoder(
         &mut self,
         query: &str,
@@ -1376,6 +1561,21 @@ async fn ensure_gguf_on_disk(spec: &GgufSpec, cache_dir: &Path) -> Result<PathBu
 }
 
 // ── Embedder ────────────────────────────────────────────────────────────────
+
+fn prepend_prefix(texts: &[String], prefix: &str) -> Vec<String> {
+    if prefix.is_empty() {
+        return texts.to_vec();
+    }
+    texts
+        .iter()
+        .map(|t| {
+            let mut s = String::with_capacity(prefix.len() + t.len());
+            s.push_str(prefix);
+            s.push_str(t);
+            s
+        })
+        .collect()
+}
 
 pub struct Embedder {
     config: EmbedderConfig,
@@ -1477,12 +1677,31 @@ impl Embedder {
         })
     }
 
-    pub fn embed_dense(&mut self, texts: Vec<String>) -> Result<DenseEmbedding> {
+    pub fn embed_dense(
+        &mut self,
+        texts: Vec<String>,
+        role: EmbedRole,
+    ) -> Result<DenseEmbedding> {
+        let prefix = self.config.model.prefix(role);
         let vectors = match &mut self.dense {
-            DenseBackend::Fastembed(fe) => fe.embed(texts, Some(self.config.batch_size))?,
-            DenseBackend::OrtPath(op) => op.embed(texts)?,
+            DenseBackend::Fastembed(fe) => {
+                // Native fastembed has no per-call prefix hook; prepend manually.
+                let prefixed = prepend_prefix(&texts, prefix);
+                fe.embed(prefixed, Some(self.config.batch_size))?
+            }
+            DenseBackend::OrtPath(op) => {
+                let prefixed = prepend_prefix(&texts, prefix);
+                op.embed(prefixed)?
+            }
             #[cfg(feature = "crispembed")]
-            DenseBackend::CrispEmbed(ce) => ce.embed(texts)?,
+            DenseBackend::CrispEmbed(ce) => {
+                // CrispEmbed has a native set_prefix that's applied inside
+                // tokenization — preferable to manual concatenation because
+                // the prefix doesn't compete with chunk text for max_tokens
+                // in the same way (libcrispembed knows it's a prefix).
+                ce.set_prefix(prefix);
+                ce.embed(texts)?
+            }
         };
         Ok(DenseEmbedding { vectors })
     }
@@ -1507,9 +1726,12 @@ impl Embedder {
     pub fn embed_full(
         &mut self,
         texts: Vec<String>,
+        role: EmbedRole,
     ) -> Result<(DenseEmbedding, Vec<Option<SparseVector>>)> {
         let t2 = texts.clone();
-        let dense = self.embed_dense(texts)?;
+        let dense = self.embed_dense(texts, role)?;
+        // Sparse models (BGE-M3, SPLADE++) are trained without prefixes —
+        // pass texts through as-is.
         let sparse = self.embed_sparse(t2)?;
         Ok((dense, sparse))
     }
@@ -1721,6 +1943,91 @@ mod tests {
             EmbedderModel::MultilingualMiniLm.to_fastembed_dense(),
             EmbeddingModel::ParaphraseMLMiniLML12V2
         ));
+    }
+
+    #[test]
+    fn prefix_table() {
+        // Asymmetric models: query/passage differ.
+        assert_eq!(EmbedderModel::MultilingualE5Small.prefix(EmbedRole::Query), "query: ");
+        assert_eq!(
+            EmbedderModel::MultilingualE5Large.prefix(EmbedRole::Passage),
+            "passage: "
+        );
+        assert_eq!(EmbedderModel::NomicEmbedTextV15.prefix(EmbedRole::Query), "search_query: ");
+        assert_eq!(
+            EmbedderModel::NomicEmbedTextV15.prefix(EmbedRole::Passage),
+            "search_document: "
+        );
+        // BGE en-v1.5 + Mxbai: query-only prefix.
+        assert!(EmbedderModel::BgeSmallEnV15
+            .prefix(EmbedRole::Query)
+            .starts_with("Represent this sentence"));
+        assert_eq!(EmbedderModel::BgeSmallEnV15.prefix(EmbedRole::Passage), "");
+        assert!(EmbedderModel::MxbaiEmbedLargeV1
+            .prefix(EmbedRole::Query)
+            .starts_with("Represent this sentence"));
+        // Jina v5: asymmetric "Query: " / "Document: ".
+        assert_eq!(EmbedderModel::JinaV5Small.prefix(EmbedRole::Query), "Query: ");
+        assert_eq!(EmbedderModel::JinaV5Nano.prefix(EmbedRole::Passage), "Document: ");
+        // No-prefix models.
+        for m in [
+            EmbedderModel::BgeM3,
+            EmbedderModel::MultilingualMiniLm,
+            EmbedderModel::AllMiniLmL6V2,
+            EmbedderModel::PixieRuneV1,
+            EmbedderModel::SnowflakeArcticLv2,
+            EmbedderModel::JinaV2Small,
+            EmbedderModel::JinaV2Base,
+            EmbedderModel::JinaV3,
+            EmbedderModel::Qwen3Embedding,
+            EmbedderModel::Octen06bFp32,
+            EmbedderModel::GteBaseEnV15,
+            EmbedderModel::GteLargeEnV15,
+        ] {
+            assert_eq!(m.prefix(EmbedRole::Query), "", "{:?} expected no query prefix", m);
+            assert_eq!(m.prefix(EmbedRole::Passage), "", "{:?} expected no passage prefix", m);
+        }
+    }
+
+    #[test]
+    fn prepend_prefix_skips_when_empty() {
+        let texts = vec!["foo".to_string(), "bar".to_string()];
+        let out = prepend_prefix(&texts, "");
+        assert_eq!(out, texts);
+        let with = prepend_prefix(&texts, "query: ");
+        assert_eq!(with, vec!["query: foo".to_string(), "query: bar".to_string()]);
+    }
+
+    /// Pin the serde kebab-case string for every variant. The frontend's
+    /// `indexEmbedderToRust` map in `Settings.svelte` must use these exact
+    /// values — a mismatch silently falls back to `bge-m3`.
+    #[test]
+    fn embedder_model_serde_strings() {
+        let cases: &[(EmbedderModel, &str)] = &[
+            (EmbedderModel::BgeM3, "bge-m3"),
+            (EmbedderModel::MultilingualMiniLm, "multilingual-mini-lm"),
+            (EmbedderModel::MultilingualE5Small, "multilingual-e5-small"),
+            (EmbedderModel::MultilingualE5Base, "multilingual-e5-base"),
+            (EmbedderModel::MultilingualE5Large, "multilingual-e5-large"),
+            (EmbedderModel::BgeSmallEnV15, "bge-small-en-v15"),
+            (EmbedderModel::BgeBaseEnV15, "bge-base-en-v15"),
+            (EmbedderModel::BgeLargeEnV15, "bge-large-en-v15"),
+            (EmbedderModel::NomicEmbedTextV15, "nomic-embed-text-v15"),
+            (EmbedderModel::MxbaiEmbedLargeV1, "mxbai-embed-large-v1"),
+            (EmbedderModel::AllMiniLmL6V2, "all-mini-lm-l6-v2"),
+            (EmbedderModel::EmbeddingGemma300M, "embedding-gemma300-m"),
+            (EmbedderModel::GteBaseEnV15, "gte-base-en-v15"),
+            (EmbedderModel::GteLargeEnV15, "gte-large-en-v15"),
+        ];
+        for (variant, expected) in cases {
+            let s = serde_json::to_string(variant).unwrap();
+            let inner = s.trim_matches('"');
+            assert_eq!(
+                inner, *expected,
+                "serde kebab-case for {:?} was {:?}, expected {:?}",
+                variant, inner, expected
+            );
+        }
     }
 
     #[test]

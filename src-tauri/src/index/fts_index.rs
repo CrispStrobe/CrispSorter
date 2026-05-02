@@ -19,6 +19,9 @@ use tantivy::{
         Field, IndexRecordOption, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, STORED,
         STRING,
     },
+    tokenizer::{
+        AsciiFoldingFilter, LowerCaser, RemoveLongFilter, SimpleTokenizer, TextAnalyzer,
+    },
     Index, IndexReader, IndexWriter, ReloadPolicy, Score, TantivyDocument, Term,
 };
 
@@ -26,6 +29,23 @@ use super::fts_query::{translate, SearchFields};
 use super::schema::SearchFilters;
 
 const WRITER_HEAP_MB: usize = 50;
+
+/// Tokenizer used for `title`/`headings`/`body`. Mirrors the query-side
+/// `fold_accents` so a query for `München` matches an indexed `München` and
+/// vice-versa for `Munchen`. Built from Tantivy's stock filters:
+/// SimpleTokenizer + RemoveLong(40) + LowerCaser + AsciiFoldingFilter.
+const ASCII_FOLD_TOKENIZER: &str = "ascii_folding";
+
+fn register_tokenizers(index: &Index) {
+    let analyzer = TextAnalyzer::builder(SimpleTokenizer::default())
+        .filter(RemoveLongFilter::limit(40))
+        .filter(LowerCaser)
+        .filter(AsciiFoldingFilter)
+        .build();
+    index
+        .tokenizers()
+        .register(ASCII_FOLD_TOKENIZER, analyzer);
+}
 
 pub struct FtsIndex {
     pub index: Index,
@@ -64,6 +84,8 @@ impl FtsIndex {
         } else {
             Index::create_in_dir(dir, schema)?
         };
+
+        register_tokenizers(&index);
 
         let reader = index
             .reader_builder()
@@ -181,7 +203,7 @@ fn build_schema() -> (Schema, IndexFields) {
 
     let text_positional = TextOptions::default().set_indexing_options(
         TextFieldIndexing::default()
-            .set_tokenizer("default")
+            .set_tokenizer(ASCII_FOLD_TOKENIZER)
             .set_index_option(IndexRecordOption::WithFreqsAndPositions),
     );
 

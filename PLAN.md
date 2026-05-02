@@ -1,16 +1,104 @@
 # CrispSorter — Development Plan
 
+## Capabilities (shipped)
+
+- **LanceDB + Tantivy hybrid search** — persistent embedded library with dense ANN + BM25 full-text, RRF fusion
+- **ONNX / CoreML backend** — run ONNX-format models via `ort` crate with CoreML execution provider for Apple Neural Engine acceleration
+- **CrispEmbed GGUF backend** — feature-gated optional backend using libcrispembed for GGUF model inference (Metal/CUDA/Vulkan GPU acceleration)
+- **Expanded model registry** — 36 ONNX/GGUF model variants (BGE-M3, BGE en-v1.5 small/base/large, PIXIE-Rune, Snowflake Arctic L-v2, Jina v2/v3/v5, Qwen3-Embedding, Octen, MiniLM, Multilingual-E5 small/base/large, Nomic-Embed v1.5, Mxbai-Embed Large v1, all-MiniLM-L6-v2, EmbeddingGemma 300M, GTE base/large en-v1.5)
+- **OrtPath backend** — handles ONNX models with external `.onnx_data` companion files and KV-cache decoder models
+- **Cross-platform release workflow** — GitHub Actions builds for macOS ARM64/x86, Windows, Linux with llama-server sidecar
+- **CrispEmbed CI integration** — sibling repo checkout + path rewrite so `cargo metadata` resolves on clean runners
+
+## In Progress
+
+- **Wire CrispEmbed sparse encoding into search pipeline** — BGE-M3/SPLADE sparse vectors via GGUF backend (C API ready, needs UI integration). Tracked under P2.
+- **CrispEmbed reranking in search** — cross-encoder and bi-encoder reranking APIs are wired in `CrispEmbedBackend` but not yet used by the search pipeline. Tracked under P2.
+
+---
+
 ## Open TODOs
+
+### P2 — Search index / RAG
+
+- [ ] **Reranking pipeline stage** — wire CrispEmbed cross-encoder rerankers
+  (`bge-reranker-v2-m3`, `ms-marco-MiniLM-L-{6,12}-v2`, `jina-reranker-v2`,
+  `mxbai-rerank-{xsmall,base}-v1`) into the search pipeline. The C ABI hooks
+  exist on `CrispEmbedBackend` (`is_reranker`, `rerank`, `rerank_biencoder`)
+  but `SearchEngine` doesn't call them. After ANN+BM25 retrieval, take top-N,
+  score each with a reranker, re-sort. Settings UI needs a reranker model
+  picker (separate from the dense embedder) and an "enable reranking" toggle.
+  Coordinate with the GGUF-only registry: rerankers are GGUF-only today.
+- [ ] **CrispEmbed sparse encoding into search** — BGE-M3/SPLADE sparse
+  vectors via the GGUF backend (already in `CrispEmbedBackend::encode_sparse`,
+  not yet routed through `IngestPipeline` / `SearchEngine`).
+- [ ] **Matryoshka dimension selection** — expose `CrispEmbed::set_dim()` in
+  Settings for smaller/faster embeddings (saved per index, locks the value
+  for the lifetime of that index).
+
+### P3 — Voice chat (CrispASR integration)
+
+- [ ] **CrispASR sidecar for voice input** — let the user dictate prompts /
+  rename suggestions / chat messages. Mirrors the `crispembed` optional path
+  dep pattern: `../../CrispASR/crispasr` + cargo features
+  (`crispasr`, `crispasr-metal`, `crispasr-cuda`, `crispasr-vulkan`). One
+  Rust thread holds the model; Tauri command takes an audio buffer or a
+  recording session handle.
+- [ ] **Push-to-talk in Chat UI** — mic button in `Chat.svelte`. WebAudio
+  capture → Float32 PCM 16 kHz mono → `invoke('asr_transcribe', { pcm })`.
+  Stop button must abort mid-recording and mid-decode.
+- [ ] **TTS for LLM answers** — voice the analysis result / chat reply back.
+  Decide: native macOS `say` / Windows SAPI for v1 (zero deps), or a small
+  GGUF TTS (Piper / Kokoro) sidecar for cross-platform consistency.
+  Settings: voice picker, rate, "auto-speak replies" toggle.
+- [ ] **Hotword / wake word (optional)** — out of scope for v1, but the ASR
+  thread should be designed so a separate small KWS model can gate full-ASR
+  decoding when this lands.
 
 ### P4 — Code quality / maintenance
 
 - [ ] Audit remaining hardcoded UI strings in `Settings.svelte` (model manager sections)
   and `LogPanel.svelte` and move them to `i18n.svelte.ts`.
 
+### P5 — Future / planned
+
+1. **Custom output path template** — `{author}/{year} - {title}.{ext}` configurable in Settings
+2. **BibTeX / Zotero export** — generate `.bib` / RIS from batch metadata
+3. **Read PDF metadata** — pre-fill Title/Author/Year from XMP/DocInfo before LLM
+4. **Folder Watcher** — auto-ingest new files from a watched directory
+5. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
+
 ---
 
-## Done
+## Recent changes
 
+- [x] **Pre-existing FTS regression fixed (May 2026)** —
+  `index::fts_index::tests::scenario_accent_folding` was failing on `main`
+  before any of this branch's edits: query-side `fold_accents` was applied
+  but the index used Tantivy's `default` tokenizer (lowercase only), so
+  `München` was indexed as `münchen` and never matched the folded query
+  `munchen`. Fixed by registering a custom `ascii_folding` tokenizer
+  (SimpleTokenizer + RemoveLong + LowerCaser + AsciiFoldingFilter) on the
+  index and using it for the title/headings/body fields. Existing FTS dirs
+  need re-ingestion — see LEARNINGS.md for the migration note. Also cleaned
+  up clippy: `wrong_self_convention` on `to_gguf_spec`/`to_model_spec`
+  (`&self` → `self` since `EmbedderModel: Copy`), and explicit
+  `#[allow(dead_code)]` on `CrispEmbedBackend` placeholders that future P2
+  work will use.
+- [x] **Query/passage prefix selection (May 2026)** — auto-apply model-specific
+  prefixes via `EmbedderModel::prefix(EmbedRole)`. E5 (`query:` / `passage:`),
+  Nomic v1.5 (`search_query:` / `search_document:`), BGE en-v1.5 + Mxbai
+  (BGE-style query-only), Jina v5 (`Query:` / `Document:`), EmbeddingGemma
+  (task templates). All other models pass through unprefixed. CrispEmbed path
+  uses native `set_prefix`; fastembed/OrtPath paths prepend in Rust. Sparse
+  encoders (BGE-M3, SPLADE++) untouched — trained without prefixes.
+- [x] **CrispEmbed/fastembed-rs registry sync (May 2026)** — added 12 new
+  `EmbedderModel` variants (`MultilingualE5{Small,Base,Large}`, `Bge{Small,Base,Large}EnV15`,
+  `NomicEmbedTextV15`, `MxbaiEmbedLargeV1`, `AllMiniLmL6V2`, `EmbeddingGemma300M`,
+  `Gte{Base,Large}EnV15`). Each wired through both ONNX (native fastembed-rs
+  via `CrispStrobe/fastembed-rs@feat/new-model-entries`) and GGUF (CrispEmbed
+  `cstr/*-GGUF` registry). `BgeSmallEnV15` paired with `SparseModel::SPLADEPPV1`
+  per `rag_plan.md` §2 rationale. Serde kebab-case test pins frontend mapper.
 - [x] Stop button — wires `AbortController` through extraction and LLM queries (v0.1.22)
 - [x] Per-request LLM timeout — 3 min local / 60 s remote via `Promise.race` (v0.1.22)
 - [x] Extraction hang timeout — 5 min auto-abort on `extractionAbort` controller (v0.1.22)

@@ -190,9 +190,8 @@
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
-    // sync with `EmbedderModel::supports_gguf()` on the Rust side.
-    // Models with GGUF counterpart in CrispEmbed (v0.2.2+, 10 architectures).
-    // Kept in sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
+    // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
+    // Models with GGUF counterpart in CrispEmbed (post-v0.2.3 sync, 22 entries).
     const GGUF_CAPABLE_MODELS = new Set([
         // Only models that exist in the EmbedderModel enum AND have a GGUF
         // equivalent in CrispEmbed.  Additional GGUF-only models can be added
@@ -202,6 +201,11 @@
         'snowflake_l_q4', 'snowflake_l_q4f16', 'snowflake_l_o4', 'snowflake_l_fp32',
         'octen', 'jina_nano', 'jina_small',
         'qwen3_embed', 'qwen3_embed_int8', 'qwen3_embed_uint8',
+        // Added in fastembed-rs/CrispEmbed registry sync (May 2026):
+        'multilingual_e5_small', 'multilingual_e5_base', 'multilingual_e5_large',
+        'bge_small_en_v15', 'bge_base_en_v15', 'bge_large_en_v15',
+        'nomic_embed_v15', 'mxbai_large_v1', 'minilm_l6_v2',
+        'embedding_gemma_300m', 'gte_base_en_v15', 'gte_large_en_v15',
     ]);
     function supportsGguf(uiModel: string): boolean {
         return GGUF_CAPABLE_MODELS.has(uiModel);
@@ -504,6 +508,19 @@
             snowflake_l_fp32:             'snowflake-arctic-lv2-fp32',
             jina_nano:                    'jina-v5-nano',
             multilingual_mini_lm:         'multilingual-mini-lm',
+            // fastembed-rs/CrispEmbed registry sync (May 2026)
+            multilingual_e5_small:        'multilingual-e5-small',
+            multilingual_e5_base:         'multilingual-e5-base',
+            multilingual_e5_large:        'multilingual-e5-large',
+            bge_small_en_v15:             'bge-small-en-v15',
+            bge_base_en_v15:              'bge-base-en-v15',
+            bge_large_en_v15:             'bge-large-en-v15',
+            nomic_embed_v15:              'nomic-embed-text-v15',
+            mxbai_large_v1:               'mxbai-embed-large-v1',
+            minilm_l6_v2:                 'all-mini-lm-l6-v2',
+            embedding_gemma_300m:         'embedding-gemma300-m',
+            gte_base_en_v15:              'gte-base-en-v15',
+            gte_large_en_v15:             'gte-large-en-v15',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -1414,6 +1431,24 @@
                     <option value="octen">{i18n.t.settings.index.model_octen}</option>
                     <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
                     <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
+                    <optgroup label="Multilingual E5 (intfloat)">
+                        <option value="multilingual_e5_small">{i18n.t.settings.index.model_multilingual_e5_small}</option>
+                        <option value="multilingual_e5_base">{i18n.t.settings.index.model_multilingual_e5_base}</option>
+                        <option value="multilingual_e5_large">{i18n.t.settings.index.model_multilingual_e5_large}</option>
+                    </optgroup>
+                    <optgroup label="BGE en-v1.5 (BAAI)">
+                        <option value="bge_small_en_v15">{i18n.t.settings.index.model_bge_small_en_v15}</option>
+                        <option value="bge_base_en_v15">{i18n.t.settings.index.model_bge_base_en_v15}</option>
+                        <option value="bge_large_en_v15">{i18n.t.settings.index.model_bge_large_en_v15}</option>
+                    </optgroup>
+                    <optgroup label="GTE en-v1.5 (Alibaba)">
+                        <option value="gte_base_en_v15">{i18n.t.settings.index.model_gte_base_en_v15}</option>
+                        <option value="gte_large_en_v15">{i18n.t.settings.index.model_gte_large_en_v15}</option>
+                    </optgroup>
+                    <option value="nomic_embed_v15">{i18n.t.settings.index.model_nomic_embed_v15}</option>
+                    <option value="mxbai_large_v1">{i18n.t.settings.index.model_mxbai_large_v1}</option>
+                    <option value="minilm_l6_v2">{i18n.t.settings.index.model_minilm_l6_v2}</option>
+                    <option value="embedding_gemma_300m">{i18n.t.settings.index.model_embedding_gemma_300m}</option>
                 </select>
 
                 {#if supportsGguf(indexEmbedderModel)}

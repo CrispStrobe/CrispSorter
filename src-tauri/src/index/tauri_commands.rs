@@ -256,8 +256,10 @@ pub async fn index_ingest_document(
     let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
 
     let dense = {
+        use super::embedder::EmbedRole;
         let mut emb = embedder.lock().await;
-        emb.embed_dense(texts).map_err(|e| e.to_string())?
+        emb.embed_dense(texts, EmbedRole::Passage)
+            .map_err(|e| e.to_string())?
     };
     let embed_ms = start_embed.elapsed().as_millis() as u64;
 
@@ -615,10 +617,11 @@ async fn embed_query(
     embedder: Option<std::sync::Arc<tokio::sync::Mutex<super::Embedder>>>,
     text: &str,
 ) -> Result<Vec<f32>, String> {
+    use super::embedder::EmbedRole;
     let embedder = embedder.ok_or("Embedder not available for remote query embedding")?;
     let mut emb = embedder.lock().await;
     let dense = emb
-        .embed_dense(vec![text.to_owned()])
+        .embed_dense(vec![text.to_owned()], EmbedRole::Query)
         .map_err(|e| e.to_string())?;
     dense
         .vectors

@@ -26,8 +26,8 @@ pub mod benchmarks;
 
 // Re-export the most commonly used types.
 pub use embedder::{
-    chunk_text, Embedder, EmbedderBackend, EmbedderConfig, EmbedderDevice, EmbedderModel,
-    TextChunk,
+    chunk_text, EmbedRole, Embedder, EmbedderBackend, EmbedderConfig, EmbedderDevice,
+    EmbedderModel, TextChunk,
 };
 pub use fts_index::FtsIndex;
 pub use ingest::{IngestConfig, IngestPipeline, IngestStats, RawDocument};
