@@ -81,10 +81,10 @@ sysinfo = "0.33"
 #   crispembed-cuda     — CUDA (NVIDIA)
 [features]
 default = []
-crispembed        = ["dep:crispembed"]
-crispembed-vulkan = ["crispembed", "crispembed/vulkan"]
-crispembed-metal  = ["crispembed", "crispembed/metal"]
-crispembed-cuda   = ["crispembed", "crispembed/cuda"]
+crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
+crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
+crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
@@ -118,6 +118,16 @@ mistralrs = { version = "0.7.0" }
 #   cargo build --features crispembed-metal    (macOS)
 [dependencies.crispembed]
 path     = "../../CrispEmbed/crispembed"
+optional = true
+
+# Direct dep on crispembed-sys (mirrors crispasr-sys/crispasr) so this
+# package's build.rs sees `DEP_CRISPEMBED_LIB_DIR` from the
+# `links = "crispembed"` metadata channel — required for the runtime
+# rpath wiring in src-tauri/build.rs to actually fire (Cargo only
+# forwards links metadata to immediate dependents). The crate itself
+# is not used from our Rust code; `crispembed` re-exports what we need.
+[dependencies.crispembed-sys]
+path     = "../../CrispEmbed/crispembed-sys"
 optional = true
 
 # ── CrispASR (optional, on-device speech-to-text) ───────────────────────────

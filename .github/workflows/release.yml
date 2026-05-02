@@ -18,16 +18,19 @@ jobs:
             rust_target: aarch64-apple-darwin
             llama_asset: llama-b8340-bin-macos-arm64.tar.gz
             sidecar_name: llama-server-aarch64-apple-darwin
-            # crispasr-metal turns on the on-device ASR backend; the
-            # libcrispasr.dylib + ggml libs come from CrispASR's
-            # release asset (downloaded below). Linux + Windows
-            # follow as Phase 2 once those lib bundles ship.
-            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal'
-            # When set, the matching libcrispasr-{arch}.tar.gz is
-            # downloaded from CrispASR's release and extracted into
-            # _sibling/CrispASR/build-flutter-bundle/ — the path
-            # crispasr-sys's `try_existing_build` auto-discovers.
+            # crispasr-metal + crispembed-metal turn on the on-device
+            # ASR + GGUF embedder/reranker backends; the
+            # libcrispasr.dylib / libcrispembed.dylib + ggml libs come
+            # from each project's release asset (downloaded below).
+            # Linux + Windows follow as Phase 2 once those lib bundles
+            # ship.
+            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal,crispembed-metal'
+            # When set, the matching tarballs are downloaded from each
+            # repo's release and extracted into the path that the
+            # corresponding -sys crate's `try_existing_build`
+            # auto-discovers.
             crispasr_lib_asset: libcrispasr-macos-arm64.tar.gz
+            crispembed_lib_asset: crispembed-macos-arm64.tar.gz
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
@@ -43,7 +46,9 @@ jobs:
 
     env:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: main
+      # Pin to the release tag whose libcrispembed bundle the
+      # workflow downloads below. Same rationale as CRISPASR_REF.
+      CRISPEMBED_REF: v0.2.4
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
@@ -92,6 +97,25 @@ jobs:
           echo "Extracted libs:"
           find _sibling/CrispASR/build-flutter-bundle/src      -name "lib*" 2>/dev/null | head
           find _sibling/CrispASR/build-flutter-bundle/ggml/src -name "libggml*" 2>/dev/null | head
+
+      - name: Download libcrispembed bundle
+        if: matrix.crispembed_lib_asset != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CrispEmbed publishes a flat tarball: libcrispembed.dylib +
+          # libggml*.dylib all at the top level (no `src/` or `ggml/src/`
+          # nesting). crispembed-sys's `try_existing_build` walks
+          # `<build>/`, `<build>/build`, etc., and `has_prebuilt` looks
+          # for libcrispembed.* directly in those dirs — so dropping
+          # the tarball contents into `<sibling>/build/` is enough.
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
+          echo "Extracted libs:"
+          find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" 2>/dev/null | head
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash
@@ -291,7 +315,9 @@ jobs:
 
     env:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: main
+      # Pin to the release tag whose libcrispembed bundle the
+      # workflow downloads below. Same rationale as CRISPASR_REF.
+      CRISPEMBED_REF: v0.2.4
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
@@ -340,6 +366,25 @@ jobs:
           echo "Extracted libs:"
           find _sibling/CrispASR/build-flutter-bundle/src      -name "lib*" 2>/dev/null | head
           find _sibling/CrispASR/build-flutter-bundle/ggml/src -name "libggml*" 2>/dev/null | head
+
+      - name: Download libcrispembed bundle
+        if: matrix.crispembed_lib_asset != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CrispEmbed publishes a flat tarball: libcrispembed.dylib +
+          # libggml*.dylib all at the top level (no `src/` or `ggml/src/`
+          # nesting). crispembed-sys's `try_existing_build` walks
+          # `<build>/`, `<build>/build`, etc., and `has_prebuilt` looks
+          # for libcrispembed.* directly in those dirs — so dropping
+          # the tarball contents into `<sibling>/build/` is enough.
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
+          echo "Extracted libs:"
+          find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" 2>/dev/null | head
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash

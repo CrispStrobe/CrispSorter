@@ -1,45 +1,58 @@
 #!/usr/bin/env bash
 #
-# Copy CrispASR's libcrispasr.dylib (+ ggml backend libs) into a built
-# crispsorter.app bundle so dyld can resolve `@rpath/libcrispasr.1.dylib`
-# at launch. Adapted from CrisperWeaver's `scripts/bundle_macos_dylibs.sh`
-# for Tauri's `.app/Contents/Frameworks/` layout.
+# Copy CrispASR's libcrispasr.dylib and/or CrispEmbed's
+# libcrispembed.dylib (+ ggml backend libs + homebrew transitives) into
+# a built crispsorter.app bundle so dyld can resolve their @rpath/...
+# references at launch.
 #
-# Adds (mirroring CrisperWeaver):
-#   * libcrispasr.dylib + the SOVERSION-1 alias the binary actually links
-#     against (`libcrispasr.1.dylib`)
-#   * `libwhisper.dylib` symlink — kept because libcrispasr's own LC_ID
-#     historically used the whisper alias
-#   * libggml*.dylib (recursive find under <build>/ggml/src/) — backend
-#     subdirs (ggml-metal, ggml-blas, ggml-cpu, …) all get flattened
-#     into Frameworks/
-#   * Homebrew transitives that libcrispasr happens to link absolute
-#     (kokoro pulls espeak-ng on macOS) — install_name in libcrispasr
-#     is rewritten to @rpath/<basename> after copying so the bundled
-#     copy wins over the missing absolute path on the user's machine
+# Adapted from CrisperWeaver's `scripts/bundle_macos_dylibs.sh` for
+# Tauri's `.app/Contents/Frameworks/` layout, then generalised to
+# handle the two sibling libs the project depends on optionally.
 #
-# Re-codesigns the .app ad-hoc at the end so Gatekeeper accepts the
-# modified bundle locally. CI release builds get a real Developer ID
-# signature later in the workflow if signing creds are configured.
+# Each wrapper lib is processed independently — if its build dir is
+# absent, that wrapper is skipped silently. So a build with only
+# `--features crispasr-metal` Just Works without touching CrispEmbed,
+# and vice versa.
+#
+# Per wrapper, the script:
+#   * Copies the main lib + recreates SOVERSION-1 / unversioned
+#     symlinks (needed because the binary records @rpath/libfoo.1.dylib
+#     via LC_LOAD_DYLIB).
+#   * Recursively copies every libggml*.{dylib} found under either the
+#     CrispASR-style `<build>/ggml/src/` or the CrispEmbed-style flat
+#     `<build>/`.
+#   * Recursively walks transitive homebrew/usr-local deps (kokoro pulls
+#     espeak-ng → pcaudiolib on macOS); copies each, rewrites its
+#     LC_ID_DYLIB to @rpath/<basename>, and rewrites the loader's
+#     LC_LOAD_DYLIB references.
+#   * Deletes every absolute LC_RPATH entry from the wrapper lib (cmake
+#     bakes in /opt/homebrew/Cellar/... and the build-tree path, both
+#     leak the dev machine and crowd out the bundled @loader_path
+#     lookup) and adds @loader_path/. as the only rpath.
+#
+# Re-codesigns ad-hoc at the end (CI release jobs with a Developer ID
+# can override via CODESIGN_IDENTITY). Optionally repacks the .dmg from
+# the patched .app so the published artifact picks up the changes —
+# Tauri 2 has no hook between "create .app" and "create .dmg".
 #
 # Usage:
 #   scripts/bundle_macos_native_libs.sh [path/to/.app]
 #
 # Env:
-#   CRISPASR_BUILD_DIR   path to the cmake build dir produced by
-#                        `scripts/build_crispasr_macos.sh` or by hand
-#                        (default: ../CrispASR/build-flutter-bundle —
-#                        matches CrisperWeaver's convention so a dev who
-#                        already built libs for that project gets a
-#                        free reuse).
-#
-# Default app path is autodiscovered:
-#   src-tauri/target/(aarch64|x86_64)-apple-darwin/release/bundle/macos/*.app
-#   src-tauri/target/release/bundle/macos/*.app
-#   src-tauri/target/debug/bundle/macos/*.app
+#   CRISPASR_BUILD_DIR    cmake build dir under which `<dir>/src/lib*` +
+#                         `<dir>/ggml/src/libggml*` exist
+#                         (default: ../CrispASR/build-flutter-bundle)
+#   CRISPEMBED_BUILD_DIR  cmake build dir under which libcrispembed.dylib
+#                         + libggml*.dylib exist (CrispEmbed uses flat
+#                         layout by default, but the script also accepts
+#                         the CrispASR-style nested layout)
+#                         (default: ../CrispEmbed/build)
+#   REPACK_DMG=0          skip the .dmg repack step
+#   CODESIGN_IDENTITY     a real Developer ID identity instead of ad-hoc
 
 set -euo pipefail
 
+# ── Locate the .app ─────────────────────────────────────────────────────
 APP="${1:-}"
 if [[ -z "$APP" ]]; then
   for cand in \
@@ -57,62 +70,47 @@ if [[ -z "$APP" || ! -d "$APP" ]]; then
   exit 2
 fi
 
-CRISPASR_BUILD_DIR="${CRISPASR_BUILD_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/CrispASR/build-flutter-bundle}"
-SRCDIR="$CRISPASR_BUILD_DIR/src"
-GGMLDIR="$CRISPASR_BUILD_DIR/ggml/src"
-
-if [[ ! -d "$SRCDIR" ]]; then
-  echo "error: CrispASR build tree not found at $SRCDIR" >&2
-  echo "       Set CRISPASR_BUILD_DIR or run scripts/build_crispasr_macos.sh first." >&2
-  exit 3
-fi
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CRISPASR_BUILD_DIR="${CRISPASR_BUILD_DIR:-$REPO_ROOT/CrispASR/build-flutter-bundle}"
+CRISPEMBED_BUILD_DIR="${CRISPEMBED_BUILD_DIR:-$REPO_ROOT/CrispEmbed/build}"
 
 FRAMEWORKS="$APP/Contents/Frameworks"
 mkdir -p "$FRAMEWORKS"
 
-# Wipe any previous bundle so stale per-backend dylibs from earlier runs
-# don't linger across rebuilds. Be careful to only remove things we
-# actually added (lib*.dylib).
+# Wipe any previous bundle so stale dylibs from earlier runs don't
+# linger across rebuilds.
 rm -f "$FRAMEWORKS"/lib*.dylib
 
-# ── Core: libcrispasr ────────────────────────────────────────────────────
-#
-# CMake produces libcrispasr.{SOVERSION_FULL}.dylib plus two symlinks
-# (libcrispasr.dylib, libcrispasr.{SOVERSION_MAJOR}.dylib). We copy the
-# concrete versioned file and recreate both symlinks inside Frameworks/
-# so:
-#   * `@rpath/libcrispasr.1.dylib` (the SONAME the binary records via
-#     LC_LOAD_DYLIB) resolves
-#   * any consumer reaching for the unversioned name also finds it
-VERSIONED=""
-for pattern in 'libcrispasr.[0-9]*.dylib' 'libwhisper.[0-9]*.dylib'; do
-  found="$(find "$SRCDIR" -maxdepth 1 -type f -name "$pattern" 2>/dev/null | sort | head -1)"
-  if [[ -n "$found" ]]; then VERSIONED="$found"; break; fi
-done
-if [[ -z "$VERSIONED" ]]; then
-  for cand in "$SRCDIR/libcrispasr.dylib" "$SRCDIR/libwhisper.dylib"; do
-    if [[ -f "$cand" || -L "$cand" ]]; then VERSIONED="$cand"; break; fi
-  done
-fi
-if [[ -z "$VERSIONED" ]]; then
-  echo "error: libcrispasr / libwhisper dylib not found under $SRCDIR" >&2
-  exit 4
-fi
-cp -L "$VERSIONED" "$FRAMEWORKS/libcrispasr.dylib"
-ln -sf libcrispasr.dylib "$FRAMEWORKS/libwhisper.dylib"
-ln -sf libcrispasr.dylib "$FRAMEWORKS/libcrispasr.1.dylib"
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-# ── ggml: every shared lib under <build>/ggml/src/, recursive ───────────
-#
-# Backend libs (ggml-metal, ggml-blas, ggml-cpu, …) live in their own
-# subdirs (e.g. `ggml/src/ggml-metal/libggml-metal.dylib`). Tauri's
-# Frameworks/ is flat, so we glob recursively and copy.
-if [[ -d "$GGMLDIR" ]]; then
+# Resolve to a concrete versioned dylib for $name under $dir, falling
+# back through alternate names (e.g. libwhisper for libcrispasr) and
+# unversioned symlinks. Echoes the chosen path; empty string if none.
+locate_versioned_lib() {
+  local dir="$1"; shift
+  for name in "$@"; do
+    local found
+    found="$(find "$dir" -maxdepth 1 -type f \
+              -name "lib$name.[0-9]*.dylib" 2>/dev/null | sort | head -1)"
+    if [[ -n "$found" ]]; then echo "$found"; return; fi
+  done
+  for name in "$@"; do
+    for cand in "$dir/lib$name.dylib"; do
+      if [[ -f "$cand" || -L "$cand" ]]; then echo "$cand"; return; fi
+    done
+  done
+  echo ""
+}
+
+# Copy every libggml*.dylib under $1 (recursive, type=f) into
+# Frameworks/ flat. Then re-create SONAME-versioned symlinks
+# (libggml.0.dylib → libggml.0.10.0.dylib …) so dlopen-by-SONAME works.
+copy_ggml_libs_from() {
+  local src="$1"
+  [[ -d "$src" ]] || return 0
   while IFS= read -r f; do
     cp -L "$f" "$FRAMEWORKS/$(basename "$f")"
-  done < <(find "$GGMLDIR" -name "libggml*.dylib" -type f 2>/dev/null)
-  # Also pull in symlinks (libggml.0.dylib → libggml.0.10.0.dylib etc.)
-  # so SONAME-based lookups resolve.
+  done < <(find "$src" -name "libggml*.dylib" -type f 2>/dev/null)
   while IFS= read -r f; do
     base="$(basename "$f")"
     [[ -e "$FRAMEWORKS/$base" ]] && continue
@@ -120,32 +118,24 @@ if [[ -d "$GGMLDIR" ]]; then
     if [[ -f "$FRAMEWORKS/$target" ]]; then
       ln -sf "$target" "$FRAMEWORKS/$base"
     fi
-  done < <(find "$GGMLDIR" -name "libggml*.dylib" -type l 2>/dev/null)
-fi
+  done < <(find "$src" -name "libggml*.dylib" -type l 2>/dev/null)
+}
 
-# ── Homebrew transitives that libcrispasr links absolute ─────────────────
-#
-# Backends that pull in system libs via /opt/homebrew/... (kokoro →
-# espeak-ng is the canonical one) need those copied next to libcrispasr
-# AND the install_name in libcrispasr rewritten to @rpath/<basename> so
-# the bundled copy wins over a missing /opt/homebrew/... on the user's
-# machine.
+# List absolute homebrew/usr-local LC_LOAD_DYLIB entries of $1.
 external_deps_of() {
   otool -L "$1" 2>/dev/null \
     | awk 'NR>1 {print $1}' \
     | grep -E '^/(opt/homebrew|usr/local)/' || true
 }
 
-# Recursively process a lib: copy it next to libcrispasr, rewrite its
-# own LC_ID_DYLIB to @rpath/<basename>, rewrite the loader's reference
-# to the bundled name, then recurse into ITS transitive deps. Hash-set
-# of already-processed basenames prevents loops + duplicate work.
+# Recursive transitive walk: for each `/opt/homebrew/*` dep of
+# $1 (the loader), copy it next to the loader, rewrite its
+# LC_ID_DYLIB + the loader's LC_LOAD_DYLIB to @rpath/<basename>, then
+# recurse into the bundled copy's own deps. Hash-set keyed on
+# basename prevents loops and duplicate work.
 declare -a processed=()
 already_processed() {
   local needle="$1"
-  # `${processed[@]+…}` expands to the array contents only when set;
-  # otherwise to nothing — keeps `set -u` happy on the first call when
-  # the array is empty.
   for p in ${processed[@]+"${processed[@]}"}; do
     [[ "$p" == "$needle" ]] && return 0
   done
@@ -161,49 +151,94 @@ bundle_external_recursive() {
       chmod u+w "$FRAMEWORKS/$base"
       install_name_tool -id "@rpath/$base" "$FRAMEWORKS/$base" 2>/dev/null || true
     fi
-    # Rewrite loader's LC_LOAD_DYLIB to point at the bundled copy.
     install_name_tool -change "$dep" "@rpath/$base" "$loader" 2>/dev/null || true
-    # Recurse — but only if we haven't seen this lib yet.
     if ! already_processed "$base"; then
       processed+=("$base")
       [[ -f "$FRAMEWORKS/$base" ]] && bundle_external_recursive "$FRAMEWORKS/$base"
     fi
   done
 }
-bundle_external_recursive "$FRAMEWORKS/libcrispasr.dylib"
 
-# ── libcrispasr's own LC_RPATH — make Frameworks/ the only search path ─
-#
-# When libcrispasr.dylib loads its OWN transitive deps via @rpath/...,
-# dyld searches *libcrispasr's* LC_RPATH, not the binary's. CMake bakes
-# in two classes of paths that have to go:
-#
-#   * absolute build-tree paths (`…/build-flutter-bundle/…`) — leak the
-#     dev machine's filesystem into the shipped binary.
-#   * absolute homebrew paths (`/opt/homebrew/…`, `/usr/local/…`) —
-#     also dev-machine-specific; if dyld finds them first it loads the
-#     unbundled copy (which then transitively pulls in *its own*
-#     unbundled deps, and the user's machine without homebrew gets a
-#     load failure).
-#
-# Strategy: delete every absolute rpath entry first, then add
-# `@loader_path/.` (= libcrispasr's own directory = Contents/Frameworks)
-# as the single, deterministic search location.
-while IFS= read -r p; do
-  install_name_tool -delete_rpath "$p" "$FRAMEWORKS/libcrispasr.dylib" 2>/dev/null || true
-done < <(otool -l "$FRAMEWORKS/libcrispasr.dylib" \
-  | awk '/cmd LC_RPATH/{getline;getline; print $2}' \
-  | grep -E '^/' || true)
-# `-add_rpath` on an existing path warns on stderr; idempotent enough.
-install_name_tool -add_rpath "@loader_path/." \
-  "$FRAMEWORKS/libcrispasr.dylib" 2>/dev/null || true
+# Strip every absolute LC_RPATH entry from $1 (cmake bakes in absolute
+# build-tree + homebrew paths that crowd out @loader_path on the user's
+# machine), then add `@loader_path/.` as the single deterministic
+# search path so transitive @rpath/... lookups land in
+# Contents/Frameworks/.
+canonicalise_loader_rpath() {
+  local lib="$1"
+  while IFS= read -r p; do
+    install_name_tool -delete_rpath "$p" "$lib" 2>/dev/null || true
+  done < <(otool -l "$lib" \
+    | awk '/cmd LC_RPATH/{getline;getline; print $2}' \
+    | grep -E '^/' || true)
+  install_name_tool -add_rpath "@loader_path/." "$lib" 2>/dev/null || true
+}
 
-# ── Re-codesign ───────────────────────────────────────────────────────────
-#
-# Ad-hoc signing is enough for local testing — the binary launches and
-# Gatekeeper grumbles only on first open (right-click → Open to bypass).
-# CI release jobs that have a Developer ID configured should re-sign
-# with that identity instead by passing CODESIGN_IDENTITY.
+# Process one wrapper library: copy + alias + ggml + transitives + rpath.
+# Args:
+#   $1 — friendly name for the log line
+#   $2 — build dir (skip silently if missing)
+#   $3 — Frameworks/-side basename to settle on (e.g., libcrispasr.dylib)
+#   $4 — comma-separated list of base names to look for in build dir
+#         (e.g., "crispasr,whisper" — first match wins)
+#   $5 — extra symlink names to create after copying (space-separated;
+#         optional; empty for libs without SOVERSION like libcrispembed)
+process_wrapper() {
+  local label="$1" build_dir="$2" frameworks_name="$3" search_names_csv="$4" extra_aliases="${5:-}"
+
+  if [[ ! -d "$build_dir" ]]; then
+    echo "==> [$label] build dir not present at $build_dir — skipping"
+    return 0
+  fi
+
+  # Lib could live in the CrispASR-style `src/` subdir or flat in
+  # the build-dir root (CrispEmbed convention). Probe both.
+  local lib_search
+  IFS=',' read -ra lib_search <<<"$search_names_csv"
+  local versioned=""
+  for src_subdir in "$build_dir/src" "$build_dir"; do
+    versioned="$(locate_versioned_lib "$src_subdir" "${lib_search[@]}")"
+    [[ -n "$versioned" ]] && break
+  done
+  if [[ -z "$versioned" ]]; then
+    echo "==> [$label] no $frameworks_name source dylib found under $build_dir — skipping"
+    return 0
+  fi
+
+  echo "==> [$label] bundling from $versioned"
+  cp -L "$versioned" "$FRAMEWORKS/$frameworks_name"
+  chmod u+w "$FRAMEWORKS/$frameworks_name"
+  for alias in $extra_aliases; do
+    ln -sf "$frameworks_name" "$FRAMEWORKS/$alias"
+  done
+
+  # ggml libs — probe both layouts.
+  copy_ggml_libs_from "$build_dir/ggml/src"
+  copy_ggml_libs_from "$build_dir"
+
+  # Recursive transitive bundle (espeak-ng → pcaudiolib etc.).
+  bundle_external_recursive "$FRAMEWORKS/$frameworks_name"
+
+  # Clean LC_RPATH + add @loader_path/. so future transitive @rpath
+  # lookups land in Frameworks/.
+  canonicalise_loader_rpath "$FRAMEWORKS/$frameworks_name"
+}
+
+# ── Process each wrapper ────────────────────────────────────────────────
+
+# CrispASR — SOVERSION 1 alias (libcrispasr.1.dylib) is the SONAME the
+# binary records via LC_LOAD_DYLIB. libwhisper.dylib is a legacy alias
+# kept for compatibility.
+process_wrapper "crispasr" "$CRISPASR_BUILD_DIR" \
+  "libcrispasr.dylib" "crispasr,whisper" \
+  "libcrispasr.1.dylib libwhisper.dylib"
+
+# CrispEmbed — no SOVERSION, no aliases needed.
+process_wrapper "crispembed" "$CRISPEMBED_BUILD_DIR" \
+  "libcrispembed.dylib" "crispembed" \
+  ""
+
+# ── Re-codesign ──────────────────────────────────────────────────────────
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 if [[ -n "$CODESIGN_IDENTITY" ]]; then
   codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP"
@@ -211,21 +246,14 @@ else
   codesign --force --deep --sign - "$APP" >/dev/null
 fi
 
+echo
 echo "Bundled into $APP/Contents/Frameworks:"
 ( cd "$FRAMEWORKS" && ls -l ./*.dylib 2>/dev/null ) | sed 's|^|  |'
 
-# ── Optional: regenerate the .dmg next to the .app ──────────────────────
-#
-# Tauri's bundler runs `tauri build` → produces .app → packs .dmg in one
-# pass, with no hook between the two. So if we want the published .dmg
-# to actually contain the patched .app, we have to repack.
-#
-# Skip with REPACK_DMG=0; defaults to repacking only if the original
-# .dmg is sitting alongside the .app (i.e. tauri produced both).
+# ── Optional: repack .dmg from the patched .app ──────────────────────────
 REPACK_DMG="${REPACK_DMG:-1}"
 if [[ "$REPACK_DMG" != "0" ]]; then
   APP_DIR="$(dirname "$APP")"
-  # Tauri puts .dmg under …/bundle/dmg/ (sibling of bundle/macos/).
   DMG_DIR="$(cd "$APP_DIR/.." && pwd)/dmg"
   if [[ -d "$DMG_DIR" ]]; then
     OLD_DMG="$(find "$DMG_DIR" -maxdepth 1 -name '*.dmg' -type f | head -1)"

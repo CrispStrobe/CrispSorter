@@ -37,16 +37,27 @@ fn main() {
 }
 
 fn emit_rpath_for(target_os: &str, build_dir: &Path) {
+    // Cover both layouts:
+    //   * CrispASR / build-flutter-bundle convention: libs in
+    //     `<build>/src/` + `<build>/ggml/src/`.
+    //   * CrispEmbed convention (flat): libs at `<build>/` itself
+    //     (libcrispembed.dylib, libggml*.dylib all in the same dir).
+    //
+    // dyld silently skips rpath entries that don't exist on disk, so
+    // emitting both is harmless and keeps consumer code identical
+    // across the two layouts.
     let lib_dir = build_dir.join("src");
     let ggml_dir = build_dir.join("ggml").join("src");
     match target_os {
         "macos" => {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", build_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", ggml_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
             println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/../Frameworks");
         }
         "linux" => {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", build_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", ggml_dir.display());
             println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib");
