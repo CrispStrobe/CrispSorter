@@ -10,10 +10,10 @@
 //!
 //! ## Design notes
 //!
-//! - **Single folder for v1.** The state struct holds `Option<Watcher>`,
-//!   not a map. Adding multi-folder support is a follow-up — the event
-//!   payload already carries the path so consumers don't need to know
-//!   which watcher fired.
+//! - **Multi-folder.** State holds `HashMap<PathBuf, RecommendedWatcher>`
+//!   keyed by canonical path. The event payload carries the file path
+//!   so consumers don't need to know which watcher fired. Adding the
+//!   same folder twice is idempotent (existing watcher is preserved).
 //! - **Debouncing.** A given file often produces multiple events on
 //!   atomic-save patterns (write to temp, rename into place). We keep
 //!   a small per-path "recently emitted" map and skip dupes within a
@@ -59,26 +59,39 @@ pub struct AddedEvent {
     pub path: String,
 }
 
-/// State held in `AppState`. The watcher field is `None` until
-/// `watch_start` is called; subsequent `watch_start` calls drop the
-/// previous watcher and replace it (enforces the single-folder
-/// invariant).
+/// State held in `AppState`. Holds one `RecommendedWatcher` per watched
+/// folder, keyed by the canonical path. Adding the same folder twice
+/// is idempotent — `start` returns `Ok(())` without touching the
+/// existing watcher. Dropping a watcher (via `stop_one`) stops fs
+/// events for that folder; the others keep emitting.
 pub struct WatcherState {
-    pub current_path: Option<PathBuf>,
-    /// Owning the `RecommendedWatcher` keeps the platform handle
-    /// alive — when this is dropped, fs events stop arriving.
-    watcher: Option<RecommendedWatcher>,
-    /// Per-path debounce map (last-emit instant).
+    /// Map of canonical path → `RecommendedWatcher`. Owning each
+    /// watcher keeps the platform handle alive — drop the entry to
+    /// stop events for that folder.
+    watchers: HashMap<PathBuf, RecommendedWatcher>,
+    /// Per-path debounce map (last-emit instant). Shared across all
+    /// active watchers — debounce is keyed on file path, not on which
+    /// watcher saw the event, so a single map is correct.
     last_emit: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 }
 
 impl WatcherState {
     pub fn new() -> Self {
         Self {
-            current_path: None,
-            watcher: None,
+            watchers: HashMap::new(),
             last_emit: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Currently watched folders, sorted for deterministic UI ordering.
+    pub fn list(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .watchers
+            .keys()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
     }
 }
 
@@ -88,9 +101,10 @@ impl Default for WatcherState {
     }
 }
 
-/// Start watching `folder` recursively. Replaces any prior watcher
-/// state (single-folder invariant). Errors out if the path doesn't
-/// exist or isn't a directory.
+/// Start watching `folder` recursively. Idempotent: if the canonical
+/// path is already in the watch set, returns `Ok(())` without spawning
+/// a duplicate watcher. Errors out if the path doesn't exist, isn't a
+/// directory, or fails to register with the platform.
 pub fn start(state: &mut WatcherState, app: AppHandle, folder: PathBuf) -> Result<()> {
     let folder = folder
         .canonicalize()
@@ -98,11 +112,9 @@ pub fn start(state: &mut WatcherState, app: AppHandle, folder: PathBuf) -> Resul
     if !folder.is_dir() {
         anyhow::bail!("watch path is not a directory: {}", folder.display());
     }
-
-    // Drop any previous watcher first — single-folder invariant. The
-    // notify crate stops events as soon as the watcher is dropped.
-    state.watcher = None;
-    state.current_path = None;
+    if state.watchers.contains_key(&folder) {
+        return Ok(());
+    }
 
     let dedup = state.last_emit.clone();
     let app_for_handler = app.clone();
@@ -118,14 +130,28 @@ pub fn start(state: &mut WatcherState, app: AppHandle, folder: PathBuf) -> Resul
         .watch(&folder, RecursiveMode::Recursive)
         .with_context(|| format!("watch start failed for {}", folder.display()))?;
 
-    state.watcher = Some(watcher);
-    state.current_path = Some(folder);
+    state.watchers.insert(folder, watcher);
     Ok(())
 }
 
-pub fn stop(state: &mut WatcherState) {
-    state.watcher = None;
-    state.current_path = None;
+/// Stop watching a single folder. Looks up by canonical path; missing
+/// entries are silently ignored (idempotent). Returns whether anything
+/// was actually removed.
+pub fn stop_one(state: &mut WatcherState, folder: &Path) -> bool {
+    let canonical = match folder.canonicalize() {
+        Ok(p) => p,
+        // Path may have been deleted since we started watching it.
+        // Fall back to a literal lookup so the user can still remove
+        // a stale entry from the list.
+        Err(_) => folder.to_path_buf(),
+    };
+    state.watchers.remove(&canonical).is_some()
+        || state.watchers.remove(folder).is_some()
+}
+
+/// Stop all active watchers.
+pub fn stop_all(state: &mut WatcherState) {
+    state.watchers.clear();
 }
 
 fn handle_event(

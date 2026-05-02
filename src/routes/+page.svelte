@@ -67,21 +67,32 @@
                 }
             );
 
-            // Resume the watcher if the user had it enabled previously.
+            // Resume any watchers configured in a previous session.
+            // Migrate the v0.1.32 single-folder shape (watchEnabled +
+            // watchFolder) to the v0.1.34 list shape (watchFolders) on
+            // first read so existing users don't lose their setup.
             try {
-                const enabled = (await getSetting('watchEnabled', false)) as boolean;
-                const folder = (await getSetting('watchFolder', '')) as string;
-                if (enabled && folder) {
-                    await invoke('watch_start', { folder });
-                    flog('info', `Watcher resumed: ${folder}`);
+                let folders = (await getSetting('watchFolders', null)) as string[] | null;
+                if (folders == null) {
+                    const legacyEnabled = (await getSetting('watchEnabled', false)) as boolean;
+                    const legacyFolder = (await getSetting('watchFolder', '')) as string;
+                    folders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
+                }
+                for (const folder of folders) {
+                    try {
+                        await invoke('watch_start', { folder });
+                        flog('info', `Watcher resumed: ${folder}`);
+                    } catch (e) {
+                        flog('warn', `Watcher resume failed for ${folder}: ${e}`);
+                    }
                 }
             } catch (e) {
-                flog('warn', `Watcher resume failed: ${e}`);
+                flog('warn', `Watcher resume read failed: ${e}`);
             }
 
             cleanup = () => {
                 unlistenWatch();
-                invoke('watch_stop').catch(() => {});
+                invoke('watch_stop_all').catch(() => {});
             };
         })();
         return () => cleanup();

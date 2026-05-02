@@ -35,9 +35,8 @@ async fn tts_speak(
     Ok(())
 }
 
-/// Start (or replace) the folder watcher. `folder` is canonicalized
-/// before installation; an existing watcher is dropped first to enforce
-/// the single-folder invariant.
+/// Start watching `folder` recursively. Idempotent — adding the same
+/// folder twice does not create a duplicate watcher.
 #[tauri::command]
 async fn watch_start(
     app: tauri::AppHandle,
@@ -49,22 +48,32 @@ async fn watch_start(
     watcher::start(&mut guard, app, path).map_err(|e| format!("watch_start failed: {e:#}"))
 }
 
-/// Stop watching. No-op when nothing is being watched.
+/// Stop watching a single folder. Returns true if a watcher was
+/// actually removed; false when the folder wasn't being watched
+/// (idempotent — frontend can call this without checking first).
 #[tauri::command]
-async fn watch_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn watch_stop_one(
+    state: tauri::State<'_, AppState>,
+    folder: String,
+) -> Result<bool, String> {
+    let path = std::path::PathBuf::from(folder);
     let mut guard = state.watcher.lock().await;
-    watcher::stop(&mut guard);
+    Ok(watcher::stop_one(&mut guard, &path))
+}
+
+/// Stop all active watchers. No-op when none are running.
+#[tauri::command]
+async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.watcher.lock().await;
+    watcher::stop_all(&mut guard);
     Ok(())
 }
 
-/// Returns the currently watched path, or `None` when idle.
+/// Returns all currently watched folders (sorted, canonical paths).
 #[tauri::command]
-async fn watch_status(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let guard = state.watcher.lock().await;
-    Ok(guard
-        .current_path
-        .as_ref()
-        .map(|p| p.to_string_lossy().into_owned()))
+    Ok(guard.list())
 }
 
 /// Stop any in-flight TTS utterance. No-op when nothing is speaking.
@@ -1378,8 +1387,9 @@ pub fn run() {
             tts_speak,
             tts_stop,
             watch_start,
-            watch_stop,
-            watch_status,
+            watch_stop_one,
+            watch_stop_all,
+            watch_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

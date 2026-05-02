@@ -43,17 +43,26 @@ remains an explicit non-goal for v1.)
 
 1. **XMP metadata extraction** — extend the PDF metadata reader to parse the
    XMP RDF/XML stream (better author / keyword data on producer-tagged PDFs).
-3. **Multi-folder watcher** — extend v0.1.32 from single-folder to a list,
-   with per-folder enable + recursive depth controls.
-4. **Auto-process toggle on watch detection** — risky (auto-moves files
+3. **Auto-process toggle on watch detection** — risky (auto-moves files
    without review); needs a confirmation step or a "watch + queue, don't
    auto-move" mode that's distinct from full auto.
-5. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
+4. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
 ---
 
 ## Recent changes
 
+- [x] **Multi-folder watcher (May 2026, v0.1.34)** — extends v0.1.32
+  from single-folder to a list. `WatcherState` now holds
+  `HashMap<PathBuf, RecommendedWatcher>` keyed by canonical path; one
+  shared per-path debounce map across all watchers. Tauri commands:
+  `watch_start` (idempotent), `watch_stop_one`, `watch_stop_all`,
+  `watch_list`. Settings UI shifts to a list with `+ Add folder` /
+  `×` per-row remove. `watchFolders: string[]` setting; on read,
+  migrates the v0.1.32 single-folder shape (`watchEnabled` +
+  `watchFolder`) to the list, so existing users don't lose their
+  setup. `+page.svelte` resume loop calls `watch_start` for each;
+  cleanup uses `watch_stop_all`. EN+DE.
 - [x] **BibTeX export (May 2026, v0.1.33)** — pure-TS `buildBibFile` in
   `src/lib/export/bibtex.ts`. Citation key = sanitized `{LastName}{Year}`,
   numeric suffix on collisions. Author lastname extracted from "Smith,

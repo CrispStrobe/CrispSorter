@@ -122,12 +122,12 @@
     // (or in lieu of) running the LLM. Default on — most academic PDFs
     // have decent embedded metadata, and the LLM still wins when it runs.
     let pdfMetadataPrefill = $state(true);
-    // Folder watcher: single path for v1, single toggle. The Rust side
-    // canonicalizes the path before installing the watcher and emits
+    // Folder watcher: list of folders for v0.1.34+. Each entry is
+    // implicitly active (presence == watching). The Rust side
+    // canonicalizes paths before installing watchers and emits
     // 'folder-watch:added' Tauri events; +page.svelte owns the global
     // listener that calls batchManager.addItem.
-    let watchEnabled = $state(false);
-    let watchFolder  = $state('');
+    let watchFolders = $state<string[]>([]);
     let watchStatusMsg = $state('');
 
     // Local Model Management
@@ -311,12 +311,26 @@
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
         pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
-        watchEnabled = await getSetting('watchEnabled', false);
-        watchFolder  = await getSetting('watchFolder', '');
+        // Migrate v0.1.32 single-folder shape on first read.
+        const stored = (await getSetting('watchFolders', null)) as string[] | null;
+        if (stored != null) {
+            watchFolders = stored;
+        } else {
+            const legacyEnabled = (await getSetting('watchEnabled', false)) as boolean;
+            const legacyFolder = (await getSetting('watchFolder', '')) as string;
+            watchFolders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
+        }
         try {
-            const cur = await invoke<string | null>('watch_status');
-            if (cur && !watchFolder) watchFolder = cur;
-            if (cur) watchStatusMsg = `Active: ${cur}`;
+            const active = await invoke<string[]>('watch_list');
+            // Resync UI list from backend in case +page.svelte already
+            // started watchers from saved state — keeps the two views
+            // aligned even after migration.
+            for (const p of active) {
+                if (!watchFolders.includes(p)) watchFolders.push(p);
+            }
+            watchStatusMsg = active.length > 0
+                ? `${active.length} folder(s) watched`
+                : '';
         } catch { /* command not yet wired */ }
         roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
@@ -476,8 +490,7 @@
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
         await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
-        await saveSetting('watchEnabled', watchEnabled);
-        await saveSetting('watchFolder',  watchFolder);
+        await saveSetting('watchFolders', watchFolders);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
@@ -641,35 +654,38 @@
     }
 
     // ── Folder watcher controls ──────────────────────────────────────────────
-    async function pickWatchFolder() {
+    async function addWatchFolder() {
         const selected = await openDialog({ directory: true, multiple: false });
-        if (selected) {
-            watchFolder = selected as string;
-            // Persist immediately so the next app start can resume even if
-            // the user doesn't click the global Save button.
-            await saveSetting('watchFolder', watchFolder);
+        if (!selected) return;
+        const folder = selected as string;
+        if (watchFolders.includes(folder)) {
+            watchStatusMsg = 'Already watching that folder.';
+            return;
         }
-    }
-
-    async function applyWatch() {
-        watchStatusMsg = '';
         try {
-            if (watchEnabled) {
-                if (!watchFolder) {
-                    watchStatusMsg = 'Pick a folder first.';
-                    return;
-                }
-                await invoke('watch_start', { folder: watchFolder });
-                watchStatusMsg = `Watching: ${watchFolder}`;
-            } else {
-                await invoke('watch_stop');
-                watchStatusMsg = 'Watcher stopped.';
-            }
-            await saveSetting('watchEnabled', watchEnabled);
-            await saveSetting('watchFolder',  watchFolder);
+            await invoke('watch_start', { folder });
+            watchFolders = [...watchFolders, folder];
+            await saveSetting('watchFolders', watchFolders);
+            watchStatusMsg = `Watching: ${folder}`;
         } catch (e: any) {
             watchStatusMsg = `Watcher error: ${e?.message ?? e}`;
         }
+    }
+
+    async function removeWatchFolder(folder: string) {
+        try {
+            await invoke('watch_stop_one', { folder });
+        } catch (e) {
+            // Stop is idempotent on the backend; failures here are usually
+            // "path no longer canonicalizes" — we still want to drop it
+            // from the UI list so the user can recover.
+            console.warn('[watch] stop_one failed (still removing from list)', e);
+        }
+        watchFolders = watchFolders.filter(f => f !== folder);
+        await saveSetting('watchFolders', watchFolders);
+        watchStatusMsg = watchFolders.length > 0
+            ? `${watchFolders.length} folder(s) watched`
+            : 'No folders being watched.';
     }
 
     async function buildIvfPq() {
@@ -1323,18 +1339,24 @@
             </div>
 
             <div class="section-card">
-                <label for="watch-folder-input"><FolderOpen size={16} /> {i18n.t.settings.watch_folder}</label>
-                <div class="input-with-action">
-                    <input id="watch-folder-input" type="text" bind:value={watchFolder}
-                        placeholder="(none)" />
-                    <button class="action-btn small" onclick={pickWatchFolder}>{i18n.t.settings.browse}</button>
-                </div>
-                <div class="checkbox-group" style="margin-top:8px;">
-                    <input id="watch-enabled-check" type="checkbox" bind:checked={watchEnabled} />
-                    <label for="watch-enabled-check">{i18n.t.settings.watch_enabled}</label>
-                </div>
-                <button class="action-btn small" style="margin-top:8px;" onclick={applyWatch}>
-                    {i18n.t.settings.watch_apply}
+                <label><FolderOpen size={16} /> {i18n.t.settings.watch_folders}</label>
+                {#if watchFolders.length === 0}
+                    <p class="hint" style="margin-top:6px;">{i18n.t.settings.watch_none}</p>
+                {:else}
+                    <ul style="list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:4px;">
+                        {#each watchFolders as folder (folder)}
+                            <li style="display:flex; align-items:center; gap:8px;">
+                                <code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.75rem;">{folder}</code>
+                                <button class="action-btn small danger" onclick={() => removeWatchFolder(folder)}
+                                        title={i18n.t.settings.watch_remove}>
+                                    ×
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
+                <button class="action-btn small" style="margin-top:8px;" onclick={addWatchFolder}>
+                    + {i18n.t.settings.watch_add}
                 </button>
                 {#if watchStatusMsg}
                     <p class="hint" style="margin-top:6px;">{watchStatusMsg}</p>
