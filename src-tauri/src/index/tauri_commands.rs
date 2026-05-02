@@ -541,13 +541,21 @@ pub async fn init_index(
     );
 
     let models_dir = data_dir.join("models");
-    let embedder_cfg = EC::new(model, device, models_dir).with_backend(config.embedder_backend);
+    let embedder_cfg =
+        EC::new(model, device, models_dir.clone()).with_backend(config.embedder_backend);
 
     let embedder = Embedder::new(embedder_cfg).await?;
 
     emit!("embedder_done", "Embedder geladen", 40);
 
     let embedder_arc = Arc::new(Mutex::new(embedder));
+
+    // Reranker handle: cheap to construct (no I/O until first scoring call).
+    // Shared between IndexState (kept alive across queries) and SearchEngine
+    // (calls score_batch on the post-RRF candidate set).
+    let reranker_handle: Option<super::RerankerHandle> = config
+        .reranker_model
+        .map(|m| super::RerankerHandle::new(m, models_dir.clone()));
 
     match config.backend_type {
         BackendType::Remote => {
@@ -567,6 +575,7 @@ pub async fn init_index(
                 embedder: Some(embedder_arc),
                 engine: None,
                 pipeline: None,
+                reranker: reranker_handle,
                 config,
             })
         }
@@ -583,11 +592,15 @@ pub async fn init_index(
             let local = Arc::new(LocalIndex::open_or_create(data_dir, dims).await?);
             emit!("lance_done", "Vektor-Datenbank bereit", 90);
 
-            let engine = Arc::new(SearchEngine::new(
+            let mut engine_inner = SearchEngine::new(
                 fts.clone(),
                 local.clone(),
                 embedder_arc.clone(),
-            ));
+            );
+            if let Some(ref h) = reranker_handle {
+                engine_inner = engine_inner.with_reranker(h.clone(), config.rerank_top_n);
+            }
+            let engine = Arc::new(engine_inner);
             let pipeline = Arc::new(IngestPipeline::new(
                 fts.clone(),
                 local.clone(),
@@ -605,6 +618,7 @@ pub async fn init_index(
                 embedder: Some(embedder_arc),
                 engine: Some(engine),
                 pipeline: Some(pipeline),
+                reranker: reranker_handle,
                 config,
             })
         }

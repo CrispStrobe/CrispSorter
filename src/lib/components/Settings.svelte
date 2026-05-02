@@ -188,6 +188,10 @@
     let indexEmbedderModel  = $state<string>('bge_m3');
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+    // Reranker: empty string = disabled (maps to null on the Rust side).
+    // Other values are UI keys; mapped to Rust kebab-case via rerankerToRust.
+    let indexRerankerModel  = $state<string>('');
+    let indexRerankerTopN   = $state<number>(50);
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
     // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
@@ -314,6 +318,8 @@
         indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
+        indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
+        indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexDataDir       = await getSetting('indexDataDir', '');
         // Sync saved config into the backend
         try {
@@ -450,6 +456,8 @@
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
+        await saveSetting('indexRerankerModel', indexRerankerModel);
+        await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -491,6 +499,19 @@
     function indexBackendToRust(b: string): string {
         return b === 'remote' ? 'remote' : 'local';
     }
+    /// UI key → serde kebab string for `RerankerModel`. Empty input
+    /// (= disabled) maps to null on the Rust side. Pinned by the
+    /// `reranker_model_serde_strings` test in `index/reranker.rs`.
+    function rerankerToRust(m: string): string | null {
+        if (!m) return null;
+        const map: Record<string, string> = {
+            bge_v2_m3:       'bge-reranker-v2-m3',
+            bge_base:        'bge-reranker-base',
+            jina_v2_multi:   'jina-reranker-v2-base-multilingual',
+        };
+        return map[m] ?? null;
+    }
+
     function indexEmbedderToRust(m: string): string {
         return {
             bge_m3:                       'bge-m3',
@@ -545,6 +566,8 @@
                     embedder_model:   indexEmbedderToRust(indexEmbedderModel),
                     embedder_device:  indexDeviceToRust(indexDevice),
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
+                    reranker_model:   rerankerToRust(indexRerankerModel),
+                    rerank_top_n:     Number(indexRerankerTopN) || 50,
                 }
             });
             if (indexEnabled) {
@@ -1474,6 +1497,25 @@
                     {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
                     <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
                 </select>
+            </div>
+
+            <!-- Reranker (cross-encoder, GGUF-only via CrispEmbed) -->
+            <div class="section-card">
+                <label for="index-reranker-select"><Cpu size={16} /> {i18n.t.settings.index.reranker_model}</label>
+                <select id="index-reranker-select" bind:value={indexRerankerModel} class="styled-select">
+                    <option value="">{i18n.t.settings.index.reranker_off}</option>
+                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
+                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
+                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
+                </select>
+                {#if indexRerankerModel}
+                    <label for="index-reranker-topn" style="margin-top:10px;">
+                        {i18n.t.settings.index.reranker_top_n}
+                    </label>
+                    <input id="index-reranker-topn" type="number" min="5" max="200" step="5"
+                        bind:value={indexRerankerTopN} />
+                    <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
+                {/if}
             </div>
 
             <!-- Data directory -->

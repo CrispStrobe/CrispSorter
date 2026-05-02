@@ -3,6 +3,7 @@ pub mod fts_index;
 pub mod fts_query;
 pub mod ingest;
 pub mod local_index;
+pub mod reranker;
 /// CrispSorter search / RAG index module.
 ///
 /// Sub-modules:
@@ -29,6 +30,7 @@ pub use embedder::{
     chunk_text, EmbedRole, Embedder, EmbedderBackend, EmbedderConfig, EmbedderDevice,
     EmbedderModel, TextChunk,
 };
+pub use reranker::{Reranker, RerankerHandle, RerankerModel};
 pub use fts_index::FtsIndex;
 pub use ingest::{IngestConfig, IngestPipeline, IngestStats, RawDocument};
 pub use local_index::LocalIndex;
@@ -90,6 +92,10 @@ pub struct IndexState {
     pub engine: Option<std::sync::Arc<SearchEngine>>,
     /// Active ingest pipeline.
     pub pipeline: Option<std::sync::Arc<IngestPipeline>>,
+    /// Cross-encoder reranker handle. `None` when `config.reranker_model`
+    /// is `None`; otherwise a cheap-to-clone handle that lazy-loads the
+    /// GGUF on first scoring call.
+    pub reranker: Option<RerankerHandle>,
     pub config: IndexConfig,
 }
 
@@ -102,6 +108,7 @@ impl IndexState {
             embedder: None,
             engine: None,
             pipeline: None,
+            reranker: None,
             config: IndexConfig::default(),
         }
     }
@@ -119,6 +126,18 @@ pub struct IndexConfig {
     pub embedder_device: EmbedderDevice,
     #[serde(default)]
     pub embedder_backend: EmbedderBackend,
+    /// Cross-encoder reranker model. `None` disables reranking.
+    /// GGUF-only via CrispEmbed (requires the `crispembed` cargo feature).
+    #[serde(default)]
+    pub reranker_model: Option<RerankerModel>,
+    /// How many top candidates to score with the reranker after RRF.
+    /// Default 50; smaller is faster, larger trades latency for recall.
+    #[serde(default = "default_rerank_top_n")]
+    pub rerank_top_n: usize,
+}
+
+fn default_rerank_top_n() -> usize {
+    50
 }
 
 impl Default for IndexConfig {
@@ -132,6 +151,8 @@ impl Default for IndexConfig {
             embedder_model: EmbedderModel::BgeM3,
             embedder_device: EmbedderDevice::Auto,
             embedder_backend: EmbedderBackend::Onnx,
+            reranker_model: None,
+            rerank_top_n: default_rerank_top_n(),
         }
     }
 }

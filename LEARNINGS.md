@@ -101,6 +101,41 @@ Or use `import { get } from 'svelte/store'` for one-shot reads.
 
 ## Search / FTS
 
+### Cross-encoder reranking: lazy-load handle + NaN-safe fallback
+Rerankers double the search-side memory (separate `crispembed::CrispEmbed`
+instance with its own GGUF) and add ~100–500ms of first-query latency for
+the model load + download. Two patterns in `index/reranker.rs` keep this
+manageable:
+
+1. **`RerankerHandle`** is the only thing `SearchEngine` carries — a
+   `Clone`-able struct with `(model, cache_dir, Arc<Mutex<Option<Reranker>>>)`.
+   First `score_batch` call performs the load (HF download via `hf-hub`,
+   GGUF open via `crispembed::CrispEmbed::new`, `is_reranker()` sanity
+   check); subsequent calls reuse the cached `Reranker`. Users who never
+   issue a query don't pay the load cost.
+2. **NaN-safe fallback**: `RerankerHandle::score_batch` returns
+   `vec![f32::NAN; docs.len()]` on load failure, and `Reranker::score`
+   returns `f32::NAN` if the underlying CrispEmbed call fails. The
+   `SearchEngine::maybe_rerank` sort treats NaN entries as "stay in original
+   RRF order at the back of the list" — a misconfigured reranker degrades
+   to plain RRF ranking instead of erroring the entire query.
+
+The cross-encoder scores are *raw logits* (not probabilities), so absolute
+score values aren't comparable across reranker models. Only the relative
+ordering matters — don't expose the score in UI as a confidence percentage.
+
+Bi-encoder reranking (`CrispEmbed::rerank_biencoder`) is intentionally not
+wired in: it's just better dense retrieval over the candidate set, which the
+existing dense ANN already does. Cross-encoders are the only path that adds
+real signal beyond what we already have.
+
+### `rerank_top_n` interacts with the inner `*2` RRF over-fetch
+`search_hybrid` already over-fetches by 2x on each side (`limit*2`) so RRF
+has slack. When reranking, the over-fetch is `inner_limit*2` where
+`inner_limit = max(rerank_top_n, limit)`. With default `top_n=50`, that's
+100 candidates per side hitting Tantivy/Lance — fine for the typical
+academic corpus, but worth profiling before raising `top_n` over 100.
+
 ### Tantivy ASCII-folding must happen on both sides
 Query-side folding alone (via `fts_query::fold_accents`) is not enough — the
 indexed terms also have to be folded, otherwise `München` (indexed as

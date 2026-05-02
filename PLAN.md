@@ -21,14 +21,6 @@
 
 ### P2 — Search index / RAG
 
-- [ ] **Reranking pipeline stage** — wire CrispEmbed cross-encoder rerankers
-  (`bge-reranker-v2-m3`, `ms-marco-MiniLM-L-{6,12}-v2`, `jina-reranker-v2`,
-  `mxbai-rerank-{xsmall,base}-v1`) into the search pipeline. The C ABI hooks
-  exist on `CrispEmbedBackend` (`is_reranker`, `rerank`, `rerank_biencoder`)
-  but `SearchEngine` doesn't call them. After ANN+BM25 retrieval, take top-N,
-  score each with a reranker, re-sort. Settings UI needs a reranker model
-  picker (separate from the dense embedder) and an "enable reranking" toggle.
-  Coordinate with the GGUF-only registry: rerankers are GGUF-only today.
 - [ ] **CrispEmbed sparse encoding into search** — BGE-M3/SPLADE sparse
   vectors via the GGUF backend (already in `CrispEmbedBackend::encode_sparse`,
   not yet routed through `IngestPipeline` / `SearchEngine`).
@@ -72,6 +64,19 @@
 
 ## Recent changes
 
+- [x] **Cross-encoder reranking pipeline (May 2026, v0.1.25)** — new
+  `RerankerModel` enum (`BgeRerankerV2M3`, `BgeRerankerBase`,
+  `JinaRerankerV2BaseMultilingual`) + `Reranker` wrapper around
+  `crispembed::CrispEmbed::rerank` (cross-encoder only; bi-encoder skipped).
+  `RerankerHandle` is a cheap-clonable lazy-load handle: GGUF download +
+  model open happens on first `score_batch` call. `SearchEngine` now fetches
+  `rerank_top_n` candidates (default 50) from FTS / ANN / RRF when a
+  reranker is configured, scores each via `score_batch(query, snippets)`,
+  and re-sorts; NaN scores fall back to RRF order. `IndexConfig` gains
+  `reranker_model: Option<RerankerModel>` + `rerank_top_n: usize`. UI:
+  Settings.svelte adds a "Reranker" section between Compute Device and Data
+  Directory. GGUF-only — without the `crispembed` cargo feature, `Reranker::load`
+  returns a clear error.
 - [x] **Pre-existing FTS regression fixed (May 2026)** —
   `index::fts_index::tests::scenario_accent_folding` was failing on `main`
   before any of this branch's edits: query-side `fold_accents` was applied
