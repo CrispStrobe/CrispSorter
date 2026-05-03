@@ -247,6 +247,71 @@ fn parse_match_strategy(s: Option<&str>) -> Result<catalog::dedup::MatchStrategy
     }
 }
 
+/// Toggle whether a catalog is materialized into the LanceDB
+/// `catalog_entries` table — i.e. whether its entries participate in
+/// the unified search alongside the documents table.
+///
+/// `active = true`: load the .caf, insert all rows tagged with
+///   `catalog_path`. Replaces any prior rows for that catalog (calls
+///   the drop path first) so a re-materialize after a refresh is
+///   idempotent.
+/// `active = false`: delete every row where `catalog_path = X`.
+#[tauri::command]
+async fn catalog_set_active(
+    catalog_path: String,
+    active: bool,
+    data_dir: String,
+) -> Result<usize, String> {
+    let cp = std::path::PathBuf::from(catalog_path);
+    let dd = std::path::PathBuf::from(data_dir);
+    if active {
+        // Off-thread: .caf I/O + Arrow build + Lance write are all
+        // sync-ish work that'd block the runtime if we ran them inline.
+        let cp_clone = cp.clone();
+        let idx = tokio::task::spawn_blocking(move || {
+            catalog::caf::read_file(&cp_clone).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("read_file join error: {e}"))??;
+        catalog::lance::materialize(&dd, &cp, &idx)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        catalog::lance::drop_catalog(&dd, &cp)
+            .await
+            .map(|_| 0)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Substring search over filenames in the materialized catalog table.
+/// Filenames only — for path-component or content matching, the existing
+/// `index_search` covers documents-table rows; future Phase 4c will
+/// merge both channels via RRF.
+#[tauri::command]
+async fn catalog_search(
+    query: String,
+    data_dir: String,
+    limit: Option<usize>,
+) -> Result<Vec<catalog::lance::CatalogHit>, String> {
+    let dd = std::path::PathBuf::from(data_dir);
+    catalog::lance::search(&dd, &query, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Distinct catalog paths currently materialized — useful for the UI
+/// to verify the search-side state matches the registry's `active`
+/// flag (frontend store can drift from backend reality if a write
+/// failed).
+#[tauri::command]
+async fn catalog_active_list(data_dir: String) -> Result<Vec<String>, String> {
+    let dd = std::path::PathBuf::from(data_dir);
+    catalog::lance::list_active(&dd)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// `source` / `destination` arg can be either a .caf path or a folder.
 /// Detect by extension + file-vs-dir; load the .caf or scan the folder
 /// (no inline hashing — dedup_options decides whether to hash).
@@ -1904,6 +1969,9 @@ pub fn run() {
             catalog_metadata,
             catalog_find_duplicates,
             catalog_generate_deletion_script,
+            catalog_set_active,
+            catalog_search,
+            catalog_active_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
