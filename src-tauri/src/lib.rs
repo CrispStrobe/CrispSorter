@@ -1,6 +1,7 @@
 pub mod asr;
 pub mod bg_ingest;
 pub mod catalog;
+pub mod cli;
 pub mod extractors;
 pub mod index;
 pub mod tts;
