@@ -45,6 +45,17 @@ notify      = "8"
 # PDFs. quick-xml is already a transitive dep; pinning it explicitly
 # guards against future churn from indirect upgrades.
 quick-xml   = "0.38"
+# ── Catalog (Cathy/Catfish .caf) — drive cataloging + dedup ─────────────────
+# jwalk is rayon-backed so a full hard-drive scan uses every core; rayon
+# itself is already in our tree (transitively via lance/tantivy/fastembed)
+# but pinned here so the catalog module's parallel hashing path doesn't
+# silently break if a transitive drops it.
+jwalk       = "0.8"
+rayon       = "1.10"
+md-5        = "0.10"
+sha1        = "0.10"
+sha2        = "0.10"
+hex         = "0.4"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

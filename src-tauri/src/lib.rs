@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod catalog;
 pub mod index;
 pub mod tts;
 pub mod watcher;
@@ -74,6 +75,114 @@ async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String>
 async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let guard = state.watcher.lock().await;
     Ok(guard.list())
+}
+
+// ── Catalog (Cathy/Catfish .caf) commands ────────────────────────────────
+//
+// Phase 1 of PLAN P6: load/save .caf files + scan a folder into a
+// FileIndex. The frontend gets the FileIndex JSON-serialized; the
+// `size_index` and `hash_index` buckets are #[serde(skip)] so the
+// payload stays linear in `all_files` length.
+
+/// Read a .caf file and return its full FileIndex. For huge catalogs,
+/// prefer `catalog_metadata` first to decide whether to load the body.
+#[tauri::command]
+async fn catalog_load_caf(path: String) -> Result<catalog::index::FileIndex, String> {
+    let p = std::path::PathBuf::from(path);
+    tokio::task::spawn_blocking(move || catalog::caf::read_file(&p).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("catalog_load_caf join error: {e}"))?
+}
+
+/// Write a FileIndex to disk in v8 .caf format. The `created_date`
+/// (epoch seconds) is what gets stamped into the header — pass 0 to
+/// use the current time.
+#[tauri::command]
+async fn catalog_save_caf(
+    path: String,
+    index: catalog::index::FileIndex,
+    created_date: u32,
+) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path);
+    let date = if created_date == 0 {
+        catalog::caf::unix_now()
+    } else {
+        created_date
+    };
+    tokio::task::spawn_blocking(move || {
+        catalog::caf::write_file(&p, &index, date).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("catalog_save_caf join error: {e}"))?
+}
+
+/// Walk a directory tree (rayon-parallel) and produce a FileIndex.
+/// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
+/// no hashing (Cathy-classic behaviour).
+#[tauri::command]
+async fn catalog_scan_dir(
+    root: String,
+    hash_algo: Option<String>,
+    max_size_bytes: Option<u64>,
+) -> Result<catalog::index::FileIndex, String> {
+    let p = std::path::PathBuf::from(root);
+    let opts = catalog::scan::ScanOptions {
+        hash: hash_algo
+            .as_deref()
+            .and_then(|s| match s.to_ascii_lowercase().as_str() {
+                "md5" => Some(catalog::scan::HashAlgo::Md5),
+                "sha1" => Some(catalog::scan::HashAlgo::Sha1),
+                "sha256" => Some(catalog::scan::HashAlgo::Sha256),
+                _ => None,
+            }),
+        max_size_bytes,
+        follow_symlinks: false,
+    };
+    tokio::task::spawn_blocking(move || catalog::scan::scan_dir(&p, opts).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("catalog_scan_dir join error: {e}"))?
+}
+
+/// Cheap header-only read for index-listing UIs. Avoids decoding the
+/// full element block — typically a few-hundred-byte read regardless
+/// of catalog size.
+#[derive(serde::Serialize)]
+struct CafMetadataDto {
+    version: u8,
+    device: String,
+    volume: String,
+    alias: String,
+    serial: u32,
+    comment: String,
+    date: u32,
+    file_count: i32,
+    total_size: u64,
+    archive: i16,
+    freesize: f32,
+}
+
+#[tauri::command]
+async fn catalog_metadata(path: String) -> Result<CafMetadataDto, String> {
+    let p = std::path::PathBuf::from(path);
+    tokio::task::spawn_blocking(move || {
+        catalog::caf::read_metadata(&p).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("catalog_metadata join error: {e}"))
+    .and_then(|r| r)
+    .map(|m| CafMetadataDto {
+        version: m.version,
+        device: m.device,
+        volume: m.volume,
+        alias: m.alias,
+        serial: m.serial,
+        comment: m.comment,
+        date: m.date,
+        file_count: m.file_count,
+        total_size: m.total_size,
+        archive: m.archive,
+        freesize: m.freesize,
+    })
 }
 
 /// Stop any in-flight TTS utterance. No-op when nothing is speaking.
@@ -1685,6 +1794,10 @@ pub fn run() {
             watch_stop_one,
             watch_stop_all,
             watch_list,
+            catalog_load_caf,
+            catalog_save_caf,
+            catalog_scan_dir,
+            catalog_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

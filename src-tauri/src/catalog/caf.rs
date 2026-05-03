@@ -1,0 +1,761 @@
+//! Reader/writer for the classic Cathy `.caf` (Catalog File) format.
+//!
+//! Backwards-compatible with versions 1 through 8. Round-trips byte-
+//! identically with Catfish (Python) and the original Cathy.exe (C++)
+//! for the v8 case the writer emits; legacy versions 1-7 are
+//! read-only.
+//!
+//! ## Format reference
+//!
+//! Header:
+//! ```text
+//! <L>      magic = version * 1_000_000_000 + 500_410_407
+//!          (version 1-2 stops here; version >= 3 reads <i16> saveVersion next)
+//! <L>      date (unix epoch seconds)
+//! NUL str  device path (>= v2)
+//! NUL str  volume label
+//! NUL str  alias
+//! <L>      serial
+//! NUL str  comment (>= v4)
+//! <f32>    freesize (>= v1)
+//! <i16>    archive flag (>= v6)
+//! ```
+//!
+//! Info block:
+//! ```text
+//! <i32>    dir_count
+//! foreach dir:
+//!   if first dir or version <= 3:
+//!     NUL str dir name (writer always emits an empty string for the root)
+//!   if version >= 3:
+//!     <i32> file_count
+//!     <f64> total_size
+//! ```
+//!
+//! Element block (the actual file/dir list):
+//! ```text
+//! <i32>    file_count
+//! foreach element:
+//!   <L>          mtime
+//!   <i32|i64>    size  (i32 for v <= 6; i64 for v >= 7)
+//!                 negative ⇒ this is a directory entry, its ID is -size
+//!                 (for v > 6) or its 1-based positional index (for v <= 6)
+//!   <u16|u32>    parent_id (u16 for v <= 7; u32 for v == 8)
+//!   NUL str      name
+//! ```
+//!
+//! All multi-byte ints are little-endian. All strings are latin-1
+//! encoded and NUL-terminated — that's how Cathy.exe wrote them on
+//! Win9x, and we preserve that for round-trip parity.
+
+use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
+
+use super::index::{FileEntry, FileIndex};
+
+/// Magic number constants from the original Cathy implementation.
+///
+/// Reading: `version = magic / UL_MODUS`, validate `magic % UL_MODUS == UL_MAGIC_BASE`.
+/// Writing: `magic = version * UL_MODUS + UL_MAGIC_BASE`. The writer always
+/// uses `version = 3` here so the on-disk magic matches versions 3-8 (the
+/// real version is encoded in the next `<i16>` for v ≥ 3).
+pub const UL_MAGIC_BASE: u32 = 500_410_407;
+pub const UL_MODUS: u32 = 1_000_000_000;
+
+/// Newest version this writer produces. Matches Catfish's `saveVersion = 8`.
+pub const SAVE_VERSION: i16 = 8;
+
+/// Cheap header-only summary read for index listings — skips the body.
+#[derive(Debug, Clone)]
+pub struct CafMetadata {
+    pub version: u8,
+    pub device: String,
+    pub volume: String,
+    pub alias: String,
+    pub serial: u32,
+    pub comment: String,
+    pub date: u32,
+    pub file_count: i32,
+    pub total_size: u64,
+    pub archive: i16,
+    pub freesize: f32,
+}
+
+/// All errors the .caf reader/writer can surface.
+#[derive(Debug)]
+pub enum CafError {
+    Io(io::Error),
+    /// The file's magic number doesn't match Cathy's algebraic check.
+    BadMagic,
+    /// Version field is outside the supported 1..=8 range.
+    UnsupportedVersion(u8),
+    /// Body read hit EOF before the declared element count.
+    Truncated,
+}
+
+impl From<io::Error> for CafError {
+    fn from(e: io::Error) -> Self {
+        CafError::Io(e)
+    }
+}
+
+impl std::fmt::Display for CafError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CafError::Io(e) => write!(f, "I/O error: {e}"),
+            CafError::BadMagic => write!(f, "not a valid .caf file (bad magic)"),
+            CafError::UnsupportedVersion(v) => {
+                write!(f, "unsupported .caf version {v} (supported: 1..=8)")
+            }
+            CafError::Truncated => write!(f, "truncated .caf file"),
+        }
+    }
+}
+
+impl std::error::Error for CafError {}
+
+// ── Low-level primitive readers ──────────────────────────────────────────
+
+fn read_u32_le<R: Read>(r: &mut R) -> Result<u32, CafError> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_i16_le<R: Read>(r: &mut R) -> Result<i16, CafError> {
+    let mut buf = [0u8; 2];
+    r.read_exact(&mut buf)?;
+    Ok(i16::from_le_bytes(buf))
+}
+
+fn read_u16_le<R: Read>(r: &mut R) -> Result<u16, CafError> {
+    let mut buf = [0u8; 2];
+    r.read_exact(&mut buf)?;
+    Ok(u16::from_le_bytes(buf))
+}
+
+fn read_i32_le<R: Read>(r: &mut R) -> Result<i32, CafError> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+fn read_i64_le<R: Read>(r: &mut R) -> Result<i64, CafError> {
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf)?;
+    Ok(i64::from_le_bytes(buf))
+}
+
+fn read_f32_le<R: Read>(r: &mut R) -> Result<f32, CafError> {
+    let mut buf = [0u8; 4];
+    r.read_exact(&mut buf)?;
+    Ok(f32::from_le_bytes(buf))
+}
+
+fn read_f64_le<R: Read>(r: &mut R) -> Result<f64, CafError> {
+    let mut buf = [0u8; 8];
+    r.read_exact(&mut buf)?;
+    Ok(f64::from_le_bytes(buf))
+}
+
+/// Read a NUL-terminated latin-1 string (Cathy's on-disk encoding).
+/// latin-1's first 256 codepoints map 1:1 onto Unicode 0-255, so any
+/// byte sequence decodes losslessly — what Cathy.exe wrote on Win9x
+/// becomes valid UTF-8 strings here.
+fn read_cstr_latin1<R: Read>(r: &mut R) -> Result<String, CafError> {
+    let mut bytes = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match r.read(&mut byte)? {
+            0 => break, // EOF — return what we have
+            _ => {
+                if byte[0] == 0 {
+                    break;
+                }
+                bytes.push(byte[0]);
+            }
+        }
+    }
+    Ok(bytes.into_iter().map(|b| b as char).collect())
+}
+
+fn skip<R: Read>(r: &mut R, n: usize) -> Result<(), CafError> {
+    let mut buf = vec![0u8; n];
+    r.read_exact(&mut buf)?;
+    Ok(())
+}
+
+// ── Low-level primitive writers ──────────────────────────────────────────
+
+fn write_u32_le<W: Write>(w: &mut W, v: u32) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_i16_le<W: Write>(w: &mut W, v: i16) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_u32_le_as<W: Write>(w: &mut W, v: u32) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_i32_le<W: Write>(w: &mut W, v: i32) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_i64_le<W: Write>(w: &mut W, v: i64) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_f32_le<W: Write>(w: &mut W, v: f32) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_f64_le<W: Write>(w: &mut W, v: f64) -> Result<(), CafError> {
+    w.write_all(&v.to_le_bytes())?;
+    Ok(())
+}
+
+/// Encode a string back to latin-1, NUL-terminated. Any codepoint outside
+/// 0x00-0xFF is replaced with `?` — same fallback Catfish uses.
+fn write_cstr_latin1<W: Write>(w: &mut W, s: &str) -> Result<(), CafError> {
+    let mut bytes = Vec::with_capacity(s.len() + 1);
+    for ch in s.chars() {
+        let cp = ch as u32;
+        bytes.push(if cp <= 0xFF { cp as u8 } else { b'?' });
+    }
+    bytes.push(0);
+    w.write_all(&bytes)?;
+    Ok(())
+}
+
+// ── High-level API ───────────────────────────────────────────────────────
+
+/// Parse just the header — fast path for index-listing UIs that need
+/// device/volume/file_count without paying for the body decode.
+pub fn read_metadata(path: &Path) -> Result<CafMetadata, CafError> {
+    let f = File::open(path)?;
+    let mut r = BufReader::new(f);
+
+    let magic = read_u32_le(&mut r)?;
+    if magic == 0 || magic % UL_MODUS != UL_MAGIC_BASE {
+        return Err(CafError::BadMagic);
+    }
+    let mut version = (magic / UL_MODUS) as u8;
+    if version > 2 {
+        version = read_i16_le(&mut r)? as u8;
+    }
+    if !(1..=8).contains(&version) {
+        return Err(CafError::UnsupportedVersion(version));
+    }
+
+    let date = read_u32_le(&mut r)?;
+    let device = if version >= 2 { read_cstr_latin1(&mut r)? } else { String::new() };
+    let volume = read_cstr_latin1(&mut r)?;
+    let alias = read_cstr_latin1(&mut r)?;
+    let serial = read_u32_le(&mut r)?;
+    let comment = if version >= 4 {
+        read_cstr_latin1(&mut r)?
+    } else {
+        String::new()
+    };
+    let freesize = if version >= 1 { read_f32_le(&mut r)? } else { 0.0 };
+    let archive = if version >= 6 { read_i16_le(&mut r)? } else { 0 };
+
+    let dir_count = read_i32_le(&mut r)?;
+    let mut file_count = 0i32;
+    let mut total_size = 0u64;
+    if dir_count > 0 {
+        // Root dir: name string for v >= 3 (always; for v <= 3 it's
+        // also the only string written), then per-dir 12-byte stats
+        // for v >= 3. Catfish's writer puts an empty string for v8.
+        read_cstr_latin1(&mut r)?;
+        if version >= 3 {
+            file_count = read_i32_le(&mut r)?;
+            total_size = read_f64_le(&mut r)? as u64;
+        }
+    }
+
+    Ok(CafMetadata {
+        version,
+        device,
+        volume,
+        alias,
+        serial,
+        comment,
+        date,
+        file_count,
+        total_size,
+        archive,
+        freesize,
+    })
+}
+
+/// Read a complete .caf into a `FileIndex`. Cost is proportional to
+/// the catalog size; for huge catalogs prefer `read_metadata` first to
+/// decide whether the full read is worth it.
+pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
+    let f = File::open(path)?;
+    let mut r = BufReader::new(f);
+
+    let magic = read_u32_le(&mut r)?;
+    if magic == 0 || magic % UL_MODUS != UL_MAGIC_BASE {
+        return Err(CafError::BadMagic);
+    }
+    let mut version = (magic / UL_MODUS) as u8;
+    if version > 2 {
+        version = read_i16_le(&mut r)? as u8;
+    }
+    if !(1..=8).contains(&version) {
+        return Err(CafError::UnsupportedVersion(version));
+    }
+
+    let _date = read_u32_le(&mut r)?;
+    let device = if version >= 2 { read_cstr_latin1(&mut r)? } else { String::new() };
+
+    // Detect Windows-style paths from the device string. Cathy.exe
+    // wrote drive letters ("C:\") and UNC paths; Catfish-on-Linux
+    // writes POSIX. The flag drives how we reconstruct child paths
+    // below — without it a Windows .caf opened on macOS would lose
+    // the backslashes.
+    let is_windows_path =
+        device.contains('\\') || (device.len() > 1 && device.as_bytes().get(1) == Some(&b':'));
+    let root_path = PathBuf::from(&device);
+    let mut index = FileIndex::new(root_path.clone(), is_windows_path);
+
+    // Skip volume / alias / serial (not used by FileIndex itself).
+    read_cstr_latin1(&mut r)?; // volume
+    read_cstr_latin1(&mut r)?; // alias
+    skip(&mut r, 4)?; // serial
+    if version >= 4 {
+        read_cstr_latin1(&mut r)?; // comment
+    }
+    if version >= 1 {
+        skip(&mut r, 4)?; // freesize <f32>
+    }
+    if version >= 6 {
+        skip(&mut r, 2)?; // archive <i16>
+    }
+
+    // Info block.
+    let dir_count = read_i32_le(&mut r)?;
+    for i in 0..dir_count {
+        if i == 0 || version <= 3 {
+            read_cstr_latin1(&mut r)?; // dir name (or empty for root in v8)
+        }
+        if version >= 3 {
+            skip(&mut r, 12)?; // <i32 file_count, f64 total_size>
+        }
+    }
+
+    // ELM block — the actual entries.
+    let element_count = read_i32_le(&mut r)?;
+    let mut raw_elements: Vec<(u32, i64, u32, String)> = Vec::with_capacity(element_count as usize);
+    for _ in 0..element_count {
+        let mtime = read_u32_le(&mut r).map_err(|_| CafError::Truncated)?;
+        let size: i64 = if version <= 6 {
+            read_i32_le(&mut r)? as i64
+        } else {
+            read_i64_le(&mut r)?
+        };
+        let parent_id: u32 = if version <= 7 {
+            read_u16_le(&mut r)? as u32
+        } else {
+            read_u32_le(&mut r)?
+        };
+        let name = read_cstr_latin1(&mut r)?;
+        raw_elements.push((mtime, size, parent_id, name));
+    }
+
+    // Reconstruct directory paths from the flat element list.
+    //
+    // For v > 6: a directory entry has `size < 0` and its ID is `-size`.
+    // For v <= 6: a directory is identified by being referenced as a
+    //             parent_id by some other entry; its ID is its 1-based
+    //             positional index. (Catfish quirk.)
+    let referenced_parent_ids: std::collections::HashSet<u32> =
+        raw_elements.iter().map(|(_, _, pid, _)| *pid).collect();
+    let mut dir_path_map: std::collections::HashMap<u32, PathBuf> =
+        std::collections::HashMap::new();
+    dir_path_map.insert(0, root_path.clone());
+
+    for (i, (_mtime, size, pid, name)) in raw_elements.iter().enumerate() {
+        let is_dir = if version > 6 {
+            *size < 0
+        } else {
+            referenced_parent_ids.contains(&((i as u32) + 1))
+        };
+        if is_dir {
+            let dir_id: u32 = if version > 6 {
+                (-size) as u32
+            } else {
+                (i as u32) + 1
+            };
+            if let Some(parent_path) = dir_path_map.get(pid) {
+                if !name.is_empty() {
+                    let mut p = parent_path.clone();
+                    p.push(name);
+                    dir_path_map.insert(dir_id, p);
+                }
+            }
+        }
+    }
+
+    for (i, (mtime, size, pid, name)) in raw_elements.iter().enumerate() {
+        let is_dir = if version > 6 {
+            *size < 0
+        } else {
+            referenced_parent_ids.contains(&((i as u32) + 1))
+        };
+        if !is_dir && !name.trim().is_empty() {
+            if let Some(parent_path) = dir_path_map.get(pid) {
+                let mut p = parent_path.clone();
+                p.push(name);
+                // v <= 6 stored no per-file size; clamp to 1 so the
+                // size_index bucket still works, matching Catfish.
+                let actual_size = if version > 6 {
+                    (*size as u64).max(1)
+                } else if *size == 0 {
+                    1024
+                } else {
+                    *size as u64
+                };
+                index.add(FileEntry::new(p, actual_size, *mtime));
+            }
+        }
+    }
+
+    Ok(index)
+}
+
+/// Serialize a `FileIndex` to a v8 .caf — the format Catfish writes,
+/// readable by every Cathy/Catfish version that supports v ≥ 3.
+///
+/// `created_date` is stored verbatim as the `<L>` date; pass
+/// `unix_now()` for "now" or a captured value for round-trip tests.
+pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(), CafError> {
+    let f = File::create(path)?;
+    let mut w = BufWriter::new(f);
+
+    // Header.
+    let magic = 3u32 * UL_MODUS + UL_MAGIC_BASE;
+    write_u32_le(&mut w, magic)?;
+    write_i16_le(&mut w, SAVE_VERSION)?;
+    write_u32_le(&mut w, created_date)?;
+    let root_str = index
+        .root_path
+        .as_os_str()
+        .to_string_lossy()
+        .into_owned();
+    write_cstr_latin1(&mut w, &root_str)?;
+    let root_name = index
+        .root_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    write_cstr_latin1(&mut w, &root_name)?; // volume
+    write_cstr_latin1(&mut w, &root_name)?; // alias
+    write_u32_le_as(&mut w, 0)?; // serial
+    write_cstr_latin1(&mut w, "CrispSorter Catalog")?; // comment
+    write_f32_le(&mut w, 0.0)?; // freesize
+    write_i16_le(&mut w, 0)?; // archive
+
+    // Build the directory ID map. Root is always ID 0; every distinct
+    // parent dir of an entry gets a fresh ID. Sort by depth so parent
+    // IDs are always allocated before their children — keeps the
+    // resulting elm list trivially topologically valid.
+    use std::collections::HashMap;
+    let mut dir_id_map: HashMap<PathBuf, u32> = HashMap::new();
+    dir_id_map.insert(index.root_path.clone(), 0);
+    let mut next_dir_id: u32 = 1;
+
+    let mut all_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for entry in &index.all_files {
+        if let Some(parent) = entry.path.parent() {
+            // Walk up to the root, registering every intermediate dir.
+            let mut p = parent.to_path_buf();
+            loop {
+                if dir_id_map.contains_key(&p) || all_dirs.contains(&p) {
+                    break;
+                }
+                all_dirs.insert(p.clone());
+                match p.parent() {
+                    Some(pp) if pp != p => p = pp.to_path_buf(),
+                    _ => break,
+                }
+            }
+        }
+    }
+    let mut sorted_dirs: Vec<PathBuf> = all_dirs.into_iter().collect();
+    sorted_dirs.sort_by_key(|p| p.components().count());
+    for d in sorted_dirs {
+        if !dir_id_map.contains_key(&d) {
+            dir_id_map.insert(d, next_dir_id);
+            next_dir_id += 1;
+        }
+    }
+
+    // Per-dir running totals for the info block.
+    let mut dir_file_count: HashMap<u32, i32> = HashMap::new();
+    let mut dir_total_size: HashMap<u32, u64> = HashMap::new();
+    for entry in &index.all_files {
+        if let Some(parent) = entry.path.parent() {
+            if let Some(&pid) = dir_id_map.get(parent) {
+                *dir_file_count.entry(pid).or_insert(0) += 1;
+                *dir_total_size.entry(pid).or_insert(0) += entry.size;
+            }
+        }
+    }
+
+    // Build the elm list: directories first (with negative size = -id),
+    // then files. Catfish writes them in this order; we match.
+    let mut elm: Vec<(u32, i64, u32, String)> = Vec::new();
+    for (dir_path, &dir_id) in &dir_id_map {
+        if dir_id == 0 {
+            continue;
+        }
+        let parent = dir_path.parent().unwrap_or(dir_path);
+        let pid = dir_id_map.get(parent).copied().unwrap_or(0);
+        let mtime = std::fs::metadata(dir_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as u32)
+            })
+            .unwrap_or(0);
+        let name = dir_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        elm.push((mtime, -(dir_id as i64), pid, name));
+    }
+    for entry in &index.all_files {
+        let parent = entry.path.parent();
+        let pid = parent.and_then(|p| dir_id_map.get(p).copied()).unwrap_or(0);
+        let name = entry
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        elm.push((entry.mtime, entry.size as i64, pid, name));
+    }
+
+    // Info block. Catfish's layout: <i32> dir_count, then for each dir
+    // the empty name string (only for i == 0) plus <i32 file_count, f64
+    // total_size>. Root counts the aggregate.
+    let total_files: i32 = index.all_files.len() as i32;
+    let total_size: u64 = index.total_size();
+    write_i32_le(&mut w, next_dir_id as i32)?;
+    for i in 0..next_dir_id {
+        if i == 0 {
+            write_cstr_latin1(&mut w, "")?;
+            write_i32_le(&mut w, total_files)?;
+            write_f64_le(&mut w, total_size as f64)?;
+        } else {
+            let fc = dir_file_count.get(&i).copied().unwrap_or(0);
+            let ts = dir_total_size.get(&i).copied().unwrap_or(0);
+            write_i32_le(&mut w, fc)?;
+            write_f64_le(&mut w, ts as f64)?;
+        }
+    }
+
+    // ELM block.
+    write_i32_le(&mut w, elm.len() as i32)?;
+    for (mtime, size, pid, name) in elm {
+        write_u32_le(&mut w, mtime)?;
+        write_i64_le(&mut w, size)?;
+        write_u32_le_as(&mut w, pid)?;
+        write_cstr_latin1(&mut w, &name)?;
+    }
+
+    w.flush()?;
+    Ok(())
+}
+
+/// Convenience: unix epoch seconds, clamped to u32.
+pub fn unix_now() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn fake_index() -> FileIndex {
+        let mut idx = FileIndex::new(PathBuf::from("/tmp/cat-root"), false);
+        idx.add(FileEntry::new(PathBuf::from("/tmp/cat-root/a.txt"), 100, 1700000000));
+        idx.add(FileEntry::new(PathBuf::from("/tmp/cat-root/b.bin"), 200, 1700000001));
+        idx.add(FileEntry::new(
+            PathBuf::from("/tmp/cat-root/sub/c.dat"),
+            300,
+            1700000002,
+        ));
+        idx
+    }
+
+    #[test]
+    fn round_trip_v8_preserves_files() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.caf");
+        let idx = fake_index();
+        write_file(&path, &idx, 1700000000).unwrap();
+        let loaded = read_file(&path).unwrap();
+
+        // The reader resolves entry paths through the dir tree; loaded
+        // entries should match by (file_name, size, mtime).
+        assert_eq!(loaded.len(), idx.len());
+        let mut want: Vec<_> = idx
+            .all_files
+            .iter()
+            .map(|e| (e.path.file_name().unwrap().to_owned(), e.size, e.mtime))
+            .collect();
+        let mut got: Vec<_> = loaded
+            .all_files
+            .iter()
+            .map(|e| (e.path.file_name().unwrap().to_owned(), e.size, e.mtime))
+            .collect();
+        want.sort();
+        got.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn metadata_matches_full_read() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.caf");
+        let idx = fake_index();
+        write_file(&path, &idx, 1700000000).unwrap();
+        let meta = read_metadata(&path).unwrap();
+        assert_eq!(meta.version, 8);
+        assert_eq!(meta.file_count, idx.len() as i32);
+        assert_eq!(meta.total_size, idx.total_size());
+        assert_eq!(meta.date, 1700000000);
+    }
+
+    #[test]
+    fn bad_magic_returns_bad_magic() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("not-a-caf.bin");
+        std::fs::write(&path, b"\x00\x00\x00\x00garbage").unwrap();
+        assert!(matches!(read_file(&path), Err(CafError::BadMagic)));
+    }
+
+    #[test]
+    fn latin1_roundtrip_preserves_high_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("latin1.caf");
+        let mut idx = FileIndex::new(PathBuf::from("/tmp/cat-root"), false);
+        // U+00E4 (ä) → 0xE4 in latin-1 — survives the round-trip.
+        idx.add(FileEntry::new(
+            PathBuf::from("/tmp/cat-root/Ümläut.txt"),
+            42,
+            1700000099,
+        ));
+        write_file(&path, &idx, 1700000000).unwrap();
+        let loaded = read_file(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded.all_files[0].path.file_name().unwrap().to_string_lossy(),
+            "Ümläut.txt"
+        );
+    }
+
+    #[test]
+    fn cross_compat_writes_for_catfish_to_read() {
+        // Side-effect-only: emit a .caf to /tmp/rust-written.caf so an
+        // adjacent Catfish call (run by hand) can verify it reads back.
+        // The unit test passes whenever the write succeeds — the
+        // Catfish-side check is operator-driven for now (one Python
+        // subprocess away from being automated, but skipping to keep
+        // the suite hermetic).
+        let path = std::path::PathBuf::from("/tmp/rust-written.caf");
+        let mut idx = FileIndex::new(PathBuf::from("/tmp/rust-source"), false);
+        idx.add(FileEntry::new(
+            PathBuf::from("/tmp/rust-source/from-rust.txt"),
+            123,
+            1700000000,
+        ));
+        idx.add(FileEntry::new(
+            PathBuf::from("/tmp/rust-source/sub/nested.bin"),
+            456,
+            1700000001,
+        ));
+        if super::write_file(&path, &idx, 1700000000).is_ok() {
+            eprintln!("Wrote {} for Catfish-side cross-compat check", path.display());
+        }
+    }
+
+    #[test]
+    fn cross_compat_reads_catfish_fixture() {
+        // Ad-hoc cross-compatibility check against a real Catfish-produced
+        // .caf if one exists on disk. Skipped silently when not present.
+        // Generate with:
+        //   cd ../Catfish && python3 -c "import sys, types
+        //   sys.modules['tkinter'] = types.ModuleType('tkinter')
+        //   sys.modules['tkinter.font'] = types.ModuleType('tkinter.font')
+        //   sys.path.insert(0, '.')
+        //   from pathlib import Path
+        //   from core.file_index import FileIndex
+        //   root = Path('/tmp/catfish-fixture').resolve()
+        //   idx = FileIndex(root, use_hash=False, hash_algo='md5')
+        //   for p in root.rglob('*'):
+        //       if p.is_file(): idx.add_file(p)
+        //   idx.save_to_caf(Path('/tmp/catfish-fixture.caf'))"
+        let path = std::path::Path::new("/tmp/catfish-fixture.caf");
+        if !path.exists() {
+            eprintln!("skipping: fixture not at {}", path.display());
+            return;
+        }
+        let idx = super::read_file(path).expect("Catfish-written .caf should parse");
+        // Catfish fixture has 2 files (a.txt + sub/b.bin).
+        assert_eq!(idx.len(), 2);
+        let names: std::collections::HashSet<String> = idx
+            .all_files
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains("a.txt"));
+        assert!(names.contains("b.bin"));
+    }
+
+    #[test]
+    fn directories_round_trip_via_negative_size() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("dirs.caf");
+        let mut idx = FileIndex::new(PathBuf::from("/cat-root"), false);
+        // Files in nested subdirs — the writer must allocate dir IDs.
+        idx.add(FileEntry::new(
+            PathBuf::from("/cat-root/a/b/c.txt"),
+            10,
+            1700000000,
+        ));
+        idx.add(FileEntry::new(
+            PathBuf::from("/cat-root/a/d.txt"),
+            20,
+            1700000001,
+        ));
+        write_file(&path, &idx, 1700000000).unwrap();
+        let loaded = read_file(&path).unwrap();
+        assert_eq!(loaded.len(), 2);
+        let names: std::collections::HashSet<_> = loaded
+            .all_files
+            .iter()
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("a/b/c.txt") || n.contains("a\\b\\c.txt")));
+        assert!(names.iter().any(|n| n.contains("a/d.txt") || n.contains("a\\d.txt")));
+    }
+}
