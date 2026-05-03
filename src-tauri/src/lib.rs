@@ -1,5 +1,6 @@
 pub mod asr;
 pub mod catalog;
+pub mod extractors;
 pub mod index;
 pub mod tts;
 pub mod watcher;
