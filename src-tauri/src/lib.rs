@@ -688,6 +688,14 @@ pub struct AppState {
     /// Lives in its own Arc so the worker task can hold a reference
     /// without borrowing the AppState lifetime.
     pub bg_ingest: Arc<Mutex<bg_ingest::BackgroundIngest>>,
+    /// Counter of in-flight foreground searches (PLAN P7.4.4 — QoS).
+    /// `index_search` increments on entry, decrements on exit via a
+    /// RAII guard. The bg_ingest worker observes the count at the top
+    /// of each iteration and yields back if non-zero, so foreground
+    /// queries don't get stuck behind a background embed batch.
+    /// AtomicUsize so reads + writes are lock-free — neither side
+    /// pays for a Mutex hop.
+    pub foreground_active: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[tauri::command]
@@ -2081,6 +2089,7 @@ pub fn run() {
             tts_process: Mutex::new(None),
             watcher: Mutex::new(watcher::WatcherState::new()),
             bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
+            foreground_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,

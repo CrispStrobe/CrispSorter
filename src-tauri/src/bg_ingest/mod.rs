@@ -32,9 +32,37 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
+
+/// RAII guard for marking a foreground operation as in-flight (PLAN
+/// P7.4.4). Increment on construction, decrement on drop. Stored on
+/// `AppState.foreground_active`; the bg_ingest worker checks the
+/// counter at the top of each iteration and yields back to the
+/// runtime if non-zero so foreground queries don't get stuck behind
+/// a background embed.
+///
+/// Use as `let _g = ForegroundGuard::new(state.foreground_active.clone());`
+/// at the entry of every foreground-blocking command (search,
+/// reranker calls, etc.).
+pub struct ForegroundGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl ForegroundGuard {
+    pub fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self { counter }
+    }
+}
+
+impl Drop for ForegroundGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// One queued path + the metadata fields that future ingest will use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +213,25 @@ pub fn ensure_worker(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
 /// The worker loop — drains the queue, calls the per-path ingest, emits
 /// progress events, sleeps between iterations.
 async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
+    use crate::AppState;
+    use tauri::Manager;
+    let foreground = app.state::<AppState>().foreground_active.clone();
+
     loop {
+        // ── QoS: yield to foreground (P7.4.4) ───────────────────────────
+        // If any foreground command is in-flight (search, reranker, …),
+        // sleep 100ms and re-check. The check is a single atomic read so
+        // we pay essentially nothing in the steady "no foreground"
+        // state, and a typical search returns in well under 100ms so
+        // we'll never block ingest for long.
+        while foreground.load(Ordering::Relaxed) > 0 {
+            // Honour Stopping even while waiting on foreground.
+            if matches!(state.lock().await.status, BgStatus::Stopping) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         // ── Take next item under the lock; release immediately. ─────────
         let next = {
             let mut g = state.lock().await;
@@ -407,6 +453,22 @@ mod tests {
         s.status = BgStatus::Running;
         s.pause();
         assert_eq!(s.snapshot().status, BgStatus::Paused);
+    }
+
+    #[test]
+    fn foreground_guard_increments_and_drops() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        {
+            let _g = ForegroundGuard::new(counter.clone());
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+            {
+                let _g2 = ForegroundGuard::new(counter.clone());
+                assert_eq!(counter.load(Ordering::Relaxed), 2);
+            }
+            assert_eq!(counter.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
     #[test]

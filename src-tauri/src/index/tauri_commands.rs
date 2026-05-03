@@ -30,6 +30,10 @@ pub async fn index_search(
     limit: usize,
     owner_id: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
+    // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
+    // pauses while we run. RAII drops at function return.
+    let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+
     let lock = state.index.lock().await;
     let config_enabled = lock.config.enabled;
 
