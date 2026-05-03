@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod bg_ingest;
 pub mod catalog;
 pub mod extractors;
 pub mod index;
@@ -283,6 +284,73 @@ async fn catalog_set_active(
             .map(|_| 0)
             .map_err(|e| e.to_string())
     }
+}
+
+// ── Background ingest commands (PLAN P7.4.2b) ────────────────────────────
+
+/// Push paths into the background ingest queue and start the worker
+/// if it isn't already running. Each path goes through the per-filetype
+/// extractor (P7.4.1) → embed → write to LanceDB cycle.
+///
+/// Idempotent: re-enqueueing the same path is harmless — the underlying
+/// ingest dedups by source_hash. Returns the post-enqueue status snapshot.
+#[tauri::command]
+async fn bg_ingest_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    owner_id: Option<String>,
+) -> Result<bg_ingest::BgStatusSnapshot, String> {
+    let items: Vec<bg_ingest::PendingIngest> = paths
+        .into_iter()
+        .map(|p| bg_ingest::PendingIngest {
+            path: std::path::PathBuf::from(p),
+            owner_id: owner_id.clone(),
+            title: None,
+            author: None,
+            year: None,
+            language: None,
+        })
+        .collect();
+    let bg = state.bg_ingest.clone();
+    {
+        let mut g = bg.lock().await;
+        g.enqueue(items);
+    }
+    bg_ingest::ensure_worker(bg.clone(), app);
+    let snap = bg.lock().await.snapshot();
+    Ok(snap)
+}
+
+#[tauri::command]
+async fn bg_ingest_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<bg_ingest::BgStatusSnapshot, String> {
+    Ok(state.bg_ingest.lock().await.snapshot())
+}
+
+#[tauri::command]
+async fn bg_ingest_pause(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.bg_ingest.lock().await.pause();
+    Ok(())
+}
+
+#[tauri::command]
+async fn bg_ingest_resume(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.bg_ingest.lock().await.resume();
+    Ok(())
+}
+
+#[tauri::command]
+async fn bg_ingest_cancel(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.bg_ingest.lock().await.cancel();
+    Ok(())
+}
+
+#[tauri::command]
+async fn bg_ingest_clear(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.bg_ingest.lock().await.clear();
+    Ok(())
 }
 
 /// Export the LanceDB documents table to a .caf file (PLAN P6 4d).
@@ -616,6 +684,10 @@ pub struct AppState {
     /// `notify::RecommendedWatcher` lives inside the state and gets
     /// dropped when the user changes folders or stops watching.
     pub watcher: Mutex<watcher::WatcherState>,
+    /// Background full-content ingest queue + worker (PLAN P7.4.2b).
+    /// Lives in its own Arc so the worker task can hold a reference
+    /// without borrowing the AppState lifetime.
+    pub bg_ingest: Arc<Mutex<bg_ingest::BackgroundIngest>>,
 }
 
 #[tauri::command]
@@ -2008,6 +2080,7 @@ pub fn run() {
             asr: Mutex::new(None),
             tts_process: Mutex::new(None),
             watcher: Mutex::new(watcher::WatcherState::new()),
+            bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -2058,6 +2131,12 @@ pub fn run() {
             catalog_search,
             catalog_active_list,
             catalog_export_sorted,
+            bg_ingest_start,
+            bg_ingest_status,
+            bg_ingest_pause,
+            bg_ingest_resume,
+            bg_ingest_cancel,
+            bg_ingest_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
