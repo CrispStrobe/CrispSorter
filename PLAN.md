@@ -411,6 +411,120 @@ background" loop and a few UI conveniences.
 P7 is what makes those backend strengths actually *visible* outside
 the curated sort-batch use case.
 
+### P8 — Versatility & operability
+
+CrispSorter is a Tauri GUI app today, with most behaviour hard-coded
+to defaults that work for the typical batch-sort case but leave power
+users (very large PDFs, scripted automation, server-side runs) with
+no good escape hatch. P8 captures the small-but-cumulative versatility
+upgrades that turn the tool from "interactive desktop app" into "also
+a tool you can drive from a terminal or a cron job, with the knobs you
+need to handle the long tail of inputs."
+
+#### P8.1 — Configurable per-file conversion timeout
+
+**Today:** `src/lib/batch/store.svelte.ts` has a 30-second *per-page*
+watchdog (`PAGE_WATCHDOG_MS = 30_000`) that aborts a file's extraction
+if no page progress is reported for 30 s. There is **no whole-file
+timeout** — a 2000-page PDF that produces a page every 25 seconds will
+keep the watchdog happy for ~14 hours and never voluntarily abort.
+Users with mixed PDF collections (one 5-MB scan that takes 3 min next
+to a hundred 50-KB pamphlets) currently can't bound the worst case.
+
+**Goal:** new Settings UI knob *Per-file conversion timeout* (number
+input + unit dropdown, default `120 s`, special-cases `0` = no
+timeout = today's effective behaviour). Threaded through both the
+PDF-extraction path and any future format converter (docx, epub, etc.
+once P7.4 lands), wraps the whole `extractDocument` promise with
+`Promise.race(extract, timer)`. Distinct from the page watchdog — the
+two coexist (page watchdog catches the "extractor froze" case, the
+total-time timeout catches the "extractor is making slow but real
+progress on a too-big file" case).
+
+Implementation cost: ~2-3 hours (Settings input + persistence + the
+`Promise.race` wrap in `processAll` + i18n strings + a "timed out
+after Xs — open in viewer to extract manually" status string).
+
+#### P8.2 — CLI mode
+
+**Today:** all CrispSorter functionality lives behind Tauri commands
+that the Svelte frontend invokes. A user wanting to script a sort
+("walk this folder, extract+analyse every PDF, dump the proposed
+moves as JSON") has to either drive the GUI by hand or write a
+custom Rust binary that links our `tauri_app_lib` crate.
+
+**Goal:** a flag-driven CLI surface that exposes every backend
+capability so CrispSorter can run headless from a terminal, ssh
+session, cron job, or another script. Approach is **single binary,
+mode-detected on launch**: if `argv[0]` is invoked with a recognised
+subcommand (e.g. `crispsorter catalog scan ...`), skip GUI bootstrap
+and run that subcommand to completion; otherwise launch the GUI as
+today. (Tauri 2's `tauri-plugin-cli` provides the parser; the same
+binary handles both modes, no second build target.)
+
+Subcommand surface (each mirrors an existing Tauri command,
+JSON-formatted output by default for scripting):
+
+* **catalog**
+  * `scan <folder> [--out X.caf] [--hash md5|sha1|sha256]`
+  * `info <file.caf>` — header-only metadata read
+  * `browse <file.caf> [--filter SUBSTR] [--limit N]`
+  * `find-dupes <source> <dest>... [--strategy STRAT] [--out json|text]`
+  * `gen-script <matches.json> [--format bash|batch|powershell]
+    [--target source|destinations]`
+  * `set-active <file.caf> [--off]` — toggle materialisation in
+    LanceDB (matches the Active checkbox in the GUI)
+  * `search <query> [--limit N]` — search active catalogs
+* **index**
+  * `init [--data-dir PATH] [--model X]`
+  * `ingest <folder|file>... [--owner-id X] [--no-llm]`
+  * `search <query> [--mode hybrid|text|vector] [--limit N]`
+  * `stats` — row count, table sizes, last-ingest timestamps
+  * `delete <doc-id>` / `list` — inspection helpers
+  * `build-ivf-pq` — runs the LancePart-2 IVF/PQ index build
+* **batch**
+  * `add <file>...` — append to the current sort batch (stored in
+    the same Settings store the GUI reads; next GUI launch sees them)
+  * `process [--filter STATUS] [--limit N] [--out json]` — runs the
+    batch pipeline headless, dumps proposed moves
+  * `apply <plan.json>` — executes a previously-`process`d plan
+* **chat**
+  * `query "<prompt>" [--context-files X,Y,Z] [--out text|json]`
+  * `transcribe <audio-file>` — ASR (P3 backend)
+  * `tts "<text>"` — speak text via the platform synth (P3 TTS)
+* **doctor** — environment / model / lib check, mirrors what the GUI
+  shows in the LogPanel about backend availability.
+* **completion** — emit shell-completion scripts (`bash`, `zsh`, `fish`).
+
+Output formatting:
+* Default to **JSON Lines** for streaming results (one
+  search-hit / catalog-entry / batch-item per line) so `crispsorter
+  catalog search foo | jq` Just Works.
+* `--out text` switches to a human-readable column-formatted view.
+* `--quiet` suppresses progress to stderr; default emits human-
+  readable progress to stderr with structured payload to stdout (the
+  llama.cpp / git pattern).
+
+Implementation cost: ~1 wk total. Scoped:
+* ~2 days for the Tauri-mode-detect + `clap`-based subcommand router
+  scaffold + JSON-Lines output infrastructure + completion generator.
+* ~1 day each for `catalog`, `index`, `batch` subcommand families
+  (mostly thin wrappers around the existing Tauri commands — they're
+  already async-stateless-friendly).
+* ~1 day for the headless variants of `chat` (mistralrs / llama-server
+  spawn from CLI without the GUI's process-tracking) + `doctor`.
+* ~1 day polish: man-page generation via `clap_mangen`, distribution
+  story (single-binary install via `brew formula` / `winget` / `cargo
+  install crispsorter` — the `cargo install` path needs the
+  workspace's `crispcat` Phase 5 extraction so the CLI doesn't drag
+  in the whole Tauri webview footprint).
+
+**Why this matters in combination with P7:** once P7.4's background
+ingest exists, the CLI becomes the natural way to bootstrap a fresh
+machine ("ssh into the file server, run `crispsorter index ingest
+/data/archives --recursive` once, then walk away"). The GUI stays
+primary for interactive sort/review; the CLI handles automation.
+
 - [x] **XMP metadata extraction (May 2026, v0.1.35)** — `extract_pdf_metadata`
   now reads the catalog's `/Metadata` stream (XMP RDF/XML) in addition to
   the `/Info` dict. XMP fields win when present (better-curated by
