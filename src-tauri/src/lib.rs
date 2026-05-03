@@ -2030,6 +2030,7 @@ pub fn run() {
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_ingest_document,
+            index::tauri_commands::index_ingest_path,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
             index::tauri_commands::index_build_ivf_pq,

@@ -225,6 +225,100 @@ pub struct DocumentIngestInput {
     pub tags: Vec<String>,
 }
 
+/// PLAN P7.4.2 — single-shot path-based ingest. Takes a filesystem
+/// path, runs the per-filetype extractor (P7.4.1), computes the
+/// source hash, builds a `RawDocument`, and feeds the existing
+/// IngestPipeline. The frontend / CLI can call this in a loop to do
+/// background ingest of a folder; full scheduler with rate-limiting +
+/// progress persistence lands in 7.4.2b.
+///
+/// `owner_id` defaults to nil-UUID when not supplied — single-user
+/// installs can ignore it; multi-user setups should always pass.
+#[tauri::command]
+pub async fn index_ingest_path(
+    state: State<'_, AppState>,
+    path: String,
+    owner_id: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    year: Option<i32>,
+    language: Option<String>,
+) -> Result<IngestStats, String> {
+    use sha2::{Digest, Sha256};
+    let p = std::path::PathBuf::from(&path);
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    // Read bytes once: needed for both source_hash and (lossily) for
+    // the text extractor in some paths. We bind it locally so the
+    // tokio task below doesn't need to re-stat / re-read.
+    let bytes = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || std::fs::read(&p)
+    })
+    .await
+    .map_err(|e| format!("read join: {e}"))?
+    .map_err(|e| format!("reading {}: {e}", p.display()))?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let source_hash = hex::encode(h.finalize());
+
+    // Run the dispatcher off the runtime — pdf_extract is sync and CPU-
+    // heavy, the others are quick but still blocking I/O.
+    let extracted = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || crate::extractors::extract_text_from_path(&p)
+    })
+    .await
+    .map_err(|e| format!("extract join: {e}"))?
+    .map_err(|e| format!("extracting {}: {e}", p.display()))?;
+
+    // Build the location URI in the canonical `crisp+local://` shape.
+    // `Uuid::nil()` for machine_id is the placeholder for single-machine
+    // setups; a multi-machine deployment would feed a real machine UUID.
+    let loc = super::location::FileLocation::Local {
+        user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+        machine_id: uuid::Uuid::nil(),
+        path: p.clone(),
+    };
+    let location_uri = loc.to_uri();
+
+    let filename = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let raw = RawDocument {
+        full_text: extracted.full_text,
+        full_text_md: String::new(), // path-based ingest has no Markdown view
+        headings: extracted.headings,
+        title,
+        author,
+        year,
+        filename,
+        ext: extracted.ext,
+        language: language.unwrap_or_default(),
+        source_hash,
+        location_uri,
+        owner_id: owner,
+        tags: Vec::new(),
+    };
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or("No local ingest pipeline (remote backend?)")?;
+    drop(lock);
+
+    pipeline
+        .ingest_document(raw)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn index_ingest_document(
     app: tauri::AppHandle,
