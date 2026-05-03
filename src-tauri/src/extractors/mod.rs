@@ -33,6 +33,7 @@ use std::path::Path;
 
 pub mod html;
 pub mod ocr;
+pub mod ocr_ocrs;
 pub mod pdf;
 pub mod text;
 
@@ -146,6 +147,21 @@ pub fn extract_text_from_path_with_opts(
             doc
         }),
         e if OCR_IMAGE_EXTS.contains(&e) && opts.try_ocr => {
+            // PLAN P7.8 — tiered OCR for images. Try Tier 2 (ocrs,
+            // pure Rust, no system deps) first when its models are
+            // available; fall through to Tier 1 (Tesseract shell-out)
+            // on any failure. ocrs is Latin-script only, so even when
+            // it succeeds Tier 1 may produce better results for
+            // German / CJK / Arabic — but the dispatcher prefers ocrs
+            // for the speed + zero-install win on Latin-only docs.
+            // Settings will eventually let users pin a tier; for now
+            // it's auto-fall-through.
+            if ocr_ocrs::is_ocrs_available() {
+                if let Ok(mut doc) = ocr_ocrs::ocr_via_ocrs(path) {
+                    doc.ext = ext.clone();
+                    return Ok(doc);
+                }
+            }
             ocr::ocr_via_tesseract(path).map(|mut doc| {
                 doc.ext = ext.clone();
                 doc
