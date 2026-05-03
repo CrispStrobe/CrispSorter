@@ -11,10 +11,12 @@
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
-    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal, HardDrive, CopyCheck } from 'lucide-svelte';
     import IndexSearch from '$lib/components/IndexSearch.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
+    import Catalog from '$lib/components/Catalog.svelte';
+    import Duplicates from '$lib/components/Duplicates.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'index-search', 'index-ingest'
     let navCollapsed = $state(false);
@@ -137,6 +139,18 @@
                 <UploadCloud size={20} />
                 {#if !navCollapsed}<span>Index Ingest</span>{/if}
             </button>
+
+            <div class="nav-separator"></div>
+
+            <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title="Catalog (Cathy/Catfish .caf)">
+                <HardDrive size={20} />
+                {#if !navCollapsed}<span>Catalog</span>{/if}
+            </button>
+
+            <button class="nav-item" class:active={activeTab === 'dupes'} onclick={() => activeTab = 'dupes'} title="Find Duplicates">
+                <CopyCheck size={20} />
+                {#if !navCollapsed}<span>Duplicates</span>{/if}
+            </button>
         </div>
 
         <div class="nav-bottom">
@@ -182,6 +196,10 @@
                 <IndexSearch />
             {:else if activeTab === 'index-ingest'}
                 <IndexIngest />
+            {:else if activeTab === 'catalog'}
+                <Catalog />
+            {:else if activeTab === 'dupes'}
+                <Duplicates />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />
