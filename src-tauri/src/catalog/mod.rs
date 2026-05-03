@@ -18,5 +18,6 @@
 //! through to the frontend.
 
 pub mod caf;
+pub mod dedup;
 pub mod index;
 pub mod scan;

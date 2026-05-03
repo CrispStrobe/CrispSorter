@@ -161,6 +161,110 @@ struct CafMetadataDto {
     freesize: f32,
 }
 
+/// Find duplicates of `source` files inside one or more `destinations`.
+///
+/// `source` and `destinations` can be either .caf paths (loaded
+/// automatically) or directory paths (scanned on the fly with the
+/// configured hash strategy). Mixed inputs are allowed.
+///
+/// `strategy` is one of `"name-and-size"` (Cathy default — same name +
+/// same size) or `"hash:<algo>"` where `<algo>` is `md5` / `sha1` /
+/// `sha256`. Hash strategy reads bytes for size-collision candidates
+/// only, so it stays cheap on large catalogs.
+#[tauri::command]
+async fn catalog_find_duplicates(
+    source: String,
+    destinations: Vec<String>,
+    strategy: Option<String>,
+) -> Result<Vec<catalog::dedup::DuplicateMatch>, String> {
+    let strategy = parse_match_strategy(strategy.as_deref())?;
+    tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let src_index = load_or_scan_for_dedup(&source)?;
+        let mut all_matches: Vec<catalog::dedup::DuplicateMatch> = Vec::new();
+        for dest in destinations {
+            let dst_index = load_or_scan_for_dedup(&dest)?;
+            let opts = catalog::dedup::DedupOptions { strategy };
+            let mut matches = catalog::dedup::find_duplicates(&src_index, &dst_index, &opts);
+            all_matches.append(&mut matches);
+        }
+        Ok(all_matches)
+    })
+    .await
+    .map_err(|e| format!("catalog_find_duplicates join error: {e}"))
+    .and_then(|r| r)
+}
+
+/// Render a deletion script (bash / batch / powershell) from a
+/// duplicate-match list. The script never auto-runs — the caller is
+/// expected to save and review before executing.
+///
+/// `format` is `"bash"`, `"batch"`, or `"powershell"`; `target` is
+/// `"destinations"` (default — delete duplicates, keep the source) or
+/// `"source"` (delete the source, keep the destinations).
+#[tauri::command]
+async fn catalog_generate_deletion_script(
+    matches: Vec<catalog::dedup::DuplicateMatch>,
+    format: Option<String>,
+    target: Option<String>,
+) -> Result<String, String> {
+    let format = match format.as_deref().unwrap_or("bash").to_ascii_lowercase().as_str() {
+        "bash" => catalog::dedup::ScriptFormat::Bash,
+        "batch" | "bat" | "cmd" => catalog::dedup::ScriptFormat::Batch,
+        "powershell" | "ps" | "ps1" => catalog::dedup::ScriptFormat::Powershell,
+        other => return Err(format!("unknown script format `{other}`")),
+    };
+    let target = match target.as_deref().unwrap_or("destinations") {
+        "destinations" | "dest" => catalog::dedup::DeletionTarget::Destinations,
+        "source" | "src" => catalog::dedup::DeletionTarget::Source,
+        other => return Err(format!("unknown deletion target `{other}`")),
+    };
+    Ok(catalog::dedup::generate_deletion_script(&matches, format, target))
+}
+
+/// Parse the user-facing `strategy` string into the typed enum.
+///
+/// Accepts:
+/// * `None`, `""`, or `"name-and-size"` → name+size match (Cathy default).
+/// * `"hash:md5"` / `"hash:sha1"` / `"hash:sha256"` → byte-level match.
+/// * Bare `"md5"` / `"sha1"` / `"sha256"` → same as `hash:<algo>` (so a
+///   simpler frontend dropdown works without prefix gymnastics).
+fn parse_match_strategy(s: Option<&str>) -> Result<catalog::dedup::MatchStrategy, String> {
+    let s = s.unwrap_or("").to_ascii_lowercase();
+    match s.as_str() {
+        "" | "name-and-size" => Ok(catalog::dedup::MatchStrategy::NameAndSize),
+        "hash:md5" | "md5" => Ok(catalog::dedup::MatchStrategy::Hash(
+            catalog::scan::HashAlgo::Md5,
+        )),
+        "hash:sha1" | "sha1" => Ok(catalog::dedup::MatchStrategy::Hash(
+            catalog::scan::HashAlgo::Sha1,
+        )),
+        "hash:sha256" | "sha256" => Ok(catalog::dedup::MatchStrategy::Hash(
+            catalog::scan::HashAlgo::Sha256,
+        )),
+        other => Err(format!(
+            "unknown match strategy `{other}` (try name-and-size / hash:md5 / hash:sha1 / hash:sha256)"
+        )),
+    }
+}
+
+/// `source` / `destination` arg can be either a .caf path or a folder.
+/// Detect by extension + file-vs-dir; load the .caf or scan the folder
+/// (no inline hashing — dedup_options decides whether to hash).
+fn load_or_scan_for_dedup(path: &str) -> Result<catalog::index::FileIndex, String> {
+    let p = std::path::PathBuf::from(path);
+    if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("caf") {
+        catalog::caf::read_file(&p).map_err(|e| format!("loading {}: {e}", p.display()))
+    } else if p.is_dir() {
+        catalog::scan::scan_dir(&p, catalog::scan::ScanOptions::default())
+            .map_err(|e| format!("scanning {}: {e}", p.display()))
+    } else {
+        Err(format!(
+            "{} is neither a .caf file nor a directory",
+            p.display()
+        ))
+    }
+}
+
 #[tauri::command]
 async fn catalog_metadata(path: String) -> Result<CafMetadataDto, String> {
     let p = std::path::PathBuf::from(path);
@@ -1798,6 +1902,8 @@ pub fn run() {
             catalog_save_caf,
             catalog_scan_dir,
             catalog_metadata,
+            catalog_find_duplicates,
+            catalog_generate_deletion_script,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
