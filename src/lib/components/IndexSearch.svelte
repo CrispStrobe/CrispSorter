@@ -1,15 +1,31 @@
 <script lang="ts">
-    import { invoke } from '@tauri-apps/api/core';
+    import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
+    import { readTextFile } from '@tauri-apps/plugin-fs';
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen, HardDrive
+        FileText, FolderOpen, HardDrive, Eye
     } from 'lucide-svelte';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
         return path.split(/[\\/]/).pop()?.replace(/\.caf$/i, '') ?? path;
+    }
+
+    // Convert a `crisp+local://user@machine/path` URI back to a plain
+    // filesystem path (catalog hits already use plain paths). Returns
+    // `null` for non-local URIs (vps / internxt) — those can't preview.
+    function uriToPath(uri: string): string | null {
+        if (uri.startsWith('crisp+local://')) {
+            const rest = uri.slice('crisp+local://'.length);
+            const slashIdx = rest.indexOf('/');
+            if (slashIdx === -1) return null;
+            return rest.slice(slashIdx);
+        }
+        // Catalog rows store plain paths in `location_uri`.
+        if (uri.startsWith('/') || /^[A-Za-z]:[\\/]/.test(uri)) return uri;
+        return null;
     }
 
     // ── Types ──────────────────────────────────────────────────────────────────
@@ -44,6 +60,75 @@
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
+
+    // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
+    // Right-side slide-in pane that shows the matched document in place
+    // so users can verify the hit without leaving the result list.
+    // PDF / image: tauri.convertFileSrc into native <object>/<img>.
+    // Text / markdown: readTextFile into a <pre>.
+    // Anything else: "Open in app" fallback.
+    let previewing      = $state<SearchResult | null>(null);
+    let previewKind     = $state<'pdf' | 'image' | 'text' | 'unsupported'>('unsupported');
+    let previewSrc      = $state('');           // file URL for pdf/image
+    let previewText     = $state('');           // file contents for text
+    let previewLoading  = $state(false);
+    let previewError    = $state('');
+
+    const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'rst', 'log',
+        'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'xml', 'html',
+        'rs', 'py', 'js', 'ts', 'svelte', 'go', 'java', 'c', 'cpp', 'h', 'hpp',
+        'sh', 'bash', 'zsh']);
+    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif',
+        'bmp', 'svg', 'ico']);
+
+    async function openPreview(r: SearchResult) {
+        // Toggle off if clicking the same row.
+        if (previewing && previewing.doc_id === r.doc_id) {
+            closePreview();
+            return;
+        }
+        const path = uriToPath(r.location_uri);
+        if (!path) {
+            previewing = r;
+            previewKind = 'unsupported';
+            previewError = 'No local path for this result (remote location)';
+            return;
+        }
+        previewing = r;
+        previewLoading = true;
+        previewError = '';
+        previewSrc = '';
+        previewText = '';
+        const ext = (r.ext ?? path.split('.').pop() ?? '').toLowerCase();
+        if (ext === 'pdf') {
+            previewKind = 'pdf';
+            previewSrc = convertFileSrc(path);
+        } else if (IMAGE_EXTS.has(ext)) {
+            previewKind = 'image';
+            previewSrc = convertFileSrc(path);
+        } else if (TEXT_EXTS.has(ext)) {
+            previewKind = 'text';
+            try {
+                // Cap at ~512 KB to avoid choking the DOM on huge logs.
+                const raw = await readTextFile(path);
+                previewText = raw.length > 512 * 1024
+                    ? raw.slice(0, 512 * 1024) + '\n\n…(truncated; file is larger than 512 KB)'
+                    : raw;
+            } catch (e: any) {
+                previewError = `read failed: ${e?.message ?? e}`;
+            }
+        } else {
+            previewKind = 'unsupported';
+        }
+        previewLoading = false;
+    }
+
+    function closePreview() {
+        previewing = null;
+        previewSrc = '';
+        previewText = '';
+        previewError = '';
+    }
 
     // Group results by doc_id
     const grouped = $derived.by(() => {
@@ -192,7 +277,8 @@
     {/if}
 
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
-    <div class="results-area">
+    <div class="results-and-preview">
+    <div class="results-area" class:with-preview={previewing !== null}>
         {#if loading}
             <div class="state-msg"><Loader2 size={22} class="spin" /> Suche läuft …</div>
 
@@ -253,6 +339,12 @@
                                 <span class="chunk-count">{group.chunks.length} Chunks</span>
                             {/if}
                             <button class="open-btn"
+                                class:active={previewing && previewing.doc_id === group.doc_id}
+                                onclick={(e) => { e.stopPropagation(); openPreview(r); }}
+                                title="Vorschau (Preview)">
+                                <Eye size={13} />
+                            </button>
+                            <button class="open-btn"
                                 onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
@@ -296,6 +388,45 @@
             {/each}
         {/if}
     </div>
+
+    {#if previewing}
+        <aside class="preview-pane">
+            <header class="preview-header">
+                <span class="preview-title" title={previewing.location_uri}>
+                    {previewing.title || previewing.filename || (previewing.doc_id.slice(0, 24) + '…')}
+                </span>
+                <button class="preview-close" onclick={closePreview} title="Vorschau schließen">
+                    <X size={14} />
+                </button>
+            </header>
+            <div class="preview-body">
+                {#if previewLoading}
+                    <div class="state-msg"><Loader2 size={20} class="spin" /> Loading…</div>
+                {:else if previewError}
+                    <div class="state-msg error">{previewError}</div>
+                {:else if previewKind === 'pdf'}
+                    <object data={previewSrc} type="application/pdf" width="100%" height="100%" aria-label="PDF preview of {previewing.title || previewing.filename || 'document'}">
+                        <p>PDF preview not supported by your webview.
+                            <button class="open-btn" onclick={() => openFile(previewing!.location_uri)}>Open in app</button>
+                        </p>
+                    </object>
+                {:else if previewKind === 'image'}
+                    <img src={previewSrc} alt={previewing.filename ?? ''} class="preview-image" />
+                {:else if previewKind === 'text'}
+                    <pre class="preview-text">{previewText}</pre>
+                {:else}
+                    <div class="state-msg">
+                        Preview not supported for this file type.
+                        <br />
+                        <button class="open-btn" onclick={() => openFile(previewing!.location_uri)}>
+                            <ExternalLink size={13} /> Open in app
+                        </button>
+                    </div>
+                {/if}
+            </div>
+        </aside>
+    {/if}
+    </div>
 </div>
 
 <style>
@@ -303,6 +434,73 @@
         display: flex; flex-direction: column; height: 100%;
         background: #09090b; color: #fafafa; padding: 20px;
         box-sizing: border-box; gap: 12px; overflow: hidden;
+    }
+
+    /* PLAN P7.3 — live preview pane. Slides in from the right when a
+       result row's eye-icon is clicked; results-area shrinks to share
+       the viewport. PDF / image render natively via tauri.convertFileSrc;
+       text reads the file via the fs plugin. */
+    .results-and-preview {
+        display: flex;
+        flex: 1;
+        gap: 12px;
+        overflow: hidden;
+        min-height: 0;
+    }
+    .results-area.with-preview { flex: 1; min-width: 0; }
+    .preview-pane {
+        flex: 1;
+        max-width: 50%;
+        min-width: 360px;
+        display: flex;
+        flex-direction: column;
+        background: #18181b;
+        border: 1px solid #3f3f46;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .preview-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 12px;
+        background: #27272a;
+        border-bottom: 1px solid #3f3f46;
+        font-size: 0.85rem;
+    }
+    .preview-title {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #fafafa;
+        font-weight: 600;
+        margin-right: 8px;
+    }
+    .preview-close {
+        background: none; border: none; cursor: pointer;
+        color: #a1a1aa; padding: 2px;
+    }
+    .preview-close:hover { color: #fafafa; }
+    .preview-body {
+        flex: 1;
+        overflow: auto;
+        background: #0a0a0c;
+    }
+    .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
+    .preview-image {
+        max-width: 100%;
+        max-height: 100%;
+        display: block;
+        margin: 0 auto;
+    }
+    .preview-text {
+        margin: 0;
+        padding: 12px;
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.78rem;
+        line-height: 1.4;
+        color: #d4d4d8;
+        white-space: pre-wrap;
+        word-break: break-word;
     }
 
     /* PLAN P6 4c / P7.1 — catalog channel hits get a small inline pill
