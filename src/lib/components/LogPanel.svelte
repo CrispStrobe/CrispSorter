@@ -3,6 +3,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { frontendLogs, type FrontendLogEntry } from '../log';
+    import { i18n } from '../i18n.svelte';
 
     interface LogEntry {
         ts: number;
@@ -100,20 +101,20 @@
 
 <div class="log-panel">
     <div class="log-toolbar">
-        <span class="log-title">Logs</span>
+        <span class="log-title">{i18n.t.logs.title}</span>
         <select bind:value={levelFilter} class="log-select">
-            <option value="all">All</option>
-            <option value="info">Info</option>
-            <option value="warn">Warn</option>
-            <option value="error">Error</option>
+            <option value="all">{i18n.t.logs.level_all}</option>
+            <option value="info">{i18n.t.logs.level_info}</option>
+            <option value="warn">{i18n.t.logs.level_warn}</option>
+            <option value="error">{i18n.t.logs.level_error}</option>
         </select>
-        <input type="text" bind:value={searchFilter} placeholder="Filter…" class="log-search" />
+        <input type="text" bind:value={searchFilter} placeholder={i18n.t.logs.filter_placeholder} class="log-search" />
         <label class="log-autoscroll">
-            <input type="checkbox" bind:checked={autoscroll} /> Auto-scroll
+            <input type="checkbox" bind:checked={autoscroll} /> {i18n.t.logs.autoscroll}
         </label>
-        <button class="log-btn" onclick={copyLogs} title="Copy logs to clipboard">Copy</button>
-        <button class="log-btn" onclick={clearLogs} title="Clear logs">Clear</button>
-        <span class="log-count">{filteredLogs.length} entries</span>
+        <button class="log-btn" onclick={copyLogs} title={i18n.t.logs.copy_title}>{i18n.t.logs.copy}</button>
+        <button class="log-btn" onclick={clearLogs} title={i18n.t.logs.clear_title}>{i18n.t.logs.clear}</button>
+        <span class="log-count">{i18n.t.logs.entries.replace('{count}', String(filteredLogs.length))}</span>
     </div>
     <div class="log-entries" bind:this={logContainer}>
         {#each filteredLogs as entry (entry.ts + entry.msg)}
@@ -125,7 +126,7 @@
             </div>
         {/each}
         {#if filteredLogs.length === 0}
-            <div class="log-empty">No log entries{levelFilter !== 'all' ? ` matching "${levelFilter}"` : ''}.</div>
+            <div class="log-empty">{levelFilter !== 'all' ? i18n.t.logs.empty_filtered.replace('{filter}', levelFilter) : i18n.t.logs.empty}</div>
         {/if}
     </div>
 </div>

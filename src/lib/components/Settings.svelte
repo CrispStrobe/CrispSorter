@@ -1217,7 +1217,7 @@
             <div class="section-card">
                 <label for="export-path-input"><FolderOpen size={16} /> {i18n.t.settings.export_dir}</label>
                 <div class="input-with-action">
-                    <input id="export-path-input" type="text" bind:value={exportPath} placeholder="Path..." />
+                    <input id="export-path-input" type="text" bind:value={exportPath} placeholder={i18n.t.settings.path_placeholder} />
                     <button class="action-btn small" onclick={pickExportPath}>{i18n.t.settings.browse}</button>
                 </div>
                 <div style="margin-top: 12px;">
@@ -1305,14 +1305,14 @@
                                     <strong>{model.name}</strong>
                                     <span class="size-badge" style="font-size: 0.6rem;">{model.id}</span>
                                 </div>
-                                <span class="model-path">{model.isDownloaded ? 'Language pack ready' : 'Not installed'}</span>
+                                <span class="model-path">{model.isDownloaded ? i18n.t.settings.tesseract_ready : i18n.t.settings.not_installed}</span>
                             </div>
                             <div class="model-status">
                                 {#if model.isDownloaded}
-                                    <span class="save-badge" style="color: #10b981;"><Check size={14} /> Installed</span>
+                                    <span class="save-badge" style="color: #10b981;"><Check size={14} /> {i18n.t.settings.installed}</span>
                                 {:else}
                                     <button class="action-btn small primary">
-                                        <Download size={14} /> Download
+                                        <Download size={14} /> {i18n.t.settings.download}
                                     </button>
                                 {/if}
                             </div>
@@ -1347,7 +1347,7 @@
 
             <!-- PLAN P8.1 — per-file conversion timeout -->
             <div class="section-card">
-                <label for="conv-timeout">Per-file conversion timeout (seconds)</label>
+                <label for="conv-timeout">{i18n.t.settings.conv_timeout_label}</label>
                 <input
                     id="conv-timeout"
                     type="number"
@@ -1357,12 +1357,7 @@
                     style="width: 120px;"
                 />
                 <p class="hint">
-                    Wall-clock ceiling per file during text extraction.
-                    A 30-second per-page watchdog still catches frozen extractors;
-                    this catches files that make slow but real progress on something
-                    pathologically large. <strong>0 disables the timeout</strong> entirely
-                    (useful when you really want to wait out a 2,000-page PDF).
-                    Default 120s.
+                    {i18n.t.settings.conv_timeout_hint_prefix}<strong>{i18n.t.settings.conv_timeout_hint_zero}</strong>{i18n.t.settings.conv_timeout_hint_suffix}
                 </p>
             </div>
 
@@ -1429,8 +1424,8 @@
                                 {#if isEnabled}
                                     <div class="rr-order">
                                         <span class="rr-idx">#{rrPos + 1}</span>
-                                        <button class="icon-btn-tiny" onclick={() => rrMoveUp(rrPos)} disabled={rrPos === 0} title="Move up">▲</button>
-                                        <button class="icon-btn-tiny" onclick={() => rrMoveDown(rrPos)} disabled={rrPos === roundRobinProviders.length - 1} title="Move down">▼</button>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveUp(rrPos)} disabled={rrPos === 0} title={i18n.t.settings.move_up}>▲</button>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveDown(rrPos)} disabled={rrPos === roundRobinProviders.length - 1} title={i18n.t.settings.move_down}>▼</button>
                                     </div>
                                 {/if}
                             </div>
@@ -1461,8 +1456,8 @@
                                     <input type="checkbox" id="bench-p-{p.id}" bind:group={benchProviders} value={p.id} />
                                     <span class="p-name">{p.name}</span>
                                 </label>
-                                <select id="bench-model-select-{p.id}" class="bench-model-select" bind:value={benchModels[p.id]} disabled={!benchProviders.includes(p.id)} aria-label="Select benchmark model">
-                                    <option value="">(Select model)</option>
+                                <select id="bench-model-select-{p.id}" class="bench-model-select" bind:value={benchModels[p.id]} disabled={!benchProviders.includes(p.id)} aria-label={i18n.t.settings.action_select_bench_model}>
+                                    <option value="">{i18n.t.settings.benchmark.select_model}</option>
                                     {#each p.models || [] as m}<option value={m}>{m}</option>{/each}
                                 </select>
                             </div>
@@ -1481,7 +1476,7 @@
                                     <span class="char-count">{(item.extractedText?.length || 0)} chars</span>
                                 </label>
                             {:else}
-                                <div class="empty-docs">No documents in current batch.</div>
+                                <div class="empty-docs">{i18n.t.settings.benchmark.no_documents}</div>
                             {/each}
                         </div>
                     </div>
@@ -1495,7 +1490,7 @@
                             <button class:active={benchPromptMode === 'custom'} class="toggle-btn" onclick={() => benchPromptMode = 'custom'}>{i18n.t.settings.benchmark.prompt_custom}</button>
                         </div>
                         {#if benchPromptMode === 'custom'}
-                            <textarea id="bench-custom-prompt" class="bench-prompt-input" bind:value={benchCustomPrompt} rows="3" aria-label="Custom benchmark prompt"></textarea>
+                            <textarea id="bench-custom-prompt" class="bench-prompt-input" bind:value={benchCustomPrompt} rows="3" aria-label={i18n.t.settings.action_custom_bench_prompt}></textarea>
                         {/if}
                     </div>
                 </div>
@@ -1526,10 +1521,10 @@
                     <table class="bench-table">
                         <thead>
                             <tr>
-                                <th>Provider</th>
-                                <th class="bench-num">Avg Latency</th>
-                                <th class="bench-num">Runs</th>
-                                <th>Details</th>
+                                <th>{i18n.t.settings.benchmark.col_provider}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.col_avg_latency}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.col_runs}</th>
+                                <th>{i18n.t.settings.benchmark.col_details}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1541,7 +1536,7 @@
                                     </td>
                                     <td class="bench-num">{res.avgLatency.toLocaleString()} ms</td>
                                     <td class="bench-num">{res.runs.length}</td>
-                                    <td><button class="bench-view-btn" onclick={() => benchModal = { title: `${res.providerName} — ${res.model}`, runs: res.runs }}>View</button></td>
+                                    <td><button class="bench-view-btn" onclick={() => benchModal = { title: `${res.providerName} — ${res.model}`, runs: res.runs }}>{i18n.t.settings.benchmark.view}</button></td>
                                 </tr>
                             {/each}
                         </tbody>
@@ -1643,14 +1638,14 @@
 
                 {#if supportsGguf(indexEmbedderModel)}
                     <label for="index-backend-select" style="margin-top:10px;">
-                        <Cpu size={14} /> Inference Backend
+                        <Cpu size={14} /> {i18n.t.settings.inference_backend}
                     </label>
                     <select id="index-backend-select" bind:value={indexEmbedderBackend} class="styled-select">
-                        <option value="onnx">ONNX (fastembed / ORT)</option>
-                        <option value="gguf">GGUF (CrispEmbed, experimental)</option>
+                        <option value="onnx">{i18n.t.settings.inference_backend_onnx}</option>
+                        <option value="gguf">{i18n.t.settings.inference_backend_gguf}</option>
                     </select>
                     <div style="font-size: 12px; color: var(--muted, #888); margin-top: 4px;">
-                        GGUF reuses the llama.cpp GPU backends (Vulkan/Metal/CUDA) — smaller files, unified GPU stack. Only available for models with a verified GGUF equivalent.
+                        {i18n.t.settings.inference_backend_hint}
                     </div>
 
                     {#if indexEmbedderBackend === 'gguf'}
@@ -1707,7 +1702,7 @@
                 </label>
                 <div class="input-with-action">
                     <input id="index-model-cache-dir" type="text" bind:value={indexModelCacheDir}
-                        placeholder="(default: app data dir / models)" />
+                        placeholder={i18n.t.settings.index.model_cache_dir_placeholder} />
                     <button class="action-btn small" onclick={pickIndexModelCacheDir}>{i18n.t.settings.browse}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.index.model_cache_dir_hint}</p>
@@ -1719,7 +1714,7 @@
                 <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
                 <div class="input-with-action">
                     <input id="index-data-dir" type="text" bind:value={indexDataDir}
-                        placeholder="(app data dir)" />
+                        placeholder={i18n.t.settings.index.data_dir_placeholder} />
                     <button class="action-btn small" onclick={pickIndexDataDir}>{i18n.t.settings.browse}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.index.data_dir_hint}</p>
@@ -1730,7 +1725,7 @@
             <div class="section-card">
                 <button class="save-btn" onclick={applyIndexConfig}
                     disabled={indexStatus === 'loading'}>
-                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> Initialisiere …
+                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> {i18n.t.settings.index.status_loading}
                     {:else}<Play size={16} /> {i18n.t.settings.index.apply}{/if}
                 </button>
                 <p class="hint">{i18n.t.settings.index.apply_hint}</p>
@@ -1741,7 +1736,7 @@
                         <div class="init-progress-bar">
                             <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
                         </div>
-                        <p class="init-progress-note">Beim ersten Start wird das Embedder-Modell heruntergeladen (~500 MB). Bitte warten …</p>
+                        <p class="init-progress-note">{i18n.t.settings.index.init_progress_note}</p>
                     </div>
                 {:else if indexStatus === 'ok'}
                     <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {i18n.t.settings.index.status_ok}</p>
@@ -1792,13 +1787,20 @@
             </div>
 
             <div class="section-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <h3>{i18n.t.settings.legal.licenses}</h3>
                     <div class="search-box small" style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:0 10px; width:240px; display:flex; align-items:center;">
                         <Search size={14} style="color:#71717a; margin-right:8px;" />
                         <input type="text" id="license-search-input" bind:value={licenseSearch} placeholder={i18n.t.settings.legal.search_licenses.replace('{count}', String(automatedLicenses.length))} style="border:none; background:transparent; color:white; padding:6px 0; font-size:0.75rem; width:100%; outline:none;" aria-label="Search licenses" />
                     </div>
                 </div>
+                {#if licensesGeneratedAt}
+                    <div class="hint" style="color:#71717a; font-size:0.7rem; margin-bottom:12px;">
+                        {i18n.t.settings.legal.generated_at
+                            .replace('{timestamp}', new Date(licensesGeneratedAt).toLocaleString())
+                            .replace('{count}', String(automatedLicenses.length))}
+                    </div>
+                {/if}
                 <div class="license-list-scrollable">
                     {#each filteredLicenses as lib}
                         <div class="license-item-auto">
@@ -1810,7 +1812,7 @@
                                 <span class="lib-type">{lib.license}</span>
                                 <span class="lib-author">{lib.author}</span>
                                 {#if lib.link}
-                                    <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>Source</button>
+                                    <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>{i18n.t.settings.legal.source_link}</button>
                                 {/if}
                             </div>
                         </div>
@@ -1859,7 +1861,7 @@
                         {/each}
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
-                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Refresh models">
+                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
@@ -1869,7 +1871,7 @@
 
             {#if selectedProvider.id !== 'mistralrs'}
                 {#if selectedProvider.id === 'ollama' && selectedProvider.selectedModel}
-                    <p class="hint" style="margin: 8px 0 4px;">Active model: <strong>{selectedProvider.selectedModel}</strong></p>
+                    <p class="hint" style="margin: 8px 0 4px;">{i18n.t.settings.active_model} <strong>{selectedProvider.selectedModel}</strong></p>
                 {/if}
                 <div class="actions">
                     <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection || !selectedProvider.selectedModel}>
@@ -1892,47 +1894,47 @@
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><Cpu size={16} /> {i18n.t.settings.ollama_manager_title}</h2>
                         <div class="header-actions">
                             {#if ollamaStatus === 'starting'}
-                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {i18n.t.settings.sidecar.starting}</span>
                             {:else if ollamaStatus === 'ready'}
-                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.sidecar.running}</span>
                             {:else if ollamaStatus === 'error'}
-                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> {i18n.t.settings.sidecar.failed}</span>
                             {/if}
                             {#if ollamaRunning}
                                 <button class="action-btn small danger" onclick={stopOllamaService}>
-                                    <Square size={14} /> Stop
+                                    <Square size={14} /> {i18n.t.settings.sidecar.stop}
                                 </button>
                             {:else}
                                 <button class="action-btn small success" onclick={startOllamaService} disabled={ollamaStatus === 'starting'}>
-                                    <Rocket size={14} /> Start Ollama
+                                    <Rocket size={14} /> {i18n.t.settings.ollama_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Fetch installed Ollama models">
-                                <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> Fetch Installed
+                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
+                                <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> {i18n.t.settings.ollama_fetch_installed}
                             </button>
                         </div>
                     </div>
                     {#if ollamaLogs.length > 0}
                         <div style="margin-bottom: 14px;">
                             <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => ollamaLogsVisible = !ollamaLogsVisible}>
-                                OLLAMA LOGS
+                                {i18n.t.settings.ollama_logs}
                                 {#if ollamaLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                             </button>
                             {#if ollamaLogsVisible}
                                 <div style="margin-top: 8px; position: relative;">
-                                    <textarea bind:this={ollamaLogEl} readonly class="log-viewer" value={ollamaLogs.join('\n')} rows="8" aria-label="Ollama Logs"></textarea>
-                                    <button class="log-clear-btn" onclick={() => ollamaLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                    <textarea bind:this={ollamaLogEl} readonly class="log-viewer" value={ollamaLogs.join('\n')} rows="8" aria-label={i18n.t.settings.action_ollama_logs_aria}></textarea>
+                                    <button class="log-clear-btn" onclick={() => ollamaLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                                 </div>
                             {/if}
                         </div>
                     {/if}
                     
                     <div class="form-group" style="margin-top: 20px;">
-                        <label for="ollama-custom-id">Custom Model Tag</label>
+                        <label for="ollama-custom-id">{i18n.t.settings.ollama_custom_tag_label}</label>
                         <div class="input-with-action">
-                            <input type="text" id="ollama-custom-id" placeholder="e.g. llama3:8b" bind:value={ollamaCustomInput} />
+                            <input type="text" id="ollama-custom-id" placeholder={i18n.t.settings.ollama_custom_tag_placeholder} bind:value={ollamaCustomInput} />
                             <button class="action-btn small" onclick={addCustomOllamaModel} disabled={!ollamaCustomInput.trim()}>
-                                <Plus size={14} /> Add/Pull
+                                <Plus size={14} /> {i18n.t.settings.ollama_add_pull}
                             </button>
                         </div>
                     </div>
@@ -1945,7 +1947,7 @@
                                         <strong>{model.tag}</strong>
                                         {#if selectedProvider.selectedModel === model.tag}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
-                                    <span class="model-path">{model.isInstalled ? 'Installed' : 'Not installed'}</span>
+                                    <span class="model-path">{model.isInstalled ? i18n.t.settings.installed : i18n.t.settings.not_installed}</span>
                                     {#if ollamaPulling[model.tag] !== undefined}
                                         <div class="progress-container">
                                             <div class="progress-bar" style="width: {ollamaPulling[model.tag]}%"></div>    
@@ -1960,7 +1962,7 @@
                                         </button>
                                     {:else if ollamaPulling[model.tag] === undefined}
                                         <button class="action-btn small primary" onclick={() => pullOllamaModel(model.tag)}>
-                                            <Download size={14} /> Pull
+                                            <Download size={14} /> {i18n.t.settings.ollama_pull}
                                         </button>
                                     {/if}
                                 </div>
@@ -1975,17 +1977,17 @@
                     <div class="header" style="margin-bottom: 12px;">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><HardDrive size={16} /> {i18n.t.settings.mlx_manager_title}</h2>
                         <div class="header-actions">
-                            <input id="mlx-port-input" type="number" bind:value={mlxPort} style="width: 80px;" aria-label="MLX Port" />    
+                            <input id="mlx-port-input" type="number" bind:value={mlxPort} style="width: 80px;" aria-label={i18n.t.settings.action_mlx_port_aria} />    
                             {#if mlxRunning}
                                 <button class="action-btn small danger" onclick={stopMlxServer}>
-                                    <Square size={14} /> Stop MLX
+                                    <Square size={14} /> {i18n.t.settings.mlx_stop}
                                 </button>
                             {:else}
                                 <button class="action-btn small success" onclick={startMlxServer}>
-                                    <Rocket size={14} /> Start MLX
+                                    <Rocket size={14} /> {i18n.t.settings.mlx_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={checkMlxModelsCache} title="Refresh cache status">
+                            <button class="action-btn small" onclick={checkMlxModelsCache} title={i18n.t.settings.action_refresh_cache_status}>
                                 <RefreshCw size={14} /> {i18n.t.batch.reanalyze_run}
                             </button>
                         </div>
@@ -1994,9 +1996,9 @@
                     <p class="hint">{i18n.t.settings.mlx_cache_label}: <code>{mlxCacheDir}</code></p>
 
                     <div class="form-group" style="margin-top: 20px;">
-                        <label for="mlx-custom-id">Custom HF Repo ID or local path</label>
+                        <label for="mlx-custom-id">{i18n.t.settings.mlx_custom_repo}</label>
                         <div class="input-with-action">
-                            <input type="text" id="mlx-custom-id" placeholder="e.g. mlx-community/Mistral-7B-Instruct-v0.3-4bit" bind:value={mlxCustomInput} />
+                            <input type="text" id="mlx-custom-id" placeholder={i18n.t.settings.mlx_custom_placeholder} bind:value={mlxCustomInput} />
                             <button class="action-btn small" onclick={addMlxModel}><Plus size={14} /> {i18n.t.batch.add_files}</button>
                         </div>
                     </div>
@@ -2019,9 +2021,9 @@
                                         {selectedProvider.selectedModel === model.repoId ? i18n.t.batch.selected_status : i18n.t.batch.use_model}   
                                     </button>
                                     {#if mlxModelCached[model.id]}
-                                        <button class="icon-btn danger" onclick={() => deleteMlxModelFromDisk(model)} title="Delete from disk"><Trash2 size={14} /></button>
+                                        <button class="icon-btn danger" onclick={() => deleteMlxModelFromDisk(model)} title={i18n.t.settings.action_delete_from_disk}><Trash2 size={14} /></button>
                                     {/if}
-                                    <button class="icon-btn" onclick={() => removeMlxModel(model.id)} title="Remove from list"><XCircle size={14} /></button>
+                                    <button class="icon-btn" onclick={() => removeMlxModel(model.id)} title={i18n.t.settings.action_remove_from_list}><XCircle size={14} /></button>
                                 </div>
                             </div>
                         {/each}
@@ -2032,18 +2034,18 @@
                     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
                     <div class="section-toggle-flat" onclick={() => mlxLogsVisible = !mlxLogsVisible} role="button" tabindex="0" onkeydown={e => e.key === 'Enter' && (mlxLogsVisible = !mlxLogsVisible)}>        
                         <span style="display:flex; align-items:center; gap:8px;">
-                            <Brain size={14} /> MLX Server Log
+                            <Brain size={14} /> {i18n.t.settings.mlx_server_log}
                             {#if mlxRunning}<span class="running-dot"></span>{/if}
                         </span>
                         <span style="display:flex; align-items:center; gap:8px;">
-                            <span class="hint" style="margin:0;">{mlxLogs.length} lines</span>
-                            {#if mlxLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}     
+                            <span class="hint" style="margin:0;">{i18n.t.settings.mlx_log_lines.replace('{count}', String(mlxLogs.length))}</span>
+                            {#if mlxLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                         </span>
                     </div>
                     {#if mlxLogsVisible}
                         <div style="margin-top: 10px; position: relative;">
-                            <textarea id="mlx-log-viewer" bind:this={mlxLogEl} readonly class="log-viewer" value={mlxLogs.join('\n')} rows="14" aria-label="MLX Server Logs"></textarea>
-                            <button class="log-clear-btn" onclick={() => mlxLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                            <textarea id="mlx-log-viewer" bind:this={mlxLogEl} readonly class="log-viewer" value={mlxLogs.join('\n')} rows="14" aria-label={i18n.t.settings.action_mlx_logs_aria}></textarea>
+                            <button class="log-clear-btn" onclick={() => mlxLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                         </div>
                     {/if}
                 </div>
@@ -2172,21 +2174,21 @@
                         <div class="header-actions" style="display: flex; gap: 8px; align-items: center;">
                             {#if selectedProvider.id === 'llamacpp'}
                                 <div style="display:flex; align-items:center; gap:8px; margin-right:8px; background:#09090b; padding:2px 8px; border-radius:6px; border:1px solid #27272a;">
-                                    <span style="font-size:0.7rem; color:#71717a; font-weight:700;">PORT</span>
+                                    <span style="font-size:0.7rem; color:#71717a; font-weight:700;">{i18n.t.settings.port}</span>
                                     <input type="number" bind:value={llamacppPort} style="width: 70px; border:none; padding:2px; height:24px; font-size:0.8125rem;" />
                                 </div>
                                 {#if sidecarStatus === 'starting'}
-                                    <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                                    <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {i18n.t.settings.sidecar.starting}</span>
                                 {:else if sidecarStatus === 'ready'}
-                                    <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                                    <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.sidecar.running}</span>
                                 {:else if sidecarStatus === 'error'}
-                                    <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                                    <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> {i18n.t.settings.sidecar.failed}</span>
                                 {/if}
                                 <button class="action-btn small primary" disabled={sidecarStatus === 'starting'} onclick={() => setLocalModelActive(selectedProvider.selectedModel)}>
                                     <Rocket size={14} /> {i18n.t.settings.local_manager_start}
                                 </button>
                                 <button class="action-btn small danger" onclick={async () => { await invoke('stop_llamacpp_sidecar'); sidecarStatus = ''; llamacppReady = false; }}>
-                                    <Square size={14} /> Stop
+                                    <Square size={14} /> {i18n.t.settings.sidecar.stop}
                                 </button>
                             {/if}
                             <button class="action-btn small success" onclick={addLocalModel}>
@@ -2197,22 +2199,22 @@
                     {#if selectedProvider.id === 'llamacpp' && sidecarLogs.length > 0}
                         <div style="margin-bottom: 14px;">
                             <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => sidecarLogsVisible = !sidecarLogsVisible}>
-                                SIDECAR LOGS
+                                {i18n.t.settings.sidecar_logs}
                                 {#if sidecarLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                             </button>
                             {#if sidecarLogsVisible}
                                 <div style="margin-top: 8px; position: relative;">
-                                    <textarea bind:this={sidecarLogEl} readonly class="log-viewer" value={sidecarLogs.join('\n')} rows="10" aria-label="llama-server Logs"></textarea>
-                                    <button class="log-clear-btn" onclick={() => sidecarLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                    <textarea bind:this={sidecarLogEl} readonly class="log-viewer" value={sidecarLogs.join('\n')} rows="10" aria-label={i18n.t.settings.action_llamacpp_logs_aria}></textarea>
+                                    <button class="log-clear-btn" onclick={() => sidecarLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                                 </div>
                             {/if}
                         </div>
                     {/if}
 
                     <div class="form-group">
-                        <label for="custom-model-id-{selectedProvider.id}">Custom HF Repo ID or URL</label>
+                        <label for="custom-model-id-{selectedProvider.id}">{i18n.t.settings.custom_hf_repo_url}</label>
                         <div class="input-with-action">
-                            <input type="text" id="custom-model-id-{selectedProvider.id}" placeholder="REPO_ID/FILENAME.GGUF" bind:value={customModelInput} />
+                            <input type="text" id="custom-model-id-{selectedProvider.id}" placeholder={i18n.t.settings.custom_hf_placeholder} bind:value={customModelInput} />
                             <button class="action-btn small" onclick={addCustomModel}><Plus size={14} /> {i18n.t.batch.add_files}</button>
                         </div>
                         <p class="hint">{i18n.t.settings.local_manager_hf_hint}</p>
@@ -2226,7 +2228,7 @@
                                         <strong>{model.name}</strong>
                                         {#if selectedProvider.selectedModel === model.path && model.path !== ''}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
-                                    <span class="model-path">{model.path || 'Not downloaded yet'}</span>
+                                    <span class="model-path">{model.path || i18n.t.settings.not_downloaded}</span>
                                     {#if model.progress !== undefined}
                                         <div class="progress-container">
                                             <div class="progress-bar" style="width: {model.progress}%"></div>    
@@ -2240,12 +2242,12 @@
                                     </button>
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
-                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title="Delete file"><Trash2 size={14} /></button>
+                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title={i18n.t.settings.action_delete_file}><Trash2 size={14} /></button>
                                     {:else if model.progress === undefined}
                                         <button class="action-btn small primary" onclick={() => downloadLocalModel(i)}>
-                                            <Download size={14} /> Download
+                                            <Download size={14} /> {i18n.t.settings.download}
                                         </button>
-                                        <button class="icon-btn" onclick={() => localModels.splice(i, 1)} title="Remove from list"><XCircle size={14} /></button>
+                                        <button class="icon-btn" onclick={() => localModels.splice(i, 1)} title={i18n.t.settings.action_remove_from_list}><XCircle size={14} /></button>
                                     {/if}
                                 </div>
                             </div>
@@ -2263,16 +2265,16 @@
         <div class="bench-modal" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="bench-modal-header">
                 <span>{benchModal.title}</span>
-                <button class="bench-modal-close" onclick={() => benchModal = null} aria-label="Close benchmark modal">✕</button>
+                <button class="bench-modal-close" onclick={() => benchModal = null} aria-label={i18n.t.settings.action_close_bench_modal}>✕</button>
             </div>
             <div class="bench-modal-body">
                 {#each benchModal.runs as run, ri}
                     <div class="bench-response-block">
                         <span class="bench-run-label">
-                            Run {ri + 1} {ri === 0 ? '(cold)' : '(warm)'}
-                            {#if run.error}— ERROR{:else}— {run.latencyMs.toLocaleString()} ms / {run.tokensPerSec ?? '?'} t/s{/if}
+                            {i18n.t.settings.benchmark.run_label} {ri + 1} {ri === 0 ? i18n.t.settings.benchmark.run_cold_marker : i18n.t.settings.benchmark.run_warm_marker}
+                            {#if run.error}{i18n.t.settings.benchmark.error_marker}{:else}— {run.latencyMs.toLocaleString()} ms / {run.tokensPerSec ?? '?'} t/s{/if}
                         </span>
-                        <pre class="bench-response-pre" style="max-height:none;">{run.error || run.response || '(empty response)'}</pre>
+                        <pre class="bench-response-pre" style="max-height:none;">{run.error || run.response || i18n.t.settings.benchmark.empty_response}</pre>
                     </div>
                 {/each}
             </div>
