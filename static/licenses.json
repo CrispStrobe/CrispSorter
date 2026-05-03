@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-05-02T19:53:08.046Z",
+  "generatedAt": "2026-05-03T17:38:06.855Z",
   "counts": {
     "frontend": 18,
-    "backend": 1172,
-    "total": 1190
+    "backend": 1186,
+    "total": 1204
   },
   "licenses": [
     {
@@ -1120,7 +1120,7 @@
     },
     {
       "name": "clap",
-      "version": "4.6.0",
+      "version": "4.6.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/clap-rs/clap",
@@ -1136,7 +1136,7 @@
     },
     {
       "name": "clap_derive",
-      "version": "4.6.0",
+      "version": "4.6.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/clap-rs/clap",
@@ -1364,6 +1364,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>",
       "link": "https://github.com/srijs/rust-crc32fast",
+      "source": "Backend"
+    },
+    {
+      "name": "crossbeam",
+      "version": "0.8.4",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/crossbeam-rs/crossbeam",
       "source": "Backend"
     },
     {
@@ -2428,6 +2436,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "bluss",
       "link": "https://github.com/petgraph/fixedbitset",
+      "source": "Backend"
+    },
+    {
+      "name": "flatbuffers",
+      "version": "24.12.23",
+      "license": "Apache-2.0",
+      "author": "Robert Winslow <hello@rwinslow.com>, FlatBuffers Maintainers",
+      "link": "https://github.com/google/flatbuffers",
       "source": "Backend"
     },
     {
@@ -3775,6 +3791,14 @@
       "source": "Backend"
     },
     {
+      "name": "jwalk",
+      "version": "0.8.1",
+      "license": "MIT",
+      "author": "Jesse Grosjean <jesse@hogbaysoftware.com>, Sebastian Thiel <byronimo@gmail.com>",
+      "link": "https://github.com/byron/jwalk",
+      "source": "Backend"
+    },
+    {
       "name": "katex",
       "version": "0.16.38",
       "license": "MIT",
@@ -4991,6 +5015,14 @@
       "source": "Backend"
     },
     {
+      "name": "ocrs",
+      "version": "0.12.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/ocrs",
+      "source": "Backend"
+    },
+    {
       "name": "once_cell",
       "version": "1.21.4",
       "license": "Apache-2.0 OR MIT",
@@ -6196,6 +6228,86 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Michele d'Amico <michele.damico@gmail.com>",
       "link": "https://github.com/la10736/rstest",
+      "source": "Backend"
+    },
+    {
+      "name": "rten",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-base",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-gemm",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-imageproc",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-model-file",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-onnx",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-shape-inference",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-simd",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-tensor",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
+      "source": "Backend"
+    },
+    {
+      "name": "rten-vecmath",
+      "version": "0.24.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Robert Knight",
+      "link": "https://github.com/robertknight/rten",
       "source": "Backend"
     },
     {
@@ -7432,9 +7544,9 @@
     },
     {
       "name": "tauri-app",
-      "version": "0.1.35",
-      "license": "Unknown",
-      "author": "you",
+      "version": "0.1.36",
+      "license": "AGPL-3.0-or-later",
+      "author": "CrispSorter contributors",
       "link": "https://crates.io/crates/tauri-app",
       "source": "Backend"
     },

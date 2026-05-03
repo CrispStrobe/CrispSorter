@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "version": "0.1.36",
-  "description": "",
+  "description": "CrispSorter — local-first AI document organizer",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -13,7 +13,7 @@
     "tauri": "tauri",
     "licenses:gen": "node scripts/generate-licenses.js"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@ai-sdk/svelte": "^4.0.116",
     "@huggingface/transformers": "^3.8.1",
