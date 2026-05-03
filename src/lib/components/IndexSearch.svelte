@@ -2,10 +2,12 @@
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
     import { readTextFile } from '@tauri-apps/plugin-fs';
+    import { onMount } from 'svelte';
+    import { getSetting, saveSetting } from '$lib/store';
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen, HardDrive, Eye
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2
     } from 'lucide-svelte';
 
     // Strip path → bare catalog filename for the badge label.
@@ -130,6 +132,64 @@
         previewError = '';
     }
 
+    // ── Saved searches (PLAN P7.5) ────────────────────────────────────────────
+    // Persist (name, query, mode, limit) tuples in tauri-plugin-store under
+    // `savedSearches`. Click → load into the query bar + run. Lightweight
+    // first cut — no per-saved-search filter persistence yet (filters reset
+    // to defaults on load); that's the next iteration once the filter shape
+    // settles.
+
+    interface SavedSearch {
+        name: string;
+        query: string;
+        mode: 'hybrid' | 'text' | 'vector';
+        limit: number;
+        savedAt: number; // unix ms
+    }
+
+    let savedSearches = $state<SavedSearch[]>([]);
+    let showSavedDropdown = $state(false);
+
+    onMount(async () => {
+        const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
+        savedSearches = stored ?? [];
+    });
+
+    async function persistSavedSearches() {
+        await saveSetting('savedSearches', savedSearches);
+    }
+
+    async function saveCurrentSearch() {
+        const q = query.trim();
+        if (!q) return;
+        // Default name = first 40 chars of the query, or user-edited later.
+        const name = q.length > 40 ? q.slice(0, 37) + '…' : q;
+        // Dedup on (name, query) — re-saving the same search updates timestamp.
+        const idx = savedSearches.findIndex(s => s.name === name && s.query === q);
+        const entry: SavedSearch = {
+            name, query: q, mode, limit, savedAt: Date.now(),
+        };
+        if (idx >= 0) {
+            savedSearches[idx] = entry;
+        } else {
+            savedSearches = [...savedSearches, entry];
+        }
+        await persistSavedSearches();
+    }
+
+    async function loadSavedSearch(s: SavedSearch) {
+        query = s.query;
+        mode = s.mode;
+        limit = s.limit;
+        showSavedDropdown = false;
+        await runSearch();
+    }
+
+    async function deleteSavedSearch(idx: number) {
+        savedSearches = savedSearches.filter((_, i) => i !== idx);
+        await persistSavedSearches();
+    }
+
     // Group results by doc_id
     const grouped = $derived.by(() => {
         const map = new Map<string, SearchResult[]>();
@@ -249,6 +309,53 @@
             {#if loading}<Loader2 size={15} class="spin" />{:else}<Search size={15} />{/if}
             Suchen
         </button>
+        <button
+            class="filter-toggle"
+            onclick={saveCurrentSearch}
+            disabled={!query.trim()}
+            title="Save this search"
+        >
+            <BookmarkPlus size={15} />
+        </button>
+        <div class="saved-wrap">
+            <button
+                class="filter-toggle"
+                class:active={showSavedDropdown}
+                onclick={() => showSavedDropdown = !showSavedDropdown}
+                disabled={savedSearches.length === 0}
+                title="Saved searches ({savedSearches.length})"
+            >
+                <Bookmark size={15} />
+                {#if savedSearches.length > 0}
+                    <span class="saved-count">{savedSearches.length}</span>
+                {/if}
+            </button>
+            {#if showSavedDropdown && savedSearches.length > 0}
+                <div class="saved-dropdown">
+                    {#each savedSearches as s, i (s.name + s.savedAt)}
+                        <div class="saved-item">
+                            <button
+                                class="saved-name"
+                                onclick={() => loadSavedSearch(s)}
+                                title={s.query}
+                            >
+                                {s.name}
+                                <span class="saved-meta">
+                                    {s.mode} · {s.limit}
+                                </span>
+                            </button>
+                            <button
+                                class="saved-del"
+                                onclick={() => deleteSavedSearch(i)}
+                                title="Delete saved search"
+                            >
+                                <Trash2 size={12} />
+                            </button>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
         <button class="filter-toggle" class:active={showFilters}
             onclick={() => showFilters = !showFilters} title="Optionen">
             <SlidersHorizontal size={15} />
@@ -435,6 +542,69 @@
         background: #09090b; color: #fafafa; padding: 20px;
         box-sizing: border-box; gap: 12px; overflow: hidden;
     }
+
+    /* PLAN P7.5 — saved-searches bookmark dropdown */
+    .saved-wrap { position: relative; display: inline-flex; }
+    .saved-count {
+        margin-left: 4px;
+        background: #3b82f6;
+        color: white;
+        font-size: 0.65rem;
+        font-weight: 600;
+        padding: 0 5px;
+        border-radius: 8px;
+        line-height: 1.5;
+    }
+    .saved-dropdown {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        z-index: 20;
+        min-width: 280px;
+        max-width: 420px;
+        max-height: 320px;
+        overflow-y: auto;
+        background: #18181b;
+        border: 1px solid #3f3f46;
+        border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        padding: 4px;
+    }
+    .saved-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px;
+    }
+    .saved-item:hover { background: #27272a; border-radius: 4px; }
+    .saved-name {
+        flex: 1;
+        background: none;
+        border: none;
+        color: #fafafa;
+        text-align: left;
+        cursor: pointer;
+        padding: 4px 6px;
+        border-radius: 4px;
+        font-size: 0.8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .saved-meta {
+        display: block;
+        font-size: 0.65rem;
+        color: #71717a;
+        text-transform: uppercase;
+    }
+    .saved-del {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #71717a;
+        padding: 4px;
+    }
+    .saved-del:hover { color: #ef4444; }
 
     /* PLAN P7.3 — live preview pane. Slides in from the right when a
        result row's eye-icon is clicked; results-area shrinks to share
