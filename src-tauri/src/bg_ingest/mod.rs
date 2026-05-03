@@ -405,6 +405,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as u32),
+        // PLAN P7.6 — tag with the source volume's stable id so a
+        // future search-time filter can hide rows from currently-
+        // unmounted volumes. Best-effort; None when the helper fails.
+        volume_id: crate::volume::volume_id_for_path(&p),
     };
 
     pipeline

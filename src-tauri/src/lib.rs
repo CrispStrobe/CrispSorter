@@ -5,6 +5,7 @@ pub mod cli;
 pub mod extractors;
 pub mod index;
 pub mod tts;
+pub mod volume;
 pub mod watcher;
 
 /// Speak `text` aloud via the platform's native TTS synth.
@@ -78,6 +79,20 @@ async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String>
 async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let guard = state.watcher.lock().await;
     Ok(guard.list())
+}
+
+// ── Volume awareness (PLAN P7.6) ────────────────────────────────────────
+
+/// List currently-mounted volumes with their stable id, mount point,
+/// and human label. Used by the frontend to show "Volumes" in index
+/// filters once the matching search-time filter lands. Each call
+/// shells out (`mount` / `findmnt` / `wmic`); the list is small and
+/// the call is rare (a settings panel open) so we don't cache.
+#[tauri::command]
+async fn volume_list_mounted() -> Result<Vec<volume::MountedVolume>, String> {
+    Ok(tokio::task::spawn_blocking(volume::list_mounted_volumes)
+        .await
+        .map_err(|e| format!("volume_list_mounted join error: {e}"))?)
 }
 
 // ── Catalog (Cathy/Catfish .caf) commands ────────────────────────────────
@@ -2131,6 +2146,7 @@ pub fn run() {
             watch_stop_one,
             watch_stop_all,
             watch_list,
+            volume_list_mounted,
             catalog_load_caf,
             catalog_save_caf,
             catalog_scan_dir,

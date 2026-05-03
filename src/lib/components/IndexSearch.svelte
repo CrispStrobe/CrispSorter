@@ -62,6 +62,10 @@
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
+    // PLAN P7.6 follow-up — when on (default), backend hides results
+    // pinned to currently-unmounted volumes. Toggle off to show
+    // everything regardless of mount state.
+    let includeUnmounted = $state(false);
 
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
     // Right-side slide-in pane that shows the matched document in place
@@ -219,6 +223,7 @@
                 mode,
                 limit,
                 ownerId: null,
+                includeUnmounted,
             });
         } catch (e: any) {
             error   = String(e);
@@ -379,6 +384,10 @@
                 <select bind:value={limit}>
                     {#each [10, 20, 50, 100] as n}<option value={n}>{n}</option>{/each}
                 </select>
+            </label>
+            <label class="filter-field" title="Include hits from drives that aren't currently mounted">
+                <input type="checkbox" bind:checked={includeUnmounted} />
+                <span>Inkl. nicht eingehängter Laufwerke</span>
             </label>
         </div>
     {/if}

@@ -29,6 +29,15 @@ pub async fn index_search(
     mode: String, // "text" | "vector" | "hybrid"
     limit: usize,
     owner_id: Option<String>,
+    // PLAN P7.6 follow-up. When false (the default), drop hits whose
+    // recorded `volume_id` isn't in the currently-mounted set —
+    // archive drives that aren't plugged in disappear from results
+    // until the user mounts them again. Pass `Some(true)` to override
+    // (e.g. "show me everything I've ever indexed, including offline
+    // drives" — useful for browse / inventory cases). Rows with no
+    // `volume_id` always pass through (legacy ingests, frontend-driven
+    // ingests, catalog hits).
+    include_unmounted: Option<bool>,
 ) -> Result<Vec<SearchResult>, String> {
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
@@ -102,6 +111,25 @@ pub async fn index_search(
         }
     }
 
+    // ── Volume-availability filter (PLAN P7.6 follow-up) ─────────────────
+    // Hide hits whose recorded volume_id isn't currently mounted, unless
+    // the caller opts out. Computed once per call (a single shell-out
+    // per platform — see `volume::list_mounted_volumes`). Rows without
+    // `volume_id` always pass.
+    if !include_unmounted.unwrap_or(false) {
+        let mounted_ids: std::collections::HashSet<String> =
+            tokio::task::spawn_blocking(crate::volume::list_mounted_volumes)
+                .await
+                .map_err(|e| format!("list_mounted_volumes join: {e}"))?
+                .into_iter()
+                .map(|v| v.id)
+                .collect();
+        results.retain(|r| match &r.volume_id {
+            Some(id) => mounted_ids.contains(id),
+            None => true,
+        });
+    }
+
     Ok(results)
 }
 
@@ -138,6 +166,11 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // (used by the documents-table whole-doc metadata rows too).
         chunk_index: -1,
         catalog_source: Some(hit.catalog_path),
+        // Catalog rows pre-date the volume-id metadata; nothing to
+        // surface yet. A future per-catalog volume_id field would
+        // populate this so catalog hits also disappear when the
+        // archive drive isn't mounted.
+        volume_id: None,
     }
 }
 
@@ -312,6 +345,10 @@ pub async fn index_ingest_path(
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as u32),
+        // PLAN P7.6 — tag the row with the source volume's stable id
+        // (best-effort; helper returns None on tmpfs / network share /
+        // missing path / platform helper failure).
+        volume_id: crate::volume::volume_id_for_path(&p),
     };
 
     let lock = state.index.lock().await;
@@ -361,6 +398,9 @@ pub async fn index_ingest_document(
         // bg_ingest will treat None as "no recorded mtime → re-ingest"
         // which is the safe default.
         mtime_unix: None,
+        // PLAN P7.6 — frontend ingest is path-less (input is the
+        // already-extracted text), so we don't have a volume to tag.
+        volume_id: None,
     };
 
     use tauri::Emitter;

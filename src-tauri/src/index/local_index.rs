@@ -261,6 +261,7 @@ impl LocalIndex {
             let language_col = str_col_opt(batch, "language");
             let chunk_idx_col = i32_col(batch, "chunk_index")?;
             let full_text_col = str_col_opt(batch, "full_text");
+            let metadata_col = str_col_opt(batch, "metadata_json");
 
             for i in 0..n {
                 if sparse_col.is_null(i) {
@@ -286,6 +287,11 @@ impl LocalIndex {
                     .unwrap_or("");
                 let snippet = full_text.chars().take(400).collect::<String>();
 
+                let volume_id = metadata_col
+                    .as_ref()
+                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                    .and_then(parse_volume_id_from_metadata);
+
                 let result = SearchResult {
                     doc_id: str_val(doc_id_col, i),
                     location_uri: str_val(location_uri_col, i),
@@ -306,6 +312,7 @@ impl LocalIndex {
                     score,
                     chunk_index: chunk_idx_col.value(i),
                     catalog_source: None,
+                    volume_id,
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -581,6 +588,7 @@ pub fn batches_to_search_results_with_scores(
         let language_col = str_col_opt(batch, "language");
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
+        let metadata_col = str_col_opt(batch, "metadata_json");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -591,6 +599,11 @@ pub fn batches_to_search_results_with_scores(
                 .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                 .unwrap_or("");
             let snippet = full_text.chars().take(400).collect::<String>();
+
+            let volume_id = metadata_col
+                .as_ref()
+                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                .and_then(parse_volume_id_from_metadata);
 
             results.push(SearchResult {
                 doc_id,
@@ -612,6 +625,7 @@ pub fn batches_to_search_results_with_scores(
                 score,
                 chunk_index: chunk_idx_col.value(i),
                 catalog_source: None,
+                volume_id,
             });
         }
     }
@@ -765,6 +779,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         let language_col = str_col_opt(batch, "language");
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
+        let metadata_col = str_col_opt(batch, "metadata_json");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -780,6 +795,11 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
             // Convert cosine distance → similarity score (0..1, higher = better).
             let distance = score_col.as_ref().map(|c| c.value(i)).unwrap_or(1.0);
             let score = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
+
+            let volume_id = metadata_col
+                .as_ref()
+                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                .and_then(parse_volume_id_from_metadata);
 
             results.push(SearchResult {
                 doc_id: str_val(doc_id_col, i),
@@ -801,11 +821,44 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 score,
                 chunk_index: chunk_idx_col.value(i),
                 catalog_source: None,
+                volume_id,
             });
         }
     }
 
     Ok(results)
+}
+
+/// Tiny hand-parser for `"volume_id":"<id>"` inside `metadata_json`.
+/// Mirrors `indexed_mtime_for_uri`'s style — avoids a serde_json dep
+/// for a single string field with a known shape. Volume ids are
+/// UUIDs / hex serials in practice (no special characters needing
+/// unescape), but we tolerate `\"` and `\\` to match the writer in
+/// `index/ingest.rs::build_metadata_json`.
+fn parse_volume_id_from_metadata(json: &str) -> Option<String> {
+    let key = "\"volume_id\"";
+    let start = json.find(key)?;
+    let after = &json[start + key.len()..];
+    let after = after.trim_start().strip_prefix(':')?.trim_start();
+    let after = after.strip_prefix('"')?;
+    // Read until the next unescaped `"`.
+    let mut out = String::new();
+    let mut chars = after.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                other => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            },
+            other => out.push(other),
+        }
+    }
+    None
 }
 
 // ── Column extraction helpers ──────────────────────────────────────────────
@@ -966,5 +1019,53 @@ mod sparse_tests {
         let b = sv(vec![1, 2], vec![1.0, 1.0]);
         assert_eq!(sparse_dot(&a, &b), 0.0);
         assert_eq!(sparse_dot(&b, &a), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod volume_id_parse_tests {
+    use super::parse_volume_id_from_metadata;
+
+    #[test]
+    fn parses_volume_id_alone() {
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"volume_id":"ABCD-1234"}"#),
+            Some("ABCD-1234".to_owned())
+        );
+    }
+
+    #[test]
+    fn parses_volume_id_after_mtime() {
+        // Same packing order the writer in build_metadata_json uses.
+        assert_eq!(
+            parse_volume_id_from_metadata(
+                r#"{"mtime_unix":1700000000,"volume_id":"12345678-1234-1234-1234-123456789ABC"}"#
+            ),
+            Some("12345678-1234-1234-1234-123456789ABC".to_owned())
+        );
+    }
+
+    #[test]
+    fn missing_volume_id_returns_none() {
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"mtime_unix":1700000000}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_metadata_returns_none() {
+        assert_eq!(parse_volume_id_from_metadata(""), None);
+    }
+
+    #[test]
+    fn handles_escaped_quote_inside_id() {
+        // Defensive — volume ids in practice are UUIDs / hex, but the
+        // writer escapes `"` as `\"` for safety. The reader has to
+        // honour that.
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"volume_id":"weird\"id"}"#),
+            Some(r#"weird"id"#.to_owned())
+        );
     }
 }
