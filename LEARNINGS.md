@@ -265,6 +265,28 @@ hf-hub layout (`models--<repo>--<sha>/...`). Note: fastembed-rs's own
 only fully shareable with hf-hub-using tools — fastembed will re-download
 into its own subtree under the chosen dir.
 
+**The default eats your boot drive on macOS.** `<data_dir>/models/`
+resolves to `~/Library/Application Support/com.<user>.crispsorter/models/`
+which lives on the boot volume. Five embedder model variants run ~5-10 GB;
+add a few rerankers + ASR models and you're routinely over 15 GB. Users
+with tight boot drives should set the cache dir to an external volume on
+first run via Settings → Search Index → "Model cache directory". The
+canonical user HF cache (`~/.cache/huggingface/hub/` on Linux,
+`~/Library/Caches/huggingface/hub/` on macOS — though many users override
+to a backup drive via `HF_HOME`) is also a reasonable target if you want
+free reuse with Python `transformers` / `huggingface_hub` / CLI tools.
+
+**Symlink trick when downloads already happened in the wrong dir.** The
+HF hub layout is content-addressed (`snapshots/<sha>/<file>` referencing
+`blobs/<hash>` via hardlink), so an `rsync -a --ignore-existing src/ dst/
+&& rm -rf src && ln -s dst src` on each `models--*` subdir is safe — the
+rsync is a no-op when both sides have the same blobs (the common case
+when both came from the same `hf_hub` download flow), and a merge when
+one side is missing blobs (e.g. fresh CrispSorter cache vs years-old
+shared user HF cache). Today's session reclaimed ~6.9 GB by symlinking 7
+recently-downloaded model dirs to the canonical
+`<external-volume>/ai/huggingface-hub/` mirror.
+
 ### Matryoshka truncation is GGUF-only and pinned by index schema
 
 `CrispEmbed::set_dim(N)` truncates the model output vector to N dims;

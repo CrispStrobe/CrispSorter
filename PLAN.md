@@ -120,6 +120,17 @@ default.
 - [ ] Audit remaining hardcoded UI strings in `Settings.svelte` (model manager sections)
   and `LogPanel.svelte` and move them to `i18n.svelte.ts`.
 
+- [ ] **Inline hint near "Model cache directory"** — Settings →
+  Search Index. The default path is on the boot drive
+  (`~/Library/Application Support/...` on macOS, equivalent on
+  Win/Linux) and casually reaches 10-20 GB once a few embedders +
+  rerankers + ASR models are cached. A short hint like *"tip: an
+  external SSD path here keeps multi-GB model weights off your boot
+  drive — and the hf-hub layout means you can share a path like
+  `<external-volume>/ai/huggingface-hub` with other tools that use
+  the same cache convention"* would surface this for new users
+  before they fill up their boot volume. ~30 min including i18n.
+
 ### P5 — Future / planned
 
 1. **Auto-process toggle on watch detection** — risky (auto-moves files
