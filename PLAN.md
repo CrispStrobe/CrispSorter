@@ -290,9 +290,126 @@ without committing to that maintenance burden upfront.
 [binsento42/Cathy](https://github.com/binsento42/Cathy) and the
 original [Cathy](http://rva.mtg.sk/) by Robert Vašíček.
 
----
+### P7 — Full-volume desktop search parity
 
-## Recent changes
+Where we are after P2 + P6: CrispSorter can do dense + BM25 + sparse
+hybrid search with cross-encoder reranking, plus filename search across
+mounted catalogs. But content indexing is *opt-in* — only files the
+user explicitly added to a sort batch end up in the documents table.
+P7 closes the gap between "smart sort assistant" and a general-purpose
+desktop search engine: every PDF, Office doc, source file, and EPUB on
+every mounted volume becomes searchable by content (not just filename),
+with operator-grade query syntax, instant preview, saved searches, and
+cross-mount awareness.
+
+The catalog table from P6 is the foundation: a row already exists for
+every file on every active drive. P7 extends each row with the
+extracted text content + an embedding, on a background schedule, so
+the existing dense + BM25 + RRF pipeline applies to the full filesystem
+rather than just the curated batch.
+
+**Why bother (vs. relying on the OS):** OS-level search (Spotlight on
+macOS, Windows Search, tracker on Linux) is filename-good but
+content-mediocre across the long tail of file types, indexes only the
+boot volume by default, has no semantic / vector channel, and exposes
+no programmable query syntax. CrispSorter's pipeline already has the
+better backend; what's missing is just the "index everything in the
+background" loop and a few UI conveniences.
+
+**Phased rollout (~6-8 weeks total, each phase shippable):**
+
+- [ ] **Phase 7.1 — Unified query covering catalogs** (~3-4 days)
+  `index_search` learns to query both `documents` and
+  `catalog_entries` in one pass. Catalog-only hits surface with a
+  `[catalog: <name>]` badge in the existing results UI. RRF fusion
+  treats catalog name-match scores as another channel. (Overlaps
+  with P6 Phase 4c — implement once, count for both.)
+
+- [ ] **Phase 7.2 — Operator-grade query syntax** (~2-3 days)
+  Expose Tantivy's existing boolean / phrase / proximity / wildcard /
+  field-prefix syntax through `index_search`. Today the query is
+  pass-through term-vectorised; switching to Tantivy's `QueryParser`
+  on a documented field whitelist costs ~150 LOC and unlocks queries
+  like `title:"chemistry" AND year:[2020 TO 2024] -archived`.
+
+- [ ] **Phase 7.3 — Live preview pane** (~3-4 days)
+  Right-side or hover-popup pane in result rows that renders the
+  matched document. PDF / image / plain text via the Tauri webview
+  (PDF.js or native `<object>`); Office docs via a "open in app"
+  fallback for v1, server-side conversion in a follow-up. Reuses the
+  existing `extract_pdf_native` command for the snippet context.
+
+- [ ] **Phase 7.4 — Background full-content ingest** (~2-3 weeks,
+  the big piece)
+  Walk active catalogs in the background, extract content per file
+  type, embed, write to `documents`. Heavy infrastructure work split
+  into sub-phases:
+  1. **Per-filetype extractor registry** (~1 wk). Already shipped:
+     PDF (`pdf_extract` + the LLM markdown pipeline). To add: docx /
+     xlsx / pptx (via a Rust `dotnetzip`-style reader or `pandoc`
+     sidecar), EPUB (via `epub` crate), RTF (via `rtf-grimoire`),
+     plain text + source code (trivial), HTML (via `scraper`),
+     compressed-archive members (via `zip`/`tar` crates — index file
+     listings now, member contents later).
+  2. **Background ingest scheduler** (~3-4 days). New
+     `IngestState::Background` mode in `index/ingest.rs` that
+     consumes a queue of (catalog_path, entry_path) pairs at a
+     bounded rate (CPU-throttle, mtime-aware so unchanged files
+     skip), persists progress to `tauri-plugin-store` so a restart
+     resumes mid-walk.
+  3. **Diff-based incremental updates** (~3-4 days). Reuse the P5
+     `notify`-based watcher to enqueue changed files into the
+     background queue, plus a periodic full-walk for catalog
+     refreshes that miss watcher events (drives unmounted at the
+     time, etc.).
+  4. **Throttling + QoS** (~2 days). Pause ingest during user-driven
+     work (dense embedding queries), respect macOS App Nap / Linux
+     `nice` so background indexing doesn't spike CPU during normal
+     use.
+
+- [ ] **Phase 7.5 — Saved searches** (~2-3 days)
+  Persist (query, filters, columns) tuples in `tauri-plugin-store`,
+  surface as left-rail items. Click → re-run query, results refresh
+  live as the background ingest catches up. Lightweight; pure
+  frontend on top of P7.1 + 7.2.
+
+- [ ] **Phase 7.6 — Cross-mount awareness** (~1 wk)
+  Tag catalog rows with the source volume's UUID (macOS
+  `getattrlist`, Linux `blkid`, Windows volume serial), not just the
+  mount-point path. When a volume mounts/unmounts, `documents` rows
+  pinned to it auto-toggle their searchability. Lets users keep an
+  archive drive's index without ever needing the drive plugged in
+  except to refresh.
+
+- [ ] **Phase 7.7 — Mountable archive index files** (~1-2 wks)
+  Serialise a per-volume slice of the documents table to a portable
+  `.cidx` file (Lance dataset export format). Load → drive's full
+  search index lights up offline. Same offline-browse property the
+  P6 catalog already has, extended to the rich content+embedding
+  rows. Useful for archived backups: ship the archive drive + a
+  `.cidx` file in the same backup snapshot.
+
+- [ ] **Phase 7.8 — OCR for scanned PDFs / images** (~2 wks)
+  Run Tesseract (or platform-native: macOS Vision framework, Windows
+  10+ OCR API) on rasterised pages of PDFs that contain no extractable
+  text, plus standalone JPG/PNG. Results land in `full_text` like any
+  other extraction. Opt-in per-catalog because OCR is CPU/memory
+  heavy.
+
+**What CrispSorter has that off-the-shelf desktop search doesn't:**
+
+* Dense + sparse + BM25 hybrid via RRF — semantic queries find
+  conceptually-related documents even when no keyword matches.
+* Cross-encoder reranking on top-N — the `cstr/*-reranker-GGUF`
+  models give markedly better precision than pure BM25.
+* Voice queries via the P3 ASR backend — speak the query, get
+  results read back via TTS.
+* The whole sorted-batch + LLM-categorise pipeline that's *adjacent*
+  to but separate from search — the same indexed content can be
+  pulled into a sort batch with the LLM categoriser running over it.
+
+P7 is what makes those backend strengths actually *visible* outside
+the curated sort-batch use case.
 
 - [x] **XMP metadata extraction (May 2026, v0.1.35)** — `extract_pdf_metadata`
   now reads the catalog's `/Metadata` stream (XMP RDF/XML) in addition to
