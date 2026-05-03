@@ -193,13 +193,42 @@
     }
 
     async function toggleActive(path: string) {
-        // Phase 4b: this'll trigger materialisation/drop in LanceDB.
-        // For now we just persist the flag — the UI hint below tells the
-        // user the toggle is wired but inert.
+        const target = registered.find(c => c.path === path);
+        if (!target) return;
+        const willActivate = !target.active;
+        // Optimistic UI update — flip the flag, kick off the backend
+        // call, revert on failure.
         registered = registered.map(c =>
-            c.path === path ? { ...c, active: !c.active } : c
+            c.path === path ? { ...c, active: willActivate } : c
         );
         await persistRegistered();
+        loading = true;
+        error = '';
+        try {
+            const dataDir = await invoke<string>('get_app_data_dir');
+            const inserted = await invoke<number>('catalog_set_active', {
+                catalogPath: path,
+                active: willActivate,
+                dataDir,
+            });
+            if (willActivate) {
+                flog(
+                    'info',
+                    `Activated catalog: ${path} (${inserted} entries materialized)`
+                );
+            } else {
+                flog('info', `Deactivated catalog: ${path}`);
+            }
+        } catch (e: any) {
+            // Revert on failure so the UI doesn't lie about state.
+            registered = registered.map(c =>
+                c.path === path ? { ...c, active: !willActivate } : c
+            );
+            await persistRegistered();
+            error = `set_active(${path}): ${e}`;
+        } finally {
+            loading = false;
+        }
     }
 
     // ── Browse ─────────────────────────────────────────────────────────────────
