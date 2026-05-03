@@ -533,3 +533,346 @@ futures = "0.3" needs to be added (for TryStreamExt when reading LanceDB result 
 - **Sync between local and remote**: local LanceDB can sync a subset (recent / tagged)
   to the VPS index for shared search. Use LanceDB's delta/versioning (Lance format
   is versioned by design) for efficient sync.
+
+---
+
+## Shipped Phases — Archived from PLAN.md
+
+This section preserves the original specs of phases that have shipped.
+Kept for context (commit history / review only tells the *what*; these
+entries explain the *why* and the design choices that didn't end up in
+code comments). For active work, see [PLAN.md](PLAN.md).
+
+### P2 — Search index / RAG (full plan)
+
+The detailed P2 plan — LanceDB schema, dtSearch query translator,
+embedder selection, dense + sparse + BM25 + RRF + cross-encoder
+reranking — is the §1-§13 archive at the top of this file (originally
+`rag_plan.md`). All P1-P12 phases shipped; the §14 "Session Continuity"
+notes record the implementation order.
+
+### P3 — Voice chat (CrispASR integration, in-scope items)
+
+ASR via the CrispASR sibling repo (whisper-cpp wrapper exposed through
+a C library), TTS via the platform's native synth (`say` on macOS,
+SAPI on Windows, `espeak` on Linux), Settings UI for voice picker /
+rate / "auto-speak replies" toggle. Hotword/wake-word gating remains
+an explicit non-goal for v1 and stays in PLAN.md as a pending item.
+
+### P3.5 Phase 1 — macOS arm64 native-lib bundling
+
+CrispEmbed + CrispASR are shipped as Cargo path-dep wrappers around
+`libcrispembed.dylib` / `libcrispasr.dylib`. The post-build script
+(`scripts/bundle_macos_native_libs.sh`) copies the cmake-built dylibs
++ ggml backends + transitive libs into `Contents/Frameworks/`,
+patches install names with `install_name_tool`, and re-codesigns.
+Pattern proven on v0.1.36's .dmg; recipe documented in LEARNINGS.md.
+Phases 2 (Linux/Windows) and 3 (mobile) remain pending.
+
+### P6 Phases 1-4 — Catalog / Cathy integration (Catfish port-and-merge)
+
+Brought Catfish's drive-cataloging + duplicate-finding + offline
+file-search into CrispSorter as a Tauri-native feature, with byte-exact
+read/write of any `.caf` file produced over the past 20+ years
+(Cathy 1.x → Catfish v8). The `.caf` binary format spec
+(little-endian, magic = `version × 1_000_000_000 + 500_410_407`,
+NUL-terminated latin-1 strings, dirs encoded as `size < 0`) was
+reverse-engineered from `core/file_index.py` in Catfish.
+
+Phases shipped:
+
+- **Phase 1 — `.caf` I/O + parallel scanner**: `src-tauri/src/catalog/`
+  — `caf.rs` (versions 1-8 reader/writer, including v ≤ 6 size quirks),
+  `index.rs` (in-memory `FileIndex` with size-bucket HashMap), `scan.rs`
+  (rayon-parallel walker via `jwalk`), Tauri commands
+  `catalog_load_caf` / `catalog_save_caf` / `catalog_scan_dir` /
+  `catalog_metadata`.
+- **Phase 2 — Duplicate engine + CLI parity**: `dedup.rs` size-bucket
+  fast-path with parallel hash verify (mirroring Catfish's
+  `find_all_duplicates_bulk`), generate-deletion-script for bash/batch/
+  powershell, JSON output mode matching Catfish's `--output json`.
+- **Phase 3 — UI tabs**: `Catalog.svelte` (registry + browse/refresh/
+  delete + Active toggle) and `Duplicates.svelte` (source + N
+  destinations, hash dropdown, results table, deletion-script export).
+  `BatchReview.svelte` gained `exportCaf()` for round-tripping.
+- **Phase 4 — Hybrid storage (option C)**: `.caf` is the canonical
+  on-disk form; LanceDB has a derived `catalog_entries` table (thin
+  schema `(catalog_path, entry_path, size, mtime, hash?)`) populated
+  on `set_active(true)`. Cross-links to the existing `documents` table
+  via `entry_path`. `catalog_export_sorted` dumps batch slices to a
+  fresh `.caf` for archival/sharing.
+
+Phase 5 (extract a `crispcat` workspace crate + standalone CLI) remains
+deferred-optional in PLAN.md.
+
+### P7 Phases 7.1-7.6 + 7.8 Tiers 1-2 — Full-volume desktop search
+
+Closed the gap between "smart sort assistant" and "general-purpose
+desktop search" by extending each P6 catalog row with extracted text
+content + an embedding on a background schedule, plus operator-grade
+query syntax, instant preview, saved searches, and cross-mount
+awareness.
+
+- **Phase 7.1 — Unified query covering catalogs**: `index_search`
+  queries both `documents` and `catalog_entries` in one pass; catalog-
+  only hits surface with `catalog_source` set, score=0.4, chunk_index=-1.
+- **Phase 7.2 — Operator-grade query syntax**: custom `translate()` in
+  `index/fts_query.rs` parses AND/OR/NOT, phrases, w/N + pre/N
+  proximity, wildcards, fuzzy, parentheses, plus field-prefix
+  (`title:foo`, `body:foo`, `headings:foo` / `h:`, `text:` aliases).
+- **Phase 7.3 — Live preview pane**: right-side pane in
+  `IndexSearch.svelte` rendering PDF/image/text via `convertFileSrc` +
+  `readTextFile`.
+- **Phase 7.4 — Background full-content ingest**: per-filetype
+  extractor registry (`extractors/{pdf,text,html,ocr,ocr_ocrs}.rs`),
+  background ingest scheduler (`bg_ingest/mod.rs` with `tokio::Mutex`-
+  guarded queue, `ForegroundGuard` RAII for QoS yielding), mtime-skip
+  via `LocalIndex::indexed_mtime_for_uri` parsing `metadata_json`'s
+  `{"mtime_unix": v}` shape.
+- **Phase 7.5 — Saved searches**: persisted `(query, filters)` tuples
+  in `tauri-plugin-store`, surfaced as a dropdown in
+  `IndexSearch.svelte`.
+- **Phase 7.6 — Cross-mount UUID tagging**: `volume::volume_id_for_path`
+  shells out to `diskutil info` (macOS) / `findmnt -no UUID` (Linux) /
+  `wmic VolumeSerialNumber` (Windows); id is packed into the existing
+  `metadata_json` column alongside `mtime_unix`. New
+  `volume_list_mounted` Tauri command.
+- **Phase 7.6 follow-up — Search-time availability filter**:
+  `index_search` now drops hits whose recorded `volume_id` isn't in
+  the currently-mounted set (single shell-out per query). New
+  `include_unmounted: Option<bool>` parameter overrides the filter
+  for browse / inventory cases. `SearchResult` carries `volume_id`
+  through the pipeline (parsed out of `metadata_json` by a new
+  hand-parser mirroring `indexed_mtime_for_uri`'s shape — 5 unit
+  tests pin its behaviour). UI: a "Inkl. nicht eingehängter
+  Laufwerke" checkbox in `IndexSearch.svelte`'s filter row.
+- **Phase 7.8 Tier 1 — Tesseract via shell-out** (`bbbca1b`): zero
+  binary bloat; user installs Tesseract on demand. Hardcoded
+  `eng+deu`. PDFs with empty text layer fall through when `try_ocr`
+  is on; image extensions dispatch directly.
+- **Phase 7.8 Tier 2 — `ocrs` (pure-Rust RTen engine)**: Apache-2.0,
+  CRAFT-shaped models in PyTorch → ONNX, executed via the project's
+  RTen runtime (zero system-onnxruntime dep). Adds ~10-20 MB to the
+  binary. Latin-script only; German users get a hint to install
+  Tesseract for better results.
+
+Tiers 3 (usls PaddleOCR) and 4 (deepseek-ocr.rs VLM, opt-in cargo
+feature) remain pending in PLAN.md, along with Phase 7.7 (mountable
+`.cidx` archive index files).
+
+### P8.1 — Configurable per-file conversion timeout
+
+New Settings UI knob *Per-file conversion timeout* (default 120 s,
+0 = no timeout = pre-P8.1 behaviour). Wraps the whole `extractDocument`
+promise with `Promise.race(extract, timer)` in
+`src/lib/batch/store.svelte.ts`. Distinct from the page watchdog
+(`PAGE_WATCHDOG_MS = 30 s`) — they coexist: page watchdog catches
+"extractor froze", total-time timeout catches "extractor making slow
+but real progress on a too-big file".
+
+### P8.2 — CLI mode (first cut)
+
+clap-based subcommand router (`src-tauri/src/cli/mod.rs`) with argv
+sniff in `main.rs` to route between CLI and GUI modes on a single
+binary. Subcommands wired:
+
+* **version** — print app version
+* **doctor** — env / model / lib check
+* **catalog scan / info / browse / find-dupes / gen-script /
+  set-active / search** — all matching the corresponding Tauri commands
+
+JSON Lines is the default output format; `--format text` switches to a
+human-readable column view. Stateless subcommands (catalog) work today;
+the stateful families (`index` / `batch` / `chat`) need a Tauri-runtime
+spinup for `AppState` / `Mutex` / `AtomicUsize` and stay pending.
+
+### Per-version changelog (was PLAN.md scratchpad)
+
+Versioned feature entries that previously lived at the bottom of
+PLAN.md. Kept here for the *what-when-why* (commit messages have the
+same span but lack the rationale lines).
+
+- **XMP metadata extraction (May 2026, v0.1.35)** — `extract_pdf_metadata`
+  now reads the catalog's `/Metadata` stream (XMP RDF/XML) in addition to
+  the `/Info` dict. XMP fields win when present (better-curated by
+  publisher tooling); `/Info` fills any gaps via the new `merge_in`
+  helper. quick-xml-based event walker tracks `dc:title`, `dc:creator`,
+  `dc:subject`, `dc:description`, and `xmp:CreateDate`/`ModifyDate`/
+  `MetadataDate` — handles the typical RDF wrapping (`Alt`/`Seq`/`Bag` >
+  `li`). Multiple creators get joined with `" and "` (BibTeX-friendly
+  format). Uses quick-xml's `xml_content()` to decode + unescape XML
+  entities in one step. 5 new unit tests cover the dc:Alt/Seq pattern,
+  Bag keywords, XMP-with-only-Producer (returns None — no merge needed),
+  truncated input resilience, and the merge precedence.
+- **Multi-folder watcher (May 2026, v0.1.34)** — extends v0.1.32
+  from single-folder to a list. `WatcherState` now holds
+  `HashMap<PathBuf, RecommendedWatcher>` keyed by canonical path; one
+  shared per-path debounce map across all watchers. Tauri commands:
+  `watch_start` (idempotent), `watch_stop_one`, `watch_stop_all`,
+  `watch_list`. Settings UI shifts to a list with `+ Add folder` /
+  `×` per-row remove. `watchFolders: string[]` setting; on read,
+  migrates the v0.1.32 single-folder shape (`watchEnabled` +
+  `watchFolder`) to the list, so existing users don't lose their
+  setup. `+page.svelte` resume loop calls `watch_start` for each;
+  cleanup uses `watch_stop_all`. EN+DE.
+- **BibTeX export (May 2026, v0.1.33)** — pure-TS `buildBibFile` in
+  `src/lib/export/bibtex.ts`. Citation key = sanitized `{LastName}{Year}`,
+  numeric suffix on collisions. Author lastname extracted from "Smith,
+  John" or "John Q. Smith"; falls back to "anon". Year regex-matched to
+  the first 4-digit substring (handles "2023-03", "approx. 2019"). LaTeX
+  special chars (`\ & % $ # _ { } ^ ~`) escaped per the BibTeX spec;
+  capitalized words in titles wrapped in `{…}` so case-folding styles
+  preserve them. All entries emit as `@misc` (universally accepted; we
+  don't have enough metadata to differentiate article/book/report yet).
+  Placeholder values (`Unknown Title`, `n/a`, `?`, `-`) are skipped
+  rather than emitted as data. Export button in BatchReview header
+  next to the source-update button; saves via Tauri dialog with
+  `crispsorter-YYYY-MM-DD.bib` default name. Skips items the user
+  marked Ignored. EN+DE.
+- **Folder watcher v1 (May 2026, v0.1.32)** — drop a file into the
+  watched folder and it lands in the batch. New `watcher/` module wraps
+  `notify` (FSEvents on macOS, inotify on Linux, `ReadDirectoryChangesW`
+  on Windows). `watch_start` / `watch_stop` / `watch_status` Tauri
+  commands; single-folder invariant for v1 (multi-folder is future
+  work). Per-path 2-second debounce kills the duplicate events common
+  to atomic-save patterns. Extension allowlist matches the rest of
+  the app (pdf, epub, djvu, txt, md, rtf, doc, docx, odt); editor
+  swap files (`.tmp`, `.crdownload`, dotfiles, `~`-suffixed) get
+  dropped. Settings UI: folder picker + enable toggle + Apply button.
+  `+page.svelte` owns the global `folder-watch:added` listener — calls
+  `batchManager.addItem` with path/name/size; `addItem` already dedupes
+  on path so retried events stay benign. **No auto-process** in v1:
+  files queue up, user still presses Start. The architecture supports
+  auto-process as a future toggle — flagged as risky in PLAN P5.
+- **PDF metadata pre-fill (May 2026, v0.1.31)** — new
+  `extract_pdf_metadata` Tauri command reads the PDF /Info dictionary
+  via `lopdf` (already a transitive dep of pdf-extract). Returns title /
+  author / subject / keywords / year / producer; year parsed best-effort
+  from the `D:YYYYMMDD…` PDF-date format. UTF-16BE-with-BOM and UTF-8
+  string decoders handle the most common producer encodings; PDFDocEncoding
+  falls back to lossy UTF-8 (covers Title/Author for most European PDFs).
+  Frontend extraction phase invokes it on `.pdf` files when the new
+  `pdfMetadataPrefill` Settings toggle is on (default true) and pre-fills
+  empty `suggestedTitle/Author/Year` slots. The LLM (when enabled) still
+  overwrites these in phase 2 — this is purely a fallback for runs where
+  the LLM is off or fails. (XMP metadata streams added in v0.1.35.)
+  6 new unit tests pin the date parser + string decoder shape.
+- **TTS auto-speak for chat replies (May 2026, v0.1.30)** — closes the
+  P3 voice loop with zero-dep platform synth. New `tts/mod.rs` shells
+  out to macOS `say` / Windows PowerShell SAPI / Linux `spd-say` or
+  `espeak` (whichever is on PATH), piping text via stdin so arbitrary
+  chat content needs no argv quoting. `tts_speak` and `tts_stop` Tauri
+  commands. AppState holds the running child so `tts_stop` (and a fresh
+  `tts_speak`) can kill it mid-utterance — no overlapping voices.
+  Settings adds an "Auto-speak chat replies" toggle (default off).
+  Chat.svelte detects new bot messages via the deep-chat `onMessage`
+  delta, strips Markdown/HTML, and pipes plaintext to the synth. Mute
+  button appears in the chat header while speaking. The contract is
+  identical for a future GGUF Piper/Kokoro sidecar — only the spawn
+  function would change.
+- **CrispASR voice input — sidecar + push-to-talk (May 2026, v0.1.29)** —
+  optional `crispasr` path dep at `../../CrispASR/crispasr` with cargo features
+  `crispasr`, `crispasr-metal`, `crispasr-cuda`, `crispasr-vulkan` mirroring
+  the CrispEmbed pattern. New `src-tauri/src/asr/mod.rs` wraps `crispasr::Session`
+  with auto-download via `cache_ensure_file`. `AsrHandle` is a cheap-clonable
+  lazy-load handle on `AppState`. New `asr_transcribe` Tauri command takes
+  Float32 PCM 16kHz mono and returns concatenated transcription text.
+  `Chat.svelte` has a mic button next to Clear: WebAudio capture →
+  OfflineAudioContext resample to 16 kHz → `invoke('asr_transcribe')` →
+  `chatElement.submitUserMessage`. Stub-on-feature-off path so users without
+  the `crispasr*` feature flag get a clean error toast. CI: release.yml now
+  also checks out `CrispStrobe/CrispASR` as a sibling and rewrites the path
+  dep, parallel to the existing CrispEmbed handling.
+- **Matryoshka dimension selection (May 2026, v0.1.28)** — new
+  `IndexConfig.matryoshka_dim: Option<u32>` threads through
+  `EmbedderConfig.with_matryoshka_dim` to `CrispEmbedBackend::set_dim` at
+  load. `EmbedderConfig::effective_dim()` clamps to the model's nominal
+  dim and treats `Some(0)` as `None` (model default). The LanceDB column
+  width now uses the effective dim so the schema matches what the embedder
+  emits — changing `matryoshka_dim` on an existing index requires
+  re-ingestion (warned in the UI hint). UI: number-select (128/256/384/512/768)
+  appears under "Inference Backend" only when GGUF is selected and the
+  model has a GGUF spec — fastembed has no per-call truncation hook so
+  ONNX paths ignore the field. Quality only holds for MRL-trained models
+  (BGE-M3, Snowflake Arctic L v2, PIXIE-Rune); the hint flags this.
+- **Sparse retrieval + Octen auto-download (May 2026, v0.1.27)** — BGE-M3
+  / SPLADE sparse vectors are now used at query time as a 3rd RRF channel
+  alongside FTS + dense ANN. `LocalIndex::search_sparse_in_pool` scores the
+  union of FTS+ANN candidates by sparse dot product (two-pointer merge for
+  sorted indices, hash-join fallback otherwise) and `SearchEngine::maybe_sparse_search`
+  fuses the result via the new generalized `rrf_merge_n`. Auto-on when the
+  embedder has a sparse head (BGE-M3, BGE-small en-v1.5 with SPLADE++);
+  silently skipped otherwise. Octen 0.6B variants (FP32, INT4, INT8-Full)
+  switched from local-only `with_local_subdir` to fastembed-native
+  auto-download via `cstr/Octen-Embedding-0.6B-ONNX*` HF repos. The
+  matMul-only INT8 variant stays local-only (no fastembed equivalent —
+  dropped in fastembed-rs 77cc2e45 due to platform-dependent checksums).
+- **Configurable model cache dir (May 2026, v0.1.25)** — new
+  `IndexConfig.model_cache_dir: Option<String>` + `resolve_model_cache_dir`
+  helper picks: `CRISPSORTER_MODEL_CACHE_DIR` env > UI override >
+  `{data_dir}/models/`. Single dir is shared by fastembed (ONNX), hf-hub
+  (external-data ONNX + GGUF embedder + GGUF reranker), so one setting
+  controls every weight on disk. Settings.svelte adds a "Model cache
+  directory" picker; an external volume like
+  `<external-volume>/ai/crispsorter-models` lets the cache survive app
+  re-installs and (partially) share with CrispEmbed CLI. Three unit tests
+  pin the resolve precedence.
+- **Cross-encoder reranking pipeline (May 2026, v0.1.25)** — new
+  `RerankerModel` enum (`BgeRerankerV2M3`, `BgeRerankerBase`,
+  `JinaRerankerV2BaseMultilingual`) + `Reranker` wrapper around
+  `crispembed::CrispEmbed::rerank` (cross-encoder only; bi-encoder skipped).
+  `RerankerHandle` is a cheap-clonable lazy-load handle: GGUF download +
+  model open happens on first `score_batch` call. `SearchEngine` now fetches
+  `rerank_top_n` candidates (default 50) from FTS / ANN / RRF when a
+  reranker is configured, scores each via `score_batch(query, snippets)`,
+  and re-sorts; NaN scores fall back to RRF order. `IndexConfig` gains
+  `reranker_model: Option<RerankerModel>` + `rerank_top_n: usize`. UI:
+  Settings.svelte adds a "Reranker" section between Compute Device and Data
+  Directory. GGUF-only — without the `crispembed` cargo feature, `Reranker::load`
+  returns a clear error.
+- **Pre-existing FTS regression fixed (May 2026)** —
+  `index::fts_index::tests::scenario_accent_folding` was failing on `main`
+  before any of this branch's edits: query-side `fold_accents` was applied
+  but the index used Tantivy's `default` tokenizer (lowercase only), so
+  `München` was indexed as `münchen` and never matched the folded query
+  `munchen`. Fixed by registering a custom `ascii_folding` tokenizer
+  (SimpleTokenizer + RemoveLong + LowerCaser + AsciiFoldingFilter) on the
+  index and using it for the title/headings/body fields. Existing FTS dirs
+  need re-ingestion — see LEARNINGS.md for the migration note. Also cleaned
+  up clippy: `wrong_self_convention` on `to_gguf_spec`/`to_model_spec`
+  (`&self` → `self` since `EmbedderModel: Copy`), and explicit
+  `#[allow(dead_code)]` on `CrispEmbedBackend` placeholders that future P2
+  work will use.
+- **Query/passage prefix selection (May 2026)** — auto-apply model-specific
+  prefixes via `EmbedderModel::prefix(EmbedRole)`. E5 (`query:` / `passage:`),
+  Nomic v1.5 (`search_query:` / `search_document:`), BGE en-v1.5 + Mxbai
+  (BGE-style query-only), Jina v5 (`Query:` / `Document:`), EmbeddingGemma
+  (task templates). All other models pass through unprefixed. CrispEmbed path
+  uses native `set_prefix`; fastembed/OrtPath paths prepend in Rust. Sparse
+  encoders (BGE-M3, SPLADE++) untouched — trained without prefixes.
+- **CrispEmbed/fastembed-rs registry sync (May 2026)** — added 12 new
+  `EmbedderModel` variants (`MultilingualE5{Small,Base,Large}`, `Bge{Small,Base,Large}EnV15`,
+  `NomicEmbedTextV15`, `MxbaiEmbedLargeV1`, `AllMiniLmL6V2`, `EmbeddingGemma300M`,
+  `Gte{Base,Large}EnV15`). Each wired through both ONNX (native fastembed-rs
+  via `CrispStrobe/fastembed-rs@feat/new-model-entries`) and GGUF (CrispEmbed
+  `cstr/*-GGUF` registry). `BgeSmallEnV15` paired with `SparseModel::SPLADEPPV1`
+  per `HISTORY.md` §2 rationale. Serde kebab-case test pins frontend mapper.
+- Stop button — wires `AbortController` through extraction and LLM queries (v0.1.22)
+- Per-request LLM timeout — 3 min local / 60 s remote via `Promise.race` (v0.1.22)
+- Extraction hang timeout — 5 min auto-abort on `extractionAbort` controller (v0.1.22)
+- Frontend log panel — `flog()` store, merged with Rust `app-log` events in LogPanel (v0.1.22)
+- Live processing stats in footer — N/total done · extracting X · analyzing Y (v0.1.22)
+- Release workflow — auto-publish draft after matrix even if one platform runner is slow (v0.1.22)
+- macOS 13 / `crispembed` stub — created minimal stub so CI/dev builds resolve the optional dep
+- Stuck items on resume — `resumeLastSession()` resets extracting/analyzing → unfinished (v0.1.23)
+- Per-page extraction watchdog — 30 s no-progress timeout replaces flat 5-min timeout (v0.1.23)
+- Two-phase batch processing — extract-all then analyze-all; LLM stall never blocks extraction (v0.1.23)
+- `unfinished` status — amber badge, filter option, footer counter, resetStuckItems handles it (v0.1.23)
+- i18n status strings — all BatchStatus values translated EN + DE; Chat/BatchReview use them (v0.1.23)
+- Chat context title/author — shows suggestedTitle + suggestedAuthor for analyzed docs (v0.1.23)
+- Stop button during rate-limit wait — `abortableSleep()` makes 429 backoff honour AbortSignal (v0.1.23)
+- Rate-limit Retry-After cap — capped at 90 s to prevent 10-min dead waits (v0.1.23)
+- Provider round-robin fallback — processAll phase 2 cycles through fallback providers on failure (v0.1.23)
+- Round-robin Settings UI — ordered checklist in LLM Options with up/down reorder (v0.1.23)
+- Index location update on move — `index_update_location_by_path` Rust command + TS call (v0.1.23)
+- i18n audit: Chat.svelte — "Docs:", "Chat:", "Clear Messages" use i18n keys (v0.1.23)
