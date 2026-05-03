@@ -125,6 +125,23 @@ to lock the wire format the frontend has to match.
 The Cargo build dir is symlinked to an external volume. If that volume is not mounted, `cargo` fails
 with "Not a directory". Fix: `rm src-tauri/target && mkdir src-tauri/target`.
 
+`scripts/build.sh` re-establishes the symlink automatically on every run when the volume is mounted
+and the symlink is missing or pointing somewhere else. It also falls through to a local
+`src-tauri/target/` when the volume isn't mounted (so disconnected-laptop builds Just Work, just
+without the disk-saving aspect). Override the destination via the
+`CRISPSORTER_TARGET_VOLUME` env var, or set it to `""` to skip the dance entirely.
+
+### Debug binary launch (`cargo run`) needs vite running — white screen otherwise
+Tauri 2 reads `devUrl: http://localhost:1420` from `tauri.conf.json` for **debug** builds and
+loads the webview from there. Release builds use `frontendDist: "../build"` instead. So:
+
+* **`npm run tauri dev`** is the right dev command — it spawns vite on :1420 and cargo together.
+* **`cargo run` alone** points at `:1420` and gets nothing → white screen if vite isn't up.
+* **`cargo build --release && ./target/release/tauri-app`** uses the static `build/` and runs
+  standalone. Useful for testing the bundled-frontend path without the full `cargo tauri build` cycle.
+
+`scripts/build.sh --release` does the static-frontend + release-binary combo in one shot.
+
 ### macOS 13 (Intel) GitHub runner is chronically slow to provision
 macOS 13 runners are often queued for 1+ hours on GitHub-hosted Actions. The release workflow now
 has a separate `publish` job with `if: always()` that publishes the draft as soon as all *other*
