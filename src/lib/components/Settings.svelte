@@ -122,6 +122,11 @@
     // (or in lieu of) running the LLM. Default on — most academic PDFs
     // have decent embedded metadata, and the LLM still wins when it runs.
     let pdfMetadataPrefill = $state(true);
+    // PLAN P8.1 — per-file conversion timeout. Default 120s; 0 = no
+    // timeout (the page watchdog still catches frozen extractors).
+    // Distinct from extractionMaxPages, which limits how MUCH text we
+    // pull; this limits how LONG we wait for a single file.
+    let conversionTimeoutSeconds = $state(120);
     // Folder watcher: list of folders for v0.1.34+. Each entry is
     // implicitly active (presence == watching). The Rust side
     // canonicalizes paths before installing watchers and emits
@@ -311,6 +316,7 @@
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
         pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
+        conversionTimeoutSeconds = (await getSetting('conversionTimeoutSeconds', 120)) as number;
         // Migrate v0.1.32 single-folder shape on first read.
         const stored = (await getSetting('watchFolders', null)) as string[] | null;
         if (stored != null) {
@@ -490,6 +496,7 @@
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
         await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
+        await saveSetting('conversionTimeoutSeconds', conversionTimeoutSeconds);
         await saveSetting('watchFolders', watchFolders);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
@@ -1336,6 +1343,27 @@
                     <label for="pdf-metadata-check">{i18n.t.settings.pdf_metadata_prefill}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.pdf_metadata_prefill_hint}</p>
+            </div>
+
+            <!-- PLAN P8.1 — per-file conversion timeout -->
+            <div class="section-card">
+                <label for="conv-timeout">Per-file conversion timeout (seconds)</label>
+                <input
+                    id="conv-timeout"
+                    type="number"
+                    min="0"
+                    step="10"
+                    bind:value={conversionTimeoutSeconds}
+                    style="width: 120px;"
+                />
+                <p class="hint">
+                    Wall-clock ceiling per file during text extraction.
+                    A 30-second per-page watchdog still catches frozen extractors;
+                    this catches files that make slow but real progress on something
+                    pathologically large. <strong>0 disables the timeout</strong> entirely
+                    (useful when you really want to wait out a 2,000-page PDF).
+                    Default 120s.
+                </p>
             </div>
 
             <div class="section-card">

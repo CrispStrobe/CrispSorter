@@ -166,6 +166,11 @@ export class BatchManager {
         const authorSortEnabled = overrides?.authorSort ?? await getSetting('authorSortEnabled', false);
         const pdfBackend = await getSetting('pdfBackend', 'js');
         const extractionMaxPages = await getSetting('extractionMaxPages', 0) as number; // 0 = all pages (no limit)
+        // PLAN P8.1 — per-file conversion timeout. 0 = no whole-file
+        // ceiling (the page watchdog still catches "extractor froze").
+        // Default 120s catches the "extractor making slow but real
+        // progress on a too-big file" case that the page watchdog can't.
+        const conversionTimeoutSec = (await getSetting('conversionTimeoutSeconds', 120)) as number;
         const requestDelayMs = await getSetting('requestDelayMs', 0) as number;
         llmClient.requestDelayMs = requestDelayMs;
         const language = await getSetting('language', 'en') as string;
@@ -216,7 +221,11 @@ export class BatchManager {
             (!onlyIds || onlyIds.has(item.id));
 
         const PAGE_WATCHDOG_MS = 30_000; // abort if no page progress for 30 s
-        const RUST_EXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
+        // P8.1 — whole-file timeout. 0 sentinel = no timeout (current
+        // pre-P8.1 behaviour for users who explicitly opted out).
+        const FILE_TIMEOUT_MS = conversionTimeoutSec > 0
+            ? conversionTimeoutSec * 1000
+            : 0;
 
         try {
             // ── Phase 1: extraction ─────────────────────────────────────────
@@ -230,12 +239,15 @@ export class BatchManager {
                 try {
                     if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
                         flog('info', `Rust extraction: ${item.originalName}`);
-                        const text = await Promise.race([
-                            invoke<string>('extract_pdf_native', { path: item.originalPath }),
-                            new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new Error('EXTRACT_TIMEOUT')), RUST_EXTRACT_TIMEOUT_MS)
-                            )
-                        ]);
+                        const extractCall = invoke<string>('extract_pdf_native', { path: item.originalPath });
+                        const text = FILE_TIMEOUT_MS > 0
+                            ? await Promise.race([
+                                extractCall,
+                                new Promise<never>((_, reject) =>
+                                    setTimeout(() => reject(new Error('EXTRACT_TIMEOUT')), FILE_TIMEOUT_MS)
+                                )
+                            ])
+                            : await extractCall;
                         item.extractedText = text;
                     } else {
                         flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
@@ -250,6 +262,18 @@ export class BatchManager {
                             }, PAGE_WATCHDOG_MS);
                         };
                         resetWatchdog(); // start watchdog immediately
+
+                        // P8.1 — whole-file timeout. Aborts the same
+                        // signal the page watchdog uses; coexists with
+                        // the watchdog (page watchdog catches "frozen",
+                        // file timeout catches "slow but progressing").
+                        let fileTimeoutId: ReturnType<typeof setTimeout> | null = null;
+                        if (FILE_TIMEOUT_MS > 0) {
+                            fileTimeoutId = setTimeout(() => {
+                                this.extractionAbort?.abort(new Error('EXTRACT_FILE_TIMEOUT'));
+                                flog('warn', `File timeout fired (${FILE_TIMEOUT_MS / 1000}s wall-clock): ${item.originalName}`);
+                            }, FILE_TIMEOUT_MS);
+                        }
 
                         const fileData = await readFile(item.originalPath);
                         if (this.stopRequested) {
@@ -274,6 +298,7 @@ export class BatchManager {
                             );
                         } finally {
                             if (watchdogId) clearTimeout(watchdogId);
+                            if (fileTimeoutId) clearTimeout(fileTimeoutId);
                             this.extractionAbort = null;
                         }
                         if (this.stopRequested) { item.status = 'queued'; break; }
