@@ -400,12 +400,67 @@ background" loop and a few UI conveniences.
   rows. Useful for archived backups: ship the archive drive + a
   `.cidx` file in the same backup snapshot.
 
-- [ ] **Phase 7.8 — OCR for scanned PDFs / images** (~2 wks)
-  Run Tesseract (or platform-native: macOS Vision framework, Windows
-  10+ OCR API) on rasterised pages of PDFs that contain no extractable
-  text, plus standalone JPG/PNG. Results land in `full_text` like any
-  other extraction. Opt-in per-catalog because OCR is CPU/memory
-  heavy.
+- [x] **Phase 7.8 — OCR for scanned PDFs / images** — tiered OCR
+  stack, all cross-platform via Rust. Each tier higher quality but
+  more weight; lower tiers are always-on, higher tiers opt-in.
+
+  Tiers:
+
+  - [x] **Tier 1 — Tesseract via shell-out** (shipped `bbbca1b`).
+    Zero binary bloat; user installs Tesseract via Homebrew / apt /
+    chocolatey on demand. Hardcoded `eng+deu` language hint matches
+    the project's primary languages. PDFs with empty text layer fall
+    through to OCR when `try_ocr` is on; image extensions
+    (png/jpg/tiff/bmp/webp) dispatch directly. The macOS Vision
+    framework would be materially better — natural follow-up via a
+    Swift sidecar, public API doesn't move.
+
+  - [ ] **Tier 2 — `ocrs` (pure-Rust RTen engine)** (~1-2 days, NEXT)
+    Apache-2.0 from the sled author. Custom CRAFT-shaped models in
+    PyTorch → ONNX, executed via the project's own RTen runtime
+    (zero dep on system onnxruntime). Truly cross-platform — same
+    cargo build works on macOS / Linux / Windows / WebAssembly,
+    no system libs to install. Adds ~10-20 MB to the binary.
+    Latin-script only; we'd flag German users to install Tesseract
+    for better results (Tier 1 is the right choice when both apply).
+    Drops into `extractors/ocr.rs` as a second backend with
+    fall-through dispatch.
+
+  - [ ] **Tier 3 — `usls` PaddleOCR pipeline** (~3-5 days)
+    MIT, ONNXRuntime via the existing `ort` dep already in our
+    binaries (no new heavy install). Provides PaddleOCR DB+SVTR
+    multilingual text + SLANet table recognition + DocLayout-YOLO
+    for structure. ~200-500 MB models that download from
+    HuggingFace on first use, same auto-download pattern as our
+    embedders. Massive quality jump for German / CJK / Arabic.
+    Caveat: "personal project, spare time" maintenance — pin a
+    known-good version.
+
+  - [ ] **Tier 4 — `deepseek-ocr.rs`-style VLM OCR** (~1 wk, opt-in
+    cargo feature like `crispembed`/`crispasr`).
+    Apache-2.0, 2.1k stars, pure Rust via Candle (NOT ort, so a
+    second tensor stack carried). DeepSeek-OCR / PaddleOCR-VL /
+    DotsOCR backends with Q4_K / Q6_K / Q8_0 quantizations. Highest
+    quality available — layout-aware, reading-order-aware, handles
+    hard scans the lower tiers fail on. Cost: 4.7-9 GB models,
+    9-50 GB RAM minimum. macOS Metal works; Linux/Win CUDA "alpha".
+    Right shape: `--features crispsorter-vlm-ocr` opts in for users
+    with the hardware.
+
+  **Dispatch order in `extract_text_from_path_with_opts` once all
+  tiers are wired:** caller passes a `OcrTier::Auto | Tier1 | Tier2 |
+  Tier3 | Tier4` enum, default Auto picks the highest-quality tier
+  available for the platform / build / installation state.
+
+  **What we deliberately don't consume:**
+  * `readur` — competitor product (Paperless-ngx alt), zero
+    embed-able pieces.
+  * `Crane` (lucasjinreal) — no LICENSE file in the repo, can't
+    legally ship code that depends on it.
+  * Per-platform native OCR APIs (macOS Vision, Windows 10+ OCR)
+    deferred — Swift / WinRT sidecars complicate the bundle pipeline
+    we just stabilised in P3.5; Tiers 2-4 cover the same quality
+    range without the per-platform sidecar tax.
 
 **What CrispSorter has that off-the-shelf desktop search doesn't:**
 
