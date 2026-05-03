@@ -223,16 +223,51 @@ keyed by `path`. A `.caf` row is a strict subset of that. So:
   3. Existing batch view gets a "duplicate of X in catalog Y"
      indicator badge when an entry's hash matches a cataloged file.
 
-- [ ] **Phase 4 — DB ↔ .caf bridge** (~3 days)
-  1. `catalog_export_to_caf(query)` — dump a LanceDB query result
-     (or the entire sorted-batch) to a fresh `.caf` for archival.
-  2. `catalog_import_caf(path)` — bring `.caf` entries into the
-     batch view as candidate files (reuses the watcher's `add_item`
-     path; user still presses Start to actually sort/embed).
-  3. Bidirectional cross-reference: each LanceDB row optionally
-     carries `caf_source: Option<{caf_path: PathBuf, parent_id: u32}>`
-     so a sorted file's "where did this come from" pane shows
-     drive provenance.
+- [ ] **Phase 4 — Hybrid storage (option C)** (~1 wk)
+  Decision: `.caf` stays the canonical on-disk persistent form;
+  LanceDB gets a lightweight `catalog_entries` table populated
+  on-demand for *active* catalogs. The `.caf` is the source of
+  truth; LanceDB is a derived index that can be dropped/rebuilt
+  any time. Lets users keep portable Cathy-compatible files while
+  also getting catalog rows into the existing dense + Tantivy +
+  RRF search stack when they want.
+
+  - [ ] **4a — Catalog manager service** (~2 hr)
+    Persistent registry of known `.caf` files with `active` flag,
+    backed by `tauri-plugin-store`. Tauri commands:
+    `catalog_register(path)`, `catalog_unregister(path)`,
+    `catalog_list()`, `catalog_set_active(path, active)`. No
+    LanceDB integration yet — UI in Phase 3 can wire against this
+    immediately.
+
+  - [ ] **4b — LanceDB materialization** (~3 days)
+    New `catalog_entries` Lance table with a thin schema:
+    `(catalog_path: Utf8, entry_path: Utf8, size: UInt64,
+    mtime: UInt32, hash: Option<Utf8>)`. On `set_active(true)`:
+    load `.caf` → batch-insert rows. On `set_active(false)`:
+    delete rows where `catalog_path = X`. Cross-link to the
+    existing `documents` table via `entry_path` (when a sorted
+    document's path matches a cataloged entry, both rows surface
+    as a single hit with provenance metadata).
+
+  - [ ] **4c — Search integration** (~1-2 days)
+    `SearchEngine` learns to optionally query `catalog_entries`
+    alongside `documents`. Catalog-only hits show with a
+    "[catalog: X]" badge in the existing results UI. RRF fusion
+    treats catalog name-match scores as another channel —
+    Tantivy's existing FTS infra handles filename tokenisation
+    via a new `catalog_fts` Tantivy index over `entry_path`
+    components.
+
+  - [ ] **4d — Import/export between sorted batch and `.caf`**
+    `catalog_export_sorted(out_path, scope)` dumps the
+    sorted-batch slice (or any LanceDB query) to a fresh `.caf`
+    for archival/sharing. `catalog_import_caf_to_batch(caf_path)`
+    brings `.caf` entries into the batch view as candidate files
+    (reuses the watcher's `add_item` path; user still presses
+    Start to sort/embed). Lossy in the sorted → .caf direction
+    (drops embeddings + LLM categories), bit-perfect in the
+    other.
 
 - [ ] **Phase 5 (optional, deferred) — extract `crispcat` workspace crate**
   Move `src-tauri/src/catalog/` to a sibling workspace crate
