@@ -63,6 +63,15 @@ pub struct RawDocument {
     pub location_uri: String,
     pub owner_id: String,
     pub tags: Vec<String>,
+
+    /// Unix epoch seconds of the source file's last-modified time.
+    /// `None` for non-file ingests (pasted text, web URLs once we add
+    /// them, etc.). Stored in `metadata_json` as `{"mtime_unix": v}`
+    /// so we can mtime-skip on re-ingest without a schema migration
+    /// (PLAN P7.4.3). Default `None` keeps the existing
+    /// `index_ingest_document` callers compiling — skip-check just
+    /// returns "no record" for those.
+    pub mtime_unix: Option<u32>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -272,7 +281,12 @@ fn build_doc_chunk(
             .as_millis() as i64,
         source_hash: raw.source_hash.clone(),
         tags: raw.tags.clone(),
-        metadata_json: None,
+        // PLAN P7.4.3 — store source-file mtime here so we can
+        // mtime-skip on re-ingest. Schema's `metadata_json` column is
+        // the documented escape hatch for forward-compat fields.
+        metadata_json: raw
+            .mtime_unix
+            .map(|m| format!(r#"{{"mtime_unix":{m}}}"#)),
     }
 }
 
@@ -298,6 +312,7 @@ mod tests {
             location_uri: "crisp+local://user@machine/test.pdf".to_owned(),
             owner_id: "user-uuid".to_owned(),
             tags: vec!["theology".to_owned()],
+            mtime_unix: None,
         }
     }
 

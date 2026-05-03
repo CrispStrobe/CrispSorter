@@ -301,6 +301,13 @@ pub async fn index_ingest_path(
         location_uri,
         owner_id: owner,
         tags: Vec::new(),
+        // Cheap path-based ingest stat()s the file for mtime so the
+        // P7.4.3 mtime-skip on re-ingest can short-circuit.
+        mtime_unix: std::fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as u32),
     };
 
     let lock = state.index.lock().await;
@@ -345,6 +352,11 @@ pub async fn index_ingest_document(
         location_uri: input.location_uri,
         owner_id: input.owner_id,
         tags: input.tags,
+        // Frontend-driven ingest doesn't carry source mtime — the file
+        // could be many months old at this point. The cheap-skip in
+        // bg_ingest will treat None as "no recorded mtime → re-ingest"
+        // which is the safe default.
+        mtime_unix: None,
     };
 
     use tauri::Emitter;

@@ -244,24 +244,67 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
 /// computes source_hash, builds a RawDocument, and feeds the existing
 /// `IngestPipeline` from `AppState.index`. Returns Ok on success, or
 /// Err(message) — both sides are reported via the status snapshot.
+///
+/// PLAN P7.4.3 — mtime-skip: stat the file first, look up the indexed
+/// mtime via `LocalIndex::indexed_mtime_for_uri`, return Ok(()) without
+/// doing any work if the index already has this file at the same or
+/// newer mtime. The skip-on-success counts in `done` so the user sees
+/// progress even when nothing's actually changing.
 async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String> {
     use crate::AppState;
     use sha2::{Digest, Sha256};
     use tauri::Manager;
 
-    // Pull the pipeline out of AppState.
+    // Pull the pipeline + the local index out of AppState. We need
+    // both: pipeline to do the actual ingest, local-index to do the
+    // mtime-skip lookup.
     let app_state = app.state::<AppState>();
-    let pipeline = {
+    let (pipeline, local) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
         }
-        g.pipeline
+        let pipe = g
+            .pipeline
             .clone()
-            .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?
+            .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
+        let local = g.local.clone();
+        (pipe, local)
     };
 
     let p = item.path.clone();
+
+    // ── mtime-skip (P7.4.3) ────────────────────────────────────────────
+    // Stat the file *before* reading it. If the documents table already
+    // has this location at the same / newer mtime, we're done — no
+    // hash, no extract, no embed.
+    let file_mtime: Option<u32> = std::fs::metadata(&p)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as u32);
+    if let (Some(file_mt), Some(local)) = (file_mtime, local.as_ref()) {
+        let owner = item
+            .owner_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+        let probe_uri = crate::index::location::FileLocation::Local {
+            user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+            machine_id: uuid::Uuid::nil(),
+            path: p.clone(),
+        }
+        .to_uri();
+        if let Ok(Some(indexed_mt)) = local.indexed_mtime_for_uri(&probe_uri).await {
+            if indexed_mt >= file_mt {
+                // Idempotent skip — caller treats Ok as a success and
+                // bumps `done`. The frontend status badge will show
+                // "N done" climbing without doing real work, which is
+                // exactly what we want for a "rescan that found
+                // nothing new" UX.
+                return Ok(());
+            }
+        }
+    }
     // File read off the runtime — pdf_extract / large reads can block.
     let bytes = tokio::task::spawn_blocking({
         let p = p.clone();
@@ -309,6 +352,13 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         location_uri: loc.to_uri(),
         owner_id: owner,
         tags: Vec::new(),
+        // PLAN P7.4.3 — stat the file for mtime so re-ingest can skip
+        // if the row is already present at the same mtime.
+        mtime_unix: std::fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as u32),
     };
 
     pipeline

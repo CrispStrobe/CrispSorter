@@ -442,6 +442,68 @@ impl LocalIndex {
             .await?;
         record_batches_to_search_results(&batches)
     }
+
+    /// PLAN P7.4.3 — read the source-file mtime stored in the documents
+    /// table for this `location_uri`, if any.
+    ///
+    /// Looks up the chunk_index = 0 row matching `location_uri`, parses
+    /// `metadata_json` as `{"mtime_unix": <secs>}`, returns the value.
+    /// `None` when the row is missing or `metadata_json` is empty / has
+    /// no `mtime_unix` key (e.g. rows ingested before P7.4.3 landed,
+    /// or rows from `index_ingest_document` which doesn't carry source
+    /// mtime).
+    ///
+    /// Background ingest uses this to mtime-skip files that haven't
+    /// changed since last index — saves the read + extract + embed
+    /// cost on the common "no new content" case.
+    pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<u32>> {
+        let pred = format!(
+            "location_uri = '{}' AND chunk_index = 0",
+            location_uri.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        for batch in &batches {
+            if let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() {
+                let col = batch.column(meta_idx);
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("metadata_json column not StringArray"))?;
+                for i in 0..batch.num_rows() {
+                    if arr.is_null(i) {
+                        continue;
+                    }
+                    let json = arr.value(i);
+                    // Tiny hand-parse — avoids serde_json dep cost for a
+                    // single integer field with a fixed key. Any change
+                    // beyond `{"mtime_unix": N, ...}` shape needs a real
+                    // parser.
+                    if let Some(start) = json.find("\"mtime_unix\"") {
+                        let after = &json[start + "\"mtime_unix\"".len()..];
+                        // Skip optional whitespace + colon + whitespace.
+                        let rest = after.trim_start();
+                        let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+                        // Read the integer up to the next non-digit.
+                        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                        if end > 0 {
+                            if let Ok(v) = rest[..end].parse::<u32>() {
+                                return Ok(Some(v));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 // ── IndexBackend impl ──────────────────────────────────────────────────────
