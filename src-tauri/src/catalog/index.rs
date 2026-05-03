@@ -35,6 +35,41 @@ impl FileEntry {
     }
 }
 
+/// Volume-level metadata captured from a `.caf` header (or supplied
+/// when scanning fresh). Round-tripped through `read_file` /
+/// `write_file` since v0.1.36 so re-saving a catalog doesn't drop the
+/// drive label / serial / free-space-at-scan-time the user originally
+/// captured.
+///
+/// Defaults are zero/empty — what `FileIndex::new` sets when scanning
+/// a fresh folder without an existing `.caf` to inherit from.
+// Eq isn't derivable because `f32 freesize` only implements PartialEq —
+// fine for our use (header equality checks happen in tests, not in
+// HashMap keys).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct VolumeHeader {
+    /// User-facing volume name as printed by Cathy/Catfish (`Archive`,
+    /// `Macintosh HD`). Empty when not set.
+    pub label: String,
+    /// Per-machine alias — Cathy/Catfish use this for shorter labels in
+    /// listings. Often duplicates `label`.
+    pub alias: String,
+    /// `<L>` Volume serial number. 0 when unknown.
+    pub serial: u32,
+    /// Free user comment. Available v ≥ 4. Empty by default.
+    pub comment: String,
+    /// Free space at scan time (bytes-as-`f32`). Available v ≥ 1.
+    pub freesize: f32,
+    /// Archive flag. Available v ≥ 6. Cathy uses bit 0 = "this catalog
+    /// represents an archive volume the user shouldn't expect to be
+    /// constantly mounted." Pass-through value.
+    pub archive: i16,
+    /// Creation date as unix epoch seconds. Cathy stores it `<L>` so it
+    /// wraps in 2106; close enough for a catalog timestamp. 0 when
+    /// unknown.
+    pub date: u32,
+}
+
 /// Catalog of files under a root path.
 ///
 /// The buckets store indices into `all_files` rather than cloning
@@ -55,6 +90,23 @@ pub struct FileIndex {
     /// All files in insertion order.
     pub all_files: Vec<FileEntry>,
 
+    /// Volume-level metadata read from the `.caf` header. Carries
+    /// label / alias / serial / comment / freesize / archive flag /
+    /// creation date through a load → save round-trip — fresh scans
+    /// start with `VolumeHeader::default()`.
+    #[serde(default)]
+    pub header: VolumeHeader,
+
+    /// On-disk format version this catalog was loaded from (1..=8),
+    /// or `8` for fresh `FileIndex::new` instances. The writer
+    /// inspects this to decide whether to emit a v6 (legacy
+    /// Cathy-compatible) or v8 (current Catfish) `.caf` — so a
+    /// load-from-v6 → save round-trip preserves the format unless the
+    /// caller explicitly upgrades. Out-of-range values in older
+    /// serialised state get clamped to 8 by the writer.
+    #[serde(default = "default_save_version")]
+    pub save_version: u8,
+
     /// `size → indices into all_files`. O(1) lookup of dup candidates
     /// by size — same trick Catfish uses.
     #[serde(skip)]
@@ -66,12 +118,18 @@ pub struct FileIndex {
     pub hash_index: HashMap<(u64, String), Vec<usize>>,
 }
 
+fn default_save_version() -> u8 {
+    8
+}
+
 impl FileIndex {
     pub fn new(root_path: PathBuf, is_windows_path: bool) -> Self {
         Self {
             root_path,
             is_windows_path,
             all_files: Vec::new(),
+            header: VolumeHeader::default(),
+            save_version: 8,
             size_index: HashMap::new(),
             hash_index: HashMap::new(),
         }

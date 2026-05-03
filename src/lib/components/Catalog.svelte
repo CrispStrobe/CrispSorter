@@ -379,8 +379,19 @@
                         </td>
                         <td>
                             {#if meta}
+                                {@const tooltipParts = [
+                                    meta.volume && `Label: ${meta.volume}`,
+                                    meta.alias && meta.alias !== meta.volume && `Alias: ${meta.alias}`,
+                                    meta.serial && `Serial: 0x${meta.serial.toString(16).toUpperCase().padStart(8, '0')}`,
+                                    meta.freesize > 0 && `Free at scan: ${formatSize(meta.freesize)}`,
+                                    meta.archive ? 'Archive flag set' : null,
+                                    meta.comment && `Comment: ${meta.comment}`,
+                                    `.caf v${meta.version}`,
+                                ].filter(Boolean).join('\n')}
                                 <HardDrive size={12} />
-                                <span class="muted">{meta.device || '—'}</span>
+                                <span class="muted" title={tooltipParts}>
+                                    {meta.volume || meta.device || '—'}
+                                </span>
                             {:else if meta === null}
                                 <span class="warn">(unreadable)</span>
                             {:else}

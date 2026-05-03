@@ -317,7 +317,7 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
         return Err(CafError::UnsupportedVersion(version));
     }
 
-    let _date = read_u32_le(&mut r)?;
+    let date = read_u32_le(&mut r)?;
     let device = if version >= 2 { read_cstr_latin1(&mut r)? } else { String::new() };
 
     // Detect Windows-style paths from the device string. Cathy.exe
@@ -330,19 +330,25 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
     let root_path = PathBuf::from(&device);
     let mut index = FileIndex::new(root_path.clone(), is_windows_path);
 
-    // Skip volume / alias / serial (not used by FileIndex itself).
-    read_cstr_latin1(&mut r)?; // volume
-    read_cstr_latin1(&mut r)?; // alias
-    skip(&mut r, 4)?; // serial
-    if version >= 4 {
-        read_cstr_latin1(&mut r)?; // comment
-    }
-    if version >= 1 {
-        skip(&mut r, 4)?; // freesize <f32>
-    }
-    if version >= 6 {
-        skip(&mut r, 2)?; // archive <i16>
-    }
+    // Volume metadata — preserved through round-trip since v0.1.36
+    // (see LEARNINGS.md "Catalog (.caf)"). Earlier versions discarded
+    // these, which silently dropped them on save.
+    let label = read_cstr_latin1(&mut r)?;
+    let alias = read_cstr_latin1(&mut r)?;
+    let serial = read_u32_le(&mut r)?;
+    let comment = if version >= 4 { read_cstr_latin1(&mut r)? } else { String::new() };
+    let freesize = if version >= 1 { read_f32_le(&mut r)? } else { 0.0 };
+    let archive = if version >= 6 { read_i16_le(&mut r)? } else { 0 };
+    index.header = crate::catalog::index::VolumeHeader {
+        label,
+        alias,
+        serial,
+        comment,
+        freesize,
+        archive,
+        date,
+    };
+    index.save_version = version;
 
     // Info block.
     let dir_count = read_i32_le(&mut r)?;
@@ -435,19 +441,36 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
     Ok(index)
 }
 
-/// Serialize a `FileIndex` to a v8 .caf — the format Catfish writes,
-/// readable by every Cathy/Catfish version that supports v ≥ 3.
+/// Serialize a `FileIndex` to a `.caf`. Picks the on-disk format from
+/// `index.save_version` — v6 for legacy Cathy.exe compatibility, v8
+/// for current Catfish. Anything outside `{6, 8}` is clamped to v8.
 ///
-/// `created_date` is stored verbatim as the `<L>` date; pass
-/// `unix_now()` for "now" or a captured value for round-trip tests.
+/// `created_date` overrides `index.header.date` (so callers that want
+/// "stamp this catalog with NOW" don't have to mutate the header
+/// first). Pass `index.header.date` to preserve the original value.
+///
+/// **Round-trip semantics**: `read_file → write_file → read_file`
+/// produces a `FileIndex` whose entries (path/size/mtime), volume
+/// header (label/alias/serial/comment/freesize/archive/date), and
+/// `save_version` match the original. Byte-for-byte equality of the
+/// `.caf` files is **not** guaranteed — entry ordering, dir-tree
+/// reconstruction, and Cathy's quirks around the `next_dir_id`
+/// allocation can shuffle bytes without affecting semantics.
 pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(), CafError> {
+    let target_version: u8 = match index.save_version {
+        6 | 8 => index.save_version,
+        _ => 8,
+    };
     let f = File::create(path)?;
     let mut w = BufWriter::new(f);
 
-    // Header.
+    // Header. v ≥ 3 uses the magic-as-sentinel scheme: magic encodes
+    // "version >= 3" (literally `3 * UL_MODUS + base`) and the actual
+    // version follows as <i16>. We never write v ≤ 2 (no callers want
+    // them), so the magic is constant.
     let magic = 3u32 * UL_MODUS + UL_MAGIC_BASE;
     write_u32_le(&mut w, magic)?;
-    write_i16_le(&mut w, SAVE_VERSION)?;
+    write_i16_le(&mut w, target_version as i16)?;
     write_u32_le(&mut w, created_date)?;
     let root_str = index
         .root_path
@@ -455,17 +478,37 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
         .to_string_lossy()
         .into_owned();
     write_cstr_latin1(&mut w, &root_str)?;
+    // Volume header — round-tripped from the `.caf` we read, or the
+    // user's chosen values for fresh scans. Falls back to root-folder
+    // name only when `label`/`alias` are blank (matches Catfish's
+    // behaviour for catalogs created without explicit labels).
     let root_name = index
         .root_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    write_cstr_latin1(&mut w, &root_name)?; // volume
-    write_cstr_latin1(&mut w, &root_name)?; // alias
-    write_u32_le_as(&mut w, 0)?; // serial
-    write_cstr_latin1(&mut w, "CrispSorter Catalog")?; // comment
-    write_f32_le(&mut w, 0.0)?; // freesize
-    write_i16_le(&mut w, 0)?; // archive
+    let label = if index.header.label.is_empty() {
+        root_name.clone()
+    } else {
+        index.header.label.clone()
+    };
+    let alias = if index.header.alias.is_empty() {
+        root_name
+    } else {
+        index.header.alias.clone()
+    };
+    write_cstr_latin1(&mut w, &label)?;
+    write_cstr_latin1(&mut w, &alias)?;
+    write_u32_le_as(&mut w, index.header.serial)?;
+    if target_version >= 4 {
+        write_cstr_latin1(&mut w, &index.header.comment)?;
+    }
+    if target_version >= 1 {
+        write_f32_le(&mut w, index.header.freesize)?;
+    }
+    if target_version >= 6 {
+        write_i16_le(&mut w, index.header.archive)?;
+    }
 
     // Build the directory ID map. Root is always ID 0; every distinct
     // parent dir of an entry gets a fresh ID. Sort by depth so parent
@@ -514,16 +557,26 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
         }
     }
 
-    // Build the elm list: directories first (with negative size = -id),
-    // then files. Catfish writes them in this order; we match.
+    // Build the elm list: directories first, then files. Order within
+    // dirs is by dir_id ascending — load-bearing for v ≤ 6 because the
+    // reader resolves dir IDs from the **positional index** of the
+    // entry, not from a stored field. Sorting means position 0 → dir_id
+    // 1, position 1 → dir_id 2, etc.; children's `parent_id` then
+    // references those positions correctly. For v ≥ 7 the dir_id is
+    // stored as `-size` so position doesn't matter — but sorting is
+    // still cheap and produces deterministic output.
+    let mut dir_entries: Vec<(u32, PathBuf)> = dir_id_map
+        .iter()
+        .filter(|(_, &id)| id != 0)
+        .map(|(p, &id)| (id, p.clone()))
+        .collect();
+    dir_entries.sort_by_key(|(id, _)| *id);
+
     let mut elm: Vec<(u32, i64, u32, String)> = Vec::new();
-    for (dir_path, &dir_id) in &dir_id_map {
-        if dir_id == 0 {
-            continue;
-        }
-        let parent = dir_path.parent().unwrap_or(dir_path);
+    for (dir_id, dir_path) in dir_entries {
+        let parent = dir_path.parent().unwrap_or(&dir_path);
         let pid = dir_id_map.get(parent).copied().unwrap_or(0);
-        let mtime = std::fs::metadata(dir_path)
+        let mtime = std::fs::metadata(&dir_path)
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| {
@@ -536,7 +589,17 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        elm.push((mtime, -(dir_id as i64), pid, name));
+        // v ≥ 7 encodes dir-ness as `size < 0` with id = `-size`. v ≤ 6
+        // identifies dirs purely by "is this row's 1-based position
+        // referenced as some other row's parent_id?" — so the size
+        // field is meaningless for v6 dirs; we write 0 (the value
+        // Catfish writes too, easy to spot in a hex dump).
+        let dir_size: i64 = if target_version >= 7 {
+            -(dir_id as i64)
+        } else {
+            0
+        };
+        elm.push((mtime, dir_size, pid, name));
     }
     for entry in &index.all_files {
         let parent = entry.path.parent();
@@ -568,12 +631,40 @@ pub fn write_file(path: &Path, index: &FileIndex, created_date: u32) -> Result<(
         }
     }
 
-    // ELM block.
+    // ELM block. Per-entry struct widths track on-disk format
+    // (mirrors the reader's symmetric branch in `read_file`):
+    //   * v ≤ 6: <L> mtime, <l> size32, <H> parent_id16
+    //   * v = 7:  <L> mtime, <q> size64, <H> parent_id16
+    //   * v = 8:  <L> mtime, <q> size64, <L> parent_id32
+    //
+    // For v ≤ 6 we clamp size > i32::MAX and parent_id > u16::MAX
+    // rather than fail — out-of-range values would only show up for
+    // catalogs with > 4 GB single files OR > 65k directories, both
+    // edge cases for v6's intended Win9x-era use.
     write_i32_le(&mut w, elm.len() as i32)?;
     for (mtime, size, pid, name) in elm {
         write_u32_le(&mut w, mtime)?;
-        write_i64_le(&mut w, size)?;
-        write_u32_le_as(&mut w, pid)?;
+        match target_version {
+            v if v <= 6 => {
+                let size32: i32 = size.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                write_i32_le(&mut w, size32)?;
+                let pid16: u16 = pid.min(u16::MAX as u32) as u16;
+                let mut buf = [0u8; 2];
+                buf.copy_from_slice(&pid16.to_le_bytes());
+                w.write_all(&buf)?;
+            }
+            7 => {
+                write_i64_le(&mut w, size)?;
+                let pid16: u16 = pid.min(u16::MAX as u32) as u16;
+                let mut buf = [0u8; 2];
+                buf.copy_from_slice(&pid16.to_le_bytes());
+                w.write_all(&buf)?;
+            }
+            _ => {
+                write_i64_le(&mut w, size)?;
+                write_u32_le_as(&mut w, pid)?;
+            }
+        }
         write_cstr_latin1(&mut w, &name)?;
     }
 
@@ -606,6 +697,13 @@ mod tests {
         idx
     }
 
+    /// **Semantic** round-trip — asserts entries survive
+    /// load → save → load with `(file_name, size, mtime)` preserved.
+    /// Does NOT assert byte-for-byte equality of the `.caf` files;
+    /// see `LEARNINGS.md` "Catalog (.caf)" for why that's
+    /// deliberately not a guarantee. For volume-header preservation,
+    /// see `volume_header_round_trips`. For v6 emit, see
+    /// `round_trip_v6_struct_widths`.
     #[test]
     fn round_trip_v8_preserves_files() {
         let tmp = TempDir::new().unwrap();
@@ -617,6 +715,62 @@ mod tests {
         // The reader resolves entry paths through the dir tree; loaded
         // entries should match by (file_name, size, mtime).
         assert_eq!(loaded.len(), idx.len());
+        let mut want: Vec<_> = idx
+            .all_files
+            .iter()
+            .map(|e| (e.path.file_name().unwrap().to_owned(), e.size, e.mtime))
+            .collect();
+        let mut got: Vec<_> = loaded
+            .all_files
+            .iter()
+            .map(|e| (e.path.file_name().unwrap().to_owned(), e.size, e.mtime))
+            .collect();
+        want.sort();
+        got.sort();
+        assert_eq!(got, want);
+        // Save version is v8 by default for fresh indexes.
+        assert_eq!(loaded.save_version, 8);
+    }
+
+    #[test]
+    fn volume_header_round_trips() {
+        use crate::catalog::index::VolumeHeader;
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("hdr.caf");
+        let mut idx = fake_index();
+        idx.header = VolumeHeader {
+            label: "Archive".to_owned(),
+            alias: "ARC".to_owned(),
+            serial: 0xDEADBEEF,
+            comment: "Captured 2026-05".to_owned(),
+            freesize: 1.5e10,
+            archive: 1,
+            date: 1700000000,
+        };
+        write_file(&path, &idx, 1700000000).unwrap();
+        let loaded = read_file(&path).unwrap();
+        assert_eq!(loaded.header.label, "Archive");
+        assert_eq!(loaded.header.alias, "ARC");
+        assert_eq!(loaded.header.serial, 0xDEADBEEF);
+        assert_eq!(loaded.header.comment, "Captured 2026-05");
+        assert!((loaded.header.freesize - 1.5e10).abs() < 1.0);
+        assert_eq!(loaded.header.archive, 1);
+        assert_eq!(loaded.header.date, 1700000000);
+    }
+
+    #[test]
+    fn round_trip_v6_struct_widths() {
+        // v6 uses i32 size + u16 parent_id, identifies dirs by
+        // positional index. This exercises the writer's v6 branch and
+        // confirms the existing reader handles what the writer emits.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("v6.caf");
+        let mut idx = fake_index();
+        idx.save_version = 6;
+        write_file(&path, &idx, 1700000000).unwrap();
+        let loaded = read_file(&path).unwrap();
+        assert_eq!(loaded.save_version, 6, "v6 magic should round-trip");
+        assert_eq!(loaded.len(), idx.len(), "all files survive v6 round-trip");
         let mut want: Vec<_> = idx
             .all_files
             .iter()

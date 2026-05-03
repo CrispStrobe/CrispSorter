@@ -542,3 +542,79 @@ All three must match or the Tauri build will fail / produce inconsistent binarie
 `tauri-apps/tauri-action` uploads artifacts to the draft release as each platform job completes.
 A separate `publish` job with `needs: [release]` and `if: always()` converts the draft to live
 once all matrix jobs have settled — regardless of individual failures.
+
+## Catalog (.caf)
+
+### `.caf` is per-file metadata + dir tree + volume header — not just filenames
+
+Easy to under-describe `.caf` because the user-visible payoff is "filename
+search across drives." But the on-disk format (Cathy 1.x → Catfish v8)
+carries materially more, and our reader parses every field. What we *use*
+is a different question.
+
+What `.caf` actually contains (per `src-tauri/src/catalog/caf.rs::read_file`):
+
+* **Volume header** — device path, volume label, alias, serial number,
+  comment (v ≥ 4), free space (v ≥ 1), archive flag (v ≥ 6), creation date.
+* **Directory tree** — per-directory aggregates `(file_count, total_size)`
+  for v ≥ 3, names, parent pointers.
+* **Per-file ELM entries** — `(mtime, size, parent_id, name)` with version-
+  dependent struct widths:
+  * v ≤ 6: size as `<i32>`, parent_id as `<u16>`
+  * v = 7:  size as `<i64>`, parent_id as `<u16>`
+  * v = 8:  size as `<i64>`, parent_id as `<u32>` (current Catfish writes this)
+* `size < 0` encodes a directory: dir ID = `-size` (v > 6) or 1-based
+  positional index (v ≤ 6 quirk).
+* **Hashes are NOT stored** — Cathy/Catfish design choice; we recompute
+  on demand for dedup.
+
+What we *keep* (per `catalog/index.rs::FileEntry` + `catalog/lance.rs::build_schema`):
+
+| Field | Parsed | Surfaced to `FileIndex` | Lance `catalog_entries` row |
+|---|---|---|---|
+| path (reconstructed from dir tree) | ✓ | ✓ | ✓ as `entry_path` |
+| size (per-file bytes) | ✓ | ✓ | ✓ as `Int64` |
+| mtime (unix seconds) | ✓ | ✓ | ✓ as `Int64` |
+| filename | denormalized | implicit | ✓ |
+| hash (computed locally, not from .caf) | n/a | ✓ | ✓ nullable |
+| device / root path | ✓ | ✓ as `root_path` | implicit via `catalog_path` |
+| is_windows_path heuristic | ✓ | ✓ | — |
+| volume label / alias / serial / comment | ✓ in `CafMetadata` | ✓ since v0.1.36 follow-up | — (still UI-only) |
+| free space / archive flag / creation date | ✓ in `CafMetadata` | ✓ since v0.1.36 follow-up | — (still UI-only) |
+| dir aggregates (file_count / total_size per dir) | ✗ skipped (`skip(12)`) | ✗ | — |
+
+The dir aggregates are pre-computed values that would let us render a
+folder tree without iterating all entries. Skipping them is a deliberate
+simplification; revisit if the Catalog UI ever wants per-folder size
+breakdowns without a full scan.
+
+### Round-trip is semantic, not byte-identical
+
+The `round_trip_v8_preserves_files` test asserts `(file_name, size, mtime)`
+tuples match across a load → save → load cycle. It does NOT assert
+byte-for-byte equality of the `.caf` output, and earlier docs that
+implied "bit-identical round-trip" were too strong. Byte equality
+would fail because:
+
+1. We always **write v8**, even when reading v1–v7. Deliberate — bumps
+   format and avoids version-specific writer code paths.
+2. Volume label / alias / serial / comment / freesize / archive flag
+   are parsed into `CafMetadata` but (until the v0.1.36 follow-up) were
+   discarded by `FileIndex`, so a load → save → load cycle dropped them.
+3. Hashes never round-trip (the format never carried them).
+
+Practically, this means: re-saving a Cathy v6 catalog from 2008 emits a
+v8 file readable by Catfish (Cathy's Python successor) but not by the
+original Cathy.exe binary that produced it. Acceptable trade — Catfish
+is our canonical reference.
+
+### v ≤ 6 zero-size clamp matches Catfish behaviour
+
+`caf.rs:421-429` substitutes `1024` bytes for any v ≤ 6 entry whose
+`<i32>` size field is exactly 0, and clamps v > 6 zero-size entries to
+`1` byte. Both clamps exist so the `size_index` bucket lookup works (it
+keys on size). The v ≤ 6 fallback of 1024 specifically matches what
+Catfish does — older Cathy.exe versions wrote 0 for indeterminate sizes
+on Win9x. The downside: a genuine zero-byte file in a v ≤ 6 catalog
+will report as 1024 bytes here. Real zero-byte files in v ≥ 7 catalogs
+report as 1 byte instead of 0. Both are documented quirks, not bugs.
