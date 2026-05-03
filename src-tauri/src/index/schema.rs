@@ -128,6 +128,12 @@ pub struct SearchResult {
     /// Relevance score (higher = better). Units vary by search mode.
     pub score: f32,
     pub chunk_index: i32,
+    /// Set on catalog-channel hits (P6 Phase 4c) to the source `.caf`
+    /// path. `None` for ordinary documents-table hits. Frontend uses
+    /// this to render a `[catalog: <name>]` badge alongside the regular
+    /// metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_source: Option<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

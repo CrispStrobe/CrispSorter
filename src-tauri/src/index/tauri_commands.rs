@@ -13,7 +13,7 @@
 ///   `index_ingest_document`  → chunk + embed locally → push per-chunk via HTTP to server
 ///   `index_search`           → embed query locally → send text + embedding to server → server does FTS+ANN+RRF
 ///   `index_build_ivf_pq`     → error (not supported for remote backend)
-use tauri::State;
+use tauri::{Manager, State};
 
 use super::ingest::{IngestStats, RawDocument};
 use super::{IndexConfig, IndexState, SearchResult};
@@ -23,6 +23,7 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn index_search(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     query: String,
     mode: String, // "text" | "vector" | "hybrid"
@@ -30,54 +31,110 @@ pub async fn index_search(
     owner_id: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
     let lock = state.index.lock().await;
-
-    if !lock.config.enabled {
-        return Ok(vec![]);
-    }
+    let config_enabled = lock.config.enabled;
 
     let filters = super::SearchFilters {
         owner_id,
         ..Default::default()
     };
 
-    if let Some(engine) = lock.engine.clone() {
-        // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────────
+    // ── Documents-table channel ──────────────────────────────────────────
+    // Run the existing documents-table search first. When the index is
+    // disabled or uninitialized we still want to surface catalog hits, so
+    // empty results from this branch are fine — they get appended to (not
+    // replace) the catalog channel below.
+    let mut results: Vec<SearchResult> = if !config_enabled {
+        Vec::new()
+    } else if let Some(engine) = lock.engine.clone() {
+        // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────
         drop(lock);
-        let results = match mode.as_str() {
+        match mode.as_str() {
             "text" => engine.search_text(&query, &filters, limit).await,
             "vector" => engine.search_vector(&query, &filters, limit).await,
             _ => engine.search_hybrid(&query, &filters, limit).await,
         }
-        .map_err(|e| e.to_string())?;
-        return Ok(results);
-    }
-
-    // ── Remote path: embed query locally, then call backend ───────────────
-    let backend = lock
-        .backend
-        .as_ref()
-        .ok_or("Index not initialised — call index_init first")?
-        .clone();
-    let embedder = lock.embedder.clone();
-
-    drop(lock);
-
-    let results = match mode.as_str() {
-        "text" => backend.search_text(&query, &filters, limit).await,
-        "vector" => {
-            let embedding = embed_query(embedder, &query).await?;
-            backend.search_vector(&embedding, &filters, limit).await
+        .map_err(|e| e.to_string())?
+    } else {
+        // ── Remote path: embed query locally, then call backend ───────
+        let backend = lock
+            .backend
+            .as_ref()
+            .ok_or("Index not initialised — call index_init first")?
+            .clone();
+        let embedder = lock.embedder.clone();
+        drop(lock);
+        match mode.as_str() {
+            "text" => backend.search_text(&query, &filters, limit).await,
+            "vector" => {
+                let embedding = embed_query(embedder, &query).await?;
+                backend.search_vector(&embedding, &filters, limit).await
+            }
+            _ => {
+                let embedding = embed_query(embedder, &query).await?;
+                backend
+                    .search_hybrid(&query, &embedding, &filters, limit)
+                    .await
+            }
         }
-        _ => {
-            let embedding = embed_query(embedder, &query).await?;
-            backend
-                .search_hybrid(&query, &embedding, &filters, limit)
-                .await
+        .map_err(|e| e.to_string())?
+    };
+
+    // ── Catalog channel (PLAN P6 4c / P7.1) ──────────────────────────────
+    // Substring-match across active-catalog filenames. Independent of the
+    // index_init state — a user with cataloged drives but no embedding
+    // index still gets filename hits. We cap the catalog channel at
+    // `limit` total slots, but back off if the documents channel already
+    // returned that many — net result is at most `limit` rows from each
+    // channel, presented in two visually distinct groups (the frontend
+    // uses `catalog_source` to badge them).
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let remaining = limit.saturating_sub(results.len()).max(limit / 2);
+        if let Ok(hits) =
+            crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
+        {
+            for hit in hits {
+                results.push(catalog_hit_to_search_result(hit));
+            }
         }
     }
-    .map_err(|e| e.to_string())?;
 
     Ok(results)
+}
+
+/// Synthesise a `SearchResult` from a catalog hit so the documents-table
+/// + catalog-table results return as a single homogeneous list. Score is
+/// a fixed 0.4 — below typical RRF-fused scores from the documents
+/// channel but high enough that catalog hits still display when there
+/// are no documents-channel matches at all.
+fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> SearchResult {
+    let ext = std::path::Path::new(&hit.entry_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase());
+    let title = hit.filename.clone().or_else(|| {
+        std::path::Path::new(&hit.entry_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+    });
+    SearchResult {
+        // Synthetic doc_id keyed on `catalog:` prefix so a future
+        // documents-channel hit on the same path doesn't collide.
+        doc_id: format!("catalog:{}", hit.entry_path),
+        location_uri: hit.entry_path.clone(),
+        owner_id: String::new(),
+        title,
+        author: None,
+        year: None,
+        filename: hit.filename,
+        ext,
+        language: None,
+        snippet: String::new(),
+        score: 0.4,
+        // -1 marks a non-chunk row in the existing convention
+        // (used by the documents-table whole-doc metadata rows too).
+        chunk_index: -1,
+        catalog_source: Some(hit.catalog_path),
+    }
 }
 
 // ── Index status ──────────────────────────────────────────────────────────────

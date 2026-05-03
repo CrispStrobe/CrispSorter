@@ -4,23 +4,33 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen
+        FileText, FolderOpen, HardDrive
     } from 'lucide-svelte';
+
+    // Strip path → bare catalog filename for the badge label.
+    function catalogName(path: string): string {
+        return path.split(/[\\/]/).pop()?.replace(/\.caf$/i, '') ?? path;
+    }
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
     interface SearchResult {
-        doc_id:       string;
-        chunk_index:  number;
-        score:        number;
-        title?:       string;
-        author?:      string;
-        year?:        number;
-        filename?:    string;
-        ext?:         string;
-        language?:    string;
-        location_uri: string;
-        snippet:      string;   // backend sends "snippet", not "full_text"
+        doc_id:          string;
+        chunk_index:     number;
+        score:           number;
+        title?:          string;
+        author?:         string;
+        year?:           number;
+        filename?:       string;
+        ext?:            string;
+        language?:       string;
+        location_uri:    string;
+        snippet:         string;   // backend sends "snippet", not "full_text"
+        // PLAN P6 4c / P7.1: when set, this hit came from the catalog
+        // table (a substring filename match across active .caf-derived
+        // catalogs) rather than the documents table. The path here is
+        // the .caf this row was materialised from.
+        catalog_source?: string;
     }
 
     // ── State ──────────────────────────────────────────────────────────────────
@@ -224,6 +234,12 @@
                             {#if r.author || r.year}
                                 <span class="result-byline">{r.author ?? ''}{r.author && r.year ? ' · ' : ''}{r.year ?? ''}</span>
                             {/if}
+                            {#if r.catalog_source}
+                                <span class="catalog-badge" title="Match from catalog: {r.catalog_source}">
+                                    <HardDrive size={11} />
+                                    catalog: {catalogName(r.catalog_source)}
+                                </span>
+                            {/if}
                             <span class="result-path" title={r.location_uri}>{r.filename ?? r.location_uri}</span>
                         </div>
 
@@ -286,6 +302,23 @@
         display: flex; flex-direction: column; height: 100%;
         background: #09090b; color: #fafafa; padding: 20px;
         box-sizing: border-box; gap: 12px; overflow: hidden;
+    }
+
+    /* PLAN P6 4c / P7.1 — catalog channel hits get a small inline pill
+       sandwiched between byline and path so the source is obvious at a
+       glance without crowding the row. */
+    .catalog-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 1px 6px;
+        margin: 0 6px;
+        background: rgba(59, 130, 246, 0.15);
+        color: #93c5fd;
+        border: 1px solid rgba(59, 130, 246, 0.4);
+        border-radius: 10px;
+        font-size: 0.7rem;
+        font-weight: 500;
     }
 
     .query-bar { display: flex; gap: 8px; align-items: center; }

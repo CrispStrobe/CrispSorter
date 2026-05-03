@@ -305,6 +305,7 @@ impl LocalIndex {
                     snippet,
                     score,
                     chunk_index: chunk_idx_col.value(i),
+                    catalog_source: None,
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -548,6 +549,7 @@ pub fn batches_to_search_results_with_scores(
                 snippet,
                 score,
                 chunk_index: chunk_idx_col.value(i),
+                catalog_source: None,
             });
         }
     }
@@ -736,6 +738,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 snippet,
                 score,
                 chunk_index: chunk_idx_col.value(i),
+                catalog_source: None,
             });
         }
     }
