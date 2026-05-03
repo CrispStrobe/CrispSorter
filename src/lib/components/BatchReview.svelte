@@ -556,6 +556,52 @@
         await batchManager.saveCurrentSession();
     }
 
+    /// PLAN P6 4d — dump the current batch (items the user has loaded
+    /// for sorting, regardless of LanceDB ingest state) to a fresh .caf
+    /// file. Bit-perfect Cathy-compatible; can be re-loaded later via
+    /// the Catalog tab. For exporting the *full* indexed corpus instead,
+    /// use the `catalog_export_sorted` backend command (no UI yet —
+    /// CLI-only in P8.2).
+    async function exportCaf() {
+        const items = batchManager.items.filter(it => !it.isIgnored);
+        if (items.length === 0) return;
+        const defaultName = `crispsorter-batch-${new Date().toISOString().slice(0, 10)}.caf`;
+        const savePath = await save({
+            defaultPath: defaultName,
+            filters: [{ name: 'Cathy Catalog', extensions: ['caf'] }],
+        });
+        if (!savePath) return;
+        try {
+            // Build the FileIndex JSON the backend expects. Stat each file
+            // for current size + mtime; fall back to whatever the batch
+            // stored (it had a `size` field at add time but no mtime).
+            const all_files = [];
+            for (const it of items) {
+                const path = it.targetPath || it.originalPath;
+                let size = it.size ?? 0;
+                let mtime = 0;
+                try {
+                    const info = await stat(path);
+                    size = Number((info as any).size ?? size);
+                    const mt = (info as any).mtime;
+                    if (mt instanceof Date) mtime = Math.floor(mt.getTime() / 1000);
+                    else if (typeof mt === 'number') mtime = Math.floor(mt / 1000);
+                } catch { /* file moved/missing — keep zeros */ }
+                all_files.push({ path, size, mtime, hash: null });
+            }
+            await invoke('catalog_save_caf', {
+                path: savePath,
+                index: { root_path: '/', is_windows_path: false, all_files },
+                createdDate: Math.floor(Date.now() / 1000),
+            });
+        } catch (e: any) {
+            await ask(`Failed to write .caf file: ${e?.message ?? e}`, {
+                title: 'Export failed',
+                kind: 'error',
+            });
+        }
+    }
+
     async function exportBibtex() {
         const items = batchManager.items;
         if (items.length === 0) return;
@@ -795,6 +841,12 @@
             <button class="action-btn small" onclick={exportBibtex} title={i18n.t.batch.export_bibtex}
                     disabled={batchManager.items.length === 0}>
                 <FileDown size={14} />
+            </button>
+
+            <button class="action-btn small" onclick={exportCaf}
+                    title="Export current batch as Cathy/Catfish .caf catalog"
+                    disabled={batchManager.items.length === 0}>
+                <HardDrive size={14} />
             </button>
 
             <div class="dropdown-container">

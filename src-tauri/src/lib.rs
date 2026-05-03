@@ -284,6 +284,89 @@ async fn catalog_set_active(
     }
 }
 
+/// Export the LanceDB documents table to a .caf file (PLAN P6 4d).
+///
+/// Walks the documents table once (whole-doc rows only, `chunk_index =
+/// 0`), extracts the local file path from each `crisp+local://...` URI,
+/// stat()s the file for current size + mtime (falls back to 0 if the
+/// file's gone), and writes the result as a v8 .caf at `out_path`.
+///
+/// Skips non-local URIs (`crisp+vps`, `crisp+internxt*`) — the .caf
+/// format has no place for those provenance bits, and a Cathy reader
+/// looking at one would be confused by an absolute path with no
+/// matching device.
+///
+/// Returns the number of entries actually written. The caller knows
+/// the discrepancy with the documents-table row count if any URIs got
+/// skipped.
+#[tauri::command]
+async fn catalog_export_sorted(
+    state: tauri::State<'_, AppState>,
+    out_path: String,
+    limit: Option<usize>,
+) -> Result<usize, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled — initialise it first".into());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Local index not available (remote backend?)")?
+        .clone();
+    drop(lock);
+
+    let docs = local
+        .list_documents(limit.unwrap_or(usize::MAX))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        use catalog::index::{FileEntry, FileIndex};
+        let out = std::path::PathBuf::from(out_path);
+        // Root = "/" is the safe default — entries carry absolute paths
+        // from arbitrary drives, the writer's dir-allocation walks
+        // each up to the root regardless.
+        let mut idx = FileIndex::new(std::path::PathBuf::from("/"), cfg!(windows));
+
+        for hit in docs {
+            // Extract the local filesystem path from the URI; skip
+            // non-local locations.
+            let loc = match index::location::FileLocation::from_uri(&hit.location_uri) {
+                Ok(loc) => loc,
+                Err(_) => continue,
+            };
+            let path = match loc {
+                index::location::FileLocation::Local { path, .. } => path,
+                _ => continue,
+            };
+            // stat() for live size + mtime; fall through to 0 / 0 when
+            // the file's been moved / removed since indexing.
+            let (size, mtime) = match std::fs::metadata(&path) {
+                Ok(m) => {
+                    let s = m.len();
+                    let t = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as u32)
+                        .unwrap_or(0);
+                    (s, t)
+                }
+                Err(_) => (0, 0),
+            };
+            idx.add(FileEntry::new(path, size, mtime));
+        }
+
+        let n = idx.len();
+        catalog::caf::write_file(&out, &idx, catalog::caf::unix_now())
+            .map_err(|e| e.to_string())?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| format!("catalog_export_sorted join error: {e}"))?
+}
+
 /// Substring search over filenames in the materialized catalog table.
 /// Filenames only — for path-component or content matching, the existing
 /// `index_search` covers documents-table rows; future Phase 4c will
@@ -1972,6 +2055,7 @@ pub fn run() {
             catalog_set_active,
             catalog_search,
             catalog_active_list,
+            catalog_export_sorted,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

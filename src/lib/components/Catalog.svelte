@@ -231,6 +231,34 @@
         }
     }
 
+    // ── Import to batch (PLAN P6 4d) ───────────────────────────────────────────
+    //
+    // Pull entries from the currently-browsed catalog into the sort
+    // batch. Reuses the watcher's add_item path (already dedup-on-path)
+    // so re-importing the same .caf is idempotent. Files don't auto-
+    // process — the user still presses Start in BatchReview.
+    let importing = $state(false);
+    let importedCount = $state(0);
+
+    async function importToBatch() {
+        if (!browsing || browsingEntries.length === 0) return;
+        importing = true;
+        importedCount = 0;
+        try {
+            const { batchManager } = await import('$lib/batch/store.svelte');
+            for (const e of browsingEntries) {
+                const name = e.path.split(/[\\/]/).pop() || e.path;
+                batchManager.addItem(e.path, name, e.size);
+                importedCount++;
+            }
+            flog('info', `Imported ${importedCount} entries from catalog ${browsing}`);
+        } catch (e: any) {
+            error = `import_to_batch: ${e}`;
+        } finally {
+            importing = false;
+        }
+    }
+
     // ── Browse ─────────────────────────────────────────────────────────────────
 
     async function browse(path: string) {
@@ -411,6 +439,18 @@
                             (showing first 500)
                         {/if}
                     </span>
+                    <button
+                        class="btn small"
+                        onclick={importToBatch}
+                        disabled={importing || browsingEntries.length === 0}
+                        title="Add every entry in this catalog to the sort batch (no auto-process — press Start in Batch Review)"
+                    >
+                        {#if importing}
+                            <Loader2 size={12} class="spin" /> Importing… ({importedCount})
+                        {:else}
+                            <FilePlus size={12} /> Import to batch
+                        {/if}
+                    </button>
                 </header>
                 {#if browsingLoading}
                     <div class="loading"><Loader2 size={20} class="spin" /> Loading…</div>
