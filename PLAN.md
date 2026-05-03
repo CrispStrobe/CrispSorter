@@ -127,6 +127,134 @@ default.
    auto-move" mode that's distinct from full auto.
 2. **PWA demo** — generate `.sh`/`.bat` sorting scripts or browser-based sorting via File System Access API
 
+### P6 — Catalog / Cathy integration (Catfish port-and-merge)
+
+Bring [Catfish](https://github.com/CrispStrobe/Catfish)'s
+drive-cataloging + duplicate-finding + offline file-search capabilities
+into CrispSorter. The Python project is ~5.5kLOC and built around the
+classic [Cathy](http://www.mtg.sk/rva/cathy/cathy.html) `.caf` binary
+catalog format, which means CrispSorter would gain backwards-compatible
+read/write of any `.caf` file produced over the past 20+ years
+(Cathy 1.x → Catfish v8).
+
+**Why integrate (vs. standalone Rust port):** CrispSorter is the
+project's hub Tauri app and already does adjacent things — file
+scanning, search, dedup-of-sorted-batches. A separate Catfish-RS
+binary would split focus and reimplement the cross-platform shell that
+Tauri already gives us. The two indexes are complementary: Catfish-style
+`.caf` is a flat (path, size, mtime) snapshot of "everything on a
+drive", whereas CrispSorter's LanceDB stores rich vector + LLM-derived
+metadata for the smaller subset that the user actually sorted. Linking
+them lets the sorter say "you've already filed this exact file under
+project X on drive Y."
+
+**`.caf` format spec (verified against Catfish `core/file_index.py`):**
+* Little-endian binary; magic = `version × 1_000_000_000 + 500_410_407`
+  with `version = 1..=8`. v ≥ 3 reads the version word as `<i16>` after
+  the magic.
+* Header: `<L>` date, NUL-terminated latin-1 device path (v ≥ 2),
+  volume label, alias, `<L>` serial, comment (v ≥ 4), `<f32>` freesize
+  (v ≥ 1), `<i16>` archive flag (v ≥ 6).
+* Info block: `<i32>` dir_count, then for each dir a name (only first
+  dir for v ≤ 3, all dirs for v ≤ 6 — different rule per version) plus
+  `<i32, f64>` (file_count, total_size) for v ≥ 3.
+* ELM block: `<i32>` file_count followed by entries. Per-entry struct:
+  v ≤ 6 → `<L l H>` (mtime, size32, parent_id16) — **no per-file size,
+  legacy quirk**; v == 7 → `<L q H>`; v == 8 → `<L q L>` (32-bit
+  parent_id). Filename is NUL-terminated latin-1.
+* `size < 0` encodes a directory: directory ID = `-size` (v > 6) or
+  positional index (v ≤ 6).
+* Hashes are **not** stored — recomputed on demand for dedup.
+
+**Bridge with CrispSorter's existing data:** LanceDB stores rich rows
+keyed by `path`. A `.caf` row is a strict subset of that. So:
+* **Import `.caf` → CrispSorter:** treat each entry as a "candidate
+  file" the user might want to sort/embed. No conflict with the
+  existing batch flow — entries appear as a new "Catalog" source
+  alongside the watcher queue and folder pickers.
+* **Export CrispSorter → `.caf`:** dump the sorted-batch slice (or any
+  query result) to a `.caf` for archival / sharing. Lossy in one
+  direction (drops embeddings + LLM categories) but round-trips the
+  Cathy-compatible bits perfectly.
+
+**Phased plan (~3 weeks, each phase shippable independently):**
+
+- [ ] **Phase 1 — `.caf` I/O + parallel scanner** (~1 wk)
+  1. `src-tauri/src/catalog/{mod.rs, caf.rs, index.rs, scan.rs}`
+  2. `caf.rs`: byte-exact reader + writer for versions 1-8, including
+     the legacy v ≤ 6 size quirks. Round-trip property test (`load →
+     save → load` must yield bit-identical bytes for ≥ 1 captured Cathy
+     fixture).
+  3. `index.rs`: in-memory `FileIndex` mirroring Catfish's structure
+     (size_index `HashMap<u64, Vec<Entry>>`, all_files `Vec<Entry>`,
+     optional sorted prefix/suffix arrays for fast name search).
+  4. `scan.rs`: parallel directory walker via `jwalk` (rayon-backed) so
+     scanning a hard drive uses all cores instead of one. Optional
+     hashing inline (`md-5`, `sha-1`, `sha-2`) gated behind a config
+     flag.
+  5. Tauri commands: `catalog_load_caf(path)`, `catalog_save_caf(path,
+     index)`, `catalog_scan_dir(path, hash_algo)`,
+     `catalog_metadata(path)` (cheap header-only read for index
+     listings).
+  6. Unit tests cover: load fixture v8 .caf → expected file count;
+     load/save round-trip; legacy v6 with no per-file size; mixed
+     Windows/POSIX path device strings.
+
+- [ ] **Phase 2 — Duplicate engine + CLI parity** (~1 wk)
+  1. `dedup.rs`: size-bucket fast path (compare by size first, then
+     hash only matching candidates), parallel hash verification via
+     rayon. Mirror Catfish's `find_all_duplicates_bulk` API.
+  2. JSON output mode for Tauri commands, matching Catfish's `--output
+     json` so existing CLI scripts can swap binaries.
+  3. Generate-deletion-script feature (.bat / .sh) for scriptable
+     cleanup, matching Catfish's interactive deletion workflow but
+     review-first by default.
+  4. Tauri commands: `catalog_find_duplicates(source_path,
+     destinations[], options)`, `catalog_generate_deletion_script(matches[])`.
+
+- [ ] **Phase 3 — UI tabs in CrispSorter** (~1 wk)
+  1. New "Catalog" tab in Settings.svelte (or a new top-level page):
+     list available `.caf` files, create/refresh/delete, browse
+     entries offline (works even if the source drive is unmounted).
+  2. New "Find Duplicates" tab: source folder picker + N destination
+     folder pickers, hash algorithm dropdown, "reuse existing
+     indexes" / "force recreate" toggles, results table with
+     per-row select + bulk delete-script export.
+  3. Existing batch view gets a "duplicate of X in catalog Y"
+     indicator badge when an entry's hash matches a cataloged file.
+
+- [ ] **Phase 4 — DB ↔ .caf bridge** (~3 days)
+  1. `catalog_export_to_caf(query)` — dump a LanceDB query result
+     (or the entire sorted-batch) to a fresh `.caf` for archival.
+  2. `catalog_import_caf(path)` — bring `.caf` entries into the
+     batch view as candidate files (reuses the watcher's `add_item`
+     path; user still presses Start to actually sort/embed).
+  3. Bidirectional cross-reference: each LanceDB row optionally
+     carries `caf_source: Option<{caf_path: PathBuf, parent_id: u32}>`
+     so a sorted file's "where did this come from" pane shows
+     drive provenance.
+
+- [ ] **Phase 5 (optional, deferred) — extract `crispcat` workspace crate**
+  Move `src-tauri/src/catalog/` to a sibling workspace crate
+  (`crates/crispcat/`) so a thin standalone CLI binary
+  (`crates/crispcat-cli/`) can ship the catalog-only feature for users
+  who want it without the rest of CrispSorter. Keeps the Tauri app's
+  binary footprint unchanged.
+
+**Why not a standalone Rust app instead:** The Catfish UI is Tkinter,
+which has no parity in the Tauri/Svelte stack — porting it would mean
+choosing egui/iced and building a new GUI from scratch (~1-2 weeks of
+UI work that doesn't add capability). Integrating into CrispSorter
+reuses the existing Svelte UI infrastructure and gives users one app
+instead of two. The Phase 5 escape hatch (extract to a workspace crate
++ CLI binary) preserves the option to ship a standalone tool later
+without committing to that maintenance burden upfront.
+
+**Acknowledgments:** The .caf format spec is reverse-engineered from
+[Catfish](https://github.com/CrispStrobe/Catfish) which itself drew on
+[binsento42/Cathy](https://github.com/binsento42/Cathy) and the
+original [Cathy](http://rva.mtg.sk/) by Robert Vašíček.
+
 ---
 
 ## Recent changes
