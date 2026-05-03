@@ -153,6 +153,7 @@
                 bind:value={query}
                 onkeydown={onKeydown}
                 placeholder="Suche in indizierten Dokumenten …"
+                title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
             />
             {#if query}
