@@ -54,7 +54,11 @@ jobs:
       # bundle we're consuming below. Keeps source-side cargo metadata
       # (which still needs the sibling checkout for the path-dep
       # resolution) in lockstep with the binary lib we link against.
-      CRISPASR_REF: v0.5.6
+      # v0.5.5 (force-pushed past the original commit) is the first
+      # CrispASR release that ships libcrispasr-macos-arm64.tar.gz;
+      # v0.5.6's release.yml run failed in windows-cuda so the publish
+      # step never created a release.
+      CRISPASR_REF: v0.5.5
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -323,7 +327,11 @@ jobs:
       # bundle we're consuming below. Keeps source-side cargo metadata
       # (which still needs the sibling checkout for the path-dep
       # resolution) in lockstep with the binary lib we link against.
-      CRISPASR_REF: v0.5.6
+      # v0.5.5 (force-pushed past the original commit) is the first
+      # CrispASR release that ships libcrispasr-macos-arm64.tar.gz;
+      # v0.5.6's release.yml run failed in windows-cuda so the publish
+      # step never created a release.
+      CRISPASR_REF: v0.5.5
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
