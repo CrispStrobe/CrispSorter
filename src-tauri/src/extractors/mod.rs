@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod html;
+pub mod ocr;
 pub mod pdf;
 pub mod text;
 
@@ -49,6 +50,14 @@ pub struct ExtractedDocument {
     /// origin without re-parsing the path.
     pub ext: String,
 }
+
+/// Image extensions that OCR can handle. Surface them to `supported`
+/// only when the caller opts in via `extract_text_from_path_with_opts`
+/// — the no-OCR default would silently produce empty text for these
+/// otherwise.
+pub const OCR_IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp",
+];
 
 /// Extension classes the registry knows how to handle. Used as the
 /// dispatch key so the match arms read top-down by category.
@@ -74,34 +83,84 @@ pub fn supported(ext: &str) -> bool {
     )
 }
 
+/// PLAN P7.8 options for the extractor dispatcher.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExtractOptions {
+    /// Run Tesseract on image extensions (png/jpg/tiff/…) and on
+    /// PDFs whose text layer is empty after the regular `pdf::extract`
+    /// pass. Off by default — OCR is CPU-heavy and most catalogs
+    /// don't need it.
+    pub try_ocr: bool,
+    /// PDFs with fewer than this many extracted characters fall through
+    /// to OCR if `try_ocr` is on. 50 is a tuning point that catches
+    /// "scanned PDF with embedded but-junk header text" without
+    /// firing on legitimately-short PDFs (single-page memos, etc.).
+    pub ocr_pdf_min_chars: usize,
+}
+
 /// Run the appropriate extractor for `path`. Returns an empty
 /// `ExtractedDocument` for unsupported extensions rather than erroring
 /// — callers can pre-filter via `supported(ext)` if they want to skip.
 pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
+    extract_text_from_path_with_opts(
+        path,
+        ExtractOptions {
+            try_ocr: false,
+            ocr_pdf_min_chars: 50,
+        },
+    )
+}
+
+/// Variant that takes the OCR opt-in. Calling sites in bg_ingest +
+/// CLI thread the user's catalog-level setting through here.
+pub fn extract_text_from_path_with_opts(
+    path: &Path,
+    opts: ExtractOptions,
+) -> Result<ExtractedDocument> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    match ext.as_str() {
-        "pdf" => pdf::extract(path).map(|mut doc| {
-            doc.ext = ext;
-            doc
-        }),
+    let result: Result<ExtractedDocument> = match ext.as_str() {
+        "pdf" => {
+            let mut doc = pdf::extract(path)?;
+            doc.ext = ext.clone();
+            // PLAN P7.8 — fall through to OCR if the PDF's text layer
+            // is empty / near-empty (typical for scanned documents).
+            if opts.try_ocr
+                && doc.full_text.trim().chars().count() < opts.ocr_pdf_min_chars
+            {
+                if let Ok(mut ocr) = ocr::ocr_via_tesseract(path) {
+                    ocr.ext = ext.clone();
+                    Ok(ocr)
+                } else {
+                    Ok(doc)
+                }
+            } else {
+                Ok(doc)
+            }
+        }
         "html" | "htm" => html::extract(path).map(|mut doc| {
-            doc.ext = ext;
+            doc.ext = ext.clone();
             doc
         }),
+        e if OCR_IMAGE_EXTS.contains(&e) && opts.try_ocr => {
+            ocr::ocr_via_tesseract(path).map(|mut doc| {
+                doc.ext = ext.clone();
+                doc
+            })
+        }
         e if supported(e) => text::extract(path).map(|mut doc| {
-            doc.ext = ext;
+            doc.ext = ext.clone();
             doc
         }),
         _ => Err(anyhow::anyhow!(
             "no extractor for `.{ext}` ({})",
             path.display()
         )),
-    }
-    .with_context(|| format!("extracting {}", path.display()))
+    };
+    result.with_context(|| format!("extracting {}", path.display()))
 }
 
 #[cfg(test)]
