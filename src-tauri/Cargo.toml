@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.37"
+version = "0.1.38"
 description = "CrispSorter — local-first AI document organizer"
 authors = ["CrispSorter contributors"]
 license = "AGPL-3.0-or-later"
