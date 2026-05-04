@@ -343,13 +343,20 @@ jobs:
           # Linux's tauri_args doesn't pass `--target` (cargo defaults to
           # the host arch on Linux), so the .deb lands at
           # `target/release/bundle/deb/` — NOT under
-          # `target/<rust_target>/release/...` like macOS. Search both
-          # paths to stay robust if a future matrix entry adds --target
-          # for cross-builds.
-          DEB=$(find \
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb \
-            src-tauri/target/release/bundle/deb \
-            -name '*.deb' -type f 2>/dev/null | head -1)
+          # `target/<rust_target>/release/...` like macOS. Walk only the
+          # dirs that actually exist; passing a non-existent path to
+          # `find` makes it exit non-zero even if it found matches
+          # elsewhere, and pipefail+set-e then silently kills the step
+          # (the v0.1.38 second-run failure mode).
+          DEB=""
+          for dir in \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb"; do
+            if [ -d "$dir" ]; then
+              candidate=$(find "$dir" -name '*.deb' -type f | head -1)
+              if [ -n "$candidate" ]; then DEB="$candidate"; break; fi
+            fi
+          done
           if [ -z "$DEB" ]; then echo "ERROR: no .deb produced"; exit 1; fi
           ./scripts/bundle_linux_native_libs.sh "$DEB"
 
@@ -362,15 +369,29 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
-          # macOS artifacts (under target/<rust_target>/...). Linux .deb
-          # lands at target/release/... when --target isn't passed; search
-          # both layouts as in the Patch step above.
-          DMG=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg -name '*.dmg' -type f 2>/dev/null | head -1)
-          TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f 2>/dev/null | head -1)
-          DEB=$(find \
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb \
-            src-tauri/target/release/bundle/deb \
-            -name '*.deb' -type f 2>/dev/null | head -1)
+          # Walk only directories that actually exist for this matrix
+          # entry: macOS lands artifacts under `target/<rust_target>/`,
+          # Linux lands them under `target/`. Same find-on-missing-dir
+          # gotcha as the Linux Patch step above.
+          find_first() {
+            local pattern="$1"; shift
+            local dir
+            for dir in "$@"; do
+              if [ -d "$dir" ]; then
+                local hit
+                hit=$(find "$dir" -name "$pattern" -type f | head -1)
+                if [ -n "$hit" ]; then echo "$hit"; return 0; fi
+              fi
+            done
+          }
+          DMG=$(find_first '*.dmg' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg")
+          TAR_GZ=$(find_first 'CrispSorter*.app.tar.gz' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos" \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle")
+          DEB=$(find_first '*.deb' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb")
           for asset in "$DMG" "$TAR_GZ" "$DEB"; do
             if [ -n "$asset" ] && [ -f "$asset" ]; then
               echo "Uploading patched $asset → $TAG"
