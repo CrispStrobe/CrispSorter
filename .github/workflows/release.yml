@@ -321,11 +321,15 @@ jobs:
           # tauri also produces an .app.tar.gz alongside (used by the
           # Tauri updater + as a download alternative to .dmg). Recreate
           # it from the patched .app so users updating via tar get the
-          # fix too.
+          # fix too. Use absolute path for the output — `cd $APP_DIR`
+          # would otherwise re-evaluate the relative `$TAR_GZ` against
+          # the new cwd and fail to find a parent dir for tar to write
+          # into (the v0.1.38 macOS arm64 failure mode).
           TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f | head -1)
           if [ -n "$TAR_GZ" ]; then
-            echo "Repacking $TAR_GZ"
-            ( cd "$APP_DIR" && tar -czf "$TAR_GZ" "$(basename "$APP")" )
+            ABS_TAR_GZ="$(cd "$(dirname "$TAR_GZ")" && pwd)/$(basename "$TAR_GZ")"
+            echo "Repacking $ABS_TAR_GZ"
+            tar -czf "$ABS_TAR_GZ" -C "$APP_DIR" "$(basename "$APP")"
           fi
 
       - name: Patch native libs into .deb + repack (Linux)
@@ -336,7 +340,16 @@ jobs:
           CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
         run: |
           set -euo pipefail
-          DEB=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb -name '*.deb' -type f | head -1)
+          # Linux's tauri_args doesn't pass `--target` (cargo defaults to
+          # the host arch on Linux), so the .deb lands at
+          # `target/release/bundle/deb/` — NOT under
+          # `target/<rust_target>/release/...` like macOS. Search both
+          # paths to stay robust if a future matrix entry adds --target
+          # for cross-builds.
+          DEB=$(find \
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb \
+            src-tauri/target/release/bundle/deb \
+            -name '*.deb' -type f 2>/dev/null | head -1)
           if [ -z "$DEB" ]; then echo "ERROR: no .deb produced"; exit 1; fi
           ./scripts/bundle_linux_native_libs.sh "$DEB"
 
@@ -349,11 +362,15 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
-          # macOS artifacts.
+          # macOS artifacts (under target/<rust_target>/...). Linux .deb
+          # lands at target/release/... when --target isn't passed; search
+          # both layouts as in the Patch step above.
           DMG=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg -name '*.dmg' -type f 2>/dev/null | head -1)
           TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f 2>/dev/null | head -1)
-          # Linux artifact.
-          DEB=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb -name '*.deb' -type f 2>/dev/null | head -1)
+          DEB=$(find \
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb \
+            src-tauri/target/release/bundle/deb \
+            -name '*.deb' -type f 2>/dev/null | head -1)
           for asset in "$DMG" "$TAR_GZ" "$DEB"; do
             if [ -n "$asset" ] && [ -f "$asset" ]; then
               echo "Uploading patched $asset → $TAG"
