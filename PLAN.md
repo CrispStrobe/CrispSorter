@@ -169,6 +169,19 @@ From the previous ROADMAP:
 8. ✅ L1 quick-scan command + UI — Rust `index_ingest_l1` writes filesystem-only rows via `metadata_json` escape hatch; Ingest tab has L1/L3 picker
 9. ✅ Catalog filters in the contents tab — depth (L1/L3), extension chips, completeness select; level badge per row
 
+### Conventions (do not break these)
+
+- **All user-facing strings go through `i18n.t.*`.** Both `en` and `de`
+  must be filled in `src/lib/i18n.svelte.ts`. No inline German (or
+  English) literals in `.svelte` templates or in Tauri-emitted strings
+  the UI displays. The audit pass for this is open below.
+- **Log messages stay in English.** They land in `app_log!` /
+  `logInfo` / `logWarn` / `logError` and feed the Logs panel + stderr;
+  consistency matters more than localisation. A handful of `init_index`
+  events currently leak German status text — clean them up.
+- **Catalog data-dir defaults to the app data dir,** not a fresh
+  per-session path. Multi-catalog management overrides this per-entry.
+
 ### Still open
 
 - **Image EXIF metadata at L2** — current L2 covers PDF / DOCX / EPUB. Adding `kamadak-exif` for image EXIF is straightforward, ~30 lines.
@@ -176,6 +189,14 @@ From the previous ROADMAP:
 - **Folder/subtree filter** — currently the Catalog has name / ext / level / completeness filters; folder-tree view is the missing chip.
 - **Build script** — `scripts/generate-licenses.js` was made permissive when `cargo-license` is missing; CI that wants strict licenses can set `LICENSES_REQUIRE=1`.
 - **Inherited backlog** in §7 — unchanged.
+- **i18n / log audit** — recent commits added inline German strings in
+  several `.svelte` templates (Hinzufügen depth chips, Settings →
+  Kataloge panel, CAF import/export buttons, etc.) and a few German
+  Tauri-emitted status messages from `init_index` (e.g. "Lade
+  Embedder-Modell …", "Embedder geladen", "Embedder übersprungen …").
+  All of those need to: (a) move into `i18n.t.*` with EN+DE entries
+  (.svelte templates), or (b) be re-written in English (Rust log/
+  status strings emitted to the frontend).
 - **Expand GGUF model registry** — CrispEmbed currently supports 24 models. CrispSorter today surfaces ~12 of them. Add the remaining 12 (bge-small/base/large-en-v1.5, multilingual-e5-base/large, mxbai-embed-large-v1, gte-small, all-MiniLM-L6-v2, all-mpnet-base-v2, nomic-embed-text-v1.5, granite-embedding-278m/107m, F2LLM-v2-0.6B, Harrier-OSS-v1-0.6B/270M, arctic-embed-xs) — each needs an `EmbedderModel` variant, display/dims/ctx, `to_model_spec` ONNX repo, dropdown option + i18n.
 - **Default-on CrispEmbed for dev builds** — `npm run tauri dev` runs `cargo run --no-default-features`, which excludes the `crispembed*` features. Mitigated this session by adding `enable-crispembed.ps1` / `enable-crispembed.sh` that auto-clone the sibling repo, download the prebuilt CrispEmbed C++ library from the GH release, set `CRISPEMBED_SYS_LIB_DIR`, and run dev/build with the right Cargo feature flag. `recompile.ps1` / `recompile-exe.ps1` now auto-detect a staged prebuilt and delegate to `enable-crispembed.ps1`, so a developer who has run the enable script once gets CrispEmbed in every subsequent dev/build run with no extra commands. `--no-crispembed` opts out per-run. The Settings panel hint and `README.md` § "Optional: CrispEmbed (GGUF) backend" both document the flow.
 
