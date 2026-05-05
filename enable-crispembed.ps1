@@ -172,7 +172,7 @@ if ($RuntimeDlls) {
         New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
         foreach ($Dll in $RuntimeDlls) {
             $dest = Join-Path $TargetDir $Dll.Name
-            # Skip when the destination already has the right size — this is
+            # Skip when the destination already has the right size -- this is
             # a no-op re-stage and trying to re-copy fails with sharing
             # violations if a prior dev server / .exe has the DLL mapped.
             if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $Dll.Length)) {
@@ -186,9 +186,13 @@ if ($RuntimeDlls) {
             }
         }
     }
-    Write-Host ("Staged " + $copiedTotal + " runtime DLL(s) to target\debug, target\release, and bin\\") -ForegroundColor Green
+    if ($copiedTotal -gt 0) {
+        Write-Host ("Staged " + $copiedTotal + " runtime DLL(s) to target\debug, target\release, and bin\") -ForegroundColor Green
+    } else {
+        Write-Host ("DLLs already up to date in target\debug, target\release, and bin\ (" + $RuntimeDlls.Count + " files, no copy needed)") -ForegroundColor DarkGreen
+    }
     if ($skippedLocked -gt 0) {
-        Write-Host ("(" + $skippedLocked + " copy(ies) skipped: file in use by a running CrispSorter — restart it to pick up new DLLs.)") -ForegroundColor DarkYellow
+        Write-Host ("(" + $skippedLocked + " copy(ies) skipped: file in use by a running CrispSorter -- restart it to pick up new DLLs.)") -ForegroundColor DarkYellow
     }
 }
 
