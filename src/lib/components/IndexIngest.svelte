@@ -87,6 +87,20 @@
     let deletingIds = $state<Set<string>>(new Set());
     let promotingL2 = $state(false);
 
+    // PLAN P9 step 2 — paginated browse via index_query_documents.
+    type SortColumn = 'filename' | 'title' | 'author' | 'year' | 'language' | 'indexed_at';
+    let sortColumn  = $state<SortColumn>('indexed_at');
+    let sortDir     = $state<'asc' | 'desc'>('desc');
+    /** Total rows matching the current filter, regardless of page.
+     *  Server-side via `count_rows`; cheap. */
+    let totalEstimate = $state(0);
+    /** Opaque cursor returned by `index_query_documents`; null on the
+     *  last page. */
+    let nextCursor    = $state<string | null>(null);
+    /** Last clicked row index for shift-click range selection on the
+     *  Übersicht table. Reset whenever the result set changes. */
+    let lastClickedDocIdx = $state<number | null>(null);
+
     // Ingest progress from Rust events
     let currentFile = $state('');
     let currentStep = $state('');
@@ -592,45 +606,7 @@
         return p.replace(/\\/g, '/').toLowerCase();
     }
 
-    function applyCatalogFilters(docs: any[]): any[] {
-        const q = contentsQuery.trim().toLowerCase();
-        const folderPrefix = contentsFolder.trim().replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
-        return docs.filter(d => {
-            if (q && !(
-                (d.title ?? '').toLowerCase().includes(q) ||
-                (d.filename ?? '').toLowerCase().includes(q) ||
-                (d.author ?? '').toLowerCase().includes(q)
-            )) return false;
-
-            if (folderPrefix) {
-                const p = docPath(d);
-                // Subtree match: doc path must start with the folder prefix
-                // followed by either nothing, "/", or the end of the string.
-                if (!(p === folderPrefix || p.startsWith(folderPrefix + '/'))) return false;
-            }
-
-            if (contentsExt.size > 0) {
-                const ext = (d.ext ?? '').toLowerCase();
-                if (!contentsExt.has(ext)) return false;
-            }
-
-            if (contentsLevel !== 'all' && docLevel(d) !== contentsLevel) return false;
-
-            if (contentsCompleteness !== 'any') {
-                const hasAuthor = !!(d.author && d.author.trim());
-                const hasTitle  = !!(d.title  && d.title.trim());
-                const hasYear   = !!(d.year);
-                if (contentsCompleteness === 'has_author' && !hasAuthor) return false;
-                if (contentsCompleteness === 'has_title'  && !hasTitle)  return false;
-                if (contentsCompleteness === 'has_year'   && !hasYear)   return false;
-                if (contentsCompleteness === 'has_all'    && !(hasAuthor && hasTitle && hasYear)) return false;
-            }
-
-            return true;
-        });
-    }
-
-    /** All distinct extensions present in the currently-loaded contents — used
+    /** All distinct extensions present in the currently-loaded contents -- used
      *  to populate the filter chips. */
     const contentsExtChoices = $derived.by(() => {
         const s = new Set<string>();
@@ -642,27 +618,86 @@
     });
 
     let _allContents = $state<any[]>([]);
-    const visibleContents = $derived(applyCatalogFilters(_allContents));
 
-    async function loadContents() {
+    /** Build the DocumentFilter payload index_query_documents expects.
+     *  Mirrors the chip-bar state. Completeness filter stays client-side
+     *  (the Rust schema doesn't model "has_*" flags as scalar columns yet
+     *  — promoting them is on P9's migration path). */
+    function buildDocumentFilter() {
+        const f: any = {};
+        if (contentsFolder.trim()) f.parentDirPrefix = contentsFolder.trim();
+        if (contentsExt.size > 0) f.ext = [...contentsExt];
+        if (contentsLevel !== 'all') f.level = contentsLevel;
+        if (contentsQuery.trim()) f.nameSubstring = contentsQuery.trim();
+        return f;
+    }
+
+    function buildSortSpec() {
+        return { column: sortColumn, direction: sortDir };
+    }
+
+    async function loadContents(append = false) {
+        if (contentsLoading) return;
         contentsLoading = true;
-        selectedDocIds = new Set();
+        if (!append) {
+            selectedDocIds = new Set();
+            lastClickedDocIdx = null;
+        }
         try {
-            // Fetch stats and document list in parallel
-            const [stats, docs] = await Promise.all([
+            const [stats, page] = await Promise.all([
                 invoke<{ total_rows: number; doc_count: number; chunk_count: number }>('index_stats').catch(() => null),
-                invoke<any[]>('index_list_documents', { limit: 500 }),
+                invoke<{ rows: any[]; nextCursor: string | null; totalEstimate: number }>(
+                    'index_query_documents',
+                    {
+                        filter: buildDocumentFilter(),
+                        sort: buildSortSpec(),
+                        page: { limit: 200, cursor: append ? nextCursor : null },
+                    }
+                ),
             ]);
             indexStats = stats;
-            _allContents = docs;
-            contents = visibleContents;
-        } catch {
-            _allContents = [];
-            contents = [];
-            indexStats = null;
+            const newRows = page?.rows ?? [];
+            _allContents = append ? [..._allContents, ...newRows] : newRows;
+            // Apply the completeness filter client-side; chip + ext + level
+            // + folder + name substring are already server-applied via the
+            // DocumentFilter payload.
+            contents = applyClientFilters(_allContents);
+            totalEstimate = page?.totalEstimate ?? 0;
+            nextCursor = page?.nextCursor ?? null;
+        } catch (e: any) {
+            const msg = String(e?.message ?? e ?? '');
+            // Don't flood the log when the index isn't ready yet; one
+            // line per distinct error per session is enough to debug
+            // and not enough to bury other useful messages.
+            if (msg !== _lastQueryError) {
+                logError(`Übersicht: query failed -- ${msg}`);
+                _lastQueryError = msg;
+            }
+            if (!append) {
+                _allContents = [];
+                contents = [];
+                indexStats = null;
+                totalEstimate = 0;
+                nextCursor = null;
+            }
         } finally {
             contentsLoading = false;
         }
+    }
+    let _lastQueryError = '';
+
+    /** Client-side residual filter after the server narrowed the page.
+     *  Today: only completeness; once we promote `has_*` flags to scalar
+     *  columns (P9 step 3) this collapses to identity. */
+    function applyClientFilters(rows: any[]): any[] {
+        if (contentsCompleteness === 'any') return rows;
+        return rows.filter(r => {
+            if (contentsCompleteness === 'has_title' && !r.title) return false;
+            if (contentsCompleteness === 'has_author' && !r.author) return false;
+            if (contentsCompleteness === 'has_year' && !r.year) return false;
+            if (contentsCompleteness === 'has_all' && (!r.title || !r.author || !r.year)) return false;
+            return true;
+        });
     }
 
     function toggleContentsExt(ext: string) {
@@ -679,10 +714,107 @@
         if (typeof sel === 'string') contentsFolder = sel;
     }
 
-    // Re-run the client-side filter whenever a filter input changes.
+    // Server-side filter / sort: any change to the chip inputs (or the
+    // user landing on Übersicht for the first time) re-issues the
+    // index_query_documents query. Debounced via a 200 ms timer so
+    // typing in the name-substring input doesn't hammer Rust.
+    //
+    // This effect *also* covers the first-load case: when activeTab is
+    // already 'overview' on mount, the effect runs once with the
+    // initial chip values and does the load. (The earlier two-effect
+    // version had a separate "auto-load if empty" effect that re-fired
+    // every time `_allContents` was set to [] by the success-with-zero
+    // path, which is exactly what an unconfigured index returns -- the
+    // resulting infinite loop is what surfaced as "always says Lade…".)
+    let queryDebounce: any = null;
     $effect(() => {
-        contents = applyCatalogFilters(_allContents);
+        // Tracking deps explicitly so the effect fires on the right things.
+        const _trackTab = activeTab;
+        const _trackName = contentsQuery;
+        const _trackFolder = contentsFolder;
+        const _trackExt = contentsExt;
+        const _trackLevel = contentsLevel;
+        const _trackSortCol = sortColumn;
+        const _trackSortDir = sortDir;
+        if (activeTab !== 'overview') return;
+        if (queryDebounce) clearTimeout(queryDebounce);
+        queryDebounce = setTimeout(() => loadContents(false), 200);
     });
+
+    // Completeness filter is residual / client-side; just re-slice.
+    $effect(() => {
+        const _track = contentsCompleteness;
+        contents = applyClientFilters(_allContents);
+    });
+
+    /** Mouse-click row selection mirroring BatchReview.svelte's pattern:
+     *  - bare click selects exactly that row;
+     *  - Shift+click extends the selection from the last anchor to here;
+     *  - Ctrl/Cmd+click toggles the row in/out of the selection set.
+     *  Text-selection is suppressed via `user-select: none` on .catalog-row
+     *  so dragging across rows actually selects rows instead of highlighting
+     *  the filename text. */
+    function handleDocRowClick(e: MouseEvent | KeyboardEvent, idx: number, docId: string) {
+        if (e.shiftKey && lastClickedDocIdx !== null) {
+            const start = Math.min(lastClickedDocIdx, idx);
+            const end   = Math.max(lastClickedDocIdx, idx);
+            const next  = new Set(selectedDocIds);
+            for (let i = start; i <= end; i++) {
+                const id = contents[i]?.doc_id;
+                if (id) next.add(id);
+            }
+            selectedDocIds = next;
+        } else if (e.metaKey || e.ctrlKey) {
+            const next = new Set(selectedDocIds);
+            if (next.has(docId)) next.delete(docId); else next.add(docId);
+            selectedDocIds = next;
+        } else {
+            selectedDocIds = new Set([docId]);
+        }
+        lastClickedDocIdx = idx;
+    }
+
+    function setSort(col: SortColumn) {
+        if (sortColumn === col) {
+            sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            sortColumn = col;
+            sortDir = (col === 'indexed_at' || col === 'year') ? 'desc' : 'asc';
+        }
+    }
+
+    /** Pluck a key out of a row's `metadata_json` blob. L1 rows carry
+     *  fs_size / fs_mtime / parent_dir / level there until P9 step 3
+     *  promotes them to real columns. Returns `null` when the field
+     *  isn't present (L3 rows from the legacy ingest path don't carry
+     *  fs_size yet). */
+    function metaField(row: any, key: string): any {
+        if (!row?.metadata_json) return null;
+        try {
+            const m = typeof row.metadata_json === 'string'
+                ? JSON.parse(row.metadata_json)
+                : row.metadata_json;
+            return m?.[key] ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    function fmtSize(bytes: number | null | undefined): string {
+        if (!bytes && bytes !== 0) return '';
+        const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let n = bytes, i = 0;
+        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+    }
+
+    function fmtMtime(ms: number | null | undefined): string {
+        if (!ms && ms !== 0) return '';
+        try {
+            const d = new Date(ms);
+            return d.toLocaleDateString();
+        } catch { return ''; }
+    }
 
     async function deleteFromIndex(docId: string) {
         deletingIds = new Set([...deletingIds, docId]);
@@ -1233,7 +1365,7 @@
                 <input type="text" bind:value={contentsQuery}
                     placeholder="Name / Titel / Autor filtern …" class="query-input" />
             </div>
-            <button class="tb-btn" onclick={loadContents} disabled={contentsLoading}>
+            <button class="tb-btn" onclick={() => loadContents(false)} disabled={contentsLoading}>
                 {#if contentsLoading}<Loader2 size={13} class="spin" />{:else}<RefreshCw size={13} />{/if}
                 Aktualisieren
             </button>
@@ -1333,42 +1465,87 @@
                 </div>
             {/if}
 
-            <div class="contents-list">
-                {#each contents as doc (doc.doc_id)}
-                    {@const isSelected = selectedDocIds.has(doc.doc_id)}
-                    {@const isDeleting = deletingIds.has(doc.doc_id)}
-                    {@const lvl = docLevel(doc)}
-                    <div class="contents-row" class:selected={isSelected} class:deleting={isDeleting}>
-                        <input type="checkbox" class="row-check" checked={isSelected}
-                            onchange={() => toggleSelect(doc.doc_id)} />
-                        {#if doc.ext}
-                            <div class="ext-badge ext-{doc.ext.toLowerCase()}">{doc.ext.toUpperCase()}</div>
-                        {:else}
-                            <div class="ext-badge">–</div>
-                        {/if}
-                        <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3} title="Analyse-Tiefe">L{lvl}</span>
-                        <div class="contents-info">
-                            <span class="contents-title">{doc.title || doc.filename || doc.doc_id?.slice(0,16)}</span>
-                            <span class="contents-meta">
-                                {#if doc.author}{doc.author}{/if}{#if doc.author && doc.year} · {/if}{#if doc.year}{doc.year}{/if}
-                                {#if doc.language} · {doc.language}{/if}
-                            </span>
-                            {#if doc.snippet}
-                                <span class="contents-snippet">{doc.snippet.slice(0, 160)}{doc.snippet.length > 160 ? '…' : ''}</span>
-                            {/if}
-                        </div>
-                        <div class="contents-actions">
-                            <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
-                                <ExternalLink size={13} />
-                            </button>
-                            <button class="icon-btn danger-icon" onclick={() => deleteFromIndex(doc.doc_id)}
-                                disabled={isDeleting} title="Aus Index löschen">
-                                {#if isDeleting}<Loader2 size={13} class="spin" />{:else}<Trash2 size={13} />{/if}
-                            </button>
-                        </div>
+            <div class="catalog-table" role="grid">
+                <div class="catalog-thead" role="row">
+                    <div class="cell col-check">
+                        <input type="checkbox" onchange={toggleSelectAll}
+                            checked={selectedDocIds.size === contents.length && contents.length > 0} />
                     </div>
-                {/each}
+                    <div class="cell col-ext">Ext</div>
+                    <div class="cell col-name col-sortable" onclick={() => setSort('filename')}>
+                        Name
+                        {#if sortColumn === 'filename'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                    </div>
+                    <div class="cell col-author col-sortable" onclick={() => setSort('author')}>
+                        Autor
+                        {#if sortColumn === 'author'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                    </div>
+                    <div class="cell col-year col-sortable" onclick={() => setSort('year')}>
+                        Jahr
+                        {#if sortColumn === 'year'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                    </div>
+                    <div class="cell col-size">Größe</div>
+                    <div class="cell col-mtime">Geändert</div>
+                    <div class="cell col-folder">Ordner</div>
+                    <div class="cell col-level" title="Analyse-Tiefe">L</div>
+                    <div class="cell col-actions"></div>
+                </div>
+                <div class="catalog-tbody">
+                    {#each contents as doc, idx (doc.doc_id)}
+                        {@const isSelected = selectedDocIds.has(doc.doc_id)}
+                        {@const isDeleting = deletingIds.has(doc.doc_id)}
+                        {@const lvl = docLevel(doc)}
+                        {@const fsSize = metaField(doc, 'fs_size')}
+                        {@const fsMtime = metaField(doc, 'fs_mtime')}
+                        {@const parentDir = metaField(doc, 'parent_dir') ?? ''}
+                        <div class="catalog-row" role="row"
+                             class:selected={isSelected} class:deleting={isDeleting}
+                             onclick={(e) => handleDocRowClick(e, idx, doc.doc_id)}>
+                            <div class="cell col-check" onclick={(e) => e.stopPropagation()}>
+                                <input type="checkbox" checked={isSelected}
+                                    onchange={() => toggleSelect(doc.doc_id)} />
+                            </div>
+                            <div class="cell col-ext">
+                                {#if doc.ext}
+                                    <span class="ext-badge ext-{doc.ext.toLowerCase()}">{doc.ext.toUpperCase()}</span>
+                                {:else}
+                                    <span class="ext-badge">–</span>
+                                {/if}
+                            </div>
+                            <div class="cell col-name" title={doc.location_uri ?? doc.filename ?? ''}>
+                                {doc.title || doc.filename || doc.doc_id?.slice(0, 16)}
+                            </div>
+                            <div class="cell col-author">{doc.author ?? ''}</div>
+                            <div class="cell col-year">{doc.year ?? ''}</div>
+                            <div class="cell col-size">{fmtSize(fsSize)}</div>
+                            <div class="cell col-mtime">{fmtMtime(fsMtime)}</div>
+                            <div class="cell col-folder" title={parentDir}>{parentDir}</div>
+                            <div class="cell col-level">
+                                <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3}>L{lvl}</span>
+                            </div>
+                            <div class="cell col-actions" onclick={(e) => e.stopPropagation()}>
+                                <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
+                                    <ExternalLink size={13} />
+                                </button>
+                                <button class="icon-btn danger-icon" onclick={() => deleteFromIndex(doc.doc_id)}
+                                    disabled={isDeleting} title="Aus Index löschen">
+                                    {#if isDeleting}<Loader2 size={13} class="spin" />{:else}<Trash2 size={13} />{/if}
+                                </button>
+                            </div>
+                        </div>
+                    {/each}
+                </div>
             </div>
+
+            {#if nextCursor}
+                <div class="load-more-bar">
+                    <button class="tb-btn" onclick={() => loadContents(true)} disabled={contentsLoading}>
+                        {#if contentsLoading}<Loader2 size={13} class="spin" />{:else}<ChevronDown size={13} />{/if}
+                        Weitere {Math.min(200, totalEstimate - contents.length).toLocaleString()} laden
+                        <span class="muted-small">({contents.length.toLocaleString()} / {totalEstimate.toLocaleString()})</span>
+                    </button>
+                </div>
+            {/if}
         {/if}
     {/if}
 </div>
@@ -1395,7 +1572,7 @@
     .toolbar, .folders-toolbar, .contents-toolbar,
     .stats-bar, .current-progress, .drop-area,
     .file-list, .run-bar, .folder-list, .empty-state,
-    .result-count, .contents-list, .folders-toolbar, .index-stats-bar {
+    .result-count, .folders-toolbar, .index-stats-bar {
         padding-left: 16px; padding-right: 16px;
     }
 
@@ -1567,21 +1744,65 @@
     .tb-btn.danger:hover:not(:disabled) { background: #7f1d1d; }
     .select-all-wrap { display: inline-flex; align-items: center; margin-right: 6px; cursor: pointer; }
 
-    .contents-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
-    .contents-row {
-        display: flex; align-items: flex-start; gap: 10px; background: #18181b;
-        border: 1px solid #27272a; border-radius: 6px; padding: 8px 10px;
+    /* PLAN P9 step 2 -- columnar Übersicht table.
+       Single grid template shared between thead + every row, so every
+       column lines up. user-select:none on rows is what makes shift /
+       ctrl multi-select feel right (otherwise dragging across rows
+       highlights filename text instead of selecting rows). */
+    .catalog-table { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+    .catalog-thead, .catalog-row {
+        display: grid;
+        grid-template-columns: 28px 50px minmax(220px, 1.6fr) minmax(120px, 1fr) 60px 70px 90px minmax(140px, 1.4fr) 28px 64px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 16px;
+        font-size: 0.78rem;
     }
-    .contents-info { flex: 1; min-width: 0; }
-    .contents-title { display: block; font-size: 0.85rem; color: #e4e4e7; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .contents-meta { display: block; font-size: 0.73rem; color: #71717a; margin-top: 2px; }
-    .contents-snippet { display: block; font-size: 0.75rem; color: #52525b; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .contents-actions { flex-shrink: 0; display: flex; gap: 4px; }
-    .contents-row.selected { background: #1e293b; border-color: #334155; }
-    .contents-row.deleting { opacity: 0.4; pointer-events: none; }
-    .row-check { flex-shrink: 0; margin-top: 3px; cursor: pointer; accent-color: #3b82f6; }
+    .catalog-thead {
+        position: sticky; top: 0; z-index: 2;
+        background: #0c0c0e; color: #a1a1aa;
+        border-bottom: 1px solid #27272a;
+        font-weight: 600; font-size: 0.7rem; text-transform: uppercase;
+        padding-top: 8px; padding-bottom: 8px;
+    }
+    .catalog-thead .col-sortable { cursor: pointer; user-select: none; }
+    .catalog-thead .col-sortable:hover { color: #fafafa; }
+    .sort-arrow { color: #3b82f6; margin-left: 4px; }
+    .catalog-tbody { display: contents; }
+    .catalog-row {
+        background: transparent;
+        border-bottom: 1px solid #18181b;
+        padding-top: 6px; padding-bottom: 6px;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    .catalog-row:hover { background: #131316; }
+    .catalog-row.selected { background: #1e293b; }
+    .catalog-row.selected:hover { background: #243450; }
+    .catalog-row.deleting { opacity: 0.4; pointer-events: none; }
+    .catalog-row .cell {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .catalog-row .col-name { color: #e4e4e7; font-weight: 500; }
+    .catalog-row .col-author, .catalog-row .col-folder, .catalog-row .col-mtime {
+        color: #a1a1aa;
+    }
+    .catalog-row .col-size, .catalog-row .col-year { color: #a1a1aa; text-align: right; }
+    .catalog-thead .col-size, .catalog-thead .col-year { text-align: right; }
+    .catalog-row .col-check input, .catalog-thead .col-check input {
+        cursor: pointer; accent-color: #3b82f6;
+    }
+    .catalog-row .col-actions {
+        display: flex; gap: 4px; justify-content: flex-end;
+    }
     .danger-icon { color: #ef4444 !important; }
     .danger-icon:hover:not(:disabled) { color: #fca5a5 !important; }
+    .load-more-bar {
+        padding: 12px 16px; border-top: 1px solid #27272a;
+        display: flex; justify-content: center;
+    }
+    .load-more-bar .muted-small { font-size: 0.7rem; color: #71717a; margin-left: 8px; }
 
     .ext-badge {
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;

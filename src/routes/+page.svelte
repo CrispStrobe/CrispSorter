@@ -29,6 +29,23 @@
         return { total: items.length, counts };
     });
 
+    // Catalog (DB) row count -- total rows currently indexed across all
+    // levels. Refreshed on a 4 s timer so it reflects ingest progress
+    // without hammering Rust. Cheap query (LanceDB count_rows).
+    let dbDocCount = $state(0);
+    let statsExpanded = $state(false);
+    function shortNumber(n: number): string {
+        if (n < 1000) return n.toLocaleString();
+        if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, '') + 'k';
+        return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0).replace(/\.0$/, '') + 'M';
+    }
+    async function refreshDbStats() {
+        try {
+            const stats = await invoke<{ doc_count: number }>('index_stats');
+            dbDocCount = stats?.doc_count ?? 0;
+        } catch { /* index disabled or not yet initialised */ }
+    }
+
     onMount(() => {
         let cleanup = () => {};
         (async () => {
@@ -179,7 +196,15 @@
                 flog('warn', `[boot] Index restore failed: ${e?.message ?? e}`);
             }
 
+            // Initial DB stats + 4 s refresh tick. Cheap (single LanceDB
+            // count_rows) so even unconditional polling is OK; we'd switch
+            // to event-driven (push from Rust on every ingest) once the
+            // ingest pipeline gains a `dbcount-changed` Tauri event.
+            await refreshDbStats();
+            const dbStatsTimer = setInterval(refreshDbStats, 4000);
+
             cleanup = () => {
+                clearInterval(dbStatsTimer);
                 unlistenWatch();
                 invoke('watch_stop_all').catch(() => {});
             };
@@ -224,19 +249,31 @@
         </div>
 
         <div class="nav-bottom">
-            {#if batchStats.total > 0}
-                <div class="batch-stats" title="Files in current batch">
+            {#if batchStats.total > 0 || dbDocCount > 0}
+                <button class="batch-stats stats-toggle"
+                    onclick={() => statsExpanded = !statsExpanded}
+                    title={statsExpanded ? 'Click to collapse' : 'Click for breakdown'}>
                     {#if !navCollapsed}
-                        <div class="stats-total">{i18n.t.batch.stats_files.replace('{count}', batchStats.total.toString())}</div>
-                        <div class="stats-breakdown">
-                            {#each Object.entries(batchStats.counts).sort((a,b) => b[1]-a[1]) as [ext, count]}
-                                <span class="stat-ext">{count} {ext}</span>
-                            {/each}
+                        <div class="stats-summary">
+                            {#if batchStats.total > 0}
+                                <span class="stats-pair"><span class="stats-key">Stapel:</span> <span class="stats-val">{shortNumber(batchStats.total)}</span></span>
+                            {/if}
+                            {#if dbDocCount > 0}
+                                <span class="stats-sep" aria-hidden="true">·</span>
+                                <span class="stats-pair"><span class="stats-key">DB:</span> <span class="stats-val">{shortNumber(dbDocCount)}</span></span>
+                            {/if}
                         </div>
+                        {#if statsExpanded && batchStats.total > 0}
+                            <div class="stats-breakdown">
+                                {#each Object.entries(batchStats.counts).sort((a,b) => b[1]-a[1]) as [ext, count]}
+                                    <span class="stat-ext">{count} {ext}</span>
+                                {/each}
+                            </div>
+                        {/if}
                     {:else}
-                        <span class="stats-badge-collapsed">{batchStats.total}</span>
+                        <span class="stats-badge-collapsed">{shortNumber(batchStats.total + dbDocCount)}</span>
                     {/if}
-                </div>
+                </button>
             {/if}
             <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}>
                 <Terminal size={20} />
@@ -404,8 +441,21 @@
 
     .nav-separator { height: 1px; background: #27272a; margin: 8px 16px; }
     .batch-stats { padding: 8px 16px; margin-bottom: 8px; border-top: 1px solid #27272a; }
-    .stats-total { font-size: 0.75rem; font-weight: 700; color: #a1a1aa; white-space: nowrap; }
-    .stats-breakdown { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .stats-toggle {
+        width: 100%; background: transparent; border: none; color: inherit;
+        text-align: left; cursor: pointer; padding: 8px 16px; margin-bottom: 8px;
+        border-top: 1px solid #27272a;
+    }
+    .stats-toggle:hover { background: #1f1f23; }
+    .stats-summary {
+        display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+        font-size: 0.75rem; color: #a1a1aa; white-space: nowrap;
+    }
+    .stats-pair { display: inline-flex; gap: 4px; align-items: baseline; }
+    .stats-key { font-weight: 600; color: #71717a; }
+    .stats-val { font-weight: 700; color: #e4e4e7; }
+    .stats-sep { color: #3f3f46; }
+    .stats-breakdown { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
     .stat-ext { font-size: 0.65rem; background: #27272a; border-radius: 3px; padding: 1px 5px; color: #71717a; text-transform: uppercase; font-weight: 600; }
     .stats-badge-collapsed { display: flex; align-items: center; justify-content: center; width: 28px; height: 20px; background: #3b82f633; border-radius: 4px; font-size: 0.7rem; font-weight: 700; color: #60a5fa; margin: 0 auto; }
 </style>

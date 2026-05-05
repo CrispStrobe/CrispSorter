@@ -249,18 +249,25 @@ pub async fn index_query_documents(
     page: super::schema::PageSpec,
 ) -> Result<super::schema::DocumentPage, String> {
     let lock = state.index.lock().await;
-    if !lock.config.enabled {
-        return Ok(super::schema::DocumentPage {
-            rows: vec![],
-            next_cursor: None,
-            total_estimate: 0,
-        });
-    }
-    let local = lock
-        .local
-        .as_ref()
-        .ok_or("Document query is only available for the local backend")?
-        .clone();
+    let local = match (lock.config.enabled, lock.local.as_ref()) {
+        // Index disabled OR not yet initialised on the local backend:
+        // hand back an empty page silently rather than an error. The
+        // Übersicht pane polls this on every chip change and during
+        // app boot, before init_index has finished -- erroring there
+        // would surface as a wave of "Document query is only available
+        // for the local backend" log lines instead of a clean empty
+        // state. Remote-backend mode also lands here (no local
+        // LocalIndex); browsing the remote catalog isn't supported
+        // yet (P9 step 8 territory).
+        (false, _) | (true, None) => {
+            return Ok(super::schema::DocumentPage {
+                rows: vec![],
+                next_cursor: None,
+                total_estimate: 0,
+            });
+        }
+        (true, Some(l)) => l.clone(),
+    };
     drop(lock);
 
     local

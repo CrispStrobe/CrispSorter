@@ -201,8 +201,14 @@ impl SearchFilters {
 /// matches every documents-table row (modulo the implicit
 /// `chunk_index <= 0` predicate that selects L1 metadata rows + L3
 /// representative rows, exactly like `list_documents`).
+///
+/// Every field is `#[serde(default)]` so the frontend can omit any
+/// field it doesn't want to constrain. Without this, the frontend has
+/// to send a complete payload with empty arrays / nulls everywhere or
+/// the Tauri command fails with `missing field 'ext'` etc. -- which
+/// is exactly the bug we surfaced as "Übersicht stuck on Lade…".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct DocumentFilter {
     /// Match rows whose `metadata_json.parent_dir` starts with this.
     /// Empty / `None` = any folder.
