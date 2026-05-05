@@ -1,4 +1,4 @@
-# CrispSorter Recompile and Run
+﻿# CrispSorter Recompile and Run
 #
 # Runs the dev server. If the CrispEmbed sibling repo and a staged prebuilt
 # C++ library are both present, this script automatically hands off to
@@ -39,7 +39,7 @@ $CrispEmbedReady = (Test-Path $SiblingCargo) -and ((Test-Path $DefaultPrebuilt) 
 if ($CrispEmbedReady -and -not $NoCrispEmbed) {
     Write-Host "CrispEmbed source + prebuilt detected -- delegating to enable-crispembed.ps1." -ForegroundColor Cyan
     Write-Host "(Pass --no-crispembed to skip and use the plain build.)" -ForegroundColor DarkGray
-    # Hashtable splat (NOT array splat — array splat is positional and
+    # Hashtable splat (NOT array splat -- array splat is positional and
     # collides with the `[ValidateSet]`-attributed `$Mode` parameter).
     $delegate = @{
         Mode         = 'dev'

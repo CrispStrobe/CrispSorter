@@ -1,4 +1,4 @@
-# CrispSorter Environment Setup
+﻿# CrispSorter Environment Setup
 # Dynamically configures MSVC, CUDA, and Rust paths without hardcoded usernames.
 
 $ProjectRoot = $PSScriptRoot
@@ -57,7 +57,7 @@ $env:PATH = $CleanedPath
 # spawns `protoc` AND requires the well-known `.proto` files
 # (`google/protobuf/empty.proto` etc.) that ship in protoc's `include/`
 # directory. Each build script runs in its own process, so a `PROTOC`
-# env var set inside our own `build.rs` doesn't propagate — the only
+# env var set inside our own `build.rs` doesn't propagate -- the only
 # reliable fix is to have `protoc.exe` on PATH BEFORE cargo starts.
 #
 # Install layout matches the upstream protoc release:
@@ -65,7 +65,7 @@ $env:PATH = $CleanedPath
 #     gh_temp\protoc\include\google\protobuf\*.proto
 #
 # protoc finds its bundled `include/` automatically by looking at
-# `<exe-dir>\..\include\` — that's why we keep them next to each other.
+# `<exe-dir>\..\include\` -- that's why we keep them next to each other.
 $ProtocRoot      = Join-Path $ProjectRoot "gh_temp\protoc"
 $ProtocBinDir    = Join-Path $ProtocRoot  "bin"
 $ProtocCachedExe = Join-Path $ProtocBinDir "protoc.exe"
@@ -87,7 +87,7 @@ if (-not $ProtocOnPath -and (-not (Test-Path $ProtocCachedExe) -or -not $ProtocI
         Remove-Item -Force $ZipPath
         Write-Host "Installed protoc $ProtocVersion at $ProtocBinDir" -ForegroundColor Green
     } catch {
-        Write-Host "WARNING: failed to download protoc — lance-encoding compile will fail. Install protoc manually and re-run." -ForegroundColor Red
+        Write-Host "WARNING: failed to download protoc -- lance-encoding compile will fail. Install protoc manually and re-run." -ForegroundColor Red
         Write-Host "Error: $_" -ForegroundColor Red
     }
 }

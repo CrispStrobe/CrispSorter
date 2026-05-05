@@ -1,4 +1,4 @@
-# CrispSorter Production Build (EXE)
+﻿# CrispSorter Production Build (EXE)
 #
 # Builds the production-ready optimized executable. If the CrispEmbed
 # sibling repo and a staged prebuilt C++ library are both present, this
@@ -46,7 +46,7 @@ if ($CrispEmbedReady -and -not $NoCrispEmbed) {
     if ($Clean) { $delegate['Clean'] = $true }
     & (Join-Path $ProjectRoot 'enable-crispembed.ps1') @delegate
 
-    # Skip the success-reporting branch below — enable-crispembed has
+    # Skip the success-reporting branch below -- enable-crispembed has
     # already handed off to `npm run tauri build`.
     return
 }
