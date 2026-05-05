@@ -4,7 +4,11 @@ import path from 'path';
 
 const STATIC_DIR = path.resolve('static');
 const OUTPUT_FILE = path.join(STATIC_DIR, 'licenses.json');
-const ALLOW_MISSING = process.env.LICENSES_ALLOW_MISSING === '1';
+// Default to permissive: a missing dev tool (cargo-license, license-report)
+// should not break a production build. CI / release pipelines that *want*
+// the build to fail when license metadata is incomplete can set
+// LICENSES_REQUIRE=1.
+const REQUIRE_ALL = process.env.LICENSES_REQUIRE === '1';
 
 console.log('Generating license reports...');
 
@@ -12,26 +16,37 @@ if (!existsSync(STATIC_DIR)) {
     mkdirSync(STATIC_DIR);
 }
 
+/** Returns the command's stdout, or null if it could not be run. Only throws
+ *  when LICENSES_REQUIRE=1. Treats "command not found" / ENOENT identically
+ *  to any other non-zero exit. */
 function runOrFail(label, cmd, options = {}) {
     try {
-        return execSync(cmd, { encoding: 'utf8', ...options });
+        return execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options });
     } catch (e) {
-        if (ALLOW_MISSING) {
-            console.warn(
-                `[licenses] Skipping ${label} — command failed and LICENSES_ALLOW_MISSING=1.`
-            );
-            console.warn(`[licenses] ${e.message}`);
-            return null;
+        const stderr = (e.stderr || '').toString().trim();
+        const looksLikeMissingTool =
+            e.code === 'ENOENT' ||
+            /is not recognized|nicht gefunden|command not found/i.test(stderr);
+
+        if (REQUIRE_ALL) {
+            console.error(`[licenses] ${label} failed: ${cmd}`);
+            if (label === 'cargo-license') {
+                console.error('\n  Install it with:  cargo install cargo-license\n');
+            }
+            throw e;
         }
-        console.error(`[licenses] ${label} failed: ${cmd}`);
-        console.error(
-            label === 'cargo-license'
-                ? '\n' +
-                      '  Install it with:  cargo install cargo-license\n' +
-                      '  (Or re-run with LICENSES_ALLOW_MISSING=1 to skip backend deps.)\n'
-                : ''
-        );
-        throw e;
+
+        if (looksLikeMissingTool) {
+            console.warn(
+                `[licenses] ${label}: tool not installed — skipping. ` +
+                `(install \`cargo install ${label === 'cargo-license' ? 'cargo-license' : label}\` ` +
+                `or set LICENSES_REQUIRE=1 to make this fatal.)`
+            );
+        } else {
+            console.warn(`[licenses] ${label}: ${cmd} failed — continuing without it.`);
+            if (stderr) console.warn(`[licenses] stderr: ${stderr}`);
+        }
+        return null;
     }
 }
 

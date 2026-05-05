@@ -1,2 +1,14 @@
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+# Per-target Rust flags.
+#
+# IMPORTANT: do NOT set `target-feature=+crt-static` for the MSVC target.
+# The `ort` crate's pre-built `libort_sys` (downloaded by the
+# `ort-download-binaries-native-tls` feature) is built against the dynamic
+# UCRT, so it imports symbols like `__imp___tzname`, `__imp___timezone`,
+# `__imp_frexp`, `__imp_erf`, `__imp_expm1f` from `ucrt.dll`. Forcing static
+# CRT in our crate causes the linker to fall back to `libucrt.lib`, which
+# does not export those `__imp_*`-prefixed names — yielding LNK2019 / LNK1120
+# at link time. Tauri's installer bundles the VC redistributable, so a
+# dynamically-linked CRT is the safe choice here.
+#
+# (If you really want a single-file static binary, you would also have to
+#  build `ort` from source with `+crt-static`, not just our own crate.)
