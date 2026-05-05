@@ -1086,6 +1086,7 @@ pub fn run() {
             index::tauri_commands::index_delete_document,
             index::tauri_commands::index_capabilities,
             index::tauri_commands::index_model_download_mb,
+            index::tauri_commands::index_benchmark_embedder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

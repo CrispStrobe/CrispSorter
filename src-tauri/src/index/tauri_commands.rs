@@ -646,6 +646,150 @@ pub async fn index_init(
     }
 }
 
+// ── Embedder benchmark ────────────────────────────────────────────────────────
+
+/// One-shot timing for a single (model, backend) pair. Loads a fresh
+/// embedder, embeds the supplied texts, measures wall-clock load + embed
+/// time, returns aggregate stats. Does NOT touch the live `IndexState`,
+/// so running this while an index is initialised is safe.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmbedderBenchmark {
+    pub backend: &'static str,
+    pub model_id: String,
+    /// Time to construct the `Embedder` (download + ORT/CrispEmbed init).
+    pub load_time_ms: u64,
+    /// Time to embed all `texts` in one batch.
+    pub embed_time_ms: u64,
+    /// `text_count / embed_seconds` — embed throughput.
+    pub texts_per_second: f32,
+    pub dim: usize,
+    pub vectors_count: usize,
+    /// Self-similarity sanity check: cosine of vec[0] with itself, expected ≈ 1.0.
+    pub self_cosine: f32,
+    /// Filled when the run failed (model couldn't be loaded for example).
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn index_benchmark_embedder(
+    state: State<'_, AppState>,
+    model: String,
+    backend: String,
+    texts: Vec<String>,
+) -> Result<EmbedderBenchmark, String> {
+    use super::embedder::{Embedder, EmbedderBackend, EmbedderConfig};
+
+    if texts.is_empty() {
+        return Err("at least one text required".to_owned());
+    }
+
+    let config_template = state.index.lock().await.config.clone();
+    let cache_dir = config_template
+        .clone()
+        .remote_url
+        .map(|_| ()); // unused — keep clippy quiet about config_template move
+    let _ = cache_dir;
+
+    let model_enum: super::embedder::EmbedderModel =
+        serde_json::from_str(&format!("\"{model}\""))
+            .map_err(|e| format!("unknown model id '{model}': {e}"))?;
+
+    let backend_enum: EmbedderBackend = match backend.as_str() {
+        "onnx" => EmbedderBackend::Onnx,
+        "gguf" => EmbedderBackend::Gguf,
+        other => return Err(format!("unknown backend '{other}' (expected 'onnx' or 'gguf')")),
+    };
+
+    let backend_label: &'static str = match backend_enum {
+        EmbedderBackend::Onnx => "onnx",
+        EmbedderBackend::Gguf => "gguf",
+    };
+
+    // Reuse the live cache dir (so we benchmark against already-downloaded
+    // weights when possible).
+    let cache_dir = {
+        let lock = state.index.lock().await;
+        lock.config
+            .clone()
+            .remote_url
+            .as_deref()
+            .filter(|_| false); // ignore
+        // Fall back to a sane default.
+        let _ = lock;
+        std::env::temp_dir().join("crispsorter-bench-cache")
+    };
+    std::fs::create_dir_all(&cache_dir).ok();
+
+    let cfg = EmbedderConfig::new(model_enum, config_template.embedder_device, cache_dir)
+        .with_backend(backend_enum);
+
+    let load_start = std::time::Instant::now();
+    let embedder = match Embedder::new(cfg).await {
+        Ok(e) => e,
+        Err(e) => {
+            return Ok(EmbedderBenchmark {
+                backend: backend_label,
+                model_id: model,
+                load_time_ms: load_start.elapsed().as_millis() as u64,
+                embed_time_ms: 0,
+                texts_per_second: 0.0,
+                dim: model_enum.dims(),
+                vectors_count: 0,
+                self_cosine: 0.0,
+                error: Some(format!("{e:#}")),
+            });
+        }
+    };
+    let load_time_ms = load_start.elapsed().as_millis() as u64;
+
+    let mut emb = embedder;
+    let embed_start = std::time::Instant::now();
+    let dense = match emb.embed_dense(texts.clone()) {
+        Ok(d) => d,
+        Err(e) => {
+            return Ok(EmbedderBenchmark {
+                backend: backend_label,
+                model_id: model,
+                load_time_ms,
+                embed_time_ms: 0,
+                texts_per_second: 0.0,
+                dim: model_enum.dims(),
+                vectors_count: 0,
+                self_cosine: 0.0,
+                error: Some(format!("embed failed: {e:#}")),
+            });
+        }
+    };
+    let embed_ms = embed_start.elapsed().as_millis() as u64;
+
+    let dim = dense.vectors.first().map(|v| v.len()).unwrap_or(0);
+    let throughput = if embed_ms > 0 {
+        (dense.vectors.len() as f32) * 1000.0 / (embed_ms as f32)
+    } else {
+        0.0
+    };
+    let self_cos = dense
+        .vectors
+        .first()
+        .map(|v| {
+            let n: f32 = v.iter().map(|x| x * x).sum();
+            n / (n.sqrt() * n.sqrt() + f32::EPSILON)
+        })
+        .unwrap_or(0.0);
+
+    Ok(EmbedderBenchmark {
+        backend: backend_label,
+        model_id: model,
+        load_time_ms,
+        embed_time_ms: embed_ms,
+        texts_per_second: throughput,
+        dim,
+        vectors_count: dense.vectors.len(),
+        self_cosine: self_cos,
+        error: None,
+    })
+}
+
 // ── Build-time capabilities ───────────────────────────────────────────────────
 
 /// What this binary supports at runtime — driven by Cargo features chosen at

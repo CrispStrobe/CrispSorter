@@ -133,6 +133,23 @@ pub enum EmbedderModel {
     /// nomic-ai/nomic-embed-text-v1.5 — 768d, 8192 ctx, English, NomicBERT.
     /// Long context, half the size of bge-large.
     NomicEmbedTextV15,
+
+    // ── Small / fast / recommended models (CrispEmbed-compatible) ────────────
+    /// BAAI/bge-small-en-v1.5 — 384d, English, BERT (~130 MB). Fast default.
+    BgeSmallEnV15,
+
+    /// BAAI/bge-base-en-v1.5 — 768d, English, BERT (~440 MB). Solid mid-size.
+    BgeBaseEnV15,
+
+    /// sentence-transformers/all-MiniLM-L6-v2 — 384d, English (~90 MB).
+    /// CrispEmbed reports 9.5x faster than fastembed-ONNX on this model.
+    AllMiniLmL6V2,
+
+    /// intfloat/multilingual-e5-small — 384d, multilingual XLM-R (~470 MB).
+    MultilingualE5Small,
+
+    /// intfloat/multilingual-e5-base — 768d, multilingual XLM-R (~1.1 GB).
+    MultilingualE5Base,
 }
 
 impl EmbedderModel {
@@ -187,16 +204,26 @@ impl EmbedderModel {
             EmbedderModel::MultilingualE5Large => "Multilingual E5 Large (1024d, 512 ctx, 100+ langs)",
             EmbedderModel::MxbaiEmbedLargeV1 => "mxbai-embed-large-v1 (1024d, 512 ctx, English)",
             EmbedderModel::NomicEmbedTextV15 => "Nomic Embed Text v1.5 (768d, 8k ctx, English)",
+            EmbedderModel::BgeSmallEnV15 => "BGE Small EN v1.5 (384d, English, fast, ~130 MB)",
+            EmbedderModel::BgeBaseEnV15 => "BGE Base EN v1.5 (768d, English, ~440 MB)",
+            EmbedderModel::AllMiniLmL6V2 => "all-MiniLM-L6-v2 (384d, English, fastest, ~90 MB)",
+            EmbedderModel::MultilingualE5Small => "Multilingual E5 Small (384d, 100+ langs, ~470 MB)",
+            EmbedderModel::MultilingualE5Base => "Multilingual E5 Base (768d, 100+ langs, ~1.1 GB)",
         }
     }
 
     pub fn dims(&self) -> usize {
         match self {
-            EmbedderModel::MultilingualMiniLm => 384,
+            EmbedderModel::MultilingualMiniLm
+            | EmbedderModel::BgeSmallEnV15
+            | EmbedderModel::AllMiniLmL6V2
+            | EmbedderModel::MultilingualE5Small => 384,
             EmbedderModel::JinaV2Small => 512,
-            EmbedderModel::JinaV2Base => 768,
-            EmbedderModel::JinaV5Nano => 768,
-            EmbedderModel::NomicEmbedTextV15 => 768,
+            EmbedderModel::JinaV2Base
+            | EmbedderModel::JinaV5Nano
+            | EmbedderModel::NomicEmbedTextV15
+            | EmbedderModel::BgeBaseEnV15
+            | EmbedderModel::MultilingualE5Base => 768,
             _ => 1024,
         }
     }
@@ -231,7 +258,12 @@ impl EmbedderModel {
             | EmbedderModel::Octen06bInt8FullLocal => 32768,
             EmbedderModel::BgeLargeEnV15
             | EmbedderModel::MultilingualE5Large
-            | EmbedderModel::MxbaiEmbedLargeV1 => 512,
+            | EmbedderModel::MxbaiEmbedLargeV1
+            | EmbedderModel::BgeSmallEnV15
+            | EmbedderModel::BgeBaseEnV15
+            | EmbedderModel::AllMiniLmL6V2
+            | EmbedderModel::MultilingualE5Small
+            | EmbedderModel::MultilingualE5Base => 512,
             EmbedderModel::NomicEmbedTextV15 => 8192,
         }
     }
@@ -274,6 +306,11 @@ impl EmbedderModel {
             EmbedderModel::MultilingualE5Large => 2240, // model.onnx + .onnx_data
             EmbedderModel::MxbaiEmbedLargeV1 => 1300,
             EmbedderModel::NomicEmbedTextV15 => 550,
+            EmbedderModel::BgeSmallEnV15 => 130,
+            EmbedderModel::BgeBaseEnV15 => 440,
+            EmbedderModel::AllMiniLmL6V2 => 90,
+            EmbedderModel::MultilingualE5Small => 470,
+            EmbedderModel::MultilingualE5Base => 1100,
         }
     }
 
@@ -287,6 +324,11 @@ impl EmbedderModel {
                 | EmbedderModel::MultilingualE5Large
                 | EmbedderModel::MxbaiEmbedLargeV1
                 | EmbedderModel::NomicEmbedTextV15
+                | EmbedderModel::BgeSmallEnV15
+                | EmbedderModel::BgeBaseEnV15
+                | EmbedderModel::AllMiniLmL6V2
+                | EmbedderModel::MultilingualE5Small
+                | EmbedderModel::MultilingualE5Base
         )
     }
 
@@ -330,6 +372,11 @@ impl EmbedderModel {
             MultilingualE5Large => "multilingual-e5-large",
             MxbaiEmbedLargeV1 => "mxbai-embed-large-v1",
             NomicEmbedTextV15 => "nomic-embed-text-v1.5",
+            BgeSmallEnV15 => "bge-small-en-v1.5",
+            BgeBaseEnV15 => "bge-base-en-v1.5",
+            AllMiniLmL6V2 => "all-MiniLM-L6-v2",
+            MultilingualE5Small => "multilingual-e5-small",
+            MultilingualE5Base => "multilingual-e5-base",
             // Models below only have GGUF (CrispEmbed) — no ONNX variant in
             // the EmbedderModel enum yet, so they're handled by the wildcard.
             _ => return None,
@@ -560,7 +607,12 @@ impl EmbedderModel {
             | EmbedderModel::BgeLargeEnV15
             | EmbedderModel::MultilingualE5Large
             | EmbedderModel::MxbaiEmbedLargeV1
-            | EmbedderModel::NomicEmbedTextV15 => None,
+            | EmbedderModel::NomicEmbedTextV15
+            | EmbedderModel::BgeSmallEnV15
+            | EmbedderModel::BgeBaseEnV15
+            | EmbedderModel::AllMiniLmL6V2
+            | EmbedderModel::MultilingualE5Small
+            | EmbedderModel::MultilingualE5Base => None,
         }
     }
 
@@ -632,6 +684,47 @@ impl EmbedderModel {
                     v
                 },
             )),
+            EmbedderModel::BgeSmallEnV15 => Some((
+                "Xenova/bge-small-en-v1.5",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::BgeBaseEnV15 => Some((
+                "Xenova/bge-base-en-v1.5",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::AllMiniLmL6V2 => Some((
+                "Qdrant/all-MiniLM-L6-v2-onnx",
+                {
+                    // Qdrant variant has tokenizer at the root, no `onnx/` prefix
+                    let mut v = vec!["model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::MultilingualE5Small => Some((
+                "intfloat/multilingual-e5-small",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::MultilingualE5Base => Some((
+                "intfloat/multilingual-e5-base",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
             _ => None,
         }
     }
@@ -644,6 +737,11 @@ impl EmbedderModel {
             EmbedderModel::MultilingualE5Large => EmbeddingModel::MultilingualE5Large,
             EmbedderModel::MxbaiEmbedLargeV1 => EmbeddingModel::MxbaiEmbedLargeV1,
             EmbedderModel::NomicEmbedTextV15 => EmbeddingModel::NomicEmbedTextV15,
+            EmbedderModel::BgeSmallEnV15 => EmbeddingModel::BGESmallENV15,
+            EmbedderModel::BgeBaseEnV15 => EmbeddingModel::BGEBaseENV15,
+            EmbedderModel::AllMiniLmL6V2 => EmbeddingModel::AllMiniLML6V2,
+            EmbedderModel::MultilingualE5Small => EmbeddingModel::MultilingualE5Small,
+            EmbedderModel::MultilingualE5Base => EmbeddingModel::MultilingualE5Base,
             _ => EmbeddingModel::BGEM3,
         }
     }

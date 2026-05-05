@@ -220,7 +220,17 @@
         // Added 2026-05 — verified F32 cos > 0.9999 vs FP32 per CrispEmbed compat table.
         'bge_large_en_v15', 'multilingual_e5_large',
         'mxbai_embed_large_v1', 'nomic_embed_text_v15',
+        'bge_small_en_v15', 'bge_base_en_v15',
+        'all_mini_lm_l6_v2',
+        'multilingual_e5_small', 'multilingual_e5_base',
     ]);
+
+    /** Models with a non-commercial license. Selecting one prompts a
+     *  confirmation dialog; declining persists the model id in
+     *  `nonCommercialDeclined` and disables that <option> permanently
+     *  (until cleared). */
+    const NON_COMMERCIAL_MODELS = new Set(['jina_nano']);
+    let nonCommercialDeclined = $state<Set<string>>(new Set());
     function supportsGguf(uiModel: string): boolean {
         return GGUF_CAPABLE_MODELS.has(uiModel);
     }
@@ -244,16 +254,73 @@
      *  downloads ~X MB" hint. */
     let modelDownloadMb = $state(0);
 
+    /** Whether `m` can be currently selected, given:
+     *   - the chosen Inference Engine (GGUF -> only GGUF_CAPABLE_MODELS),
+     *   - whether the user has previously declined the NC license dialog
+     *     for this model (declined models stay greyed out until reset). */
+    function isModelAvailable(m: string): boolean {
+        if (nonCommercialDeclined.has(m)) return false;
+        if (indexEmbedderBackend === 'gguf' && !GGUF_CAPABLE_MODELS.has(m)) return false;
+        return true;
+    }
+
+    /** Optional suffix shown next to a model name in the dropdown to signal
+     *  its license / state. */
+    function ncLabelSuffix(m: string): string {
+        if (nonCommercialDeclined.has(m)) return ' (declined — re-allow below)';
+        if (NON_COMMERCIAL_MODELS.has(m)) return ' (NC license)';
+        return '';
+    }
+
+    async function persistNonCommercialDeclines() {
+        await saveSetting('nonCommercialDeclined', Array.from(nonCommercialDeclined));
+    }
+
+    function resetNonCommercialDeclines() {
+        nonCommercialDeclined = new Set();
+        persistNonCommercialDeclines();
+    }
+
+    /** Switch the Inference Engine. If the currently-selected model isn't
+     *  available on the new engine, auto-pick the first one that is so the
+     *  dropdown isn't left in a phantom state. */
+    function onSelectEngine(engine: 'onnx' | 'gguf') {
+        indexEmbedderBackend = engine;
+        if (!isModelAvailable(indexEmbedderModel)) {
+            // Find the first available option in the dropdown order.
+            const candidates = ['bge_m3', 'all_mini_lm_l6_v2', 'bge_small_en_v15',
+                'multilingual_e5_small', 'bge_base_en_v15', 'multilingual_e5_base',
+                'nomic_embed_text_v15', 'bge_large_en_v15', 'multilingual_e5_large',
+                'mxbai_embed_large_v1', 'octen', 'pixie_q', 'snowflake_l_int8',
+                'jina_nano', 'multilingual_mini_lm'];
+            const next = candidates.find(c => isModelAvailable(c));
+            if (next) {
+                indexEmbedderModel = next;
+                refreshModelDownloadSize();
+            }
+        }
+    }
+
     async function handleEmbedderChange(e: Event) {
-        const val = (e.target as HTMLSelectElement).value;
-        if (val === 'jina_nano') {
+        const sel = e.target as HTMLSelectElement;
+        const val = sel.value;
+        // Block declined NC models — the <option> is disabled, but defend
+        // against scripted change events anyway.
+        if (nonCommercialDeclined.has(val)) {
+            sel.value = indexEmbedderModel;
+            return;
+        }
+        if (NON_COMMERCIAL_MODELS.has(val) && val !== indexEmbedderModel) {
             const confirmed = await ask(i18n.t.settings.index.non_commercial_confirm, {
-                title: 'Jina-v5 License Confirmation',
+                title: 'Non-Commercial License Confirmation',
                 kind: 'warning'
             });
             if (!confirmed) {
-                // Revert to previous value or default if user cancels
-                (e.target as HTMLSelectElement).value = indexEmbedderModel;
+                // Persist the decline so the option goes greyed out and
+                // can't be saved into a Catalog without re-confirming.
+                nonCommercialDeclined = new Set([...nonCommercialDeclined, val]);
+                await persistNonCommercialDeclines();
+                sel.value = indexEmbedderModel;
                 return;
             }
         }
@@ -375,6 +442,73 @@
 
     // Benchmarking
     let benchProviders = $state<string[]>([]);
+
+    // Embedding benchmark state (FastEmbed vs CrispEmbed for the same model).
+    interface EmbedderBenchResult {
+        backend: 'onnx' | 'gguf';
+        model_id: string;
+        load_time_ms: number;
+        embed_time_ms: number;
+        texts_per_second: number;
+        dim: number;
+        vectors_count: number;
+        self_cosine: number;
+        error: string | null;
+    }
+    let embedderBenchModel    = $state('bge_small_en_v15');
+    let embedderBenchTexts    = $state('');
+    let embedderBenchRunning  = $state(false);
+    let embedderBenchResults  = $state<EmbedderBenchResult[]>([]);
+
+    /** Default 8-text corpus across English + German. Mirrors the eval set
+     *  CrispEmbed publishes its compatibility numbers on. */
+    const DEFAULT_BENCH_TEXTS = [
+        'A small step for a man, a giant leap for mankind.',
+        'Climate models suggest accelerating polar ice loss.',
+        'The composition of black holes remains poorly understood.',
+        'A neural network learns from gradients, not rules.',
+        'Die Theorie der Relativität wurde 1905 veröffentlicht.',
+        'Diese Bibliothek umfasst dreitausend mittelalterliche Manuskripte.',
+        'Schubert komponierte die Winterreise im Jahr 1827.',
+        'Die Quantenmechanik beschreibt subatomare Phänomene.',
+    ];
+
+    async function runEmbedderBenchmark() {
+        if (embedderBenchRunning) return;
+        embedderBenchRunning = true;
+        embedderBenchResults = [];
+        const texts = embedderBenchTexts.trim()
+            ? embedderBenchTexts.split('\n').map(s => s.trim()).filter(Boolean)
+            : DEFAULT_BENCH_TEXTS;
+        const modelId = indexEmbedderToRust(embedderBenchModel);
+        const engines: Array<'onnx' | 'gguf'> = crispEmbedCompiledIn ? ['onnx', 'gguf'] : ['onnx'];
+        try {
+            for (const engine of engines) {
+                try {
+                    const result = await invoke<EmbedderBenchResult>('index_benchmark_embedder', {
+                        model: modelId,
+                        backend: engine,
+                        texts,
+                    });
+                    embedderBenchResults = [...embedderBenchResults, result];
+                } catch (e: any) {
+                    embedderBenchResults = [...embedderBenchResults, {
+                        backend: engine,
+                        model_id: modelId,
+                        load_time_ms: 0,
+                        embed_time_ms: 0,
+                        texts_per_second: 0,
+                        dim: 0,
+                        vectors_count: 0,
+                        self_cosine: 0,
+                        error: String(e?.message ?? e),
+                    }];
+                }
+            }
+        } finally {
+            embedderBenchRunning = false;
+        }
+    }
     let benchModels = $state<Record<string, string>>({});
     let benchDocuments = $state<string[]>([]);
     let benchRuns = $state(1);
@@ -461,6 +595,8 @@
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
+        const declinedArr  = (await getSetting('nonCommercialDeclined', [])) as string[];
+        nonCommercialDeclined = new Set(declinedArr ?? []);
         // Sync saved config into the backend
         try {
             await invoke('index_get_config').then(() => {}).catch(() => {});
@@ -723,6 +859,11 @@
             multilingual_e5_large:        'multilingual-e5-large',
             mxbai_embed_large_v1:         'mxbai-embed-large-v1',
             nomic_embed_text_v15:         'nomic-embed-text-v15',
+            bge_small_en_v15:             'bge-small-en-v15',
+            bge_base_en_v15:              'bge-base-en-v15',
+            all_mini_lm_l6_v2:            'all-mini-lm-l6-v2',
+            multilingual_e5_small:        'multilingual-e5-small',
+            multilingual_e5_base:         'multilingual-e5-base',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -1539,6 +1680,77 @@
                 </div>
             {/if}
 
+            <!-- Embedding Benchmark: ONNX vs GGUF for the same model -->
+            <div class="section-card">
+                <div class="header" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
+                    <h2 style="font-size:1rem; color:#a1a1aa; margin:0;"><Cpu size={16} /> Embedding Benchmark (FastEmbed vs CrispEmbed)</h2>
+                </div>
+                <p class="hint" style="margin-bottom:12px;">
+                    Loads a fresh embedder for each engine, embeds a fixed corpus once, and reports load time, embed throughput, and dimension. Does not affect the running index. CrispEmbed must be linked into the build (run <code>.\enable-crispembed.ps1</code> if greyed out).
+                </p>
+
+                <div class="bench-config-row">
+                    <span class="bench-config-label">Model</span>
+                    <select bind:value={embedderBenchModel} class="styled-select" style="flex:1;">
+                        <option value="bge_small_en_v15">BGE Small EN v1.5 (384d, fast)</option>
+                        <option value="all_mini_lm_l6_v2">all-MiniLM-L6-v2 (384d, fastest)</option>
+                        <option value="bge_base_en_v15">BGE Base EN v1.5 (768d)</option>
+                        <option value="bge_large_en_v15">BGE Large EN v1.5 (1024d)</option>
+                        <option value="multilingual_e5_small">Multilingual E5 Small (384d)</option>
+                        <option value="multilingual_e5_base">Multilingual E5 Base (768d)</option>
+                        <option value="nomic_embed_text_v15">Nomic Embed Text v1.5 (768d, 8k ctx)</option>
+                    </select>
+                </div>
+
+                <div class="bench-config-row">
+                    <span class="bench-config-label">Texts</span>
+                    <textarea class="bench-prompt-input" rows="3"
+                        bind:value={embedderBenchTexts}
+                        placeholder="One text per line. Leave empty for the built-in 8-line default corpus."></textarea>
+                </div>
+
+                <button class="action-btn primary large-bench-btn" onclick={runEmbedderBenchmark}
+                    disabled={embedderBenchRunning}>
+                    {#if embedderBenchRunning}<Loader2 size={20} class="loader-spin" />{:else}<Play size={20} />{/if}
+                    <span>Run Embedding Benchmark</span>
+                </button>
+
+                {#if embedderBenchResults.length > 0}
+                    <table class="bench-table" style="margin-top:14px;">
+                        <thead>
+                            <tr>
+                                <th>Engine</th>
+                                <th>Model</th>
+                                <th class="bench-num">Load (ms)</th>
+                                <th class="bench-num">Embed (ms)</th>
+                                <th class="bench-num">Throughput (texts/s)</th>
+                                <th class="bench-num">Dim</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {#each embedderBenchResults as r}
+                                <tr>
+                                    <td>{r.backend === 'onnx' ? 'FastEmbed (ONNX)' : 'CrispEmbed (GGUF)'}</td>
+                                    <td><div class="bench-model">{r.model_id}</div></td>
+                                    <td class="bench-num">{r.load_time_ms.toLocaleString()}</td>
+                                    <td class="bench-num">{r.error ? '—' : r.embed_time_ms.toLocaleString()}</td>
+                                    <td class="bench-num">{r.error ? '—' : r.texts_per_second.toFixed(1)}</td>
+                                    <td class="bench-num">{r.dim || '—'}</td>
+                                    <td>
+                                        {#if r.error}
+                                            <span style="color:#f87171;" title={r.error}>error</span>
+                                        {:else}
+                                            <span style="color:#22c55e;">ok ({r.vectors_count})</span>
+                                        {/if}
+                                    </td>
+                                </tr>
+                            {/each}
+                        </tbody>
+                    </table>
+                {/if}
+            </div>
+
         {:else if selectedProviderId === 'index'}
             <div class="header">
                 <h1>{i18n.t.settings.index.title}</h1>
@@ -1635,78 +1847,87 @@
             </div>
             {/if}
 
-            <!-- Embedder model -->
+            <!-- Inference engine FIRST so the model dropdown below can filter
+                 to what's actually runnable on the chosen engine. -->
             <div class="section-card">
-                <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
-                <select id="index-model-select" value={indexEmbedderModel} onchange={handleEmbedderChange} class="styled-select">
-                    <option value="bge_m3">{i18n.t.settings.index.model_bge_m3}</option>
-                    <optgroup label="PIXIE-Rune-v1.0 (cstr/PIXIE-Rune-v1.0-ONNX)">
-                        <option value="pixie_q">{i18n.t.settings.index.model_pixie_q}</option>
-                        <option value="pixie_int4">{i18n.t.settings.index.model_pixie_int4}</option>
-                        <option value="pixie_int4_full">{i18n.t.settings.index.model_pixie_int4_full}</option>
-                        <option value="pixie">{i18n.t.settings.index.model_pixie}</option>
-                    </optgroup>
-                    <optgroup label="Snowflake Arctic Embed L v2.0">
-                        <option value="snowflake_l">{i18n.t.settings.index.model_snowflake_l}</option>
-                        <option value="snowflake_l_int8">{i18n.t.settings.index.model_snowflake_l_int8}</option>
-                        <option value="snowflake_l_fp16">{i18n.t.settings.index.model_snowflake_l_fp16}</option>
-                        <option value="snowflake_l_q4">{i18n.t.settings.index.model_snowflake_l_q4}</option>
-                        <option value="snowflake_l_q4f16">{i18n.t.settings.index.model_snowflake_l_q4f16}</option>
-                        <option value="snowflake_l_o4">{i18n.t.settings.index.model_snowflake_l_o4}</option>
-                        <option value="snowflake_l_fp32">{i18n.t.settings.index.model_snowflake_l_fp32}</option>
-                    </optgroup>
-                    <option value="octen">{i18n.t.settings.index.model_octen}</option>
-                    <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
-                    <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
-                    <optgroup label="More CrispEmbed-compatible models">
-                        <option value="bge_large_en_v15">{i18n.t.settings.index.model_bge_large}</option>
-                        <option value="multilingual_e5_large">{i18n.t.settings.index.model_e5_large}</option>
-                        <option value="mxbai_embed_large_v1">{i18n.t.settings.index.model_mxbai_large}</option>
-                        <option value="nomic_embed_text_v15">{i18n.t.settings.index.model_nomic}</option>
-                    </optgroup>
-                </select>
-
-                <label for="index-backend-select" style="margin-top:10px;">
+                <label for="index-backend-select">
                     <Cpu size={14} /> {i18n.t.settings.index.backend_engine}
                 </label>
                 <div class="toggle-group" id="index-backend-select" style="margin-top:4px;">
                     <button
                         class="toggle-btn"
                         class:active={indexEmbedderBackend === 'onnx'}
-                        onclick={() => (indexEmbedderBackend = 'onnx')}>
+                        onclick={() => onSelectEngine('onnx')}>
                         FastEmbed (ONNX)
                     </button>
                     <button
                         class="toggle-btn"
-                        class:active={indexEmbedderBackend === 'gguf' && ggufAvailable}
-                        disabled={!ggufAvailable}
-                        title={
-                            !crispEmbedCompiledIn
-                                ? 'CrispEmbed is not linked into this build. Re-build with --features crispembed-vulkan (or -metal/-cuda).'
-                                : (!ggufModelSupported ? 'No GGUF equivalent for this model.' : '')
-                        }
-                        onclick={() => { if (ggufAvailable) indexEmbedderBackend = 'gguf'; }}>
+                        class:active={indexEmbedderBackend === 'gguf'}
+                        disabled={!crispEmbedCompiledIn}
+                        title={crispEmbedCompiledIn ? '' : 'CrispEmbed is not linked into this build. Re-run via .\\enable-crispembed.ps1.'}
+                        onclick={() => { if (crispEmbedCompiledIn) onSelectEngine('gguf'); }}>
                         CrispEmbed (GGUF)
                     </button>
                 </div>
                 <div style="font-size: 12px; color: #71717a; margin-top: 6px; line-height:1.45;">
                     {#if !crispEmbedCompiledIn}
                         <strong>CrispEmbed (GGUF) is not built into this binary.</strong>
-                        It's an optional dependency that adds GGUF model support and reuses llama.cpp's GPU backends (Vulkan / Metal / CUDA).
-                        To enable it, stop the dev server and run the helper script — it auto-clones the <code>CrispEmbed</code> source next to this repo, downloads a prebuilt C++ library from the CrispEmbed GitHub release, and re-launches CrispSorter with the right Cargo feature flag:
-                        <ul style="margin: 6px 0 0 16px; padding: 0;">
-                            <li><strong>Windows:</strong> <code>.\enable-crispembed.ps1</code> (dev) or <code>.\enable-crispembed.ps1 -Mode build</code> (production .exe)</li>
-                            <li><strong>macOS / Linux:</strong> <code>./enable-crispembed.sh</code> or <code>./enable-crispembed.sh build</code></li>
-                        </ul>
-                        See <code>README.md</code> § <em>Optional: CrispEmbed (GGUF) backend</em> for the full story.
-                    {:else if !ggufModelSupported}
-                        <strong>{indexEmbedderModel}</strong> has no verified GGUF equivalent in CrispEmbed yet — falls back to FastEmbed. Models with a GGUF row include PIXIE-Rune, Snowflake Arctic-L v2, Octen-0.6B, Jina v5, Qwen3-Embedding.
+                        Run <code>.\enable-crispembed.ps1</code> (Windows) or <code>./enable-crispembed.sh</code> (macOS / Linux) to enable it.
+                        See <code>README.md</code> § <em>Optional: CrispEmbed (GGUF) backend</em>.
                     {:else if indexEmbedderBackend === 'onnx'}
-                        <strong>FastEmbed</strong> — our fork of <code>fastembed-rs</code>, runs ONNX models via ORT (CoreML/CUDA/CPU). Broadest hardware support.
+                        <strong>FastEmbed</strong> — runs ONNX models via ORT (CoreML/CUDA/CPU). Broadest hardware support, all models below.
                     {:else}
-                        <strong>CrispEmbed</strong> — GGUF inference reusing llama.cpp's Vulkan/Metal/CUDA backends. Smaller files, single GPU stack. Experimental.
+                        <strong>CrispEmbed</strong> — GGUF inference reusing llama.cpp's Vulkan/Metal/CUDA backends. Filtered list below to the verified GGUF-compatible models.
                     {/if}
                 </div>
+            </div>
+
+            <!-- Embedder model: filtered by chosen engine + NC-license-aware -->
+            <div class="section-card">
+                <label for="index-model-select"><Cpu size={16} /> {i18n.t.settings.index.embedder_model}</label>
+                <select id="index-model-select" value={indexEmbedderModel} onchange={handleEmbedderChange} class="styled-select">
+                    <option value="bge_m3" disabled={!isModelAvailable('bge_m3')}>
+                        {i18n.t.settings.index.model_bge_m3}{ncLabelSuffix('bge_m3')}
+                    </option>
+                    <optgroup label="PIXIE-Rune-v1.0 (cstr/PIXIE-Rune-v1.0-ONNX)">
+                        <option value="pixie_q" disabled={!isModelAvailable('pixie_q')}>{i18n.t.settings.index.model_pixie_q}{ncLabelSuffix('pixie_q')}</option>
+                        <option value="pixie_int4" disabled={!isModelAvailable('pixie_int4')}>{i18n.t.settings.index.model_pixie_int4}{ncLabelSuffix('pixie_int4')}</option>
+                        <option value="pixie_int4_full" disabled={!isModelAvailable('pixie_int4_full')}>{i18n.t.settings.index.model_pixie_int4_full}{ncLabelSuffix('pixie_int4_full')}</option>
+                        <option value="pixie" disabled={!isModelAvailable('pixie')}>{i18n.t.settings.index.model_pixie}{ncLabelSuffix('pixie')}</option>
+                    </optgroup>
+                    <optgroup label="Snowflake Arctic Embed L v2.0">
+                        <option value="snowflake_l" disabled={!isModelAvailable('snowflake_l')}>{i18n.t.settings.index.model_snowflake_l}{ncLabelSuffix('snowflake_l')}</option>
+                        <option value="snowflake_l_int8" disabled={!isModelAvailable('snowflake_l_int8')}>{i18n.t.settings.index.model_snowflake_l_int8}{ncLabelSuffix('snowflake_l_int8')}</option>
+                        <option value="snowflake_l_fp16" disabled={!isModelAvailable('snowflake_l_fp16')}>{i18n.t.settings.index.model_snowflake_l_fp16}{ncLabelSuffix('snowflake_l_fp16')}</option>
+                        <option value="snowflake_l_q4" disabled={!isModelAvailable('snowflake_l_q4')}>{i18n.t.settings.index.model_snowflake_l_q4}{ncLabelSuffix('snowflake_l_q4')}</option>
+                        <option value="snowflake_l_q4f16" disabled={!isModelAvailable('snowflake_l_q4f16')}>{i18n.t.settings.index.model_snowflake_l_q4f16}{ncLabelSuffix('snowflake_l_q4f16')}</option>
+                        <option value="snowflake_l_o4" disabled={!isModelAvailable('snowflake_l_o4')}>{i18n.t.settings.index.model_snowflake_l_o4}{ncLabelSuffix('snowflake_l_o4')}</option>
+                        <option value="snowflake_l_fp32" disabled={!isModelAvailable('snowflake_l_fp32')}>{i18n.t.settings.index.model_snowflake_l_fp32}{ncLabelSuffix('snowflake_l_fp32')}</option>
+                    </optgroup>
+                    <option value="octen" disabled={!isModelAvailable('octen')}>{i18n.t.settings.index.model_octen}{ncLabelSuffix('octen')}</option>
+                    <option value="jina_nano" disabled={!isModelAvailable('jina_nano')}>{i18n.t.settings.index.model_jina_nano}{ncLabelSuffix('jina_nano')}</option>
+                    <option value="multilingual_mini_lm" disabled={!isModelAvailable('multilingual_mini_lm')}>{i18n.t.settings.index.model_mini_lm}{ncLabelSuffix('multilingual_mini_lm')}</option>
+                    <optgroup label="Small / fast (recommended for fast first run)">
+                        <option value="all_mini_lm_l6_v2" disabled={!isModelAvailable('all_mini_lm_l6_v2')}>{i18n.t.settings.index.model_minilm_l6}{ncLabelSuffix('all_mini_lm_l6_v2')}</option>
+                        <option value="bge_small_en_v15" disabled={!isModelAvailable('bge_small_en_v15')}>{i18n.t.settings.index.model_bge_small}{ncLabelSuffix('bge_small_en_v15')}</option>
+                        <option value="multilingual_e5_small" disabled={!isModelAvailable('multilingual_e5_small')}>{i18n.t.settings.index.model_e5_small}{ncLabelSuffix('multilingual_e5_small')}</option>
+                    </optgroup>
+                    <optgroup label="Mid-size (768d, balanced)">
+                        <option value="bge_base_en_v15" disabled={!isModelAvailable('bge_base_en_v15')}>{i18n.t.settings.index.model_bge_base}{ncLabelSuffix('bge_base_en_v15')}</option>
+                        <option value="multilingual_e5_base" disabled={!isModelAvailable('multilingual_e5_base')}>{i18n.t.settings.index.model_e5_base}{ncLabelSuffix('multilingual_e5_base')}</option>
+                        <option value="nomic_embed_text_v15" disabled={!isModelAvailable('nomic_embed_text_v15')}>{i18n.t.settings.index.model_nomic}{ncLabelSuffix('nomic_embed_text_v15')}</option>
+                    </optgroup>
+                    <optgroup label="Large (1024d, top quality)">
+                        <option value="bge_large_en_v15" disabled={!isModelAvailable('bge_large_en_v15')}>{i18n.t.settings.index.model_bge_large}{ncLabelSuffix('bge_large_en_v15')}</option>
+                        <option value="multilingual_e5_large" disabled={!isModelAvailable('multilingual_e5_large')}>{i18n.t.settings.index.model_e5_large}{ncLabelSuffix('multilingual_e5_large')}</option>
+                        <option value="mxbai_embed_large_v1" disabled={!isModelAvailable('mxbai_embed_large_v1')}>{i18n.t.settings.index.model_mxbai_large}{ncLabelSuffix('mxbai_embed_large_v1')}</option>
+                    </optgroup>
+                </select>
+                {#if nonCommercialDeclined.size > 0}
+                    <button class="action-btn small" style="margin-top:6px;" onclick={resetNonCommercialDeclines}>
+                        Re-allow declined non-commercial models ({nonCommercialDeclined.size})
+                    </button>
+                {/if}
             </div>
 
             <!-- Compute device -->
