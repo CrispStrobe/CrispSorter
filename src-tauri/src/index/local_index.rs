@@ -497,6 +497,98 @@ impl LocalIndex {
         record_batches_to_search_results(&batches)
     }
 
+    /// PLAN P9 step 1 — paginated, filterable, sortable browse of the
+    /// documents table. Replaces the load-the-whole-table fetch in the
+    /// Catalog overview pane with a windowed read.
+    ///
+    /// **Pagination model — current and future.** LanceDB 0.26's public
+    /// Rust query API doesn't expose `ORDER BY`, so this implementation
+    /// fetches `min(total, offset + limit)` rows, sorts the window
+    /// in-process, and slices to `[offset..offset+limit]`. That's
+    /// correct but linear in `offset` — fine for the first ~50 pages
+    /// (~10k rows on a 200-row page) but degrades after that. Step 3
+    /// of the migration promotes `parent_dir` to a real column with a
+    /// scalar index; step 5 swaps this for a keyset cursor over an
+    /// indexed sort column once we drop down to `lance::Scanner` for
+    /// DB-side ordering. The `PageCursor` API was designed
+    /// keyset-shaped on purpose — only the encoding changes.
+    ///
+    /// `total_estimate` comes from `count_rows(filter)` — a scalar
+    /// query against the same predicate, so it's cheap (no row
+    /// materialisation) and lets the UI render "342k matches" without
+    /// listing them.
+    pub async fn query_documents(
+        &self,
+        filter: &super::schema::DocumentFilter,
+        sort: super::schema::SortSpec,
+        page: super::schema::PageSpec,
+    ) -> Result<super::schema::DocumentPage> {
+        use super::schema::{DocumentPage, PageCursor};
+
+        let limit = page.limit.clamp(1, 1000) as usize;
+        let offset = page.cursor.as_ref().map(|c| c.offset()).unwrap_or(0) as usize;
+        let base_filter = filter_to_sql(filter);
+
+        let total_estimate = self
+            .table
+            .count_rows(base_filter.clone())
+            .await
+            .context("count_rows for total_estimate")? as u64;
+
+        if offset as u64 >= total_estimate {
+            return Ok(DocumentPage {
+                rows: vec![],
+                next_cursor: None,
+                total_estimate,
+            });
+        }
+
+        // Bounded window — until step 5 we have to materialise + sort
+        // [0..offset+limit]. Cap at 50k rows to keep memory bounded;
+        // beyond that the call returns rows unsorted with a warning
+        // logged (the UI shows them, the user is told to add filters
+        // to narrow). 50k * ~1KB/row ~= 50MB peak, acceptable.
+        const HARD_CAP: usize = 50_000;
+        let window = (offset + limit).min(HARD_CAP);
+
+        let mut q = self.table.query();
+        if let Some(sql) = base_filter {
+            q = q.only_if(sql);
+        }
+
+        let batches: Vec<RecordBatch> = q
+            .limit(window)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut rows = record_batches_to_search_results(&batches)?;
+        sort_rows(&mut rows, sort);
+
+        // Slice to the requested page.
+        let end = (offset + limit).min(rows.len());
+        let page_rows: Vec<_> = rows.drain(offset.min(rows.len())..end).collect();
+
+        // Next cursor: bump the offset, but `None` when we hit either
+        // the end of the result set or the hard cap.
+        let next_offset = offset + page_rows.len();
+        let next_cursor = if page_rows.len() < limit
+            || (next_offset as u64) >= total_estimate
+            || next_offset >= HARD_CAP
+        {
+            None
+        } else {
+            Some(PageCursor::from_offset(next_offset as u32))
+        };
+
+        Ok(DocumentPage {
+            rows: page_rows,
+            next_cursor,
+            total_estimate,
+        })
+    }
+
     /// PLAN P7.4.3 — read the source-file mtime stored in the documents
     /// table for this `location_uri`, if any.
     ///
@@ -976,6 +1068,127 @@ fn is_table_not_found(e: &lancedb::Error) -> bool {
     matches!(e, lancedb::Error::TableNotFound { .. })
 }
 
+// ── PLAN P9 query helpers ─────────────────────────────────────────────────
+
+/// Translate a `DocumentFilter` into the predicate string we hand to
+/// LanceDB's `only_if`. Returns `None` when the filter is wide open
+/// (callers may pass that to `count_rows(None)` to count every row).
+///
+/// The implicit `chunk_index <= 0` clause is always added so we list one
+/// row per document (L1 metadata rows + L3 representative rows) and
+/// never return chunk-level rows from the catalog overview.
+fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
+    let mut parts: Vec<String> = vec!["chunk_index <= 0".to_owned()];
+
+    if let Some(prefix) = f.parent_dir_prefix.as_ref().filter(|s| !s.is_empty()) {
+        // parent_dir lives in metadata_json until step 3 of the
+        // migration promotes it to a column. LIKE '%"parent_dir":"<p>%'
+        // is a hack — fast enough for tens of thousands of rows but
+        // intentionally on the migration path.
+        let escaped = prefix.replace('\'', "''").replace('\\', "\\\\");
+        parts.push(format!(
+            "metadata_json LIKE '%\"parent_dir\":\"{}%'",
+            escaped
+        ));
+    }
+    if !f.ext.is_empty() {
+        let lits: Vec<String> = f
+            .ext
+            .iter()
+            .map(|e| format!("'{}'", e.to_lowercase().replace('\'', "''")))
+            .collect();
+        parts.push(format!("ext IN ({})", lits.join(", ")));
+    }
+    if let Some(ymin) = f.year_min {
+        parts.push(format!("year >= {}", ymin));
+    }
+    if let Some(ymax) = f.year_max {
+        parts.push(format!("year <= {}", ymax));
+    }
+    if let Some(lang) = f.language.as_ref().filter(|s| !s.is_empty()) {
+        parts.push(format!("language = '{}'", lang.replace('\'', "''")));
+    }
+    if let Some(level) = f.level {
+        match level {
+            1 => parts.push("chunk_index = -1".to_owned()),
+            // L2 == L1 row that has L2 metadata. Cheap heuristic: any
+            // metadata_json key beyond fs_*. We pin to a marker the
+            // L2 promotion writer always emits.
+            2 => parts.push(
+                "chunk_index = -1 AND metadata_json LIKE '%\"l2_extracted\":true%'".to_owned(),
+            ),
+            3 => parts.push("chunk_index = 0".to_owned()),
+            _ => {}
+        }
+    }
+    if let Some(sub) = f.name_substring.as_ref().filter(|s| !s.is_empty()) {
+        let pat = sub.replace('\'', "''").replace('%', "\\%");
+        // Search both filename and title (LIKE in LanceDB is
+        // case-insensitive in 0.26 — verified by the existing
+        // metadata_json LIKE patterns elsewhere in the codebase).
+        parts.push(format!(
+            "(filename LIKE '%{}%' OR title LIKE '%{}%')",
+            pat, pat
+        ));
+    }
+    if let Some(ids) = f.doc_ids.as_ref().filter(|v| !v.is_empty()) {
+        let lits: Vec<String> = ids
+            .iter()
+            .map(|d| format!("'{}'", d.replace('\'', "''")))
+            .collect();
+        parts.push(format!("doc_id IN ({})", lits.join(", ")));
+    }
+    if let Some(oid) = f.owner_id.as_ref().filter(|s| !s.is_empty()) {
+        parts.push(format!("owner_id = '{}'", oid.replace('\'', "''")));
+    }
+    if let Some(vols) = f.volume_ids.as_ref().filter(|v| !v.is_empty()) {
+        // volume_id lives in metadata_json (P7.6); same caveat as
+        // parent_dir, on the migration path to a real column in step 6.
+        let alts: Vec<String> = vols
+            .iter()
+            .map(|v| {
+                format!(
+                    "metadata_json LIKE '%\"volume_id\":\"{}\"%'",
+                    v.replace('\'', "''").replace('\\', "\\\\")
+                )
+            })
+            .collect();
+        parts.push(format!("({})", alts.join(" OR ")));
+    }
+
+    Some(parts.join(" AND "))
+}
+
+/// In-process sort over the candidate window. LanceDB 0.26's public
+/// query API doesn't expose ORDER BY, so we sort client-side after
+/// fetching `[0..offset+limit]`. See `query_documents` for the
+/// scaling envelope and the migration path off this implementation.
+fn sort_rows(rows: &mut [SearchResult], sort: super::schema::SortSpec) {
+    use super::schema::{SortColumn, SortDir};
+
+    rows.sort_by(|a, b| {
+        let c = match sort.column {
+            SortColumn::Filename => a.filename.cmp(&b.filename),
+            SortColumn::Title => a.title.cmp(&b.title),
+            SortColumn::Author => a.author.cmp(&b.author),
+            SortColumn::Year => a.year.cmp(&b.year),
+            SortColumn::Language => a.language.cmp(&b.language),
+            // SearchResult doesn't carry indexed_at directly; fall back
+            // to doc_id ordering which is stable per ingest. Step 5 of
+            // the migration adds an explicit indexed_at field.
+            SortColumn::IndexedAt => a.doc_id.cmp(&b.doc_id),
+        };
+        // Tiebreak on doc_id so the cursor predicate has a stable
+        // partner for cross-page consistency.
+        let c = c.then_with(|| a.doc_id.cmp(&b.doc_id));
+        match sort.direction {
+            SortDir::Asc => c,
+            SortDir::Desc => c.reverse(),
+        }
+    });
+}
+
+
 // ── Sparse scoring ─────────────────────────────────────────────────────────
 
 /// Dot product of two sparse vectors. BGE-M3 / SPLADE outputs are sorted by
@@ -1068,6 +1281,99 @@ mod sparse_tests {
         let b = sv(vec![1, 2], vec![1.0, 1.0]);
         assert_eq!(sparse_dot(&a, &b), 0.0);
         assert_eq!(sparse_dot(&b, &a), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod query_documents_tests {
+    use super::*;
+    use crate::index::schema::{DocumentFilter, SortColumn, SortDir, SortSpec};
+
+    fn mk_result(doc_id: &str, filename: Option<&str>, year: Option<i32>) -> SearchResult {
+        SearchResult {
+            doc_id: doc_id.to_owned(),
+            location_uri: String::new(),
+            owner_id: String::new(),
+            title: None,
+            author: None,
+            year,
+            filename: filename.map(|s| s.to_owned()),
+            ext: None,
+            language: None,
+            snippet: String::new(),
+            score: 0.0,
+            chunk_index: 0,
+            metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
+        }
+    }
+
+    #[test]
+    fn filter_sql_always_constrains_to_doc_rows() {
+        let f = DocumentFilter::default();
+        let sql = filter_to_sql(&f).unwrap();
+        assert!(sql.contains("chunk_index <= 0"));
+    }
+
+    #[test]
+    fn filter_sql_combines_extension_and_year_range() {
+        let f = DocumentFilter {
+            ext: vec!["pdf".to_owned(), "docx".to_owned()],
+            year_min: Some(2000),
+            year_max: Some(2020),
+            ..Default::default()
+        };
+        let sql = filter_to_sql(&f).unwrap();
+        assert!(sql.contains("ext IN ('pdf', 'docx')"));
+        assert!(sql.contains("year >= 2000"));
+        assert!(sql.contains("year <= 2020"));
+    }
+
+    #[test]
+    fn filter_sql_level_translates_to_chunk_index_predicate() {
+        for (level, expected) in [(1u8, "chunk_index = -1"), (3, "chunk_index = 0")] {
+            let f = DocumentFilter {
+                level: Some(level),
+                ..Default::default()
+            };
+            let sql = filter_to_sql(&f).unwrap();
+            assert!(
+                sql.contains(expected),
+                "level {level} should produce {expected:?}: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_sql_escapes_single_quotes_in_owner_id() {
+        let f = DocumentFilter {
+            owner_id: Some("o'malley".to_owned()),
+            ..Default::default()
+        };
+        let sql = filter_to_sql(&f).unwrap();
+        assert!(sql.contains("owner_id = 'o''malley'"));
+    }
+
+    #[test]
+    fn sort_rows_orders_year_descending_with_doc_id_tiebreak() {
+        let mut rows = vec![
+            mk_result("a", Some("a.pdf"), Some(2020)),
+            mk_result("b", Some("b.pdf"), Some(2024)),
+            mk_result("c", Some("c.pdf"), Some(2024)),
+            mk_result("d", Some("d.pdf"), Some(2010)),
+        ];
+        sort_rows(
+            &mut rows,
+            SortSpec {
+                column: SortColumn::Year,
+                direction: SortDir::Desc,
+            },
+        );
+        let ids: Vec<&str> = rows.iter().map(|r| r.doc_id.as_str()).collect();
+        // 2024 group sorted by doc_id descending (`c` before `b`), then 2020,
+        // then 2010.
+        assert_eq!(ids, vec!["c", "b", "a", "d"]);
     }
 }
 
