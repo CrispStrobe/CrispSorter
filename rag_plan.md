@@ -11,7 +11,7 @@
 2. Support **remote LanceDB** via a self-hosted Rust/Axum VPS server
 3. Track **where every file lives** with a typed, forward-compatible URI scheme
 4. Handle **hundreds of thousands** of German + English academic documents
-5. Provide **dtSearch-grade** proximity/wildcard/boolean full-text search
+5. Provide **advanced** proximity/wildcard/boolean full-text search
 6. Keep the setup **versatile from the UI** (mode, embedder, device, backend)
 7. Design for **multi-user** from the start without forcing it on single-user installs
 
@@ -172,7 +172,7 @@ metadata_json     Utf8            forward-compat escape hatch (Internxt zip path
 
 ## 5. Full-Text Search — Tantivy Direct (not via LanceDB FTS API)
 
-LanceDB has built-in FTS via Tantivy, but its query API is too simplified for dtSearch-grade
+LanceDB has built-in FTS via Tantivy, but its query API is too simplified for advanced
 proximity + wildcard queries. We use the `tantivy` crate directly alongside LanceDB.
 
 ### Tantivy schema (parallel to LanceDB table)
@@ -188,13 +188,13 @@ owner_id          TEXT STORED       for multi-user filtering
 The Tantivy index lives at `{data_dir}/fts/` next to the LanceDB directory at `{data_dir}/lance/`.
 Both are written atomically during ingest.
 
-### dtSearch Query Translator
+### Query Translator
 
-Parses a dtSearch-style query string → Tantivy query tree.
+Parses an advanced query string → Tantivy query tree.
 
 Supported operators:
 
-| dtSearch syntax | Meaning | Tantivy implementation |
+| Query syntax | Meaning | Tantivy implementation |
 |---|---|---|
 | `foo AND bar` | both terms | `BooleanQuery::must` |
 | `foo OR bar` | either term | `BooleanQuery::should` |
@@ -398,7 +398,7 @@ index/
   location.rs         FileLocation enum, URI parse/serialize, RetrievalCost
   schema.rs           Arrow schema builder, chunk helper types
   embedder.rs         fastembed-rs wrapper: model enum, device selection, batch embed
-  fts_query.rs        dtSearch → Tantivy query translator
+  fts_query.rs        advanced query → Tantivy query translator
   fts_index.rs        Tantivy index open/create/write/search
   local_index.rs      LanceDB local: open/create/ingest/search, IVF-PQ build
   remote_client.rs    HTTP client to VPS server (reqwest)
@@ -428,7 +428,7 @@ crisp-index-server/
 | Phase | Deliverable | Est. | Status |
 |---|---|---|---|
 | **P1** | `location.rs` — full URI model with tests | ½ day | ✅ Done |
-| **P2** | `fts_query.rs` — dtSearch query translator with tests | 1 day | ✅ Done |
+| **P2** | `fts_query.rs` — advanced query translator with tests | 1 day | ✅ Done |
 | **P3** | `embedder.rs` — fastembed-rs wrapper, model enum, device picker | 1 day | ✅ Done |
 | **P4** | `fts_index.rs` — Tantivy index CRUD + search | 1 day | ✅ Done |
 | **P5** | `local_index.rs` — LanceDB CRUD, IVF-PQ, vector search | 2 days | ✅ Done |
@@ -451,7 +451,7 @@ crisp-index-server/
 - `src-tauri/src/index/location.rs` — `FileLocation` URI model (Local/Vps/Internxt/InternxtZip), tests
 - `src-tauri/src/index/schema.rs` — Arrow schema, `DocumentChunk`, `SearchResult`, `SearchFilters`
 - `src-tauri/src/index/embedder.rs` — `Embedder` (fastembed 5.x), correct model mappings, `chunk_text`
-- `src-tauri/src/index/fts_query.rs` — dtSearch → Tantivy (AND/OR/NOT/phrase/wildcard/fuzzy/w/N/pre/N)
+- `src-tauri/src/index/fts_query.rs` — advanced query → Tantivy (AND/OR/NOT/phrase/wildcard/fuzzy/w/N/pre/N)
 - `src-tauri/src/index/fts_index.rs` — Tantivy index CRUD + search with owner-filter
 - `src-tauri/src/index/local_index.rs` — LanceDB CRUD, IVF-PQ build, `batches_to_search_results_with_scores`
 - `src-tauri/src/index/search.rs` — `SearchEngine`: FTS+ANN+RRF(k=60), parallel tokio::spawn
