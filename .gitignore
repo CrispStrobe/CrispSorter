@@ -14,6 +14,9 @@ src-tauri/target
 src-tauri/gen
 src-tauri/bin
 
+# Bootstrapped tools (paths.ps1 downloads protoc here)
+gh_temp/
+
 # OS
 .DS_Store
 Thumbs.db
