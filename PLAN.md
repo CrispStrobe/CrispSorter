@@ -434,6 +434,166 @@ captured under their own phases:
 
 ---
 
+### P10 — Robust ingest at scale: parallelism, timeouts, broken-task recognition
+
+The current ingest pipeline processes one file at a time, blocks
+indefinitely on slow / corrupt inputs, and has no notion of "this
+task is wedged, kill it." At the catalog sizes P9 is sized for
+(millions of files), three issues become inevitable:
+
+1. **Throughput** — extraction is CPU-bound and OCR is GPU- or
+   CPU-bound; doing them serially leaves cores idle.
+2. **Hangs** — a single corrupt PDF with a malformed xref table
+   can sit in `pdf-extract` forever. Today there's a per-file
+   timeout configured in Settings (P8.1) but it doesn't fire
+   until the file's *whole* budget is exhausted; you can't
+   distinguish "slow but progressing" from "stuck since byte 1."
+3. **Known-impossible inputs** — DRM-protected EPUBs, password-
+   locked PDFs, scanned images with no OCR available — the
+   pipeline retries them every run and produces the same error,
+   wasting time and burying useful messages in the log.
+
+#### What we already have
+
+* **Catalog scanner** (`catalog/scan.rs`) is rayon-parallel via
+  jwalk, so directory walking and SHA hashing already saturate
+  cores. The bottleneck is downstream of the scanner.
+* **Per-file conversion timeout** (P8.1, `conversionTimeoutSeconds`
+  in Settings, default 120 s) wraps each `extractText` call in a
+  `Promise.race` with a wall-clock alarm. Coarse but it works.
+* **LLM round-robin** across remote providers
+  (`roundRobinProviders` in Settings) already balances chat /
+  classification queries across configured API keys.
+* **Background ingest scheduler** (P7.4) with QoS throttling
+  pauses ingest while the user is searching — orthogonal to
+  this phase, but the same scheduler is the right host for
+  the new worker pool.
+
+#### Concurrency: parallel workers + the right back-pressure
+
+* **Extraction worker pool** — N tokio tasks pulling from a bounded
+  channel of `IngestEntry`s. N defaults to `min(num_cpus, 4)`;
+  configurable per backend (PDF native ↔ JS, OCR ↔ ocrs, etc.) so
+  a slow stage doesn't starve a fast one.
+* **Embedder workers — single by default.** The fastembed and
+  CrispEmbed backends both serialise GPU access internally, and
+  multiple model instances would balloon RAM. The pool size
+  here is "1 per active backend"; CPU-only ONNX with batch=32 is
+  already at GPU-saturating throughput on the embedder side.
+* **LanceDB writes — coalesce.** Today each chunk is written via
+  `ingest_batch`. The worker pool produces batches of K chunks
+  (K ≈ 64) which the writer coalesces into one Arrow `RecordBatch`
+  per K-block. Tantivy commits on the same K boundary.
+* **LLM round-robin** — extend the existing rotation so background
+  classification (e.g. "infer subject from title") obeys the
+  same provider list the chat panel uses. Today only the chat
+  flow consults `roundRobinProviders`.
+* **Back-pressure**: the channel between scanner and worker pool
+  has a bounded capacity (1000 entries). When full, the scanner
+  awaits — keeps memory usage bounded regardless of catalog size.
+
+#### Timeouts at the right granularity
+
+Layer the timeouts so a fast stage failure doesn't get masked by
+a coarse per-file alarm:
+
+| stage | budget | enforced where |
+|---|---|---|
+| **Stage timeout — first byte** | 60 s | extractor wrapper. If the extractor produces zero output (no first page from PDF, no first chunk from OCR) within 60 s, abort. Strong signal of a wedged file. |
+| **Stage timeout — total** | per-stage configurable (default: PDF 5 min / OCR 10 min / DOCX 1 min) | extractor wrapper. Hard wall-clock cap. |
+| **Whole-file timeout** | `conversionTimeoutSeconds` (Settings, default 120 s today; raised to 600 s when the per-stage caps land) | pipeline orchestrator. Catches bugs the per-stage timeouts miss. |
+| **Embedder timeout** | 30 s per batch | call site. Embedder is pinned to one backend; if it hangs we want to see it surface, not retry forever. |
+| **LLM query timeout** | 30 s default, settable per provider | already enforced upstream of round-robin (`abort_aware_rate_limit_sleep` etc.) |
+
+Each timeout produces a structured `TaskFailureReason` so the
+"broken-task" classifier below has something to work with.
+
+#### Broken-task recognition — `TaskFailureReason` taxonomy
+
+Every failure to ingest a file is bucketed into one of these:
+
+| reason | source | retry-worthy? | UI badge |
+|---|---|---|---|
+| `Timeout::FirstByte` | first-byte stage timeout | no — 99% wedged file | red, "stuck" |
+| `Timeout::Total` | total-stage or whole-file timeout | maybe — if config raised | red, "too slow" |
+| `Encrypted::Drm { scheme }` | EPUB `META-INF/encryption.xml` present, or PDF `/Encrypt` dict | no — needs decryption key | yellow, "DRM" |
+| `Encrypted::Password` | PDF user-password set | yes if user supplies password | yellow, "password" |
+| `Corrupt::ParseError { stage }` | extractor returned a hard parse error in <2s | no | red, "corrupt" |
+| `Unsupported::NoExtractor` | no extractor registered for this extension | no — needs new code | grey, "unsupported" |
+| `Resource::OutOfMemory` | extractor died with OOM | no — file too large for current backend | red, "too large" |
+| `Network::Unreachable` | only relevant once the cloud-storage location types are wired | yes after backoff | yellow, "offline" |
+| `Other { msg }` | catch-all | no | red |
+
+The classification happens at one place — the worker's per-stage
+error handler — and the reason is persisted alongside the file's
+row so the next ingest run can skip-or-retry per the taxonomy.
+
+#### Graceful-degrade response: what to do when L3 is impossible
+
+The user's example: *"EPUB extraction failed: The file is encrypted
+with AES, but no symmetric key is provided."* The current pipeline
+treats this the same as any other failure — the file ends up with
+status `error` and a stack trace, and the user sees neither the
+title nor a useful next step. Better:
+
+1. **Always try L2 metadata first.** EPUB OPF (in
+   `META-INF/container.xml` → `OEBPS/content.opf`) is *not*
+   encrypted by ADEPT/FairPlay/B&N — only the chapter XHTML is.
+   So the `dc:title` / `dc:creator` / `dc:date` fields are
+   readable even when L3 fails. Same with PDFs that have a
+   user-password set: the `/Info` dict + XMP packet sit outside
+   the encryption envelope and `lopdf` can read them. Today
+   `l2_metadata.rs` is invoked from a separate `index_promote_l2`
+   command; the fix is to invoke it as a *fallback* from the L3
+   path the moment the L3 extractor errors with one of the
+   bucket reasons above.
+
+2. **Persist the failure reason on the row.** New
+   `metadata_json` field `extraction_failure: { reason, last_seen_at }`.
+   Übersicht renders an icon next to the L-badge per the
+   reason → badge column in the taxonomy table above.
+
+3. **Don't silently retry.** The background ingest scheduler
+   today re-tries every file every run. Add a "skip files with
+   extraction_failure reason ∈ {DRM, Unsupported, Corrupt} unless
+   the user explicitly clicks Retry" rule. `Timeout::Total` and
+   `Network::Unreachable` stay retry-worthy.
+
+4. **Surface a help link.** For `Encrypted::Drm`: the badge is
+   clickable; the popover explains DRM, links to a help page,
+   suggests Calibre + DeDRM as the typical workflow if the user
+   has the legal right to decrypt their own purchases. We don't
+   ship DRM removal; we point at it. (`Encrypted::Password`:
+   prompt for the password and re-run.)
+
+5. **CLI parity.** `crispsorter index ingest --skip-failed`
+   honours the same skip rules so unattended bulk runs don't
+   waste hours retrying DRM EPUBs.
+
+#### Migration path
+
+a. **`TaskFailureReason` enum** in `index/mod.rs` + the
+   `extraction_failure` field on `metadata_json`. Wire L2 fallback
+   in the L3 extractor on first-byte timeout / parse error.
+b. **Per-stage timeout wrappers** (first-byte + total) in the
+   extractor adapters. The `conversionTimeoutSeconds` Setting
+   becomes a UI knob over the L3 *whole-file* budget; per-stage
+   defaults stay sane.
+c. **Worker pool** in the background-ingest scheduler. N
+   configurable in Settings (default `min(num_cpus, 4)`).
+d. **DRM detection** for EPUB + password-protected PDF. Surfaces
+   the right reason even when the underlying extractor would
+   otherwise give a generic error.
+e. **Übersicht status badges** + the help-popover for `Drm`.
+f. **CLI `--skip-failed`** flag and the `--retry-failed` complement.
+
+Steps (a) and (b) are the load-bearing ones — once those land, the
+"the file is encrypted with AES" message becomes a yellow DRM
+badge in Übersicht with title + author still showing, and the
+rest is incremental.
+
+---
+
 (For historical per-version changelog and shipped phase specs, see
 [HISTORY.md](HISTORY.md).)
 
