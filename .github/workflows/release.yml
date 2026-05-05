@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  release-required:
     permissions:
       contents: write
     strategy:
@@ -18,37 +18,59 @@ jobs:
             rust_target: aarch64-apple-darwin
             llama_asset: llama-b8340-bin-macos-arm64.tar.gz
             sidecar_name: llama-server-aarch64-apple-darwin
-            tauri_args: '--target aarch64-apple-darwin'
-          - platform: macos-13
-            rust_target: x86_64-apple-darwin
-            llama_asset: llama-b8340-bin-macos-x64.tar.gz
-            sidecar_name: llama-server-x86_64-apple-darwin
-            tauri_args: '--target x86_64-apple-darwin'
+            # crispasr-metal + crispembed-metal turn on the on-device
+            # ASR + GGUF embedder/reranker backends; the
+            # libcrispasr.dylib / libcrispembed.dylib + ggml libs come
+            # from each project's release asset (downloaded below).
+            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal,crispembed-metal'
+            # When set, the matching tarballs are downloaded from each
+            # repo's release and extracted into the path that the
+            # corresponding -sys crate's `try_existing_build`
+            # auto-discovers.
+            crispasr_lib_asset: libcrispasr-macos-arm64.tar.gz
+            crispembed_lib_asset: crispembed-macos-arm64.tar.gz
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
             sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
+            # P3.5 Phase 2 Windows enablement deferred to v0.1.39:
+            # Windows DLL resolution doesn't follow Tauri's
+            # `bundle.resources: ["bin/*"]` install layout (DLLs land
+            # at `<install>/resources/bin/` but the loader searches
+            # alongside the .exe). Needs either (a) a Rust startup
+            # `SetDllDirectoryW("resources/bin")` call before any
+            # libcrispembed/libcrispasr touch or (b) a custom WiX
+            # fragment that drops DLLs at the install root. Doing
+            # either before testing is the same trap that broke
+            # v0.1.37 on macOS arm64. Leave Windows feature-less
+            # this release, ship in v0.1.39 once tested.
             tauri_args: ''
           - platform: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
             sidecar_name: llama-server-x86_64-unknown-linux-gnu
-            tauri_args: '--bundles deb'
+            tauri_args: '--bundles deb --features crispasr-vulkan,crispembed-vulkan'
+            crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
+            crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
 
     runs-on: ${{ matrix.platform }}
 
     env:
-      # Sibling repo referenced by src-tauri/Cargo.toml as
-      # `path = "../../CrispEmbed/crispembed"`. We check it out inside the
-      # workspace and rewrite the path dep at CI time so cargo metadata
-      # resolves on a clean runner.
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: main
-      # linuxdeploy / AppImage tools are themselves AppImages that need FUSE
-      # to self-extract. GitHub Actions runners don't have FUSE, so tell them
-      # to extract to a temp dir instead.
+      # Pin to the release tag whose libcrispembed bundle the
+      # workflow downloads below. Same rationale as CRISPASR_REF.
+      CRISPEMBED_REF: v0.2.6
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      # Pin the CrispASR ref to the release tag whose libcrispasr
+      # bundle we're consuming below. Keeps source-side cargo metadata
+      # (which still needs the sibling checkout for the path-dep
+      # resolution) in lockstep with the binary lib we link against.
+      # v0.5.7 added the missing libcrispasr-{linux,windows}-* lib
+      # bundles that unblock P3.5 Phase 2 (Linux + Windows native
+      # ASR + embedder). Bumping requires verifying the asset names
+      # in the per-matrix `crispasr_lib_asset` entries still resolve.
+      CRISPASR_REF: v0.5.7
       APPIMAGE_EXTRACT_AND_RUN: '1'
-      # Prevent strip from failing on cross-compiled or unusual binaries.
       NO_STRIP: 'true'
 
     steps:
@@ -61,23 +83,106 @@ jobs:
           ref: ${{ env.CRISPEMBED_REF }}
           path: _sibling/CrispEmbed
 
-      - name: Rewrite CrispEmbed path dep for CI layout
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+
+      - name: Download libcrispasr bundle (Unix)
+        if: matrix.crispasr_lib_asset != '' && runner.os != 'Windows'
         shell: bash
         run: |
-          # Committed path is `../../CrispEmbed/crispembed` (sibling-of-parent
-          # layout used for local dev). In CI both repos live inside
-          # $GITHUB_WORKSPACE, so point the path at the in-workspace copy.
+          set -euo pipefail
+          # Pull the per-platform libcrispasr lib bundle that CrispASR's
+          # release publishes and extract it into the path crispasr-sys's
+          # `try_existing_build` walks first — so cargo build skips its
+          # own cmake step entirely and just links against the pre-built
+          # lib. Same `build-flutter-bundle/` convention macOS uses.
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispASR/build-flutter-bundle
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip it
+          # so contents land directly under build-flutter-bundle/.
+          tar -xzf crispasr-libs.tar.gz \
+            -C _sibling/CrispASR/build-flutter-bundle \
+            --strip-components=1
+          echo "Extracted libs:"
+          find _sibling/CrispASR/build-flutter-bundle -maxdepth 4 \
+            \( -name "lib*" -o -name "*.dll" -o -name "*.lib" \) 2>/dev/null | head -30
+
+      - name: Download libcrispasr bundle (Windows)
+        if: matrix.crispasr_lib_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile crispasr-libs.tar.gz
+          New-Item -ItemType Directory -Force -Path _sibling/CrispASR/build-flutter-bundle | Out-Null
+          # tar ships with Win10+. --strip-components flattens the
+          # top-level `libcrispasr-windows-*-vulkan/` dir like Unix.
+          tar -xzf crispasr-libs.tar.gz -C _sibling/CrispASR/build-flutter-bundle --strip-components=1
+          Write-Host "Extracted libs:"
+          Get-ChildItem -Recurse _sibling/CrispASR/build-flutter-bundle -Include "*.dll","*.lib" | Select-Object -First 30 FullName | Format-Table -HideTableHeaders
+
+      - name: Download libcrispembed bundle (Unix)
+        if: matrix.crispembed_lib_asset != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CrispEmbed Linux/macOS publish flat tarballs: libcrispembed +
+          # libggml* all at the top level. crispembed-sys's
+          # `try_existing_build` walks `<build>/`, `<build>/build/`, etc.,
+          # and `has_prebuilt` looks for libcrispembed.* directly in
+          # those dirs — so dropping the tarball contents into
+          # `<sibling>/build/` is enough.
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
+          echo "Extracted libs:"
+          find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" 2>/dev/null | head
+
+      - name: Download libcrispembed bundle (Windows)
+        if: matrix.crispembed_lib_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile crispembed-libs.zip
+          New-Item -ItemType Directory -Force -Path _sibling/CrispEmbed/build | Out-Null
+          # CrispEmbed Windows zip is FLAT (crispembed.dll, ggml*.dll,
+          # *.lib + include/) — no top-level dir to strip.
+          Expand-Archive -Path crispembed-libs.zip -DestinationPath _sibling/CrispEmbed/build -Force
+          Write-Host "Extracted libs:"
+          Get-ChildItem _sibling/CrispEmbed/build -Include "*.dll","*.lib" -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+
+      - name: Rewrite sibling path deps for CI layout
+        shell: bash
+        run: |
           python -c "
           import re, pathlib
           p = pathlib.Path('src-tauri/Cargo.toml')
           s = p.read_text()
+          # Handle both '../../CrispEmbed/<sub>' and '../../CrispASR/<sub>'.
+          # The capture group lets us cover crispasr, crispasr-sys, crispembed,
+          # crispembed-sys, etc. without per-sub regex churn.
           s = re.sub(
-              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/crispembed\"',
-              'path = \"../_sibling/CrispEmbed/crispembed\"',
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispEmbed/\1\"',
+              s,
+          )
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispASR/\1\"',
               s,
           )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
           "
 
       - name: Setup Node
@@ -126,9 +231,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # Needed by scripts/generate-licenses.js, which runs automatically
-      # during `npm run build` via the `prebuild` hook. Without this, the
-      # About → Open Source Licenses screen ships a stale list.
       - name: Install cargo-license
         run: cargo install --locked cargo-license
 
@@ -187,3 +289,341 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.tauri_args }}
+
+      # ── Patch native libs into the bundled .app (macOS arm64 only) ────
+      #
+      # tauri-action ships the freshly-bundled .app + .dmg without
+      # libcrispasr inside Contents/Frameworks, so the binary's
+      # @rpath/libcrispasr.1.dylib lookup fails on a clean user
+      # machine. Run the bundle script to copy the libs in (recursively
+      # walking transitives), then repack the .dmg + .app.tar.gz from
+      # the patched .app and `gh release upload --clobber` the
+      # replacements over what tauri-action already pushed.
+      - name: Patch native libs into .app + repack .dmg / .app.tar.gz (macOS)
+        if: matrix.crispasr_lib_asset != '' && runner.os == 'macOS'
+        shell: bash
+        env:
+          # Override the script's local-dev defaults (which look at
+          # `$REPO_ROOT/../CrispASR/build-flutter-bundle` — the
+          # ~/code/CrispASR sibling layout). On CI the lib bundles get
+          # extracted INSIDE the repo at `_sibling/...`, so without
+          # these overrides both wrappers skip and the script exits
+          # 1 from the trailing `ls *.dylib` under pipefail. This was
+          # the v0.1.37 macOS arm64 failure root cause.
+          CRISPASR_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispASR/build-flutter-bundle
+          CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
+        run: |
+          set -euo pipefail
+          APP_DIR=src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos
+          APP=$(find "$APP_DIR" -maxdepth 1 -name '*.app' -type d | head -1)
+          if [ -z "$APP" ]; then echo "ERROR: no .app under $APP_DIR"; exit 1; fi
+          REPACK_DMG=1 ./scripts/bundle_macos_native_libs.sh "$APP"
+          # tauri also produces an .app.tar.gz alongside (used by the
+          # Tauri updater + as a download alternative to .dmg). Recreate
+          # it from the patched .app so users updating via tar get the
+          # fix too. Use absolute path for the output — `cd $APP_DIR`
+          # would otherwise re-evaluate the relative `$TAR_GZ` against
+          # the new cwd and fail to find a parent dir for tar to write
+          # into (the v0.1.38 macOS arm64 failure mode).
+          TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f | head -1)
+          if [ -n "$TAR_GZ" ]; then
+            ABS_TAR_GZ="$(cd "$(dirname "$TAR_GZ")" && pwd)/$(basename "$TAR_GZ")"
+            echo "Repacking $ABS_TAR_GZ"
+            tar -czf "$ABS_TAR_GZ" -C "$APP_DIR" "$(basename "$APP")"
+          fi
+
+      - name: Patch native libs into .deb + repack (Linux)
+        if: matrix.crispasr_lib_asset != '' && runner.os == 'Linux'
+        shell: bash
+        env:
+          CRISPASR_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispASR/build-flutter-bundle
+          CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
+        run: |
+          set -euo pipefail
+          # Linux's tauri_args doesn't pass `--target` (cargo defaults to
+          # the host arch on Linux), so the .deb lands at
+          # `target/release/bundle/deb/` — NOT under
+          # `target/<rust_target>/release/...` like macOS. Walk only the
+          # dirs that actually exist; passing a non-existent path to
+          # `find` makes it exit non-zero even if it found matches
+          # elsewhere, and pipefail+set-e then silently kills the step
+          # (the v0.1.38 second-run failure mode).
+          DEB=""
+          for dir in \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb"; do
+            if [ -d "$dir" ]; then
+              candidate=$(find "$dir" -name '*.deb' -type f | head -1)
+              if [ -n "$candidate" ]; then DEB="$candidate"; break; fi
+            fi
+          done
+          if [ -z "$DEB" ]; then echo "ERROR: no .deb produced"; exit 1; fi
+          ./scripts/bundle_linux_native_libs.sh "$DEB"
+
+      - name: Re-upload patched assets over tauri-action's drafts
+        if: matrix.crispasr_lib_asset != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          TAG="v${VERSION}"
+          # Walk only directories that actually exist for this matrix
+          # entry: macOS lands artifacts under `target/<rust_target>/`,
+          # Linux lands them under `target/`. Same find-on-missing-dir
+          # gotcha as the Linux Patch step above.
+          find_first() {
+            local pattern="$1"; shift
+            local dir
+            for dir in "$@"; do
+              if [ -d "$dir" ]; then
+                local hit
+                hit=$(find "$dir" -name "$pattern" -type f | head -1)
+                if [ -n "$hit" ]; then echo "$hit"; return 0; fi
+              fi
+            done
+          }
+          DMG=$(find_first '*.dmg' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg")
+          TAR_GZ=$(find_first 'CrispSorter*.app.tar.gz' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos" \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle")
+          DEB=$(find_first '*.deb' \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb")
+          for asset in "$DMG" "$TAR_GZ" "$DEB"; do
+            if [ -n "$asset" ] && [ -f "$asset" ]; then
+              echo "Uploading patched $asset → $TAG"
+              gh release upload "$TAG" "$asset" --clobber --repo "${{ github.repository }}"
+            fi
+          done
+
+  # macOS Intel (x86_64) — runs in parallel but does NOT block publish.
+  # macos-13 runners are chronically queue-starved on GitHub-hosted Actions;
+  # decoupling them prevents a stuck queue from holding the release indefinitely.
+  release-optional:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-13
+            rust_target: x86_64-apple-darwin
+            llama_asset: llama-b8340-bin-macos-x64.tar.gz
+            sidecar_name: llama-server-x86_64-apple-darwin
+            tauri_args: '--target x86_64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+
+    env:
+      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+      # Pin to the release tag whose libcrispembed bundle the
+      # workflow downloads below. Same rationale as CRISPASR_REF.
+      CRISPEMBED_REF: v0.2.6
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      # Pin the CrispASR ref to the release tag whose libcrispasr
+      # bundle we're consuming below. Keeps source-side cargo metadata
+      # (which still needs the sibling checkout for the path-dep
+      # resolution) in lockstep with the binary lib we link against.
+      # v0.5.7 added the missing libcrispasr-{linux,windows}-* lib
+      # bundles that unblock P3.5 Phase 2 (Linux + Windows native
+      # ASR + embedder). Bumping requires verifying the asset names
+      # in the per-matrix `crispasr_lib_asset` entries still resolve.
+      CRISPASR_REF: v0.5.7
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      NO_STRIP: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: _sibling/CrispEmbed
+
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+
+      - name: Download libcrispasr bundle (Unix)
+        if: matrix.crispasr_lib_asset != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pull the per-platform libcrispasr lib bundle that CrispASR's
+          # release publishes and extract it into the path crispasr-sys's
+          # `try_existing_build` walks first — so cargo build skips its
+          # own cmake step entirely and just links against the pre-built
+          # lib. Same `build-flutter-bundle/` convention macOS uses.
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispASR/build-flutter-bundle
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip it
+          # so contents land directly under build-flutter-bundle/.
+          tar -xzf crispasr-libs.tar.gz \
+            -C _sibling/CrispASR/build-flutter-bundle \
+            --strip-components=1
+          echo "Extracted libs:"
+          find _sibling/CrispASR/build-flutter-bundle -maxdepth 4 \
+            \( -name "lib*" -o -name "*.dll" -o -name "*.lib" \) 2>/dev/null | head -30
+
+      - name: Download libcrispasr bundle (Windows)
+        if: matrix.crispasr_lib_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/${{ matrix.crispasr_lib_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile crispasr-libs.tar.gz
+          New-Item -ItemType Directory -Force -Path _sibling/CrispASR/build-flutter-bundle | Out-Null
+          # tar ships with Win10+. --strip-components flattens the
+          # top-level `libcrispasr-windows-*-vulkan/` dir like Unix.
+          tar -xzf crispasr-libs.tar.gz -C _sibling/CrispASR/build-flutter-bundle --strip-components=1
+          Write-Host "Extracted libs:"
+          Get-ChildItem -Recurse _sibling/CrispASR/build-flutter-bundle -Include "*.dll","*.lib" | Select-Object -First 30 FullName | Format-Table -HideTableHeaders
+
+      - name: Download libcrispembed bundle (Unix)
+        if: matrix.crispembed_lib_asset != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CrispEmbed Linux/macOS publish flat tarballs: libcrispembed +
+          # libggml* all at the top level. crispembed-sys's
+          # `try_existing_build` walks `<build>/`, `<build>/build/`, etc.,
+          # and `has_prebuilt` looks for libcrispembed.* directly in
+          # those dirs — so dropping the tarball contents into
+          # `<sibling>/build/` is enough.
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          mkdir -p _sibling/CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C _sibling/CrispEmbed/build
+          echo "Extracted libs:"
+          find _sibling/CrispEmbed/build -maxdepth 2 -name "lib*" 2>/dev/null | head
+
+      - name: Download libcrispembed bundle (Windows)
+        if: matrix.crispembed_lib_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/${{ matrix.crispembed_lib_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile crispembed-libs.zip
+          New-Item -ItemType Directory -Force -Path _sibling/CrispEmbed/build | Out-Null
+          # CrispEmbed Windows zip is FLAT (crispembed.dll, ggml*.dll,
+          # *.lib + include/) — no top-level dir to strip.
+          Expand-Archive -Path crispembed-libs.zip -DestinationPath _sibling/CrispEmbed/build -Force
+          Write-Host "Extracted libs:"
+          Get-ChildItem _sibling/CrispEmbed/build -Include "*.dll","*.lib" -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+
+      - name: Rewrite sibling path deps for CI layout
+        shell: bash
+        run: |
+          python -c "
+          import re, pathlib
+          p = pathlib.Path('src-tauri/Cargo.toml')
+          s = p.read_text()
+          # Handle both '../../CrispEmbed/<sub>' and '../../CrispASR/<sub>'.
+          # The capture group lets us cover crispasr, crispasr-sys, crispembed,
+          # crispembed-sys, etc. without per-sub regex churn.
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispEmbed/\1\"',
+              s,
+          )
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"',
+              r'path = \"../_sibling/CrispASR/\1\"',
+              s,
+          )
+          p.write_text(s)
+          print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
+          print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
+          "
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install macOS dependencies
+        run: brew install protobuf
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: ${{ matrix.rust_target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install cargo-license
+        run: cargo install --locked cargo-license
+
+      - name: Download llama-server sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/bin
+          URL="https://github.com/ggml-org/llama.cpp/releases/download/b8340/${{ matrix.llama_asset }}"
+          echo "Downloading $URL"
+          curl -fL -o llama.tar.gz "$URL"
+          mkdir -p llama-extract
+          tar -xzf llama.tar.gz -C llama-extract
+          SRV=$(find llama-extract -type f -name llama-server | head -n1)
+          if [ -z "$SRV" ]; then
+            echo "ERROR: llama-server not found in tarball"
+            find llama-extract -maxdepth 3 -type f
+            exit 1
+          fi
+          cp "$SRV" "src-tauri/bin/${{ matrix.sidecar_name }}"
+          chmod +x "src-tauri/bin/${{ matrix.sidecar_name }}"
+          find llama-extract -type f -name '*.dylib' -exec cp {} src-tauri/bin/ \;
+          echo "Contents of src-tauri/bin:"
+          ls -la src-tauri/bin/
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'CrispSorter v__VERSION__'
+          releaseBody: 'Automated release from GitHub Actions.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.tauri_args }}
+
+  # Publish the draft once the 3 required platforms finish (success OR failure).
+  # release-optional (macos-13 Intel) runs in parallel and uploads its artifact
+  # if/when it eventually gets a runner, but does not block this step.
+  publish:
+    needs: release-required
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish release draft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          TAG="v${VERSION}"
+          echo "Publishing release ${TAG}…"
+          gh release edit "${TAG}" --draft=false --latest
+          echo "✓ Published ${TAG}"

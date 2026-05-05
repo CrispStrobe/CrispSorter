@@ -229,10 +229,45 @@ impl<'a> Parser<'a> {
 // ── Query builders ─────────────────────────────────────────────────────────
 
 /// Build a query for a single term word.
+/// - `field:foo`    → TermQuery scoped to the named field (PLAN P7.2)
 /// - `foo*` / `fo?` → RegexQuery (wildcard)
 /// - `foo~N`        → FuzzyTermQuery
 /// - `foo`          → TermQuery on body + headings + title (weighted via BoostQuery)
 fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>> {
+    // Field-prefix syntax: `title:foo`, `body:foo`, `headings:foo`.
+    // PLAN P7.2 — restricts the match to a single field instead of the
+    // default boosted union across all three. Phrases inside the value
+    // aren't supported here (the lexer eats the `"` as a separate
+    // Phrase token); use `title:* AND "phrase"` for that effect.
+    if let Some(colon) = word.find(':') {
+        let prefix = &word[..colon];
+        let value = &word[colon + 1..];
+        if !value.is_empty() {
+            let field_opt = match prefix {
+                "title" => Some(fields.title),
+                "headings" | "h" => Some(fields.headings),
+                "body" | "text" => Some(fields.body),
+                _ => None,
+            };
+            if let Some(f) = field_opt {
+                let folded = fold_accents(value);
+                // Wildcards / fuzzy still apply inside a field-scoped term —
+                // recurse through the regular term-query dispatch but with
+                // a single-field SearchFields so the boosted union becomes
+                // a single boosted Term on `f`.
+                let scoped = SearchFields {
+                    title: f,
+                    headings: f,
+                    body: f,
+                };
+                return build_term_query(&folded, &scoped);
+            }
+            // Unknown prefix → fall through to treat the whole `prefix:value`
+            // as a literal term. Surprising but predictable; the alternative
+            // (silently dropping the colon) hides bad queries.
+        }
+    }
+
     let folded = fold_accents(word);
 
     // Fuzzy: foo~N
@@ -587,5 +622,61 @@ mod tests {
         assert!(res.is_ok(), "Leading wildcard * should now be allowed");
         let res2 = build_wildcard("?foo", &fields);
         assert!(res2.is_ok(), "Leading wildcard ? should now be allowed");
+    }
+
+    /// PLAN P7.2 — `field:term` syntax restricts the match to a single
+    /// indexed field instead of the default boosted union across all
+    /// three. The body of the query is still wildcard / fuzzy aware
+    /// because we recurse through `build_term_query` with a
+    /// single-field SearchFields.
+    #[test]
+    fn field_prefix_scopes_to_named_field() {
+        let title_f = tantivy::schema::Field::from_field_id(0);
+        let head_f = tantivy::schema::Field::from_field_id(1);
+        let body_f = tantivy::schema::Field::from_field_id(2);
+        let fields = SearchFields {
+            title: title_f,
+            headings: head_f,
+            body: body_f,
+        };
+
+        // `title:karl` should produce a TermQuery on the title field only,
+        // not the boosted three-way union the bare term `karl` would yield.
+        let q = build_term_query("title:karl", &fields).unwrap();
+        // The boosted union returns a BooleanQuery with 3 Should clauses;
+        // a field-scoped term returns one with all 3 clauses pointing at
+        // the same field (since the recursion still goes through the
+        // boosted-union path with a single-field SearchFields).
+        if let Some(bq) = q.as_any().downcast_ref::<BooleanQuery>() {
+            for (_, sub) in bq.clauses() {
+                // Every leaf TermQuery should be on the title field.
+                let body_terms = extract_body_terms(sub.as_ref(), title_f);
+                let head_terms = extract_body_terms(sub.as_ref(), head_f);
+                let body_field_terms = extract_body_terms(sub.as_ref(), body_f);
+                assert!(
+                    !body_terms.is_empty()
+                        || head_terms.is_empty() && body_field_terms.is_empty(),
+                    "field-scoped term must only emit on the named field"
+                );
+            }
+        } else {
+            panic!("expected a BooleanQuery, got something else");
+        }
+    }
+
+    /// Unknown prefixes (`foo:bar` for non-whitelisted `foo`) fall
+    /// through to be treated as a literal term. Surprising but
+    /// predictable: we'd rather a typo'd field name surface as
+    /// "no results" than silently search the wrong field or throw an
+    /// error mid-typing.
+    #[test]
+    fn field_prefix_unknown_falls_through() {
+        let fields = SearchFields {
+            title: tantivy::schema::Field::from_field_id(0),
+            headings: tantivy::schema::Field::from_field_id(1),
+            body: tantivy::schema::Field::from_field_id(2),
+        };
+        let q = build_term_query("notafield:karl", &fields);
+        assert!(q.is_ok(), "unknown prefix should still produce a query");
     }
 }

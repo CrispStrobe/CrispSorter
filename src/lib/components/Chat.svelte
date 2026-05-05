@@ -3,12 +3,14 @@
     import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
     import { getSetting } from '../store';
     import { i18n } from '../i18n.svelte';
-    import { 
-        Send, User, Bot, Trash2, FileText, 
+    import {
+        Send, User, Bot, Trash2, FileText,
         ChevronRight, ChevronLeft, Cpu, Zap, Search, MessageSquare, Brain,
-        Loader2, Info, ChevronDown, ChevronUp
+        Loader2, Info, ChevronDown, ChevronUp,
+        Mic, MicOff, VolumeX
     } from 'lucide-svelte';
     import { onMount, tick } from 'svelte';
+    import { invoke } from '@tauri-apps/api/core';
     import { getWebLLMLoadedModel } from '../llm/webllm';
     import { getORTLoadedModel } from '../llm/ort';
     import { saveSetting } from '../store';
@@ -103,6 +105,7 @@
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         llmTemperature = await getSetting('llmTemperature', 0.7);
         systemInstruction = await getSetting('systemInstruction', 'You are a helpful AI assistant. Use the provided context to answer questions accurately.');
+        autoSpeakReplies = await getSetting('autoSpeakReplies', false);
 
         const currentProv = providers.find(p => p.id === activeProviderId);
         if (currentProv) {
@@ -126,6 +129,24 @@
                     if (m.text) size += new TextEncoder().encode(m.text).length;
                 });
                 chatHistorySize = size;
+
+                // Auto-speak: fire on the first onMessage tick that lands a
+                // bot reply we haven't spoken yet. Skips streaming partials
+                // by keying on stable index transitions; mid-stream updates
+                // either don't trigger onMessage (deep-chat dispatches only
+                // for completed messages by default) or land at the same
+                // index and are safely no-op'd by the lastSpokenIndex check.
+                if (autoSpeakReplies && msgs.length > 0) {
+                    const lastIdx = msgs.length - 1;
+                    const last = msgs[lastIdx];
+                    const role = (last?.role ?? '').toLowerCase();
+                    const isBot = role === 'ai' || role === 'assistant';
+                    const text = (last?.text ?? '').trim();
+                    if (isBot && text && lastIdx > lastSpokenIndex) {
+                        lastSpokenIndex = lastIdx;
+                        speakBotReply(text);
+                    }
+                }
             };
         }
     });
@@ -184,9 +205,180 @@
         else selectedIds = [...selectedIds, id];
     }
 
-    function clearChat() { 
+    function clearChat() {
         if (chatElement) chatElement.clearMessages();
         chatHistorySize = 0;
+    }
+
+    // ── Voice input (CrispASR push-to-talk) ──────────────────────────────────
+    // The mic button captures via WebAudio, resamples to 16 kHz mono Float32
+    // PCM (the format CrispASR expects), invokes the asr_transcribe Tauri
+    // command, and submits the result through deep-chat. Backend availability
+    // depends on the `crispasr*` cargo feature being enabled at build time;
+    // the Rust command returns a clear error otherwise so the user gets a
+    // toast instead of a silent no-op.
+
+    let asrState = $state<'idle' | 'recording' | 'transcribing'>('idle');
+    let asrAudioCtx: AudioContext | null = null;
+    let asrMediaStream: MediaStream | null = null;
+    let asrSamples: Float32Array[] = [];
+    let asrSampleRate = 48000;
+    let asrError = $state<string | null>(null);
+
+    // ── TTS auto-speak state ─────────────────────────────────────────────────
+    // Watches deep-chat onMessage and, when the toggle is on, ships the
+    // latest bot reply to the platform-native synth (macOS say / Windows
+    // SAPI / Linux espeak). The Rust handler kills any in-flight utterance
+    // when a new one arrives.
+    let autoSpeakReplies = $state(false);
+    let ttsSpeaking = $state(false);
+    let lastSpokenIndex = -1;
+
+    async function startVoiceCapture() {
+        asrError = null;
+        try {
+            asrMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e: any) {
+            asrError = `Microphone access denied: ${e?.message ?? e}`;
+            return;
+        }
+
+        // Use a single AudioContext per recording session; the browser may
+        // pick its own native rate (typically 48000) which we resample on stop.
+        asrAudioCtx = new AudioContext();
+        asrSampleRate = asrAudioCtx.sampleRate;
+        asrSamples = [];
+
+        const source = asrAudioCtx.createMediaStreamSource(asrMediaStream);
+        // ScriptProcessorNode is deprecated but universally supported and
+        // sufficient for short PTT clips. AudioWorklet would be cleaner for
+        // streaming but adds a worklet-module load which complicates packaging.
+        const processor = asrAudioCtx.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (ev) => {
+            const ch = ev.inputBuffer.getChannelData(0);
+            // Copy because the buffer gets reused across callbacks.
+            asrSamples.push(new Float32Array(ch));
+        };
+        source.connect(processor);
+        processor.connect(asrAudioCtx.destination);
+
+        asrState = 'recording';
+    }
+
+    async function stopVoiceCapture() {
+        if (asrState !== 'recording') return;
+        asrState = 'transcribing';
+
+        // Tear down the capture pipeline before resampling — frees the mic LED.
+        try { asrMediaStream?.getTracks().forEach(t => t.stop()); } catch {}
+        asrMediaStream = null;
+
+        // Concatenate captured chunks.
+        const total = asrSamples.reduce((n, c) => n + c.length, 0);
+        const merged = new Float32Array(total);
+        let off = 0;
+        for (const chunk of asrSamples) {
+            merged.set(chunk, off);
+            off += chunk.length;
+        }
+        asrSamples = [];
+
+        try {
+            // Resample to 16 kHz via OfflineAudioContext — handles
+            // anti-aliasing properly. Typical mic rate is 48000.
+            const targetRate = 16000;
+            let pcm16k: Float32Array = merged;
+            if (Math.abs(asrSampleRate - targetRate) > 1) {
+                const offline = new OfflineAudioContext(
+                    1,
+                    Math.max(1, Math.ceil((merged.length * targetRate) / asrSampleRate)),
+                    targetRate
+                );
+                const buf = offline.createBuffer(1, merged.length, asrSampleRate);
+                buf.copyToChannel(merged, 0);
+                const src = offline.createBufferSource();
+                src.buffer = buf;
+                src.connect(offline.destination);
+                src.start();
+                const rendered = await offline.startRendering();
+                pcm16k = rendered.getChannelData(0);
+            }
+
+            // tauri's invoke serializes Float32Array as Vec<f32> on the Rust
+            // side, so this just works without an intermediate JSON encode.
+            const text = await invoke<string>('asr_transcribe', { pcm: Array.from(pcm16k) });
+            const trimmed = (text ?? '').trim();
+            if (trimmed && chatElement) {
+                // deep-chat exposes submitUserMessage to inject a chat-as-user
+                // message that goes through the normal request handler.
+                try { chatElement.submitUserMessage({ text: trimmed }); }
+                catch (e) { console.warn('[asr] submitUserMessage failed', e); }
+            } else if (!trimmed) {
+                asrError = 'No speech detected';
+            }
+        } catch (e: any) {
+            asrError = `Transcription failed: ${e?.message ?? e}`;
+            console.error('[asr]', e);
+        } finally {
+            try { asrAudioCtx?.close(); } catch {}
+            asrAudioCtx = null;
+            asrState = 'idle';
+        }
+    }
+
+    function toggleVoiceCapture() {
+        if (asrState === 'idle') startVoiceCapture();
+        else if (asrState === 'recording') stopVoiceCapture();
+    }
+
+    // ── TTS bridge ───────────────────────────────────────────────────────────
+    // Strips Markdown/HTML before handing off so the synth pronounces words,
+    // not asterisks and angle brackets. Crude but good enough for chat replies;
+    // a fully native speech-friendly transformation would need a proper MD AST.
+    function plainifyForSpeech(text: string): string {
+        return text
+            // Code fences and inline code
+            .replace(/```[\s\S]*?```/g, ' ')
+            .replace(/`([^`]+)`/g, '$1')
+            // Headings + emphasis
+            .replace(/^#{1,6}\s*/gm, '')
+            .replace(/\*\*([^*]+)\*\*/g, '$1')
+            .replace(/\*([^*]+)\*/g, '$1')
+            .replace(/__([^_]+)__/g, '$1')
+            .replace(/_([^_]+)_/g, '$1')
+            // Links: keep the link text only
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+            // HTML tags
+            .replace(/<[^>]+>/g, ' ')
+            // Collapse whitespace
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    async function speakBotReply(text: string) {
+        const clean = plainifyForSpeech(text);
+        if (!clean) return;
+        try {
+            ttsSpeaking = true;
+            await invoke('tts_speak', { text: clean });
+        } catch (e) {
+            console.warn('[tts] speak failed', e);
+        } finally {
+            // We can't cleanly tell when the synth finishes (it runs detached
+            // on the Rust side). Reset the flag a moment later so the Stop
+            // button stays enabled while plausibly speaking.
+            setTimeout(() => { ttsSpeaking = false; }, 500);
+        }
+    }
+
+    async function stopSpeaking() {
+        try {
+            await invoke('tts_stop');
+        } catch (e) {
+            console.warn('[tts] stop failed', e);
+        } finally {
+            ttsSpeaking = false;
+        }
     }
 
     const activeProvider = $derived(providers.find(p => p.id === activeProviderId) || providers[0]);
@@ -268,8 +460,16 @@
                         <button class="context-item" class:selected={selectedIds.includes(item.id)} onclick={() => toggleContext(item.id)}>
                             <FileText size={14} />
                             <div class="context-item-info">
-                                <span class="file-name">{item.originalName}</span>
-                                <span class="file-size-hint">{item.size > 0 ? formatSize(item.size) : (item.extractedText ? formatSize(item.extractedText.length) : '—')}</span>
+                                {#if item.suggestedTitle}
+                                    <span class="file-name">{item.suggestedTitle}</span>
+                                    {#if item.suggestedAuthor}
+                                        <span class="file-meta-hint">{item.suggestedAuthor}</span>
+                                    {/if}
+                                    <span class="file-size-hint">{item.originalName}</span>
+                                {:else}
+                                    <span class="file-name">{item.originalName}</span>
+                                    <span class="file-size-hint">{item.size > 0 ? formatSize(item.size) : (item.extractedText ? formatSize(item.extractedText.length) : '—')}</span>
+                                {/if}
                             </div>
                         </button>
                     {/each}
@@ -283,12 +483,39 @@
             <div class="header-info">
                 <h2>{i18n.t.chat.title}</h2>
                 <div class="context-stats">
-                    <span class="stat-badge">Docs: {selectedIds.length} ({formatSize(docContextSize)})</span>
-                    <span class="stat-badge history">Chat: {formatSize(chatHistorySize)}</span>
+                    <span class="stat-badge">{i18n.t.chat.docs} {selectedIds.length} ({formatSize(docContextSize)})</span>
+                    <span class="stat-badge history">{i18n.t.chat.history}: {formatSize(chatHistorySize)}</span>
                 </div>
             </div>
-            <button class="icon-btn danger" onclick={clearChat} title="Clear Messages"><Trash2 size={16} /></button>
+            <div style="display:flex; align-items:center; gap:6px;">
+                {#if ttsSpeaking}
+                    <button
+                        class="icon-btn tts-speaking"
+                        onclick={stopSpeaking}
+                        title={i18n.t.chat.tts_stop}>
+                        <VolumeX size={16} />
+                    </button>
+                {/if}
+                <button
+                    class="icon-btn"
+                    class:asr-recording={asrState === 'recording'}
+                    onclick={toggleVoiceCapture}
+                    disabled={asrState === 'transcribing'}
+                    title={asrState === 'recording' ? i18n.t.chat.voice_stop : (asrState === 'transcribing' ? i18n.t.chat.voice_busy : i18n.t.chat.voice_start)}>
+                    {#if asrState === 'transcribing'}
+                        <Loader2 size={16} class="spin" />
+                    {:else if asrState === 'recording'}
+                        <MicOff size={16} />
+                    {:else}
+                        <Mic size={16} />
+                    {/if}
+                </button>
+                <button class="icon-btn danger" onclick={clearChat} title={i18n.t.chat.clear}><Trash2 size={16} /></button>
+            </div>
         </div>
+        {#if asrError}
+            <div class="asr-error" role="alert">{asrError}</div>
+        {/if}
 
         <div class="chat-content">
             <deep-chat 
@@ -326,7 +553,8 @@
     .context-item:hover { background: #27272a; color: white; }
     .context-item.selected { background: #1e3a8a33; border-color: #1e3a8a; color: #3b82f6; }
     .context-item-info { display: flex; flex-direction: column; align-items: flex-start; overflow: hidden; flex: 1; }
-    .file-size-hint { font-size: 0.65rem; color: #52525b; margin-top: 1px; }
+    .file-size-hint { font-size: 0.65rem; color: #52525b; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+    .file-meta-hint { font-size: 0.65rem; color: #71717a; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     .chat-main { flex: 1; display: flex; flex-direction: column; background: #09090b; height: 100%; width: 100%; overflow: hidden; min-width: 0; position: relative; }
     .chat-header { height: 64px; padding: 0 24px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; transition: padding-left 0.3s ease; flex-shrink: 0; }
@@ -339,4 +567,12 @@
     .chat-content { flex: 1; width: 100%; position: relative; min-height: 0; }
     .icon-btn { background: transparent; border: none; color: #71717a; cursor: pointer; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
     .icon-btn:hover { background: #27272a; color: white; }
+    .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .icon-btn.asr-recording { color: #ef4444; background: #7f1d1d33; }
+    .icon-btn.asr-recording:hover { background: #7f1d1d55; }
+    .icon-btn.tts-speaking { color: #3b82f6; background: #1e3a8a33; }
+    .icon-btn.tts-speaking:hover { background: #1e3a8a55; }
+    .asr-error { padding: 6px 16px; background: #7f1d1d33; color: #fca5a5; font-size: 0.75rem; border-bottom: 1px solid #7f1d1d; }
+    :global(.spin) { animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

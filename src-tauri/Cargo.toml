@@ -1,8 +1,9 @@
 [package]
 name = "tauri-app"
-version = "0.1.21"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.1.38"
+description = "CrispSorter — local-first AI document organizer"
+authors = ["CrispSorter contributors"]
+license = "AGPL-3.0-or-later"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -43,6 +44,29 @@ zip = "7"
 # EXIF reader for L2 metadata extraction from JPG / TIFF / WebP / PNG
 # images. Pure Rust, no system deps.
 kamadak-exif = "0.6"
+# `lopdf` is a transitive dep of pdf-extract; pinned here to read the
+# /Info dictionary (Title / Author / Subject / Keywords / CreationDate)
+# directly. Used by the extract_pdf_metadata Tauri command.
+lopdf       = "0.38"
+# Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
+# ReadDirectoryChangesW on Windows). Used by the folder-watcher
+# feature to auto-add new files into the batch.
+notify      = "8"
+# Streaming XML parser used to read the XMP metadata stream embedded in
+# PDFs. quick-xml is already a transitive dep; pinning it explicitly
+# guards against future churn from indirect upgrades.
+quick-xml   = "0.38"
+# ── Catalog (Cathy/Catfish .caf) — drive cataloging + dedup ─────────────────
+# jwalk is rayon-backed so a full hard-drive scan uses every core; rayon
+# itself is already in our tree (transitively via lance/tantivy/fastembed)
+# but pinned here so the catalog module's parallel hashing path doesn't
+# silently break if a transitive drops it.
+jwalk       = "0.8"
+rayon       = "1.10"
+md-5        = "0.10"
+sha1        = "0.10"
+sha2        = "0.10"
+hex         = "0.4"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.
@@ -65,6 +89,10 @@ ort          = "=2.0.0-rc.11"
 # tokenizers + ndarray are transitive via fastembed; listed explicitly for OrtPathEmbedder.
 tokenizers   = { version = "0.22", default-features = false, features = ["onig"] }
 ndarray      = "0.17"
+ocrs = "0.12.2"
+rten = "0.24.0"
+image = "0.25.10"
+clap = { version = "4.6.1", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -79,10 +107,17 @@ sysinfo = "0.33"
 #   crispembed-cuda     — CUDA (NVIDIA)
 [features]
 default = []
-crispembed        = ["dep:crispembed"]
-crispembed-vulkan = ["crispembed", "crispembed/vulkan"]
-crispembed-metal  = ["crispembed", "crispembed/metal"]
-crispembed-cuda   = ["crispembed", "crispembed/cuda"]
+crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
+crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
+crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
+crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
+
+# ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
+# Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
+crispasr          = ["dep:crispasr", "dep:crispasr-sys"]
+crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
+crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
+crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 
 # ── Dev build size ──────────────────────────────────────────────────────────
 # Strip debug info from third-party deps only (keep it for our own crate).
@@ -109,5 +144,37 @@ mistralrs = { version = "0.7.0" }
 #   cargo build --features crispembed-metal    (macOS)
 [dependencies.crispembed]
 path     = "../../CrispEmbed/crispembed"
+optional = true
+
+# Direct dep on crispembed-sys (mirrors crispasr-sys/crispasr) so this
+# package's build.rs sees `DEP_CRISPEMBED_LIB_DIR` from the
+# `links = "crispembed"` metadata channel — required for the runtime
+# rpath wiring in src-tauri/build.rs to actually fire (Cargo only
+# forwards links metadata to immediate dependents). The crate itself
+# is not used from our Rust code; `crispembed` re-exports what we need.
+[dependencies.crispembed-sys]
+path     = "../../CrispEmbed/crispembed-sys"
+optional = true
+
+# ── CrispASR (optional, on-device speech-to-text) ───────────────────────────
+# Path dep to the sibling repo, mirroring the CrispEmbed integration. The
+# `crispasr` cargo feature opts this in; sub-features pick the GGML backend.
+# Enable locally with:
+#   cargo build --features crispasr-vulkan   (Windows / Linux)
+#   cargo build --features crispasr-metal    (macOS)
+[dependencies.crispasr]
+path     = "../../CrispASR/crispasr"
+optional = true
+
+# Direct dep on crispasr-sys (mirrors `crispasr`'s own dep) so this
+# package's build.rs sees `DEP_CRISPASR_LIB_DIR`, which crispasr-sys's
+# build script publishes via its `links = "crispasr"` metadata channel.
+# We need that to emit the right `cargo:rustc-link-arg=-Wl,-rpath,…`
+# entries for the final binary — Cargo only forwards `links` metadata
+# to *direct* dependents, so a transitive path won't work. The crate
+# itself is unused from our Rust code; `crispasr` re-exports what we
+# need.
+[dependencies.crispasr-sys]
+path     = "../../CrispASR/crispasr-sys"
 optional = true
 

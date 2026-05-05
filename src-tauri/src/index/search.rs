@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use super::embedder::Embedder;
 use super::fts_index::FtsIndex;
 use super::local_index::LocalIndex;
+use super::reranker::RerankerHandle;
 use super::schema::{SearchFilters, SearchResult};
 
 // ── SearchEngine ────────────────────────────────────────────────────────────
@@ -22,6 +23,11 @@ pub struct SearchEngine {
     /// Vector / hybrid search return a clear error in that case;
     /// text-only (BM25) still works.
     pub embedder: Option<Arc<Mutex<Embedder>>>,
+    /// Optional cross-encoder reranker. When set, each search method fetches
+    /// `rerank_top_n` candidates (instead of `limit`), scores them with the
+    /// reranker, then truncates to the requested `limit`.
+    reranker: Option<RerankerHandle>,
+    rerank_top_n: usize,
 }
 
 impl SearchEngine {
@@ -34,7 +40,86 @@ impl SearchEngine {
             fts,
             vector,
             embedder,
+            reranker: None,
+            rerank_top_n: 50,
         }
+    }
+
+    /// Enable cross-encoder reranking. `top_n` controls how many candidates
+    /// are scored per query (recall vs latency tradeoff; default 50).
+    pub fn with_reranker(mut self, handle: RerankerHandle, top_n: usize) -> Self {
+        self.reranker = Some(handle);
+        self.rerank_top_n = top_n.max(1);
+        self
+    }
+
+    fn fetch_limit(&self, requested: usize) -> usize {
+        if self.reranker.is_some() {
+            self.rerank_top_n.max(requested)
+        } else {
+            requested
+        }
+    }
+
+    /// If a reranker is configured, score `results` against `query` and
+    /// re-sort by reranker score descending. Items that the reranker scored
+    /// as NaN (load failure / scoring error) keep their original RRF order
+    /// at the back of the list.
+    async fn maybe_rerank(
+        &self,
+        query: &str,
+        mut results: Vec<SearchResult>,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        let Some(ref handle) = self.reranker else {
+            results.truncate(limit);
+            return results;
+        };
+        if results.is_empty() {
+            return results;
+        }
+        // Cap to top_n: the reranker only needs to score the candidate window,
+        // not the entire result set. If `fetch_limit` already bounded this,
+        // the truncation is a no-op.
+        let n = results.len().min(self.rerank_top_n);
+        results.truncate(n);
+
+        let docs: Vec<&str> = results.iter().map(|r| r.snippet.as_str()).collect();
+        let scores = handle.score_batch(query, &docs).await;
+
+        // Annotate each result with its reranker score; preserve the RRF
+        // score for the NaN fallback path so we keep stable ordering.
+        let mut paired: Vec<(SearchResult, f32, f32)> = results
+            .into_iter()
+            .zip(scores.into_iter())
+            .map(|(r, rr)| {
+                let rrf = r.score;
+                (r, rr, rrf)
+            })
+            .collect();
+
+        paired.sort_by(|a, b| {
+            // Valid scores first, sorted desc; NaN entries fall to the back
+            // and tie-break by original RRF score.
+            match (a.1.is_nan(), b.1.is_nan()) {
+                (false, false) => b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal),
+                (true, true) => b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal),
+                (false, true) => std::cmp::Ordering::Less,
+                (true, false) => std::cmp::Ordering::Greater,
+            }
+        });
+
+        let mut out: Vec<SearchResult> = paired
+            .into_iter()
+            .map(|(mut r, rr, rrf)| {
+                // Replace .score with reranker score when available; the
+                // RRF score is no longer meaningful once we've reranked.
+                r.score = if rr.is_nan() { rrf } else { rr };
+                r
+            })
+            .collect();
+        out.truncate(limit);
+        out
     }
 
     // ── Text-only search ───────────────────────────────────────────────────
@@ -48,7 +133,10 @@ impl SearchEngine {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let hits = self.fts.search(query, filters, limit)?;
+        // When reranking is on, pull a wider candidate window so the cross
+        // encoder has enough material to re-sort to `limit`.
+        let inner_limit = self.fetch_limit(limit);
+        let hits = self.fts.search(query, filters, inner_limit)?;
         if hits.is_empty() {
             return Ok(vec![]);
         }
@@ -79,8 +167,7 @@ impl SearchEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(limit);
-        Ok(results)
+        Ok(self.maybe_rerank(query, results, limit).await)
     }
 
     // ── Vector-only search ─────────────────────────────────────────────────
@@ -93,7 +180,12 @@ impl SearchEngine {
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_query(query_text).await?;
-        self.vector.search_vector(&embedding, filters, limit).await
+        let inner_limit = self.fetch_limit(limit);
+        let results = self
+            .vector
+            .search_vector(&embedding, filters, inner_limit)
+            .await?;
+        Ok(self.maybe_rerank(query_text, results, limit).await)
     }
 
     // ── Hybrid search (RRF) ────────────────────────────────────────────────
@@ -115,6 +207,11 @@ impl SearchEngine {
         // Embed first, then run both searches concurrently.
         let embedding = self.embed_query(query_text).await?;
 
+        // When reranking is on, pull a wider candidate window so the cross
+        // encoder has enough material to re-sort to `limit`. The internal
+        // *2 multiplier still applies on top so RRF has slack on each side.
+        let inner_limit = self.fetch_limit(limit);
+
         let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
         let q_owned = query_text.to_owned();
@@ -122,11 +219,12 @@ impl SearchEngine {
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();
 
-        let fts_task =
-            tokio::spawn(async move { fts_clone.search(&q_owned, &filters_fts, limit * 2) });
+        let fts_task = tokio::spawn(async move {
+            fts_clone.search(&q_owned, &filters_fts, inner_limit * 2)
+        });
         let vec_task = tokio::spawn(async move {
             vec_clone
-                .search_vector(&emb_clone, &filters_vec, limit * 2)
+                .search_vector(&emb_clone, &filters_vec, inner_limit * 2)
                 .await
         });
 
@@ -134,8 +232,23 @@ impl SearchEngine {
         let fts_hits = fts_result?;
         let vec_hits = vec_result?;
 
-        // RRF merge → (doc_id, rrf_score)
-        let merged = rrf_merge(&fts_hits, &vec_hits, 60, limit);
+        // Optional 3rd modality: BGE-M3 / SPLADE sparse retrieval, scored on
+        // the union of FTS+ANN candidates. Cheap (no extra DB scan beyond
+        // what we'd already need to hydrate snippets) and only runs when the
+        // active embedder has a sparse head.
+        let sparse_hits = self
+            .maybe_sparse_search(query_text, &fts_hits, &vec_hits, filters, inner_limit)
+            .await;
+
+        // RRF merge — 2-way (no sparse) or 3-way (with sparse).
+        let mut lists: Vec<Vec<String>> = vec![
+            doc_ids_from_fts(&fts_hits),
+            doc_ids_from_results(&vec_hits),
+        ];
+        if let Some(ref sparse) = sparse_hits {
+            lists.push(doc_ids_from_results(sparse));
+        }
+        let merged = rrf_merge_n(&lists, 60, inner_limit);
         if merged.is_empty() {
             return Ok(vec![]);
         }
@@ -200,13 +313,65 @@ impl SearchEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        results.truncate(limit);
-        Ok(results)
+        Ok(self.maybe_rerank(query_text, results, limit).await)
     }
 
     // ── Private helpers ────────────────────────────────────────────────────
 
+    /// Encode `text` as a sparse query vector if the active embedder has a
+    /// sparse head, then score it against the union of FTS + ANN candidates
+    /// using `LocalIndex::search_sparse_in_pool`. Returns `None` when the
+    /// embedder is missing, dense-only, or any step fails (sparse is purely
+    /// additive).
+    async fn maybe_sparse_search(
+        &self,
+        query_text: &str,
+        fts_hits: &[super::fts_index::FtsHit],
+        vec_hits: &[SearchResult],
+        filters: &super::schema::SearchFilters,
+        limit: usize,
+    ) -> Option<Vec<SearchResult>> {
+        let embedder = self.embedder.as_ref()?;
+        let mut emb = embedder.lock().await;
+        if !emb.has_sparse() {
+            return None;
+        }
+        // BGE-M3 / SPLADE are trained without prefixes — pass query through as-is.
+        let mut sparse_vecs = match emb.embed_sparse(vec![query_text.to_owned()]) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[search] sparse query embed failed, skipping: {e:#}");
+                return None;
+            }
+        };
+        drop(emb);
+        let sparse_q = sparse_vecs.pop().flatten()?;
+
+        // Union of doc_ids from both retrieval sources, dedup'd.
+        let mut pool: std::collections::BTreeSet<String> =
+            fts_hits.iter().map(|h| h.doc_id.clone()).collect();
+        pool.extend(vec_hits.iter().map(|r| r.doc_id.clone()));
+        let pool: Vec<String> = pool.into_iter().collect();
+        if pool.is_empty() {
+            return None;
+        }
+
+        match self
+            .vector
+            .search_sparse_in_pool(&sparse_q, &pool, filters, limit)
+            .await
+        {
+            Ok(hits) if !hits.is_empty() => Some(hits),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!("[search] sparse pool scoring failed, skipping: {e:#}");
+                None
+            }
+        }
+    }
+
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        use super::embedder::EmbedRole;
         let embedder = self.embedder.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Vector search needs an embedder. Enable \
@@ -215,7 +380,7 @@ impl SearchEngine {
             )
         })?;
         let mut emb = embedder.lock().await;
-        let dense = emb.embed_dense(vec![text.to_owned()])?;
+        let dense = emb.embed_dense(vec![text.to_owned()], EmbedRole::Query)?;
         dense
             .vectors
             .into_iter()
@@ -226,50 +391,56 @@ impl SearchEngine {
 
 // ── RRF ────────────────────────────────────────────────────────────────────
 
-/// Reciprocal Rank Fusion.
-///
-/// `fts_hits`  — ranked list from Tantivy (index 0 = best)
-/// `vec_hits`  — ranked list from LanceDB ANN (index 0 = best)
-/// `k`         — RRF constant (typically 60)
-///
-/// Returns a list of (doc_id, rrf_score) sorted by score descending, truncated
-/// to `limit` entries.
+/// Two-way RRF kept for the legacy bug-fix test below. Production code
+/// (search_hybrid) uses `rrf_merge_n` directly so the same fusion logic
+/// covers 2-way (no sparse) and 3-way (with sparse) without duplication.
+#[cfg(test)]
 fn rrf_merge(
     fts_hits: &[super::fts_index::FtsHit],
     vec_hits: &[SearchResult],
     k: usize,
     limit: usize,
 ) -> Vec<(String, f32)> {
+    rrf_merge_n(
+        &[
+            doc_ids_from_fts(fts_hits),
+            doc_ids_from_results(vec_hits),
+        ],
+        k,
+        limit,
+    )
+}
+
+/// Generalized N-way Reciprocal Rank Fusion. Each list is a slice of doc_ids
+/// already sorted best-first. Per-list deduplication keeps only the best rank
+/// for each document, so a doc appearing as multiple chunks in the same list
+/// doesn't bloat its score. Used to fuse FTS + dense ANN + sparse signals.
+fn rrf_merge_n(lists: &[Vec<String>], k: usize, limit: usize) -> Vec<(String, f32)> {
     let mut scores: HashMap<String, f32> = HashMap::new();
 
-    // Deduplicate docs per source: only the BEST rank for a document in each source
-    // should contribute to its RRF score. Summing multiple chunks from the same doc
-    // (bloat) incorrectly inflates its rank.
-
-    let mut seen_fts = HashMap::new();
-    for (rank, hit) in fts_hits.iter().enumerate() {
-        // Since fts_hits is already sorted, first occurrence is best rank.
-        seen_fts.entry(hit.doc_id.clone()).or_insert(rank);
-    }
-    for (doc_id, rank) in seen_fts {
-        let entry = scores.entry(doc_id).or_insert(0.0);
-        *entry += 1.0 / (k + rank + 1) as f32;
-    }
-
-    let mut seen_vec = HashMap::new();
-    for (rank, hit) in vec_hits.iter().enumerate() {
-        // Since vec_hits is already sorted, first occurrence is best rank.
-        seen_vec.entry(hit.doc_id.clone()).or_insert(rank);
-    }
-    for (doc_id, rank) in seen_vec {
-        let entry = scores.entry(doc_id).or_insert(0.0);
-        *entry += 1.0 / (k + rank + 1) as f32;
+    for list in lists {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for (rank, doc_id) in list.iter().enumerate() {
+            seen.entry(doc_id.clone()).or_insert(rank);
+        }
+        for (doc_id, rank) in seen {
+            let entry = scores.entry(doc_id).or_insert(0.0);
+            *entry += 1.0 / (k + rank + 1) as f32;
+        }
     }
 
     let mut ranked: Vec<(String, f32)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     ranked.truncate(limit);
     ranked
+}
+
+fn doc_ids_from_fts(hits: &[super::fts_index::FtsHit]) -> Vec<String> {
+    hits.iter().map(|h| h.doc_id.clone()).collect()
+}
+
+fn doc_ids_from_results(results: &[SearchResult]) -> Vec<String> {
+    results.iter().map(|r| r.doc_id.clone()).collect()
 }
 
 // ── Pure-logic tests ────────────────────────────────────────────────────────
@@ -306,6 +477,8 @@ mod tests {
                 score: 1.0 / (i + 1) as f32,
                 chunk_index: 0,
                 metadata_json: None,
+                catalog_source: None,
+                volume_id: None,
             })
             .collect()
     }
@@ -331,6 +504,8 @@ mod tests {
                 score: 0.9,
                 chunk_index: 0,
                 metadata_json: None,
+                catalog_source: None,
+                volume_id: None,
             });
         }
         vec.push(SearchResult {
@@ -347,6 +522,8 @@ mod tests {
             score: 0.95,
             chunk_index: 0,
             metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);
@@ -396,5 +573,37 @@ mod tests {
     fn rrf_empty_lists() {
         let merged = rrf_merge(&[], &[], 60, 10);
         assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn rrf_three_way_boosts_consensus_doc() {
+        // doc "x" appears in all three lists → highest RRF
+        // doc "y" appears in two lists; doc "z" only in one
+        let fts: Vec<String> = vec!["x".into(), "y".into()];
+        let vec: Vec<String> = vec!["x".into(), "y".into(), "z".into()];
+        let sparse: Vec<String> = vec!["x".into(), "z".into()];
+        let merged = rrf_merge_n(&[fts, vec, sparse], 60, 10);
+        let x = merged.iter().find(|(id, _)| id == "x").unwrap().1;
+        let y = merged.iter().find(|(id, _)| id == "y").unwrap().1;
+        let z = merged.iter().find(|(id, _)| id == "z").unwrap().1;
+        assert!(x > y, "x (3 lists) should beat y (2 lists)");
+        assert!(y > z, "y (2 lists) should beat z (1 list)");
+    }
+
+    #[test]
+    fn rrf_n_handles_zero_lists() {
+        let merged = rrf_merge_n(&[], 60, 10);
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn rrf_n_dedupes_within_list() {
+        // A doc appearing twice in the same list should only contribute its
+        // best rank — not be summed across chunks.
+        let bloated: Vec<String> = vec!["a".into(); 5];
+        let single: Vec<String> = vec!["a".into()];
+        let merged = rrf_merge_n(&[bloated], 60, 5);
+        let merged_single = rrf_merge_n(&[single], 60, 5);
+        assert!((merged[0].1 - merged_single[0].1).abs() < 1e-6);
     }
 }

@@ -2,6 +2,7 @@ import { fetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
 import { queryWebLLM, getWebLLMLoadedModel } from './webllm';
 import { queryORT, getORTLoadedModel } from './ort';
+import { flog } from '../log';
 
 export interface LLMProvider {
     id: string;
@@ -108,14 +109,23 @@ export class LLMClient {
         const retryAfterHeader = headers.get('retry-after') || headers.get('Retry-After');
         if (retryAfterHeader) {
             const secs = parseFloat(retryAfterHeader);
-            if (!isNaN(secs)) return Math.ceil(secs * 1000) + 200;
+            if (!isNaN(secs)) return Math.min(Math.ceil(secs * 1000) + 200, 90_000);
         }
         // Parse from Groq/OpenAI error body: "Please try again in 847.5ms" or "1.5s"
         const msMatch = errorText.match(/try again in ([\d.]+)ms/i);
-        if (msMatch) return Math.ceil(parseFloat(msMatch[1])) + 500;
+        if (msMatch) return Math.min(Math.ceil(parseFloat(msMatch[1])) + 500, 90_000);
         const sMatch = errorText.match(/try again in ([\d.]+)s/i);
-        if (sMatch) return Math.ceil(parseFloat(sMatch[1]) * 1000) + 500;
+        if (sMatch) return Math.min(Math.ceil(parseFloat(sMatch[1]) * 1000) + 500, 90_000);
         return 3000; // default 3s
+    }
+
+    // Sleep that unblocks immediately when signal fires.
+    private abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+            const t = setTimeout(resolve, ms);
+            signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+        });
     }
 
     private stripThinking(text: string): string {
@@ -172,14 +182,14 @@ export class LLMClient {
         }
     }
 
-    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3): Promise<string> {
-        console.log(`[LLMClient] query: provider=${providerId}, model=${modelId}`);
-        console.log(`[LLMClient] prompt length: ${prompt.length}`);
-        
+    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal): Promise<string> {
+        flog('info', `LLM query: provider=${providerId} model=${modelId} prompt_len=${prompt.length}`);
+
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
         if (providerId === 'webllm') {
             const loaded = getWebLLMLoadedModel();
             if (!loaded) throw new Error('WebLLM: no model loaded — open Settings and click Load.');
-            console.log(`[LLMClient] WebLLM query using model: ${loaded}`);
             const result = await queryWebLLM(prompt);
             return this.stripThinking(result);
         }
@@ -187,28 +197,38 @@ export class LLMClient {
         if (providerId === 'ort') {
             const loaded = getORTLoadedModel();
             if (!loaded) throw new Error('ORT: no model loaded — open Settings and click Load.');
-            console.log(`[LLMClient] ORT query using model: ${loaded}`);
             const result = await queryORT(prompt);
             return this.stripThinking(result);
         }
 
         if (providerId === 'mistralrs') {
-            console.log(`[LLMClient] Invoking native mistral.rs engine for local model...`);
             const startTime = Date.now();
+            const invokePromise = invoke<string>('run_mistralrs_query', {
+                modelPath: modelId,
+                prompt,
+                maxTokens: 512,
+                noThinking: this.noThinking,
+            });
+            // Race against abort signal and 3-minute timeout
+            const races: Promise<any>[] = [
+                invokePromise,
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('LLM_TIMEOUT: mistralrs took >3 min')), 3 * 60 * 1000)
+                )
+            ];
+            if (signal) {
+                races.push(new Promise<never>((_, reject) => {
+                    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+                    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+                }));
+            }
             try {
-                const result = await invoke('run_mistralrs_query', {
-                    modelPath: modelId,
-                    prompt: prompt,
-                    maxTokens: 512,
-                    noThinking: this.noThinking,
-                });
-                const duration = Date.now() - startTime;
-                console.log(`[LLMClient] Native query successful in ${duration}ms. Result length: ${String(result).length}`);
+                const result = await Promise.race(races);
+                flog('info', `mistralrs done in ${Date.now() - startTime}ms, result_len=${String(result).length}`);
                 return this.stripThinking(String(result));
             } catch (error: any) {
-                const duration = Date.now() - startTime;
-                console.error(`[LLMClient] Native query failed after ${duration}ms:`, error);
-                throw new Error(`mistral.rs error: ${error}`);
+                flog('error', `mistralrs failed after ${Date.now() - startTime}ms: ${error?.message ?? error}`);
+                throw error?.name === 'AbortError' ? error : new Error(`mistral.rs error: ${error}`);
             }
         }
 
@@ -216,19 +236,20 @@ export class LLMClient {
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
-        
+
         const isLocal = ['ollama', 'llamacpp', 'mlx'].includes(providerId);
-        // Local providers: single attempt, long connect timeout (server is either up or not)
-        // Remote providers: 3 retries with backoff
         const maxRetries = isLocal ? 1 : 3;
+        // Per-request timeout: 3 min for local (model might be slow), 60s for remote
+        const requestTimeoutMs = isLocal ? 3 * 60 * 1000 : 60 * 1000;
         let lastError = null;
 
         let rateLimitRetries = 0;
         const MAX_RL_RETRIES = 6;
 
         for (let attempt = 0; attempt < maxRetries; attempt++) {
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             try {
-                console.log(`[LLMClient] POST ${baseUrl}/chat/completions (Attempt ${attempt + 1})`);
+                flog('info', `POST ${baseUrl}/chat/completions (attempt ${attempt + 1})`);
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
                 if (key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) headers['Authorization'] = `Bearer ${key}`;
 
@@ -236,50 +257,64 @@ export class LLMClient {
                 if (this.noThinking) messages.push({ role: 'system', content: '/no_think' });
                 messages.push({ role: 'user', content: prompt });
 
-                const response = await fetch(`${baseUrl}/chat/completions`, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify({
-                        model: modelId,
-                        messages,
-                        temperature: temperature,
-                        stream: false
-                    }),
-                    connectTimeout: isLocal ? 30000 : 15000
-                });
+                // Combine external abort signal with per-request timeout
+                const reqController = new AbortController();
+                const timeoutId = setTimeout(() => reqController.abort(new Error('LLM_TIMEOUT')), requestTimeoutMs);
+                if (signal) {
+                    if (signal.aborted) { clearTimeout(timeoutId); throw new DOMException('Aborted', 'AbortError'); }
+                    signal.addEventListener('abort', () => reqController.abort(signal.reason), { once: true });
+                }
+
+                let response: Response;
+                try {
+                    response = await fetch(`${baseUrl}/chat/completions`, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({ model: modelId, messages, temperature, stream: false }),
+                        connectTimeout: isLocal ? 30000 : 15000,
+                        signal: reqController.signal,
+                    });
+                } finally {
+                    clearTimeout(timeoutId);
+                }
 
                 if (response.status === 429 && rateLimitRetries < MAX_RL_RETRIES) {
+                    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
                     rateLimitRetries++;
                     const errorText = await response.text();
                     const waitMs = this.getRetryAfterMs(response.headers, errorText);
-                    console.warn(`[LLMClient] Rate limited (429). Waiting ${waitMs}ms (rl-retry ${rateLimitRetries}/${MAX_RL_RETRIES})...`);
-                    await new Promise(resolve => setTimeout(resolve, waitMs));
-                    attempt--; // don't consume a regular attempt slot for rate limiting
+                    flog('warn', `Rate limited (429). Waiting ${waitMs}ms (rl-retry ${rateLimitRetries}/${MAX_RL_RETRIES})`);
+                    await this.abortableSleep(waitMs, signal);
+                    attempt--;
                     continue;
                 }
 
                 if (!response.ok) {
                     const errorText = await response.text();
-                    console.error(`[LLMClient] Query failed: ${response.status} ${errorText}`);
+                    flog('error', `LLM HTTP ${response.status} (${providerId}): ${errorText}`);
                     throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
                 }
 
                 const data = await response.json();
-                console.log(`[LLMClient] Query success.`);
+                flog('info', `LLM query success (${providerId})`);
                 const content = data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.reasoning_content ?? '';
                 return this.stripThinking(content);
             } catch (error: any) {
+                // Don't retry on user abort or timeout — surface immediately
+                if (error?.name === 'AbortError' || error?.message?.includes('LLM_TIMEOUT')) {
+                    flog('warn', `LLM query aborted/timed out (${providerId}): ${error.message}`);
+                    throw error;
+                }
                 lastError = error;
-                console.warn(`[LLMClient] Attempt ${attempt + 1} failed for ${providerId}:`, error.message || error);
+                flog('warn', `LLM attempt ${attempt + 1} failed (${providerId}): ${error.message || error}`);
                 if (attempt < maxRetries - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await this.abortableSleep(2000, signal);
                 }
             }
         }
 
-        console.error(`[LLMClient] All ${maxRetries} attempts failed for ${providerId}.`);
-        const rawMsg = typeof lastError === 'object' ? (lastError.message || JSON.stringify(lastError)) : String(lastError);
-        // Surface actionable message for connection refused
+        flog('error', `All ${maxRetries} LLM attempts failed for ${providerId}`);
+        const rawMsg = typeof lastError === 'object' ? (lastError?.message || JSON.stringify(lastError)) : String(lastError);
         const errorMsg = rawMsg.includes('error sending request') || rawMsg.includes('Connection refused')
             ? `Server not running (${baseUrl.replace('/v1', '')})`
             : rawMsg;

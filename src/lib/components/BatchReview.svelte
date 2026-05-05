@@ -8,15 +8,16 @@
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
-    import type { BatchItem } from '../types';
+    import type { BatchItem, BatchStatus } from '../types';
     import { stat, writeTextFile } from '@tauri-apps/plugin-fs';
     import {
         Play, Trash2, Check, X, FileSearch, FolderOpen,
         Loader2, Eye, Edit, Rocket, CheckSquare, Copy,
         Square, Brain, Type, Search, Filter, ChevronDown, ChevronUp,
         Plus, Columns, Calendar, FileText, HardDrive, Hash,
-        RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud
+        RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud, FileDown
     } from 'lucide-svelte';
+    import { buildBibFile } from '../export/bibtex';
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
@@ -59,6 +60,22 @@
             detailYear   = selectedItem.suggestedYear   ?? '';
         }
     });
+
+    function statusLabel(status: BatchStatus): string {
+        const t = i18n.t.batch;
+        const map: Record<BatchStatus, string> = {
+            queued: t.status_queued,
+            extracting: t.status_extracting,
+            analyzing: t.status_analyzing,
+            review: t.status_review,
+            ready: t.status_ready,
+            unfinished: t.status_unfinished,
+            moving: t.status_moving,
+            done: t.status_done,
+            error: t.status_error,
+        };
+        return map[status] ?? status;
+    }
 
     async function saveDetailChanges() {
         if (!selectedItem) return;
@@ -573,6 +590,88 @@
         await batchManager.saveCurrentSession();
     }
 
+    /// PLAN P6 4d — dump the current batch (items the user has loaded
+    /// for sorting, regardless of LanceDB ingest state) to a fresh .caf
+    /// file. Bit-perfect Cathy-compatible; can be re-loaded later via
+    /// the Catalog tab. For exporting the *full* indexed corpus instead,
+    /// use the `catalog_export_sorted` backend command (no UI yet —
+    /// CLI-only in P8.2).
+    async function exportCaf() {
+        const items = batchManager.items.filter(it => !it.isIgnored);
+        if (items.length === 0) return;
+        const defaultName = `crispsorter-batch-${new Date().toISOString().slice(0, 10)}.caf`;
+        const savePath = await save({
+            defaultPath: defaultName,
+            filters: [{ name: 'Cathy Catalog', extensions: ['caf'] }],
+        });
+        if (!savePath) return;
+        try {
+            // Build the FileIndex JSON the backend expects. Stat each file
+            // for current size + mtime; fall back to whatever the batch
+            // stored (it had a `size` field at add time but no mtime).
+            const all_files = [];
+            for (const it of items) {
+                const path = it.targetPath || it.originalPath;
+                let size = it.size ?? 0;
+                let mtime = 0;
+                try {
+                    const info = await stat(path);
+                    size = Number((info as any).size ?? size);
+                    const mt = (info as any).mtime;
+                    if (mt instanceof Date) mtime = Math.floor(mt.getTime() / 1000);
+                    else if (typeof mt === 'number') mtime = Math.floor(mt / 1000);
+                } catch { /* file moved/missing — keep zeros */ }
+                all_files.push({ path, size, mtime, hash: null });
+            }
+            await invoke('catalog_save_caf', {
+                path: savePath,
+                index: { root_path: '/', is_windows_path: false, all_files },
+                createdDate: Math.floor(Date.now() / 1000),
+            });
+        } catch (e: any) {
+            await ask(`Failed to write .caf file: ${e?.message ?? e}`, {
+                title: 'Export failed',
+                kind: 'error',
+            });
+        }
+    }
+
+    async function exportBibtex() {
+        const items = batchManager.items;
+        if (items.length === 0) return;
+
+        const sources = items
+            // Skip ignored items — user explicitly opted them out of the
+            // sorted output, so they shouldn't end up in the citation file.
+            .filter(it => !it.isIgnored)
+            .map(it => ({
+                title: it.suggestedTitle,
+                author: it.suggestedAuthor,
+                year: it.suggestedYear,
+                filename: it.originalName,
+                path: it.targetPath || it.originalPath,
+            }));
+
+        if (sources.length === 0) return;
+
+        const defaultName = `crispsorter-${new Date().toISOString().slice(0, 10)}.bib`;
+        const savePath = await save({
+            defaultPath: defaultName,
+            filters: [{ name: 'BibTeX', extensions: ['bib'] }],
+        });
+        if (!savePath) return;
+
+        const content = buildBibFile(sources);
+        try {
+            await writeTextFile(savePath, content);
+        } catch (e: any) {
+            await ask(`Failed to write .bib file: ${e?.message ?? e}`, {
+                title: 'Export failed',
+                kind: 'error',
+            });
+        }
+    }
+
     async function checkAndUpdateSources() {
         console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
         let missingCount = 0;
@@ -773,6 +872,17 @@
                 <RefreshCw size={14} />
             </button>
 
+            <button class="action-btn small" onclick={exportBibtex} title={i18n.t.batch.export_bibtex}
+                    disabled={batchManager.items.length === 0}>
+                <FileDown size={14} />
+            </button>
+
+            <button class="action-btn small" onclick={exportCaf}
+                    title="Export current batch as Cathy/Catfish .caf catalog"
+                    disabled={batchManager.items.length === 0}>
+                <HardDrive size={14} />
+            </button>
+
             <div class="dropdown-container">
                 <button class="mode-select-btn" onclick={() => showModeMenu = !showModeMenu} aria-label="Extraction Mode">
                     {#if batchManager.isMetadataExtractionEnabled}<Brain size={16} />{:else}<Type size={16} />{/if}
@@ -835,9 +945,9 @@
                 </button>
             {/if}
 
-            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing')}
-                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title="Reset stuck items to queued">
-                    <RefreshCw size={14} /> Reset stuck
+            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing' || i.status === 'unfinished')}
+                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title={i18n.t.batch.reset_stuck}>
+                    <RefreshCw size={14} /> {i18n.t.batch.reset_stuck}
                 </button>
             {/if}
 
@@ -908,10 +1018,13 @@
                 <label for="status-filter">{i18n.t.batch.filter_status}</label>
                 <select id="status-filter" bind:value={batchManager.filterStatus}>
                     <option value="all">All</option>
-                    <option value="queued">Queued</option>
-                    <option value="review">Review</option>
-                    <option value="done">Done</option>
-                    <option value="error">Error</option>
+                    <option value="queued">{i18n.t.batch.status_queued}</option>
+                    <option value="unfinished">{i18n.t.batch.status_unfinished}</option>
+                    <option value="extracting">{i18n.t.batch.status_extracting}</option>
+                    <option value="analyzing">{i18n.t.batch.status_analyzing}</option>
+                    <option value="review">{i18n.t.batch.status_review}</option>
+                    <option value="done">{i18n.t.batch.status_done}</option>
+                    <option value="error">{i18n.t.batch.status_error}</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -1031,8 +1144,11 @@
                                 {#if col.visible}
                                     <td style="width: {col.width}px;">
                                         {#if col.id === 'status'}
-                                            <span class="status-badge" class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)} class:status-error={item.status === 'error'}>
-                                                {item.status}
+                                            <span class="status-badge"
+                                                class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
+                                                class:status-unfinished={item.status === 'unfinished'}
+                                                class:status-error={item.status === 'error'}>
+                                                {statusLabel(item.status)}
                                             </span>
                                             {#if item.statusDetail}
                                                 {#if /^\d+\/\d+/.test(item.statusDetail)}
@@ -1175,6 +1291,34 @@
                 <FileText size={14} />
                 {i18n.t.batch.stats_files.replace('{count}', batchManager.items.length.toString())}
             </span>
+            {#if batchManager.isProcessing}
+                {@const processed = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const extracting = batchManager.items.filter(i => i.status === 'extracting').length}
+                {@const analyzing = batchManager.items.filter(i => i.status === 'analyzing').length}
+                <span class="stat-divider">·</span>
+                <span class="stat-item stat-processing">
+                    <Loader2 size={13} class="loader-spin" />
+                    {i18n.t.batch.processing_stats.replace('{done}', processed.toString()).replace('{total}', batchManager.items.length.toString())}
+                    {#if extracting > 0}<span class="stat-sub">· {i18n.t.batch.status_extracting} {extracting}</span>{/if}
+                    {#if analyzing > 0}<span class="stat-sub">· {i18n.t.batch.status_analyzing} {analyzing}</span>{/if}
+                </span>
+            {:else}
+                {@const done = batchManager.items.filter(i => i.status === 'review' || i.status === 'done').length}
+                {@const unfinished = batchManager.items.filter(i => i.status === 'unfinished').length}
+                {@const errors = batchManager.items.filter(i => i.status === 'error').length}
+                {#if done > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-ready">{done} {i18n.t.batch.status_review}</span>
+                {/if}
+                {#if unfinished > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-unfinished">{unfinished} {i18n.t.batch.status_unfinished}</span>
+                {/if}
+                {#if errors > 0}
+                    <span class="stat-divider">·</span>
+                    <span class="stat-item stat-err">{errors} {i18n.t.batch.status_error}</span>
+                {/if}
+            {/if}
         </div>
     </div>
 </div>
@@ -1397,7 +1541,9 @@
     
     .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; text-transform: capitalize; }
     .status-active { color: #3b82f6; background: #1e3a8a33; }
+    .status-unfinished { color: #f59e0b; background: #78350f33; }
     .status-error { color: #ef4444; background: #450a0a33; }
+    .stat-unfinished { color: #f59e0b; }
     .status-detail-badge { font-size: 0.6rem; color: #60a5fa; background: #1e3a8a33; padding: 1px 4px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
     .status-icon-btn { background: transparent; border: none; cursor: pointer; display: inline-flex; align-items: center; padding: 2px 3px; border-radius: 3px; margin-left: 3px; vertical-align: middle; }
     .status-icon-btn:hover { background: #27272a; }
@@ -1478,8 +1624,13 @@
     .choice-btn.secondary:hover { background: #3f3f46; color: white; }
 
     .status-footer { padding: 6px 16px; background: #18181b; border-top: 1px solid #27272a; display: flex; align-items: center; font-size: 0.75rem; color: #71717a; }
-    .stats { display: flex; align-items: center; gap: 12px; }
+    .stats { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .stat-item { display: flex; align-items: center; gap: 6px; }
+    .stat-divider { color: #3f3f46; }
+    .stat-processing { color: #60a5fa; font-weight: 600; }
+    .stat-sub { color: #4b5563; font-weight: 400; }
+    .stat-ready { color: #34d399; font-weight: 600; }
+    .stat-err { color: #f87171; font-weight: 600; }
 
     .info-modal { width: 500px; }
     .info-grid { display: grid; grid-template-columns: 140px 1fr; gap: 16px; }

@@ -114,6 +114,26 @@
     let noThinking = $state(true);
     let pdfBackend = $state<'js' | 'rust'>('js');
     let parsingFormat = $state<'xml' | 'json'>('xml');
+    // Auto-speak chat replies via the platform's native TTS synth (macOS
+    // `say` / Windows SAPI / Linux espeak). Off by default — voice mode
+    // is opt-in.
+    let autoSpeakReplies = $state(false);
+    // Pre-fill suggestedTitle/Author/Year from the PDF /Info dict before
+    // (or in lieu of) running the LLM. Default on — most academic PDFs
+    // have decent embedded metadata, and the LLM still wins when it runs.
+    let pdfMetadataPrefill = $state(true);
+    // PLAN P8.1 — per-file conversion timeout. Default 120s; 0 = no
+    // timeout (the page watchdog still catches frozen extractors).
+    // Distinct from extractionMaxPages, which limits how MUCH text we
+    // pull; this limits how LONG we wait for a single file.
+    let conversionTimeoutSeconds = $state(120);
+    // Folder watcher: list of folders for v0.1.34+. Each entry is
+    // implicitly active (presence == watching). The Rust side
+    // canonicalizes paths before installing watchers and emits
+    // 'folder-watch:added' Tauri events; +page.svelte owns the global
+    // listener that calls batchManager.addItem.
+    let watchFolders = $state<string[]>([]);
+    let watchStatusMsg = $state('');
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
@@ -149,6 +169,9 @@
             if (loaded) { ortStatus = 'ready'; ortSelectedModel = loaded; }
         }
     });
+
+    // Rate-limit round-robin fallback providers (ordered list of provider IDs)
+    let roundRobinProviders = $state<string[]>([]);
 
     let sidecarStatus = $state(''); // '', 'starting', 'ready', 'error'
     let sidecarLogs = $state<string[]>([]);
@@ -190,6 +213,18 @@
      *  the user only wants offline file cataloguing (L1 + L2) and
      *  full-text search via Tantivy. Mirrored into IndexConfig. */
     let indexUseVector      = $state(true);
+    // Reranker: empty string = disabled (maps to null on the Rust side).
+    // Other values are UI keys; mapped to Rust kebab-case via rerankerToRust.
+    let indexRerankerModel  = $state<string>('');
+    let indexRerankerTopN   = $state<number>(50);
+    // Empty = use default ({data_dir}/models). Override is shared by
+    // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
+    // downloads, so one setting controls every model weight on disk.
+    let indexModelCacheDir  = $state<string>('');
+    // Matryoshka truncation dim. 0 = use model default (no truncation).
+    // Honored only on GGUF backend; ignored otherwise. Quality only holds
+    // for MRL-trained models.
+    let indexMatryoshkaDim  = $state<number>(0);
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -210,9 +245,8 @@
     let renameDraft    = $state('');
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
-    // sync with `EmbedderModel::supports_gguf()` on the Rust side.
-    // Models with GGUF counterpart in CrispEmbed (v0.2.2+, 10 architectures).
-    // Kept in sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
+    // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
+    // Models with GGUF counterpart in CrispEmbed (post-v0.2.3 sync, 22 entries).
     const GGUF_CAPABLE_MODELS = new Set([
         // Only models that exist in the EmbedderModel enum AND have a GGUF
         // equivalent in CrispEmbed.  Additional GGUF-only models can be added
@@ -222,12 +256,13 @@
         'snowflake_l_q4', 'snowflake_l_q4f16', 'snowflake_l_o4', 'snowflake_l_fp32',
         'octen', 'jina_nano', 'jina_small',
         'qwen3_embed', 'qwen3_embed_int8', 'qwen3_embed_uint8',
-        // Added 2026-05 — verified F32 cos > 0.9999 vs FP32 per CrispEmbed compat table.
-        'bge_large_en_v15', 'multilingual_e5_large',
-        'mxbai_embed_large_v1', 'nomic_embed_text_v15',
-        'bge_small_en_v15', 'bge_base_en_v15',
-        'all_mini_lm_l6_v2',
-        'multilingual_e5_small', 'multilingual_e5_base',
+        // Sync of CrispEmbed model registry (May 2026):
+        'multilingual_e5_small', 'multilingual_e5_base', 'multilingual_e5_large',
+        'bge_small_en_v15', 'bge_base_en_v15', 'bge_large_en_v15',
+        'nomic_embed_v15', 'mxbai_large_v1', 'minilm_l6_v2',
+        'embedding_gemma_300m', 'gte_base_en_v15', 'gte_large_en_v15',
+        // Older HEAD-side aliases kept for backwards compat with persisted prefs:
+        'mxbai_embed_large_v1', 'nomic_embed_text_v15', 'all_mini_lm_l6_v2',
     ]);
 
     /** Models with a non-commercial license. Selecting one prompts a
@@ -586,6 +621,31 @@
         ocrEnabled = await getSetting('ocrEnabled', false);
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
+        autoSpeakReplies = await getSetting('autoSpeakReplies', false);
+        pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
+        conversionTimeoutSeconds = (await getSetting('conversionTimeoutSeconds', 120)) as number;
+        // Migrate v0.1.32 single-folder shape on first read.
+        const stored = (await getSetting('watchFolders', null)) as string[] | null;
+        if (stored != null) {
+            watchFolders = stored;
+        } else {
+            const legacyEnabled = (await getSetting('watchEnabled', false)) as boolean;
+            const legacyFolder = (await getSetting('watchFolder', '')) as string;
+            watchFolders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
+        }
+        try {
+            const active = await invoke<string[]>('watch_list');
+            // Resync UI list from backend in case +page.svelte already
+            // started watchers from saved state — keeps the two views
+            // aligned even after migration.
+            for (const p of active) {
+                if (!watchFolders.includes(p)) watchFolders.push(p);
+            }
+            watchStatusMsg = active.length > 0
+                ? `${active.length} folder(s) watched`
+                : '';
+        } catch { /* command not yet wired */ }
+        roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
         
@@ -618,6 +678,10 @@
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
         indexUseVector     = await getSetting('indexUseVector', true) as boolean;
+        indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
+        indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
+        indexModelCacheDir = await getSetting('indexModelCacheDir', '');
+        indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -847,6 +911,11 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
+        await saveSetting('autoSpeakReplies', autoSpeakReplies);
+        await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
+        await saveSetting('conversionTimeoutSeconds', conversionTimeoutSeconds);
+        await saveSetting('watchFolders', watchFolders);
+        await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
         await saveSetting('localModels', $state.snapshot(localModels));
@@ -863,12 +932,41 @@
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
         await saveSetting('indexUseVector',     indexUseVector);
+        await saveSetting('indexRerankerModel', indexRerankerModel);
+        await saveSetting('indexRerankerTopN',  indexRerankerTopN);
+        await saveSetting('indexModelCacheDir', indexModelCacheDir);
+        await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
+    }
+
+    // ── Round-robin helpers ──────────────────────────────────────────────────
+    // Remote providers only — local servers don't rate-limit
+    const REMOTE_PROVIDER_IDS = ['groq','openrouter','mistral','openai','nebius','scaleway','anthropic','google','poe'];
+    let rrCandidates = $derived(providers.filter(p => REMOTE_PROVIDER_IDS.includes(p.id) && (p.apiKey || p.isConfigured)));
+
+    function rrToggle(id: string) {
+        if (roundRobinProviders.includes(id)) {
+            roundRobinProviders = roundRobinProviders.filter(x => x !== id);
+        } else {
+            roundRobinProviders = [...roundRobinProviders, id];
+        }
+    }
+    function rrMoveUp(idx: number) {
+        if (idx === 0) return;
+        const arr = [...roundRobinProviders];
+        [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+        roundRobinProviders = arr;
+    }
+    function rrMoveDown(idx: number) {
+        if (idx >= roundRobinProviders.length - 1) return;
+        const arr = [...roundRobinProviders];
+        [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]];
+        roundRobinProviders = arr;
     }
 
     // ── Search Index helpers ─────────────────────────────────────────────────
@@ -879,6 +977,19 @@
     function indexBackendToRust(b: string): string {
         return b === 'remote' ? 'remote' : 'local';
     }
+    /// UI key → serde kebab string for `RerankerModel`. Empty input
+    /// (= disabled) maps to null on the Rust side. Pinned by the
+    /// `reranker_model_serde_strings` test in `index/reranker.rs`.
+    function rerankerToRust(m: string): string | null {
+        if (!m) return null;
+        const map: Record<string, string> = {
+            bge_v2_m3:       'bge-reranker-v2-m3',
+            bge_base:        'bge-reranker-base',
+            jina_v2_multi:   'jina-reranker-v2-base-multilingual',
+        };
+        return map[m] ?? null;
+    }
+
     function indexEmbedderToRust(m: string): string {
         return {
             bge_m3:                       'bge-m3',
@@ -896,15 +1007,23 @@
             snowflake_l_fp32:             'snowflake-arctic-lv2-fp32',
             jina_nano:                    'jina-v5-nano',
             multilingual_mini_lm:         'multilingual-mini-lm',
-            bge_large_en_v15:             'bge-large-en-v15',
-            multilingual_e5_large:        'multilingual-e5-large',
-            mxbai_embed_large_v1:         'mxbai-embed-large-v1',
-            nomic_embed_text_v15:         'nomic-embed-text-v15',
-            bge_small_en_v15:             'bge-small-en-v15',
-            bge_base_en_v15:              'bge-base-en-v15',
-            all_mini_lm_l6_v2:            'all-mini-lm-l6-v2',
+            // fastembed-rs/CrispEmbed registry sync (May 2026)
             multilingual_e5_small:        'multilingual-e5-small',
             multilingual_e5_base:         'multilingual-e5-base',
+            multilingual_e5_large:        'multilingual-e5-large',
+            bge_small_en_v15:             'bge-small-en-v15',
+            bge_base_en_v15:              'bge-base-en-v15',
+            bge_large_en_v15:             'bge-large-en-v15',
+            nomic_embed_v15:              'nomic-embed-text-v15',
+            mxbai_large_v1:               'mxbai-embed-large-v1',
+            minilm_l6_v2:                 'all-mini-lm-l6-v2',
+            embedding_gemma_300m:         'embedding-gemma300-m',
+            gte_base_en_v15:              'gte-base-en-v15',
+            gte_large_en_v15:             'gte-large-en-v15',
+            // Older HEAD-side aliases kept for backwards compat with persisted prefs
+            mxbai_embed_large_v1:         'mxbai-embed-large-v1',
+            nomic_embed_text_v15:         'nomic-embed-text-v15',
+            all_mini_lm_l6_v2:            'all-mini-lm-l6-v2',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -931,6 +1050,12 @@
                     embedder_device:  indexDeviceToRust(indexDevice),
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
                     use_vector:       indexUseVector,
+                    reranker_model:   rerankerToRust(indexRerankerModel),
+                    rerank_top_n:     Number(indexRerankerTopN) || 50,
+                    model_cache_dir:  indexModelCacheDir.trim() || null,
+                    matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
+                        ? Number(indexMatryoshkaDim)
+                        : null,
                 }
             });
             if (indexEnabled) {
@@ -952,6 +1077,46 @@
     async function pickIndexDataDir() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (selected) { indexDataDir = selected as string; }
+    }
+
+    async function pickIndexModelCacheDir() {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (selected) { indexModelCacheDir = selected as string; }
+    }
+
+    // ── Folder watcher controls ──────────────────────────────────────────────
+    async function addWatchFolder() {
+        const selected = await openDialog({ directory: true, multiple: false });
+        if (!selected) return;
+        const folder = selected as string;
+        if (watchFolders.includes(folder)) {
+            watchStatusMsg = 'Already watching that folder.';
+            return;
+        }
+        try {
+            await invoke('watch_start', { folder });
+            watchFolders = [...watchFolders, folder];
+            await saveSetting('watchFolders', watchFolders);
+            watchStatusMsg = `Watching: ${folder}`;
+        } catch (e: any) {
+            watchStatusMsg = `Watcher error: ${e?.message ?? e}`;
+        }
+    }
+
+    async function removeWatchFolder(folder: string) {
+        try {
+            await invoke('watch_stop_one', { folder });
+        } catch (e) {
+            // Stop is idempotent on the backend; failures here are usually
+            // "path no longer canonicalizes" — we still want to drop it
+            // from the UI list so the user can recover.
+            console.warn('[watch] stop_one failed (still removing from list)', e);
+        }
+        watchFolders = watchFolders.filter(f => f !== folder);
+        await saveSetting('watchFolders', watchFolders);
+        watchStatusMsg = watchFolders.length > 0
+            ? `${watchFolders.length} folder(s) watched`
+            : 'No folders being watched.';
     }
 
     async function buildIvfPq() {
@@ -1476,7 +1641,7 @@
             <div class="section-card">
                 <label for="export-path-input"><FolderOpen size={16} /> {i18n.t.settings.export_dir}</label>
                 <div class="input-with-action">
-                    <input id="export-path-input" type="text" bind:value={exportPath} placeholder="Path..." />
+                    <input id="export-path-input" type="text" bind:value={exportPath} placeholder={i18n.t.settings.path_placeholder} />
                     <button class="action-btn small" onclick={pickExportPath}>{i18n.t.settings.browse}</button>
                 </div>
                 <div style="margin-top: 12px;">
@@ -1572,14 +1737,14 @@
                                     <strong>{model.name}</strong>
                                     <span class="size-badge" style="font-size: 0.6rem;">{model.id}</span>
                                 </div>
-                                <span class="model-path">{model.isDownloaded ? 'Language pack ready' : 'Not installed'}</span>
+                                <span class="model-path">{model.isDownloaded ? i18n.t.settings.tesseract_ready : i18n.t.settings.not_installed}</span>
                             </div>
                             <div class="model-status">
                                 {#if model.isDownloaded}
-                                    <span class="save-badge" style="color: #10b981;"><Check size={14} /> Installed</span>
+                                    <span class="save-badge" style="color: #10b981;"><Check size={14} /> {i18n.t.settings.installed}</span>
                                 {:else}
                                     <button class="action-btn small primary">
-                                        <Download size={14} /> Download
+                                        <Download size={14} /> {i18n.t.settings.download}
                                     </button>
                                 {/if}
                             </div>
@@ -1598,6 +1763,64 @@
 
             <div class="section-card">
                 <div class="checkbox-group">
+                    <input id="auto-speak-check" type="checkbox" bind:checked={autoSpeakReplies} />
+                    <label for="auto-speak-check">{i18n.t.settings.auto_speak}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.auto_speak_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="pdf-metadata-check" type="checkbox" bind:checked={pdfMetadataPrefill} />
+                    <label for="pdf-metadata-check">{i18n.t.settings.pdf_metadata_prefill}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.pdf_metadata_prefill_hint}</p>
+            </div>
+
+            <!-- PLAN P8.1 — per-file conversion timeout -->
+            <div class="section-card">
+                <label for="conv-timeout">{i18n.t.settings.conv_timeout_label}</label>
+                <input
+                    id="conv-timeout"
+                    type="number"
+                    min="0"
+                    step="10"
+                    bind:value={conversionTimeoutSeconds}
+                    style="width: 120px;"
+                />
+                <p class="hint">
+                    {i18n.t.settings.conv_timeout_hint_prefix}<strong>{i18n.t.settings.conv_timeout_hint_zero}</strong>{i18n.t.settings.conv_timeout_hint_suffix}
+                </p>
+            </div>
+
+            <div class="section-card">
+                <label><FolderOpen size={16} /> {i18n.t.settings.watch_folders}</label>
+                {#if watchFolders.length === 0}
+                    <p class="hint" style="margin-top:6px;">{i18n.t.settings.watch_none}</p>
+                {:else}
+                    <ul style="list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:4px;">
+                        {#each watchFolders as folder (folder)}
+                            <li style="display:flex; align-items:center; gap:8px;">
+                                <code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.75rem;">{folder}</code>
+                                <button class="action-btn small danger" onclick={() => removeWatchFolder(folder)}
+                                        title={i18n.t.settings.watch_remove}>
+                                    ×
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
+                <button class="action-btn small" style="margin-top:8px;" onclick={addWatchFolder}>
+                    + {i18n.t.settings.watch_add}
+                </button>
+                {#if watchStatusMsg}
+                    <p class="hint" style="margin-top:6px;">{watchStatusMsg}</p>
+                {/if}
+                <p class="hint">{i18n.t.settings.watch_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
                     <input id="author-sort-check" type="checkbox" bind:checked={authorSortEnabled} />
                     <label for="author-sort-check">{i18n.t.settings.author_sort}</label>
                 </div>
@@ -1610,6 +1833,37 @@
                     <button class:active={parsingFormat === 'xml'} class="toggle-btn" onclick={() => { parsingFormat = 'xml'; updatePrompt(); }}>{i18n.t.settings.parsing_xml}</button>
                     <button class:active={parsingFormat === 'json'} class="toggle-btn" onclick={() => { parsingFormat = 'json'; updatePrompt(); }}>{i18n.t.settings.parsing_json}</button>
                 </div>
+            </div>
+
+            <div class="section-card">
+                <div class="header" style="margin-bottom: 12px;">
+                    <h2 style="font-size: 1rem; color: #a1a1aa;"><RefreshCw size={16} /> {i18n.t.settings.roundrobin_title}</h2>
+                </div>
+                <p class="hint" style="margin-top: 0; margin-bottom: 12px;">{i18n.t.settings.roundrobin_hint}</p>
+
+                {#if rrCandidates.length === 0}
+                    <p class="hint">{i18n.t.settings.roundrobin_no_providers}</p>
+                {:else}
+                    <div class="rr-list">
+                        {#each rrCandidates as p}
+                            {@const rrPos = roundRobinProviders.indexOf(p.id)}
+                            {@const isEnabled = rrPos !== -1}
+                            <div class="rr-row" class:rr-enabled={isEnabled}>
+                                <label class="rr-label" for="rr-{p.id}">
+                                    <input type="checkbox" id="rr-{p.id}" checked={isEnabled} onchange={() => rrToggle(p.id)} />
+                                    <span>{p.name}</span>
+                                </label>
+                                {#if isEnabled}
+                                    <div class="rr-order">
+                                        <span class="rr-idx">#{rrPos + 1}</span>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveUp(rrPos)} disabled={rrPos === 0} title={i18n.t.settings.move_up}>▲</button>
+                                        <button class="icon-btn-tiny" onclick={() => rrMoveDown(rrPos)} disabled={rrPos === roundRobinProviders.length - 1} title={i18n.t.settings.move_down}>▼</button>
+                                    </div>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
             </div>
 
             <div class="section-card">
@@ -1634,8 +1888,8 @@
                                     <input type="checkbox" id="bench-p-{p.id}" bind:group={benchProviders} value={p.id} />
                                     <span class="p-name">{p.name}</span>
                                 </label>
-                                <select id="bench-model-select-{p.id}" class="bench-model-select" bind:value={benchModels[p.id]} disabled={!benchProviders.includes(p.id)} aria-label="Select benchmark model">
-                                    <option value="">(Select model)</option>
+                                <select id="bench-model-select-{p.id}" class="bench-model-select" bind:value={benchModels[p.id]} disabled={!benchProviders.includes(p.id)} aria-label={i18n.t.settings.action_select_bench_model}>
+                                    <option value="">{i18n.t.settings.benchmark.select_model}</option>
                                     {#each p.models || [] as m}<option value={m}>{m}</option>{/each}
                                 </select>
                             </div>
@@ -1654,7 +1908,7 @@
                                     <span class="char-count">{(item.extractedText?.length || 0)} chars</span>
                                 </label>
                             {:else}
-                                <div class="empty-docs">No documents in current batch.</div>
+                                <div class="empty-docs">{i18n.t.settings.benchmark.no_documents}</div>
                             {/each}
                         </div>
                     </div>
@@ -1668,7 +1922,7 @@
                             <button class:active={benchPromptMode === 'custom'} class="toggle-btn" onclick={() => benchPromptMode = 'custom'}>{i18n.t.settings.benchmark.prompt_custom}</button>
                         </div>
                         {#if benchPromptMode === 'custom'}
-                            <textarea id="bench-custom-prompt" class="bench-prompt-input" bind:value={benchCustomPrompt} rows="3" aria-label="Custom benchmark prompt"></textarea>
+                            <textarea id="bench-custom-prompt" class="bench-prompt-input" bind:value={benchCustomPrompt} rows="3" aria-label={i18n.t.settings.action_custom_bench_prompt}></textarea>
                         {/if}
                     </div>
                 </div>
@@ -1699,10 +1953,10 @@
                     <table class="bench-table">
                         <thead>
                             <tr>
-                                <th>Provider</th>
-                                <th class="bench-num">Avg Latency</th>
-                                <th class="bench-num">Runs</th>
-                                <th>Details</th>
+                                <th>{i18n.t.settings.benchmark.col_provider}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.col_avg_latency}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.col_runs}</th>
+                                <th>{i18n.t.settings.benchmark.col_details}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1714,7 +1968,7 @@
                                     </td>
                                     <td class="bench-num">{res.avgLatency.toLocaleString()} ms</td>
                                     <td class="bench-num">{res.runs.length}</td>
-                                    <td><button class="bench-view-btn" onclick={() => benchModal = { title: `${res.providerName} — ${res.model}`, runs: res.runs }}>View</button></td>
+                                    <td><button class="bench-view-btn" onclick={() => benchModal = { title: `${res.providerName} — ${res.model}`, runs: res.runs }}>{i18n.t.settings.benchmark.view}</button></td>
                                 </tr>
                             {/each}
                         </tbody>
@@ -1967,25 +2221,43 @@
                     <option value="jina_nano" disabled={!isModelAvailable('jina_nano')}>{i18n.t.settings.index.model_jina_nano}{ncLabelSuffix('jina_nano')}</option>
                     <option value="multilingual_mini_lm" disabled={!isModelAvailable('multilingual_mini_lm')}>{i18n.t.settings.index.model_mini_lm}{ncLabelSuffix('multilingual_mini_lm')}</option>
                     <optgroup label="Small / fast (recommended for fast first run)">
-                        <option value="all_mini_lm_l6_v2" disabled={!isModelAvailable('all_mini_lm_l6_v2')}>{i18n.t.settings.index.model_minilm_l6}{ncLabelSuffix('all_mini_lm_l6_v2')}</option>
-                        <option value="bge_small_en_v15" disabled={!isModelAvailable('bge_small_en_v15')}>{i18n.t.settings.index.model_bge_small}{ncLabelSuffix('bge_small_en_v15')}</option>
-                        <option value="multilingual_e5_small" disabled={!isModelAvailable('multilingual_e5_small')}>{i18n.t.settings.index.model_e5_small}{ncLabelSuffix('multilingual_e5_small')}</option>
+                        <option value="minilm_l6_v2" disabled={!isModelAvailable('minilm_l6_v2')}>{i18n.t.settings.index.model_minilm_l6_v2}{ncLabelSuffix('minilm_l6_v2')}</option>
+                        <option value="bge_small_en_v15" disabled={!isModelAvailable('bge_small_en_v15')}>{i18n.t.settings.index.model_bge_small_en_v15}{ncLabelSuffix('bge_small_en_v15')}</option>
+                        <option value="multilingual_e5_small" disabled={!isModelAvailable('multilingual_e5_small')}>{i18n.t.settings.index.model_multilingual_e5_small}{ncLabelSuffix('multilingual_e5_small')}</option>
                     </optgroup>
                     <optgroup label="Mid-size (768d, balanced)">
-                        <option value="bge_base_en_v15" disabled={!isModelAvailable('bge_base_en_v15')}>{i18n.t.settings.index.model_bge_base}{ncLabelSuffix('bge_base_en_v15')}</option>
-                        <option value="multilingual_e5_base" disabled={!isModelAvailable('multilingual_e5_base')}>{i18n.t.settings.index.model_e5_base}{ncLabelSuffix('multilingual_e5_base')}</option>
-                        <option value="nomic_embed_text_v15" disabled={!isModelAvailable('nomic_embed_text_v15')}>{i18n.t.settings.index.model_nomic}{ncLabelSuffix('nomic_embed_text_v15')}</option>
+                        <option value="bge_base_en_v15" disabled={!isModelAvailable('bge_base_en_v15')}>{i18n.t.settings.index.model_bge_base_en_v15}{ncLabelSuffix('bge_base_en_v15')}</option>
+                        <option value="multilingual_e5_base" disabled={!isModelAvailable('multilingual_e5_base')}>{i18n.t.settings.index.model_multilingual_e5_base}{ncLabelSuffix('multilingual_e5_base')}</option>
+                        <option value="nomic_embed_v15" disabled={!isModelAvailable('nomic_embed_v15')}>{i18n.t.settings.index.model_nomic_embed_v15}{ncLabelSuffix('nomic_embed_v15')}</option>
+                        <option value="gte_base_en_v15" disabled={!isModelAvailable('gte_base_en_v15')}>{i18n.t.settings.index.model_gte_base_en_v15}{ncLabelSuffix('gte_base_en_v15')}</option>
+                        <option value="embedding_gemma_300m" disabled={!isModelAvailable('embedding_gemma_300m')}>{i18n.t.settings.index.model_embedding_gemma_300m}{ncLabelSuffix('embedding_gemma_300m')}</option>
                     </optgroup>
                     <optgroup label="Large (1024d, top quality)">
-                        <option value="bge_large_en_v15" disabled={!isModelAvailable('bge_large_en_v15')}>{i18n.t.settings.index.model_bge_large}{ncLabelSuffix('bge_large_en_v15')}</option>
-                        <option value="multilingual_e5_large" disabled={!isModelAvailable('multilingual_e5_large')}>{i18n.t.settings.index.model_e5_large}{ncLabelSuffix('multilingual_e5_large')}</option>
-                        <option value="mxbai_embed_large_v1" disabled={!isModelAvailable('mxbai_embed_large_v1')}>{i18n.t.settings.index.model_mxbai_large}{ncLabelSuffix('mxbai_embed_large_v1')}</option>
+                        <option value="bge_large_en_v15" disabled={!isModelAvailable('bge_large_en_v15')}>{i18n.t.settings.index.model_bge_large_en_v15}{ncLabelSuffix('bge_large_en_v15')}</option>
+                        <option value="multilingual_e5_large" disabled={!isModelAvailable('multilingual_e5_large')}>{i18n.t.settings.index.model_multilingual_e5_large}{ncLabelSuffix('multilingual_e5_large')}</option>
+                        <option value="mxbai_large_v1" disabled={!isModelAvailable('mxbai_large_v1')}>{i18n.t.settings.index.model_mxbai_large_v1}{ncLabelSuffix('mxbai_large_v1')}</option>
+                        <option value="gte_large_en_v15" disabled={!isModelAvailable('gte_large_en_v15')}>{i18n.t.settings.index.model_gte_large_en_v15}{ncLabelSuffix('gte_large_en_v15')}</option>
                     </optgroup>
                 </select>
                 {#if nonCommercialDeclined.size > 0}
                     <button class="action-btn small" style="margin-top:6px;" onclick={resetNonCommercialDeclines}>
                         Re-allow declined non-commercial models ({nonCommercialDeclined.size})
                     </button>
+                {/if}
+
+                {#if supportsGguf(indexEmbedderModel) && indexEmbedderBackend === 'gguf'}
+                    <label for="index-matryoshka-dim" style="margin-top:10px;">
+                        {i18n.t.settings.index.matryoshka_dim}
+                    </label>
+                    <select id="index-matryoshka-dim" bind:value={indexMatryoshkaDim} class="styled-select">
+                        <option value={0}>{i18n.t.settings.index.matryoshka_default}</option>
+                        <option value={128}>128</option>
+                        <option value={256}>256</option>
+                        <option value={384}>384</option>
+                        <option value={512}>512</option>
+                        <option value={768}>768</option>
+                    </select>
+                    <p class="hint">{i18n.t.settings.index.matryoshka_hint}</p>
                 {/if}
             </div>
 
@@ -2023,13 +2295,45 @@
                 {/if}
             </div>
 
+            <!-- Reranker (cross-encoder, GGUF-only via CrispEmbed) -->
+            <div class="section-card">
+                <label for="index-reranker-select"><Cpu size={16} /> {i18n.t.settings.index.reranker_model}</label>
+                <select id="index-reranker-select" bind:value={indexRerankerModel} class="styled-select">
+                    <option value="">{i18n.t.settings.index.reranker_off}</option>
+                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
+                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
+                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
+                </select>
+                {#if indexRerankerModel}
+                    <label for="index-reranker-topn" style="margin-top:10px;">
+                        {i18n.t.settings.index.reranker_top_n}
+                    </label>
+                    <input id="index-reranker-topn" type="number" min="5" max="200" step="5"
+                        bind:value={indexRerankerTopN} />
+                    <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
+                {/if}
+            </div>
+
+            <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->
+            <div class="section-card">
+                <label for="index-model-cache-dir">
+                    <FolderOpen size={16} /> {i18n.t.settings.index.model_cache_dir}
+                </label>
+                <div class="input-with-action">
+                    <input id="index-model-cache-dir" type="text" bind:value={indexModelCacheDir}
+                        placeholder={i18n.t.settings.index.model_cache_dir_placeholder} />
+                    <button class="action-btn small" onclick={pickIndexModelCacheDir}>{i18n.t.settings.browse}</button>
+                </div>
+                <p class="hint">{i18n.t.settings.index.model_cache_dir_hint}</p>
+            </div>
+
             <!-- Data directory -->
             {#if indexBackendType === 'local'}
             <div class="section-card">
                 <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
                 <div class="input-with-action">
                     <input id="index-data-dir" type="text" bind:value={indexDataDir}
-                        placeholder="(app data dir)" />
+                        placeholder={i18n.t.settings.index.data_dir_placeholder} />
                     <button class="action-btn small" onclick={pickIndexDataDir}>{i18n.t.settings.browse}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.index.data_dir_hint}</p>
@@ -2040,7 +2344,7 @@
             <div class="section-card">
                 <button class="save-btn" onclick={applyIndexConfig}
                     disabled={indexStatus === 'loading'}>
-                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> Initialisiere …
+                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> {i18n.t.settings.index.status_loading}
                     {:else}<Play size={16} /> {i18n.t.settings.index.apply}{/if}
                 </button>
                 <p class="hint">
@@ -2071,13 +2375,7 @@
                                 <div class="init-progress-fill" style="width:{indexDownloadProgress.pct}%"></div>
                             </div>
                         {/if}
-                        <p class="init-progress-note">
-                            {#if modelDownloadMb > 0}
-                                Beim ersten Start wird das Embedder-Modell heruntergeladen (~{modelDownloadMb} MB). Bitte warten …
-                            {:else}
-                                Beim ersten Start wird das Embedder-Modell heruntergeladen. Bitte warten …
-                            {/if}
-                        </p>
+                        <p class="init-progress-note">{i18n.t.settings.index.init_progress_note}</p>
                     </div>
                 {:else if indexStatus === 'ok'}
                     <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {i18n.t.settings.index.status_ok}</p>
@@ -2129,13 +2427,20 @@
             </div>
 
             <div class="section-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <h3>{i18n.t.settings.legal.licenses}</h3>
                     <div class="search-box small" style="background:#09090b; border:1px solid #27272a; border-radius:6px; padding:0 10px; width:240px; display:flex; align-items:center;">
                         <Search size={14} style="color:#71717a; margin-right:8px;" />
                         <input type="text" id="license-search-input" bind:value={licenseSearch} placeholder={i18n.t.settings.legal.search_licenses.replace('{count}', String(automatedLicenses.length))} style="border:none; background:transparent; color:white; padding:6px 0; font-size:0.75rem; width:100%; outline:none;" aria-label="Search licenses" />
                     </div>
                 </div>
+                {#if licensesGeneratedAt}
+                    <div class="hint" style="color:#71717a; font-size:0.7rem; margin-bottom:12px;">
+                        {i18n.t.settings.legal.generated_at
+                            .replace('{timestamp}', new Date(licensesGeneratedAt).toLocaleString())
+                            .replace('{count}', String(automatedLicenses.length))}
+                    </div>
+                {/if}
                 <div class="license-list-scrollable">
                     {#if licensesLoading}
                         <div class="license-empty"><Loader2 size={16} class="loader-spin" /> Loading licenses…</div>
@@ -2161,16 +2466,11 @@
                                     <span class="lib-type">{lib.license}</span>
                                     <span class="lib-author">{lib.author}</span>
                                     {#if lib.link}
-                                        <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>Source</button>
+                                        <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>{i18n.t.settings.legal.source_link}</button>
                                     {/if}
                                 </div>
                             </div>
                         {/each}
-                        {#if licensesGeneratedAt}
-                            <div class="license-footer">
-                                Generated {new Date(licensesGeneratedAt).toLocaleString()}
-                            </div>
-                        {/if}
                     {/if}
                 </div>
             </div>
@@ -2216,7 +2516,7 @@
                         {/each}
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
-                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Refresh models">
+                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
@@ -2226,7 +2526,7 @@
 
             {#if selectedProvider.id !== 'mistralrs'}
                 {#if selectedProvider.id === 'ollama' && selectedProvider.selectedModel}
-                    <p class="hint" style="margin: 8px 0 4px;">Active model: <strong>{selectedProvider.selectedModel}</strong></p>
+                    <p class="hint" style="margin: 8px 0 4px;">{i18n.t.settings.active_model} <strong>{selectedProvider.selectedModel}</strong></p>
                 {/if}
                 <div class="actions">
                     <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection || !selectedProvider.selectedModel}>
@@ -2249,47 +2549,47 @@
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><Cpu size={16} /> {i18n.t.settings.ollama_manager_title}</h2>
                         <div class="header-actions">
                             {#if ollamaStatus === 'starting'}
-                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                                <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {i18n.t.settings.sidecar.starting}</span>
                             {:else if ollamaStatus === 'ready'}
-                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                                <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.sidecar.running}</span>
                             {:else if ollamaStatus === 'error'}
-                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                                <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> {i18n.t.settings.sidecar.failed}</span>
                             {/if}
                             {#if ollamaRunning}
                                 <button class="action-btn small danger" onclick={stopOllamaService}>
-                                    <Square size={14} /> Stop
+                                    <Square size={14} /> {i18n.t.settings.sidecar.stop}
                                 </button>
                             {:else}
                                 <button class="action-btn small success" onclick={startOllamaService} disabled={ollamaStatus === 'starting'}>
-                                    <Rocket size={14} /> Start Ollama
+                                    <Rocket size={14} /> {i18n.t.settings.ollama_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label="Fetch installed Ollama models">
-                                <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> Fetch Installed
+                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
+                                <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> {i18n.t.settings.ollama_fetch_installed}
                             </button>
                         </div>
                     </div>
                     {#if ollamaLogs.length > 0}
                         <div style="margin-bottom: 14px;">
                             <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => ollamaLogsVisible = !ollamaLogsVisible}>
-                                OLLAMA LOGS
+                                {i18n.t.settings.ollama_logs}
                                 {#if ollamaLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                             </button>
                             {#if ollamaLogsVisible}
                                 <div style="margin-top: 8px; position: relative;">
-                                    <textarea bind:this={ollamaLogEl} readonly class="log-viewer" value={ollamaLogs.join('\n')} rows="8" aria-label="Ollama Logs"></textarea>
-                                    <button class="log-clear-btn" onclick={() => ollamaLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                    <textarea bind:this={ollamaLogEl} readonly class="log-viewer" value={ollamaLogs.join('\n')} rows="8" aria-label={i18n.t.settings.action_ollama_logs_aria}></textarea>
+                                    <button class="log-clear-btn" onclick={() => ollamaLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                                 </div>
                             {/if}
                         </div>
                     {/if}
                     
                     <div class="form-group" style="margin-top: 20px;">
-                        <label for="ollama-custom-id">Custom Model Tag</label>
+                        <label for="ollama-custom-id">{i18n.t.settings.ollama_custom_tag_label}</label>
                         <div class="input-with-action">
-                            <input type="text" id="ollama-custom-id" placeholder="e.g. llama3:8b" bind:value={ollamaCustomInput} />
+                            <input type="text" id="ollama-custom-id" placeholder={i18n.t.settings.ollama_custom_tag_placeholder} bind:value={ollamaCustomInput} />
                             <button class="action-btn small" onclick={addCustomOllamaModel} disabled={!ollamaCustomInput.trim()}>
-                                <Plus size={14} /> Add/Pull
+                                <Plus size={14} /> {i18n.t.settings.ollama_add_pull}
                             </button>
                         </div>
                     </div>
@@ -2302,7 +2602,7 @@
                                         <strong>{model.tag}</strong>
                                         {#if selectedProvider.selectedModel === model.tag}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
-                                    <span class="model-path">{model.isInstalled ? 'Installed' : 'Not installed'}</span>
+                                    <span class="model-path">{model.isInstalled ? i18n.t.settings.installed : i18n.t.settings.not_installed}</span>
                                     {#if ollamaPulling[model.tag] !== undefined}
                                         <div class="progress-container">
                                             <div class="progress-bar" style="width: {ollamaPulling[model.tag]}%"></div>    
@@ -2317,7 +2617,7 @@
                                         </button>
                                     {:else if ollamaPulling[model.tag] === undefined}
                                         <button class="action-btn small primary" onclick={() => pullOllamaModel(model.tag)}>
-                                            <Download size={14} /> Pull
+                                            <Download size={14} /> {i18n.t.settings.ollama_pull}
                                         </button>
                                     {/if}
                                 </div>
@@ -2332,17 +2632,17 @@
                     <div class="header" style="margin-bottom: 12px;">
                         <h2 style="font-size: 1rem; color: #a1a1aa;"><HardDrive size={16} /> {i18n.t.settings.mlx_manager_title}</h2>
                         <div class="header-actions">
-                            <input id="mlx-port-input" type="number" bind:value={mlxPort} style="width: 80px;" aria-label="MLX Port" />    
+                            <input id="mlx-port-input" type="number" bind:value={mlxPort} style="width: 80px;" aria-label={i18n.t.settings.action_mlx_port_aria} />    
                             {#if mlxRunning}
                                 <button class="action-btn small danger" onclick={stopMlxServer}>
-                                    <Square size={14} /> Stop MLX
+                                    <Square size={14} /> {i18n.t.settings.mlx_stop}
                                 </button>
                             {:else}
                                 <button class="action-btn small success" onclick={startMlxServer}>
-                                    <Rocket size={14} /> Start MLX
+                                    <Rocket size={14} /> {i18n.t.settings.mlx_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={checkMlxModelsCache} title="Refresh cache status">
+                            <button class="action-btn small" onclick={checkMlxModelsCache} title={i18n.t.settings.action_refresh_cache_status}>
                                 <RefreshCw size={14} /> {i18n.t.batch.reanalyze_run}
                             </button>
                         </div>
@@ -2351,9 +2651,9 @@
                     <p class="hint">{i18n.t.settings.mlx_cache_label}: <code>{mlxCacheDir}</code></p>
 
                     <div class="form-group" style="margin-top: 20px;">
-                        <label for="mlx-custom-id">Custom HF Repo ID or local path</label>
+                        <label for="mlx-custom-id">{i18n.t.settings.mlx_custom_repo}</label>
                         <div class="input-with-action">
-                            <input type="text" id="mlx-custom-id" placeholder="e.g. mlx-community/Mistral-7B-Instruct-v0.3-4bit" bind:value={mlxCustomInput} />
+                            <input type="text" id="mlx-custom-id" placeholder={i18n.t.settings.mlx_custom_placeholder} bind:value={mlxCustomInput} />
                             <button class="action-btn small" onclick={addMlxModel}><Plus size={14} /> {i18n.t.batch.add_files}</button>
                         </div>
                     </div>
@@ -2376,9 +2676,9 @@
                                         {selectedProvider.selectedModel === model.repoId ? i18n.t.batch.selected_status : i18n.t.batch.use_model}   
                                     </button>
                                     {#if mlxModelCached[model.id]}
-                                        <button class="icon-btn danger" onclick={() => deleteMlxModelFromDisk(model)} title="Delete from disk"><Trash2 size={14} /></button>
+                                        <button class="icon-btn danger" onclick={() => deleteMlxModelFromDisk(model)} title={i18n.t.settings.action_delete_from_disk}><Trash2 size={14} /></button>
                                     {/if}
-                                    <button class="icon-btn" onclick={() => removeMlxModel(model.id)} title="Remove from list"><XCircle size={14} /></button>
+                                    <button class="icon-btn" onclick={() => removeMlxModel(model.id)} title={i18n.t.settings.action_remove_from_list}><XCircle size={14} /></button>
                                 </div>
                             </div>
                         {/each}
@@ -2389,18 +2689,18 @@
                     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
                     <div class="section-toggle-flat" onclick={() => mlxLogsVisible = !mlxLogsVisible} role="button" tabindex="0" onkeydown={e => e.key === 'Enter' && (mlxLogsVisible = !mlxLogsVisible)}>        
                         <span style="display:flex; align-items:center; gap:8px;">
-                            <Brain size={14} /> MLX Server Log
+                            <Brain size={14} /> {i18n.t.settings.mlx_server_log}
                             {#if mlxRunning}<span class="running-dot"></span>{/if}
                         </span>
                         <span style="display:flex; align-items:center; gap:8px;">
-                            <span class="hint" style="margin:0;">{mlxLogs.length} lines</span>
-                            {#if mlxLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}     
+                            <span class="hint" style="margin:0;">{i18n.t.settings.mlx_log_lines.replace('{count}', String(mlxLogs.length))}</span>
+                            {#if mlxLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                         </span>
                     </div>
                     {#if mlxLogsVisible}
                         <div style="margin-top: 10px; position: relative;">
-                            <textarea id="mlx-log-viewer" bind:this={mlxLogEl} readonly class="log-viewer" value={mlxLogs.join('\n')} rows="14" aria-label="MLX Server Logs"></textarea>
-                            <button class="log-clear-btn" onclick={() => mlxLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                            <textarea id="mlx-log-viewer" bind:this={mlxLogEl} readonly class="log-viewer" value={mlxLogs.join('\n')} rows="14" aria-label={i18n.t.settings.action_mlx_logs_aria}></textarea>
+                            <button class="log-clear-btn" onclick={() => mlxLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                         </div>
                     {/if}
                 </div>
@@ -2529,21 +2829,21 @@
                         <div class="header-actions" style="display: flex; gap: 8px; align-items: center;">
                             {#if selectedProvider.id === 'llamacpp'}
                                 <div style="display:flex; align-items:center; gap:8px; margin-right:8px; background:#09090b; padding:2px 8px; border-radius:6px; border:1px solid #27272a;">
-                                    <span style="font-size:0.7rem; color:#71717a; font-weight:700;">PORT</span>
+                                    <span style="font-size:0.7rem; color:#71717a; font-weight:700;">{i18n.t.settings.port}</span>
                                     <input type="number" bind:value={llamacppPort} style="width: 70px; border:none; padding:2px; height:24px; font-size:0.8125rem;" />
                                 </div>
                                 {#if sidecarStatus === 'starting'}
-                                    <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> Starting...</span>
+                                    <span class="save-badge" style="color:#f59e0b;"><Loader2 size={14} /> {i18n.t.settings.sidecar.starting}</span>
                                 {:else if sidecarStatus === 'ready'}
-                                    <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> Running</span>
+                                    <span class="save-badge" style="color:#10b981;"><CheckCircle size={14} /> {i18n.t.settings.sidecar.running}</span>
                                 {:else if sidecarStatus === 'error'}
-                                    <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> Failed</span>
+                                    <span class="save-badge" style="color:#ef4444;"><XCircle size={14} /> {i18n.t.settings.sidecar.failed}</span>
                                 {/if}
                                 <button class="action-btn small primary" disabled={sidecarStatus === 'starting'} onclick={() => setLocalModelActive(selectedProvider.selectedModel)}>
                                     <Rocket size={14} /> {i18n.t.settings.local_manager_start}
                                 </button>
                                 <button class="action-btn small danger" onclick={async () => { await invoke('stop_llamacpp_sidecar'); sidecarStatus = ''; llamacppReady = false; }}>
-                                    <Square size={14} /> Stop
+                                    <Square size={14} /> {i18n.t.settings.sidecar.stop}
                                 </button>
                             {/if}
                             <button class="action-btn small success" onclick={addLocalModel}>
@@ -2554,22 +2854,22 @@
                     {#if selectedProvider.id === 'llamacpp' && sidecarLogs.length > 0}
                         <div style="margin-bottom: 14px;">
                             <button class="action-btn small" style="color:#71717a; border:none; background:none; padding:0; font-size:0.75rem; font-weight:700; gap:6px;" onclick={() => sidecarLogsVisible = !sidecarLogsVisible}>
-                                SIDECAR LOGS
+                                {i18n.t.settings.sidecar_logs}
                                 {#if sidecarLogsVisible}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
                             </button>
                             {#if sidecarLogsVisible}
                                 <div style="margin-top: 8px; position: relative;">
-                                    <textarea bind:this={sidecarLogEl} readonly class="log-viewer" value={sidecarLogs.join('\n')} rows="10" aria-label="llama-server Logs"></textarea>
-                                    <button class="log-clear-btn" onclick={() => sidecarLogs = []} title="Clear log"><Trash2 size={12} /></button>
+                                    <textarea bind:this={sidecarLogEl} readonly class="log-viewer" value={sidecarLogs.join('\n')} rows="10" aria-label={i18n.t.settings.action_llamacpp_logs_aria}></textarea>
+                                    <button class="log-clear-btn" onclick={() => sidecarLogs = []} title={i18n.t.settings.action_clear_log}><Trash2 size={12} /></button>
                                 </div>
                             {/if}
                         </div>
                     {/if}
 
                     <div class="form-group">
-                        <label for="custom-model-id-{selectedProvider.id}">Custom HF Repo ID or URL</label>
+                        <label for="custom-model-id-{selectedProvider.id}">{i18n.t.settings.custom_hf_repo_url}</label>
                         <div class="input-with-action">
-                            <input type="text" id="custom-model-id-{selectedProvider.id}" placeholder="REPO_ID/FILENAME.GGUF" bind:value={customModelInput} />
+                            <input type="text" id="custom-model-id-{selectedProvider.id}" placeholder={i18n.t.settings.custom_hf_placeholder} bind:value={customModelInput} />
                             <button class="action-btn small" onclick={addCustomModel}><Plus size={14} /> {i18n.t.batch.add_files}</button>
                         </div>
                         <p class="hint">{i18n.t.settings.local_manager_hf_hint}</p>
@@ -2583,7 +2883,7 @@
                                         <strong>{model.name}</strong>
                                         {#if selectedProvider.selectedModel === model.path && model.path !== ''}<Zap size={12} style="color: #eab308;" />{/if}
                                     </div>
-                                    <span class="model-path">{model.path || 'Not downloaded yet'}</span>
+                                    <span class="model-path">{model.path || i18n.t.settings.not_downloaded}</span>
                                     {#if model.progress !== undefined}
                                         <div class="progress-container">
                                             <div class="progress-bar" style="width: {model.progress}%"></div>    
@@ -2597,12 +2897,12 @@
                                     </button>
                                     {#if model.isDownloaded}
                                         <span class="size-badge">{model.size}</span>
-                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title="Delete file"><Trash2 size={14} /></button>
+                                        <button class="icon-btn danger" onclick={() => removeLocalModel(i)} title={i18n.t.settings.action_delete_file}><Trash2 size={14} /></button>
                                     {:else if model.progress === undefined}
                                         <button class="action-btn small primary" onclick={() => downloadLocalModel(i)}>
-                                            <Download size={14} /> Download
+                                            <Download size={14} /> {i18n.t.settings.download}
                                         </button>
-                                        <button class="icon-btn" onclick={() => localModels.splice(i, 1)} title="Remove from list"><XCircle size={14} /></button>
+                                        <button class="icon-btn" onclick={() => localModels.splice(i, 1)} title={i18n.t.settings.action_remove_from_list}><XCircle size={14} /></button>
                                     {/if}
                                 </div>
                             </div>
@@ -2620,16 +2920,16 @@
         <div class="bench-modal" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="bench-modal-header">
                 <span>{benchModal.title}</span>
-                <button class="bench-modal-close" onclick={() => benchModal = null} aria-label="Close benchmark modal">✕</button>
+                <button class="bench-modal-close" onclick={() => benchModal = null} aria-label={i18n.t.settings.action_close_bench_modal}>✕</button>
             </div>
             <div class="bench-modal-body">
                 {#each benchModal.runs as run, ri}
                     <div class="bench-response-block">
                         <span class="bench-run-label">
-                            Run {ri + 1} {ri === 0 ? '(cold)' : '(warm)'}
-                            {#if run.error}— ERROR{:else}— {run.latencyMs.toLocaleString()} ms / {run.tokensPerSec ?? '?'} t/s{/if}
+                            {i18n.t.settings.benchmark.run_label} {ri + 1} {ri === 0 ? i18n.t.settings.benchmark.run_cold_marker : i18n.t.settings.benchmark.run_warm_marker}
+                            {#if run.error}{i18n.t.settings.benchmark.error_marker}{:else}— {run.latencyMs.toLocaleString()} ms / {run.tokensPerSec ?? '?'} t/s{/if}
                         </span>
-                        <pre class="bench-response-pre" style="max-height:none;">{run.error || run.response || '(empty response)'}</pre>
+                        <pre class="bench-response-pre" style="max-height:none;">{run.error || run.response || i18n.t.settings.benchmark.empty_response}</pre>
                     </div>
                 {/each}
             </div>
@@ -2782,4 +3082,15 @@
     .runs-select-grid .r-text { font-size: 0.65rem; text-transform: uppercase; font-weight: 600; opacity: 0.8; }
     
     .large-bench-btn { height: 50px; font-size: 1rem; margin-top: 20px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 12px; }
+
+    .rr-list { display: flex; flex-direction: column; gap: 4px; }
+    .rr-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; }
+    .rr-row.rr-enabled { border-color: #27272a; background: #1c1c1f; }
+    .rr-label { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: #a1a1aa; cursor: pointer; }
+    .rr-label input { cursor: pointer; }
+    .rr-order { display: flex; align-items: center; gap: 4px; }
+    .rr-idx { font-size: 0.7rem; color: #52525b; width: 20px; text-align: right; }
+    .icon-btn-tiny { background: transparent; border: none; color: #52525b; cursor: pointer; padding: 2px 4px; border-radius: 3px; font-size: 0.65rem; line-height: 1; }
+    .icon-btn-tiny:hover:not(:disabled) { color: #a1a1aa; background: #27272a; }
+    .icon-btn-tiny:disabled { opacity: 0.3; cursor: not-allowed; }
 </style>
