@@ -249,6 +249,132 @@ way to bootstrap a fresh machine ("ssh into the file server, run
 away"). The GUI stays primary for interactive sort/review; the CLI
 handles automation.
 
+### P9 — Übersicht at million-file scale
+
+The L1 quick-scan now lets a user point CrispSorter at a multi-TB
+archive in seconds. The Übersicht / Catalog list, however, was
+designed for the dozens-to-hundreds case — `index_list_documents` returns
+the full set, the Svelte template iterates over it, all filter chips
+re-run client-side. Two orders of magnitude past that and the panel
+freezes on every keystroke. This phase reshapes the catalog view so it
+stays smooth at one to ten million rows on a single machine, the
+working scale for desktop-search parity (P7).
+
+#### Three architectural layers
+
+1. **Indexed columnar storage** (LanceDB) — promote the soft fields the
+   Übersicht filter chips depend on out of `metadata_json` into proper
+   columns with scalar indexes. New columns:
+
+   | column | type | purpose |
+   |---|---|---|
+   | `parent_dir` | `Utf8` | folder filter, folder-tree pane |
+   | `volume_id` | `Utf8` | already in `metadata_json`; promote so volume-filter is index-backed |
+   | `source_kind` | `Utf8` | `documents` / `catalog` / future archives |
+
+   Add scalar (BTree) indexes on: `parent_dir`, `ext`, `year`,
+   `language`, `owner_id`, `indexed_at`, `volume_id`. LanceDB's
+   `create_index(scalar)` builds these in one pass. Field-level
+   filters then hit the scalar index instead of full-scanning the
+   row group.
+
+   Fields that stay in `metadata_json` (low-cardinality, rarely
+   filtered): EXIF camera/lens, PDF producer, EPUB publisher,
+   per-row tags. Promote them only when a real filter chip appears.
+
+2. **Paginated API** — new Tauri command:
+
+   ```
+   index_query_documents(
+       filter: DocumentFilter,
+       sort:   SortSpec,
+       page:   PageSpec,
+       columns: Vec<ColumnId>,   // projection; only fetch what the UI shows
+   ) -> DocumentPage
+   ```
+
+   `DocumentFilter` mirrors the chip set: parent path prefix, ext
+   list, level (L1/L2/L3), date range, completeness flags, name
+   substring. `SortSpec`: column + direction; `PageSpec`: keyset
+   cursor (`(sort_value, doc_id)`) — *not* offset-based; offset
+   pagination on a 10M-row table is O(N) per page. Returns
+   `{ rows, next_cursor, total_estimate }`. `total_estimate` comes
+   from a cheap LanceDB row-count query against the same filter,
+   so the UI can show "342k matches" without listing them.
+
+   Companion command `index_folder_children(parent, depth)` for the
+   lazy-loaded folder tree pane: returns `{ name, child_count }`
+   tuples grouped by `parent_dir LIKE 'parent/%'`. Only the visible
+   subtree is materialised.
+
+3. **Virtualised UI** — `<div class="contents-list">` becomes a
+   TanStack-Virtual-backed table. Only the rows in the viewport (~30)
+   plus a small overscan are mounted. New layout:
+
+   ```
+   ┌─ folder tree ─┬─────── row list ──────────┬─ preview ─┐
+   │  /            │  filename  ext  size  …    │           │
+   │   ├ archives  │  ...                       │  PDF page │
+   │   ├ scans     │                            │           │
+   │   └ …         │                            │           │
+   └───────────────┴───────────────────────────┴───────────┘
+   ```
+
+   * **Row density** defaults to compact (24px), toggle to comfortable
+     (40px) — a 24px row × ~30 visible rows = the entire viewport's
+     DOM cost is bounded regardless of dataset size.
+   * **Column registry**: the set of columns the user can show is
+     declared once in TypeScript (id, label, accessor, default
+     visibility, default width, sortable). User toggles + reorders
+     persist in the store via `getSetting('catalogColumns', defaults)`.
+   * **Header sort**: clicking a header re-issues the query with the
+     new `SortSpec`. Free because the scalar index sorts on the
+     column server-side.
+   * **Search-as-filter**: the Suche tab's hit list, when piped
+     through "Show in Catalog", becomes a `doc_id IN (…)` filter
+     chip on the Übersicht — same virtualised pane, just filtered.
+
+#### Performance budget
+
+| operation | target | how we get there |
+|---|---|---|
+| open Übersicht (cold) | < 300 ms | first page = 200 rows, total estimate runs in parallel |
+| scroll | < 50 ms / frame | virtualisation; only render viewport ± 5 rows |
+| change sort | < 200 ms | scalar index hit, server-side ORDER BY |
+| change filter chip | < 200 ms | scalar index hit; cursor reset |
+| folder-tree expand | < 100 ms | one `index_folder_children` call per level |
+| preview render (PDF page 1) | < 500 ms | reuse existing extractor; lazy on selection |
+
+#### Migration path (incremental commits, in priority order)
+
+1. **`index_query_documents`** Rust command — `DocumentFilter` /
+   `SortSpec` / `PageSpec` types, keyset cursor implementation,
+   `total_estimate` via `count_rows` with same filter. No schema
+   changes yet — sort/filter on existing columns + LIKE on
+   `metadata_json` for parent_dir.
+2. **TanStack-Virtual rewrite** of the contents list in
+   `IndexIngest.svelte`, calling `index_query_documents` instead of
+   `index_list_documents`. Compact-density default. Existing chips
+   keep working through the new filter struct.
+3. **Promote `parent_dir` to a column** + scalar index on it.
+   Backfill existing rows. Folder filter chip switches from
+   client-side to indexed.
+4. **Folder-tree pane** + `index_folder_children`. Becomes the
+   primary navigation; the path chip is now a click on a tree node.
+5. **Column registry** + persistence. User can toggle Title / Author
+   / Year / Size / Mtime / Volume / Path / Language / Tags.
+6. **Promote `volume_id` + `source_kind`** to columns + indexes
+   (last, because they have the smallest filter-cost win and the
+   biggest schema-migration cost).
+7. **Preview pane** wired to existing `extractPdfNative` /
+   `extractDocxText` paths, lazy-rendered on row selection.
+
+Each step is independently shippable — the UI never breaks mid-flight,
+because the Rust command keeps returning the same `SearchResult`-shaped
+rows (just paginated). Steps 3 and 6 require a schema migration; the
+existing `IndexConfig::dims`-driven schema rebuild is the same hammer
+we use today when the embedder model changes.
+
 ---
 
 (For historical per-version changelog and shipped phase specs, see
