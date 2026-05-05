@@ -73,11 +73,11 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
 
     let fts = Arc::new(FtsIndex::open_or_create(&data_dir.path().join("fts"))?);
     let local = Arc::new(LocalIndex::open_or_create(data_dir.path(), model.dims()).await?);
-    let engine = SearchEngine::new(fts.clone(), local.clone(), embedder_arc.clone());
+    let engine = SearchEngine::new(fts.clone(), local.clone(), Some(embedder_arc.clone()));
     let pipeline = IngestPipeline::new(
         fts.clone(),
         local.clone(),
-        embedder_arc.clone(),
+        Some(embedder_arc.clone()),
         IngestConfig::default(),
     );
 

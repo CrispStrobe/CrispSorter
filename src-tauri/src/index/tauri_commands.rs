@@ -234,6 +234,41 @@ pub async fn index_list_documents(
     local.list_documents(limit).await.map_err(|e| e.to_string())
 }
 
+/// PLAN P9 — paginated, filterable, sortable browse of the documents
+/// table. Replaces the load-the-whole-table fetch in the Catalog
+/// overview pane.
+///
+/// The request is `(filter, sort, page)`; the response is one page of
+/// rows + a `next_cursor` (opaque) + a `total_estimate` for the same
+/// filter (regardless of page).
+#[tauri::command]
+pub async fn index_query_documents(
+    state: State<'_, AppState>,
+    filter: super::schema::DocumentFilter,
+    sort: super::schema::SortSpec,
+    page: super::schema::PageSpec,
+) -> Result<super::schema::DocumentPage, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Ok(super::schema::DocumentPage {
+            rows: vec![],
+            next_cursor: None,
+            total_estimate: 0,
+        });
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Document query is only available for the local backend")?
+        .clone();
+    drop(lock);
+
+    local
+        .query_documents(&filter, sort, page)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Ingest ────────────────────────────────────────────────────────────────────
 
 /// Ingest progress event emitted as `index://ingest-progress`.

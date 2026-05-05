@@ -185,6 +185,145 @@ impl SearchFilters {
     }
 }
 
+// ── Document query API (PLAN P9 Übersicht scaling) ───────────────────────
+//
+// `SearchFilters` above is the *retrieval-side* filter (applied around
+// FTS / ANN scoring). The catalog overview pane needs a richer
+// browse-side filter that's index-friendly: parent-folder prefix,
+// extension multi-select, name substring, level, completeness flags,
+// optional doc_id allowlist (for "Show in Catalog" from a search hit).
+// This block contains the API contract; the implementation lives in
+// `LocalIndex::query_documents`.
+
+/// Browse-side filter for `index_query_documents`.
+///
+/// All fields are optional / additive — a `Default::default()` filter
+/// matches every documents-table row (modulo the implicit
+/// `chunk_index <= 0` predicate that selects L1 metadata rows + L3
+/// representative rows, exactly like `list_documents`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentFilter {
+    /// Match rows whose `metadata_json.parent_dir` starts with this.
+    /// Empty / `None` = any folder.
+    pub parent_dir_prefix: Option<String>,
+    /// Lowercased extensions (without leading dot) to keep, e.g.
+    /// `["pdf", "docx"]`. Empty = any extension.
+    pub ext: Vec<String>,
+    pub year_min: Option<i32>,
+    pub year_max: Option<i32>,
+    /// ISO 639-1 code, e.g. "de" or "en". Matches `language = ?`.
+    pub language: Option<String>,
+    /// Filter by analysis level. `None` = all levels.
+    /// L1 = filesystem only (`chunk_index = -1`)
+    /// L2 = embedded metadata (also `chunk_index = -1`, with non-empty
+    ///      `metadata_json` carrying L2 fields)
+    /// L3 = full text + embedding (`chunk_index = 0` row exists)
+    pub level: Option<u8>,
+    /// Case-insensitive substring search on filename / title.
+    pub name_substring: Option<String>,
+    /// Restrict to a fixed doc_id allowlist (used by the
+    /// "Show in Catalog" pipeline that pipes search-hit doc_ids
+    /// into the Übersicht pane).
+    pub doc_ids: Option<Vec<String>>,
+    /// Multi-user filter — usually pulled from auth state in lib.rs.
+    pub owner_id: Option<String>,
+    /// Volume awareness (P7.6) — drop hits whose `metadata_json.volume_id`
+    /// isn't in this allowlist. `None` = volume filter disabled.
+    pub volume_ids: Option<Vec<String>>,
+}
+
+/// Sort column for `index_query_documents`. Matches a real LanceDB
+/// column when possible (cheap, scalar-index-friendly) and falls back
+/// to a `metadata_json` field for properties that haven't been
+/// promoted yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortColumn {
+    Filename,
+    Title,
+    Author,
+    Year,
+    Language,
+    /// Always present — when nothing else is specified, this is the
+    /// stable default (newest first).
+    IndexedAt,
+}
+
+impl Default for SortColumn {
+    fn default() -> Self {
+        SortColumn::IndexedAt
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDir {
+    Asc,
+    #[default]
+    Desc,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SortSpec {
+    #[serde(default)]
+    pub column: SortColumn,
+    #[serde(default)]
+    pub direction: SortDir,
+}
+
+/// Pagination cursor — opaque to the frontend. Step 1 of the migration
+/// uses offset-based pagination because LanceDB 0.26's public Rust API
+/// doesn't expose `ORDER BY`; without DB-side ordering, a keyset cursor
+/// would only work on the first page (storage order != sort order).
+/// Step 3+5 of the migration promote `parent_dir` to a column and
+/// upgrade the cursor to a real keyset once `Scanner::scan` is wired
+/// through. Encoded as a decimal string so it round-trips through the
+/// Tauri serde boundary cleanly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PageCursor(pub String);
+
+impl PageCursor {
+    pub fn from_offset(offset: u32) -> Self {
+        PageCursor(offset.to_string())
+    }
+    pub fn offset(&self) -> u32 {
+        self.0.parse().unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageSpec {
+    /// Page size, capped at 1000 server-side. Frontend default 200.
+    #[serde(default = "default_page_limit")]
+    pub limit: u32,
+    /// `None` = first page.
+    #[serde(default)]
+    pub cursor: Option<PageCursor>,
+}
+
+fn default_page_limit() -> u32 {
+    200
+}
+
+/// Server response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentPage {
+    pub rows: Vec<SearchResult>,
+    /// `None` when fewer than `limit` rows were returned (we hit the
+    /// end of the result set). Otherwise pass this back unchanged in
+    /// the next `PageSpec.cursor` to fetch the next page.
+    pub next_cursor: Option<PageCursor>,
+    /// Total rows matching `filter` regardless of `page`. Computed via
+    /// `count_rows(filter_sql)` — a single scalar query against the
+    /// same predicate, so it's cheap (no row materialisation).
+    pub total_estimate: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +362,20 @@ mod tests {
         assert!(sql.contains("owner_id"));
         assert!(sql.contains("year >= 1950"));
         assert!(sql.contains("year <= 2000"));
+    }
+
+    #[test]
+    fn page_cursor_offset_round_trip() {
+        for offset in [0u32, 1, 200, 999, 1_000_000] {
+            assert_eq!(PageCursor::from_offset(offset).offset(), offset);
+        }
+    }
+
+    #[test]
+    fn page_cursor_offset_garbage_falls_back_to_zero() {
+        // Forward-compat: a cursor minted by a future keyset-based
+        // implementation should be treated as "first page" by an old
+        // offset-based reader rather than crash.
+        assert_eq!(PageCursor("not-a-number".to_owned()).offset(), 0);
     }
 }

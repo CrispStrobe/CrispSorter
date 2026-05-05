@@ -2169,6 +2169,7 @@ pub fn run() {
             index::tauri_commands::index_is_ready,
             index::tauri_commands::index_stats,
             index::tauri_commands::index_list_documents,
+            index::tauri_commands::index_query_documents,
             index::tauri_commands::index_delete_document,
             index::tauri_commands::index_capabilities,
             index::tauri_commands::index_model_download_mb,
