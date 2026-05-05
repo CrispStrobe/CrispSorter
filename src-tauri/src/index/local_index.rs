@@ -26,6 +26,7 @@ use lancedb::{
     Connection, DistanceType, Table,
 };
 
+use super::embedder::SparseVector;
 use super::schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
 use super::IndexBackend;
 
@@ -194,6 +195,146 @@ impl LocalIndex {
         Ok(best.into_values().map(|(r, _)| r).collect())
     }
 
+    /// Score a candidate doc-id pool by sparse dot product.
+    ///
+    /// LanceDB has no native sparse vector index, so this scans the full
+    /// candidate set rather than the corpus — but it's only invoked from
+    /// `SearchEngine::search_hybrid` where the pool is the union of FTS+ANN
+    /// hits (typically <200 docs). For larger corpora, sparse retrieval as
+    /// the *primary* modality would need a dedicated inverted index; this
+    /// implementation is intentionally a third RRF channel that refines an
+    /// already-scoped candidate set.
+    ///
+    /// Returns one `SearchResult` per matching doc_id, scored by sparse
+    /// dot product (higher = better), best chunk per doc kept.
+    pub async fn search_sparse_in_pool(
+        &self,
+        query: &SparseVector,
+        candidate_doc_ids: &[String],
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if candidate_doc_ids.is_empty() || query.indices.is_empty() {
+            return Ok(vec![]);
+        }
+        let quoted: Vec<String> = candidate_doc_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect();
+        let mut filter = format!("doc_id IN ({})", quoted.join(", "));
+        if let Some(extra) = filters.to_lance_sql() {
+            filter = format!("({}) AND ({})", filter, extra);
+        }
+        // 8 chunks per doc lets us pick the best per-doc chunk without
+        // scanning the full doc.
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(filter)
+            .limit(candidate_doc_ids.len() * 8)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Walk each row, deserialize sparse JSON, score against query.
+        let mut best: std::collections::HashMap<String, (SearchResult, f32)> =
+            std::collections::HashMap::new();
+
+        for batch in &batches {
+            let n = batch.num_rows();
+            let sparse_col = str_col_opt(batch, "embedding_sparse");
+            // If the column is missing entirely, the corpus was indexed
+            // without sparse — bail out gracefully.
+            let Some(sparse_col) = sparse_col else {
+                return Ok(vec![]);
+            };
+
+            let doc_id_col = str_col(batch, "doc_id")?;
+            let location_uri_col = str_col(batch, "location_uri")?;
+            let owner_id_col = str_col(batch, "owner_id")?;
+            let title_col = str_col_opt(batch, "title");
+            let author_col = str_col_opt(batch, "author");
+            let year_col = i32_col_opt(batch, "year");
+            let filename_col = str_col_opt(batch, "filename");
+            let ext_col = str_col_opt(batch, "ext");
+            let language_col = str_col_opt(batch, "language");
+            let chunk_idx_col = i32_col(batch, "chunk_index")?;
+            let full_text_col = str_col_opt(batch, "full_text");
+            let metadata_col = str_col_opt(batch, "metadata_json");
+
+            for i in 0..n {
+                if sparse_col.is_null(i) {
+                    continue;
+                }
+                let json_str = sparse_col.value(i);
+                let Ok(parsed): std::result::Result<serde_json::Value, _> =
+                    serde_json::from_str(json_str)
+                else {
+                    continue;
+                };
+                let Some(doc_sparse) = SparseVector::from_json(&parsed) else {
+                    continue;
+                };
+                let score = sparse_dot(query, &doc_sparse);
+                if score <= 0.0 {
+                    continue;
+                }
+
+                let full_text = full_text_col
+                    .as_ref()
+                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                    .unwrap_or("");
+                let snippet = full_text.chars().take(400).collect::<String>();
+
+                let volume_id = metadata_col
+                    .as_ref()
+                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                    .and_then(parse_volume_id_from_metadata);
+
+                let result = SearchResult {
+                    doc_id: str_val(doc_id_col, i),
+                    location_uri: str_val(location_uri_col, i),
+                    owner_id: str_val(owner_id_col, i),
+                    title: str_col_val_opt(&title_col, i),
+                    author: str_col_val_opt(&author_col, i),
+                    year: year_col.as_ref().and_then(|c| {
+                        if c.is_null(i) {
+                            None
+                        } else {
+                            Some(c.value(i))
+                        }
+                    }),
+                    filename: str_col_val_opt(&filename_col, i),
+                    ext: str_col_val_opt(&ext_col, i),
+                    language: str_col_val_opt(&language_col, i),
+                    snippet,
+                    score,
+                    chunk_index: chunk_idx_col.value(i),
+                    catalog_source: None,
+                    volume_id,
+                };
+                let doc_id = result.doc_id.clone();
+                let is_better = match best.get(&doc_id) {
+                    None => true,
+                    Some((_, prev)) => score > *prev,
+                };
+                if is_better {
+                    best.insert(doc_id, (result, score));
+                }
+            }
+        }
+
+        let mut results: Vec<SearchResult> = best.into_values().map(|(r, _)| r).collect();
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+        Ok(results)
+    }
+
     /// Fetch one representative row per doc_id (chunk_index = 0) for result hydration.
     ///
     /// Using `chunk_index = 0` guarantees exactly one row per document regardless
@@ -242,6 +383,20 @@ impl LocalIndex {
             .execute()
             .await
             .context("LanceDB update_location")?;
+        Ok(())
+    }
+
+    /// Update `location_uri` by matching the old URI (no doc_id required).
+    pub async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        let filter = format!("location_uri = '{}'", old_uri.replace('\'', "''"));
+        let new_val = format!("'{}'", new_uri.replace('\'', "''"));
+        self.table
+            .update()
+            .only_if(filter)
+            .column("location_uri", new_val)
+            .execute()
+            .await
+            .context("LanceDB update_location_by_uri")?;
         Ok(())
     }
 
@@ -340,6 +495,68 @@ impl LocalIndex {
             .await?;
         record_batches_to_search_results(&batches)
     }
+
+    /// PLAN P7.4.3 — read the source-file mtime stored in the documents
+    /// table for this `location_uri`, if any.
+    ///
+    /// Looks up the chunk_index = 0 row matching `location_uri`, parses
+    /// `metadata_json` as `{"mtime_unix": <secs>}`, returns the value.
+    /// `None` when the row is missing or `metadata_json` is empty / has
+    /// no `mtime_unix` key (e.g. rows ingested before P7.4.3 landed,
+    /// or rows from `index_ingest_document` which doesn't carry source
+    /// mtime).
+    ///
+    /// Background ingest uses this to mtime-skip files that haven't
+    /// changed since last index — saves the read + extract + embed
+    /// cost on the common "no new content" case.
+    pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<u32>> {
+        let pred = format!(
+            "location_uri = '{}' AND chunk_index = 0",
+            location_uri.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        for batch in &batches {
+            if let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() {
+                let col = batch.column(meta_idx);
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("metadata_json column not StringArray"))?;
+                for i in 0..batch.num_rows() {
+                    if arr.is_null(i) {
+                        continue;
+                    }
+                    let json = arr.value(i);
+                    // Tiny hand-parse — avoids serde_json dep cost for a
+                    // single integer field with a fixed key. Any change
+                    // beyond `{"mtime_unix": N, ...}` shape needs a real
+                    // parser.
+                    if let Some(start) = json.find("\"mtime_unix\"") {
+                        let after = &json[start + "\"mtime_unix\"".len()..];
+                        // Skip optional whitespace + colon + whitespace.
+                        let rest = after.trim_start();
+                        let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+                        // Read the integer up to the next non-digit.
+                        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+                        if end > 0 {
+                            if let Ok(v) = rest[..end].parse::<u32>() {
+                                return Ok(Some(v));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 // ── IndexBackend impl ──────────────────────────────────────────────────────
@@ -387,6 +604,10 @@ impl IndexBackend for LocalIndex {
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
         self.update_location(doc_id, new_uri).await
     }
+
+    async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        self.update_location_by_uri(old_uri, new_uri).await
+    }
 }
 
 // ── Public helpers used by search.rs ─────────────────────────────────────
@@ -425,6 +646,11 @@ pub fn batches_to_search_results_with_scores(
                 .unwrap_or("");
             let snippet = full_text.chars().take(400).collect::<String>();
 
+            let volume_id = metadata_col
+                .as_ref()
+                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                .and_then(parse_volume_id_from_metadata);
+
             results.push(SearchResult {
                 doc_id,
                 location_uri: str_val(location_uri_col, i),
@@ -445,6 +671,8 @@ pub fn batches_to_search_results_with_scores(
                 score,
                 chunk_index: chunk_idx_col.value(i),
                 metadata_json: str_col_val_opt(&metadata_col, i),
+                catalog_source: None,
+                volume_id,
             });
         }
     }
@@ -615,6 +843,11 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
             let distance = score_col.as_ref().map(|c| c.value(i)).unwrap_or(1.0);
             let score = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
 
+            let volume_id = metadata_col
+                .as_ref()
+                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                .and_then(parse_volume_id_from_metadata);
+
             results.push(SearchResult {
                 doc_id: str_val(doc_id_col, i),
                 location_uri: str_val(location_uri_col, i),
@@ -635,11 +868,45 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 score,
                 chunk_index: chunk_idx_col.value(i),
                 metadata_json: str_col_val_opt(&metadata_col, i),
+                catalog_source: None,
+                volume_id,
             });
         }
     }
 
     Ok(results)
+}
+
+/// Tiny hand-parser for `"volume_id":"<id>"` inside `metadata_json`.
+/// Mirrors `indexed_mtime_for_uri`'s style — avoids a serde_json dep
+/// for a single string field with a known shape. Volume ids are
+/// UUIDs / hex serials in practice (no special characters needing
+/// unescape), but we tolerate `\"` and `\\` to match the writer in
+/// `index/ingest.rs::build_metadata_json`.
+fn parse_volume_id_from_metadata(json: &str) -> Option<String> {
+    let key = "\"volume_id\"";
+    let start = json.find(key)?;
+    let after = &json[start + key.len()..];
+    let after = after.trim_start().strip_prefix(':')?.trim_start();
+    let after = after.strip_prefix('"')?;
+    // Read until the next unescaped `"`.
+    let mut out = String::new();
+    let mut chars = after.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                other => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            },
+            other => out.push(other),
+        }
+    }
+    None
 }
 
 // ── Column extraction helpers ──────────────────────────────────────────────
@@ -706,4 +973,147 @@ fn str_col_val_opt(arr: &Option<&StringArray>, i: usize) -> Option<String> {
 fn is_table_not_found(e: &lancedb::Error) -> bool {
     // LanceDB returns TableNotFound when the table doesn't exist yet.
     matches!(e, lancedb::Error::TableNotFound { .. })
+}
+
+// ── Sparse scoring ─────────────────────────────────────────────────────────
+
+/// Dot product of two sparse vectors. BGE-M3 / SPLADE outputs are sorted by
+/// token id, but this implementation sorts on the fly when needed so the
+/// scoring is correct regardless. Hot path uses the merge form when both
+/// inputs are already sorted (the common case).
+pub(super) fn sparse_dot(a: &SparseVector, b: &SparseVector) -> f32 {
+    if a.indices.is_empty() || b.indices.is_empty() {
+        return 0.0;
+    }
+
+    let a_sorted = is_sorted_ascending(&a.indices);
+    let b_sorted = is_sorted_ascending(&b.indices);
+
+    if a_sorted && b_sorted {
+        // Two-pointer merge — O(|a| + |b|).
+        let mut score = 0.0f32;
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < a.indices.len() && j < b.indices.len() {
+            match a.indices[i].cmp(&b.indices[j]) {
+                std::cmp::Ordering::Equal => {
+                    score += a.values[i] * b.values[j];
+                    i += 1;
+                    j += 1;
+                }
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+        return score;
+    }
+
+    // Fallback: hash join — O(|a| + |b|) but allocates a small map.
+    let map: std::collections::HashMap<u32, f32> =
+        a.indices.iter().copied().zip(a.values.iter().copied()).collect();
+    let mut score = 0.0f32;
+    for (idx, val) in b.indices.iter().zip(b.values.iter()) {
+        if let Some(&w) = map.get(idx) {
+            score += w * val;
+        }
+    }
+    score
+}
+
+fn is_sorted_ascending(v: &[u32]) -> bool {
+    v.windows(2).all(|w| w[0] <= w[1])
+}
+
+#[cfg(test)]
+mod sparse_tests {
+    use super::*;
+    use crate::index::embedder::SparseVector;
+
+    fn sv(indices: Vec<u32>, values: Vec<f32>) -> SparseVector {
+        SparseVector { indices, values }
+    }
+
+    #[test]
+    fn dot_disjoint_is_zero() {
+        let a = sv(vec![1, 2, 3], vec![1.0, 1.0, 1.0]);
+        let b = sv(vec![4, 5, 6], vec![1.0, 1.0, 1.0]);
+        assert_eq!(sparse_dot(&a, &b), 0.0);
+    }
+
+    #[test]
+    fn dot_full_overlap_is_sum_of_products() {
+        let a = sv(vec![1, 2, 3], vec![1.0, 2.0, 3.0]);
+        let b = sv(vec![1, 2, 3], vec![4.0, 5.0, 6.0]);
+        assert!((sparse_dot(&a, &b) - 32.0).abs() < 1e-6); // 4 + 10 + 18
+    }
+
+    #[test]
+    fn dot_partial_overlap() {
+        let a = sv(vec![1, 3, 5], vec![1.0, 1.0, 1.0]);
+        let b = sv(vec![3, 5, 7], vec![2.0, 3.0, 4.0]);
+        assert!((sparse_dot(&a, &b) - 5.0).abs() < 1e-6); // 2 + 3
+    }
+
+    #[test]
+    fn dot_works_when_unsorted() {
+        // Force the hash-join path by giving b an out-of-order index list.
+        let a = sv(vec![1, 2, 3], vec![1.0, 1.0, 1.0]);
+        let b = sv(vec![3, 1, 2], vec![3.0, 1.0, 2.0]);
+        assert!((sparse_dot(&a, &b) - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dot_empty_inputs_zero() {
+        let a = sv(vec![], vec![]);
+        let b = sv(vec![1, 2], vec![1.0, 1.0]);
+        assert_eq!(sparse_dot(&a, &b), 0.0);
+        assert_eq!(sparse_dot(&b, &a), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod volume_id_parse_tests {
+    use super::parse_volume_id_from_metadata;
+
+    #[test]
+    fn parses_volume_id_alone() {
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"volume_id":"ABCD-1234"}"#),
+            Some("ABCD-1234".to_owned())
+        );
+    }
+
+    #[test]
+    fn parses_volume_id_after_mtime() {
+        // Same packing order the writer in build_metadata_json uses.
+        assert_eq!(
+            parse_volume_id_from_metadata(
+                r#"{"mtime_unix":1700000000,"volume_id":"12345678-1234-1234-1234-123456789ABC"}"#
+            ),
+            Some("12345678-1234-1234-1234-123456789ABC".to_owned())
+        );
+    }
+
+    #[test]
+    fn missing_volume_id_returns_none() {
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"mtime_unix":1700000000}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_metadata_returns_none() {
+        assert_eq!(parse_volume_id_from_metadata(""), None);
+    }
+
+    #[test]
+    fn handles_escaped_quote_inside_id() {
+        // Defensive — volume ids in practice are UUIDs / hex, but the
+        // writer escapes `"` as `\"` for safety. The reader has to
+        // honour that.
+        assert_eq!(
+            parse_volume_id_from_metadata(r#"{"volume_id":"weird\"id"}"#),
+            Some(r#"weird"id"#.to_owned())
+        );
+    }
 }

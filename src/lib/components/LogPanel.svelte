@@ -2,23 +2,36 @@
     import { onMount, onDestroy } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+    import { frontendLogs, type FrontendLogEntry } from '../log';
+    import { i18n } from '../i18n.svelte';
 
     interface LogEntry {
         ts: number;
         level: string;
         msg: string;
+        src?: 'be' | 'fe';
     }
 
-    let logs = $state<LogEntry[]>([]);
+    let backendLogs = $state<LogEntry[]>([]);
+    let feLogs = $state<FrontendLogEntry[]>([]);
     let autoscroll = $state(true);
     let levelFilter = $state('all');
     let searchFilter = $state('');
     let logContainer: HTMLElement | null = null;
     let unlisten: UnlistenFn | null = null;
+    let unsubFe: (() => void) | null = null;
 
     const MAX_UI_LOGS = 1000;
 
-    let filteredLogs = $derived(logs.filter(l => {
+    // Merge backend + frontend logs, sorted by timestamp
+    let allLogs = $derived(
+        [...backendLogs.map(l => ({ ...l, src: 'be' as const })),
+         ...feLogs.map(l => ({ ...l, src: 'fe' as const }))]
+            .sort((a, b) => a.ts - b.ts)
+            .slice(-MAX_UI_LOGS)
+    );
+
+    let filteredLogs = $derived(allLogs.filter(l => {
         if (levelFilter !== 'all' && l.level !== levelFilter) return false;
         if (searchFilter && !l.msg.toLowerCase().includes(searchFilter.toLowerCase())) return false;
         return true;
@@ -45,69 +58,75 @@
     }
 
     function clearLogs() {
-        logs = [];
+        backendLogs = [];
+        feLogs = [];
     }
 
     function copyLogs() {
         const text = filteredLogs
-            .map(l => `[${formatTime(l.ts)}] [${l.level}] ${l.msg}`)
+            .map(l => `[${formatTime(l.ts)}] [${l.src ?? '??'}] [${l.level}] ${l.msg}`)
             .join('\n');
         navigator.clipboard.writeText(text);
     }
 
     onMount(async () => {
-        // Load existing logs from ring buffer
         try {
             const existing = await invoke<LogEntry[]>('get_logs');
-            logs = existing;
+            backendLogs = existing;
             scrollToBottom();
         } catch (e) {
             console.warn('[LogPanel] get_logs failed:', e);
         }
 
-        // Listen for new log events
         unlisten = await listen<LogEntry>('app-log', (event) => {
-            logs.push(event.payload);
-            if (logs.length > MAX_UI_LOGS) {
-                logs = logs.slice(-MAX_UI_LOGS);
+            backendLogs.push(event.payload);
+            if (backendLogs.length > MAX_UI_LOGS) {
+                backendLogs = backendLogs.slice(-MAX_UI_LOGS);
             }
-            // Also capture console-level frontend logs
+            scrollToBottom();
+        });
+
+        // Subscribe to frontend log store
+        unsubFe = frontendLogs.subscribe(v => {
+            feLogs = v;
             scrollToBottom();
         });
     });
 
     onDestroy(() => {
         unlisten?.();
+        unsubFe?.();
     });
 </script>
 
 <div class="log-panel">
     <div class="log-toolbar">
-        <span class="log-title">Logs</span>
+        <span class="log-title">{i18n.t.logs.title}</span>
         <select bind:value={levelFilter} class="log-select">
-            <option value="all">All</option>
-            <option value="info">Info</option>
-            <option value="warn">Warn</option>
-            <option value="error">Error</option>
+            <option value="all">{i18n.t.logs.level_all}</option>
+            <option value="info">{i18n.t.logs.level_info}</option>
+            <option value="warn">{i18n.t.logs.level_warn}</option>
+            <option value="error">{i18n.t.logs.level_error}</option>
         </select>
-        <input type="text" bind:value={searchFilter} placeholder="Filter…" class="log-search" />
+        <input type="text" bind:value={searchFilter} placeholder={i18n.t.logs.filter_placeholder} class="log-search" />
         <label class="log-autoscroll">
-            <input type="checkbox" bind:checked={autoscroll} /> Auto-scroll
+            <input type="checkbox" bind:checked={autoscroll} /> {i18n.t.logs.autoscroll}
         </label>
-        <button class="log-btn" onclick={copyLogs} title="Copy logs to clipboard">Copy</button>
-        <button class="log-btn" onclick={clearLogs} title="Clear logs">Clear</button>
-        <span class="log-count">{filteredLogs.length} entries</span>
+        <button class="log-btn" onclick={copyLogs} title={i18n.t.logs.copy_title}>{i18n.t.logs.copy}</button>
+        <button class="log-btn" onclick={clearLogs} title={i18n.t.logs.clear_title}>{i18n.t.logs.clear}</button>
+        <span class="log-count">{i18n.t.logs.entries.replace('{count}', String(filteredLogs.length))}</span>
     </div>
     <div class="log-entries" bind:this={logContainer}>
         {#each filteredLogs as entry (entry.ts + entry.msg)}
             <div class="log-line {levelClass(entry.level)}">
                 <span class="log-ts">{formatTime(entry.ts)}</span>
+                <span class="log-src" class:log-src-fe={entry.src === 'fe'}>{entry.src ?? 'be'}</span>
                 <span class="log-level">{entry.level.toUpperCase()}</span>
                 <span class="log-msg">{entry.msg}</span>
             </div>
         {/each}
         {#if filteredLogs.length === 0}
-            <div class="log-empty">No log entries{levelFilter !== 'all' ? ` matching "${levelFilter}"` : ''}.</div>
+            <div class="log-empty">{levelFilter !== 'all' ? i18n.t.logs.empty_filtered.replace('{filter}', levelFilter) : i18n.t.logs.empty}</div>
         {/if}
     </div>
 </div>
@@ -209,6 +228,16 @@
         flex-shrink: 0;
         min-width: 85px;
     }
+
+    .log-src {
+        flex-shrink: 0;
+        min-width: 22px;
+        font-size: 10px;
+        color: #555;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .log-src-fe { color: #7c6a2a; }
 
     .log-level {
         flex-shrink: 0;

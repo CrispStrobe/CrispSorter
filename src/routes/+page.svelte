@@ -1,5 +1,8 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { invoke } from '@tauri-apps/api/core';
+    import { listen } from '@tauri-apps/api/event';
+    import { stat } from '@tauri-apps/plugin-fs';
     import Settings from '$lib/components/Settings.svelte';
     import BatchReview from '$lib/components/BatchReview.svelte';
     import History from '$lib/components/History.svelte';
@@ -7,9 +10,13 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal } from 'lucide-svelte';
+    import { flog } from '$lib/log';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal, HardDrive, CopyCheck } from 'lucide-svelte';
+    import IndexSearch from '$lib/components/IndexSearch.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
+    import Catalog from '$lib/components/Catalog.svelte';
+    import Duplicates from '$lib/components/Duplicates.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog'
     let navCollapsed = $state(false);
@@ -25,16 +32,72 @@
         return { total: items.length, counts };
     });
 
-    onMount(async () => {
-        // Load saved language
-        const savedLang = await getSetting('language', 'en') as Language;
-        i18n.setLanguage(savedLang);
+    onMount(() => {
+        let cleanup = () => {};
+        (async () => {
+            // Load saved language
+            const savedLang = await getSetting('language', 'en') as Language;
+            i18n.setLanguage(savedLang);
 
-        try {
-            await batchManager.resumeLastSession();
-        } catch (e) {
-            console.error("Session resume failed:", e);
-        }
+            try {
+                await batchManager.resumeLastSession();
+            } catch (e) {
+                console.error("Session resume failed:", e);
+            }
+
+            // ── Folder watcher ──────────────────────────────────────────
+            // Single global listener for folder-watch:added events. The
+            // Rust watcher emits one event per new file (debounced 2s);
+            // we stat for size and append to the batch. addItem dedupes
+            // on path, so re-emitted events don't create duplicate rows.
+            const unlistenWatch = await listen<{ path: string }>(
+                'folder-watch:added',
+                async (event) => {
+                    const path = event.payload?.path;
+                    if (!path) return;
+                    const name = path.split(/[\\/]/).pop() || path;
+                    let size = 0;
+                    try {
+                        const info = await stat(path);
+                        size = Number((info as any).size ?? 0);
+                    } catch {
+                        /* file may have been moved between detection and
+                           stat — ignore and import with size=0 */
+                    }
+                    batchManager.addItem(path, name, size);
+                    flog('info', `Watcher added: ${name}`);
+                }
+            );
+
+            // Resume any watchers configured in a previous session.
+            // Migrate the v0.1.32 single-folder shape (watchEnabled +
+            // watchFolder) to the v0.1.34 list shape (watchFolders) on
+            // first read so existing users don't lose their setup.
+            try {
+                let folders = (await getSetting('watchFolders', null)) as string[] | null;
+                if (folders == null) {
+                    const legacyEnabled = (await getSetting('watchEnabled', false)) as boolean;
+                    const legacyFolder = (await getSetting('watchFolder', '')) as string;
+                    folders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
+                }
+                for (const folder of folders) {
+                    try {
+                        await invoke('watch_start', { folder });
+                        flog('info', `Watcher resumed: ${folder}`);
+                    } catch (e) {
+                        flog('warn', `Watcher resume failed for ${folder}: ${e}`);
+                    }
+                }
+            } catch (e) {
+                flog('warn', `Watcher resume read failed: ${e}`);
+            }
+
+            cleanup = () => {
+                unlistenWatch();
+                invoke('watch_stop_all').catch(() => {});
+            };
+        })();
+        return () => cleanup();
     });
 
     function switchToBatch() {
@@ -70,6 +133,18 @@
             <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title={i18n.t.nav.catalog}>
                 <Library size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.catalog}</span>{/if}
+            </button>
+
+            <div class="nav-separator"></div>
+
+            <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title="Catalog (Cathy/Catfish .caf)">
+                <HardDrive size={20} />
+                {#if !navCollapsed}<span>Catalog</span>{/if}
+            </button>
+
+            <button class="nav-item" class:active={activeTab === 'dupes'} onclick={() => activeTab = 'dupes'} title="Find Duplicates">
+                <CopyCheck size={20} />
+                {#if !navCollapsed}<span>Duplicates</span>{/if}
             </button>
         </div>
 
@@ -114,6 +189,10 @@
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}
                 <IndexIngest />
+            {:else if activeTab === 'catalog'}
+                <Catalog />
+            {:else if activeTab === 'dupes'}
+                <Duplicates />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />

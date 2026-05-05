@@ -132,6 +132,22 @@ pub struct SearchResult {
     /// Frontend reads `level`, `fs_size`, `fs_mtime`, etc. from here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_json: Option<String>,
+    /// Set on catalog-channel hits (P6 Phase 4c) to the source `.caf`
+    /// path. `None` for ordinary documents-table hits. Frontend uses
+    /// this to render a `[catalog: <name>]` badge alongside the regular
+    /// metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_source: Option<String>,
+    /// PLAN P7.6 follow-up — the source volume's stable id (macOS
+    /// `diskutil` UUID, Linux blkid UUID, Windows volume serial),
+    /// parsed out of `metadata_json` at search time. `None` for rows
+    /// ingested before P7.6 landed, for path-less ingests, or for any
+    /// row whose volume helper failed at ingest time. The
+    /// `index_search` caller drops hits whose `volume_id` is `Some`
+    /// and not in the currently-mounted set, unless
+    /// `include_unmounted` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_id: Option<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

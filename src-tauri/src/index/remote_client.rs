@@ -244,4 +244,12 @@ impl IndexBackend for RemoteClient {
             .await?;
         Ok(())
     }
+
+    async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
+        #[derive(Serialize)]
+        struct ByUriPayload<'a> { old_uri: &'a str, new_uri: &'a str }
+        let payload = ByUriPayload { old_uri, new_uri };
+        self.post_json("/v1/docs/location/by-uri", &payload).await?;
+        Ok(())
+    }
 }

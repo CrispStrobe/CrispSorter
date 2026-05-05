@@ -97,6 +97,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             location_uri: "uri1".to_owned(),
             owner_id: "user1".to_owned(),
             tags: vec![],
+            mtime_unix: None,
+            volume_id: None,
         },
         RawDocument {
             full_text: "Während Angriffe auf den Rechtsstaat in Europa zunehmen...".to_owned(),
@@ -112,6 +114,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             location_uri: "uri2".to_owned(),
             owner_id: "user1".to_owned(),
             tags: vec![],
+            mtime_unix: None,
+            volume_id: None,
         },
         RawDocument {
             full_text: "Integrationsdialog? Zeithistorisch akzentuierte Perspektiven auf sozialintegrative Potentiale des christlich-islamischen Dialogs. Wilhelm Heitmeyer.".to_owned(),
@@ -127,6 +131,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             location_uri: "uri3".to_owned(),
             owner_id: "user1".to_owned(),
             tags: vec![],
+            mtime_unix: None,
+            volume_id: None,
         }
     ];
 
@@ -230,7 +236,7 @@ async fn embedding_quality_metrics() {
     let fp32_vecs: Option<Vec<Vec<f32>>> = {
         let cfg = cfg_for(EmbedderModel::Octen06bFp32);
         match Embedder::new(cfg).await {
-            Ok(mut e) => match e.embed_dense(texts.clone()) {
+            Ok(mut e) => match e.embed_dense(texts.clone(), super::embedder::EmbedRole::Passage) {
                 Ok(d) => {
                     println!("FP32 baseline loaded.");
                     Some(d.vectors)
@@ -258,7 +264,7 @@ async fn embedding_quality_metrics() {
 
         let cfg = cfg_for(model);
         let vecs: Vec<Vec<f32>> = match Embedder::new(cfg).await {
-            Ok(mut e) => match e.embed_dense(texts.clone()) {
+            Ok(mut e) => match e.embed_dense(texts.clone(), super::embedder::EmbedRole::Passage) {
                 Ok(d) => d.vectors,
                 Err(err) => {
                     println!("SKIPPED — embed failed: {err:#}");

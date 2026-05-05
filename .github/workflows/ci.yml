@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, index-test]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
@@ -11,11 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Sibling repo referenced by src-tauri/Cargo.toml as `../../CrispEmbed/crispembed`.
-  # Checked out alongside CrispSorter so cargo metadata / cargo-license /
-  # cargo check can all resolve the path dep even on a clean runner.
+  # Sibling repos referenced by src-tauri/Cargo.toml as path deps:
+  #   ../../CrispEmbed/crispembed
+  #   ../../CrispASR/crispasr
+  # Checked out into repos/{name} so that, from repos/CrispSorter/src-tauri,
+  # the relative path resolves correctly without any Cargo.toml rewrite.
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
   CRISPEMBED_REF: main
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: main
 
 jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
@@ -35,6 +39,13 @@ jobs:
           repository: ${{ env.CRISPEMBED_REPO }}
           ref: ${{ env.CRISPEMBED_REF }}
           path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
 
       - uses: actions/setup-node@v4
         with:

@@ -11,6 +11,7 @@ import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import type { BatchSession } from '../types';
 import { extractText } from '../extractors';
+import { flog } from '../log';
 
 export interface ProcessOverrides {
     providerId?: string;
@@ -43,6 +44,7 @@ export class BatchManager {
     isMetadataExtractionEnabled = $state(true);
     private stopRequested = false;
     private extractionAbort: AbortController | null = null;
+    private llmAbort: AbortController | null = null;
 
     filteredItems = $derived.by(() => {
         return this.items.filter(item => {
@@ -93,12 +95,13 @@ export class BatchManager {
     stopAll() {
         this.stopRequested = true;
         this.extractionAbort?.abort();
-        console.log('[BatchManager] Stop requested by user');
+        this.llmAbort?.abort();
+        flog('info', 'Stop requested by user — aborting extraction and LLM');
     }
 
     resetStuckItems() {
         for (const item of this.items) {
-            if (item.status === 'extracting' || item.status === 'analyzing') {
+            if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
                 item.status = 'queued';
                 item.statusDetail = undefined;
             }
@@ -141,10 +144,11 @@ export class BatchManager {
     }
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
-        console.log("[BatchManager] Starting processAll loop", overrides ? `(overrides: ${JSON.stringify(overrides)})` : '', onlyIds ? `(onlyIds: ${onlyIds.size})` : '');
+        flog('info', `processAll started${onlyIds ? ` (${onlyIds.size} items)` : ''}`);
         if (this.isProcessing) return;
         this.isProcessing = true;
         this.stopRequested = false;
+        this.llmAbort = new AbortController();
 
         const providers = await getSetting('providers', []);
         const activeProviderId = overrides?.providerId || await getSetting('activeProviderId', 'ollama');
@@ -166,6 +170,11 @@ export class BatchManager {
         const authorSortEnabled = overrides?.authorSort ?? await getSetting('authorSortEnabled', false);
         const pdfBackend = await getSetting('pdfBackend', 'js');
         const extractionMaxPages = await getSetting('extractionMaxPages', 0) as number; // 0 = all pages (no limit)
+        // PLAN P8.1 — per-file conversion timeout. 0 = no whole-file
+        // ceiling (the page watchdog still catches "extractor froze").
+        // Default 120s catches the "extractor making slow but real
+        // progress on a too-big file" case that the page watchdog can't.
+        const conversionTimeoutSec = (await getSetting('conversionTimeoutSeconds', 120)) as number;
         const requestDelayMs = await getSetting('requestDelayMs', 0) as number;
         llmClient.requestDelayMs = requestDelayMs;
         const language = await getSetting('language', 'en') as string;
@@ -189,94 +198,229 @@ export class BatchManager {
         const defaultPrompt = getDefaultPrompt(parsingFormat, language);
         const basePrompt = await getSetting('llmPrompt', defaultPrompt);
 
-        console.log(`[BatchManager] processAll config: format=${parsingFormat}, language=${language}, provider=${activeProviderId}, model=${modelId}, maxChars=${llmMaxChars}, authorSort=${authorSortEnabled}`);
+        // Build round-robin provider list: active provider first, then user-defined fallbacks.
+        // Each entry: { id, modelId, apiKey }. Used in phase 2 to switch on provider failure.
+        const roundRobinIds: string[] = (await getSetting('roundRobinProviders', [])) as string[];
+        type RRProvider = { id: string; modelId: string; apiKey: string };
+        const rrProviders: RRProvider[] = [
+            { id: activeProvider.id, modelId, apiKey: activeProvider.apiKey || '' },
+            ...roundRobinIds
+                .filter(id => id !== activeProviderId)
+                .map(id => {
+                    const p = (providers as any[]).find(pp => pp.id === id);
+                    if (!p) return null;
+                    return { id, modelId: p.selectedModel || p.models?.[0] || '', apiKey: p.apiKey || '' };
+                })
+                .filter((p): p is RRProvider => p !== null),
+        ];
+        let rrIdx = 0; // advances when a provider exhausts its retries
+
+        flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
+
+        // Two-phase: EXTRACT all → ANALYZE all.
+        // This decouples text extraction from LLM analysis so a stalled LLM
+        // queue never blocks extraction of remaining items.
+        const needsProcessing = (item: BatchItem) =>
+            (item.status === 'queued' || item.status === 'error' || item.status === 'unfinished') &&
+            (!onlyIds || onlyIds.has(item.id));
+
+        const PAGE_WATCHDOG_MS = 30_000; // abort if no page progress for 30 s
+        // P8.1 — whole-file timeout. 0 sentinel = no timeout (current
+        // pre-P8.1 behaviour for users who explicitly opted out).
+        const FILE_TIMEOUT_MS = conversionTimeoutSec > 0
+            ? conversionTimeoutSec * 1000
+            : 0;
 
         try {
+            // ── Phase 1: extraction ─────────────────────────────────────────
             for (const item of this.items) {
-                if (item.status !== 'queued' && item.status !== 'error') continue;
-                if (onlyIds && !onlyIds.has(item.id)) continue;
-                if (this.stopRequested) {
-                    console.log(`[BatchManager] Stop requested, halting.`);
-                    break;
-                }
+                if (!needsProcessing(item) || item.extractedText) continue;
+                if (this.stopRequested) { flog('info', 'Stop requested, halting extraction phase'); break; }
+
+                item.status = 'extracting';
+                const forceOCR = overrides?.enforceOcr ?? false;
 
                 try {
-                    if (!item.extractedText) {
-                        item.status = 'extracting';
-                        const forceOCR = overrides?.enforceOcr ?? false;
+                    if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
+                        flog('info', `Rust extraction: ${item.originalName}`);
+                        const extractCall = invoke<string>('extract_pdf_native', { path: item.originalPath });
+                        const text = FILE_TIMEOUT_MS > 0
+                            ? await Promise.race([
+                                extractCall,
+                                new Promise<never>((_, reject) =>
+                                    setTimeout(() => reject(new Error('EXTRACT_TIMEOUT')), FILE_TIMEOUT_MS)
+                                )
+                            ])
+                            : await extractCall;
+                        item.extractedText = text;
+                    } else {
+                        flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
+                        this.extractionAbort = new AbortController();
+                        // Per-page watchdog: abort if no page progress for PAGE_WATCHDOG_MS
+                        let watchdogId: ReturnType<typeof setTimeout> | null = null;
+                        const resetWatchdog = () => {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            watchdogId = setTimeout(() => {
+                                this.extractionAbort?.abort(new Error('EXTRACT_PAGE_TIMEOUT'));
+                                flog('warn', `Page watchdog fired (${PAGE_WATCHDOG_MS / 1000}s no progress): ${item.originalName}`);
+                            }, PAGE_WATCHDOG_MS);
+                        };
+                        resetWatchdog(); // start watchdog immediately
 
-                        if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
-                            console.log(`[BatchManager] Using Rust-Native extraction for ${item.originalName}`);
-                            const text = await invoke('extract_pdf_native', { path: item.originalPath });
-                            // Check stop after Rust call (can't cancel mid-extraction,
-                            // but we can discard the result and stop the loop)
-                            if (this.stopRequested) {
-                                item.extractedText = text as string; // keep what we got
-                                item.status = 'queued';
-                                break;
-                            }
-                            item.extractedText = text as string;
-                        } else {
-                            console.log(`[BatchManager] Using JS-Native extraction for ${item.originalName} (forceOCR=${forceOCR})`);
-                            this.extractionAbort = new AbortController();
-                            const fileData = await readFile(item.originalPath);
-                            if (this.stopRequested) {
-                                this.extractionAbort = null;
-                                item.status = 'queued';
-                                break;
-                            }
-                            const extraction = await extractText(
+                        // P8.1 — whole-file timeout. Aborts the same
+                        // signal the page watchdog uses; coexists with
+                        // the watchdog (page watchdog catches "frozen",
+                        // file timeout catches "slow but progressing").
+                        let fileTimeoutId: ReturnType<typeof setTimeout> | null = null;
+                        if (FILE_TIMEOUT_MS > 0) {
+                            fileTimeoutId = setTimeout(() => {
+                                this.extractionAbort?.abort(new Error('EXTRACT_FILE_TIMEOUT'));
+                                flog('warn', `File timeout fired (${FILE_TIMEOUT_MS / 1000}s wall-clock): ${item.originalName}`);
+                            }, FILE_TIMEOUT_MS);
+                        }
+
+                        const fileData = await readFile(item.originalPath);
+                        if (this.stopRequested) {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            this.extractionAbort = null;
+                            item.status = 'queued';
+                            break;
+                        }
+                        let extraction;
+                        try {
+                            extraction = await extractText(
                                 { name: item.originalName, arrayBuffer: fileData.buffer },
                                 {
                                     forceOCR,
                                     signal: this.extractionAbort.signal,
-                                    maxPages: extractionMaxPages || undefined, // undefined = no page limit
+                                    maxPages: extractionMaxPages || undefined,
                                     onProgress: (page, total) => {
                                         item.statusDetail = `${page}/${total} pages`;
+                                        resetWatchdog();
                                     }
                                 }
                             );
+                        } finally {
+                            if (watchdogId) clearTimeout(watchdogId);
+                            if (fileTimeoutId) clearTimeout(fileTimeoutId);
                             this.extractionAbort = null;
-                            if (this.stopRequested) {
-                                item.status = 'queued';
-                                break;
+                        }
+                        if (this.stopRequested) { item.status = 'queued'; break; }
+                        item.extractedText = extraction.text;
+                    }
+                    item.statusDetail = (item.extractedText?.trim().length ?? 0) < 100 ? '⚠ poor extraction' : undefined;
+
+                    // PDF metadata pre-fill — read /Info dict on the Rust side
+                    // and populate suggestedTitle/Author/Year before phase 2.
+                    // The LLM (when enabled) will overwrite these in phase 2,
+                    // so this is purely a fallback for users who skip the LLM
+                    // or for runs where phase 2 errors out. See lib.rs
+                    // extract_pdf_metadata for the lopdf decoding details.
+                    const isPdf = item.originalName.toLowerCase().endsWith('.pdf');
+                    if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
+                        try {
+                            const meta = await invoke<{
+                                title?: string | null;
+                                author?: string | null;
+                                year?: number | null;
+                            }>('extract_pdf_metadata', { path: item.originalPath });
+                            if (meta?.title && !item.suggestedTitle) {
+                                item.suggestedTitle = meta.title.trim();
                             }
-                            item.extractedText = extraction.text;
+                            if (meta?.author && !item.suggestedAuthor) {
+                                item.suggestedAuthor = meta.author.trim();
+                            }
+                            if (typeof meta?.year === 'number' && !item.suggestedYear) {
+                                item.suggestedYear = String(meta.year);
+                            }
+                            if (meta?.title || meta?.author || meta?.year) {
+                                flog('info', `PDF metadata prefilled: ${item.originalName}`);
+                            }
+                        } catch (e) {
+                            // Non-fatal — most PDFs have an Info dict, but
+                            // missing or malformed ones shouldn't break extraction.
+                            flog('warn', `PDF metadata read failed: ${item.originalName}: ${e}`);
                         }
-                        item.statusDetail = undefined;
-                        if ((item.extractedText?.trim().length ?? 0) < 100) {
-                            item.statusDetail = '⚠ poor extraction';
-                        }
-                        console.log(`[BatchManager] Extracted: ${item.originalName} — ${item.extractedText?.length} chars`);
                     }
 
-                    if (this.stopRequested) { item.status = 'queued'; break; }
+                    // Park at 'queued' with text so phase 2 picks it up (unless extraction-only)
+                    item.status = overrides?.extractionOnly ? 'review' : 'queued';
+                    if (overrides?.extractionOnly) await this.calculateTargetPath(item);
+                    flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
+                } catch (e: any) {
+                    const isAbort = this.stopRequested || e?.name === 'AbortError' || e?.message?.includes('EXTRACT');
+                    if (isAbort) {
+                        item.status = 'unfinished';
+                        item.statusDetail = 'interrupted';
+                        flog('warn', `Extraction interrupted: ${item.originalName}`);
+                        if (this.stopRequested) break;
+                    } else {
+                        item.status = 'error';
+                        item.errorMessage = e.message || String(e);
+                        flog('error', `Extraction error: ${item.originalName}: ${e.message || e}`);
+                    }
+                }
+                await this.saveCurrentSession();
+            }
 
-                    // Metadata Analysis
-                    if (this.isMetadataExtractionEnabled && !overrides?.extractionOnly) {
-                        item.status = 'analyzing';
-                        const textSample = item.extractedText?.substring(0, llmMaxChars) || '';
-                        const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
+            if (overrides?.extractionOnly) return; // done after phase 1
 
-                        const response = await llmClient.query(activeProvider.id, modelId, prompt, activeProvider.apiKey);
-                        if (this.stopRequested) { item.status = 'queued'; break; }
-                        const metadata = this.parseLLMResponse(response, parsingFormat);
+            // ── Phase 2: LLM analysis ───────────────────────────────────────
+            if (!this.isMetadataExtractionEnabled) return;
 
-                        item.suggestedTitle = metadata.title || 'Unknown Title';
-                        item.suggestedAuthor = metadata.author || 'Unknown Author';
-                        item.suggestedYear = metadata.year || 'Unknown Year';
+            for (const item of this.items) {
+                // Analyze items that have text but no metadata yet, or were previously queued/unfinished
+                const needsAnalysis = (item.status === 'queued' || item.status === 'unfinished') &&
+                    item.extractedText &&
+                    (!onlyIds || onlyIds.has(item.id));
+                if (!needsAnalysis) continue;
+                if (this.stopRequested || this.llmAbort?.signal.aborted) {
+                    flog('info', 'Stop requested, halting analysis phase');
+                    break;
+                }
 
-                        if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
-                            const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
-                            const sortRes = await llmClient.query(activeProvider.id, modelId, sortPrompt, activeProvider.apiKey);
-                            if (this.stopRequested) { item.status = 'queued'; break; }
-                            const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
-                            if (match) item.suggestedAuthor = match[1].trim();
+                item.status = 'analyzing';
+                try {
+                    const textSample = item.extractedText!.substring(0, llmMaxChars);
+                    const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
+
+                    // Try providers in round-robin order; advance index on non-abort failure.
+                    const queryRR = async (p: string): Promise<string> => {
+                        let lastErr: any = null;
+                        for (let i = rrIdx; i < rrProviders.length; i++) {
+                            const rr = rrProviders[i];
+                            try {
+                                const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, this.llmAbort?.signal);
+                                rrIdx = i; // stick with this provider for subsequent items
+                                return res;
+                            } catch (e: any) {
+                                if (e?.name === 'AbortError' || e?.message?.includes('LLM_TIMEOUT')) throw e;
+                                lastErr = e;
+                                flog('warn', `Provider ${rr.id} failed — trying next fallback (${i + 1}/${rrProviders.length}): ${e.message}`);
+                                rrIdx = i + 1;
+                            }
                         }
+                        // All providers exhausted — reset index and throw last error
+                        rrIdx = 0;
+                        throw lastErr ?? new Error('All LLM providers exhausted');
+                    };
 
-                        if (requestDelayMs > 0) {
-                            await new Promise(r => setTimeout(r, requestDelayMs));
-                        }
+                    flog('info', `LLM analyze: ${item.originalName}`);
+                    const response = await queryRR(prompt);
+                    if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
+                    const metadata = this.parseLLMResponse(response, parsingFormat);
+
+                    item.suggestedTitle = metadata.title || 'Unknown Title';
+                    item.suggestedAuthor = metadata.author || 'Unknown Author';
+                    item.suggestedYear = metadata.year || 'Unknown Year';
+                    flog('info', `Analyzed: ${item.originalName} → "${item.suggestedTitle}" / ${item.suggestedAuthor}`);
+
+                    if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
+                        const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
+                        const sortRes = await queryRR(sortPrompt);
+                        if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
+                        const match = sortRes.match(/<AUTHOR>(.*?)<\/AUTHOR>/i);
+                        if (match) item.suggestedAuthor = match[1].trim();
                     }
 
                     item.status = 'review';
@@ -289,14 +433,19 @@ export class BatchManager {
                         item.suggestedAuthor !== 'Unknown Author';
                     item.isAccepted = hasAuthor;
                     await this.calculateTargetPath(item);
+
+                    if (requestDelayMs > 0) await new Promise(r => setTimeout(r, requestDelayMs));
                 } catch (e: any) {
-                    if (this.stopRequested || e?.message === 'EXTRACTION_ABORTED') {
+                    const isAbort = this.stopRequested || e?.name === 'AbortError';
+                    if (isAbort) {
                         item.status = 'queued';
                         item.statusDetail = undefined;
+                        flog('info', `Analysis stopped: ${item.originalName}`);
+                        break;
                     } else {
                         item.status = 'error';
                         item.errorMessage = e.message || String(e);
-                        console.error(`[BatchManager] Error processing ${item.originalName}:`, e);
+                        flog('error', `Analysis error: ${item.originalName}: ${e.message || e}`);
                     }
                 }
                 await this.saveCurrentSession();
@@ -304,6 +453,8 @@ export class BatchManager {
         } finally {
             this.isProcessing = false;
             this.stopRequested = false;
+            this.llmAbort = null;
+            flog('info', 'processAll finished');
         }
     }
 
@@ -377,7 +528,12 @@ export class BatchManager {
     async resumeLastSession() {
         const last = await getSetting('lastSession');
         if (last && (last as any).items) {
-            this.items = (last as any).items;
+            this.items = (last as any).items.map((item: any) => {
+                if (item.status === 'extracting' || item.status === 'analyzing') {
+                    return { ...item, status: 'unfinished', statusDetail: undefined };
+                }
+                return item;
+            });
         }
     }
 
@@ -425,6 +581,13 @@ export class BatchManager {
                             item.errorMessage = undefined;
                             item.statusDetail = mode.includes('copy') ? 'copied' : 'moved';
                             successCount++;
+                            // Update search index location if the file was moved (not copied)
+                            if (!mode.includes('copy') && item.targetPath) {
+                                invoke('index_update_location_by_path', {
+                                    oldPath: item.originalPath,
+                                    newPath: item.targetPath,
+                                }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
+                            }
                         }
                     } else {
                         item.status = 'error';

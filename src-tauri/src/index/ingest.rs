@@ -63,6 +63,23 @@ pub struct RawDocument {
     pub location_uri: String,
     pub owner_id: String,
     pub tags: Vec<String>,
+
+    /// Unix epoch seconds of the source file's last-modified time.
+    /// `None` for non-file ingests (pasted text, web URLs once we add
+    /// them, etc.). Stored in `metadata_json` as `{"mtime_unix": v}`
+    /// so we can mtime-skip on re-ingest without a schema migration
+    /// (PLAN P7.4.3). Default `None` keeps the existing
+    /// `index_ingest_document` callers compiling — skip-check just
+    /// returns "no record" for those.
+    pub mtime_unix: Option<u32>,
+
+    /// Stable id of the volume the source file lives on (PLAN P7.6).
+    /// Populated by the `volume::volume_id_for_path` helper at ingest
+    /// time. Stored alongside `mtime_unix` in `metadata_json` so a
+    /// future search-time filter can hide rows from currently-unmounted
+    /// volumes without a schema migration. `None` for non-file ingests
+    /// or when the platform helper fails (best-effort enrichment).
+    pub volume_id: Option<String>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -139,8 +156,9 @@ impl IngestPipeline {
             let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
 
             let (dense, sparse) = {
+                use super::embedder::EmbedRole;
                 let mut emb = embedder.lock().await;
-                emb.embed_full(texts)?
+                emb.embed_full(texts, EmbedRole::Passage)?
             };
 
             let model_id = {
@@ -370,7 +388,33 @@ fn build_doc_chunk(
             .as_millis() as i64,
         source_hash: raw.source_hash.clone(),
         tags: raw.tags.clone(),
-        metadata_json: None,
+        // PLAN P7.4.3 + P7.6 — pack source-file mtime and volume id
+        // into `metadata_json` so they round-trip without a schema
+        // migration. Order is stable (mtime_unix first) so the tiny
+        // hand-parser in `LocalIndex::indexed_mtime_for_uri` keeps
+        // working — it only finds the `mtime_unix` key and reads digits
+        // up to the next non-digit (which is `,` when volume_id is
+        // present, `}` when it isn't).
+        metadata_json: build_metadata_json(raw.mtime_unix, raw.volume_id.as_deref()),
+    }
+}
+
+fn build_metadata_json(mtime_unix: Option<u32>, volume_id: Option<&str>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(m) = mtime_unix {
+        parts.push(format!(r#""mtime_unix":{m}"#));
+    }
+    if let Some(v) = volume_id {
+        // Volume ids are UUIDs / hex serials in practice (no quotes,
+        // no backslashes), but escape defensively in case a future
+        // platform helper returns something exotic.
+        let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
+        parts.push(format!(r#""volume_id":"{escaped}""#));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("{{{}}}", parts.join(",")))
     }
 }
 
@@ -396,6 +440,8 @@ mod tests {
             location_uri: "crisp+local://user@machine/test.pdf".to_owned(),
             owner_id: "user-uuid".to_owned(),
             tags: vec!["theology".to_owned()],
+            mtime_unix: None,
+            volume_id: None,
         }
     }
 
@@ -409,6 +455,36 @@ mod tests {
     fn chunk_row_id_is_deterministic() {
         assert_eq!(chunk_row_id("doc1", 0), chunk_row_id("doc1", 0));
         assert_ne!(chunk_row_id("doc1", 0), chunk_row_id("doc1", 1));
+    }
+
+    #[test]
+    fn metadata_json_packs_both_fields() {
+        assert_eq!(build_metadata_json(None, None), None);
+        assert_eq!(
+            build_metadata_json(Some(1700000000), None).as_deref(),
+            Some(r#"{"mtime_unix":1700000000}"#)
+        );
+        assert_eq!(
+            build_metadata_json(None, Some("ABCD-1234")).as_deref(),
+            Some(r#"{"volume_id":"ABCD-1234"}"#)
+        );
+        assert_eq!(
+            build_metadata_json(Some(42), Some("ABCD-1234")).as_deref(),
+            Some(r#"{"mtime_unix":42,"volume_id":"ABCD-1234"}"#)
+        );
+    }
+
+    #[test]
+    fn metadata_json_keeps_mtime_parser_compatible() {
+        // The hand-parser in LocalIndex::indexed_mtime_for_uri reads
+        // digits after `"mtime_unix":` up to the next non-digit. Adding
+        // a second key after must not break that contract.
+        let s = build_metadata_json(Some(1700000000), Some("ABCD")).unwrap();
+        let start = s.find("\"mtime_unix\"").unwrap();
+        let after = &s[start + "\"mtime_unix\"".len()..];
+        let after = after.trim_start().strip_prefix(':').unwrap().trim_start();
+        let end = after.find(|c: char| !c.is_ascii_digit()).unwrap();
+        assert_eq!(&after[..end], "1700000000");
     }
 
     #[test]

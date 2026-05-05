@@ -13,7 +13,7 @@
 ///   `index_ingest_document`  → chunk + embed locally → push per-chunk via HTTP to server
 ///   `index_search`           → embed query locally → send text + embedding to server → server does FTS+ANN+RRF
 ///   `index_build_ivf_pq`     → error (not supported for remote backend)
-use tauri::State;
+use tauri::{Manager, State};
 
 use super::ingest::{IngestStats, L1FileEntry, RawDocument};
 use super::{IndexConfig, IndexState, SearchResult};
@@ -23,61 +23,155 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn index_search(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     query: String,
     mode: String, // "text" | "vector" | "hybrid"
     limit: usize,
     owner_id: Option<String>,
+    // PLAN P7.6 follow-up. When false (the default), drop hits whose
+    // recorded `volume_id` isn't in the currently-mounted set —
+    // archive drives that aren't plugged in disappear from results
+    // until the user mounts them again. Pass `Some(true)` to override
+    // (e.g. "show me everything I've ever indexed, including offline
+    // drives" — useful for browse / inventory cases). Rows with no
+    // `volume_id` always pass through (legacy ingests, frontend-driven
+    // ingests, catalog hits).
+    include_unmounted: Option<bool>,
 ) -> Result<Vec<SearchResult>, String> {
-    let lock = state.index.lock().await;
+    // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
+    // pauses while we run. RAII drops at function return.
+    let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
 
-    if !lock.config.enabled {
-        return Ok(vec![]);
-    }
+    let lock = state.index.lock().await;
+    let config_enabled = lock.config.enabled;
 
     let filters = super::SearchFilters {
         owner_id,
         ..Default::default()
     };
 
-    if let Some(engine) = lock.engine.clone() {
-        // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────────
+    // ── Documents-table channel ──────────────────────────────────────────
+    // Run the existing documents-table search first. When the index is
+    // disabled or uninitialized we still want to surface catalog hits, so
+    // empty results from this branch are fine — they get appended to (not
+    // replace) the catalog channel below.
+    let mut results: Vec<SearchResult> = if !config_enabled {
+        Vec::new()
+    } else if let Some(engine) = lock.engine.clone() {
+        // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────
         drop(lock);
-        let results = match mode.as_str() {
+        match mode.as_str() {
             "text" => engine.search_text(&query, &filters, limit).await,
             "vector" => engine.search_vector(&query, &filters, limit).await,
             _ => engine.search_hybrid(&query, &filters, limit).await,
         }
-        .map_err(|e| e.to_string())?;
-        return Ok(results);
+        .map_err(|e| e.to_string())?
+    } else {
+        // ── Remote path: embed query locally, then call backend ───────
+        let backend = lock
+            .backend
+            .as_ref()
+            .ok_or("Index not initialised — call index_init first")?
+            .clone();
+        let embedder = lock.embedder.clone();
+        drop(lock);
+        match mode.as_str() {
+            "text" => backend.search_text(&query, &filters, limit).await,
+            "vector" => {
+                let embedding = embed_query(embedder, &query).await?;
+                backend.search_vector(&embedding, &filters, limit).await
+            }
+            _ => {
+                let embedding = embed_query(embedder, &query).await?;
+                backend
+                    .search_hybrid(&query, &embedding, &filters, limit)
+                    .await
+            }
+        }
+        .map_err(|e| e.to_string())?
+    };
+
+    // ── Catalog channel (PLAN P6 4c / P7.1) ──────────────────────────────
+    // Substring-match across active-catalog filenames. Independent of the
+    // index_init state — a user with cataloged drives but no embedding
+    // index still gets filename hits. We cap the catalog channel at
+    // `limit` total slots, but back off if the documents channel already
+    // returned that many — net result is at most `limit` rows from each
+    // channel, presented in two visually distinct groups (the frontend
+    // uses `catalog_source` to badge them).
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let remaining = limit.saturating_sub(results.len()).max(limit / 2);
+        if let Ok(hits) =
+            crate::catalog::lance::search(&data_dir, &query, Some(remaining)).await
+        {
+            for hit in hits {
+                results.push(catalog_hit_to_search_result(hit));
+            }
+        }
     }
 
-    // ── Remote path: embed query locally, then call backend ───────────────
-    let backend = lock
-        .backend
-        .as_ref()
-        .ok_or("Index not initialised — call index_init first")?
-        .clone();
-    let embedder = lock.embedder.clone();
-
-    drop(lock);
-
-    let results = match mode.as_str() {
-        "text" => backend.search_text(&query, &filters, limit).await,
-        "vector" => {
-            let embedding = embed_query(embedder, &query).await?;
-            backend.search_vector(&embedding, &filters, limit).await
-        }
-        _ => {
-            let embedding = embed_query(embedder, &query).await?;
-            backend
-                .search_hybrid(&query, &embedding, &filters, limit)
+    // ── Volume-availability filter (PLAN P7.6 follow-up) ─────────────────
+    // Hide hits whose recorded volume_id isn't currently mounted, unless
+    // the caller opts out. Computed once per call (a single shell-out
+    // per platform — see `volume::list_mounted_volumes`). Rows without
+    // `volume_id` always pass.
+    if !include_unmounted.unwrap_or(false) {
+        let mounted_ids: std::collections::HashSet<String> =
+            tokio::task::spawn_blocking(crate::volume::list_mounted_volumes)
                 .await
-        }
+                .map_err(|e| format!("list_mounted_volumes join: {e}"))?
+                .into_iter()
+                .map(|v| v.id)
+                .collect();
+        results.retain(|r| match &r.volume_id {
+            Some(id) => mounted_ids.contains(id),
+            None => true,
+        });
     }
-    .map_err(|e| e.to_string())?;
 
     Ok(results)
+}
+
+/// Synthesise a `SearchResult` from a catalog hit so the documents-table
+/// + catalog-table results return as a single homogeneous list. Score is
+/// a fixed 0.4 — below typical RRF-fused scores from the documents
+/// channel but high enough that catalog hits still display when there
+/// are no documents-channel matches at all.
+fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> SearchResult {
+    let ext = std::path::Path::new(&hit.entry_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase());
+    let title = hit.filename.clone().or_else(|| {
+        std::path::Path::new(&hit.entry_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+    });
+    SearchResult {
+        // Synthetic doc_id keyed on `catalog:` prefix so a future
+        // documents-channel hit on the same path doesn't collide.
+        doc_id: format!("catalog:{}", hit.entry_path),
+        location_uri: hit.entry_path.clone(),
+        owner_id: String::new(),
+        title,
+        author: None,
+        year: None,
+        filename: hit.filename,
+        ext,
+        language: None,
+        snippet: String::new(),
+        score: 0.4,
+        // -1 marks a non-chunk row in the existing convention
+        // (used by the documents-table whole-doc metadata rows too).
+        chunk_index: -1,
+        catalog_source: Some(hit.catalog_path),
+        // Catalog rows pre-date the volume-id metadata; nothing to
+        // surface yet. A future per-catalog volume_id field would
+        // populate this so catalog hits also disappear when the
+        // archive drive isn't mounted.
+        volume_id: None,
+    }
 }
 
 // ── Index status ──────────────────────────────────────────────────────────────
@@ -171,6 +265,111 @@ pub struct DocumentIngestInput {
     pub tags: Vec<String>,
 }
 
+/// PLAN P7.4.2 — single-shot path-based ingest. Takes a filesystem
+/// path, runs the per-filetype extractor (P7.4.1), computes the
+/// source hash, builds a `RawDocument`, and feeds the existing
+/// IngestPipeline. The frontend / CLI can call this in a loop to do
+/// background ingest of a folder; full scheduler with rate-limiting +
+/// progress persistence lands in 7.4.2b.
+///
+/// `owner_id` defaults to nil-UUID when not supplied — single-user
+/// installs can ignore it; multi-user setups should always pass.
+#[tauri::command]
+pub async fn index_ingest_path(
+    state: State<'_, AppState>,
+    path: String,
+    owner_id: Option<String>,
+    title: Option<String>,
+    author: Option<String>,
+    year: Option<i32>,
+    language: Option<String>,
+) -> Result<IngestStats, String> {
+    use sha2::{Digest, Sha256};
+    let p = std::path::PathBuf::from(&path);
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    // Read bytes once: needed for both source_hash and (lossily) for
+    // the text extractor in some paths. We bind it locally so the
+    // tokio task below doesn't need to re-stat / re-read.
+    let bytes = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || std::fs::read(&p)
+    })
+    .await
+    .map_err(|e| format!("read join: {e}"))?
+    .map_err(|e| format!("reading {}: {e}", p.display()))?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let source_hash = hex::encode(h.finalize());
+
+    // Run the dispatcher off the runtime — pdf_extract is sync and CPU-
+    // heavy, the others are quick but still blocking I/O.
+    let extracted = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || crate::extractors::extract_text_from_path(&p)
+    })
+    .await
+    .map_err(|e| format!("extract join: {e}"))?
+    .map_err(|e| format!("extracting {}: {e}", p.display()))?;
+
+    // Build the location URI in the canonical `crisp+local://` shape.
+    // `Uuid::nil()` for machine_id is the placeholder for single-machine
+    // setups; a multi-machine deployment would feed a real machine UUID.
+    let loc = super::location::FileLocation::Local {
+        user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+        machine_id: uuid::Uuid::nil(),
+        path: p.clone(),
+    };
+    let location_uri = loc.to_uri();
+
+    let filename = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let raw = RawDocument {
+        full_text: extracted.full_text,
+        full_text_md: String::new(), // path-based ingest has no Markdown view
+        headings: extracted.headings,
+        title,
+        author,
+        year,
+        filename,
+        ext: extracted.ext,
+        language: language.unwrap_or_default(),
+        source_hash,
+        location_uri,
+        owner_id: owner,
+        tags: Vec::new(),
+        // Cheap path-based ingest stat()s the file for mtime so the
+        // P7.4.3 mtime-skip on re-ingest can short-circuit.
+        mtime_unix: std::fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as u32),
+        // PLAN P7.6 — tag the row with the source volume's stable id
+        // (best-effort; helper returns None on tmpfs / network share /
+        // missing path / platform helper failure).
+        volume_id: crate::volume::volume_id_for_path(&p),
+    };
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or("No local ingest pipeline (remote backend?)")?;
+    drop(lock);
+
+    pipeline
+        .ingest_document(raw)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn index_ingest_document(
     app: tauri::AppHandle,
@@ -197,6 +396,14 @@ pub async fn index_ingest_document(
         location_uri: input.location_uri,
         owner_id: input.owner_id,
         tags: input.tags,
+        // Frontend-driven ingest doesn't carry source mtime — the file
+        // could be many months old at this point. The cheap-skip in
+        // bg_ingest will treat None as "no recorded mtime → re-ingest"
+        // which is the safe default.
+        mtime_unix: None,
+        // PLAN P7.6 — frontend ingest is path-less (input is the
+        // already-extracted text), so we don't have a volume to tag.
+        volume_id: None,
     };
 
     use tauri::Emitter;
@@ -259,8 +466,10 @@ pub async fn index_ingest_document(
     let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
 
     let dense = {
+        use super::embedder::EmbedRole;
         let mut emb = embedder.lock().await;
-        emb.embed_dense(texts).map_err(|e| e.to_string())?
+        emb.embed_dense(texts, EmbedRole::Passage)
+            .map_err(|e| e.to_string())?
     };
     let embed_ms = start_embed.elapsed().as_millis() as u64;
 
@@ -839,6 +1048,30 @@ pub async fn index_update_location(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn index_update_location_by_path(
+    state: State<'_, AppState>,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Ok(());
+    }
+    let backend = lock
+        .backend
+        .as_ref()
+        .ok_or("Index backend not initialised")?
+        .clone();
+    drop(lock);
+    let old_uri = format!("crisp+local://local/{}", old_path);
+    let new_uri = format!("crisp+local://local/{}", new_path);
+    backend
+        .update_location_by_uri(&old_uri, &new_uri)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Index management ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1208,6 +1441,21 @@ pub async fn init_index(
     let device = config.embedder_device;
     let model_name = format!("{:?}", model);
 
+    // Resolve model cache: env override > UI setting > {data_dir}/models.
+    // Same dir is used by fastembed (ONNX), hf-hub (external-data ONNX +
+    // GGUF embedder + GGUF reranker) — so a single configurable path
+    // controls every downloaded weight. Computed up-front because the
+    // reranker handle below needs it even when no embedder is loaded.
+    let models_dir = super::resolve_model_cache_dir(&config, data_dir);
+    println!("[index] Model cache: {}", models_dir.display());
+
+    // Pre-compute the effective embedding dim so LocalIndex's Arrow schema
+    // can be built whether or not we end up loading the embedder.
+    let probe_cfg = EC::new(model, device, models_dir.clone())
+        .with_backend(config.embedder_backend)
+        .with_matryoshka_dim(config.matryoshka_dim);
+    let effective_dim = probe_cfg.effective_dim();
+
     // Optional embedder construction. Skipped when:
     //   - caller passed `load_embedder = false` (L1 / L2 fast-path), or
     //   - global `IndexConfig.use_vector = false` (no vectors at all).
@@ -1223,24 +1471,31 @@ pub async fn init_index(
         let size_hint = if mb > 0 { format!(" (~{mb} MB)") } else { String::new() };
         emit!(
             "embedder_start",
-            format!("Lade Embedder-Modell ({model_name}){size_hint}, erster Start lädt aus dem Internet …"),
+            format!("Loading embedder model ({model_name}){size_hint}, first run downloads from the network …"),
             5
         );
 
-        let models_dir = data_dir.join("models");
-        let embedder_cfg =
-            EC::new(model, device, models_dir).with_backend(config.embedder_backend);
+        let embedder_cfg = EC::new(model, device, models_dir.clone())
+            .with_backend(config.embedder_backend)
+            .with_matryoshka_dim(config.matryoshka_dim);
         let embedder = Embedder::new(embedder_cfg).await?;
-        emit!("embedder_done", "Embedder geladen", 40);
+        emit!("embedder_done", "Embedder loaded", 40);
         Some(Arc::new(Mutex::new(embedder)))
     } else {
         emit!(
             "embedder_skipped",
-            "Embedder übersprungen (L1/L2-Modus oder use_vector=false)",
+            "Embedder skipped (L1/L2 mode or use_vector=false)",
             40
         );
         None
     };
+
+    // Reranker handle: cheap to construct (no I/O until first scoring call).
+    // Shared between IndexState (kept alive across queries) and SearchEngine
+    // (calls score_batch on the post-RRF candidate set).
+    let reranker_handle: Option<super::RerankerHandle> = config
+        .reranker_model
+        .map(|m| super::RerankerHandle::new(m, models_dir.clone()));
 
     match config.backend_type {
         BackendType::Remote => {
@@ -1260,13 +1515,16 @@ pub async fn init_index(
                 embedder: embedder_arc,
                 engine: None,
                 pipeline: None,
+                reranker: reranker_handle,
                 config,
                 initializing: false,
             })
         }
 
         BackendType::Local => {
-            let dims = model.dims();
+            // Use the matryoshka-aware effective dim so the LanceDB column
+            // width matches what the embedder will actually emit.
+            let dims = effective_dim;
             let fts_dir = data_dir.join("fts");
 
             emit!("fts_start", "Öffne Volltext-Index (Tantivy) …", 55);
@@ -1277,11 +1535,15 @@ pub async fn init_index(
             let local = Arc::new(LocalIndex::open_or_create(data_dir, dims).await?);
             emit!("lance_done", "Vektor-Datenbank bereit", 90);
 
-            let engine = Arc::new(SearchEngine::new(
+            let mut engine_inner = SearchEngine::new(
                 fts.clone(),
                 local.clone(),
                 embedder_arc.clone(),
-            ));
+            );
+            if let Some(ref h) = reranker_handle {
+                engine_inner = engine_inner.with_reranker(h.clone(), config.rerank_top_n);
+            }
+            let engine = Arc::new(engine_inner);
             let pipeline = Arc::new(IngestPipeline::new(
                 fts.clone(),
                 local.clone(),
@@ -1299,6 +1561,7 @@ pub async fn init_index(
                 embedder: embedder_arc,
                 engine: Some(engine),
                 pipeline: Some(pipeline),
+                reranker: reranker_handle,
                 config,
                 initializing: false,
             })
@@ -1312,10 +1575,11 @@ async fn embed_query(
     embedder: Option<std::sync::Arc<tokio::sync::Mutex<super::Embedder>>>,
     text: &str,
 ) -> Result<Vec<f32>, String> {
+    use super::embedder::EmbedRole;
     let embedder = embedder.ok_or("Embedder not available for remote query embedding")?;
     let mut emb = embedder.lock().await;
     let dense = emb
-        .embed_dense(vec![text.to_owned()])
+        .embed_dense(vec![text.to_owned()], EmbedRole::Query)
         .map_err(|e| e.to_string())?;
     dense
         .vectors
