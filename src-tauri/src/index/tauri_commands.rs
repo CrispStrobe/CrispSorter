@@ -165,6 +165,7 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // -1 marks a non-chunk row in the existing convention
         // (used by the documents-table whole-doc metadata rows too).
         chunk_index: -1,
+        metadata_json: None,
         catalog_source: Some(hit.catalog_path),
         // Catalog rows pre-date the volume-id metadata; nothing to
         // surface yet. A future per-catalog volume_id field would
@@ -1256,7 +1257,7 @@ pub async fn index_benchmark_embedder(
 
     let mut emb = embedder;
     let embed_start = std::time::Instant::now();
-    let dense = match emb.embed_dense(texts.clone()) {
+    let dense = match emb.embed_dense(texts.clone(), super::embedder::EmbedRole::Passage) {
         Ok(d) => d,
         Err(e) => {
             return Ok(EmbedderBenchmark {
