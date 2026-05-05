@@ -51,6 +51,51 @@ $PathArray = $env:PATH -split ';'
 $CleanedPath = ($PathArray | Where-Object { $_ -notlike "*chocolatey*rust*" -and $_ -notlike "*ProgramData\chocolatey\bin" }) -join ';'
 $env:PATH = $CleanedPath
 
+# 5. Ensure `protoc` is available before cargo runs.
+#
+# `lance-encoding` (transitive via lancedb) calls `prost-build`, which
+# spawns `protoc` AND requires the well-known `.proto` files
+# (`google/protobuf/empty.proto` etc.) that ship in protoc's `include/`
+# directory. Each build script runs in its own process, so a `PROTOC`
+# env var set inside our own `build.rs` doesn't propagate — the only
+# reliable fix is to have `protoc.exe` on PATH BEFORE cargo starts.
+#
+# Install layout matches the upstream protoc release:
+#     gh_temp\protoc\bin\protoc.exe
+#     gh_temp\protoc\include\google\protobuf\*.proto
+#
+# protoc finds its bundled `include/` automatically by looking at
+# `<exe-dir>\..\include\` — that's why we keep them next to each other.
+$ProtocRoot      = Join-Path $ProjectRoot "gh_temp\protoc"
+$ProtocBinDir    = Join-Path $ProtocRoot  "bin"
+$ProtocCachedExe = Join-Path $ProtocBinDir "protoc.exe"
+$ProtocIncludeOk = Test-Path (Join-Path $ProtocRoot "include\google\protobuf\empty.proto")
+$ProtocOnPath    = Get-Command protoc -ErrorAction SilentlyContinue
+if (-not $ProtocOnPath -and (-not (Test-Path $ProtocCachedExe) -or -not $ProtocIncludeOk)) {
+    Write-Host "Bootstrapping protoc into gh_temp\protoc (one-time download) ..." -ForegroundColor Yellow
+    try {
+        $ProtocVersion = "29.0"
+        $ProtocAsset   = "protoc-$ProtocVersion-win64.zip"
+        $ProtocUrl     = "https://github.com/protocolbuffers/protobuf/releases/download/v$ProtocVersion/$ProtocAsset"
+        if (Test-Path $ProtocRoot) { Remove-Item -Recurse -Force $ProtocRoot }
+        New-Item -ItemType Directory -Force -Path $ProtocRoot | Out-Null
+        $ZipPath = Join-Path $ProtocRoot $ProtocAsset
+        Invoke-WebRequest -Uri $ProtocUrl -OutFile $ZipPath -UseBasicParsing
+        # Extract directly so bin/ and include/ end up at the right
+        # protoc-relative-paths layout.
+        Expand-Archive -Path $ZipPath -DestinationPath $ProtocRoot -Force
+        Remove-Item -Force $ZipPath
+        Write-Host "Installed protoc $ProtocVersion at $ProtocBinDir" -ForegroundColor Green
+    } catch {
+        Write-Host "WARNING: failed to download protoc — lance-encoding compile will fail. Install protoc manually and re-run." -ForegroundColor Red
+        Write-Host "Error: $_" -ForegroundColor Red
+    }
+}
+if (Test-Path $ProtocCachedExe) {
+    $env:PATH = "$ProtocBinDir;" + $env:PATH
+    $env:PROTOC = $ProtocCachedExe
+}
+
 # Final Verification
 $CargoPath = (Get-Command cargo -ErrorAction SilentlyContinue).Source
 Write-Host "Active Cargo: $CargoPath" -ForegroundColor Yellow
