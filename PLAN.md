@@ -347,33 +347,90 @@ working scale for desktop-search parity (P7).
 
 #### Migration path (incremental commits, in priority order)
 
-1. **`index_query_documents`** Rust command — `DocumentFilter` /
-   `SortSpec` / `PageSpec` types, keyset cursor implementation,
-   `total_estimate` via `count_rows` with same filter. No schema
-   changes yet — sort/filter on existing columns + LIKE on
-   `metadata_json` for parent_dir.
-2. **TanStack-Virtual rewrite** of the contents list in
-   `IndexIngest.svelte`, calling `index_query_documents` instead of
-   `index_list_documents`. Compact-density default. Existing chips
-   keep working through the new filter struct.
+1. ✅ **`index_query_documents`** Rust command (commit `4ecfd7a`).
+   `DocumentFilter` / `SortSpec` / `PageSpec` / `PageCursor` types
+   in `index/schema.rs`, implementation on `LocalIndex` in
+   `index/local_index.rs`, Tauri command + `lib.rs` registration.
+   `total_estimate` via `count_rows` against the same predicate.
+   **Implementation detail diverges from the design above:**
+   `PageCursor` currently encodes an offset, not a keyset. Reason:
+   LanceDB 0.26's public Rust query API doesn't expose `ORDER BY`,
+   so a keyset cursor `(sort_value, doc_id) <op> (cursor)` would
+   only work on the first page. Step 5 / step 6 swap this for a
+   real keyset by dropping to `lance::dataset::Dataset::scan` (the
+   layer under `lancedb`, which exposes Datafusion-backed
+   `order_by` + `limit` + `offset`). The cursor wire format is
+   the only thing that changes; callers pass the cursor through
+   unchanged. A 50k-row hard cap is in place until then so we
+   don't accidentally materialise an entire 10M-row table to
+   re-sort the window in-process.
+
+2. ✅ **Columnar Übersicht** (commit `9cbe0c1`). CSS-grid table
+   (single `grid-template-columns` shared between thead + every
+   row), sticky header with sortable columns (filename / author /
+   year), server-side filter+sort+pagination via
+   `index_query_documents`, "Load more" button, multi-row select
+   (single-click / Shift-range / Ctrl-or-Cmd-toggle, mirrored
+   from `BatchReview.svelte`'s pattern), `user-select:none` so
+   dragging selects rows instead of highlighting filename text.
+   No TanStack-Virtual yet — the page-of-200 model is enough at
+   the current scale; full virtualisation comes with step 5.
+
 3. **Promote `parent_dir` to a column** + scalar index on it.
    Backfill existing rows. Folder filter chip switches from
-   client-side to indexed.
+   `metadata_json LIKE` (today's hack) to a column-indexed
+   equality scan. First step that lifts the 50k cap meaningfully
+   for path-prefix filtered views.
+
 4. **Folder-tree pane** + `index_folder_children`. Becomes the
    primary navigation; the path chip is now a click on a tree node.
-5. **Column registry** + persistence. User can toggle Title / Author
-   / Year / Size / Mtime / Volume / Path / Language / Tags.
-6. **Promote `volume_id` + `source_kind`** to columns + indexes
-   (last, because they have the smallest filter-cost win and the
+
+5. **DB-side ordering via `lance::Scanner`**. Drop down to
+   `lance::dataset::Dataset::scan` to get a real Datafusion
+   query with `order_by` + `limit` + `offset`. Keyset cursor
+   replaces offset; 50k cap goes away. Combine with TanStack-
+   Virtual on the frontend so the visible row window stays
+   bounded regardless of dataset size.
+
+6. **Column registry** + persistence. User can toggle Title /
+   Author / Year / Size / Mtime / Volume / Path / Language /
+   Tags. State persisted via `tauri-plugin-store`.
+
+7. **Promote `volume_id` + `source_kind`** to columns + indexes
+   (last because they have the smallest filter-cost win and the
    biggest schema-migration cost).
-7. **Preview pane** wired to existing `extractPdfNative` /
+
+8. **Preview pane** wired to existing `extractPdfNative` /
    `extractDocxText` paths, lazy-rendered on row selection.
 
 Each step is independently shippable — the UI never breaks mid-flight,
 because the Rust command keeps returning the same `SearchResult`-shaped
-rows (just paginated). Steps 3 and 6 require a schema migration; the
+rows (just paginated). Steps 3 and 7 require a schema migration; the
 existing `IndexConfig::dims`-driven schema rebuild is the same hammer
 we use today when the embedder model changes.
+
+#### Open UX follow-ups (post-merge cleanup)
+
+These came out of the post-merge user-walkthrough and aren't yet
+captured under their own phases:
+
+* **`Catalog.svelte` (the `.caf` registry sub-tab) still has
+  hard-coded English strings.** The `caf_catalog.*` i18n keys
+  exist (EN+DE) but the component hasn't been wired through them
+  yet. Same shape as the recent Duplicates pass.
+* **Duplicates results-table actions** (`per-row tooltips, the
+  bash/batch/ps1 format option labels`) — the form + script
+  builder are i18n'd; a few internal action attributes still leak
+  English.
+* **Settings → bench panel + a few dialog strings** still hold
+  inline literals from earlier sessions. Audit pass needed.
+* **Catalog overview metadata for L3 rows.** L1 rows carry
+  `fs_size` / `fs_mtime` / `parent_dir` in `metadata_json` so the
+  Übersicht columns render. The L3 ingest path
+  (`build_metadata_json` in `index/ingest.rs`) only writes
+  `mtime_unix` + `volume_id` — so L3 rows show blanks for size
+  and folder. Step 3 of P9 fixes this for parent_dir; size needs
+  to be plumbed through `RawDocument` first.
 
 ---
 
