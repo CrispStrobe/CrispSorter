@@ -245,6 +245,12 @@
      *  rebuild with e.g. `cargo run --features crispembed-vulkan`. */
     let crispEmbedCompiledIn = $state(false);
 
+    /** Which GPU backend was linked into CrispEmbed at compile time —
+     *  `'vulkan'` / `'cuda'` / `'metal'` / `'cpu'` or `null` if the
+     *  `crispembed` feature itself is off. Drives the device dropdown
+     *  filter when the GGUF engine is selected. */
+    let crispEmbedGpu = $state<string | null>(null);
+
     /** Final gate: GGUF can be selected iff the model has a spec AND the
      *  binary actually contains the CrispEmbed backend code. */
     let ggufAvailable = $derived(ggufModelSupported && crispEmbedCompiledIn);
@@ -254,12 +260,10 @@
      *  downloads ~X MB" hint. */
     let modelDownloadMb = $state(0);
 
-    /** Whether `m` can be currently selected, given:
-     *   - the chosen Inference Engine (GGUF -> only GGUF_CAPABLE_MODELS),
-     *   - whether the user has previously declined the NC license dialog
-     *     for this model (declined models stay greyed out until reset). */
+    /** Whether `m` can be currently selected. Engine-only filter — NC
+     *  models are NOT disabled here; instead, picking a previously-declined
+     *  one re-shows the confirmation dialog so the user can opt back in. */
     function isModelAvailable(m: string): boolean {
-        if (nonCommercialDeclined.has(m)) return false;
         if (indexEmbedderBackend === 'gguf' && !GGUF_CAPABLE_MODELS.has(m)) return false;
         return true;
     }
@@ -267,7 +271,7 @@
     /** Optional suffix shown next to a model name in the dropdown to signal
      *  its license / state. */
     function ncLabelSuffix(m: string): string {
-        if (nonCommercialDeclined.has(m)) return ' (declined — re-allow below)';
+        if (nonCommercialDeclined.has(m)) return ' (NC — confirmation needed)';
         if (NON_COMMERCIAL_MODELS.has(m)) return ' (NC license)';
         return '';
     }
@@ -304,24 +308,28 @@
     async function handleEmbedderChange(e: Event) {
         const sel = e.target as HTMLSelectElement;
         const val = sel.value;
-        // Block declined NC models — the <option> is disabled, but defend
-        // against scripted change events anyway.
-        if (nonCommercialDeclined.has(val)) {
-            sel.value = indexEmbedderModel;
-            return;
-        }
+        // For any NC model — first time, or after a previous decline —
+        // re-show the dialog. Confirming opts in (and clears the decline);
+        // declining records the decline and reverts the dropdown.
         if (NON_COMMERCIAL_MODELS.has(val) && val !== indexEmbedderModel) {
             const confirmed = await ask(i18n.t.settings.index.non_commercial_confirm, {
                 title: 'Non-Commercial License Confirmation',
                 kind: 'warning'
             });
             if (!confirmed) {
-                // Persist the decline so the option goes greyed out and
-                // can't be saved into a Catalog without re-confirming.
-                nonCommercialDeclined = new Set([...nonCommercialDeclined, val]);
-                await persistNonCommercialDeclines();
+                if (!nonCommercialDeclined.has(val)) {
+                    nonCommercialDeclined = new Set([...nonCommercialDeclined, val]);
+                    await persistNonCommercialDeclines();
+                }
                 sel.value = indexEmbedderModel;
                 return;
+            }
+            // Confirmed — clear any prior decline so the suffix goes away.
+            if (nonCommercialDeclined.has(val)) {
+                const next = new Set(nonCommercialDeclined);
+                next.delete(val);
+                nonCommercialDeclined = next;
+                await persistNonCommercialDeclines();
             }
         }
         indexEmbedderModel = val;
@@ -422,17 +430,24 @@
     }
 
     /** Ask the backend for the approximate first-run download size of the
-     *  currently-selected embedder, so the UI can show an accurate hint
-     *  instead of a generic "~500 MB" placeholder. */
+     *  currently-selected embedder + engine combination, so the UI shows
+     *  the real GGUF or ONNX size instead of a generic "~500 MB". */
     async function refreshModelDownloadSize() {
         try {
             modelDownloadMb = await invoke<number>('index_model_download_mb', {
-                model: indexEmbedderToRust(indexEmbedderModel)
+                model: indexEmbedderToRust(indexEmbedderModel),
+                backend: indexEmbedderBackend,
             });
         } catch {
             modelDownloadMb = 0;
         }
     }
+    // Recompute size whenever model OR engine changes.
+    $effect(() => {
+        // touch reactive deps so $effect runs on either change
+        const _ = `${indexEmbedderModel}|${indexEmbedderBackend}`;
+        refreshModelDownloadSize();
+    });
     let indexDataDir        = $state('');
     let indexStatus         = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
     let indexStatusMsg      = $state('');
@@ -603,8 +618,9 @@
         } catch { /* index not yet wired */ }
         // Discover what backends were compiled in (CrispEmbed is feature-gated).
         try {
-            const caps = await invoke<{ crispembed: boolean }>('index_capabilities');
+            const caps = await invoke<{ crispembed: boolean; crispembed_gpu: string | null }>('index_capabilities');
             crispEmbedCompiledIn = !!caps.crispembed;
+            crispEmbedGpu = caps.crispembed_gpu ?? null;
         } catch { /* command not available */ }
         await refreshModelDownloadSize();
         // Check if index is already initialized (e.g. after navigating back to Settings)
@@ -1930,15 +1946,38 @@
                 {/if}
             </div>
 
-            <!-- Compute device -->
+            <!-- Compute device — options depend on the selected engine.
+                 ONNX (FastEmbed) supports Auto/CPU/Metal/CUDA via ORT
+                 execution providers. GGUF (CrispEmbed) is bound at compile
+                 time to ONE GPU backend (the `crispembed-{vulkan,cuda,metal}`
+                 feature) plus CPU; we surface only what's actually linked. -->
             <div class="section-card">
                 <label for="index-device-select"><Zap size={16} /> {i18n.t.settings.index.device}</label>
-                <select id="index-device-select" bind:value={indexDevice} class="styled-select">
-                    <option value="auto">{i18n.t.settings.index.device_auto}</option>
-                    <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
-                    {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
-                    <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
-                </select>
+                {#if indexEmbedderBackend === 'onnx'}
+                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
+                        <option value="auto">{i18n.t.settings.index.device_auto}</option>
+                        <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
+                        {#if isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
+                        <option value="cuda">{i18n.t.settings.index.device_cuda}</option>
+                    </select>
+                {:else}
+                    <!-- GGUF: CPU is always available; the linked GPU
+                         backend (or `null` if CrispEmbed itself is off) is
+                         the second option. -->
+                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
+                        <option value="cpu">CPU</option>
+                        {#if crispEmbedGpu === 'vulkan'}<option value="auto">Vulkan (linked)</option>{/if}
+                        {#if crispEmbedGpu === 'cuda'}<option value="cuda">CUDA (linked)</option>{/if}
+                        {#if crispEmbedGpu === 'metal'}<option value="metal">Metal (linked)</option>{/if}
+                    </select>
+                    <p class="hint" style="margin-top:6px;">
+                        {#if crispEmbedGpu && crispEmbedGpu !== 'cpu'}
+                            CrispEmbed was built with the <strong>{crispEmbedGpu}</strong> backend. To switch (e.g. CUDA → Vulkan), rebuild with <code>.\enable-crispembed.ps1 -Backend &lt;cuda|vulkan|metal&gt;</code>.
+                        {:else}
+                            CrispEmbed was built CPU-only. To enable a GPU backend, rebuild with <code>.\enable-crispembed.ps1 -Backend cuda</code> (or vulkan / metal).
+                        {/if}
+                    </p>
+                {/if}
             </div>
 
             <!-- Data directory -->

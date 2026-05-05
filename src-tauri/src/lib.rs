@@ -89,9 +89,35 @@ macro_rules! app_log {
     };
 }
 
+/// Fire-and-forget Tauri event using the global `APP_HANDLE` set up in
+/// `run()`. Lets module-level code (where there's no `tauri::AppHandle`
+/// in scope — e.g. the embedder prefetch progress callback) emit events
+/// without threading the handle through every async call.
+pub fn emit_app_event<T: serde::Serialize + Clone>(event: &str, payload: &T) {
+    if let Ok(guard) = APP_HANDLE.lock() {
+        if let Some(ref handle) = *guard {
+            let _ = handle.emit(event, payload);
+        }
+    }
+}
+
 #[tauri::command]
 fn get_logs() -> Vec<LogEntry> {
     LOG_BUFFER.lock().map(|b| b.snapshot()).unwrap_or_default()
+}
+
+/// Pipe a frontend log entry into the same ring buffer + Tauri event
+/// channel the Rust side uses, so per-file extraction errors and
+/// tauri-plugin-fs permission rejections show up in the in-app Logs
+/// panel alongside Rust-side messages.
+#[tauri::command]
+fn frontend_log(level: String, msg: String) {
+    // Clamp the level to the small set the LogPanel knows how to colour.
+    let level = match level.as_str() {
+        "error" | "warn" | "info" => level,
+        _ => "info".to_string(),
+    };
+    app_log(&level, msg);
 }
 
 #[derive(Serialize)]
@@ -1055,6 +1081,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
+            frontend_log,
             execute_batch,
             scan_folder,
             download_file,

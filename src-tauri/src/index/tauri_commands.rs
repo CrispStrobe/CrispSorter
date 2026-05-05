@@ -801,24 +801,57 @@ pub struct IndexCapabilities {
     /// True iff the binary was built with one of `crispembed` /
     /// `crispembed-vulkan` / `crispembed-metal` / `crispembed-cuda`.
     pub crispembed: bool,
+    /// Which GPU backend is linked into CrispEmbed at compile time.
+    /// `"vulkan"` / `"cuda"` / `"metal"` for the GPU sub-features; `"cpu"`
+    /// for plain `crispembed`; `null` when `crispembed` itself is off.
+    /// Lets the UI show the correct device choices for the GGUF engine.
+    pub crispembed_gpu: Option<&'static str>,
 }
 
 #[tauri::command]
 pub fn index_capabilities() -> IndexCapabilities {
+    // Determine the linked GPU backend by feature. Sub-features are
+    // mutually exclusive in practice — only one cmake flag wins per
+    // build — so a priority order suffices.
+    #[cfg(feature = "crispembed-cuda")]
+    const GPU: Option<&str> = Some("cuda");
+    #[cfg(all(feature = "crispembed-vulkan", not(feature = "crispembed-cuda")))]
+    const GPU: Option<&str> = Some("vulkan");
+    #[cfg(all(feature = "crispembed-metal", not(any(feature = "crispembed-cuda", feature = "crispembed-vulkan"))))]
+    const GPU: Option<&str> = Some("metal");
+    #[cfg(all(
+        feature = "crispembed",
+        not(any(feature = "crispembed-cuda", feature = "crispembed-vulkan", feature = "crispembed-metal"))
+    ))]
+    const GPU: Option<&str> = Some("cpu");
+    #[cfg(not(feature = "crispembed"))]
+    const GPU: Option<&str> = None;
+
     IndexCapabilities {
         crispembed: cfg!(feature = "crispembed"),
+        crispembed_gpu: GPU,
     }
 }
 
 /// Approximate first-time download size (in megabytes) for a given embedder
-/// model identifier. Lets the UI display something accurate before init runs.
+/// model identifier and engine. Lets the UI display something accurate
+/// before init runs — the GGUF and ONNX flavours of the same model often
+/// differ a lot (e.g. arctic-embed-l-v2 Q4 GGUF is 437 MB whereas the
+/// FP32 ONNX is ~1.7 GB).
 #[tauri::command]
-pub fn index_model_download_mb(model: String) -> u32 {
+pub fn index_model_download_mb(model: String, backend: Option<String>) -> u32 {
     use super::embedder::EmbedderModel;
     let normalised = model.replace('_', "-");
-    match serde_json::from_str::<EmbedderModel>(&format!("\"{normalised}\"")) {
-        Ok(m) => m.approx_download_mb(),
-        Err(_) => 0,
+    let m: EmbedderModel = match serde_json::from_str(&format!("\"{normalised}\"")) {
+        Ok(m) => m,
+        Err(_) => return 0,
+    };
+    match backend.as_deref() {
+        Some("gguf") => {
+            let g = m.gguf_download_mb();
+            if g > 0 { g } else { m.approx_download_mb() }
+        }
+        _ => m.approx_download_mb(),
     }
 }
 
@@ -897,9 +930,24 @@ pub async fn init_index(
     let device = config.embedder_device;
     let model_name = format!("{:?}", model);
 
+    // Use the actual per-model download size (engine-aware). Older code
+    // hard-coded "~500 MB" which was wildly wrong for big models like
+    // BGE-M3 (~2.3 GB) and tiny ones like all-MiniLM-L6-v2 (~90 MB).
+    let mb = match config.embedder_backend {
+        super::embedder::EmbedderBackend::Gguf => {
+            let g = model.gguf_download_mb();
+            if g > 0 { g } else { model.approx_download_mb() }
+        }
+        super::embedder::EmbedderBackend::Onnx => model.approx_download_mb(),
+    };
+    let size_hint = if mb > 0 {
+        format!(" (~{mb} MB)")
+    } else {
+        String::new()
+    };
     emit!(
         "embedder_start",
-        format!("Lade Embedder-Modell ({model_name}) … erster Start lädt ~500 MB herunter"),
+        format!("Lade Embedder-Modell ({model_name}){size_hint}, erster Start lädt aus dem Internet …"),
         5
     );
 

@@ -4,8 +4,9 @@ use fastembed::{
     SparseModel, SparseTextEmbedding, TextEmbedding, TextInitOptions, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
-#[cfg(feature = "crispembed")]
-use hf_hub::api::tokio::ApiBuilder;
+// hf_hub::api was used for the crispembed GGUF download path before we
+// switched it to our own progress-aware reqwest prefetcher. Kept the
+// import gone so neither feature-on nor feature-off builds warn.
 use serde::{Deserialize, Serialize};
 /// Embedding model wrapper.
 ///
@@ -383,30 +384,82 @@ impl EmbedderModel {
         })
     }
 
-    /// GGUF source for CrispEmbed — HF repo id + filename. Only models with a
-    /// verified conversion in the `cstr/*-GGUF` registry return `Some`.
+    /// GGUF source for CrispEmbed — HF repo id + filename. Only models with
+    /// a verified conversion in the `cstr/*-GGUF` registry return `Some`.
     ///
-    /// The filename follows the registry convention: unquantized models use
-    /// `<name>.gguf`, decoder-based models default to `<name>-q8_0.gguf`
-    /// (Q8_0 is universally verified, Q4_K fails for a few).
+    /// Each repo follows the same naming convention:
+    ///   `<name>.gguf`         — F32 reference
+    ///   `<name>-q8_0.gguf`    — 8-bit quant
+    ///   `<name>-q4_k.gguf`    — 4-bit K-quant
+    ///
+    /// We pick the quant that matches the user's *intent* baked into the
+    /// `EmbedderModel` variant — see `gguf_quant_suffix_str()`.
     #[cfg(feature = "crispembed")]
     pub(crate) fn to_gguf_spec(&self) -> Option<GgufSpec> {
         let name = self.gguf_registry_name()?;
-        // BERT/XLM-R/MPNet/NomicBERT encoders: F32 .gguf
-        // Qwen3/Gemma3 decoders: -q8_0.gguf (smaller, verified quality)
-        let file = match name {
-            // Decoder models → Q8_0
-            "octen-0.6b" | "qwen3-embed-0.6b" | "jina-v5-small" | "jina-v5-nano"
-            | "harrier-0.6b" | "harrier-270m" | "f2llm-v2-0.6b" => {
-                format!("{name}-q8_0.gguf")
-            }
-            // Encoder models → F32
-            _ => format!("{name}.gguf"),
-        };
+        let suffix = self.gguf_quant_suffix_str();
         Some(GgufSpec {
             repo: format!("cstr/{name}-GGUF"),
-            file,
+            file: format!("{name}{suffix}.gguf"),
         })
+    }
+
+    /// Sibling to `to_gguf_spec`: returns the same `(repo, file)` pair even
+    /// when the `crispembed` feature is OFF, so the frontend can quote the
+    /// download size + show the resolved filename without depending on the
+    /// GGUF backend being linked in.
+    pub(crate) fn gguf_file_name(&self) -> Option<(&'static str, String)> {
+        let name = self.gguf_registry_name()?;
+        Some((name, format!("{name}{}.gguf", self.gguf_quant_suffix_str())))
+    }
+
+    /// Approximate GGUF download size in megabytes for this variant.
+    /// Mirrors the size of the file `gguf_file_name()` resolves to,
+    /// taken from the actual cstr/*-GGUF repos (HF API, 2026-05-05).
+    pub fn gguf_download_mb(&self) -> u32 {
+        let Some((name, _)) = self.gguf_file_name() else {
+            return 0;
+        };
+        let suffix = self.gguf_quant_suffix_str();
+        match (name, suffix) {
+            // Encoders 1024d (BERT/XLM-R)
+            ("pixie-rune-v1",          "-q4_k") => 437, ("pixie-rune-v1",          "-q8_0") => 581, ("pixie-rune-v1",          "") => 2168,
+            ("arctic-embed-l-v2",      "-q4_k") => 437, ("arctic-embed-l-v2",      "-q8_0") => 581, ("arctic-embed-l-v2",      "") => 2168,
+            ("multilingual-e5-large",  "-q4_k") => 429, ("multilingual-e5-large",  "-q8_0") => 574, ("multilingual-e5-large",  "") => 2141,
+            // Encoders 768d
+            ("bge-large-en-v1.5",      "-q4_k") => 196, ("bge-large-en-v1.5",      "-q8_0") => 341, ("bge-large-en-v1.5",      "") => 1279,
+            ("mxbai-embed-large-v1",   "-q4_k") => 196, ("mxbai-embed-large-v1",   "-q8_0") => 341, ("mxbai-embed-large-v1",   "") => 1279,
+            ("multilingual-e5-base",   "-q4_k") => 247, ("multilingual-e5-base",   "-q8_0") => 287, ("multilingual-e5-base",   "") => 1066,
+            ("bge-base-en-v1.5",       "-q4_k") =>  71, ("bge-base-en-v1.5",       "-q8_0") => 112, ("bge-base-en-v1.5",       "") =>  418,
+            ("nomic-embed-text-v1.5",  "-q4_k") =>  85, ("nomic-embed-text-v1.5",  "-q8_0") => 139, ("nomic-embed-text-v1.5",  "") =>  522,
+            // Encoders 384d
+            ("multilingual-e5-small",  "-q4_k") => 115, ("multilingual-e5-small",  "-q8_0") => 126, ("multilingual-e5-small",  "") =>  455,
+            ("bge-small-en-v1.5",      "-q4_k") =>  24, ("bge-small-en-v1.5",      "-q8_0") =>  34, ("bge-small-en-v1.5",      "") =>  128,
+            ("all-MiniLM-L6-v2",       "-q4_k") =>  19, ("all-MiniLM-L6-v2",       "-q8_0") =>  24, ("all-MiniLM-L6-v2",       "") =>   87,
+            // Decoders 1024d
+            ("octen-0.6b",             "-q4_k") => 400, ("octen-0.6b",             "-q8_0") => 610, ("octen-0.6b",             "") => 2278,
+            ("qwen3-embed-0.6b",       "-q4_k") => 400, ("qwen3-embed-0.6b",       "-q8_0") => 610, ("qwen3-embed-0.6b",       "") => 2278,
+            ("jina-v5-small",          "-q4_k") => 400, ("jina-v5-small",          "-q8_0") => 610, ("jina-v5-small",          "") => 2279,
+            // Decoders 768d
+            ("jina-v5-nano",           "-q4_k") => 168, ("jina-v5-nano",           "-q8_0") => 222, ("jina-v5-nano",           "") =>  815,
+            _ => 0,
+        }
+    }
+
+    /// String form of `gguf_quant_suffix` so the runtime size lookup works
+    /// regardless of whether the `crispembed` Cargo feature is on.
+    pub(crate) fn gguf_quant_suffix_str(&self) -> &'static str {
+        use EmbedderModel::*;
+        match self {
+            PixieRuneV1Int4 | PixieRuneV1Int4Full
+            | SnowflakeArcticLv2Q4 | SnowflakeArcticLv2Q4F16
+            | Octen06bInt4Local => "-q4_k",
+            PixieRuneV1Q
+            | SnowflakeArcticLv2 | SnowflakeArcticLv2Int8
+            | Qwen3EmbeddingInt8 | Qwen3EmbeddingUint8
+            | Octen06bInt8Local | Octen06bInt8FullLocal => "-q8_0",
+            _ => "",
+        }
     }
 
     pub fn to_model_spec(&self) -> Option<ModelSpec> {
@@ -910,23 +963,55 @@ struct ModelPaths {
     tokenizer_config: Option<PathBuf>,
 }
 
-/// Build a progress callback for `prefetch_repo_files` that emits log lines
-/// keyed both on percentage (every 10%) and absolute bytes (every 50 MB) so
-/// huge files (~2 GB `.onnx_data`) still report meaningful progress without
-/// flooding the log on small files. Also logs the per-file start with the
-/// total size so the user can see what's coming.
+/// Payload for the `index://download-progress` Tauri event. Emitted once
+/// per file-start and on every meaningful byte-level update so the
+/// frontend progress bar can advance smoothly.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DownloadProgress {
+    pub repo: String,
+    pub file: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// 0..=100. Always derivable from done/total but precomputed so the
+    /// frontend doesn't have to.
+    pub pct: u8,
+}
+
+/// Build a progress callback for `prefetch_repo_files` that:
+///  - logs to the in-app log panel (every 10% AND every 50 MB so multi-GB
+///    files stay visible without flooding small ones),
+///  - emits an `index://download-progress` Tauri event each time, so the
+///    UI progress bar moves continuously rather than staying frozen at 5%
+///    for the whole download.
 fn make_prefetch_logger(repo: &str) -> impl FnMut(&str, u64, u64) + Send + 'static {
     let repo = repo.to_owned();
     let mut current_file = String::new();
     let mut last_logged_pct: u64 = 0;
     let mut last_logged_bytes: u64 = 0;
-    const LOG_EVERY_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+    let mut last_emitted_bytes: u64 = 0;
+    const LOG_EVERY_BYTES: u64 = 50 * 1024 * 1024;     // 50 MB — log line
+    const EMIT_EVERY_BYTES: u64 = 1 * 1024 * 1024;     // 1 MB — Tauri event
+
+    fn emit_progress(repo: &str, file: &str, done: u64, total: u64) {
+        let pct = if total > 0 { (done * 100 / total) as u8 } else { 0 };
+        crate::emit_app_event(
+            "index://download-progress",
+            &DownloadProgress {
+                repo: repo.to_owned(),
+                file: file.to_owned(),
+                bytes_done: done,
+                bytes_total: total,
+                pct: pct.min(100),
+            },
+        );
+    }
 
     move |file: &str, done: u64, total: u64| {
         if file != current_file {
             current_file = file.to_owned();
             last_logged_pct = 0;
             last_logged_bytes = 0;
+            last_emitted_bytes = 0;
             crate::app_log!(
                 "info",
                 "Embedder: starting {}/{} (size ≈ {:.1} MB)",
@@ -934,6 +1019,7 @@ fn make_prefetch_logger(repo: &str) -> impl FnMut(&str, u64, u64) + Send + 'stat
                 file,
                 total as f64 / (1024.0 * 1024.0)
             );
+            emit_progress(&repo, file, 0, total);
         }
         let pct = if total > 0 { done * 100 / total } else { 0 };
         let pct_step = pct >= last_logged_pct + 10 || pct == 100 && last_logged_pct < 100;
@@ -950,6 +1036,12 @@ fn make_prefetch_logger(repo: &str) -> impl FnMut(&str, u64, u64) + Send + 'stat
                 done as f64 / (1024.0 * 1024.0),
                 total as f64 / (1024.0 * 1024.0)
             );
+        }
+        // Emit a Tauri event at finer granularity (every 1 MB) so the UI
+        // bar moves smoothly. Always emit on completion.
+        if done >= last_emitted_bytes + EMIT_EVERY_BYTES || done == total {
+            last_emitted_bytes = done;
+            emit_progress(&repo, file, done, total);
         }
     }
 }
@@ -1720,17 +1812,21 @@ pub struct GgufSpec {
 
 #[cfg(feature = "crispembed")]
 async fn ensure_gguf_on_disk(spec: &GgufSpec, cache_dir: &Path) -> Result<PathBuf> {
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .context("Failed to build hf-hub Api")?;
-    let model_api = api.model(spec.repo.clone());
-    println!("[embedder] Fetching GGUF: {}/{} …", spec.repo, spec.file);
-    let path = model_api
-        .get(&spec.file)
+    use super::hf_prefetch::prefetch_repo_files;
+    crate::app_log!(
+        "info",
+        "Embedder: prefetching GGUF {}/{}",
+        spec.repo,
+        spec.file
+    );
+    let progress = make_prefetch_logger(&spec.repo);
+    let files = prefetch_repo_files(&spec.repo, &[spec.file.as_str()], cache_dir, progress)
         .await
-        .with_context(|| format!("failed to get {}/{}", spec.repo, spec.file))?;
-    Ok(path)
+        .with_context(|| format!("failed to fetch {}/{}", spec.repo, spec.file))?;
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("prefetch returned no files"))
 }
 
 // ── Embedder ────────────────────────────────────────────────────────────────

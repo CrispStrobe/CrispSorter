@@ -14,6 +14,7 @@
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
+    import { logInfo, logWarn, logError } from '$lib/log';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -59,11 +60,15 @@
     let folders     = $state<ManagedFolder[]>([]);
     let scanningFolder = $state<string | null>(null);
 
-    /** Ingest depth requested by the user. L1 = filesystem metadata only (fast),
-     *  L3 = extract text + embed (deep). L2 (file-embedded metadata) is on the
-     *  roadmap; it folds into L3 today. */
-    let ingestLevel = $state<1 | 3>(3);
+    /** Ingest depth requested by the user.
+     *   L1 = filesystem metadata only (fast — path/size/date),
+     *   L2 = embedded file metadata (PDF Info / DOCX core / EPUB OPF / EXIF),
+     *   L3 = extract text + embed (deep, slow).
+     *  Default is L1 — the fastest path, doesn't require the search index
+     *  or any embedder model to be set up. */
+    let ingestLevel = $state<1 | 2 | 3>(1);
     let l1Running   = $state(false);
+    let l2RunningInline = $state(false);
 
     let contents    = $state<any[]>([]);
     let contentsLoading = $state(false);
@@ -130,7 +135,17 @@
                 }
             );
 
-            cleanup = () => { unlistenProgress?.(); };
+            // Tauri's webview swallows HTML5 dragenter/drop events on most
+            // platforms and emits its own `tauri://drag-drop` payload
+            // instead. Use that so files dropped onto the Hinzufügen
+            // panel actually get added to the queue.
+            const unlistenDrag = await listen<{ paths: string[] }>('tauri://drag-drop', (ev) => {
+                if (activeTab !== 'add') return;
+                const paths = (ev.payload?.paths ?? []).filter(p => supported.has((p.split('.').pop() ?? '').toLowerCase()));
+                if (paths.length > 0) addPaths(paths);
+            });
+
+            cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); };
         })();
         return () => cleanup();
     });
@@ -253,14 +268,35 @@
 
     // ── Ingest run ─────────────────────────────────────────────────────────────
 
-    /** Quick filesystem-only ingest. No text extraction, no embedding. */
+    /** Quick filesystem-only ingest. No text extraction, no embedding —
+     *  but we DO need the underlying LocalIndex to be ready. If the user
+     *  hasn't enabled the full search index yet, we transparently flip
+     *  the enable flag + auto-init so L1 just works without forcing a
+     *  trip to Settings. (L1 doesn't need Tantivy or an embedder model;
+     *  the LocalIndex's LanceDB table is enough.)
+     */
+    async function ensureIndexReady(): Promise<boolean> {
+        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
+        if (cfg.enabled) {
+            const ready = await invoke<boolean>('index_is_ready').catch(() => false);
+            if (ready) return true;
+        }
+        // Auto-enable + init with whatever config is currently saved.
+        try {
+            await invoke('index_set_config', { config: { ...(cfg as any), enabled: true } });
+            const dataDir = await invoke<string>('get_app_data_dir').catch(() => '');
+            await invoke('index_init', { dataDir });
+            return true;
+        } catch (e) {
+            console.error('[Catalog] auto-init failed:', e);
+            alert(`Catalog initialisation failed: ${e}\n\nOpen Settings → Search Index to configure manually.`);
+            return false;
+        }
+    }
+
     async function startL1Ingest() {
         if (l1Running || running) return;
-        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
-        if (!cfg.enabled) {
-            alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
-            return;
-        }
+        if (!(await ensureIndexReady())) return;
         const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
         if (pending.length === 0) return;
 
@@ -298,17 +334,48 @@
         }
     }
 
+    /** L2 ingest: writes filesystem-only rows first (so the doc_id exists)
+     *  then immediately promotes them via the embedded-metadata reader.
+     *  Doesn't require Tantivy / embedder either. */
+    async function startL2Ingest() {
+        if (l2RunningInline) return;
+        if (!(await ensureIndexReady())) return;
+        const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
+        if (pending.length === 0) return;
+        l2RunningInline = true;
+        try {
+            // Step 1: L1 ingest to create doc rows.
+            await startL1Ingest();
+            // Step 2: collect doc_ids of just-ingested rows by hashing path.
+            // Frontend doesn't easily know the doc_id without re-fetching, so
+            // pull recent contents and match by filename+path.
+            const docs = await invoke<any[]>('index_list_documents', { limit: 1000 }).catch(() => []);
+            const ids: string[] = [];
+            for (const e of pending) {
+                const found = docs.find(d => (d.filename ?? '') === e.filename && String(d.location_uri ?? '').includes(e.path.replace(/\\/g, '/')));
+                if (found?.doc_id) ids.push(found.doc_id);
+            }
+            if (ids.length > 0) {
+                await invoke('index_promote_l2', { docIds: ids });
+            }
+        } catch (err: any) {
+            console.error('[L2] ingest failed:', err);
+        } finally {
+            l2RunningInline = false;
+        }
+    }
+
     async function startIngest() {
         if (running) return;
         if (ingestLevel === 1) {
             await startL1Ingest();
             return;
         }
-        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
-        if (!cfg.enabled) {
-            alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
+        if (ingestLevel === 2) {
+            await startL2Ingest();
             return;
         }
+        if (!(await ensureIndexReady())) return;
 
         running   = true;
         paused    = false;
@@ -323,16 +390,26 @@
             if (signal.aborted) break;
 
             updateEntry(entry.id, { status: 'extracting', error: undefined });
+            logInfo(`Extract: ${entry.path} (.${entry.ext})`);
 
             try {
-                const bytes   = await readFile(entry.path);
+                let bytes: Uint8Array;
+                try {
+                    bytes = await readFile(entry.path);
+                } catch (fsErr: any) {
+                    logError(`Read failed: ${entry.path} -- ${fsErr?.message ?? fsErr}`);
+                    updateEntry(entry.id, { status: 'error', error: `Read failed: ${fsErr}` });
+                    continue;
+                }
                 const ab      = bytes.buffer as ArrayBuffer;
                 const fileObj = new File([ab], entry.filename, { type: mimeFor(entry.ext) });
 
                 const result = await extractText(fileObj);
+                logInfo(`Extracted ${entry.filename}: ${(result.text?.length ?? 0)} chars, ${(result.headings?.length ?? 0)} headings`);
 
                 if (!result.text || result.text.trim().length < 20) {
                     updateEntry(entry.id, { status: 'skipped', error: 'Zu wenig Text extrahiert' });
+                    logWarn(`Skip ${entry.filename}: too little text (${result.text?.length ?? 0} chars)`);
                     continue;
                 }
 
@@ -370,6 +447,7 @@
                 });
 
             } catch (err: any) {
+                logError(`Extract/index failed for ${entry.filename}: ${err?.message ?? err}`);
                 updateEntry(entry.id, { status: 'error', error: String(err) });
             }
         }
@@ -759,6 +837,10 @@
                 <button class="tb-btn" onclick={() => { activeTab = 'sources'; }}>
                     <FolderOpen size={14} /> Ordner verwalten
                 </button>
+                <span class="level-inline-label">Tiefe:</span>
+                <button class="chip" class:active={ingestLevel === 1} onclick={() => ingestLevel = 1} title="Nur Pfad / Größe / Datum (sehr schnell)">L1</button>
+                <button class="chip" class:active={ingestLevel === 2} onclick={() => ingestLevel = 2} title="Eingebettete Metadaten (PDF Info, DOCX core, EPUB OPF, EXIF)">L2</button>
+                <button class="chip" class:active={ingestLevel === 3} onclick={() => ingestLevel = 3} title="Volltext extrahieren + embedden">L3</button>
                 {#if stats.done > 0}
                     <button class="tb-btn ghost" onclick={clearDone}><Trash2 size={14} /> Fertige entfernen</button>
                 {/if}
@@ -766,24 +848,15 @@
                     <button class="tb-btn ghost danger" onclick={clearAll}><X size={14} /> Alle löschen</button>
                 {/if}
             </div>
-        </div>
-
-        <!-- Level picker -->
-        <div class="level-picker">
-            <span class="level-label">Tiefe:</span>
-            <button class="level-btn" class:active={ingestLevel === 1} onclick={() => ingestLevel = 1}>
-                L1 — Dateisystem-Metadaten
-            </button>
-            <button class="level-btn" class:active={ingestLevel === 3} onclick={() => ingestLevel = 3}>
-                L3 — Volltext + Embedding
-            </button>
-            <span class="level-hint">
+            <div class="level-hint-inline">
                 {#if ingestLevel === 1}
-                    Schneller Scan: Pfad, Größe, Datum, Endung. Kein Text, keine Vektoren.
+                    L1 — Pfad, Größe, Datum, Endung. Kein Embedder nötig.
+                {:else if ingestLevel === 2}
+                    L2 — Liest eingebettete Metadaten (PDF/DOCX/EPUB/EXIF). Kein Embedder nötig.
                 {:else}
-                    Dokumente werden extrahiert, in Chunks zerlegt, embeddet und indexiert.
+                    L3 — Volltext + Embedding. Embedder-Modell + Such-Index erforderlich.
                 {/if}
-            </span>
+            </div>
         </div>
 
         <!-- Stats bar -->
@@ -863,15 +936,15 @@
         <!-- Run controls -->
         {#if entries.length > 0}
             <div class="run-bar">
-                {#if !running && !l1Running}
+                {#if !running && !l1Running && !l2RunningInline}
                     <button class="run-btn primary" onclick={startIngest}
                         disabled={stats.pending === 0}>
                         <Play size={15} />
-                        {ingestLevel === 1 ? 'L1 Quick-Scan' : 'L3 Volltext-Indexierung'} ({stats.pending})
+                        {ingestLevel === 1 ? 'L1 Quick-Scan' : ingestLevel === 2 ? 'L2 Metadaten-Lesen' : 'L3 Volltext-Indexierung'} ({stats.pending})
                     </button>
-                {:else if l1Running}
+                {:else if l1Running || l2RunningInline}
                     <span class="status-text" style="color:#3b82f6">
-                        <Loader2 size={14} class="spin" /> L1 Indexierung läuft …
+                        <Loader2 size={14} class="spin" /> {l1Running ? 'L1' : 'L2'} Indexierung läuft …
                     </span>
                 {:else}
                     <button class="run-btn" onclick={pauseResume}>
@@ -1017,7 +1090,7 @@
             <div class="empty-state">
                 <Database size={32} style="color:#3f3f46" />
                 <p>{indexStats?.doc_count === 0 ? 'Index ist leer' : 'Keine Treffer'}</p>
-                <p class="hint-sub">{indexStats?.doc_count === 0 ? 'Indexiere Dokumente über den "Ingest"-Tab' : 'Filter anpassen oder leeren'}</p>
+                <p class="hint-sub">{indexStats?.doc_count === 0 ? 'Indexiere Dokumente über den "Hinzufügen"-Tab' : 'Filter anpassen oder leeren'}</p>
             </div>
         {:else}
             <!-- Selection toolbar (shown when items are selected) -->
@@ -1188,15 +1261,8 @@
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
         background: #27272a; color: #a1a1aa; flex-shrink: 0; min-width: 32px; text-align: center;
     }
-    .level-picker { display: flex; align-items: center; gap: 8px; padding: 8px 16px 0; flex-wrap: wrap; }
-    .level-label { font-size: 0.75rem; color: #71717a; font-weight: 600; }
-    .level-btn {
-        background: #18181b; border: 1px solid #27272a; color: #a1a1aa;
-        padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
-    }
-    .level-btn:hover { color: white; border-color: #3f3f46; }
-    .level-btn.active { background: #1e3a8a33; border-color: #3b82f6; color: #93c5fd; }
-    .level-hint { font-size: 0.72rem; color: #52525b; margin-left: 4px; }
+    .level-inline-label { font-size: 0.72rem; color: #71717a; font-weight: 600; margin-left: 6px; align-self: center; }
+    .level-hint-inline { font-size: 0.72rem; color: #52525b; padding: 6px 16px 0; }
 
     .filter-bar { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; flex-wrap: wrap; }
     .filter-label { font-size: 0.72rem; color: #71717a; font-weight: 600; }
