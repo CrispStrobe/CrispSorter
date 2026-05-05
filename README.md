@@ -277,6 +277,13 @@ npm run tauri build
 .\release.ps1
 ```
 
+`recompile.ps1` and `recompile-exe.ps1` automatically pick up CrispEmbed
+when the sibling repo (`..\CrispEmbed`) and a staged prebuilt
+(`src-tauri\crispembed-prebuilt\crispembed.lib`) are both present — they
+delegate to `enable-crispembed.ps1` with the matching `-Mode` and pass
+`--clean` through. Pass `--no-crispembed` to opt out for a single run
+without removing the staged prebuilt.
+
 `download-llama-backends.ps1` downloads pre-built llama.cpp binaries for Windows.
 
 ### Optional: CrispEmbed (GGUF) backend

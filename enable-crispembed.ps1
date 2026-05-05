@@ -30,6 +30,8 @@ param(
     [string]$Backend = '',
     [switch]$SkipDownload,
     [switch]$Force,
+    # Pass-through to cargo clean before the build (matches recompile.ps1).
+    [switch]$Clean,
     # Use a custom prebuilt directory instead of the GitHub release tarball.
     # Useful when you've built CrispEmbed yourself with GPU support, e.g.:
     #   cd ..\CrispEmbed && .\build-cuda.bat
@@ -164,13 +166,30 @@ if ($RuntimeDlls) {
         (Join-Path $ProjectRoot 'src-tauri\target\release'),
         (Join-Path $ProjectRoot 'src-tauri\bin')
     )
+    $copiedTotal = 0
+    $skippedLocked = 0
     foreach ($TargetDir in $TargetDirs) {
         New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
         foreach ($Dll in $RuntimeDlls) {
-            Copy-Item -Force -Path $Dll.FullName -Destination $TargetDir
+            $dest = Join-Path $TargetDir $Dll.Name
+            # Skip when the destination already has the right size — this is
+            # a no-op re-stage and trying to re-copy fails with sharing
+            # violations if a prior dev server / .exe has the DLL mapped.
+            if ((Test-Path $dest) -and ((Get-Item $dest).Length -eq $Dll.Length)) {
+                continue
+            }
+            try {
+                Copy-Item -Force -Path $Dll.FullName -Destination $dest -ErrorAction Stop
+                $copiedTotal++
+            } catch {
+                $skippedLocked++
+            }
         }
     }
-    Write-Host ("Copied " + $RuntimeDlls.Count + " runtime DLL(s) to target\\debug, target\\release, and bin\\") -ForegroundColor Green
+    Write-Host ("Staged " + $copiedTotal + " runtime DLL(s) to target\debug, target\release, and bin\\") -ForegroundColor Green
+    if ($skippedLocked -gt 0) {
+        Write-Host ("(" + $skippedLocked + " copy(ies) skipped: file in use by a running CrispSorter — restart it to pick up new DLLs.)") -ForegroundColor DarkYellow
+    }
 }
 
 # 4b. Warn when GPU-backed feature was requested but the staged tarball is
@@ -202,6 +221,12 @@ if ($DryRun) {
 
 # 6. Configure Rust/MSVC env (paths.ps1) and run the requested mode.
 . (Join-Path $ProjectRoot 'paths.ps1')
+
+if ($Clean) {
+    Write-Host "Cleaning Rust artifacts..." -ForegroundColor Yellow
+    Push-Location (Join-Path $ProjectRoot 'src-tauri')
+    try { & $env:CARGO clean } finally { Pop-Location }
+}
 
 if ($Mode -eq 'dev') {
     Write-Host "Starting CrispSorter in dev mode with --features $CargoFeature ..." -ForegroundColor Cyan
