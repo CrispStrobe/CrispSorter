@@ -446,7 +446,62 @@ export const translations = {
             entries: '{count} entries',
             empty: 'No log entries',
             empty_filtered: 'No log entries matching "{filter}".'
-        }
+        },
+        indexIngest: {
+            tab_overview: 'Overview',
+            tab_search: 'Search',
+            tab_add: 'Add',
+            tab_sources: 'Sources',
+            tab_caf_catalog: 'Volumes (.caf)',
+            tab_duplicates: 'Duplicates'
+        },
+        duplicates: {
+            title: 'Find Duplicates',
+            subtitle: 'Find files in destination catalogs that already exist in a source catalog. Generate a deletion script for safe cleanup.',
+            source: 'Source catalog',
+            source_hint: 'Files in this catalog are the keepers — duplicates found in destinations will be flagged for removal.',
+            destinations: 'Destination catalogs',
+            destinations_hint: 'Hold Ctrl/⌘ to select multiple. Files matching a source-catalog entry will be reported as duplicates.',
+            match_mode: 'Match mode',
+            match_size_only: 'Size only (fastest)',
+            match_size_name: 'Size + filename',
+            match_size_hash: 'Size + content hash (slowest, most accurate)',
+            find: 'Find duplicates',
+            running: 'Searching…',
+            no_source: 'Pick a source catalog first.',
+            no_destinations: 'Pick at least one destination catalog.',
+            results_summary: '{count} duplicate file(s) across {catalogs} destination catalog(s).',
+            results_empty: 'No duplicates found.',
+            generate_script: 'Generate deletion script',
+            script_label: 'Deletion script',
+            script_hint: 'Review carefully before running. The script never deletes the source-catalog files.',
+            copy_script: 'Copy script to clipboard',
+            error: 'Error: {message}'
+        },
+        caf_catalog: {
+            title: 'Catalog (.caf volumes)',
+            subtitle: 'Cathy/Catfish-compatible drive catalogs. Add an existing .caf file or scan a folder to create one.',
+            add_existing: 'Add existing .caf',
+            create_from_folder: 'Scan folder → new .caf',
+            empty_state: 'No catalogs registered yet.',
+            empty_hint: 'Add a .caf file or scan a folder to create one.',
+            active: 'Active in search',
+            inactive: 'Inactive',
+            view: 'Browse',
+            remove: 'Unregister',
+            remove_confirm: 'Unregister catalog "{name}"? The .caf file is left on disk.',
+            metadata_unreadable: '(file unreadable)',
+            file_count: '{count} files',
+            total_size: '{size}',
+            volume: 'Volume',
+            comment: 'Comment',
+            created: 'Created',
+            entries_filter: 'Filter entries…',
+            entries_loading: 'Loading entries…',
+            close_browse: 'Close browse'
+        },
+        crispembed_engine_built: 'CrispEmbed was built with the **{backend}** backend. To switch (e.g. CUDA → Vulkan), rebuild with `.\\enable-crispembed.ps1 -Backend <cuda|vulkan|metal>`.',
+        crispembed_engine_built_cpu: 'CrispEmbed was built CPU-only. To enable a GPU backend, rebuild with `.\\enable-crispembed.ps1 -Backend cuda` (or vulkan / metal).'
     },
     de: {
         nav: {
@@ -887,7 +942,62 @@ export const translations = {
             entries: '{count} Einträge',
             empty: 'Keine Log-Einträge',
             empty_filtered: 'Keine Log-Einträge passen zu „{filter}".'
-        }
+        },
+        indexIngest: {
+            tab_overview: 'Übersicht',
+            tab_search: 'Suche',
+            tab_add: 'Hinzufügen',
+            tab_sources: 'Quellen',
+            tab_caf_catalog: 'Volumes (.caf)',
+            tab_duplicates: 'Duplikate'
+        },
+        duplicates: {
+            title: 'Duplikate finden',
+            subtitle: 'Findet Dateien in Ziel-Katalogen, die bereits in einem Quellkatalog vorhanden sind. Erzeugt ein Löschskript für ein sicheres Aufräumen.',
+            source: 'Quellkatalog',
+            source_hint: 'Dateien in diesem Katalog sind die Behaltedateien -- Duplikate in den Zielkatalogen werden zur Entfernung markiert.',
+            destinations: 'Zielkataloge',
+            destinations_hint: 'Halte Strg/⌘, um mehrere auszuwählen. Dateien, die einem Quellkatalog-Eintrag entsprechen, gelten als Duplikate.',
+            match_mode: 'Vergleichsmodus',
+            match_size_only: 'Nur Größe (schnellster)',
+            match_size_name: 'Größe + Dateiname',
+            match_size_hash: 'Größe + Inhalts-Hash (langsamer, am genauesten)',
+            find: 'Duplikate finden',
+            running: 'Suche läuft …',
+            no_source: 'Wähle zuerst einen Quellkatalog.',
+            no_destinations: 'Wähle mindestens einen Zielkatalog.',
+            results_summary: '{count} Duplikat(e) in {catalogs} Ziel-Katalog(en).',
+            results_empty: 'Keine Duplikate gefunden.',
+            generate_script: 'Löschskript erzeugen',
+            script_label: 'Löschskript',
+            script_hint: 'Vor dem Ausführen sorgfältig prüfen. Das Skript löscht niemals Dateien aus dem Quellkatalog.',
+            copy_script: 'Skript in Zwischenablage kopieren',
+            error: 'Fehler: {message}'
+        },
+        caf_catalog: {
+            title: 'Katalog (.caf-Volumes)',
+            subtitle: 'Cathy/Catfish-kompatible Laufwerks-Kataloge. Füge eine vorhandene .caf-Datei hinzu oder scanne einen Ordner, um eine zu erzeugen.',
+            add_existing: 'Vorhandene .caf hinzufügen',
+            create_from_folder: 'Ordner scannen → neue .caf',
+            empty_state: 'Keine Kataloge registriert.',
+            empty_hint: 'Füge eine .caf-Datei hinzu oder scanne einen Ordner, um eine zu erzeugen.',
+            active: 'In der Suche aktiv',
+            inactive: 'Inaktiv',
+            view: 'Durchsuchen',
+            remove: 'Abmelden',
+            remove_confirm: 'Katalog „{name}" abmelden? Die .caf-Datei bleibt auf der Festplatte.',
+            metadata_unreadable: '(Datei nicht lesbar)',
+            file_count: '{count} Dateien',
+            total_size: '{size}',
+            volume: 'Volume',
+            comment: 'Kommentar',
+            created: 'Erstellt',
+            entries_filter: 'Einträge filtern …',
+            entries_loading: 'Einträge laden …',
+            close_browse: 'Ansicht schließen'
+        },
+        crispembed_engine_built: 'CrispEmbed wurde mit dem **{backend}**-Backend gebaut. Zum Wechseln (z. B. CUDA → Vulkan) erneut bauen mit `.\\enable-crispembed.ps1 -Backend <cuda|vulkan|metal>`.',
+        crispembed_engine_built_cpu: 'CrispEmbed wurde nur mit CPU-Unterstützung gebaut. Für ein GPU-Backend erneut bauen mit `.\\enable-crispembed.ps1 -Backend cuda` (oder vulkan / metal).'
     }
 };
 

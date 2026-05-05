@@ -17,6 +17,7 @@
         FolderOpen, FilePlus, X, Search, Loader2, Download,
         AlertTriangle
     } from 'lucide-svelte';
+    import { i18n } from '$lib/i18n.svelte';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -185,25 +186,21 @@
 
 <div class="dupes-tab">
     <header>
-        <h1>Find Duplicates</h1>
-        <p class="subtitle">
-            Compare a source folder (or <code>.caf</code> catalog) against one or more
-            destinations. Cheap by default (size + name); switch to a hash for
-            byte-perfect verification.
-        </p>
+        <h1>{i18n.t.duplicates.title}</h1>
+        <p class="subtitle">{i18n.t.duplicates.subtitle}</p>
     </header>
 
     <section class="config">
         <div class="row">
-            <span class="row-label">Source</span>
+            <span class="row-label">{i18n.t.duplicates.source}</span>
             <input
                 type="text"
                 bind:value={source}
-                placeholder="Folder or .caf file"
+                placeholder=".caf / folder"
                 class="path-input"
             />
             <button class="btn small" onclick={() => pickPath(true)}>
-                <FolderOpen size={14} /> Folder
+                <FolderOpen size={14} /> {i18n.t.indexIngest.tab_sources}
             </button>
             <button class="btn small" onclick={() => pickCaf(true)}>
                 <FilePlus size={14} /> .caf
@@ -212,20 +209,20 @@
 
         {#each destinations as dest, i}
             <div class="row">
-                <span class="row-label">{i === 0 ? 'Destination' : ''}</span>
+                <span class="row-label">{i === 0 ? i18n.t.duplicates.destinations : ''}</span>
                 <input
                     type="text"
                     bind:value={destinations[i]}
-                    placeholder="Folder or .caf file"
+                    placeholder=".caf / folder"
                     class="path-input"
                 />
                 <button class="btn small" onclick={() => pickPath(false, i)}>
-                    <FolderOpen size={14} /> Folder
+                    <FolderOpen size={14} /> {i18n.t.indexIngest.tab_sources}
                 </button>
                 <button class="btn small" onclick={() => pickCaf(false, i)}>
                     <FilePlus size={14} /> .caf
                 </button>
-                <button class="icon-btn" onclick={() => removeDestination(i)} title="Remove">
+                <button class="icon-btn" onclick={() => removeDestination(i)} title={i18n.t.duplicates.remove}>
                     <X size={14} />
                 </button>
             </div>
@@ -233,16 +230,16 @@
 
         <div class="row">
             <span class="row-label"></span>
-            <button class="btn small" onclick={addDestination}>+ Add destination</button>
+            <button class="btn small" onclick={addDestination}>+ {i18n.t.duplicates.destinations}</button>
         </div>
 
         <div class="row">
-            <span class="row-label">Strategy</span>
+            <span class="row-label">{i18n.t.duplicates.match_mode}</span>
             <select bind:value={strategy} class="strategy-select">
-                <option value="name-and-size">Name + Size (fast, approximate)</option>
-                <option value="hash:md5">Hash MD5 (byte-perfect)</option>
-                <option value="hash:sha1">Hash SHA-1 (byte-perfect)</option>
-                <option value="hash:sha256">Hash SHA-256 (byte-perfect, slowest)</option>
+                <option value="name-and-size">{i18n.t.duplicates.match_size_name}</option>
+                <option value="hash:md5">MD5 — {i18n.t.duplicates.match_size_hash}</option>
+                <option value="hash:sha1">SHA-1 — {i18n.t.duplicates.match_size_hash}</option>
+                <option value="hash:sha256">SHA-256 — {i18n.t.duplicates.match_size_hash}</option>
             </select>
         </div>
 
@@ -251,17 +248,17 @@
             <button class="btn primary" onclick={runDedup} disabled={scanning}>
                 {#if scanning}
                     <Loader2 size={14} class="spin" />
-                    Scanning…
+                    {i18n.t.duplicates.running}
                 {:else}
                     <Search size={14} />
-                    Find duplicates
+                    {i18n.t.duplicates.find}
                 {/if}
             </button>
         </div>
     </section>
 
     {#if error}
-        <div class="error"><AlertTriangle size={14} /> {error}</div>
+        <div class="error"><AlertTriangle size={14} /> {i18n.t.duplicates.error.replace('{message}', error)}</div>
     {/if}
 
     {#if matches.length > 0}

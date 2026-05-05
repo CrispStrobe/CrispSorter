@@ -10,10 +10,12 @@
     import {
         FolderOpen, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
-        UploadCloud, Trash2, Database, Search, ExternalLink
+        UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
+    import CafCatalog from './Catalog.svelte';
+    import Duplicates from './Duplicates.svelte';
     import { logInfo, logWarn, logError } from '$lib/log';
 
     // ── Types ──────────────────────────────────────────────────────────────────
@@ -42,7 +44,7 @@
         fileCount:   number;
     }
 
-    type Tab = 'overview' | 'search' | 'add' | 'sources';
+    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates';
 
     // ── State ──────────────────────────────────────────────────────────────────
 
@@ -976,18 +978,30 @@
     <!-- ── Tab bar (Kataloge sub-views) ──────────────────────────────────── -->
     <div class="tab-bar">
         <button class="tab" class:active={activeTab === 'overview'} onclick={() => { activeTab = 'overview'; loadContents(); }}>
-            <Database size={14} /> Übersicht{#if indexStats !== null} ({indexStats.doc_count}){/if}
+            <Database size={14} /> {i18n.t.indexIngest.tab_overview}{#if indexStats !== null} ({indexStats.doc_count}){/if}
         </button>
         <button class="tab" class:active={activeTab === 'search'} onclick={() => activeTab = 'search'}>
-            <Search size={14} /> Suche
+            <Search size={14} /> {i18n.t.indexIngest.tab_search}
         </button>
         <button class="tab" class:active={activeTab === 'add'} onclick={() => activeTab = 'add'}>
-            <UploadCloud size={14} /> Hinzufügen
+            <UploadCloud size={14} /> {i18n.t.indexIngest.tab_add}
         </button>
         <button class="tab" class:active={activeTab === 'sources'} onclick={() => activeTab = 'sources'}>
-            <FolderOpen size={14} /> Quellen ({folders.length})
+            <FolderOpen size={14} /> {i18n.t.indexIngest.tab_sources} ({folders.length})
+        </button>
+        <button class="tab" class:active={activeTab === 'cafCatalog'} onclick={() => activeTab = 'cafCatalog'}>
+            <HardDrive size={14} /> {i18n.t.indexIngest.tab_caf_catalog}
+        </button>
+        <button class="tab" class:active={activeTab === 'duplicates'} onclick={() => activeTab = 'duplicates'}>
+            <CopyCheck size={14} /> {i18n.t.indexIngest.tab_duplicates}
         </button>
     </div>
+
+    {#if activeTab === 'cafCatalog'}
+        <CafCatalog />
+    {:else if activeTab === 'duplicates'}
+        <Duplicates />
+    {/if}
 
     <!-- ══════════════════ HINZUFÜGEN (queue + ingest run) ══════════════════ -->
     {#if activeTab === 'add'}
