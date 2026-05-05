@@ -689,6 +689,80 @@
     let promotingL3 = $state(false);
     let l3Progress  = $state<{ done: number; total: number; current: string } | null>(null);
 
+    // .caf round-trip state.
+    let cafBusy       = $state(false);
+    let cafLastResult = $state<string | null>(null);
+
+    /** Open a `.caf` file produced by Cathy / Catfish / a previous
+     *  CrispSorter session. Each entry becomes an L1 row in the active
+     *  catalog (location_uri preserved so promotion to L2/L3 still
+     *  works once the volume is mounted). */
+    async function importCafFile() {
+        const sel = await openDialog({
+            multiple: false,
+            filters: [{ name: 'Catfish catalog', extensions: ['caf'] }]
+        });
+        if (typeof sel !== 'string') return;
+        if (!(await ensureIndexReady())) return;
+        cafBusy = true;
+        cafLastResult = null;
+        try {
+            logInfo(`CAF: importing ${sel}`);
+            const result = await invoke<{
+                ingested: number; skipped: number; errors: number;
+                volume_label: string; volume_serial: number; volume_date: number;
+            }>('index_import_caf', { path: sel });
+            cafLastResult = `Imported ${result.ingested} entries from "${result.volume_label || sel}"`
+                + (result.errors ? ` (${result.errors} errors)` : '')
+                + (result.skipped ? ` (${result.skipped} skipped)` : '');
+            logInfo(`CAF: ${cafLastResult}`);
+            await loadContents();
+        } catch (e: any) {
+            cafLastResult = `Import failed: ${e?.message ?? e}`;
+            logError(`CAF import failed: ${e?.message ?? e}`);
+        } finally {
+            cafBusy = false;
+        }
+    }
+
+    /** Write the current catalog out as a `.caf` file readable by
+     *  Cathy / Catfish / another CrispSorter installation. When the
+     *  user has a selection in the Übersicht, only those rows are
+     *  exported; otherwise the entire catalog. */
+    async function exportCafFile() {
+        const filterDocIds = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
+        const out = await openDialog({
+            // Tauri's open dialog with `save: false` is the picker; for
+            // saving we use `dialog/save` via the same plugin. Use the
+            // existing `save` import.
+            ...({} as any),
+        });
+        // Use the dedicated save dialog for the destination path.
+        const savePath = await import('@tauri-apps/plugin-dialog').then(m =>
+            m.save({
+                defaultPath: 'crispsorter.caf',
+                filters: [{ name: 'Catfish catalog', extensions: ['caf'] }]
+            })
+        );
+        if (typeof savePath !== 'string') return;
+        cafBusy = true;
+        cafLastResult = null;
+        try {
+            logInfo(`CAF: exporting${filterDocIds ? ' selection' : ' all rows'} to ${savePath}`);
+            const written = await invoke<number>('index_export_caf', {
+                path: savePath,
+                docIds: filterDocIds,
+            });
+            cafLastResult = `Exported ${written} entries to ${savePath}`;
+            logInfo(`CAF: ${cafLastResult}`);
+        } catch (e: any) {
+            cafLastResult = `Export failed: ${e?.message ?? e}`;
+            logError(`CAF export failed: ${e?.message ?? e}`);
+        } finally {
+            cafBusy = false;
+        }
+    }
+
     /** Promote the selected catalog rows to full L3 (text + embedding).
      *  For each selected doc we resolve location_uri to a file path, read
      *  the bytes, extract text via the same pipeline used for fresh
@@ -1041,7 +1115,7 @@
         {/if}
     {/if}
 
-    <!-- ══════════════════ QUELLEN (managed folders) ══════════════════ -->
+    <!-- ══════════════════ QUELLEN (managed folders + .caf import/export) ══════════════════ -->
     {#if activeTab === 'sources'}
         <div class="folders-toolbar">
             <button class="tb-btn" onclick={addFolder}><FolderOpen size={14} /> Ordner hinzufügen</button>
@@ -1050,7 +1124,21 @@
                     <RefreshCw size={14} class={scanningFolder ? 'spin' : ''} /> Alle neu scannen
                 </button>
             {/if}
+            <span style="flex:1;"></span>
+            <button class="tb-btn" onclick={importCafFile} disabled={cafBusy}>
+                {#if cafBusy}<Loader2 size={13} class="spin" />{:else}<Database size={13} />{/if}
+                .caf importieren
+            </button>
+            <button class="tb-btn" onclick={exportCafFile} disabled={cafBusy}>
+                {#if cafBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
+                .caf exportieren
+            </button>
         </div>
+        {#if cafLastResult}
+            <div class="caf-result-bar">
+                {cafLastResult}
+            </div>
+        {/if}
 
         {#if folders.length === 0}
             <div class="empty-state">
@@ -1410,6 +1498,7 @@
     .hint-sub { font-size: 0.8rem; color: #3f3f46; max-width: 320px; }
 
     .folder-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; flex: 1; overflow-y: auto; }
+    .caf-result-bar { padding: 6px 16px; background: #18181b; border-bottom: 1px solid #27272a; color: #a1a1aa; font-size: 0.8rem; }
     .folder-row {
         display: flex; align-items: flex-start; gap: 10px; background: #18181b;
         border: 1px solid #27272a; border-radius: 6px; padding: 10px 12px;

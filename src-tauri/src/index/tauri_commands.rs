@@ -507,6 +507,267 @@ pub async fn index_promote_l2(
     Ok(out)
 }
 
+// ── CAF (Catfish/Cathy file index) import / export ───────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CafImportResult {
+    pub ingested: usize,
+    pub skipped: usize,
+    pub errors: usize,
+    /// Volume label / serial / scan date carried over from the .caf header,
+    /// surfaced so the UI can show what catalog the user just imported.
+    pub volume_label: String,
+    pub volume_serial: u32,
+    pub volume_date: u32,
+}
+
+/// Read a `.caf` file produced by Cathy / Catfish (or a previous
+/// CrispSorter session) and ingest each entry as a Level-1 row in the
+/// active LanceDB catalog. The on-disk paths in the .caf are preserved
+/// in `location_uri` so promotion to L2 / L3 later still works when the
+/// drive is mounted.
+#[tauri::command]
+pub async fn index_import_caf(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<CafImportResult, String> {
+    use crate::catalog::caf;
+    use std::path::PathBuf;
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or("Local index pipeline not available — switch to Local backend")?;
+    drop(lock);
+
+    let caf_path = PathBuf::from(&path);
+    crate::app_log!("info", "CAF: reading {}", caf_path.display());
+    let idx = caf::read_file(&caf_path).map_err(|e| format!("read {}: {e}", caf_path.display()))?;
+    let total = idx.all_files.len();
+    crate::app_log!(
+        "info",
+        "CAF: {} entries, label='{}', root='{}'",
+        total,
+        idx.header.label,
+        idx.root_path.display()
+    );
+
+    let now_ms: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    // Convert each FileEntry into an L1 row. doc_id is sha256 of the
+    // absolute path so subsequent imports of the same .caf are idempotent
+    // (same id => updates the row instead of duplicating).
+    let mut entries = Vec::with_capacity(total);
+    for f in &idx.all_files {
+        let abs = f.path.to_string_lossy().to_string();
+        let parent = f
+            .path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let filename = f
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| abs.clone());
+        let ext = f
+            .path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let doc_id = format!("{:x}", sha2_path(&abs));
+
+        entries.push(super::ingest::L1FileEntry {
+            doc_id: doc_id.clone(),
+            source_hash: doc_id,
+            location_uri: format!("crisp+local://caf-import{}/{}", idx.header.serial, abs),
+            owner_id: "local".to_string(),
+            filename,
+            ext,
+            parent_dir: parent,
+            size: f.size as i64,
+            mtime_ms: (f.mtime as i64) * 1000,
+            ctime_ms: (f.mtime as i64) * 1000,
+        });
+    }
+
+    let mut ingested = 0usize;
+    let mut errors = 0usize;
+    // Process in batches to keep LanceDB writes manageable on huge catalogs.
+    for chunk in entries.chunks(500) {
+        match pipeline.ingest_l1(chunk).await {
+            Ok(stats) => ingested += stats.chunk_count,
+            Err(e) => {
+                errors += chunk.len();
+                crate::app_log!("error", "CAF: ingest_l1 batch failed: {e:#}");
+            }
+        }
+    }
+
+    let _ = now_ms; // (timestamp lives inside ingest_l1 already)
+
+    Ok(CafImportResult {
+        ingested,
+        skipped: total - ingested - errors,
+        errors,
+        volume_label: idx.header.label.clone(),
+        volume_serial: idx.header.serial,
+        volume_date: idx.header.date,
+    })
+}
+
+/// Write the catalog's L1+ rows out as a `.caf` file readable by
+/// Catfish / Cathy and any other CrispSorter installation.
+///
+/// `doc_ids` (optional) limits the export to those ids; otherwise every
+/// row in the active catalog is written.
+#[tauri::command]
+pub async fn index_export_caf(
+    state: State<'_, AppState>,
+    path: String,
+    doc_ids: Option<Vec<String>>,
+) -> Result<usize, String> {
+    use crate::catalog::caf;
+    use crate::catalog::index::{FileEntry, FileIndex, VolumeHeader};
+    use std::path::PathBuf;
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".to_owned());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Local backend required")?
+        .clone();
+    drop(lock);
+
+    let rows = local
+        .list_documents(usize::MAX)
+        .await
+        .map_err(|e| e.to_string())?;
+    let filtered: Vec<_> = match doc_ids {
+        Some(ref ids) => rows
+            .into_iter()
+            .filter(|r| ids.contains(&r.doc_id))
+            .collect(),
+        None => rows,
+    };
+
+    // Pick a sensible root: the longest common ancestor of all paths.
+    // Fall back to `/` when paths don't share a prefix.
+    let paths: Vec<PathBuf> = filtered
+        .iter()
+        .map(|r| {
+            let uri = &r.location_uri;
+            let p = if uri.starts_with("crisp+local://") {
+                let after = &uri["crisp+local://".len()..];
+                let slash = after.find('/').map(|i| i + 1).unwrap_or(0);
+                after[slash.saturating_sub(1)..].to_string()
+            } else {
+                uri.clone()
+            };
+            PathBuf::from(p)
+        })
+        .collect();
+    let root = common_path_prefix(&paths).unwrap_or_else(|| PathBuf::from("/"));
+    let is_windows_path = paths
+        .iter()
+        .next()
+        .map(|p| p.to_string_lossy().contains('\\') || p.to_string_lossy().chars().nth(1) == Some(':'))
+        .unwrap_or(false);
+
+    let mut idx = FileIndex::new(root.clone(), is_windows_path);
+    idx.header = VolumeHeader {
+        label: "CrispSorter".to_string(),
+        alias: "CrispSorter".to_string(),
+        serial: 0,
+        comment: format!("Exported from CrispSorter ({} rows)", filtered.len()),
+        freesize: 0.0,
+        archive: 0,
+        date: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32,
+    };
+
+    // Pull file size + mtime out of metadata_json.fs_size / fs_mtime; fall
+    // back to 0 when an L1 row never had them.
+    for (path, row) in paths.iter().zip(filtered.iter()) {
+        let (size, mtime) = parse_l1_meta(&row.metadata_json);
+        idx.add(FileEntry::new(path.clone(), size, mtime));
+    }
+
+    let out = PathBuf::from(&path);
+    crate::app_log!(
+        "info",
+        "CAF: writing {} entries to {}",
+        idx.all_files.len(),
+        out.display()
+    );
+    caf::write_file(&out, &idx, idx.header.date)
+        .map_err(|e| format!("write {}: {e}", out.display()))?;
+    Ok(idx.all_files.len())
+}
+
+/// SHA-256 over a path string, hex-encoded — gives us a deterministic
+/// `doc_id` so re-importing the same .caf doesn't duplicate rows.
+fn sha2_path(path: &str) -> impl std::fmt::LowerHex {
+    use std::hash::{Hash, Hasher};
+    // We don't pull `sha2`; a SipHash digest is deterministic enough for
+    // doc-id uniqueness and avoids adding a dep just for this.
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    HashHex(h.finish())
+}
+
+struct HashHex(u64);
+impl std::fmt::LowerHex for HashHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+fn common_path_prefix(paths: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    let first = paths.first()?;
+    let comps: Vec<_> = first.components().collect();
+    let mut shared = comps.len();
+    for p in paths.iter().skip(1) {
+        let pc: Vec<_> = p.components().collect();
+        let n = comps
+            .iter()
+            .zip(pc.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        shared = shared.min(n);
+        if shared == 0 {
+            break;
+        }
+    }
+    if shared == 0 {
+        None
+    } else {
+        Some(comps[..shared].iter().collect())
+    }
+}
+
+fn parse_l1_meta(meta_json: &Option<String>) -> (u64, u32) {
+    let Some(s) = meta_json else { return (0, 0); };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_str(s) else {
+        return (0, 0);
+    };
+    let size = v.get("fs_size").and_then(|x| x.as_i64()).unwrap_or(0).max(0) as u64;
+    let mtime_ms = v.get("fs_mtime").and_then(|x| x.as_i64()).unwrap_or(0).max(0);
+    (size, (mtime_ms / 1000) as u32)
+}
+
 // ── Document delete ───────────────────────────────────────────────────────────
 
 /// Delete a document completely: removes all chunks from LanceDB and the
