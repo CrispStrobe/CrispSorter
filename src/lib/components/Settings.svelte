@@ -2287,9 +2287,14 @@
                     </select>
                     <p class="hint" style="margin-top:6px;">
                         {#if crispEmbedGpu && crispEmbedGpu !== 'cpu'}
-                            CrispEmbed was built with the <strong>{crispEmbedGpu}</strong> backend. To switch (e.g. CUDA → Vulkan), rebuild with <code>.\enable-crispembed.ps1 -Backend &lt;cuda|vulkan|metal&gt;</code>.
+                            {@html i18n.t.crispembed_engine_built
+                                .replace('{backend}', crispEmbedGpu)
+                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
                         {:else}
-                            CrispEmbed was built CPU-only. To enable a GPU backend, rebuild with <code>.\enable-crispembed.ps1 -Backend cuda</code> (or vulkan / metal).
+                            {@html i18n.t.crispembed_engine_built_cpu
+                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
                         {/if}
                     </p>
                 {/if}

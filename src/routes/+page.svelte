@@ -11,12 +11,9 @@
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
-    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal, HardDrive, CopyCheck } from 'lucide-svelte';
-    import IndexSearch from '$lib/components/IndexSearch.svelte';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal } from 'lucide-svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
-    import Catalog from '$lib/components/Catalog.svelte';
-    import Duplicates from '$lib/components/Duplicates.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog'
     let navCollapsed = $state(false);
@@ -92,6 +89,96 @@
                 flog('warn', `Watcher resume read failed: ${e}`);
             }
 
+            // ── Restore the search-index config on every app launch ─────
+            // The Rust IndexState boots with `IndexConfig::default()`
+            // (enabled=false, BgeM3, ONNX, ...). The user's persisted
+            // choices live in the JS-side `tauri-plugin-store`. Without
+            // this push, every restart silently reverts the model /
+            // backend / catalog dir to the defaults until the user
+            // opens Settings and clicks Apply -- which is exactly what
+            // the user was complaining about.
+            //
+            // We also auto-`index_init` so the L1 rows that already
+            // exist in the LanceDB table on disk show up in Übersicht
+            // immediately. `withEmbedder=false` keeps init cheap when
+            // the user isn't doing vector search yet -- IndexIngest
+            // upgrades to a full init on demand.
+            try {
+                // Mirror of Settings.svelte's indexEmbedderToRust /
+                // indexModeToRust / indexDeviceToRust / indexBackendToRust
+                // / rerankerToRust. Kept inline (not a $lib helper)
+                // because it's the only boot-time translation; coupling
+                // a settings-save format to a Rust serde format with a
+                // shared module would be over-engineering for two
+                // dictionaries of ~20 entries each.
+                const modeToRust = (m: string) =>
+                    ({ text: 'text_only', vector: 'vector_only', hybrid: 'hybrid' } as Record<string,string>)[m] ?? 'hybrid';
+                const backendToRust = (b: string) => b === 'remote' ? 'remote' : 'local';
+                const deviceToRust = (d: string) =>
+                    ({ auto: 'auto', cpu: 'cpu', metal: 'metal', cuda: 'cuda' } as Record<string,string>)[d] ?? 'auto';
+                const embedderToRust = (m: string) => ({
+                    bge_m3: 'bge-m3',
+                    pixie: 'pixie-rune-v1', pixie_q: 'pixie-rune-v1-q',
+                    pixie_int4: 'pixie-rune-v1-int4', pixie_int4_full: 'pixie-rune-v1-int4-full',
+                    octen: 'octen-06b-int8-local',
+                    snowflake_l: 'snowflake-arctic-lv2', snowflake_l_fp16: 'snowflake-arctic-lv2-fp16',
+                    snowflake_l_int8: 'snowflake-arctic-lv2-int8', snowflake_l_q4: 'snowflake-arctic-lv2-q4',
+                    snowflake_l_q4f16: 'snowflake-arctic-lv2-q4-f16',
+                    snowflake_l_o4: 'snowflake-arctic-lv2-o4', snowflake_l_fp32: 'snowflake-arctic-lv2-fp32',
+                    jina_nano: 'jina-v5-nano', multilingual_mini_lm: 'multilingual-mini-lm',
+                    multilingual_e5_small: 'multilingual-e5-small',
+                    multilingual_e5_base:  'multilingual-e5-base',
+                    multilingual_e5_large: 'multilingual-e5-large',
+                    bge_small_en_v15: 'bge-small-en-v15',
+                    bge_base_en_v15:  'bge-base-en-v15',
+                    bge_large_en_v15: 'bge-large-en-v15',
+                    nomic_embed_v15:  'nomic-embed-text-v15',
+                    mxbai_large_v1:   'mxbai-embed-large-v1',
+                    minilm_l6_v2:     'all-mini-lm-l6-v2',
+                    embedding_gemma_300m: 'embedding-gemma300-m',
+                    gte_base_en_v15:  'gte-base-en-v15',
+                    gte_large_en_v15: 'gte-large-en-v15',
+                    // HEAD-side aliases retained for backward compat
+                    mxbai_embed_large_v1: 'mxbai-embed-large-v1',
+                    nomic_embed_text_v15: 'nomic-embed-text-v15',
+                    all_mini_lm_l6_v2:    'all-mini-lm-l6-v2',
+                } as Record<string,string>)[m] ?? 'bge-m3';
+                const rerankerToRust = (m: string): string | null => {
+                    if (!m) return null;
+                    return ({
+                        bge_v2_m3: 'bge-reranker-v2-m3',
+                        bge_base: 'bge-reranker-base',
+                        jina_v2_multi: 'jina-reranker-v2-base-multilingual',
+                    } as Record<string,string>)[m] ?? null;
+                };
+
+                const cfg = {
+                    enabled:          (await getSetting('indexEnabled', false)) as boolean,
+                    mode:             modeToRust(await getSetting('indexSearchMode', 'hybrid')),
+                    backend_type:     backendToRust(await getSetting('indexBackendType', 'local')),
+                    remote_url:       (await getSetting('indexRemoteUrl', '')) || null,
+                    remote_api_key:   (await getSetting('indexRemoteApiKey', '')) || null,
+                    embedder_model:   embedderToRust(await getSetting('indexEmbedderModel', 'bge_m3')),
+                    embedder_device:  deviceToRust(await getSetting('indexDevice', 'auto')),
+                    embedder_backend: await getSetting('indexEmbedderBackend', 'onnx'),
+                    use_vector:       (await getSetting('indexUseVector', true)) as boolean,
+                    reranker_model:   rerankerToRust(await getSetting('indexRerankerModel', '')),
+                    rerank_top_n:     (await getSetting('indexRerankerTopN', 50)) as number,
+                    model_cache_dir:  (await getSetting('indexModelCacheDir', '')) || null,
+                    matryoshka_dim:   (await getSetting('indexMatryoshkaDim', 0)) || null,
+                };
+                await invoke('index_set_config', { config: cfg });
+                flog('info', '[boot] Pushed persisted index config to Rust.');
+
+                if (cfg.enabled) {
+                    const dataDir = await invoke<string>('get_app_data_dir').catch(() => '');
+                    await invoke('index_init', { dataDir, withEmbedder: false });
+                    flog('info', `[boot] Index auto-initialised at ${dataDir} (use_vector=${cfg.use_vector}).`);
+                }
+            } catch (e: any) {
+                flog('warn', `[boot] Index restore failed: ${e?.message ?? e}`);
+            }
+
             cleanup = () => {
                 unlistenWatch();
                 invoke('watch_stop_all').catch(() => {});
@@ -133,18 +220,6 @@
             <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title={i18n.t.nav.catalog}>
                 <Library size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.catalog}</span>{/if}
-            </button>
-
-            <div class="nav-separator"></div>
-
-            <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title="Catalog (Cathy/Catfish .caf)">
-                <HardDrive size={20} />
-                {#if !navCollapsed}<span>Catalog</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'dupes'} onclick={() => activeTab = 'dupes'} title="Find Duplicates">
-                <CopyCheck size={20} />
-                {#if !navCollapsed}<span>Duplicates</span>{/if}
             </button>
         </div>
 
@@ -189,10 +264,6 @@
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}
                 <IndexIngest />
-            {:else if activeTab === 'catalog'}
-                <Catalog />
-            {:else if activeTab === 'dupes'}
-                <Duplicates />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />
