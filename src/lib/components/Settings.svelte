@@ -185,6 +185,11 @@
     let indexEmbedderModel  = $state<string>('bge_m3');
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
+    /** Master switch for vector capabilities. When false, no embedder is
+     *  ever loaded — saves multi-GB downloads + minutes of init time when
+     *  the user only wants offline file cataloguing (L1 + L2) and
+     *  full-text search via Tantivy. Mirrored into IndexConfig. */
+    let indexUseVector      = $state(true);
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -612,6 +617,7 @@
         indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
+        indexUseVector     = await getSetting('indexUseVector', true) as boolean;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -856,6 +862,7 @@
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
+        await saveSetting('indexUseVector',     indexUseVector);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -923,6 +930,7 @@
                     embedder_model:   indexEmbedderToRust(indexEmbedderModel),
                     embedder_device:  indexDeviceToRust(indexDevice),
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
+                    use_vector:       indexUseVector,
                 }
             });
             if (indexEnabled) {
@@ -1803,6 +1811,25 @@
                 </label>
                 <p class="hint">{i18n.t.settings.index.enabled_hint}</p>
             </div>
+
+            <!-- Vector capabilities master switch -->
+            <div class="section-card">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <input type="checkbox" bind:checked={indexUseVector} />
+                    <span><strong>{i18n.t.settings.index.use_vector}</strong></span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.use_vector_hint}</p>
+            </div>
+
+            <!-- Hide every embedder-related option when vectors are off,
+                 since none of those settings has any effect in that mode. -->
+            {#if !indexUseVector}
+                <div class="section-card" style="border-color:#3b82f6; background:#1e3a8a14;">
+                    <p class="hint" style="margin:0;">
+                        {i18n.t.settings.index.no_vector_active}
+                    </p>
+                </div>
+            {/if}
 
             <!-- Catalogs (named bundles of the settings below) -->
             <div class="section-card">

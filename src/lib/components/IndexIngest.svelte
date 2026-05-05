@@ -277,24 +277,26 @@
                 return { id: crypto.randomUUID(), path: p, filename, ext, size: 0, status: 'pending' as FileStatus };
             });
         entries = [...entries, ...toAdd];
+        await persistEntries();
     }
 
-    function removeEntry(id: string) { entries = entries.filter(e => e.id !== id); persistEntries(); }
-    function clearAll()  { if (!running) { entries = []; persistEntries(); } }
-    function clearDone() { entries = entries.filter(e => e.status !== 'done'); persistEntries(); }
+    async function removeEntry(id: string) { entries = entries.filter(e => e.id !== id); await persistEntries(); }
+    async function clearAll()  { if (!running) { entries = []; await persistEntries(); } }
+    async function clearDone() { entries = entries.filter(e => e.status !== 'done'); await persistEntries(); }
 
     /** Persist the Hinzufügen queue across tab switches / app restarts.
-     *  Mirrors how the Stapel batch keeps state in tauri-plugin-store. */
+     *  Mirrors how the Stapel batch keeps state in tauri-plugin-store.
+     *  Called from every mutator (not via a `$effect`) so the write
+     *  always lands BEFORE Svelte unmounts the component on tab change. */
     async function persistEntries() {
         try {
             const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
             await store.set('entries', $state.snapshot(entries));
-        } catch { /* store not yet writable */ }
+            await store.save();
+        } catch (e) {
+            logError(`Hinzufügen: persist failed — ${e}`);
+        }
     }
-    $effect(() => {
-        const _ = entries.length;
-        persistEntries();
-    });
 
     // ── Language detection ─────────────────────────────────────────────────────
 
@@ -310,31 +312,39 @@
 
     // ── Ingest run ─────────────────────────────────────────────────────────────
 
-    /** Quick filesystem-only ingest. No text extraction, no embedding —
-     *  but we DO need the underlying LocalIndex to be ready. If the user
-     *  hasn't enabled the full search index yet, we transparently flip
-     *  the enable flag + auto-init so L1 just works without forcing a
-     *  trip to Settings. (L1 doesn't need Tantivy or an embedder model;
-     *  the LocalIndex's LanceDB table is enough.)
+    /** Make sure the catalog backend is ready. `withEmbedder` decides
+     *  whether the (slow, multi-GB) embedder model gets loaded:
      *
-     *  When an init is *already in progress* (e.g. user clicked Files
-     *  twice, or another component triggered it), we poll until it
-     *  completes instead of returning an "already in progress" error.
-     */
-    async function ensureIndexReady(): Promise<boolean> {
+     *    L1 / L2 fast-paths → `withEmbedder = false`. Only LanceDB +
+     *      Tantivy are spun up; no model download, init takes < 1 s.
+     *    L3 / vector-search → `withEmbedder = true`. Full pipeline.
+     *
+     *  When an init is already in progress (user double-clicked, or a
+     *  background ingest started one), we poll until it completes
+     *  instead of returning an "already in progress" error. */
+    async function ensureIndexReady(withEmbedder: boolean = false): Promise<boolean> {
         const isReady = async () => invoke<boolean>('index_is_ready').catch(() => false);
 
         // Fast path: already up.
-        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
-        if (cfg.enabled && (await isReady())) return true;
+        const cfg = await invoke<{ enabled: boolean; use_vector?: boolean }>(
+            'index_get_config'
+        ).catch(() => ({ enabled: false, use_vector: true }));
+        const ready = cfg.enabled && (await isReady());
+        // If we don't actually need the embedder for this call AND something is
+        // already initialised, take it as good enough — re-running init now
+        // just to attach an embedder would block on the multi-GB download.
+        if (ready && (!withEmbedder || (cfg as any).use_vector === false)) {
+            return true;
+        }
+        if (ready) {
+            // Already up + we want the embedder + use_vector is on → done.
+            return true;
+        }
 
-        // Try to (re-)init. The Rust side's `initializing` flag rejects
-        // duplicate concurrent calls — when that happens we wait it out
-        // by polling `index_is_ready`.
         const tryInit = async () => {
             await invoke('index_set_config', { config: { ...(cfg as any), enabled: true } });
             const dataDir = await invoke<string>('get_app_data_dir').catch(() => '');
-            await invoke('index_init', { dataDir });
+            await invoke('index_init', { dataDir, withEmbedder });
         };
 
         try {
@@ -344,9 +354,6 @@
             const msg = String(e?.message ?? e ?? '');
             if (msg.includes('already in progress')) {
                 logInfo('Catalog: another init is running — waiting for it to finish');
-                // Poll up to 10 minutes (long enough for a 2 GB embedder
-                // download on a slow connection). Bail with a clear error
-                // if we time out.
                 const deadline = Date.now() + 10 * 60 * 1000;
                 while (Date.now() < deadline) {
                     await new Promise(r => setTimeout(r, 500));
@@ -363,7 +370,7 @@
 
     async function startL1Ingest() {
         if (l1Running || running) return;
-        if (!(await ensureIndexReady())) return;
+        if (!(await ensureIndexReady(false))) return;
         const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
         if (pending.length === 0) return;
 
@@ -406,7 +413,7 @@
      *  Doesn't require Tantivy / embedder either. */
     async function startL2Ingest() {
         if (l2RunningInline) return;
-        if (!(await ensureIndexReady())) return;
+        if (!(await ensureIndexReady(false))) return;
         const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
         if (pending.length === 0) return;
         l2RunningInline = true;
@@ -442,7 +449,8 @@
             await startL2Ingest();
             return;
         }
-        if (!(await ensureIndexReady())) return;
+        // L3 = full text + embedding -> must have the embedder loaded.
+        if (!(await ensureIndexReady(true))) return;
 
         running   = true;
         paused    = false;
@@ -703,7 +711,7 @@
             filters: [{ name: 'Catfish catalog', extensions: ['caf'] }]
         });
         if (typeof sel !== 'string') return;
-        if (!(await ensureIndexReady())) return;
+        if (!(await ensureIndexReady(false))) return;
         cafBusy = true;
         cafLastResult = null;
         try {
@@ -777,11 +785,8 @@
         l3Progress = { done: 0, total: ids.length, current: '' };
         let ok = 0, fail = 0, skipped = 0;
         try {
-            const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
-            if (!cfg.enabled) {
-                alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
-                return;
-            }
+            // L3 promotion needs the embedder — attach it now.
+            if (!(await ensureIndexReady(true))) return;
 
             // Find the rows we're promoting in the currently-loaded contents.
             for (const id of ids) {
@@ -898,6 +903,9 @@
 
     function updateEntry(id: string, patch: Partial<IngestEntry>) {
         entries = entries.map(e => e.id === id ? { ...e, ...patch } : e);
+        // Fire-and-forget persist so per-file status updates survive a
+        // tab switch mid-ingest. Don't await — the ingest loop is hot.
+        void persistEntries();
     }
 
     function mimeFor(ext: string): string {

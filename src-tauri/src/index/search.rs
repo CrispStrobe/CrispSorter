@@ -18,14 +18,17 @@ use super::schema::{SearchFilters, SearchResult};
 pub struct SearchEngine {
     pub fts: Arc<FtsIndex>,
     pub vector: Arc<LocalIndex>,
-    pub embedder: Arc<Mutex<Embedder>>,
+    /// `None` when the index was init'd without vector capabilities.
+    /// Vector / hybrid search return a clear error in that case;
+    /// text-only (BM25) still works.
+    pub embedder: Option<Arc<Mutex<Embedder>>>,
 }
 
 impl SearchEngine {
     pub fn new(
         fts: Arc<FtsIndex>,
         vector: Arc<LocalIndex>,
-        embedder: Arc<Mutex<Embedder>>,
+        embedder: Option<Arc<Mutex<Embedder>>>,
     ) -> Self {
         SearchEngine {
             fts,
@@ -204,7 +207,14 @@ impl SearchEngine {
     // ── Private helpers ────────────────────────────────────────────────────
 
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        let mut emb = self.embedder.lock().await;
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Vector search needs an embedder. Enable \
+                 `Vektor-Embeddings verwenden` in Settings → Search Index \
+                 and re-init the catalog."
+            )
+        })?;
+        let mut emb = embedder.lock().await;
         let dense = emb.embed_dense(vec![text.to_owned()])?;
         dense
             .vectors
