@@ -289,7 +289,11 @@ impl IngestPipeline {
 }
 
 /// One file's filesystem-only metadata for the L1 ingest path.
+///
+/// Frontend sends camelCase (Tauri convention) so the deserialisation
+/// needs the rename: `docId` -> `doc_id`, `mtimeMs` -> `mtime_ms`, etc.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct L1FileEntry {
     pub doc_id: String,
     pub source_hash: String,

@@ -151,7 +151,10 @@ pub struct IngestProgress {
     pub message: String,
 }
 
+/// Frontend sends camelCase (Tauri convention); rename so `fullText` ->
+/// `full_text` etc.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentIngestInput {
     pub full_text: String,
     pub full_text_md: String,
