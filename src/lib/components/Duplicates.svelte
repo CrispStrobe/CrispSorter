@@ -60,7 +60,7 @@
         const folder = await openDialog({
             directory: true,
             multiple: false,
-            title: forSource ? 'Pick source folder' : 'Pick destination folder',
+            title: forSource ? i18n.t.duplicates.picker_source_folder : i18n.t.duplicates.picker_destination_folder,
         });
         if (typeof folder === 'string') {
             applyPick(folder, forSource, idx);
@@ -72,7 +72,7 @@
         const f = await openDialog({
             multiple: false,
             filters: [{ name: 'Cathy Catalog', extensions: ['caf'] }],
-            title: forSource ? 'Pick source .caf' : 'Pick destination .caf',
+            title: forSource ? i18n.t.duplicates.picker_source_caf : i18n.t.duplicates.picker_destination_caf,
         });
         if (typeof f === 'string') applyPick(f, forSource, idx);
     }
@@ -264,8 +264,8 @@
     {#if matches.length > 0}
         <section class="results">
             <header>
-                <h2>{matches.length.toLocaleString()} matches</h2>
-                <span class="muted">{selected.size} selected</span>
+                <h2>{i18n.t.duplicates.matches_count.replace('{count}', matches.length.toLocaleString())}</h2>
+                <span class="muted">{i18n.t.duplicates.selected_count.replace('{count}', selected.size.toString())}</span>
             </header>
 
             <table class="match-table">
@@ -280,9 +280,9 @@
                                     : new Set(matches.map((_, i) => i));
                             }}
                         /></th>
-                        <th>Source</th>
-                        <th>Size</th>
-                        <th>Destinations</th>
+                        <th>{i18n.t.duplicates.col_source}</th>
+                        <th>{i18n.t.duplicates.col_size}</th>
+                        <th>{i18n.t.duplicates.col_destinations}</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -310,31 +310,30 @@
             </table>
 
             <section class="script-builder">
-                <h3>Generate deletion script</h3>
+                <h3>{i18n.t.duplicates.generate_script}</h3>
                 <div class="row">
-                    <span class="row-label">Format</span>
+                    <span class="row-label">{i18n.t.duplicates.script_format}</span>
                     <select bind:value={scriptFormat}>
                         <option value="bash">Bash (.sh)</option>
                         <option value="batch">Batch (.bat)</option>
                         <option value="powershell">PowerShell (.ps1)</option>
                     </select>
-                    <span class="row-label" style="margin-left: 12px;">Delete</span>
+                    <span class="row-label" style="margin-left: 12px;">{i18n.t.duplicates.script_delete}</span>
                     <select bind:value={scriptTarget}>
-                        <option value="destinations">Destinations (keep source)</option>
-                        <option value="source">Source (keep destinations)</option>
+                        <option value="destinations">{i18n.t.duplicates.script_target_destinations}</option>
+                        <option value="source">{i18n.t.duplicates.script_target_source}</option>
                     </select>
                     <button class="btn small primary" onclick={generateScript}>
-                        Generate
+                        {i18n.t.duplicates.script_generate_btn}
                     </button>
                 </div>
                 <p class="muted" style="margin: 4px 0;">
-                    Selected files will free approximately
-                    <strong>{formatSize(totalToDelete)}</strong>.
+                    {@html i18n.t.duplicates.space_freed.replace('{size}', `<strong>${formatSize(totalToDelete)}</strong>`)}
                 </p>
                 {#if generatedScript}
                     <textarea readonly class="script-output">{generatedScript}</textarea>
                     <button class="btn small" onclick={saveScript}>
-                        <Download size={14} /> Save script…
+                        <Download size={14} /> {i18n.t.duplicates.save_script}
                     </button>
                 {/if}
             </section>
@@ -342,7 +341,7 @@
     {:else if scanning === false && !error}
         <div class="empty">
             <Search size={32} />
-            <p>No matches yet — pick a source + destination(s) and run.</p>
+            <p>{i18n.t.duplicates.empty_pick_run}</p>
         </div>
     {/if}
 </div>
