@@ -4,6 +4,7 @@ use fastembed::{
     SparseModel, SparseTextEmbedding, TextEmbedding, TextInitOptions, TokenizerFiles,
     UserDefinedEmbeddingModel,
 };
+#[cfg(feature = "crispembed")]
 use hf_hub::api::tokio::ApiBuilder;
 use serde::{Deserialize, Serialize};
 /// Embedding model wrapper.
@@ -117,6 +118,21 @@ pub enum EmbedderModel {
     /// Our own dynamic-INT8 ONNX export including Gather (embedding table) — ~570 MB total.
     /// Smaller than Int8Local but the embedding lookup table is also quantized.
     Octen06bInt8FullLocal,
+
+    // ── Additional native-fastembed models (added to widen GGUF coverage) ──
+    /// BAAI/bge-large-en-v1.5 — 1024d, 512 ctx, English, BERT.
+    BgeLargeEnV15,
+
+    /// intfloat/multilingual-e5-large — 1024d, 512 ctx, multilingual XLM-R.
+    MultilingualE5Large,
+
+    /// mixedbread-ai/mxbai-embed-large-v1 — 1024d, 512 ctx, English, BERT.
+    /// Top-performing English encoder.
+    MxbaiEmbedLargeV1,
+
+    /// nomic-ai/nomic-embed-text-v1.5 — 768d, 8192 ctx, English, NomicBERT.
+    /// Long context, half the size of bge-large.
+    NomicEmbedTextV15,
 }
 
 impl EmbedderModel {
@@ -167,6 +183,10 @@ impl EmbedderModel {
             EmbedderModel::Octen06bInt8FullLocal => {
                 "Octen-0.6B int8 full local export incl. embedding table (~570 MB)"
             }
+            EmbedderModel::BgeLargeEnV15 => "BGE Large EN v1.5 (1024d, 512 ctx, English)",
+            EmbedderModel::MultilingualE5Large => "Multilingual E5 Large (1024d, 512 ctx, 100+ langs)",
+            EmbedderModel::MxbaiEmbedLargeV1 => "mxbai-embed-large-v1 (1024d, 512 ctx, English)",
+            EmbedderModel::NomicEmbedTextV15 => "Nomic Embed Text v1.5 (768d, 8k ctx, English)",
         }
     }
 
@@ -176,6 +196,7 @@ impl EmbedderModel {
             EmbedderModel::JinaV2Small => 512,
             EmbedderModel::JinaV2Base => 768,
             EmbedderModel::JinaV5Nano => 768,
+            EmbedderModel::NomicEmbedTextV15 => 768,
             _ => 1024,
         }
     }
@@ -208,6 +229,10 @@ impl EmbedderModel {
             | EmbedderModel::Octen06bInt8Local
             | EmbedderModel::Octen06bInt4Local
             | EmbedderModel::Octen06bInt8FullLocal => 32768,
+            EmbedderModel::BgeLargeEnV15
+            | EmbedderModel::MultilingualE5Large
+            | EmbedderModel::MxbaiEmbedLargeV1 => 512,
+            EmbedderModel::NomicEmbedTextV15 => 8192,
         }
     }
 
@@ -215,11 +240,53 @@ impl EmbedderModel {
         matches!(self, EmbedderModel::BgeM3)
     }
 
+    /// Approximate first-time download size in megabytes (model + tokenizer
+    /// + any companion `.onnx_data`). Used by the UI to show a realistic
+    /// "first run downloads X MB" hint before the prefetch begins.
+    pub fn approx_download_mb(&self) -> u32 {
+        match self {
+            EmbedderModel::BgeM3 => 2280,
+            EmbedderModel::MultilingualMiniLm => 130,
+            EmbedderModel::PixieRuneV1 => 1830,
+            EmbedderModel::PixieRuneV1Q => 542,
+            EmbedderModel::PixieRuneV1Int4 => 434,
+            EmbedderModel::PixieRuneV1Int4Full => 337,
+            EmbedderModel::SnowflakeArcticLv2 => 600,
+            EmbedderModel::SnowflakeArcticLv2Fp16 => 1100,
+            EmbedderModel::SnowflakeArcticLv2Int8 => 600,
+            EmbedderModel::SnowflakeArcticLv2Q4 => 320,
+            EmbedderModel::SnowflakeArcticLv2Q4F16 => 360,
+            EmbedderModel::SnowflakeArcticLv2O4 => 360,
+            EmbedderModel::SnowflakeArcticLv2Fp32 => 1700,
+            EmbedderModel::JinaV2Base => 320,
+            EmbedderModel::JinaV2Small => 130,
+            EmbedderModel::JinaV3 => 1100,
+            EmbedderModel::JinaV5Small => 2500,
+            EmbedderModel::JinaV5Nano => 700,
+            EmbedderModel::Qwen3Embedding => 2400,
+            EmbedderModel::Qwen3EmbeddingInt8 => 600,
+            EmbedderModel::Qwen3EmbeddingUint8 => 600,
+            EmbedderModel::Octen06bFp32 => 2400,
+            EmbedderModel::Octen06bInt8Local => 1100,
+            EmbedderModel::Octen06bInt4Local => 900,
+            EmbedderModel::Octen06bInt8FullLocal => 570,
+            EmbedderModel::BgeLargeEnV15 => 1300,
+            EmbedderModel::MultilingualE5Large => 2240, // model.onnx + .onnx_data
+            EmbedderModel::MxbaiEmbedLargeV1 => 1300,
+            EmbedderModel::NomicEmbedTextV15 => 550,
+        }
+    }
+
     /// Native fastembed models — loaded via `TextEmbedding::try_new` (no hf-hub fetch needed).
     pub fn is_native(&self) -> bool {
         matches!(
             self,
-            EmbedderModel::BgeM3 | EmbedderModel::MultilingualMiniLm
+            EmbedderModel::BgeM3
+                | EmbedderModel::MultilingualMiniLm
+                | EmbedderModel::BgeLargeEnV15
+                | EmbedderModel::MultilingualE5Large
+                | EmbedderModel::MxbaiEmbedLargeV1
+                | EmbedderModel::NomicEmbedTextV15
         )
     }
 
@@ -257,6 +324,12 @@ impl EmbedderModel {
             Octen06bFp32 | Octen06bInt8Local | Octen06bInt4Local | Octen06bInt8FullLocal => {
                 "octen-0.6b"
             }
+            // CrispEmbed-supported models added 2026-05: per upstream
+            // accuracy report, all four have F32 cos > 0.9999 vs FP32.
+            BgeLargeEnV15 => "bge-large-en-v1.5",
+            MultilingualE5Large => "multilingual-e5-large",
+            MxbaiEmbedLargeV1 => "mxbai-embed-large-v1",
+            NomicEmbedTextV15 => "nomic-embed-text-v1.5",
             // Models below only have GGUF (CrispEmbed) — no ONNX variant in
             // the EmbedderModel enum yet, so they're handled by the wildcard.
             _ => return None,
@@ -480,8 +553,86 @@ impl EmbedderModel {
                 "model.onnx",
             )),
 
-            // Native fastembed models — no spec needed.
-            EmbedderModel::BgeM3 | EmbedderModel::MultilingualMiniLm => None,
+            // Native fastembed models — no spec needed (handled via
+            // `fastembed_native_files()` + `TextEmbedding::try_new`).
+            EmbedderModel::BgeM3
+            | EmbedderModel::MultilingualMiniLm
+            | EmbedderModel::BgeLargeEnV15
+            | EmbedderModel::MultilingualE5Large
+            | EmbedderModel::MxbaiEmbedLargeV1
+            | EmbedderModel::NomicEmbedTextV15 => None,
+        }
+    }
+
+    /// HF repo + file list for the fastembed-native models. Used by
+    /// `hf_prefetch::prefetch_repo_files` to pre-populate the cache before
+    /// `TextEmbedding::try_new` runs (works around a Windows hf-hub bug —
+    /// see `hf_prefetch.rs`). Returns `None` for models that don't go through
+    /// the native fastembed path.
+    pub(crate) fn fastembed_native_files(self) -> Option<(&'static str, Vec<&'static str>)> {
+        // The HF repo + file list for each model is taken verbatim from
+        // fastembed's `text_embedding/models.rs`. Keep this in sync if
+        // fastembed renames or splits a repo.
+        let tokenizer_set = vec![
+            "tokenizer.json",
+            "config.json",
+            "special_tokens_map.json",
+            "tokenizer_config.json",
+        ];
+        match self {
+            EmbedderModel::BgeM3 => Some((
+                "BAAI/bge-m3",
+                {
+                    let mut v = vec![
+                        "onnx/model.onnx",
+                        "onnx/model.onnx_data",
+                        "onnx/Constant_7_attr__value",
+                    ];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::MultilingualMiniLm => Some((
+                "Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q",
+                {
+                    let mut v = vec!["model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::BgeLargeEnV15 => Some((
+                "Xenova/bge-large-en-v1.5",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::MultilingualE5Large => Some((
+                "Qdrant/multilingual-e5-large-onnx",
+                {
+                    let mut v = vec!["model.onnx", "model.onnx_data"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::MxbaiEmbedLargeV1 => Some((
+                "mixedbread-ai/mxbai-embed-large-v1",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            EmbedderModel::NomicEmbedTextV15 => Some((
+                "nomic-ai/nomic-embed-text-v1.5",
+                {
+                    let mut v = vec!["onnx/model.onnx"];
+                    v.extend(&tokenizer_set);
+                    v
+                },
+            )),
+            _ => None,
         }
     }
 
@@ -489,6 +640,10 @@ impl EmbedderModel {
         match self {
             EmbedderModel::BgeM3 => EmbeddingModel::BGEM3,
             EmbedderModel::MultilingualMiniLm => EmbeddingModel::ParaphraseMLMiniLML12V2,
+            EmbedderModel::BgeLargeEnV15 => EmbeddingModel::BGELargeENV15,
+            EmbedderModel::MultilingualE5Large => EmbeddingModel::MultilingualE5Large,
+            EmbedderModel::MxbaiEmbedLargeV1 => EmbeddingModel::MxbaiEmbedLargeV1,
+            EmbedderModel::NomicEmbedTextV15 => EmbeddingModel::NomicEmbedTextV15,
             _ => EmbeddingModel::BGEM3,
         }
     }
@@ -657,6 +812,50 @@ struct ModelPaths {
     tokenizer_config: Option<PathBuf>,
 }
 
+/// Build a progress callback for `prefetch_repo_files` that emits log lines
+/// keyed both on percentage (every 10%) and absolute bytes (every 50 MB) so
+/// huge files (~2 GB `.onnx_data`) still report meaningful progress without
+/// flooding the log on small files. Also logs the per-file start with the
+/// total size so the user can see what's coming.
+fn make_prefetch_logger(repo: &str) -> impl FnMut(&str, u64, u64) + Send + 'static {
+    let repo = repo.to_owned();
+    let mut current_file = String::new();
+    let mut last_logged_pct: u64 = 0;
+    let mut last_logged_bytes: u64 = 0;
+    const LOG_EVERY_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+
+    move |file: &str, done: u64, total: u64| {
+        if file != current_file {
+            current_file = file.to_owned();
+            last_logged_pct = 0;
+            last_logged_bytes = 0;
+            crate::app_log!(
+                "info",
+                "Embedder: starting {}/{} (size ≈ {:.1} MB)",
+                repo,
+                file,
+                total as f64 / (1024.0 * 1024.0)
+            );
+        }
+        let pct = if total > 0 { done * 100 / total } else { 0 };
+        let pct_step = pct >= last_logged_pct + 10 || pct == 100 && last_logged_pct < 100;
+        let byte_step = done >= last_logged_bytes + LOG_EVERY_BYTES;
+        if pct_step || byte_step {
+            last_logged_pct = pct;
+            last_logged_bytes = done;
+            crate::app_log!(
+                "info",
+                "Embedder: {}/{} {}% ({:.1} / {:.1} MB)",
+                repo,
+                file,
+                pct,
+                done as f64 / (1024.0 * 1024.0),
+                total as f64 / (1024.0 * 1024.0)
+            );
+        }
+    }
+}
+
 /// Ensure all model files are on disk via hf-hub (re-uses cache on repeat calls).
 /// `config.json` is fetched best-effort — some repos (e.g. Octen) don't have one.
 /// When `spec.local_subdir` is set, files are read directly from `{cache_dir}/{subdir}/`
@@ -666,13 +865,25 @@ async fn ensure_model_on_disk(spec: &ModelSpec, cache_dir: &Path) -> Result<Mode
         let base = cache_dir.join(subdir);
         let onnx = base.join(&spec.file);
         let tokenizer = base.join(&spec.tokenizer_file);
+        crate::app_log!(
+            "info",
+            "Embedder: using local model {} (subdir {})",
+            onnx.display(),
+            subdir
+        );
         if !onnx.exists() {
+            crate::app_log!("error", "Embedder: local ONNX missing at {}", onnx.display());
             bail!(
                 "Local ONNX not found at {:?} — run the export script first",
                 onnx
             );
         }
         if !tokenizer.exists() {
+            crate::app_log!(
+                "error",
+                "Embedder: local tokenizer missing at {}",
+                tokenizer.display()
+            );
             bail!("Local tokenizer not found at {:?}", tokenizer);
         }
         return Ok(ModelPaths {
@@ -684,51 +895,94 @@ async fn ensure_model_on_disk(spec: &ModelSpec, cache_dir: &Path) -> Result<Mode
         });
     }
 
-    let api = ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .context("Failed to build hf-hub Api")?;
+    use super::hf_prefetch::prefetch_repo_files;
 
-    let model_api = api.model(spec.repo.clone());
-
-    println!("[embedder] Fetching ONNX: {}/{} …", spec.repo, spec.file);
-    let onnx = model_api
-        .get(&spec.file)
-        .await
-        .context("Failed to get ONNX file")?;
-
-    let tokenizer = model_api
-        .get(&spec.tokenizer_file)
-        .await
-        .context("Failed to get tokenizer.json")?;
-
-    // config.json may not exist in all repos — non-fatal.
-    let config = {
-        let cfg_src = spec.config_repo.as_deref().unwrap_or(spec.repo.as_str());
-        let api_for_cfg = if cfg_src != spec.repo {
-            api.model(cfg_src.to_owned())
-        } else {
-            api.model(spec.repo.clone())
-        };
-        api_for_cfg.get(&spec.config_file).await.ok()
-    };
-
+    // Required files (failure ⇒ error).
+    let mut required: Vec<&str> = vec![spec.file.as_str(), spec.tokenizer_file.as_str()];
     for f in &spec.additional_files {
-        println!("[embedder] Fetching extra file: {} …", f);
-        model_api
-            .get(f)
-            .await
-            .context(format!("Failed to get {}", f))?;
+        required.push(f.as_str());
     }
 
+    crate::app_log!(
+        "info",
+        "Embedder: prefetching {} files from {} into {}",
+        required.len(),
+        spec.repo,
+        cache_dir.display()
+    );
+    let progress = make_prefetch_logger(&spec.repo);
+    prefetch_repo_files(&spec.repo, &required, cache_dir, progress)
+        .await
+        .map_err(|e| {
+            crate::app_log!("error", "Embedder: prefetch failed for {}: {e:#}", spec.repo);
+            e
+        })?;
+
+    // The prefetcher writes into hf-hub's cache layout. We compute the same
+    // pointer paths here so we can return them directly. After prefetch, the
+    // commit hash is in `<cache>/models--<safe_repo>/refs/main`.
+    let safe_repo = format!("models--{}", spec.repo.replace('/', "--"));
+    let repo_dir = cache_dir.join(&safe_repo);
+    let commit = std::fs::read_to_string(repo_dir.join("refs").join("main"))
+        .unwrap_or_else(|_| "main".to_owned());
+    let snap_dir = repo_dir.join("snapshots").join(commit.trim());
+
+    let onnx = snap_dir.join(&spec.file);
+    let tokenizer = snap_dir.join(&spec.tokenizer_file);
+
+    // Optional files: ignore failures since not every repo ships them.
+    let config_repo_id = spec.config_repo.as_deref().unwrap_or(spec.repo.as_str());
+    let config = if config_repo_id == spec.repo.as_str() {
+        let p = snap_dir.join(&spec.config_file);
+        if p.exists() {
+            Some(p)
+        } else {
+            // Try to fetch the optional config from the same repo; ignore failure.
+            let _ = prefetch_repo_files(
+                &spec.repo,
+                &[spec.config_file.as_str()],
+                cache_dir,
+                |_, _, _| {},
+            )
+            .await;
+            if p.exists() { Some(p) } else { None }
+        }
+    } else {
+        // Pull config.json from a different repo (rare).
+        let other_safe = format!("models--{}", config_repo_id.replace('/', "--"));
+        let other_dir = cache_dir.join(&other_safe);
+        let _ = prefetch_repo_files(
+            config_repo_id,
+            &[spec.config_file.as_str()],
+            cache_dir,
+            |_, _, _| {},
+        )
+        .await;
+        let other_commit = std::fs::read_to_string(other_dir.join("refs").join("main"))
+            .unwrap_or_else(|_| "main".to_owned());
+        let p = other_dir
+            .join("snapshots")
+            .join(other_commit.trim())
+            .join(&spec.config_file);
+        if p.exists() { Some(p) } else { None }
+    };
+
     let special_tokens_map = if let Some(ref f) = spec.special_tokens_map_file {
-        model_api.get(f).await.ok()
+        let p = snap_dir.join(f);
+        if !p.exists() {
+            let _ = prefetch_repo_files(&spec.repo, &[f.as_str()], cache_dir, |_, _, _| {}).await;
+        }
+        if p.exists() { Some(p) } else { None }
     } else {
         None
     };
 
     let tokenizer_config = if let Some(ref f) = spec.tokenizer_config_file {
-        model_api.get(f).await.ok()
+        let p = snap_dir.join(f);
+        if !p.exists() {
+            let _ = prefetch_repo_files(&spec.repo, &[f.as_str()], cache_dir, |_, _, _| {}).await;
+        }
+        if p.exists() { Some(p) } else { None }
     } else {
         None
     };
@@ -1281,6 +1535,12 @@ pub(crate) struct CrispEmbedBackend {
 }
 
 #[cfg(feature = "crispembed")]
+#[allow(dead_code)] // The set_*/has_sparse/encode_sparse/rerank* methods are
+                    // the future API surface for sparse retrieval and
+                    // cross-encoder reranking — wired into the search
+                    // pipeline in upcoming work (see PLAN.md "Wire CrispEmbed
+                    // sparse encoding into search pipeline" and "CrispEmbed
+                    // reranking in search").
 impl CrispEmbedBackend {
     fn load(gguf_path: &Path) -> Result<Self> {
         let p = gguf_path
@@ -1386,6 +1646,14 @@ pub struct Embedder {
 impl Embedder {
     pub async fn new(config: EmbedderConfig) -> Result<Self> {
         let eps = config.device.execution_providers();
+        crate::app_log!(
+            "info",
+            "Embedder: init model={:?} device={:?} backend={:?} cache={}",
+            config.model,
+            config.device,
+            config.backend,
+            config.cache_dir.display()
+        );
 
         // Try the GGUF path first — only produces Some when the `crispembed`
         // cargo feature is on AND the caller asked for it AND the model has a
@@ -1414,11 +1682,44 @@ impl Embedder {
             g
         } else if config.model.is_native() {
             // ── fastembed built-in model ────────────────────────────────────
+            crate::app_log!(
+                "info",
+                "Embedder: loading native fastembed model {:?}",
+                config.model
+            );
+            // Workaround for a Windows-only hf-hub bug (see hf_prefetch.rs):
+            // fastembed's internal download fails with os error 3, so we
+            // pre-populate the cache via reqwest. fastembed's cache lookup
+            // then skips the broken download path.
+            if let Some((repo, files)) = config.model.fastembed_native_files() {
+                use super::hf_prefetch::prefetch_repo_files;
+                crate::app_log!(
+                    "info",
+                    "Embedder: prefetching {} files from {repo} (~{} MB total) into {}",
+                    files.len(),
+                    config.model.approx_download_mb(),
+                    config.cache_dir.display()
+                );
+                let progress = make_prefetch_logger(repo);
+                prefetch_repo_files(repo, &files, &config.cache_dir, progress)
+                    .await
+                    .map_err(|e| {
+                        crate::app_log!(
+                            "error",
+                            "Embedder: prefetch failed for {repo}: {e:#}"
+                        );
+                        e
+                    })?;
+            }
             let opts = TextInitOptions::new(config.model.to_fastembed_dense())
                 .with_cache_dir(config.cache_dir.clone())
                 .with_show_download_progress(true)
                 .with_execution_providers(eps.clone());
-            DenseBackend::Fastembed(TextEmbedding::try_new(opts)?)
+            let dense = TextEmbedding::try_new(opts).map_err(|e| {
+                crate::app_log!("error", "Embedder: fastembed init failed: {e}");
+                e
+            })?;
+            DenseBackend::Fastembed(dense)
         } else {
             let spec = config
                 .model
@@ -1427,6 +1728,12 @@ impl Embedder {
 
             if spec.needs_ort_path() {
                 // ── OrtPath: needed for external-data models OR repos without config.json ──
+                crate::app_log!(
+                    "info",
+                    "Embedder: using OrtPath backend for {} ({})",
+                    spec.repo,
+                    spec.file
+                );
                 let paths = ensure_model_on_disk(&spec, &config.cache_dir).await?;
                 let emb = OrtPathEmbedder::load(OrtPathLoadOptions {
                     onnx_path: &paths.onnx,
@@ -1444,11 +1751,25 @@ impl Embedder {
                 DenseBackend::OrtPath(emb)
             } else {
                 // ── fastembed UserDefined: self-contained ONNX with config.json ──
+                crate::app_log!(
+                    "info",
+                    "Embedder: using fastembed UserDefined backend for {} ({})",
+                    spec.repo,
+                    spec.file
+                );
                 let (onnx_bytes, tokenizer_files) =
                     fetch_model_bytes(&spec, &config.cache_dir).await?;
                 let model = UserDefinedEmbeddingModel::new(onnx_bytes, tokenizer_files);
                 let opts = InitOptionsUserDefined::new().with_execution_providers(eps.clone());
-                DenseBackend::Fastembed(TextEmbedding::try_new_from_user_defined(model, opts)?)
+                let dense = TextEmbedding::try_new_from_user_defined(model, opts).map_err(|e| {
+                    crate::app_log!(
+                        "error",
+                        "Embedder: fastembed UserDefined init failed for {}: {e}",
+                        spec.repo
+                    );
+                    e
+                })?;
+                DenseBackend::Fastembed(dense)
             }
         };
 
@@ -1470,6 +1791,16 @@ impl Embedder {
             None => None,
         };
 
+        crate::app_log!(
+            "info",
+            "Embedder: ready (dense backend {})",
+            match &dense {
+                DenseBackend::Fastembed(_) => "fastembed",
+                DenseBackend::OrtPath(_) => "OrtPath",
+                #[cfg(feature = "crispembed")]
+                DenseBackend::CrispEmbed(_) => "CrispEmbed/GGUF",
+            }
+        );
         Ok(Embedder {
             config,
             dense,

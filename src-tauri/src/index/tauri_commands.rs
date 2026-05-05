@@ -15,7 +15,7 @@
 ///   `index_build_ivf_pq`     → error (not supported for remote backend)
 use tauri::State;
 
-use super::ingest::{IngestStats, RawDocument};
+use super::ingest::{IngestStats, L1FileEntry, RawDocument};
 use super::{IndexConfig, IndexState, SearchResult};
 use crate::AppState;
 
@@ -322,6 +322,191 @@ pub async fn index_ingest_document(
     })
 }
 
+// ── Level-1 (filesystem-only) ingest ──────────────────────────────────────────
+
+/// Quick metadata-only ingest: writes one filesystem-info row per file.
+/// No text extraction, no embedding. Use this to bootstrap a catalog
+/// before deciding which files to deep-index.
+#[tauri::command]
+pub async fn index_ingest_l1(
+    state: State<'_, AppState>,
+    files: Vec<L1FileEntry>,
+) -> Result<IngestStats, String> {
+    let lock = state.index.lock().await;
+
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or("L1 ingest requires the local backend; remote not yet wired")?;
+    drop(lock);
+
+    pipeline
+        .ingest_l1(&files)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── Level-2 promotion ─────────────────────────────────────────────────────────
+
+/// Per-doc result of an L2 promotion.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct L2PromoteResult {
+    pub doc_id: String,
+    /// True if any field was updated.
+    pub updated: bool,
+    /// Title / author / year that ended up in the row (post-merge).
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub year: Option<i32>,
+    /// Filled with a human-readable cause when the file couldn't be read.
+    pub error: Option<String>,
+}
+
+/// Read embedded metadata (PDF Info dict, DOCX core.xml, EPUB OPF) for each
+/// `doc_id`, write the discovered Title / Author / Year fields back to the
+/// row, and bump `metadata_json.level` to 2.
+#[tauri::command]
+pub async fn index_promote_l2(
+    state: State<'_, AppState>,
+    doc_ids: Vec<String>,
+) -> Result<Vec<L2PromoteResult>, String> {
+    use super::l2_metadata;
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".to_owned());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("L2 promotion requires the local backend")?
+        .clone();
+    drop(lock);
+
+    let mut out = Vec::with_capacity(doc_ids.len());
+    for doc_id in doc_ids {
+        // Look up the row to find location_uri + existing metadata_json.
+        let rows = local
+            .list_documents(usize::MAX)
+            .await
+            .map_err(|e| e.to_string())?;
+        let row = match rows.iter().find(|r| r.doc_id == doc_id) {
+            Some(r) => r.clone(),
+            None => {
+                out.push(L2PromoteResult {
+                    doc_id,
+                    updated: false,
+                    title: None,
+                    author: None,
+                    year: None,
+                    error: Some("doc_id not found".into()),
+                });
+                continue;
+            }
+        };
+
+        // Resolve location_uri to a path. Strip our `crisp+local://…/` prefix.
+        let path_str = if row.location_uri.starts_with("crisp+local://") {
+            let after = &row.location_uri["crisp+local://".len()..];
+            let slash = after.find('/').map(|i| i + 1).unwrap_or(0);
+            after[slash.saturating_sub(1)..].to_string()
+        } else {
+            row.location_uri.clone()
+        };
+        let path = std::path::PathBuf::from(&path_str);
+        if !path.exists() {
+            out.push(L2PromoteResult {
+                doc_id,
+                updated: false,
+                title: row.title,
+                author: row.author,
+                year: row.year,
+                error: Some(format!("file missing: {}", path.display())),
+            });
+            continue;
+        }
+
+        let meta = l2_metadata::read(&path);
+
+        // Build merged metadata_json: existing keys + L2 fields + level=2.
+        let mut merged: serde_json::Map<String, serde_json::Value> = row
+            .metadata_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        merged.insert("level".to_owned(), serde_json::Value::from(2));
+        if let Some(pc) = meta.page_count {
+            merged.insert("page_count".to_owned(), serde_json::Value::from(pc));
+        }
+        for (k, v) in meta.extra.iter() {
+            merged.insert(k.clone(), v.clone());
+        }
+        let merged_str = serde_json::to_string(&merged).unwrap_or_else(|_| "{}".to_owned());
+
+        // Only patch fields the row didn't already have — never clobber.
+        let title_to_set = match (row.title.as_ref(), meta.title.as_ref()) {
+            (None, Some(t)) if !t.trim().is_empty() => Some(t.as_str()),
+            _ => None,
+        };
+        let author_to_set = match (row.author.as_ref(), meta.author.as_ref()) {
+            (None, Some(a)) if !a.trim().is_empty() => Some(a.as_str()),
+            _ => None,
+        };
+        let year_to_set = match (row.year, meta.year) {
+            (None, Some(y)) => Some(y),
+            _ => None,
+        };
+        let lang_to_set = match (row.language.as_ref(), meta.language.as_ref()) {
+            (None, Some(l)) if !l.trim().is_empty() => Some(l.as_str()),
+            _ => None,
+        };
+
+        let updated = title_to_set.is_some()
+            || author_to_set.is_some()
+            || year_to_set.is_some()
+            || lang_to_set.is_some()
+            || meta.page_count.is_some();
+
+        if let Err(e) = local
+            .update_l2_fields(
+                &doc_id,
+                title_to_set,
+                author_to_set,
+                year_to_set,
+                lang_to_set,
+                meta.page_count,
+                Some(&merged_str),
+            )
+            .await
+        {
+            out.push(L2PromoteResult {
+                doc_id,
+                updated: false,
+                title: row.title,
+                author: row.author,
+                year: row.year,
+                error: Some(format!("update failed: {e:#}")),
+            });
+            continue;
+        }
+
+        out.push(L2PromoteResult {
+            doc_id,
+            updated,
+            title: title_to_set.map(|s| s.to_owned()).or(row.title),
+            author: author_to_set.map(|s| s.to_owned()).or(row.author),
+            year: year_to_set.or(row.year),
+            error: None,
+        });
+    }
+
+    Ok(out)
+}
+
 // ── Document delete ───────────────────────────────────────────────────────────
 
 /// Delete a document completely: removes all chunks from LanceDB and the
@@ -420,19 +605,77 @@ pub async fn index_init(
     state: State<'_, AppState>,
     data_dir: String,
 ) -> Result<(), String> {
+    // Reserve the init slot atomically. If another init is already running,
+    // bail out instead of starting a second multi-GB download.
     let config = {
-        let lock = state.index.lock().await;
+        let mut lock = state.index.lock().await;
+        if lock.initializing {
+            crate::app_log!(
+                "info",
+                "Index init already running — ignoring duplicate request"
+            );
+            return Err("Index initialisation is already in progress".to_owned());
+        }
+        lock.initializing = true;
         lock.config.clone()
     };
 
+    crate::app_log!(
+        "info",
+        "Index init requested: data_dir={}, model={:?}, backend={:?}",
+        data_dir,
+        config.embedder_model,
+        config.backend_type
+    );
+
     let path = std::path::PathBuf::from(&data_dir);
-    let new_state = init_index(&path, config, Some(app))
-        .await
-        .map_err(|e| e.to_string())?;
+    let init_result = init_index(&path, config, Some(app)).await;
 
     let mut lock = state.index.lock().await;
-    *lock = new_state;
-    Ok(())
+    lock.initializing = false;
+    match init_result {
+        Ok(new_state) => {
+            *lock = new_state;
+            crate::app_log!("info", "Index init complete");
+            Ok(())
+        }
+        Err(e) => {
+            crate::app_log!("error", "Index init failed: {e:#}");
+            Err(format!("{e:#}"))
+        }
+    }
+}
+
+// ── Build-time capabilities ───────────────────────────────────────────────────
+
+/// What this binary supports at runtime — driven by Cargo features chosen at
+/// compile time. The frontend uses this to disable / annotate backends that
+/// aren't actually available in the running build (e.g. CrispEmbed/GGUF when
+/// `--features crispembed*` was not passed).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IndexCapabilities {
+    /// True iff the binary was built with one of `crispembed` /
+    /// `crispembed-vulkan` / `crispembed-metal` / `crispembed-cuda`.
+    pub crispembed: bool,
+}
+
+#[tauri::command]
+pub fn index_capabilities() -> IndexCapabilities {
+    IndexCapabilities {
+        crispembed: cfg!(feature = "crispembed"),
+    }
+}
+
+/// Approximate first-time download size (in megabytes) for a given embedder
+/// model identifier. Lets the UI display something accurate before init runs.
+#[tauri::command]
+pub fn index_model_download_mb(model: String) -> u32 {
+    use super::embedder::EmbedderModel;
+    let normalised = model.replace('_', "-");
+    match serde_json::from_str::<EmbedderModel>(&format!("\"{normalised}\"")) {
+        Ok(m) => m.approx_download_mb(),
+        Err(_) => 0,
+    }
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -490,7 +733,9 @@ pub async fn init_index(
 
     macro_rules! emit {
         ($step:expr, $label:expr, $pct:expr) => {
-            eprintln!("[index-init] {} ({}%)", $label, $pct);
+            // Mirror progress to the in-app log panel so users without a console
+            // can see what step the init is on.
+            crate::app_log!("info", "[index-init] {} ({}%)", $label, $pct);
             if let Some(h) = &app {
                 let _ = h.emit(
                     "index://init-progress",
@@ -542,6 +787,7 @@ pub async fn init_index(
                 engine: None,
                 pipeline: None,
                 config,
+                initializing: false,
             })
         }
 
@@ -580,6 +826,7 @@ pub async fn init_index(
                 engine: Some(engine),
                 pipeline: Some(pipeline),
                 config,
+                initializing: false,
             })
         }
     }

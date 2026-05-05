@@ -295,6 +295,7 @@ mod tests {
                 snippet: String::new(),
                 score: 1.0 / (i + 1) as f32,
                 chunk_index: 0,
+                metadata_json: None,
             })
             .collect()
     }
@@ -319,6 +320,7 @@ mod tests {
                 snippet: String::new(),
                 score: 0.9,
                 chunk_index: 0,
+                metadata_json: None,
             });
         }
         vec.push(SearchResult {
@@ -334,6 +336,7 @@ mod tests {
             snippet: String::new(),
             score: 0.95,
             chunk_index: 0,
+            metadata_json: None,
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);

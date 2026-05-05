@@ -245,6 +245,46 @@ impl LocalIndex {
         Ok(())
     }
 
+    /// Patch L2 metadata fields on an existing row. Pass `None` to leave a
+    /// column untouched. `metadata_json_merge` is JSON that gets shallow-merged
+    /// into the existing `metadata_json` (the caller is responsible for
+    /// computing the final blob — see `index_promote_l2`).
+    pub async fn update_l2_fields(
+        &self,
+        doc_id: &str,
+        title: Option<&str>,
+        author: Option<&str>,
+        year: Option<i32>,
+        language: Option<&str>,
+        page_count: Option<i32>,
+        metadata_json: Option<&str>,
+    ) -> Result<()> {
+        let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
+        let mut update = self.table.update().only_if(filter);
+
+        if let Some(t) = title {
+            update = update.column("title", format!("'{}'", t.replace('\'', "''")));
+        }
+        if let Some(a) = author {
+            update = update.column("author", format!("'{}'", a.replace('\'', "''")));
+        }
+        if let Some(y) = year {
+            update = update.column("year", y.to_string());
+        }
+        if let Some(lang) = language {
+            update = update.column("language", format!("'{}'", lang.replace('\'', "''")));
+        }
+        if let Some(pc) = page_count {
+            update = update.column("page_count", pc.to_string());
+        }
+        if let Some(meta) = metadata_json {
+            update = update.column("metadata_json", format!("'{}'", meta.replace('\'', "''")));
+        }
+
+        update.execute().await.context("LanceDB update_l2_fields")?;
+        Ok(())
+    }
+
     // ── Index building ─────────────────────────────────────────────────────
 
     /// Build an IVF-PQ ANN index on the `embedding` column.
@@ -272,21 +312,27 @@ impl LocalIndex {
         Ok(self.table.count_rows(None).await?)
     }
 
-    /// Number of unique documents (rows with chunk_index = 0).
+    /// Number of unique documents.
+    ///
+    /// L3 docs have a `chunk_index = 0` row; L1 docs have only `chunk_index = -1`.
+    /// `chunk_index <= 0` counts each unique doc exactly once.
     pub async fn count_docs(&self) -> Result<usize> {
         Ok(self
             .table
-            .count_rows(Some("chunk_index = 0".to_owned()))
+            .count_rows(Some("chunk_index <= 0".to_owned()))
             .await?)
     }
 
-    /// List all indexed documents: one row per document (chunk_index = 0).
-    /// Suitable for the "Index-Inhalt" viewer in the frontend.
+    /// List all indexed documents: one representative row per document.
+    /// Suitable for the catalog viewer in the frontend.
+    ///
+    /// Uses `chunk_index <= 0` so both L3 docs (their first chunk) and L1
+    /// metadata-only rows (chunk_index = -1) are returned.
     pub async fn list_documents(&self, limit: usize) -> Result<Vec<SearchResult>> {
         let batches: Vec<RecordBatch> = self
             .table
             .query()
-            .only_if("chunk_index = 0")
+            .only_if("chunk_index <= 0")
             .limit(limit)
             .execute()
             .await?
@@ -367,6 +413,7 @@ pub fn batches_to_search_results_with_scores(
         let language_col = str_col_opt(batch, "language");
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
+        let metadata_col = str_col_opt(batch, "metadata_json");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -397,6 +444,7 @@ pub fn batches_to_search_results_with_scores(
                 snippet,
                 score,
                 chunk_index: chunk_idx_col.value(i),
+                metadata_json: str_col_val_opt(&metadata_col, i),
             });
         }
     }
@@ -550,6 +598,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         let language_col = str_col_opt(batch, "language");
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
+        let metadata_col = str_col_opt(batch, "metadata_json");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -585,6 +634,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 snippet,
                 score,
                 chunk_index: chunk_idx_col.value(i),
+                metadata_json: str_col_val_opt(&metadata_col, i),
             });
         }
     }

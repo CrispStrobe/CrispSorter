@@ -1073,6 +1073,8 @@ pub fn run() {
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_ingest_document,
+            index::tauri_commands::index_ingest_l1,
+            index::tauri_commands::index_promote_l2,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_build_ivf_pq,
             index::tauri_commands::index_get_config,
@@ -1082,6 +1084,8 @@ pub fn run() {
             index::tauri_commands::index_stats,
             index::tauri_commands::index_list_documents,
             index::tauri_commands::index_delete_document,
+            index::tauri_commands::index_capabilities,
+            index::tauri_commands::index_model_download_mb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

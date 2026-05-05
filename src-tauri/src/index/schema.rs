@@ -128,6 +128,10 @@ pub struct SearchResult {
     /// Relevance score (higher = better). Units vary by search mode.
     pub score: f32,
     pub chunk_index: i32,
+    /// Forward-compatibility blob from the row's `metadata_json` column.
+    /// Frontend reads `level`, `fs_size`, `fs_mtime`, etc. from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_json: Option<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

@@ -1,7 +1,9 @@
 pub mod embedder;
 pub mod fts_index;
 pub mod fts_query;
+pub mod hf_prefetch;
 pub mod ingest;
+pub mod l2_metadata;
 pub mod local_index;
 /// CrispSorter search / RAG index module.
 ///
@@ -88,6 +90,10 @@ pub struct IndexState {
     /// Active ingest pipeline.
     pub pipeline: Option<std::sync::Arc<IngestPipeline>>,
     pub config: IndexConfig,
+    /// Set to `true` while an `index_init` is running so we can reject
+    /// concurrent re-init attempts (each download is multi-GB; we don't want
+    /// two of them racing on the same cache).
+    pub initializing: bool,
 }
 
 impl IndexState {
@@ -100,6 +106,7 @@ impl IndexState {
             engine: None,
             pipeline: None,
             config: IndexConfig::default(),
+            initializing: false,
         }
     }
 }

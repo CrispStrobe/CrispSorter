@@ -206,6 +206,87 @@ impl IngestPipeline {
 
         self.ingest_document(raw).await
     }
+
+    /// Level-1 ingest: write a single metadata-only row for each input file.
+    ///
+    /// No text extraction, no embedding. The row uses `chunk_index = -1` and
+    /// stashes filesystem metadata + the analysis level in `metadata_json`.
+    /// Subsequent L2/L3 runs upgrade the same row by `doc_id` (via re-ingest).
+    pub async fn ingest_l1(&self, files: &[L1FileEntry]) -> Result<IngestStats> {
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let mut chunks: Vec<DocumentChunk> = Vec::with_capacity(files.len());
+        for f in files {
+            let meta = serde_json::json!({
+                "level":      1,
+                "fs_size":    f.size,
+                "fs_mtime":   f.mtime_ms,
+                "fs_ctime":   f.ctime_ms,
+                "parent_dir": f.parent_dir,
+            });
+            let doc_id = f.doc_id.clone();
+            chunks.push(DocumentChunk {
+                id: chunk_row_id(&doc_id, -1),
+                doc_id,
+                location_uri: f.location_uri.clone(),
+                owner_id: f.owner_id.clone(),
+                filename: Some(f.filename.clone()),
+                title: None,
+                author: None,
+                year: None,
+                ext: Some(f.ext.clone()),
+                language: None,
+                page_count: None,
+                headings_text: None,
+                full_text: None,
+                full_text_md: None,
+                embedding: None,
+                embedding_sparse: None,
+                embedding_model: None,
+                chunk_index: -1,
+                chunk_total: 0,
+                chunk_start_char: None,
+                chunk_end_char: None,
+                indexed_at: now_ms,
+                source_hash: f.source_hash.clone(),
+                tags: vec![],
+                metadata_json: Some(meta.to_string()),
+            });
+        }
+
+        let write_start = Instant::now();
+        for batch in chunks.chunks(self.config.batch_size) {
+            self.vector
+                .ingest_batch(batch)
+                .await
+                .context("LanceDB write (L1)")?;
+        }
+        let write_time_ms = write_start.elapsed().as_millis() as u64;
+
+        Ok(IngestStats {
+            chunk_count: chunks.len(),
+            embed_time_ms: 0,
+            write_time_ms,
+        })
+    }
+}
+
+/// One file's filesystem-only metadata for the L1 ingest path.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct L1FileEntry {
+    pub doc_id: String,
+    pub source_hash: String,
+    pub location_uri: String,
+    pub owner_id: String,
+    pub filename: String,
+    pub ext: String,
+    pub parent_dir: String,
+    pub size: i64,
+    pub mtime_ms: i64,
+    pub ctime_ms: i64,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
