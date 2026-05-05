@@ -71,6 +71,10 @@
     let contentsExt = $state<Set<string>>(new Set());
     let contentsLevel = $state<'all' | 1 | 3>('all');
     let contentsCompleteness = $state<'any' | 'has_author' | 'has_title' | 'has_year' | 'has_all'>('any');
+    /** Subtree filter: only show docs whose path starts with this prefix.
+     *  Empty string = no filter. Matched against the resolved local path
+     *  (after stripping any `crisp+local://` scheme prefix). */
+    let contentsFolder = $state<string>('');
     let indexStats  = $state<{ total_rows: number; doc_count: number; chunk_count: number } | null>(null);
     let selectedDocIds = $state<Set<string>>(new Set());
     let deletingIds = $state<Set<string>>(new Set());
@@ -409,14 +413,35 @@
         return d.snippet ? 3 : 1;
     }
 
+    /** Resolve location_uri to a normalised local-path string for prefix
+     *  matching (forward slashes, lowercased on Windows). Used by the
+     *  folder/subtree filter. */
+    function docPath(d: any): string {
+        let p = String(d.location_uri ?? '');
+        if (p.startsWith('crisp+local://')) {
+            const after = p.slice('crisp+local://'.length);
+            const slash = after.indexOf('/');
+            p = slash >= 0 ? after.slice(slash) : after;
+        }
+        return p.replace(/\\/g, '/').toLowerCase();
+    }
+
     function applyCatalogFilters(docs: any[]): any[] {
         const q = contentsQuery.trim().toLowerCase();
+        const folderPrefix = contentsFolder.trim().replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');
         return docs.filter(d => {
             if (q && !(
                 (d.title ?? '').toLowerCase().includes(q) ||
                 (d.filename ?? '').toLowerCase().includes(q) ||
                 (d.author ?? '').toLowerCase().includes(q)
             )) return false;
+
+            if (folderPrefix) {
+                const p = docPath(d);
+                // Subtree match: doc path must start with the folder prefix
+                // followed by either nothing, "/", or the end of the string.
+                if (!(p === folderPrefix || p.startsWith(folderPrefix + '/'))) return false;
+            }
 
             if (contentsExt.size > 0) {
                 const ext = (d.ext ?? '').toLowerCase();
@@ -480,6 +505,14 @@
         contentsExt = next;
     }
 
+    /** Open the OS folder picker and seed `contentsFolder` with the chosen
+     *  directory. The Übersicht filter then narrows to docs whose
+     *  `location_uri` is inside that subtree. */
+    async function pickContentsFolder() {
+        const sel = await openDialog({ directory: true, multiple: false });
+        if (typeof sel === 'string') contentsFolder = sel;
+    }
+
     // Re-run the client-side filter whenever a filter input changes.
     $effect(() => {
         contents = applyCatalogFilters(_allContents);
@@ -505,6 +538,90 @@
         const ids = [...selectedDocIds];
         for (const docId of ids) {
             await deleteFromIndex(docId);
+        }
+    }
+
+    let promotingL3 = $state(false);
+    let l3Progress  = $state<{ done: number; total: number; current: string } | null>(null);
+
+    /** Promote the selected catalog rows to full L3 (text + embedding).
+     *  For each selected doc we resolve location_uri to a file path, read
+     *  the bytes, extract text via the same pipeline used for fresh
+     *  ingest, then call `index_ingest_document`. Updates the live row
+     *  in place — same `doc_id` is reused so the L1 metadata-only row is
+     *  replaced by the new L3 chunks (deletion + insert is implicit
+     *  because the source_hash matches). */
+    async function promoteSelectedToL3() {
+        const ids = [...selectedDocIds];
+        if (ids.length === 0) return;
+        promotingL3 = true;
+        l3Progress = { done: 0, total: ids.length, current: '' };
+        let ok = 0, fail = 0, skipped = 0;
+        try {
+            const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
+            if (!cfg.enabled) {
+                alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
+                return;
+            }
+
+            // Find the rows we're promoting in the currently-loaded contents.
+            for (const id of ids) {
+                const row = contents.find((c: any) => c.doc_id === id);
+                if (!row) { fail++; continue; }
+                l3Progress = { done: l3Progress?.done ?? 0, total: ids.length, current: row.filename ?? id.slice(0, 12) };
+
+                // Resolve location_uri to a path. Strip crisp+local://… prefix.
+                let path = String(row.location_uri ?? '');
+                if (path.startsWith('crisp+local://')) {
+                    const after = path.slice('crisp+local://'.length);
+                    const slashIdx = after.indexOf('/');
+                    path = slashIdx >= 0 ? after.slice(slashIdx) : after;
+                }
+                if (!path) { fail++; continue; }
+
+                try {
+                    const bytes = await readFile(path);
+                    const ab = bytes.buffer as ArrayBuffer;
+                    const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
+                    const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
+                    const fileObj = new File([ab], filename, { type: mimeFor(ext) });
+                    const result = await extractText(fileObj);
+                    if (!result.text || result.text.trim().length < 20) {
+                        skipped++;
+                        l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
+                        continue;
+                    }
+                    const language = detectLanguage(result.text);
+                    const sourceHash = await hashText(result.text + path);
+                    await invoke('index_ingest_document', {
+                        input: {
+                            fullText:    result.text,
+                            fullTextMd:  result.markdownText ?? '',
+                            headings:    result.headings ?? [],
+                            title:       row.title  ?? null,
+                            author:      row.author ?? null,
+                            year:        row.year   ?? null,
+                            filename,
+                            ext,
+                            language,
+                            locationUri: row.location_uri,
+                            ownerId:     row.owner_id ?? 'local',
+                            sourceHash,
+                            tags:        [],
+                        },
+                    });
+                    ok++;
+                } catch (e) {
+                    console.error('[L3] promote failed for', id, e);
+                    fail++;
+                }
+                l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
+            }
+            await loadContents();
+            console.log(`[L3] ${ok} promoted, ${skipped} skipped (no text), ${fail} errors`);
+        } finally {
+            promotingL3 = false;
+            l3Progress = null;
         }
     }
 
@@ -848,7 +965,18 @@
 
         <!-- Filters -->
         <div class="filter-bar">
-            <span class="filter-label">Tiefe:</span>
+            <span class="filter-label">Ordner:</span>
+            <input class="folder-filter" type="text"
+                bind:value={contentsFolder}
+                placeholder="Pfad-Präfix (z. B. C:/Books/Theology)" />
+            <button class="chip" onclick={pickContentsFolder} title="Ordner auswählen">
+                <FolderOpen size={11} />
+            </button>
+            {#if contentsFolder}
+                <button class="chip ghost" onclick={() => contentsFolder = ''}>×</button>
+            {/if}
+
+            <span class="filter-label" style="margin-left:8px;">Tiefe:</span>
             <button class="chip" class:active={contentsLevel === 'all'} onclick={() => contentsLevel = 'all'}>Alle</button>
             <button class="chip" class:active={contentsLevel === 1} onclick={() => contentsLevel = 1}>L1</button>
             <button class="chip" class:active={contentsLevel === 3} onclick={() => contentsLevel = 3}>L3</button>
@@ -896,15 +1024,29 @@
             {#if selectedDocIds.size > 0}
                 <div class="selection-bar">
                     <span class="sel-count">{selectedDocIds.size} ausgewählt</span>
-                    <button class="tb-btn" onclick={promoteSelectedToL2} disabled={promotingL2}>
+                    <button class="tb-btn" onclick={promoteSelectedToL2} disabled={promotingL2 || promotingL3}>
                         {#if promotingL2}<Loader2 size={13} class="spin" />{:else}<Database size={13} />{/if}
-                        Auf L2 anheben (Metadaten lesen)
+                        Auf L2 anheben (Metadaten)
+                    </button>
+                    <button class="tb-btn" onclick={promoteSelectedToL3} disabled={promotingL2 || promotingL3}>
+                        {#if promotingL3}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
+                        Auf L3 anheben (Volltext + Embedding)
                     </button>
                     <button class="tb-btn danger" onclick={deleteSelected} disabled={deletingIds.size > 0}>
                         <Trash2 size={13} /> {deletingIds.size > 0 ? 'Löschen …' : 'Aus Index löschen'}
                     </button>
                     <button class="tb-btn" onclick={() => selectedDocIds = new Set()}>Abwählen</button>
                 </div>
+                {#if l3Progress}
+                    <div class="current-progress">
+                        <Loader2 size={13} class="spin" />
+                        <span class="current-filename">{l3Progress.current}</span>
+                        <span class="current-step">{l3Progress.done}/{l3Progress.total}</span>
+                        <div class="mini-bar">
+                            <div class="mini-fill" style="width:{Math.round((l3Progress.done) / Math.max(1, l3Progress.total) * 100)}%"></div>
+                        </div>
+                    </div>
+                {/if}
             {:else}
                 <div class="result-count">
                     <label class="select-all-wrap">
@@ -1070,6 +1212,12 @@
         background: #18181b; border: 1px solid #27272a; color: #d4d4d8;
         padding: 2px 6px; border-radius: 4px; font-size: 0.75rem;
     }
+    .folder-filter {
+        background: #18181b; border: 1px solid #27272a; color: #d4d4d8;
+        padding: 3px 8px; border-radius: 4px; font-size: 0.72rem;
+        min-width: 220px; max-width: 320px;
+    }
+    .folder-filter:focus { border-color: #3b82f6; outline: none; }
 
     .ext-pdf  { background: #7f1d1d33; color: #fca5a5; }
     .ext-docx { background: #1e3a5f33; color: #93c5fd; }

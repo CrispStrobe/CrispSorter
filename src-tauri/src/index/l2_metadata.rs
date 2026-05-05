@@ -47,6 +47,7 @@ pub fn read(path: &Path) -> L2Metadata {
         "pdf" => read_pdf(path),
         "docx" => read_docx(path),
         "epub" => read_epub(path),
+        "jpg" | "jpeg" | "tif" | "tiff" | "png" | "webp" | "heic" | "heif" => read_image_exif(path),
         _ => Ok(L2Metadata::default()),
     };
 
@@ -211,6 +212,72 @@ fn read_docx(path: &Path) -> anyhow::Result<L2Metadata> {
     if let Some(s) = extract_xml_tag(&xml, "dc:subject") {
         out.extra.insert("subject".to_owned(), serde_json::Value::String(s));
     }
+    Ok(out)
+}
+
+// ── Image EXIF (JPG / TIFF / WebP / HEIC / PNG) ────────────────────────────
+
+fn read_image_exif(path: &Path) -> anyhow::Result<L2Metadata> {
+    use exif::{In, Reader, Tag};
+    let f = File::open(path)?;
+    let mut bufreader = std::io::BufReader::new(&f);
+    let exifreader = Reader::new();
+    let exif = match exifreader.read_from_container(&mut bufreader) {
+        Ok(e) => e,
+        // Many WebP/PNG files have no EXIF block at all. Treat as empty.
+        Err(_) => return Ok(L2Metadata::default()),
+    };
+
+    let mut out = L2Metadata::default();
+
+    let primary_field = |tag: Tag| -> Option<String> {
+        exif.get_field(tag, In::PRIMARY).map(|f| f.display_value().with_unit(&exif).to_string())
+    };
+
+    // ImageDescription often holds a free-form caption / title.
+    if let Some(desc) = primary_field(Tag::ImageDescription) {
+        let trimmed = desc.trim_matches('"').trim().to_owned();
+        if !trimmed.is_empty() && trimmed != "\"\"" {
+            out.title = Some(trimmed);
+        }
+    }
+    // Artist / XPAuthor → author.
+    if let Some(artist) = primary_field(Tag::Artist) {
+        let trimmed = artist.trim_matches('"').trim().to_owned();
+        if !trimmed.is_empty() && trimmed != "\"\"" {
+            out.author = Some(trimmed);
+        }
+    }
+    // DateTimeOriginal → year (preferred over DateTime which is the file mtime).
+    let date_str = primary_field(Tag::DateTimeOriginal)
+        .or_else(|| primary_field(Tag::DateTime))
+        .or_else(|| primary_field(Tag::DateTimeDigitized));
+    if let Some(d) = date_str {
+        // EXIF date format: "YYYY:MM:DD HH:MM:SS"
+        let cleaned = d.trim_matches('"');
+        if cleaned.len() >= 4 {
+            if let Ok(y) = cleaned[..4].parse::<i32>() {
+                if (1500..=2200).contains(&y) {
+                    out.year = Some(y);
+                }
+            }
+        }
+    }
+    // Extras worth keeping for future use.
+    for (key, tag) in [
+        ("camera_make", Tag::Make),
+        ("camera_model", Tag::Model),
+        ("software", Tag::Software),
+        ("copyright", Tag::Copyright),
+    ] {
+        if let Some(v) = primary_field(tag) {
+            let trimmed = v.trim_matches('"').trim().to_owned();
+            if !trimmed.is_empty() {
+                out.extra.insert(key.to_owned(), serde_json::Value::String(trimmed));
+            }
+        }
+    }
+
     Ok(out)
 }
 

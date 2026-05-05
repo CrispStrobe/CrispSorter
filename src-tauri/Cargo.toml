@@ -40,6 +40,9 @@ pdf-extract = "0.10.0"
 # archives without a full-DOM XML parser. zip 7 matches the version
 # already pulled in transitively via candle-core (mistral.rs).
 zip = "7"
+# EXIF reader for L2 metadata extraction from JPG / TIFF / WebP / PNG
+# images. Pure Rust, no system deps.
+kamadak-exif = "0.6"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.
