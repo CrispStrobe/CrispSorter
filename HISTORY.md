@@ -9,6 +9,211 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — May 2026 — index-test → main reconciliation + P9 step 1+2
+
+### Branch reunification (commits `400df29`, `33479da`)
+
+The `index-test` branch had drifted significantly from `main` — 18
+commits ahead carrying the L1/L2/L3 multi-level ingest, hf-hub
+Windows-symlink workaround, GGUF model registry expansion,
+NC-license gating, embedder benchmark, CAF round-trip restore,
+`enable-crispembed.{ps1,sh}` + DLL staging, and protoc bootstrap
+in `paths.ps1`. Meanwhile `main` had shipped 65 commits worth of
+independent work — full Catalog/Cathy subsystem with `.caf v6`
++ volume-header round-trip, parallel scanner (jwalk-backed),
+dedup engine, deletion scripts; LanceDB materialisation with
+unified search; live preview pane; pure-Rust OCR via `ocrs`;
+background ingest scheduler with mtime-skip + foreground-search
+throttling; saved searches; field-prefix FTS syntax;
+cross-mount volume awareness (P7.6); single-binary CLI mode;
+matryoshka dim selection; cross-encoder reranking; macOS/Linux
+native-lib bundling for `libcrispasr` / `libcrispembed`.
+
+17 conflicts resolved with the better-of-both rule. Notable choices:
+
+* **`index/embedder.rs`** — main's expanded model set
+  (EmbeddingGemma300M, GTE base/large) wins; HEAD's
+  `approx_download_mb` / `gguf_download_mb` /
+  `gguf_quant_suffix_str` / `gguf_file_name` helpers + the
+  hf-hub Windows workaround `fastembed_native_files()` preserved.
+  Octen variants now route through fastembed-rs's auto-download
+  (3 of 4 variants), keeping the local-only Int8 fallback.
+* **`index/mod.rs`** — `IndexConfig` combines HEAD's `use_vector`
+  master switch with main's `reranker_model` / `rerank_top_n`
+  / `model_cache_dir` / `matryoshka_dim`.
+* **`index/search.rs`** — combined HEAD's `Option<Arc<Mutex<Embedder>>>`
+  (so L1/L2 paths work with `use_vector=false`) with main's
+  reranker support and `EmbedRole::Query` asymmetric retrieval.
+* **`index/tauri_commands.rs`** — pre-compute `models_dir` +
+  `effective_dim` up-front so they're available even when
+  `load_embedder=false`. Then conditionally construct the
+  `Option<Arc<Mutex<Embedder>>>`.
+* **`index/local_index.rs`** — kept main's `update_location_by_uri`
+  AND HEAD's `update_l2_fields`. `SearchResult` carries both
+  HEAD's `metadata_json` and main's `catalog_source` + `volume_id`.
+* **`src/lib/log.ts`** — main's `frontendLogs` store + `flog`,
+  HEAD's `logInfo` / `logWarn` / `logError` as wrappers that
+  push to the local store (no Rust round-trip → no LogPanel
+  duplication).
+* **Settings.svelte** — kept HEAD's organised-by-size embedder
+  dropdown with engine-aware filtering and NC-license gating;
+  updated all model values + i18n keys to main's naming. Added
+  EmbeddingGemma + GTE base/large to the mid/large optgroups.
+* **Catalog subsystem** — main wins entirely. Pulled HEAD's
+  pruned `caf.rs` / `index.rs` restore in favour of main's
+  full v6-writer + dedup + lance modules.
+
+After the merge, three trivial compile errors fell out
+(`SearchResult` missing `metadata_json` in two call sites,
+`embed_dense` arity change to take `EmbedRole`); fixed in
+commit `33479da`. `cargo check --no-default-features`: green.
+
+Branch hygiene: `index-test` was fast-forwarded into `main` (no
+force push, since main was a strict ancestor of index-test
+post-merge) and then deleted both locally and on origin. `main`
+is once again the canonical branch.
+
+### PowerShell scripts unstuck on PS 5 / German locale (commit `1f1d2a9`)
+
+`paths.ps1` started failing to parse on a German Windows shell
+with `Unerwartetes Token "Active"` and `Die Zeichenfolge hat kein
+Abschlusszeichen`. Cause: PowerShell 5 reads UTF-8-without-BOM
+files using the system code page (CP1252 on a German install),
+so the multi-byte em-dash bytes inside string literals get
+re-interpreted as a quote-like character and the parser sees
+an unterminated string. Cascading "missing closing brace" errors
+follow.
+
+Belt-and-braces fix:
+1. Replaced every em-dash with `--` (ASCII) in `paths.ps1`,
+   `enable-crispembed.ps1`, `recompile.ps1`, `recompile-exe.ps1`.
+2. Re-wrote each script with a UTF-8 BOM (EF BB BF) so PS 5
+   detects UTF-8 explicitly.
+
+Bonus: `enable-crispembed.ps1`'s "Staged 0 runtime DLL(s)"
+message was misleading on the no-op happy path (re-running the
+script when target dirs already had the DLLs at the right size).
+Branch: print "Staged N DLL(s)" in green only when something was
+actually copied; otherwise print a calmer "DLLs already up to
+date (N files, no copy needed)".
+
+### Settings + DB persistence on app restart (commit `e41d704`)
+
+Symptom: every app restart, the Search-Index model selection
+silently reverted to BgeM3 (the Rust default). Cause: the Rust
+`IndexState` always boots with `IndexConfig::default()`. The
+JS-side `tauri-plugin-store` carried the user's persisted
+choices, but `Settings.svelte`'s onMount loaded them only
+into JS state — never pushed them to Rust until the user
+opened Settings and clicked Apply.
+
+Fix: added a boot block in `+page.svelte` `onMount` that loads
+every `index_*` setting from the store, translates UI keys
+(`bge_m3`, `auto`, etc.) to Rust kebab strings (`bge-m3`,
+`auto`) via inline maps mirroring `Settings.svelte`'s
+`*ToRust` helpers, invokes `index_set_config`, and -- if
+`cfg.enabled` is true — auto-invokes `index_init` with
+`withEmbedder=false`. The L1 LanceDB rows from a previous
+session now appear in Übersicht on app start instead of
+showing an empty pane.
+
+### UI cleanup: Kataloge umbrella + Duplikate sub-tab (same commit)
+
+Pre-merge nav had two buttons firing on `activeTab === 'catalog'`
+(both HEAD and main wanted that slot) plus a standalone
+"Duplicates" button. Dropped both duplicates; single Kataloge
+nav entry routes into `IndexIngest`, which now hosts the
+.caf-volumes Catalog and Duplikate as sub-tabs alongside
+Übersicht / Suche / Hinzufügen / Quellen.
+
+### i18n coverage extension (commits `e41d704`, `2e92ec8`)
+
+* Tab labels (Übersicht / Suche / Hinzufügen / Quellen) moved
+  out of inline German literals into `i18n.t.indexIngest.tab_*`.
+* New keys for the `tab_caf_catalog` + `tab_duplicates` sub-tabs.
+* Full Duplicates pane: title / subtitle / source / destinations
+  / match-mode strategy options / find / running / errors / 4
+  picker dialog titles / result table column headers / matches +
+  selected counts / deletion-script builder (format / target /
+  generate / save / space-freed hint) / empty state. EN+DE.
+* `Settings.svelte`'s "CrispEmbed was built with the cuda
+  backend" hint moved to `i18n.t.crispembed_engine_built` /
+  `_cpu` with `{backend}` substitution and minimal
+  `**bold**` / `` `code` `` markdown rendering.
+
+Open follow-up: the `.caf` Catalog sub-tab (`Catalog.svelte`)
+still has hard-coded English strings. The `caf_catalog.*` i18n
+keys exist (EN+DE) but the component hasn't been wired through
+them yet.
+
+### P9 step 1 — `index_query_documents` Tauri command (commit `4ecfd7a`)
+
+Paginated, filterable, sortable browse of the documents table,
+designed to drop in cleanly today and graduate to keyset + DB-side
+ORDER BY without breaking the API contract.
+
+* `DocumentFilter` / `SortSpec` / `PageSpec` / `PageCursor` /
+  `DocumentPage` types in `index/schema.rs` (with `#[serde(default)]`
+  on every field of `DocumentFilter` so the frontend can omit
+  fields it isn't constraining).
+* `LocalIndex::query_documents` + helpers (`filter_to_sql`,
+  `sort_rows`) in `index/local_index.rs`. `total_estimate` via
+  `count_rows` against the same predicate. 50k-row hard cap on
+  the in-process sort window because LanceDB 0.26's public Rust
+  query API doesn't expose `ORDER BY`.
+* Tauri command + `lib.rs` registration. Returns an empty page
+  silently when the index isn't yet initialised — the Übersicht
+  pane polls during boot before `index_init` finishes, and
+  erroring there would surface as red log lines instead of an
+  empty state.
+* 7 pure-function unit tests pinning filter SQL generation, sort
+  ordering, and PageCursor offset round-trip.
+
+### P9 step 2 — columnar Übersicht + multi-select (commit `9cbe0c1`)
+
+* CSS-grid table — single `grid-template-columns` shared
+  between thead and every row, sticky header. Columns: select,
+  ext, name, author, year, size, modified, folder, level,
+  actions.
+* Server-side filter + sort + pagination via
+  `index_query_documents`; the chip bar (folder prefix, ext
+  multi-select, L1/L3 toggle, name substring, sort header)
+  serialises into a `DocumentFilter`. Completeness chip stays
+  client-side until P9 step 3 promotes those flags to scalar
+  columns.
+* "Load more" button paginates (fetches next 200 rows, appends
+  in-place, preserves selection, total estimate shown alongside).
+* Multi-row selection with mouse: bare click = single-row
+  select, Shift+click = range from last anchor, Ctrl/Cmd+click
+  = toggle. `user-select:none` on rows so dragging selects rows
+  instead of highlighting filename text. Mirrors the
+  `BatchReview.svelte` handler so the two panes feel identical.
+* Bottom-left stats now shows a collapsible "Stapel: 271 · DB:
+  321k" summary; click to expand the per-extension breakdown.
+  `dbDocCount` polls `index_stats` every 4 s.
+* Settings sidebar alignment fix — wrapped icon + label in a
+  flex `<span class="prov-label">` so the App-Einstellungen
+  buttons hug their icons; status checkmark sits to the right
+  via the parent's `space-between`.
+
+Bugs hit on first walkthrough, all fixed:
+
+* "Übersicht is empty when entering Kataloge from another tab"
+  — `loadContents` was wired only to the tab-button onclick;
+  fixed via a `$effect` that fires on first activation +
+  every chip change.
+* "Always says Lade…" + ERROR loop — combined cause: an earlier
+  auto-load `$effect` re-ran on every `_allContents = []` reset
+  (which the catch path did on every error), and
+  `DocumentFilter` rejected payloads that omitted any field
+  (`missing field 'ext'`). Fixed: dropped the redundant effect,
+  added `#[serde(default)]` on `DocumentFilter`, made
+  `index_query_documents` return an empty page when local
+  isn't initialised yet, deduped error log to one line per
+  distinct message.
+
+---
+
 ## RAG / Search Extension — Original Plan (March 2026)
 
 > Originally `rag_plan.md`. Phases P1–P13 are all shipped; this section
