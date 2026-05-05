@@ -69,7 +69,11 @@ export class BatchManager {
             status: 'queued',
             extension,
             modifiedAt: Date.now(),
-            isAccepted: true,
+            // New items start UNaccepted. They auto-flip to accepted only
+            // once an Author is recognised (see `markReviewed`); files
+            // whose extraction never produces an Author stay unaccepted
+            // and require an explicit user click to be included in a sort.
+            isAccepted: false,
             isIgnored: false
         });
         this.saveCurrentSession();
@@ -276,6 +280,14 @@ export class BatchManager {
                     }
 
                     item.status = 'review';
+                    // Auto-accept (green check) only when the LLM came back
+                    // with a real Author. Items without Author stay
+                    // unaccepted (yellow) until the user explicitly ticks
+                    // them — see Stapel UX in PLAN.md.
+                    const hasAuthor = !!item.suggestedAuthor &&
+                        item.suggestedAuthor.trim() !== '' &&
+                        item.suggestedAuthor !== 'Unknown Author';
+                    item.isAccepted = hasAuthor;
                     await this.calculateTargetPath(item);
                 } catch (e: any) {
                     if (this.stopRequested || e?.message === 'EXTRACTION_ABORTED') {

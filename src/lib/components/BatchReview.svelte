@@ -1217,24 +1217,35 @@
                     {/if}
                 </div>
 
-                <div class="report-choices">
-                    {#if lastExecutionStats.success > 0}
-                        <button class="choice-btn success" onclick={() => handleReportChoice('remove_done')}>
-                            {i18n.t.batch.report_choice_remove_done}
+                {#if lastExecutionStats}
+                    {@const problemCount = (lastExecutionStats.notFound ?? 0)
+                                           + (lastExecutionStats.notWritable ?? 0)
+                                           + (lastExecutionStats.locked ?? 0)
+                                           + (lastExecutionStats.copiedFallback ?? 0)}
+                    {@const allSucceeded = problemCount === 0 && lastExecutionStats.success > 0}
+                    <div class="report-choices">
+                        {#if lastExecutionStats.success > 0}
+                            <button class="choice-btn success" onclick={() => handleReportChoice('remove_done')}>
+                                {i18n.t.batch.report_choice_remove_done}
+                            </button>
+                        {/if}
+                        {#if problemCount > 0}
+                            <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
+                                {i18n.t.batch.report_choice_keep_problematic}
+                            </button>
+                        {/if}
+                        <button class="choice-btn danger" onclick={() => handleReportChoice('empty')}>
+                            {i18n.t.batch.report_choice_empty}
                         </button>
-                    {/if}
-                    {#if (lastExecutionStats.notFound ?? 0) + (lastExecutionStats.notWritable ?? 0) + (lastExecutionStats.locked ?? 0) > 0}
-                        <button class="choice-btn" onclick={() => handleReportChoice('keep_problematic')}>
-                            {i18n.t.batch.report_choice_keep_problematic}
-                        </button>
-                    {/if}
-                    <button class="choice-btn danger" onclick={() => handleReportChoice('empty')}>
-                        {i18n.t.batch.report_choice_empty}
-                    </button>
-                    <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
-                        {i18n.t.batch.report_choice_keep_all}
-                    </button>
-                </div>
+                        <!-- Hide "keep entire batch" when every file
+                             succeeded: there's nothing left to act on. -->
+                        {#if !allSucceeded}
+                            <button class="choice-btn secondary" onclick={() => handleReportChoice('keep_all')}>
+                                {i18n.t.batch.report_choice_keep_all}
+                            </button>
+                        {/if}
+                    </div>
+                {/if}
             </div>
         </div>
     </div>
