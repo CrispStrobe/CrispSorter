@@ -165,14 +165,21 @@
             });
 
             // Restore pending Hinzufügen entries from a previous session so
-            // navigating to Settings + back doesn't drop them.
+            // navigating to Settings + back doesn't drop them. Log the
+            // restore + persist outcomes so the user can see in the Logs
+            // panel whether the round-trip is actually working.
             try {
                 const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
                 const savedEntries = await store.get<IngestEntry[]>('entries');
                 if (savedEntries && Array.isArray(savedEntries)) {
                     entries = savedEntries.filter(e => e.status !== 'done');
+                    logInfo(`Hinzufügen: restored ${entries.length} entries from store (filtered ${savedEntries.length - entries.length} done)`);
+                } else {
+                    logInfo('Hinzufügen: no entries stored from a previous session');
                 }
-            } catch { /* store not yet created */ }
+            } catch (e: any) {
+                logError(`Hinzufügen: load failed -- ${e?.message ?? e}`);
+            }
 
             cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); unlistenDownload?.(); };
         })();
@@ -291,10 +298,14 @@
     async function persistEntries() {
         try {
             const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
-            await store.set('entries', $state.snapshot(entries));
+            const snapshot = $state.snapshot(entries);
+            await store.set('entries', snapshot);
             await store.save();
-        } catch (e) {
-            logError(`Hinzufügen: persist failed — ${e}`);
+            // Useful when chasing "files disappeared on tab switch" --
+            // confirms each mutator's write actually reaches disk.
+            logInfo(`Hinzufügen: persisted ${snapshot.length} entries to store`);
+        } catch (e: any) {
+            logError(`Hinzufügen: persist failed -- ${e?.message ?? e}`);
         }
     }
 
