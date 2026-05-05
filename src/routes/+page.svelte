@@ -7,12 +7,11 @@
     import { batchManager } from '$lib/batch/store.svelte';
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
-    import { Settings as SettingsIcon, Database, ListChecks, MessageSquare, ChevronLeft, ChevronRight, Search, UploadCloud, Terminal } from 'lucide-svelte';
-    import IndexSearch from '$lib/components/IndexSearch.svelte';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal } from 'lucide-svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
 
-    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'index-search', 'index-ingest'
+    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog'
     let navCollapsed = $state(false);
     let showLogs = $state(false);
 
@@ -68,14 +67,9 @@
 
             <div class="nav-separator"></div>
 
-            <button class="nav-item" class:active={activeTab === 'index-search'} onclick={() => activeTab = 'index-search'} title="Index Suche">
-                <Search size={20} />
-                {#if !navCollapsed}<span>Index Suche</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'index-ingest'} onclick={() => activeTab = 'index-ingest'} title="Index Ingest">
-                <UploadCloud size={20} />
-                {#if !navCollapsed}<span>Index Ingest</span>{/if}
+            <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title={i18n.t.nav.catalog}>
+                <Library size={20} />
+                {#if !navCollapsed}<span>{i18n.t.nav.catalog}</span>{/if}
             </button>
         </div>
 
@@ -94,9 +88,9 @@
                     {/if}
                 </div>
             {/if}
-            <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title="Logs">
+            <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}>
                 <Terminal size={20} />
-                {#if !navCollapsed}<span>Logs</span>{/if}
+                {#if !navCollapsed}<span>{i18n.t.nav.logs}</span>{/if}
             </button>
 
             <button class="nav-item" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'} title={i18n.t.nav.settings}>
@@ -118,9 +112,7 @@
                 <BatchReview />
             {:else if activeTab === 'history'}
                 <History onResumeBatch={switchToBatch} />
-            {:else if activeTab === 'index-search'}
-                <IndexSearch />
-            {:else if activeTab === 'index-ingest'}
+            {:else if activeTab === 'catalog'}
                 <IndexIngest />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>

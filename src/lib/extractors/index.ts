@@ -1,6 +1,8 @@
 import { extractPdf } from './pdfExtractor';
 import { extractDocx } from './docxExtractor';
 import { extractEpub } from './epubExtractor';
+import { extractHtml } from './htmlExtractor';
+import { extractImage } from './imageExtractor';
 
 export interface ExtractionResult {
     text: string;
@@ -10,6 +12,14 @@ export interface ExtractionResult {
     headings?: string[];
     metadata?: Record<string, any>;
 }
+
+/** File extensions whose extraction is supported end-to-end. */
+export const SUPPORTED_EXTENSIONS = [
+    'pdf', 'docx', 'epub', 'txt', 'md',
+    'html', 'htm',
+    'webp', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff',
+    'doc',
+] as const;
 
 export interface ExtractionOptions {
     forceOCR?: boolean;
@@ -79,6 +89,27 @@ export async function extractText(
             headings = headingsFromMarkdown(text);
             break;
         }
+        case 'html':
+        case 'htm':
+            console.log("[ExtractorIndex] Handing off to extractHtml");
+            ({ text, markdownText, headings } = await extractHtml(arrayBuffer));
+            break;
+        case 'webp':
+        case 'png':
+        case 'jpg':
+        case 'jpeg':
+        case 'bmp':
+        case 'tif':
+        case 'tiff':
+            console.log(`[ExtractorIndex] Handing off to extractImage (${extension})`);
+            ({ text, markdownText, headings } = await extractImage(arrayBuffer, name));
+            break;
+        case 'doc':
+            // Legacy MS Word (CFB / OLE2). Browser libraries can't reliably read this.
+            // Surface a clear message so the user can convert to .docx.
+            throw new Error(
+                'Legacy .doc files are not supported in-app. Please convert the file to .docx, .pdf, or .txt and try again.'
+            );
         default:
             console.warn(`[ExtractorIndex] Unsupported type: ${extension}`);
             throw new Error(`Unsupported file type: ${extension}`);

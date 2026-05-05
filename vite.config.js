@@ -1,5 +1,8 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import { readFileSync } from "node:fs";
+
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -8,6 +11,7 @@ export default defineConfig(async () => ({
   define: {
     'process.env': {},
     'process.version': '"v16.0.0"',
+    __APP_VERSION__: JSON.stringify(pkg.version),
   },
 
   // @huggingface/transformers uses WASM + Web Workers — must not be pre-bundled by Vite

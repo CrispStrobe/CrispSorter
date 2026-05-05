@@ -2,6 +2,7 @@
     import { batchManager, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
+    import { SUPPORTED_EXTENSIONS } from '../extractors';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { open, save, ask } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
@@ -66,6 +67,19 @@
         selectedItem.suggestedYear   = detailYear;
         await batchManager.recalculateTargetPath(selectedItem.id);
         await batchManager.saveCurrentSession();
+    }
+
+    /** Enter on any of the three metadata inputs commits, Escape reverts. */
+    function onMetaKey(e: KeyboardEvent) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (detailDirty) saveDetailChanges();
+        } else if (e.key === 'Escape' && selectedItem && detailDirty) {
+            e.preventDefault();
+            detailTitle  = selectedItem.suggestedTitle  ?? '';
+            detailAuthor = selectedItem.suggestedAuthor ?? '';
+            detailYear   = selectedItem.suggestedYear   ?? '';
+        }
     }
 
     // Duplicates panel
@@ -200,11 +214,31 @@
             await new Promise(r => setTimeout(r, 0));
             scaleColumnsToContainer();
 
-            const handleKeyDown = (e: KeyboardEvent) => {
+            const handleKeyDown = async (e: KeyboardEvent) => {
+                // Skip when the user is typing into an input/textarea/contenteditable.
+                const target = e.target as HTMLElement | null;
+                const isEditable = !!target && (
+                    target.tagName === 'INPUT' ||
+                    target.tagName === 'TEXTAREA' ||
+                    target.tagName === 'SELECT' ||
+                    target.isContentEditable
+                );
+
                 if (e.key === 'Escape') {
                     if (selectedIds.length > 0) selectedIds = [];
                     showReportModal = false;
                     showInfoModal = false;
+                    return;
+                }
+
+                // Delete / Backspace removes the selected entries (Stapel view).
+                if (!isEditable && (e.key === 'Delete' || e.key === 'Backspace')) {
+                    if (selectedIds.length === 0) return;
+                    e.preventDefault();
+                    if (confirm(i18n.t.history.delete_confirm)) {
+                        await batchManager.removeItems(selectedIds);
+                        selectedIds = [];
+                    }
                 }
             };
             window.addEventListener('keydown', handleKeyDown);
@@ -214,7 +248,7 @@
                 paths.forEach(path => {
                     invoke<{ path: string; size: number }[]>('scan_folder', {
                         folderPath: path,
-                        extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                        extensions: [...SUPPORTED_EXTENSIONS]
                     }).then(entries => {
                         entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
                     }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
@@ -253,7 +287,7 @@
     async function handleAddFiles() {
         const selected = await open({
             multiple: true,
-            filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md', 'epub'] }]
+            filters: [{ name: 'Documents', extensions: [...SUPPORTED_EXTENSIONS] }]
         });
         if (Array.isArray(selected)) {
             for (const path of selected) {
@@ -1098,18 +1132,18 @@
                                 </div>
                             {/if}
                         </div>
-                        <div class="edit-fields">
+                        <div class="edit-fields" role="group" aria-label="Edit metadata">
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.title}</span>
-                                <input type="text" bind:value={detailTitle} aria-label="Edit Title" />
+                                <input type="text" bind:value={detailTitle} onkeydown={onMetaKey} aria-label="Edit Title" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.author}</span>
-                                <input type="text" bind:value={detailAuthor} aria-label="Edit Author" />
+                                <input type="text" bind:value={detailAuthor} onkeydown={onMetaKey} aria-label="Edit Author" />
                             </div>
                             <div class="field-row">
                                 <span class="field-label">{i18n.t.batch.year}</span>
-                                <input type="text" bind:value={detailYear} aria-label="Edit Year" />
+                                <input type="text" bind:value={detailYear} onkeydown={onMetaKey} aria-label="Edit Year" />
                             </div>
                         </div>
                     </div>

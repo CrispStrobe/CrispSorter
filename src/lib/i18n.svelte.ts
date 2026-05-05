@@ -3,10 +3,13 @@ export type Language = 'en' | 'de';
 export const translations = {
     en: {
         nav: {
-            batch: 'Stapel',
+            batch: 'Batch',
             history: 'History',
             settings: 'Settings',
-            chat: 'Chat'
+            chat: 'Chat',
+            catalog: 'Catalog',
+            ingest: 'Ingest',
+            logs: 'Logs'
         },
         chat: {
             title: 'Chat',
@@ -238,6 +241,7 @@ export const translations = {
                 backend: 'Backend',
                 backend_local: 'Local (on-device)',
                 backend_remote: 'Remote (self-hosted VPS)',
+                backend_engine: 'Inference Engine',
                 remote_url: 'Remote URL',
                 remote_url_placeholder: 'https://yourserver:8473',
                 remote_api_key: 'Remote API Key',
@@ -257,6 +261,10 @@ export const translations = {
                 model_snowflake_l_fp32: 'Snowflake Arctic-L v2.0 FP32 (8k ctx, ~1.7 GB)',
                 model_jina_nano: 'Jina-v5 Nano (8k ctx, Rank 33, tiny)',
                 model_mini_lm: 'Multilingual MiniLM (Fast CPU)',
+                model_bge_large: 'BGE Large EN v1.5 (1024d, 512 ctx, English, ~1.3 GB)',
+                model_e5_large: 'Multilingual E5 Large (1024d, 512 ctx, 100+ langs, ~2.2 GB)',
+                model_mxbai_large: 'mxbai-embed-large-v1 (1024d, 512 ctx, English, ~1.3 GB)',
+                model_nomic: 'Nomic Embed Text v1.5 (768d, 8k ctx, English, ~550 MB)',
                 non_commercial_confirm: 'This model (Jina-v5) is licensed under CC-BY-NC-4.0 for non-commercial use only. Do you confirm that you will use it non-commercially?',
                 device: 'Compute Device',
                 device_auto: 'Auto (recommended)',
@@ -290,7 +298,10 @@ export const translations = {
             batch: 'Stapel',
             history: 'Verlauf',
             settings: 'Einstellungen',
-            chat: 'Chat'
+            chat: 'Chat',
+            catalog: 'Kataloge',
+            ingest: 'Einlesen',
+            logs: 'Logs'
         },
         chat: {
             title: 'Chat',
@@ -522,6 +533,7 @@ export const translations = {
                 backend: 'Backend',
                 backend_local: 'Lokal (auf Gerät)',
                 backend_remote: 'Remote (selbst gehosteter VPS)',
+                backend_engine: 'Inferenz-Engine',
                 remote_url: 'Remote-URL',
                 remote_url_placeholder: 'https://ihreserver:8473',
                 remote_api_key: 'Remote-API-Schlüssel',
@@ -541,6 +553,10 @@ export const translations = {
                 model_snowflake_l_fp32: 'Snowflake Arctic-L v2.0 FP32 (8k Ctx, ~1,7 GB)',
                 model_jina_nano: 'Jina-v5 Nano (8k Ctx, Rank 33, winzig)',
                 model_mini_lm: 'Multilingual MiniLM (Schnell, Wenig RAM)',
+                model_bge_large: 'BGE Large EN v1.5 (1024d, 512 Ctx, Englisch, ~1,3 GB)',
+                model_e5_large: 'Multilingual E5 Large (1024d, 512 Ctx, 100+ Sprachen, ~2,2 GB)',
+                model_mxbai_large: 'mxbai-embed-large-v1 (1024d, 512 Ctx, Englisch, ~1,3 GB)',
+                model_nomic: 'Nomic Embed Text v1.5 (768d, 8k Ctx, Englisch, ~550 MB)',
                 non_commercial_confirm: 'Dieses Modell (Jina-v5) unterliegt der CC-BY-NC-4.0-Lizenz für ausschließlich nicht-kommerzielle Nutzung. Bestätigen Sie, dass Sie es nicht-kommerziell nutzen werden?',
                 device: 'Rechengerät',
                 device_auto: 'Automatisch (empfohlen)',

@@ -186,6 +186,24 @@
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
 
+    // ── Catalogs (named bundles of the above settings) ────────────────────
+    interface Catalog {
+        id:       string;            // uuid-ish, stable
+        name:     string;            // user-visible
+        dataDir:  string;            // override of indexDataDir for this catalog
+        mode:     'text' | 'vector' | 'hybrid';
+        backend:  'local' | 'remote';
+        remoteUrl: string;
+        embedderModel: string;
+        embedderBackend: 'onnx' | 'gguf';
+        device:   'auto' | 'cpu' | 'metal' | 'cuda';
+        createdAt: number;
+    }
+    let catalogs       = $state<Catalog[]>([]);
+    let activeCatalogId = $state<string | null>(null);
+    let renamingCatalogId = $state<string | null>(null);
+    let renameDraft    = $state('');
+
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
     // sync with `EmbedderModel::supports_gguf()` on the Rust side.
     // Models with GGUF counterpart in CrispEmbed (v0.2.2+, 10 architectures).
@@ -199,15 +217,37 @@
         'snowflake_l_q4', 'snowflake_l_q4f16', 'snowflake_l_o4', 'snowflake_l_fp32',
         'octen', 'jina_nano', 'jina_small',
         'qwen3_embed', 'qwen3_embed_int8', 'qwen3_embed_uint8',
+        // Added 2026-05 — verified F32 cos > 0.9999 vs FP32 per CrispEmbed compat table.
+        'bge_large_en_v15', 'multilingual_e5_large',
+        'mxbai_embed_large_v1', 'nomic_embed_text_v15',
     ]);
     function supportsGguf(uiModel: string): boolean {
         return GGUF_CAPABLE_MODELS.has(uiModel);
     }
+    /** Reactive boolean — true when the currently-selected embedder has a
+     *  verified GGUF equivalent (the *model* supports it). */
+    let ggufModelSupported = $derived(supportsGguf(indexEmbedderModel));
+
+    /** True iff the running binary was compiled with a CrispEmbed feature.
+     *  Filled from the `index_capabilities` Tauri command at mount time.
+     *  Default: `false` — the dev `npm run tauri dev` build uses
+     *  `--no-default-features` so CrispEmbed is NOT linked in. To enable it,
+     *  rebuild with e.g. `cargo run --features crispembed-vulkan`. */
+    let crispEmbedCompiledIn = $state(false);
+
+    /** Final gate: GGUF can be selected iff the model has a spec AND the
+     *  binary actually contains the CrispEmbed backend code. */
+    let ggufAvailable = $derived(ggufModelSupported && crispEmbedCompiledIn);
+
+    /** Approximate download size (MB) for the selected embedder, returned by
+     *  `index_model_download_mb`. 0 means unknown. Drives the "first run
+     *  downloads ~X MB" hint. */
+    let modelDownloadMb = $state(0);
 
     async function handleEmbedderChange(e: Event) {
         const val = (e.target as HTMLSelectElement).value;
         if (val === 'jina_nano') {
-            const confirmed = await ask(i18n.t.settings.index.non_commercial_confirm, { 
+            const confirmed = await ask(i18n.t.settings.index.non_commercial_confirm, {
                 title: 'Jina-v5 License Confirmation',
                 kind: 'warning'
             });
@@ -218,6 +258,113 @@
             }
         }
         indexEmbedderModel = val;
+        await refreshModelDownloadSize();
+    }
+
+    // ── Catalog helpers ───────────────────────────────────────────────────
+
+    /** Snapshot the live Search-Index settings into a Catalog payload. */
+    function liveSettingsAsCatalog(name: string, id?: string): Catalog {
+        return {
+            id: id ?? (crypto.randomUUID?.() ?? `cat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+            name,
+            dataDir: indexDataDir,
+            mode: indexSearchMode,
+            backend: indexBackendType,
+            remoteUrl: indexRemoteUrl,
+            embedderModel: indexEmbedderModel,
+            embedderBackend: indexEmbedderBackend,
+            device: indexDevice,
+            createdAt: Date.now(),
+        };
+    }
+
+    /** Apply a saved catalog to the live Search-Index inputs. Does NOT
+     *  immediately re-init the Rust backend — that happens when the user
+     *  presses Apply (or via `applyCatalog`). */
+    function loadCatalogIntoInputs(c: Catalog) {
+        indexDataDir         = c.dataDir;
+        indexSearchMode      = c.mode;
+        indexBackendType     = c.backend;
+        indexRemoteUrl       = c.remoteUrl ?? '';
+        indexEmbedderModel   = c.embedderModel;
+        indexEmbedderBackend = c.embedderBackend;
+        indexDevice          = c.device;
+    }
+
+    async function persistCatalogs() {
+        await saveSetting('catalogs', $state.snapshot(catalogs));
+        await saveSetting('activeCatalogId', activeCatalogId);
+    }
+
+    async function createCatalogFromCurrent() {
+        // Default name derived from data-dir basename or a sequence number.
+        const base = (indexDataDir || '').replace(/[\\/]$/, '').split(/[\\/]/).pop() || 'catalog';
+        let name = base;
+        let n = 2;
+        while (catalogs.some(c => c.name === name)) {
+            name = `${base}-${n++}`;
+        }
+        const cat = liveSettingsAsCatalog(name);
+        catalogs = [...catalogs, cat];
+        activeCatalogId = cat.id;
+        await persistCatalogs();
+    }
+
+    async function deleteCatalog(id: string) {
+        if (!confirm(`Catalog "${catalogs.find(c => c.id === id)?.name ?? id}" entfernen? (Index-Daten bleiben auf der Festplatte.)`)) return;
+        catalogs = catalogs.filter(c => c.id !== id);
+        if (activeCatalogId === id) activeCatalogId = catalogs[0]?.id ?? null;
+        await persistCatalogs();
+    }
+
+    function startRename(id: string) {
+        renamingCatalogId = id;
+        renameDraft = catalogs.find(c => c.id === id)?.name ?? '';
+    }
+
+    async function commitRename() {
+        if (!renamingCatalogId || !renameDraft.trim()) {
+            renamingCatalogId = null;
+            return;
+        }
+        catalogs = catalogs.map(c =>
+            c.id === renamingCatalogId ? { ...c, name: renameDraft.trim() } : c
+        );
+        renamingCatalogId = null;
+        await persistCatalogs();
+    }
+
+    async function selectCatalog(id: string) {
+        const c = catalogs.find(c => c.id === id);
+        if (!c) return;
+        activeCatalogId = id;
+        loadCatalogIntoInputs(c);
+        await persistCatalogs();
+    }
+
+    /** Persist current inputs back to the active catalog (silent). */
+    async function syncActiveCatalogFromInputs() {
+        if (!activeCatalogId) return;
+        catalogs = catalogs.map(c =>
+            c.id === activeCatalogId
+                ? { ...liveSettingsAsCatalog(c.name, c.id), createdAt: c.createdAt }
+                : c
+        );
+        await saveSetting('catalogs', $state.snapshot(catalogs));
+    }
+
+    /** Ask the backend for the approximate first-run download size of the
+     *  currently-selected embedder, so the UI can show an accurate hint
+     *  instead of a generic "~500 MB" placeholder. */
+    async function refreshModelDownloadSize() {
+        try {
+            modelDownloadMb = await invoke<number>('index_model_download_mb', {
+                model: indexEmbedderToRust(indexEmbedderModel)
+            });
+        } catch {
+            modelDownloadMb = 0;
+        }
     }
     let indexDataDir        = $state('');
     let indexStatus         = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
@@ -243,12 +390,17 @@
     // doesn't break a freshly-built app.
     let automatedLicenses = $state<any[]>([]);
     let licensesGeneratedAt = $state<string | null>(null);
+    let licensesError = $state<string | null>(null);
+    let licensesLoading = $state(false);
     let licenseSearch = $state('');
     let filteredLicenses = $derived(automatedLicenses.filter(l =>
         l.name.toLowerCase().includes(licenseSearch.toLowerCase()) ||
         l.author?.toLowerCase().includes(licenseSearch.toLowerCase()) ||
         (l.license ?? '').toLowerCase().includes(licenseSearch.toLowerCase())
     ));
+
+    // App version (Vite-injected from package.json — see vite.config.js).
+    const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '?';
 
     onMount(() => {
         let cleanup = () => {};
@@ -307,18 +459,31 @@
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
         indexDataDir       = await getSetting('indexDataDir', '');
+        catalogs           = (await getSetting('catalogs', [])) as Catalog[];
+        activeCatalogId    = await getSetting('activeCatalogId', null);
         // Sync saved config into the backend
         try {
             await invoke('index_get_config').then(() => {}).catch(() => {});
         } catch { /* index not yet wired */ }
+        // Discover what backends were compiled in (CrispEmbed is feature-gated).
+        try {
+            const caps = await invoke<{ crispembed: boolean }>('index_capabilities');
+            crispEmbedCompiledIn = !!caps.crispembed;
+        } catch { /* command not available */ }
+        await refreshModelDownloadSize();
         // Check if index is already initialized (e.g. after navigating back to Settings)
         try {
             const ready = await invoke<boolean>('index_is_ready');
             if (ready) indexStatus = 'ok';
         } catch { /* command not available */ }
 
+        licensesLoading = true;
+        licensesError = null;
         try {
             const resp = await fetch('/licenses.json');
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+            }
             const raw = await resp.json();
             if (Array.isArray(raw)) {
                 // Legacy shape: bare array of license entries.
@@ -328,11 +493,17 @@
                 automatedLicenses = raw.licenses;
                 licensesGeneratedAt = raw.generatedAt ?? null;
             } else {
-                console.warn('Unexpected licenses.json shape', raw);
+                throw new Error('Unexpected licenses.json shape');
             }
-        } catch(e) { console.error('Failed to load automated licenses', e); }
+        } catch(e: any) {
+            console.error('Failed to load automated licenses', e);
+            licensesError = String(e?.message ?? e);
+        } finally {
+            licensesLoading = false;
+        }
 
         checkMlxModelsCache();
+        refreshTesseractModels().catch(() => {});
         try { mlxCacheDir = await invoke('get_mlx_cache_dir'); } catch(e) {}
 
         const unlistenMlx = await listen('mlx-log', (event: any) => {
@@ -404,12 +575,86 @@
 
     // Tesseract Management
     let tesseractModels = $state<{ id: string; name: string; isDownloaded: boolean }[]>([
-        { id: 'eng', name: 'English', isDownloaded: true },
-        { id: 'deu', name: 'German', isDownloaded: true },
+        { id: 'eng', name: 'English', isDownloaded: false },
+        { id: 'deu', name: 'German', isDownloaded: false },
         { id: 'fra', name: 'French', isDownloaded: false },
         { id: 'spa', name: 'Spanish', isDownloaded: false },
         { id: 'ita', name: 'Italian', isDownloaded: false },
     ]);
+    let tesseractRefreshing = $state(false);
+
+    /** Probe IndexedDB / OPFS / Cache Storage for cached Tesseract `.traineddata` files. */
+    async function detectInstalledTesseractLangs(): Promise<Set<string>> {
+        const found = new Set<string>();
+        // Tesseract.js v7 caches language packs as `<lang>.traineddata.gz` in either
+        // IndexedDB (`keyval-store` → `keyval`), OPFS, or the Cache API depending on
+        // platform. We probe each cheaply.
+        try {
+            // 1. IndexedDB key-value store used by tesseract.js (idb-keyval).
+            const dbs = (await indexedDB.databases?.()) ?? [];
+            for (const info of dbs) {
+                if (!info.name) continue;
+                if (!/keyval-store|tesseract/i.test(info.name)) continue;
+                await new Promise<void>(resolve => {
+                    const req = indexedDB.open(info.name!);
+                    req.onsuccess = () => {
+                        const db = req.result;
+                        const stores = Array.from(db.objectStoreNames);
+                        if (stores.length === 0) { db.close(); resolve(); return; }
+                        let pending = stores.length;
+                        for (const storeName of stores) {
+                            try {
+                                const tx = db.transaction(storeName, 'readonly');
+                                const store = tx.objectStore(storeName);
+                                const keyReq = store.getAllKeys();
+                                keyReq.onsuccess = () => {
+                                    for (const k of keyReq.result as IDBValidKey[]) {
+                                        const s = String(k);
+                                        const m = s.match(/([a-z]{3})\.traineddata/);
+                                        if (m) found.add(m[1]);
+                                    }
+                                    if (--pending === 0) { db.close(); resolve(); }
+                                };
+                                keyReq.onerror = () => { if (--pending === 0) { db.close(); resolve(); } };
+                            } catch {
+                                if (--pending === 0) { db.close(); resolve(); }
+                            }
+                        }
+                    };
+                    req.onerror = () => resolve();
+                });
+            }
+            // 2. Cache Storage (some tesseract.js versions use it for the wasm core).
+            if ('caches' in self) {
+                const names = await caches.keys();
+                for (const n of names) {
+                    if (!/tesseract/i.test(n)) continue;
+                    const cache = await caches.open(n);
+                    const reqs = await cache.keys();
+                    for (const r of reqs) {
+                        const m = r.url.match(/([a-z]{3})\.traineddata/);
+                        if (m) found.add(m[1]);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Tesseract] cache probe failed:', e);
+        }
+        return found;
+    }
+
+    async function refreshTesseractModels() {
+        tesseractRefreshing = true;
+        try {
+            const installed = await detectInstalledTesseractLangs();
+            tesseractModels = tesseractModels.map(m => ({
+                ...m,
+                isDownloaded: installed.has(m.id),
+            }));
+        } finally {
+            tesseractRefreshing = false;
+        }
+    }
 
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
@@ -474,6 +719,10 @@
             snowflake_l_fp32:             'snowflake-arctic-lv2-fp32',
             jina_nano:                    'jina-v5-nano',
             multilingual_mini_lm:         'multilingual-mini-lm',
+            bge_large_en_v15:             'bge-large-en-v15',
+            multilingual_e5_large:        'multilingual-e5-large',
+            mxbai_embed_large_v1:         'mxbai-embed-large-v1',
+            nomic_embed_text_v15:         'nomic-embed-text-v15',
         }[m] ?? 'bge-m3';
     }
     function indexDeviceToRust(d: string): string {
@@ -482,6 +731,7 @@
 
     async function applyIndexConfig() {
         await saveSettingsSilent();
+        await syncActiveCatalogFromInputs();
         indexStatus       = 'loading';
         indexStatusMsg    = '';
         indexInitProgress = 'Konfiguration wird gespeichert …';
@@ -1114,8 +1364,16 @@
             </div>
 
             <div class="section-card">
-                <div class="header" style="margin-bottom: 12px;">
+                <div class="header" style="margin-bottom: 12px; display:flex; align-items:center; justify-content:space-between;">
                     <h2 style="font-size: 1rem; color: #a1a1aa;"><Scan size={16} /> {i18n.t.settings.ocr_tesseract_title}</h2>
+                    <button class="action-btn small" onclick={refreshTesseractModels} disabled={tesseractRefreshing} title={i18n.t.settings.refresh_models}>
+                        {#if tesseractRefreshing}
+                            <Loader2 size={14} class="loader-spin" />
+                        {:else}
+                            <RefreshCw size={14} />
+                        {/if}
+                        {i18n.t.settings.refresh_models}
+                    </button>
                 </div>
                 <div class="checkbox-group">
                     <input id="ocr-enabled-check" type="checkbox" bind:checked={ocrEnabled} />
@@ -1300,6 +1558,53 @@
                 <p class="hint">{i18n.t.settings.index.enabled_hint}</p>
             </div>
 
+            <!-- Catalogs (named bundles of the settings below) -->
+            <div class="section-card">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                    <label style="margin:0;"><HardDrive size={16} /> Kataloge</label>
+                    <button class="action-btn small" onclick={createCatalogFromCurrent}>
+                        <Plus size={13} /> Aktuelle Einstellungen als Katalog speichern
+                    </button>
+                </div>
+                <p class="hint" style="margin-bottom:12px;">
+                    Ein Katalog bündelt Daten-Verzeichnis, Embedder-Modell, Modus und Backend unter einem Namen — so können verschiedene Bibliotheken (z. B. „Theologie", „Musik-PDFs") parallel verwaltet und schnell umgeschaltet werden.
+                </p>
+                {#if catalogs.length === 0}
+                    <p class="hint" style="font-style:italic; color:#52525b;">Noch kein Katalog gespeichert. Konfiguriere die Felder unten und drücke „Aktuelle Einstellungen als Katalog speichern".</p>
+                {:else}
+                    <div class="catalog-list">
+                        {#each catalogs as cat (cat.id)}
+                            <div class="catalog-row" class:active={cat.id === activeCatalogId}>
+                                <input type="radio" name="active-catalog" value={cat.id}
+                                    checked={cat.id === activeCatalogId}
+                                    onchange={() => selectCatalog(cat.id)} />
+                                {#if renamingCatalogId === cat.id}
+                                    <input class="catalog-rename-input" bind:value={renameDraft}
+                                        onkeydown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') renamingCatalogId = null; }}
+                                        onblur={commitRename} />
+                                {:else}
+                                    <button class="catalog-name" onclick={() => selectCatalog(cat.id)}>
+                                        <strong>{cat.name}</strong>
+                                    </button>
+                                {/if}
+                                <span class="catalog-meta">
+                                    {cat.embedderModel} · {cat.mode} · {cat.backend}
+                                    {#if cat.dataDir}· {cat.dataDir}{/if}
+                                </span>
+                                <div class="catalog-actions">
+                                    <button class="icon-btn" onclick={() => startRename(cat.id)} title="Umbenennen">
+                                        <Edit size={13} />
+                                    </button>
+                                    <button class="icon-btn danger" onclick={() => deleteCatalog(cat.id)} title="Entfernen">
+                                        <Trash2 size={13} />
+                                    </button>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
+
             <!-- Search mode -->
             <div class="section-card">
                 <label for="index-mode-select"><Brain size={16} /> {i18n.t.settings.index.search_mode}</label>
@@ -1353,20 +1658,55 @@
                     <option value="octen">{i18n.t.settings.index.model_octen}</option>
                     <option value="jina_nano">{i18n.t.settings.index.model_jina_nano}</option>
                     <option value="multilingual_mini_lm">{i18n.t.settings.index.model_mini_lm}</option>
+                    <optgroup label="More CrispEmbed-compatible models">
+                        <option value="bge_large_en_v15">{i18n.t.settings.index.model_bge_large}</option>
+                        <option value="multilingual_e5_large">{i18n.t.settings.index.model_e5_large}</option>
+                        <option value="mxbai_embed_large_v1">{i18n.t.settings.index.model_mxbai_large}</option>
+                        <option value="nomic_embed_text_v15">{i18n.t.settings.index.model_nomic}</option>
+                    </optgroup>
                 </select>
 
-                {#if supportsGguf(indexEmbedderModel)}
-                    <label for="index-backend-select" style="margin-top:10px;">
-                        <Cpu size={14} /> Inference Backend
-                    </label>
-                    <select id="index-backend-select" bind:value={indexEmbedderBackend} class="styled-select">
-                        <option value="onnx">ONNX (fastembed / ORT)</option>
-                        <option value="gguf">GGUF (CrispEmbed, experimental)</option>
-                    </select>
-                    <div style="font-size: 12px; color: var(--muted, #888); margin-top: 4px;">
-                        GGUF reuses the llama.cpp GPU backends (Vulkan/Metal/CUDA) — smaller files, unified GPU stack. Only available for models with a verified GGUF equivalent.
-                    </div>
-                {/if}
+                <label for="index-backend-select" style="margin-top:10px;">
+                    <Cpu size={14} /> {i18n.t.settings.index.backend_engine}
+                </label>
+                <div class="toggle-group" id="index-backend-select" style="margin-top:4px;">
+                    <button
+                        class="toggle-btn"
+                        class:active={indexEmbedderBackend === 'onnx'}
+                        onclick={() => (indexEmbedderBackend = 'onnx')}>
+                        FastEmbed (ONNX)
+                    </button>
+                    <button
+                        class="toggle-btn"
+                        class:active={indexEmbedderBackend === 'gguf' && ggufAvailable}
+                        disabled={!ggufAvailable}
+                        title={
+                            !crispEmbedCompiledIn
+                                ? 'CrispEmbed is not linked into this build. Re-build with --features crispembed-vulkan (or -metal/-cuda).'
+                                : (!ggufModelSupported ? 'No GGUF equivalent for this model.' : '')
+                        }
+                        onclick={() => { if (ggufAvailable) indexEmbedderBackend = 'gguf'; }}>
+                        CrispEmbed (GGUF)
+                    </button>
+                </div>
+                <div style="font-size: 12px; color: #71717a; margin-top: 6px; line-height:1.45;">
+                    {#if !crispEmbedCompiledIn}
+                        <strong>CrispEmbed (GGUF) is not built into this binary.</strong>
+                        It's an optional dependency that adds GGUF model support and reuses llama.cpp's GPU backends (Vulkan / Metal / CUDA).
+                        To enable it, stop the dev server and run the helper script — it auto-clones the <code>CrispEmbed</code> source next to this repo, downloads a prebuilt C++ library from the CrispEmbed GitHub release, and re-launches CrispSorter with the right Cargo feature flag:
+                        <ul style="margin: 6px 0 0 16px; padding: 0;">
+                            <li><strong>Windows:</strong> <code>.\enable-crispembed.ps1</code> (dev) or <code>.\enable-crispembed.ps1 -Mode build</code> (production .exe)</li>
+                            <li><strong>macOS / Linux:</strong> <code>./enable-crispembed.sh</code> or <code>./enable-crispembed.sh build</code></li>
+                        </ul>
+                        See <code>README.md</code> § <em>Optional: CrispEmbed (GGUF) backend</em> for the full story.
+                    {:else if !ggufModelSupported}
+                        <strong>{indexEmbedderModel}</strong> has no verified GGUF equivalent in CrispEmbed yet — falls back to FastEmbed. Models with a GGUF row include PIXIE-Rune, Snowflake Arctic-L v2, Octen-0.6B, Jina v5, Qwen3-Embedding.
+                    {:else if indexEmbedderBackend === 'onnx'}
+                        <strong>FastEmbed</strong> — our fork of <code>fastembed-rs</code>, runs ONNX models via ORT (CoreML/CUDA/CPU). Broadest hardware support.
+                    {:else}
+                        <strong>CrispEmbed</strong> — GGUF inference reusing llama.cpp's Vulkan/Metal/CUDA backends. Smaller files, single GPU stack. Experimental.
+                    {/if}
+                </div>
             </div>
 
             <!-- Compute device -->
@@ -1400,7 +1740,14 @@
                     {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> Initialisiere …
                     {:else}<Play size={16} /> {i18n.t.settings.index.apply}{/if}
                 </button>
-                <p class="hint">{i18n.t.settings.index.apply_hint}</p>
+                <p class="hint">
+                    Saves config and initializes the index.
+                    {#if modelDownloadMb > 0}
+                        First run downloads the embedder model (~{modelDownloadMb} MB).
+                    {:else}
+                        First run downloads the embedder model.
+                    {/if}
+                </p>
 
                 {#if indexStatus === 'loading' && indexInitProgress}
                     <div class="init-progress-wrap">
@@ -1408,7 +1755,13 @@
                         <div class="init-progress-bar">
                             <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
                         </div>
-                        <p class="init-progress-note">Beim ersten Start wird das Embedder-Modell heruntergeladen (~500 MB). Bitte warten …</p>
+                        <p class="init-progress-note">
+                            {#if modelDownloadMb > 0}
+                                Beim ersten Start wird das Embedder-Modell heruntergeladen (~{modelDownloadMb} MB). Bitte warten …
+                            {:else}
+                                Beim ersten Start wird das Embedder-Modell heruntergeladen. Bitte warten …
+                            {/if}
+                        </p>
                     </div>
                 {:else if indexStatus === 'ok'}
                     <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {i18n.t.settings.index.status_ok}</p>
@@ -1431,6 +1784,7 @@
         {:else if selectedProviderId === 'about'}
             <div class="header">
                 <h1>{i18n.t.settings.about}</h1>
+                <span class="version-pill" title="App version">CrispSorter v{appVersion}</span>
             </div>
 
             <div class="section-card">
@@ -1467,21 +1821,41 @@
                     </div>
                 </div>
                 <div class="license-list-scrollable">
-                    {#each filteredLicenses as lib}
-                        <div class="license-item-auto">
-                            <div class="license-item-header">
-                                <span class="lib-name"><strong>{lib.name}</strong> <small>v{lib.version}</small></span>
-                                <span class="lib-source-badge" class:rust={lib.source === 'Backend'}>{lib.source}</span>
-                            </div>
-                            <div class="license-item-meta">
-                                <span class="lib-type">{lib.license}</span>
-                                <span class="lib-author">{lib.author}</span>
-                                {#if lib.link}
-                                    <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>Source</button>
-                                {/if}
-                            </div>
+                    {#if licensesLoading}
+                        <div class="license-empty"><Loader2 size={16} class="loader-spin" /> Loading licenses…</div>
+                    {:else if licensesError}
+                        <div class="license-empty error">
+                            <AlertCircle size={16} />
+                            Could not load <code>licenses.json</code>: {licensesError}.
+                            <br /><small>Run <code>npm run licenses:gen</code> to regenerate it.</small>
                         </div>
-                    {/each}
+                    {:else if automatedLicenses.length === 0}
+                        <div class="license-empty">
+                            No license data found in <code>static/licenses.json</code>.
+                            Run <code>npm run licenses:gen</code> to populate it.
+                        </div>
+                    {:else}
+                        {#each filteredLicenses as lib}
+                            <div class="license-item-auto">
+                                <div class="license-item-header">
+                                    <span class="lib-name"><strong>{lib.name}</strong> <small>v{lib.version}</small></span>
+                                    <span class="lib-source-badge" class:rust={lib.source === 'Backend'}>{lib.source}</span>
+                                </div>
+                                <div class="license-item-meta">
+                                    <span class="lib-type">{lib.license}</span>
+                                    <span class="lib-author">{lib.author}</span>
+                                    {#if lib.link}
+                                        <button class="inline-link" onclick={() => opener.openUrl(lib.link)}>Source</button>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/each}
+                        {#if licensesGeneratedAt}
+                            <div class="license-footer">
+                                Generated {new Date(licensesGeneratedAt).toLocaleString()}
+                            </div>
+                        {/if}
+                    {/if}
                 </div>
             </div>
 
@@ -2045,6 +2419,30 @@
     .license-item-meta { display: flex; align-items: center; gap: 12px; font-size: 0.75rem; color: #71717a; }    
     .inline-link { background: none; border: none; color: #3b82f6; cursor: pointer; font-size: 0.8rem; padding: 0; text-decoration: underline; }
     .legal-text { font-size: 0.875rem; color: #e2e8f0; line-height: 1.6; }
+
+    .catalog-list { display: flex; flex-direction: column; gap: 4px; }
+    .catalog-row {
+        display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+        background: #09090b; border: 1px solid #27272a; border-radius: 6px;
+    }
+    .catalog-row.active { border-color: #3b82f6; background: #1e3a8a14; }
+    .catalog-row input[type="radio"] { cursor: pointer; flex-shrink: 0; accent-color: #3b82f6; }
+    .catalog-name {
+        background: none; border: none; color: #e4e4e7; font-size: 0.875rem;
+        cursor: pointer; padding: 0; text-align: left;
+    }
+    .catalog-name:hover { color: white; }
+    .catalog-rename-input {
+        background: #18181b; border: 1px solid #3b82f6; border-radius: 4px;
+        color: white; padding: 2px 6px; font-size: 0.85rem; min-width: 200px;
+    }
+    .catalog-meta { flex: 1; font-size: 0.72rem; color: #71717a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .catalog-actions { display: flex; gap: 2px; flex-shrink: 0; }
+    .version-pill { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 99px; background: #18181b; border: 1px solid #27272a; color: #a1a1aa; font-size: 0.75rem; font-family: monospace; font-weight: 600; }
+    .license-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 16px; color: #71717a; font-size: 0.85rem; }
+    .license-empty.error { color: #fca5a5; }
+    .license-empty code { background: #18181b; border: 1px solid #27272a; padding: 1px 5px; border-radius: 3px; font-size: 0.75rem; }
+    .license-footer { padding-top: 8px; margin-top: 4px; border-top: 1px solid #18181b; color: #52525b; font-size: 0.7rem; text-align: right; }
 
     /* Improved Benchmark UI Styles */
     .benchmark-ui .bench-config-label { width: 100px; font-size: 0.75rem; color: #71717a; font-weight: 700; }

@@ -3,15 +3,17 @@
     import { listen } from '@tauri-apps/api/event';
     import { open as openDialog } from '@tauri-apps/plugin-dialog';
     import { openPath } from '@tauri-apps/plugin-opener';
-    import { readDir, readFile, type DirEntry } from '@tauri-apps/plugin-fs';
+    import { readDir, readFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
     import { onMount } from 'svelte';
+    import { i18n } from '$lib/i18n.svelte';
     import {
         FolderOpen, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink
     } from 'lucide-svelte';
-    import { extractText } from '$lib/extractors/index';
+    import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
+    import IndexSearch from './IndexSearch.svelte';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -39,11 +41,15 @@
         fileCount:   number;
     }
 
-    type Tab = 'ingest' | 'folders' | 'contents';
+    type Tab = 'overview' | 'search' | 'add' | 'sources';
 
     // ── State ──────────────────────────────────────────────────────────────────
 
-    let activeTab   = $state<Tab>('ingest');
+    /** Default tab is 'overview' (browse what's already in the catalog) — the
+     *  Stapel/sorter flow handles "import unsorted files". The Hinzufügen tab
+     *  is for users who want to add files DIRECTLY to the catalog without
+     *  going through the AI sort step. */
+    let activeTab   = $state<Tab>('overview');
     let entries     = $state<IngestEntry[]>([]);
     let running     = $state(false);
     let paused      = $state(false);
@@ -53,12 +59,22 @@
     let folders     = $state<ManagedFolder[]>([]);
     let scanningFolder = $state<string | null>(null);
 
+    /** Ingest depth requested by the user. L1 = filesystem metadata only (fast),
+     *  L3 = extract text + embed (deep). L2 (file-embedded metadata) is on the
+     *  roadmap; it folds into L3 today. */
+    let ingestLevel = $state<1 | 3>(3);
+    let l1Running   = $state(false);
+
     let contents    = $state<any[]>([]);
     let contentsLoading = $state(false);
     let contentsQuery = $state('');
+    let contentsExt = $state<Set<string>>(new Set());
+    let contentsLevel = $state<'all' | 1 | 3>('all');
+    let contentsCompleteness = $state<'any' | 'has_author' | 'has_title' | 'has_year' | 'has_all'>('any');
     let indexStats  = $state<{ total_rows: number; doc_count: number; chunk_count: number } | null>(null);
     let selectedDocIds = $state<Set<string>>(new Set());
     let deletingIds = $state<Set<string>>(new Set());
+    let promotingL2 = $state(false);
 
     // Ingest progress from Rust events
     let currentFile = $state('');
@@ -66,7 +82,7 @@
     let currentChunk = $state(0);
     let currentChunkTotal = $state(0);
 
-    const supported = new Set(['pdf', 'docx', 'txt', 'md', 'epub']);
+    const supported = new Set<string>(SUPPORTED_EXTENSIONS);
 
     // ── Stats ──────────────────────────────────────────────────────────────────
 
@@ -195,7 +211,7 @@
     async function addFiles() {
         const selected = await openDialog({
             multiple: true,
-            filters: [{ name: 'Documents', extensions: ['pdf','docx','txt','md','epub'] }]
+            filters: [{ name: 'Documents', extensions: [...SUPPORTED_EXTENSIONS] }]
         });
         if (!selected) return;
         await addPaths(Array.isArray(selected) ? selected : [selected]);
@@ -233,8 +249,57 @@
 
     // ── Ingest run ─────────────────────────────────────────────────────────────
 
+    /** Quick filesystem-only ingest. No text extraction, no embedding. */
+    async function startL1Ingest() {
+        if (l1Running || running) return;
+        const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
+        if (!cfg.enabled) {
+            alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
+            return;
+        }
+        const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
+        if (pending.length === 0) return;
+
+        l1Running = true;
+        try {
+            const files = [];
+            for (const e of pending) {
+                const meta = await stat(e.path).catch(() => null);
+                const size = (meta as any)?.size ?? 0;
+                const mtime = ((meta as any)?.mtime ?? new Date()).valueOf();
+                const ctime = ((meta as any)?.birthtime ?? (meta as any)?.mtime ?? new Date()).valueOf();
+                const parentDir = e.path.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
+                const docId = await hashText(e.path);
+                files.push({
+                    docId,
+                    sourceHash: docId,
+                    locationUri: e.path,
+                    ownerId: 'local',
+                    filename: e.filename,
+                    ext: e.ext,
+                    parentDir,
+                    size,
+                    mtimeMs: mtime,
+                    ctimeMs: ctime,
+                });
+                updateEntry(e.id, { status: 'embedding' });
+            }
+            await invoke('index_ingest_l1', { files });
+            for (const e of pending) updateEntry(e.id, { status: 'done', chunks: 0 });
+        } catch (err: any) {
+            console.error('[L1] ingest failed:', err);
+            for (const e of pending) updateEntry(e.id, { status: 'error', error: String(err) });
+        } finally {
+            l1Running = false;
+        }
+    }
+
     async function startIngest() {
         if (running) return;
+        if (ingestLevel === 1) {
+            await startL1Ingest();
+            return;
+        }
         const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
         if (!cfg.enabled) {
             alert('Search index is not enabled. Please enable it in Settings → Search Index first.');
@@ -330,6 +395,64 @@
 
     // ── Index contents ─────────────────────────────────────────────────────────
 
+    /** Pull `level` (1 or 3) out of the row's metadata_json, falling back to a
+     *  reasonable default by inspecting which fields are populated. */
+    function docLevel(d: any): 1 | 3 {
+        if (d.metadata_json) {
+            try {
+                const m = JSON.parse(d.metadata_json);
+                if (m.level === 1) return 1;
+                if (m.level === 3) return 3;
+            } catch { /* malformed JSON — ignore */ }
+        }
+        // No metadata blob: if the row has a snippet/full_text it's L3.
+        return d.snippet ? 3 : 1;
+    }
+
+    function applyCatalogFilters(docs: any[]): any[] {
+        const q = contentsQuery.trim().toLowerCase();
+        return docs.filter(d => {
+            if (q && !(
+                (d.title ?? '').toLowerCase().includes(q) ||
+                (d.filename ?? '').toLowerCase().includes(q) ||
+                (d.author ?? '').toLowerCase().includes(q)
+            )) return false;
+
+            if (contentsExt.size > 0) {
+                const ext = (d.ext ?? '').toLowerCase();
+                if (!contentsExt.has(ext)) return false;
+            }
+
+            if (contentsLevel !== 'all' && docLevel(d) !== contentsLevel) return false;
+
+            if (contentsCompleteness !== 'any') {
+                const hasAuthor = !!(d.author && d.author.trim());
+                const hasTitle  = !!(d.title  && d.title.trim());
+                const hasYear   = !!(d.year);
+                if (contentsCompleteness === 'has_author' && !hasAuthor) return false;
+                if (contentsCompleteness === 'has_title'  && !hasTitle)  return false;
+                if (contentsCompleteness === 'has_year'   && !hasYear)   return false;
+                if (contentsCompleteness === 'has_all'    && !(hasAuthor && hasTitle && hasYear)) return false;
+            }
+
+            return true;
+        });
+    }
+
+    /** All distinct extensions present in the currently-loaded contents — used
+     *  to populate the filter chips. */
+    const contentsExtChoices = $derived.by(() => {
+        const s = new Set<string>();
+        for (const d of contents) {
+            const e = (d.ext ?? '').toLowerCase();
+            if (e) s.add(e);
+        }
+        return [...s].sort();
+    });
+
+    let _allContents = $state<any[]>([]);
+    const visibleContents = $derived(applyCatalogFilters(_allContents));
+
     async function loadContents() {
         contentsLoading = true;
         selectedDocIds = new Set();
@@ -340,21 +463,27 @@
                 invoke<any[]>('index_list_documents', { limit: 500 }),
             ]);
             indexStats = stats;
-            // If there's a filter query, filter client-side
-            const q = contentsQuery.trim().toLowerCase();
-            contents = q
-                ? docs.filter(d =>
-                    (d.title ?? '').toLowerCase().includes(q) ||
-                    (d.filename ?? '').toLowerCase().includes(q) ||
-                    (d.author ?? '').toLowerCase().includes(q))
-                : docs;
+            _allContents = docs;
+            contents = visibleContents;
         } catch {
+            _allContents = [];
             contents = [];
             indexStats = null;
         } finally {
             contentsLoading = false;
         }
     }
+
+    function toggleContentsExt(ext: string) {
+        const next = new Set(contentsExt);
+        if (next.has(ext)) next.delete(ext); else next.add(ext);
+        contentsExt = next;
+    }
+
+    // Re-run the client-side filter whenever a filter input changes.
+    $effect(() => {
+        contents = applyCatalogFilters(_allContents);
+    });
 
     async function deleteFromIndex(docId: string) {
         deletingIds = new Set([...deletingIds, docId]);
@@ -376,6 +505,32 @@
         const ids = [...selectedDocIds];
         for (const docId of ids) {
             await deleteFromIndex(docId);
+        }
+    }
+
+    /** Read embedded metadata (PDF Info / DOCX core / EPUB OPF) for the
+     *  selected docs and write Title / Author / Year / Language back to
+     *  the LanceDB row. The Rust side bumps `metadata_json.level` to 2. */
+    async function promoteSelectedToL2() {
+        const ids = [...selectedDocIds];
+        if (ids.length === 0) return;
+        promotingL2 = true;
+        try {
+            const results = await invoke<Array<{
+                doc_id: string; updated: boolean;
+                title: string | null; author: string | null; year: number | null;
+                error: string | null;
+            }>>('index_promote_l2', { docIds: ids });
+            // Reload to reflect updates.
+            await loadContents();
+            // Surface a summary in the console (could be a toast later).
+            const updated = results.filter(r => r.updated).length;
+            const errored = results.filter(r => r.error).length;
+            console.log(`[L2] ${updated}/${results.length} updated, ${errored} errors`);
+        } catch (e) {
+            console.error('[L2] promote failed:', e);
+        } finally {
+            promotingL2 = false;
         }
     }
 
@@ -410,7 +565,23 @@
     }
 
     function mimeFor(ext: string): string {
-        return ({ pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', txt: 'text/plain', md: 'text/markdown', epub: 'application/epub+zip' } as any)[ext] ?? 'application/octet-stream';
+        return ({
+            pdf:  'application/pdf',
+            docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            doc:  'application/msword',
+            txt:  'text/plain',
+            md:   'text/markdown',
+            epub: 'application/epub+zip',
+            html: 'text/html',
+            htm:  'text/html',
+            webp: 'image/webp',
+            png:  'image/png',
+            jpg:  'image/jpeg',
+            jpeg: 'image/jpeg',
+            bmp:  'image/bmp',
+            tif:  'image/tiff',
+            tiff: 'image/tiff',
+        } as any)[ext] ?? 'application/octet-stream';
     }
 
     async function hashText(text: string): Promise<string> {
@@ -447,25 +618,28 @@
     ondragleave={onDragleave}
     ondrop={onDrop}>
 
-    <!-- ── Tab bar ──────────────────────────────────────────────────────────── -->
+    <!-- ── Tab bar (Kataloge sub-views) ──────────────────────────────────── -->
     <div class="tab-bar">
-        <button class="tab" class:active={activeTab === 'ingest'}   onclick={() => activeTab = 'ingest'}>
-            <UploadCloud size={14} /> Ingest
+        <button class="tab" class:active={activeTab === 'overview'} onclick={() => { activeTab = 'overview'; loadContents(); }}>
+            <Database size={14} /> Übersicht{#if indexStats !== null} ({indexStats.doc_count}){/if}
         </button>
-        <button class="tab" class:active={activeTab === 'folders'}  onclick={() => activeTab = 'folders'}>
-            <FolderOpen size={14} /> Ordner ({folders.length})
+        <button class="tab" class:active={activeTab === 'search'} onclick={() => activeTab = 'search'}>
+            <Search size={14} /> Suche
         </button>
-        <button class="tab" class:active={activeTab === 'contents'} onclick={() => { activeTab = 'contents'; loadContents(); }}>
-            <Database size={14} /> Index-Inhalt{#if indexStats !== null} ({indexStats.doc_count}){/if}
+        <button class="tab" class:active={activeTab === 'add'} onclick={() => activeTab = 'add'}>
+            <UploadCloud size={14} /> Hinzufügen
+        </button>
+        <button class="tab" class:active={activeTab === 'sources'} onclick={() => activeTab = 'sources'}>
+            <FolderOpen size={14} /> Quellen ({folders.length})
         </button>
     </div>
 
-    <!-- ══════════════════ INGEST TAB ══════════════════ -->
-    {#if activeTab === 'ingest'}
+    <!-- ══════════════════ HINZUFÜGEN (queue + ingest run) ══════════════════ -->
+    {#if activeTab === 'add'}
         <div class="toolbar">
             <div class="toolbar-actions">
                 <button class="tb-btn" onclick={addFiles}><FileText size={14} /> Dateien</button>
-                <button class="tb-btn" onclick={() => { activeTab = 'folders'; }}>
+                <button class="tb-btn" onclick={() => { activeTab = 'sources'; }}>
                     <FolderOpen size={14} /> Ordner verwalten
                 </button>
                 {#if stats.done > 0}
@@ -475,6 +649,24 @@
                     <button class="tb-btn ghost danger" onclick={clearAll}><X size={14} /> Alle löschen</button>
                 {/if}
             </div>
+        </div>
+
+        <!-- Level picker -->
+        <div class="level-picker">
+            <span class="level-label">Tiefe:</span>
+            <button class="level-btn" class:active={ingestLevel === 1} onclick={() => ingestLevel = 1}>
+                L1 — Dateisystem-Metadaten
+            </button>
+            <button class="level-btn" class:active={ingestLevel === 3} onclick={() => ingestLevel = 3}>
+                L3 — Volltext + Embedding
+            </button>
+            <span class="level-hint">
+                {#if ingestLevel === 1}
+                    Schneller Scan: Pfad, Größe, Datum, Endung. Kein Text, keine Vektoren.
+                {:else}
+                    Dokumente werden extrahiert, in Chunks zerlegt, embeddet und indexiert.
+                {/if}
+            </span>
         </div>
 
         <!-- Stats bar -->
@@ -507,7 +699,7 @@
             <div class="drop-area" class:active={dropActive}>
                 <UploadCloud size={40} style="color:#3b82f6; opacity:0.7;" />
                 <p>Dateien hier ablegen</p>
-                <p class="drop-hint">PDF, DOCX, TXT, MD, EPUB — oder "Dateien" klicken</p>
+                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, WebP/PNG/JPG — oder "Dateien" klicken</p>
             </div>
         {:else}
             <div class="file-list">
@@ -554,11 +746,16 @@
         <!-- Run controls -->
         {#if entries.length > 0}
             <div class="run-bar">
-                {#if !running}
+                {#if !running && !l1Running}
                     <button class="run-btn primary" onclick={startIngest}
                         disabled={stats.pending === 0}>
-                        <Play size={15} /> Indexierung starten ({stats.pending})
+                        <Play size={15} />
+                        {ingestLevel === 1 ? 'L1 Quick-Scan' : 'L3 Volltext-Indexierung'} ({stats.pending})
                     </button>
+                {:else if l1Running}
+                    <span class="status-text" style="color:#3b82f6">
+                        <Loader2 size={14} class="spin" /> L1 Indexierung läuft …
+                    </span>
                 {:else}
                     <button class="run-btn" onclick={pauseResume}>
                         {#if paused}<Play size={15} /> Fortsetzen{:else}<Pause size={15} /> Pausieren{/if}
@@ -572,8 +769,8 @@
         {/if}
     {/if}
 
-    <!-- ══════════════════ FOLDERS TAB ══════════════════ -->
-    {#if activeTab === 'folders'}
+    <!-- ══════════════════ QUELLEN (managed folders) ══════════════════ -->
+    {#if activeTab === 'sources'}
         <div class="folders-toolbar">
             <button class="tb-btn" onclick={addFolder}><FolderOpen size={14} /> Ordner hinzufügen</button>
             {#if folders.length > 0}
@@ -622,27 +819,60 @@
 
             {#if entries.filter(e => e.status === 'pending').length > 0}
                 <div class="run-bar" style="margin-top: auto; padding-top: 12px; border-top: 1px solid #27272a;">
-                    <button class="run-btn primary" onclick={() => { activeTab = 'ingest'; }}>
-                        <UploadCloud size={15} /> Zu Ingest wechseln ({entries.filter(e => e.status === 'pending').length} Dateien)
+                    <button class="run-btn primary" onclick={() => { activeTab = 'add'; }}>
+                        <UploadCloud size={15} /> Zu Hinzufügen wechseln ({entries.filter(e => e.status === 'pending').length} Dateien)
                     </button>
                 </div>
             {/if}
         {/if}
     {/if}
 
-    <!-- ══════════════════ CONTENTS TAB ══════════════════ -->
-    {#if activeTab === 'contents'}
+    <!-- ══════════════════ SUCHE (semantic + full-text) ══════════════════ -->
+    {#if activeTab === 'search'}
+        <IndexSearch />
+    {/if}
+
+    <!-- ══════════════════ ÜBERSICHT (catalog contents) ══════════════════ -->
+    {#if activeTab === 'overview'}
         <div class="contents-toolbar">
             <div class="query-input-wrap" style="flex:1">
                 <Search size={14} style="color:#71717a;" />
                 <input type="text" bind:value={contentsQuery}
-                    onkeydown={e => e.key === 'Enter' && loadContents()}
-                    placeholder="Filtern …" class="query-input" />
+                    placeholder="Name / Titel / Autor filtern …" class="query-input" />
             </div>
             <button class="tb-btn" onclick={loadContents} disabled={contentsLoading}>
                 {#if contentsLoading}<Loader2 size={13} class="spin" />{:else}<RefreshCw size={13} />{/if}
                 Aktualisieren
             </button>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-bar">
+            <span class="filter-label">Tiefe:</span>
+            <button class="chip" class:active={contentsLevel === 'all'} onclick={() => contentsLevel = 'all'}>Alle</button>
+            <button class="chip" class:active={contentsLevel === 1} onclick={() => contentsLevel = 1}>L1</button>
+            <button class="chip" class:active={contentsLevel === 3} onclick={() => contentsLevel = 3}>L3</button>
+
+            {#if contentsExtChoices.length > 0}
+                <span class="filter-label" style="margin-left:8px;">Ext:</span>
+                {#each contentsExtChoices as ext}
+                    <button class="chip" class:active={contentsExt.has(ext)} onclick={() => toggleContentsExt(ext)}>
+                        {ext}
+                    </button>
+                {/each}
+                {#if contentsExt.size > 0}
+                    <button class="chip ghost" onclick={() => contentsExt = new Set()}>Reset</button>
+                {/if}
+            {/if}
+
+            <span class="filter-label" style="margin-left:8px;">Vollständigkeit:</span>
+            <select bind:value={contentsCompleteness} class="filter-select">
+                <option value="any">Egal</option>
+                <option value="has_title">Titel</option>
+                <option value="has_author">Autor</option>
+                <option value="has_year">Jahr</option>
+                <option value="has_all">Alle</option>
+            </select>
         </div>
 
         {#if indexStats}
@@ -666,6 +896,10 @@
             {#if selectedDocIds.size > 0}
                 <div class="selection-bar">
                     <span class="sel-count">{selectedDocIds.size} ausgewählt</span>
+                    <button class="tb-btn" onclick={promoteSelectedToL2} disabled={promotingL2}>
+                        {#if promotingL2}<Loader2 size={13} class="spin" />{:else}<Database size={13} />{/if}
+                        Auf L2 anheben (Metadaten lesen)
+                    </button>
                     <button class="tb-btn danger" onclick={deleteSelected} disabled={deletingIds.size > 0}>
                         <Trash2 size={13} /> {deletingIds.size > 0 ? 'Löschen …' : 'Aus Index löschen'}
                     </button>
@@ -685,6 +919,7 @@
                 {#each contents as doc (doc.doc_id)}
                     {@const isSelected = selectedDocIds.has(doc.doc_id)}
                     {@const isDeleting = deletingIds.has(doc.doc_id)}
+                    {@const lvl = docLevel(doc)}
                     <div class="contents-row" class:selected={isSelected} class:deleting={isDeleting}>
                         <input type="checkbox" class="row-check" checked={isSelected}
                             onchange={() => toggleSelect(doc.doc_id)} />
@@ -693,6 +928,7 @@
                         {:else}
                             <div class="ext-badge">–</div>
                         {/if}
+                        <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3} title="Analyse-Tiefe">L{lvl}</span>
                         <div class="contents-info">
                             <span class="contents-title">{doc.title || doc.filename || doc.doc_id?.slice(0,16)}</span>
                             <span class="contents-meta">
@@ -810,11 +1046,39 @@
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
         background: #27272a; color: #a1a1aa; flex-shrink: 0; min-width: 32px; text-align: center;
     }
+    .level-picker { display: flex; align-items: center; gap: 8px; padding: 8px 16px 0; flex-wrap: wrap; }
+    .level-label { font-size: 0.75rem; color: #71717a; font-weight: 600; }
+    .level-btn {
+        background: #18181b; border: 1px solid #27272a; color: #a1a1aa;
+        padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+    }
+    .level-btn:hover { color: white; border-color: #3f3f46; }
+    .level-btn.active { background: #1e3a8a33; border-color: #3b82f6; color: #93c5fd; }
+    .level-hint { font-size: 0.72rem; color: #52525b; margin-left: 4px; }
+
+    .filter-bar { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; flex-wrap: wrap; }
+    .filter-label { font-size: 0.72rem; color: #71717a; font-weight: 600; }
+    .chip {
+        background: #18181b; border: 1px solid #27272a; color: #a1a1aa;
+        padding: 2px 9px; border-radius: 99px; font-size: 0.72rem; cursor: pointer;
+        text-transform: lowercase;
+    }
+    .chip:hover { color: white; border-color: #3f3f46; }
+    .chip.active { background: #1e3a8a33; border-color: #3b82f6; color: #93c5fd; }
+    .chip.ghost { background: transparent; color: #52525b; }
+    .filter-select {
+        background: #18181b; border: 1px solid #27272a; color: #d4d4d8;
+        padding: 2px 6px; border-radius: 4px; font-size: 0.75rem;
+    }
+
     .ext-pdf  { background: #7f1d1d33; color: #fca5a5; }
     .ext-docx { background: #1e3a5f33; color: #93c5fd; }
+    .ext-doc  { background: #1e3a5f33; color: #93c5fd; }
     .ext-md   { background: #14532d33; color: #86efac; }
     .ext-txt  { background: #44403c33; color: #d6d3d1; }
     .ext-epub { background: #4c1d9533; color: #c4b5fd; }
+    .ext-html, .ext-htm { background: #c2410c33; color: #fdba74; }
+    .ext-webp, .ext-png, .ext-jpg, .ext-jpeg, .ext-bmp, .ext-tif, .ext-tiff { background: #be185d33; color: #f9a8d4; }
 
     .file-info { flex: 1; min-width: 0; }
     .file-name { display: block; font-size: 0.85rem; color: #e4e4e7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -905,6 +1169,12 @@
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
         background: #27272a; color: #a1a1aa; flex-shrink: 0; min-width: 32px; text-align: center; margin-top: 2px;
     }
+    .level-badge {
+        font-size: 0.6rem; font-weight: 800; padding: 3px 6px; border-radius: 4px;
+        flex-shrink: 0; min-width: 22px; text-align: center; margin-top: 2px;
+    }
+    .level-badge.l1 { background: #44403c33; color: #d6d3d1; }
+    .level-badge.l3 { background: #14532d33; color: #86efac; }
 
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
