@@ -311,6 +311,7 @@ impl LocalIndex {
                     snippet,
                     score,
                     chunk_index: chunk_idx_col.value(i),
+                    metadata_json: str_col_val_opt(&metadata_col, i),
                     catalog_source: None,
                     volume_id,
                 };
