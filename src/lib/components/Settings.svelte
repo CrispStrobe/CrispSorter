@@ -1580,6 +1580,9 @@
             <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
                 <span class="prov-label"><Globe size={16} /> {i18n.t.settings.general}</span>
             </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'extraction'} onclick={() => selectedProviderId = 'extraction'}>
+                <span class="prov-label"><Scan size={16} /> {i18n.t.settings.extraction}</span>
+            </button>
             <button class="provider-btn" class:active={selectedProviderId === 'llm'} onclick={() => selectedProviderId = 'llm'}>
                 <span class="prov-label"><Zap size={16} /> {i18n.t.settings.llm_options}</span>
             </button>
@@ -1679,29 +1682,16 @@
                 <p class="hint">{i18n.t.settings.path_template_hint}</p>
             </div>
 
-            <div class="section-card">
-                <div class="checkbox-group">
-                    <input id="save-txt-check" type="checkbox" bind:checked={saveTxt} />
-                    <label for="save-txt-check"><FileText size={16} /> {i18n.t.settings.save_txt}</label>
-                </div>
-                <p class="hint">{i18n.t.settings.save_txt_hint}</p>
-            </div>
-
-        {:else if selectedProviderId === 'llm'}
+        {:else if selectedProviderId === 'extraction'}
             <div class="header">
-                <h1>{i18n.t.settings.llm_options}</h1>
+                <h1>{i18n.t.settings.extraction}</h1>
                 <div class="save-area">
                     {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
                     <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
                 </div>
             </div>
 
-            <div class="section-card">
-                <label for="max-chars-input">{i18n.t.settings.llm_max_chars}</label>
-                <input id="max-chars-input" type="number" bind:value={llmMaxChars} step="500" min="500" />
-                <p class="hint">{i18n.t.settings.llm_max_chars_hint}</p>
-            </div>
-
+            <!-- Extractor backend choice -->
             <div class="section-card">
                 <label for="pdf-engine-select">{i18n.t.settings.pdf_engine}</label>
                 <div class="toggle-group" id="pdf-engine-select">
@@ -1711,6 +1701,7 @@
                 <p class="hint">{i18n.t.settings.pdf_engine_hint}</p>
             </div>
 
+            <!-- OCR (Tesseract) -->
             <div class="section-card">
                 <div class="header" style="margin-bottom: 12px; display:flex; align-items:center; justify-content:space-between;">
                     <h2 style="font-size: 1rem; color: #a1a1aa;"><Scan size={16} /> {i18n.t.settings.ocr_tesseract_title}</h2>
@@ -1728,7 +1719,7 @@
                     <label for="ocr-enabled-check">{i18n.t.settings.ocr_enabled}</label>
                 </div>
                 <p class="hint" style="margin-bottom: 16px;">{i18n.t.settings.ocr_tesseract_hint}</p>
-                
+
                 <div class="models-grid">
                     {#each tesseractModels as model}
                         <div class="local-model-row">
@@ -1753,28 +1744,29 @@
                 </div>
             </div>
 
-            <div class="section-card">
-                <div class="checkbox-group">
-                    <input id="no-think-check" type="checkbox" bind:checked={noThinking} />
-                    <label for="no-think-check">{i18n.t.settings.no_think}</label>
-                </div>
-                <p class="hint">{i18n.t.settings.no_think_hint}</p>
-            </div>
-
-            <div class="section-card">
-                <div class="checkbox-group">
-                    <input id="auto-speak-check" type="checkbox" bind:checked={autoSpeakReplies} />
-                    <label for="auto-speak-check">{i18n.t.settings.auto_speak}</label>
-                </div>
-                <p class="hint">{i18n.t.settings.auto_speak_hint}</p>
-            </div>
-
+            <!-- PDF /Info dict prefill -->
             <div class="section-card">
                 <div class="checkbox-group">
                     <input id="pdf-metadata-check" type="checkbox" bind:checked={pdfMetadataPrefill} />
                     <label for="pdf-metadata-check">{i18n.t.settings.pdf_metadata_prefill}</label>
                 </div>
                 <p class="hint">{i18n.t.settings.pdf_metadata_prefill_hint}</p>
+            </div>
+
+            <!-- Save extracted text alongside the sorted file -->
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="save-txt-check" type="checkbox" bind:checked={saveTxt} />
+                    <label for="save-txt-check"><FileText size={16} /> {i18n.t.settings.save_txt}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.save_txt_hint}</p>
+            </div>
+
+            <!-- LLM input cap (lives here because it caps the *extracted* text -->
+            <div class="section-card">
+                <label for="max-chars-input">{i18n.t.settings.llm_max_chars}</label>
+                <input id="max-chars-input" type="number" bind:value={llmMaxChars} step="500" min="500" />
+                <p class="hint">{i18n.t.settings.llm_max_chars_hint}</p>
             </div>
 
             <!-- PLAN P8.1 — per-file conversion timeout -->
@@ -1791,6 +1783,31 @@
                 <p class="hint">
                     {i18n.t.settings.conv_timeout_hint_prefix}<strong>{i18n.t.settings.conv_timeout_hint_zero}</strong>{i18n.t.settings.conv_timeout_hint_suffix}
                 </p>
+            </div>
+
+        {:else if selectedProviderId === 'llm'}
+            <div class="header">
+                <h1>{i18n.t.settings.llm_options}</h1>
+                <div class="save-area">
+                    {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
+                    <button class="save-btn" onclick={handleSave}>{i18n.t.settings.save_all}</button>
+                </div>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="no-think-check" type="checkbox" bind:checked={noThinking} />
+                    <label for="no-think-check">{i18n.t.settings.no_think}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.no_think_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <div class="checkbox-group">
+                    <input id="auto-speak-check" type="checkbox" bind:checked={autoSpeakReplies} />
+                    <label for="auto-speak-check">{i18n.t.settings.auto_speak}</label>
+                </div>
+                <p class="hint">{i18n.t.settings.auto_speak_hint}</p>
             </div>
 
             <div class="section-card">
