@@ -859,15 +859,23 @@ pub async fn index_build_ivf_pq(state: State<'_, AppState>) -> Result<(), String
 }
 
 /// Initialise (or re-initialise) the index from a data directory path and the
-/// current config stored in `AppState`.  Called by the Settings UI.
+/// current config stored in `AppState`. Called by the Settings UI and by
+/// the L1 / L2 / L3 fast-paths in the frontend.
+///
+/// `with_embedder = false` (or `IndexConfig.use_vector = false`) skips
+/// the embedder construction entirely — useful for L1 / L2 ingest which
+/// only need the LocalIndex (LanceDB) + FtsIndex. Saves multi-GB
+/// downloads + minutes of init time when the user just wants to scan
+/// a drive.
 #[tauri::command]
 pub async fn index_init(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     data_dir: String,
+    with_embedder: Option<bool>,
 ) -> Result<(), String> {
-    // Reserve the init slot atomically. If another init is already running,
-    // bail out instead of starting a second multi-GB download.
+    // Reserve the init slot atomically. If another init is already
+    // running, bail out instead of starting a second multi-GB download.
     let config = {
         let mut lock = state.index.lock().await;
         if lock.initializing {
@@ -881,16 +889,23 @@ pub async fn index_init(
         lock.config.clone()
     };
 
+    // Three-way decision tree:
+    //   - global `use_vector = false`: never load an embedder.
+    //   - explicit `with_embedder = false` (L1 / L2 fast-path): skip.
+    //   - default: load (matches old behaviour).
+    let load_embedder = config.use_vector && with_embedder.unwrap_or(true);
+
     crate::app_log!(
         "info",
-        "Index init requested: data_dir={}, model={:?}, backend={:?}",
+        "Index init requested: data_dir={}, model={:?}, backend={:?}, with_embedder={}",
         data_dir,
         config.embedder_model,
-        config.backend_type
+        config.backend_type,
+        load_embedder
     );
 
     let path = std::path::PathBuf::from(&data_dir);
-    let init_result = init_index(&path, config, Some(app)).await;
+    let init_result = init_index(&path, config, Some(app), load_embedder).await;
 
     let mut lock = state.index.lock().await;
     lock.initializing = false;
@@ -1158,6 +1173,7 @@ pub async fn init_index(
     data_dir: &std::path::Path,
     config: IndexConfig,
     app: Option<tauri::AppHandle>,
+    load_embedder: bool,
 ) -> anyhow::Result<IndexState> {
     use super::embedder::EmbedderConfig as EC;
     use super::remote_client::RemoteClient;
@@ -1171,8 +1187,6 @@ pub async fn init_index(
 
     macro_rules! emit {
         ($step:expr, $label:expr, $pct:expr) => {
-            // Mirror progress to the in-app log panel so users without a console
-            // can see what step the init is on.
             crate::app_log!("info", "[index-init] {} ({}%)", $label, $pct);
             if let Some(h) = &app {
                 let _ = h.emit(
@@ -1191,35 +1205,39 @@ pub async fn init_index(
     let device = config.embedder_device;
     let model_name = format!("{:?}", model);
 
-    // Use the actual per-model download size (engine-aware). Older code
-    // hard-coded "~500 MB" which was wildly wrong for big models like
-    // BGE-M3 (~2.3 GB) and tiny ones like all-MiniLM-L6-v2 (~90 MB).
-    let mb = match config.embedder_backend {
-        super::embedder::EmbedderBackend::Gguf => {
-            let g = model.gguf_download_mb();
-            if g > 0 { g } else { model.approx_download_mb() }
-        }
-        super::embedder::EmbedderBackend::Onnx => model.approx_download_mb(),
-    };
-    let size_hint = if mb > 0 {
-        format!(" (~{mb} MB)")
+    // Optional embedder construction. Skipped when:
+    //   - caller passed `load_embedder = false` (L1 / L2 fast-path), or
+    //   - global `IndexConfig.use_vector = false` (no vectors at all).
+    // Saves multi-GB downloads + minutes of init time.
+    let embedder_arc: Option<Arc<Mutex<Embedder>>> = if load_embedder {
+        let mb = match config.embedder_backend {
+            super::embedder::EmbedderBackend::Gguf => {
+                let g = model.gguf_download_mb();
+                if g > 0 { g } else { model.approx_download_mb() }
+            }
+            super::embedder::EmbedderBackend::Onnx => model.approx_download_mb(),
+        };
+        let size_hint = if mb > 0 { format!(" (~{mb} MB)") } else { String::new() };
+        emit!(
+            "embedder_start",
+            format!("Lade Embedder-Modell ({model_name}){size_hint}, erster Start lädt aus dem Internet …"),
+            5
+        );
+
+        let models_dir = data_dir.join("models");
+        let embedder_cfg =
+            EC::new(model, device, models_dir).with_backend(config.embedder_backend);
+        let embedder = Embedder::new(embedder_cfg).await?;
+        emit!("embedder_done", "Embedder geladen", 40);
+        Some(Arc::new(Mutex::new(embedder)))
     } else {
-        String::new()
+        emit!(
+            "embedder_skipped",
+            "Embedder übersprungen (L1/L2-Modus oder use_vector=false)",
+            40
+        );
+        None
     };
-    emit!(
-        "embedder_start",
-        format!("Lade Embedder-Modell ({model_name}){size_hint}, erster Start lädt aus dem Internet …"),
-        5
-    );
-
-    let models_dir = data_dir.join("models");
-    let embedder_cfg = EC::new(model, device, models_dir).with_backend(config.embedder_backend);
-
-    let embedder = Embedder::new(embedder_cfg).await?;
-
-    emit!("embedder_done", "Embedder geladen", 40);
-
-    let embedder_arc = Arc::new(Mutex::new(embedder));
 
     match config.backend_type {
         BackendType::Remote => {
@@ -1236,7 +1254,7 @@ pub async fn init_index(
                 backend: Some(remote),
                 local: None,
                 fts: None,
-                embedder: Some(embedder_arc),
+                embedder: embedder_arc,
                 engine: None,
                 pipeline: None,
                 config,
@@ -1275,7 +1293,7 @@ pub async fn init_index(
                 backend: Some(backend),
                 local: Some(local),
                 fts: Some(fts),
-                embedder: Some(embedder_arc),
+                embedder: embedder_arc,
                 engine: Some(engine),
                 pipeline: Some(pipeline),
                 config,

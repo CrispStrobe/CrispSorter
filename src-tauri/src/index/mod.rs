@@ -123,6 +123,18 @@ pub struct IndexConfig {
     pub embedder_device: EmbedderDevice,
     #[serde(default)]
     pub embedder_backend: EmbedderBackend,
+    /// Master switch for vector capabilities. When `false`, init never
+    /// loads an embedder model — the catalog can still scan + store
+    /// filesystem metadata (L1) and embedded file metadata (L2),
+    /// Tantivy still does full-text indexing on extracted L3 text.
+    /// Saves multi-GB downloads + hundreds of MB of resident memory
+    /// when the user only wants offline file cataloguing.
+    #[serde(default = "default_use_vector")]
+    pub use_vector: bool,
+}
+
+fn default_use_vector() -> bool {
+    true
 }
 
 impl Default for IndexConfig {
@@ -136,6 +148,7 @@ impl Default for IndexConfig {
             embedder_model: EmbedderModel::BgeM3,
             embedder_device: EmbedderDevice::Auto,
             embedder_backend: EmbedderBackend::Onnx,
+            use_vector: true,
         }
     }
 }

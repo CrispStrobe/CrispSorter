@@ -79,7 +79,10 @@ pub struct IngestStats {
 pub struct IngestPipeline {
     pub fts: Arc<FtsIndex>,
     pub vector: Arc<LocalIndex>,
-    pub embedder: Arc<Mutex<Embedder>>,
+    /// `None` when the index was init'd without vector capabilities
+    /// (`use_vector = false`) or when only L1 / L2 ingest was requested.
+    /// L3 ingest checks this and errors clearly if not present.
+    pub embedder: Option<Arc<Mutex<Embedder>>>,
     pub config: IngestConfig,
 }
 
@@ -87,7 +90,7 @@ impl IngestPipeline {
     pub fn new(
         fts: Arc<FtsIndex>,
         vector: Arc<LocalIndex>,
-        embedder: Arc<Mutex<Embedder>>,
+        embedder: Option<Arc<Mutex<Embedder>>>,
         config: IngestConfig,
     ) -> Self {
         IngestPipeline {
@@ -107,6 +110,17 @@ impl IngestPipeline {
     /// 4. Write a single whole-document row to Tantivy (doc_id, owner_id, headings, body).
     /// 5. Return timing stats.
     pub async fn ingest_document(&self, raw: RawDocument) -> Result<IngestStats> {
+        // L3 = Volltext + Embedding. Without an embedder we can't satisfy
+        // the contract. The frontend should never reach this from an L1 / L2
+        // code path; if it does, surface the misconfiguration clearly.
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Embedding (L3) is disabled. Switch the index config to \
+                 `use_vector = true` (Settings → Search Index → \
+                 Vektor-Embeddings verwenden) and re-init."
+            )
+        })?;
+
         let chunks = chunk_text(
             &raw.full_text,
             self.config.chunk_max_words,
@@ -125,12 +139,12 @@ impl IngestPipeline {
             let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
 
             let (dense, sparse) = {
-                let mut emb = self.embedder.lock().await;
+                let mut emb = embedder.lock().await;
                 emb.embed_full(texts)?
             };
 
             let model_id = {
-                let emb = self.embedder.lock().await;
+                let emb = embedder.lock().await;
                 format!("{:?}", emb.model())
             };
 
