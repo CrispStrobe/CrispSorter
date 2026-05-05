@@ -270,11 +270,109 @@ npm run tauri build
 # Dev mode (add --clean for a fresh build after feature-flag changes)
 .\recompile.ps1
 
+# Production .exe (add --clean for a fresh full rebuild)
+.\recompile-exe.ps1
+
 # Build production installer and publish to GitHub
 .\release.ps1
 ```
 
 `download-llama-backends.ps1` downloads pre-built llama.cpp binaries for Windows.
+
+### Optional: CrispEmbed (GGUF) backend
+
+CrispSorter ships with two embedding backends: **FastEmbed (ONNX)** by default,
+and **CrispEmbed (GGUF)** as an opt-in. CrispEmbed reuses the llama.cpp GPU
+stack (Vulkan / CUDA / Metal), gives smaller model files via GGUF
+quantisation, and is significantly faster on supported models (≈ 9× faster
+than FastEmbed on MiniLM-L6 per the upstream benchmarks).
+
+**It is feature-gated at compile time.** Default builds (`recompile.ps1`,
+`npm run tauri dev`) deliberately *do not* link CrispEmbed in, because:
+
+- The high-level `crispembed` Rust crate lives in the sibling repo
+  [CrispStrobe/CrispEmbed](https://github.com/CrispStrobe/CrispEmbed)
+  (Cargo path dep at `../../CrispEmbed/crispembed`).
+- The native C++ library can either be built from source via CMake
+  (~15 minutes) or downloaded as a prebuilt tarball from CrispEmbed's
+  GitHub release.
+
+To enable it, use the **`enable-crispembed`** helper instead of `recompile`:
+
+```powershell
+# Windows (dev)
+.\enable-crispembed.ps1
+
+# Windows (production .exe)
+.\enable-crispembed.ps1 -Mode build
+
+# Force a specific GPU backend (default: vulkan on Win/Linux, metal on macOS)
+.\enable-crispembed.ps1 -Backend cuda
+.\enable-crispembed.ps1 -Backend cpu
+
+# Skip the prebuilt download (reuse already-extracted libs)
+.\enable-crispembed.ps1 -SkipDownload
+```
+
+```bash
+# macOS / Linux
+./enable-crispembed.sh
+./enable-crispembed.sh build               # production
+./enable-crispembed.sh dev --backend cuda
+./enable-crispembed.sh dev --skip-download
+```
+
+The script:
+
+1. Ensures the `CrispEmbed` source repo is checked out at `..\CrispEmbed`
+   (`gh repo clone` if missing).
+2. Downloads the OS-matching prebuilt C++ library tarball from CrispEmbed's
+   latest GitHub release into `src-tauri\crispembed-prebuilt\`.
+3. Sets `CRISPEMBED_SYS_LIB_DIR` so `crispembed-sys` links the prebuilt
+   instead of running its own CMake build.
+4. Copies `crispembed.dll` + `ggml*.dll` into:
+   - `src-tauri\target\debug\` and `src-tauri\target\release\` so the dev
+     and production .exe can find them at runtime,
+   - `src-tauri\bin\` so the Tauri bundler picks them up for the installer
+     (per `tauri.conf.json` → `resources: ["bin/*.dll"]`).
+5. Hands off to `npm run tauri dev` or `npm run tauri build` with the
+   matching Cargo feature flag (`crispembed-vulkan` / `crispembed-metal` /
+   `crispembed-cuda` / `crispembed`).
+
+Once it succeeds, the **CrispEmbed (GGUF)** option in *Settings → Search Index*
+is no longer greyed out for models that have a verified GGUF equivalent
+(PIXIE-Rune, Snowflake Arctic-L v2, Octen-0.6B, Jina v5, Qwen3-Embedding,
+BGE-large-EN-v1.5, multilingual-E5-large, mxbai-embed-large-v1,
+nomic-embed-text-v1.5).
+
+#### GPU acceleration with CrispEmbed
+
+The upstream **prebuilt CrispEmbed tarballs are CPU-only** (no
+`ggml-cuda.dll` / `ggml-vulkan.dll` / `ggml-metal.dylib`). If you pass
+`-Backend cuda` / `vulkan` / `metal`, the script still runs and the app
+still launches, but inference falls back to CPU. The script prints a
+warning when this happens.
+
+For real GPU acceleration, build CrispEmbed from source and point the
+script at the resulting library directory:
+
+```powershell
+# 1. Build CrispEmbed with the GPU backend you want
+cd ..\CrispEmbed
+.\build-cuda.bat            # or .\build-vulkan.bat
+cd ..\CrispSorter
+
+# 2. Tell the enable script to use that build instead of the GH release tarball
+.\enable-crispembed.ps1 -Backend cuda -LibDir ..\CrispEmbed\build-cuda\src\Release
+```
+
+(The `-LibDir` argument also wins over `CRISPEMBED_SYS_LIB_DIR` in the
+environment, so if you've already set that you can simply re-run the
+script with `-SkipDownload`.)
+
+Mirroring CrispASR's per-target tarball matrix (CUDA / Vulkan / Metal
+variants in upstream CI) is on the roadmap — see
+[`PLAN.md`](./PLAN.md) → "CrispEmbed CI: per-target lib tarballs".
 
 ### macOS — release script
 
