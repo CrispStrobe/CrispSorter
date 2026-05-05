@@ -1578,21 +1578,21 @@
         <div class="sidebar-scrollable">
             <h2>{i18n.t.settings.app_settings}</h2>
             <button class="provider-btn" class:active={selectedProviderId === 'global'} onclick={() => selectedProviderId = 'global'}>
-                <Globe size={16} /> {i18n.t.settings.general}
+                <span class="prov-label"><Globe size={16} /> {i18n.t.settings.general}</span>
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'llm'} onclick={() => selectedProviderId = 'llm'}>
-                <Zap size={16} /> {i18n.t.settings.llm_options}
+                <span class="prov-label"><Zap size={16} /> {i18n.t.settings.llm_options}</span>
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'bench'} onclick={() => selectedProviderId = 'bench'}>
-                <Beaker size={16} /> {i18n.t.settings.benchmark.title}
+                <span class="prov-label"><Beaker size={16} /> {i18n.t.settings.benchmark.title}</span>
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'index'} onclick={() => selectedProviderId = 'index'}>
-                <Search size={16} /> {i18n.t.settings.index.title}
-                {#if indexStatus === 'ok'}<CheckCircle2 size={12} style="color:#22c55e; margin-left:auto;" />{/if}
-                {#if indexStatus === 'error'}<AlertCircle size={12} style="color:#ef4444; margin-left:auto;" />{/if}
+                <span class="prov-label"><Search size={16} /> {i18n.t.settings.index.title}</span>
+                {#if indexStatus === 'ok'}<CheckCircle2 size={12} style="color:#22c55e;" />{/if}
+                {#if indexStatus === 'error'}<AlertCircle size={12} style="color:#ef4444;" />{/if}
             </button>
             <button class="provider-btn" class:active={selectedProviderId === 'about'} onclick={() => selectedProviderId = 'about'}>
-                <Info size={16} /> {i18n.t.settings.about}
+                <span class="prov-label"><Info size={16} /> {i18n.t.settings.about}</span>
             </button>
 
             <div class="sidebar-divider"></div>
@@ -2949,7 +2949,8 @@
     .sidebar h2 { padding: 0 20px; font-size: 0.75rem; text-transform: uppercase; color: #71717a; margin-bottom: 12px; letter-spacing: 0.05em; }
     .sidebar-divider { height: 1px; background: #27272a; margin: 20px 0; }
     .provider-list { display: flex; flex-direction: column; }
-    .provider-btn { padding: 8px 20px; text-align: left; border: none; background: transparent; cursor: pointer; font-size: 0.875rem; color: #a1a1aa; transition: all 0.2s; display: flex; align-items: center; justify-content: space-between; width: 100%; }
+    .provider-btn { padding: 8px 20px; text-align: left; border: none; background: transparent; cursor: pointer; font-size: 0.875rem; color: #a1a1aa; transition: all 0.2s; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
+    .provider-btn .prov-label { display: inline-flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .provider-btn:hover { background: #27272a; color: white; }
     .provider-btn.active { background: #27272a; color: white; font-weight: 600; border-left: 3px solid #3b82f6; }
     
