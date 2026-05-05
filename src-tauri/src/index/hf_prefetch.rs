@@ -82,9 +82,12 @@ where
             })?;
 
         // Use the first non-empty commit hash; HF guarantees they are stable
-        // across files in the same revision pull.
-        if commit_hash.is_none() && !file_commit.is_empty() {
-            commit_hash = Some(file_commit);
+        // across files in the same revision pull. Strip whitespace because
+        // hf-hub's `Cache::get` reads the hash with `read_to_string` (no
+        // trim) and pushes it onto a path — a stray newline silently
+        // breaks the lookup.
+        if commit_hash.is_none() && !file_commit.trim().is_empty() {
+            commit_hash = Some(file_commit.trim().to_string());
         }
         let commit = commit_hash.as_deref().unwrap_or("main");
         let snapshot_dir = repo_dir.join("snapshots").join(commit);
@@ -113,12 +116,21 @@ where
         local_paths.push(dst_path);
     }
 
-    // Write `refs/main` so hf-hub's cache lookup `Cache::get(filename)` resolves.
-    if let Some(commit) = commit_hash {
-        let ref_path = refs_dir.join("main");
-        std::fs::write(&ref_path, commit.as_bytes())
-            .with_context(|| format!("writing {}", ref_path.display()))?;
-    }
+    // ALWAYS write `refs/main` so hf-hub's `Cache::get(filename)` lookup
+    // resolves — without it, fastembed falls back to its own broken
+    // download path (Windows symlink bug → os error 3 → "Failed to
+    // retrieve onnx/model.onnx") even though our prefetch placed the
+    // file at the right snapshot location.
+    let final_commit = commit_hash.as_deref().unwrap_or("main");
+    let ref_path = refs_dir.join("main");
+    std::fs::write(&ref_path, final_commit.trim().as_bytes())
+        .with_context(|| format!("writing {}", ref_path.display()))?;
+    crate::app_log!(
+        "info",
+        "Embedder: cache layout ready at {} (commit={})",
+        repo_dir.display(),
+        final_commit
+    );
 
     Ok(local_paths)
 }

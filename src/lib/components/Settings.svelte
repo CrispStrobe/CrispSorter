@@ -452,6 +452,11 @@
     let indexStatus         = $state<'idle' | 'loading' | 'ok' | 'error'>('idle');
     let indexStatusMsg      = $state('');
     let indexInitProgress   = $state('');
+    /** Live bytes-of-total during embedder download — populated by the
+     *  `index://download-progress` Tauri event, drives a second progress
+     *  bar inside the init message so the user sees real download
+     *  movement instead of a stuck-at-5% bar. */
+    let indexDownloadProgress = $state<{ repo: string; file: string; bytes_done: number; bytes_total: number; pct: number } | null>(null);
     let indexInitPct        = $state(0);
     let indexIvfRunning     = $state(false);
 
@@ -711,6 +716,18 @@
             }
         );
 
+        // Per-MB embedder download progress (drives the bar inside the
+        // init-progress note instead of leaving it stuck at 5%).
+        const unlistenDownload = await listen<{ repo: string; file: string; bytes_done: number; bytes_total: number; pct: number }>(
+            'index://download-progress',
+            (event) => {
+                indexDownloadProgress = event.payload;
+                if (event.payload.pct >= 100) {
+                    setTimeout(() => { if (indexDownloadProgress?.pct === 100) indexDownloadProgress = null; }, 1500);
+                }
+            }
+        );
+
             cleanup = () => {
                 unlistenMlx();
                 unlistenSidecar();
@@ -720,6 +737,7 @@
                 unlistenOllamaFailed();
                 unlistenOllamaLog();
                 unlistenIndexProgress();
+                unlistenDownload();
             };
         })();
         return () => cleanup();
@@ -1887,13 +1905,11 @@
                 </div>
                 <div style="font-size: 12px; color: #71717a; margin-top: 6px; line-height:1.45;">
                     {#if !crispEmbedCompiledIn}
-                        <strong>CrispEmbed (GGUF) is not built into this binary.</strong>
-                        Run <code>.\enable-crispembed.ps1</code> (Windows) or <code>./enable-crispembed.sh</code> (macOS / Linux) to enable it.
-                        See <code>README.md</code> § <em>Optional: CrispEmbed (GGUF) backend</em>.
+                        {i18n.t.settings.index.engine_hint_no_crispembed}
                     {:else if indexEmbedderBackend === 'onnx'}
-                        <strong>FastEmbed</strong> — runs ONNX models via ORT (CoreML/CUDA/CPU). Broadest hardware support, all models below.
+                        {i18n.t.settings.index.engine_hint_onnx}
                     {:else}
-                        <strong>CrispEmbed</strong> — GGUF inference reusing llama.cpp's Vulkan/Metal/CUDA backends. Filtered list below to the verified GGUF-compatible models.
+                        {i18n.t.settings.index.engine_hint_gguf}
                     {/if}
                 </div>
             </div>
@@ -2012,9 +2028,22 @@
                 {#if indexStatus === 'loading' && indexInitProgress}
                     <div class="init-progress-wrap">
                         <p class="init-progress-label"><Loader2 size={13} class="spin" /> {indexInitProgress}</p>
+                        <!-- Step-level bar (5% / 40% / 70% / 90% / 100%). -->
                         <div class="init-progress-bar">
                             <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
                         </div>
+                        {#if indexDownloadProgress}
+                            <!-- Bytes-level download bar (advances once per MB). -->
+                            <p class="init-progress-label" style="margin-top:8px;">
+                                {indexDownloadProgress.repo}/{indexDownloadProgress.file}
+                                — {(indexDownloadProgress.bytes_done / 1024 / 1024).toFixed(1)} /
+                                {(indexDownloadProgress.bytes_total / 1024 / 1024).toFixed(1)} MB
+                                ({indexDownloadProgress.pct}%)
+                            </p>
+                            <div class="init-progress-bar">
+                                <div class="init-progress-fill" style="width:{indexDownloadProgress.pct}%"></div>
+                            </div>
+                        {/if}
                         <p class="init-progress-note">
                             {#if modelDownloadMb > 0}
                                 Beim ersten Start wird das Embedder-Modell heruntergeladen (~{modelDownloadMb} MB). Bitte warten …

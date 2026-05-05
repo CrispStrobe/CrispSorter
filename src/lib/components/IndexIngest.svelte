@@ -91,6 +91,16 @@
     let currentChunk = $state(0);
     let currentChunkTotal = $state(0);
 
+    // Embedder download progress (bytes-level, fired during model fetch).
+    interface DownloadProgress {
+        repo: string;
+        file: string;
+        bytes_done: number;
+        bytes_total: number;
+        pct: number;
+    }
+    let downloadProgress = $state<DownloadProgress | null>(null);
+
     const supported = new Set<string>(SUPPORTED_EXTENSIONS);
 
     // ── Stats ──────────────────────────────────────────────────────────────────
@@ -145,7 +155,26 @@
                 if (paths.length > 0) addPaths(paths);
             });
 
-            cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); };
+            // Embedder download progress — drives the "Lade Embedder …"
+            // bar with real bytes-of-total instead of staying stuck at 5%.
+            const unlistenDownload = await listen<DownloadProgress>('index://download-progress', (ev) => {
+                downloadProgress = ev.payload;
+                if (ev.payload.pct >= 100) {
+                    setTimeout(() => { if (downloadProgress?.pct === 100) downloadProgress = null; }, 1500);
+                }
+            });
+
+            // Restore pending Hinzufügen entries from a previous session so
+            // navigating to Settings + back doesn't drop them.
+            try {
+                const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
+                const savedEntries = await store.get<IngestEntry[]>('entries');
+                if (savedEntries && Array.isArray(savedEntries)) {
+                    entries = savedEntries.filter(e => e.status !== 'done');
+                }
+            } catch { /* store not yet created */ }
+
+            cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); unlistenDownload?.(); };
         })();
         return () => cleanup();
     });
@@ -250,9 +279,22 @@
         entries = [...entries, ...toAdd];
     }
 
-    function removeEntry(id: string) { entries = entries.filter(e => e.id !== id); }
-    function clearAll()  { if (!running) entries = []; }
-    function clearDone() { entries = entries.filter(e => e.status !== 'done'); }
+    function removeEntry(id: string) { entries = entries.filter(e => e.id !== id); persistEntries(); }
+    function clearAll()  { if (!running) { entries = []; persistEntries(); } }
+    function clearDone() { entries = entries.filter(e => e.status !== 'done'); persistEntries(); }
+
+    /** Persist the Hinzufügen queue across tab switches / app restarts.
+     *  Mirrors how the Stapel batch keeps state in tauri-plugin-store. */
+    async function persistEntries() {
+        try {
+            const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
+            await store.set('entries', $state.snapshot(entries));
+        } catch { /* store not yet writable */ }
+    }
+    $effect(() => {
+        const _ = entries.length;
+        persistEntries();
+    });
 
     // ── Language detection ─────────────────────────────────────────────────────
 
@@ -274,22 +316,47 @@
      *  the enable flag + auto-init so L1 just works without forcing a
      *  trip to Settings. (L1 doesn't need Tantivy or an embedder model;
      *  the LocalIndex's LanceDB table is enough.)
+     *
+     *  When an init is *already in progress* (e.g. user clicked Files
+     *  twice, or another component triggered it), we poll until it
+     *  completes instead of returning an "already in progress" error.
      */
     async function ensureIndexReady(): Promise<boolean> {
+        const isReady = async () => invoke<boolean>('index_is_ready').catch(() => false);
+
+        // Fast path: already up.
         const cfg = await invoke<{ enabled: boolean }>('index_get_config').catch(() => ({ enabled: false }));
-        if (cfg.enabled) {
-            const ready = await invoke<boolean>('index_is_ready').catch(() => false);
-            if (ready) return true;
-        }
-        // Auto-enable + init with whatever config is currently saved.
-        try {
+        if (cfg.enabled && (await isReady())) return true;
+
+        // Try to (re-)init. The Rust side's `initializing` flag rejects
+        // duplicate concurrent calls — when that happens we wait it out
+        // by polling `index_is_ready`.
+        const tryInit = async () => {
             await invoke('index_set_config', { config: { ...(cfg as any), enabled: true } });
             const dataDir = await invoke<string>('get_app_data_dir').catch(() => '');
             await invoke('index_init', { dataDir });
+        };
+
+        try {
+            await tryInit();
             return true;
-        } catch (e) {
-            console.error('[Catalog] auto-init failed:', e);
-            alert(`Catalog initialisation failed: ${e}\n\nOpen Settings → Search Index to configure manually.`);
+        } catch (e: any) {
+            const msg = String(e?.message ?? e ?? '');
+            if (msg.includes('already in progress')) {
+                logInfo('Catalog: another init is running — waiting for it to finish');
+                // Poll up to 10 minutes (long enough for a 2 GB embedder
+                // download on a slow connection). Bail with a clear error
+                // if we time out.
+                const deadline = Date.now() + 10 * 60 * 1000;
+                while (Date.now() < deadline) {
+                    await new Promise(r => setTimeout(r, 500));
+                    if (await isReady()) return true;
+                }
+                logError('Catalog: timed out waiting for the in-progress init to finish');
+                return false;
+            }
+            logError(`Catalog: auto-init failed — ${msg}`);
+            alert(`Catalog initialisation failed: ${msg}\n\nOpen Settings → Search Index for manual setup.`);
             return false;
         }
     }
@@ -866,6 +933,21 @@
                 {#if stats.done > 0}    <span class="sb-chip done">{stats.done} fertig</span>{/if}
                 {#if stats.errors > 0}  <span class="sb-chip error">{stats.errors} Fehler</span>{/if}
                 {#if stats.pending > 0} <span class="sb-chip pending">{stats.pending} ausstehend</span>{/if}
+            </div>
+        {/if}
+
+        <!-- Embedder model download (shown while a model is being fetched). -->
+        {#if downloadProgress}
+            <div class="current-progress">
+                <Loader2 size={13} class="spin" />
+                <span class="current-filename">Lade {downloadProgress.repo}/{downloadProgress.file}</span>
+                <span class="current-step">
+                    {(downloadProgress.bytes_done / 1024 / 1024).toFixed(1)} /
+                    {(downloadProgress.bytes_total / 1024 / 1024).toFixed(1)} MB
+                </span>
+                <div class="mini-bar">
+                    <div class="mini-fill" style="width:{downloadProgress.pct}%"></div>
+                </div>
             </div>
         {/if}
 
