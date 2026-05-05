@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod index;
 
 use futures_util::StreamExt;
@@ -1102,6 +1103,8 @@ pub fn run() {
             index::tauri_commands::index_ingest_document,
             index::tauri_commands::index_ingest_l1,
             index::tauri_commands::index_promote_l2,
+            index::tauri_commands::index_import_caf,
+            index::tauri_commands::index_export_caf,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_build_ivf_pq,
             index::tauri_commands::index_get_config,
