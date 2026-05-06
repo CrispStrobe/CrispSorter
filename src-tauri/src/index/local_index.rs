@@ -524,12 +524,11 @@ impl LocalIndex {
     /// fetches `min(total, offset + limit)` rows, sorts the window
     /// in-process, and slices to `[offset..offset+limit]`. That's
     /// correct but linear in `offset` — fine for the first ~50 pages
-    /// (~10k rows on a 200-row page) but degrades after that. Step 3
-    /// of the migration promotes `parent_dir` to a real column with a
-    /// scalar index; step 5 swaps this for a keyset cursor over an
-    /// indexed sort column once we drop down to `lance::Scanner` for
-    /// DB-side ordering. The `PageCursor` API was designed
-    /// keyset-shaped on purpose — only the encoding changes.
+    /// (~10k rows on a 200-row page) but degrades after that. Step 5
+    /// swaps this for a keyset cursor over an indexed sort column once
+    /// we drop down to `lance::Scanner` for DB-side ordering. The
+    /// `PageCursor` API was designed keyset-shaped on purpose — only
+    /// the encoding changes.
     ///
     /// `total_estimate` comes from `count_rows(filter)` — a scalar
     /// query against the same predicate, so it's cheap (no row
@@ -998,6 +997,18 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
 /// UUIDs / hex serials in practice (no special characters needing
 /// unescape), but we tolerate `\"` and `\\` to match the writer in
 /// `index/ingest.rs::build_metadata_json`.
+/// Tiny hand-parser for `"parent_dir":"<path>"` in `metadata_json`.
+/// Used by `sort_rows` until `SearchResult` gains a first-class field.
+fn parse_parent_dir_from_metadata(json: &str) -> Option<String> {
+    let key = "\"parent_dir\"";
+    let start = json.find(key)?;
+    let after = &json[start + key.len()..];
+    let after = after.trim_start().strip_prefix(':')?.trim_start();
+    let after = after.strip_prefix('"')?;
+    let end = after.find('"').unwrap_or(after.len());
+    Some(after[..end].to_owned())
+}
+
 fn parse_volume_id_from_metadata(json: &str) -> Option<String> {
     let key = "\"volume_id\"";
     let start = json.find(key)?;
@@ -1221,6 +1232,14 @@ fn sort_rows(rows: &mut [SearchResult], sort: super::schema::SortSpec) {
             // to doc_id ordering which is stable per ingest. Step 5 of
             // the migration adds an explicit indexed_at field.
             SortColumn::IndexedAt => a.doc_id.cmp(&b.doc_id),
+            // parent_dir is a real column but SearchResult doesn't expose
+            // it yet; parse from metadata_json as a fallback. L1 rows
+            // always have it there; L3 rows without it sort last.
+            SortColumn::ParentDir => {
+                let a_pd = a.metadata_json.as_deref().and_then(parse_parent_dir_from_metadata);
+                let b_pd = b.metadata_json.as_deref().and_then(parse_parent_dir_from_metadata);
+                a_pd.cmp(&b_pd)
+            }
         };
         // Tiebreak on doc_id so the cursor predicate has a stable
         // partner for cross-page consistency.
@@ -1397,6 +1416,38 @@ mod query_documents_tests {
         };
         let sql = filter_to_sql(&f).unwrap();
         assert!(sql.contains("owner_id = 'o''malley'"));
+    }
+
+    #[test]
+    fn filter_sql_parent_dir_uses_column_not_json_like() {
+        let f = DocumentFilter {
+            parent_dir_prefix: Some("/Users/alice/Documents".to_owned()),
+            ..Default::default()
+        };
+        let sql = filter_to_sql(&f).unwrap();
+        // Must use the real column predicate (P9 step 3).
+        assert!(
+            sql.contains("parent_dir LIKE '/Users/alice/Documents%'"),
+            "expected column predicate, got: {sql}"
+        );
+        // Must NOT fall back to the old JSON LIKE hack.
+        assert!(
+            !sql.contains("metadata_json LIKE"),
+            "must not use metadata_json LIKE, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn filter_sql_parent_dir_escapes_like_wildcards() {
+        let f = DocumentFilter {
+            parent_dir_prefix: Some("/weird%path_here".to_owned()),
+            ..Default::default()
+        };
+        let sql = filter_to_sql(&f).unwrap();
+        assert!(
+            sql.contains(r"parent_dir LIKE '/weird\%path\_here%'"),
+            "LIKE wildcards inside prefix must be escaped: {sql}"
+        );
     }
 
     #[test]
