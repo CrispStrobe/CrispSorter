@@ -127,6 +127,13 @@
     // Distinct from extractionMaxPages, which limits how MUCH text we
     // pull; this limits how LONG we wait for a single file.
     let conversionTimeoutSeconds = $state(120);
+    // PLAN P10 step c -- worker concurrency for the Stapel pipeline.
+    let extractionWorkers = $state(1);
+    let llmWorkers = $state(1);
+    // Frontend log verbosity (silent / error / info / debug). Mutated
+    // via Settings -> Allgemein; the in-process global lives in
+    // `src/lib/log.ts` so non-component code paths see the same value.
+    let logVerbosity = $state<'silent' | 'error' | 'info' | 'debug'>('info');
     // Folder watcher: list of folders for v0.1.34+. Each entry is
     // implicitly active (presence == watching). The Rust side
     // canonicalizes paths before installing watchers and emits
@@ -624,6 +631,9 @@
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
         pdfMetadataPrefill = await getSetting('pdfMetadataPrefill', true);
         conversionTimeoutSeconds = (await getSetting('conversionTimeoutSeconds', 120)) as number;
+        extractionWorkers = (await getSetting('extractionWorkers', 1)) as number;
+        llmWorkers = (await getSetting('llmWorkers', 1)) as number;
+        logVerbosity = (await getSetting('logVerbosity', 'info')) as any;
         // Migrate v0.1.32 single-folder shape on first read.
         const stored = (await getSetting('watchFolders', null)) as string[] | null;
         if (stored != null) {
@@ -914,6 +924,13 @@
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
         await saveSetting('pdfMetadataPrefill', pdfMetadataPrefill);
         await saveSetting('conversionTimeoutSeconds', conversionTimeoutSeconds);
+        await saveSetting('extractionWorkers', extractionWorkers);
+        await saveSetting('llmWorkers', llmWorkers);
+        await saveSetting('logVerbosity', logVerbosity);
+        // Push the verbosity into the in-process flog filter so other
+        // (non-Settings) code paths see the change immediately.
+        const { setLogVerbosity } = await import('../log');
+        setLogVerbosity(logVerbosity);
         await saveSetting('watchFolders', watchFolders);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
@@ -1682,6 +1699,17 @@
                 <p class="hint">{i18n.t.settings.path_template_hint}</p>
             </div>
 
+            <div class="section-card">
+                <label for="log-verbosity">{i18n.t.settings.log_verbosity_label}</label>
+                <select id="log-verbosity" bind:value={logVerbosity} class="styled-select" style="max-width: 320px;">
+                    <option value="silent">{i18n.t.settings.log_verbosity_silent}</option>
+                    <option value="error">{i18n.t.settings.log_verbosity_error}</option>
+                    <option value="info">{i18n.t.settings.log_verbosity_info}</option>
+                    <option value="debug">{i18n.t.settings.log_verbosity_debug}</option>
+                </select>
+                <p class="hint">{i18n.t.settings.log_verbosity_hint}</p>
+            </div>
+
         {:else if selectedProviderId === 'extraction'}
             <div class="header">
                 <h1>{i18n.t.settings.extraction}</h1>
@@ -1785,6 +1813,21 @@
                 </p>
             </div>
 
+            <!-- PLAN P10 step c — extraction worker count -->
+            <div class="section-card">
+                <label for="extraction-workers">{i18n.t.settings.extraction_workers_label}</label>
+                <input
+                    id="extraction-workers"
+                    type="number"
+                    min="1"
+                    max="16"
+                    step="1"
+                    bind:value={extractionWorkers}
+                    style="width: 120px;"
+                />
+                <p class="hint">{i18n.t.settings.extraction_workers_hint}</p>
+            </div>
+
         {:else if selectedProviderId === 'llm'}
             <div class="header">
                 <h1>{i18n.t.settings.llm_options}</h1>
@@ -1881,6 +1924,20 @@
                         {/each}
                     </div>
                 {/if}
+            </div>
+
+            <div class="section-card">
+                <label for="llm-workers">{i18n.t.settings.llm_workers_label}</label>
+                <input
+                    id="llm-workers"
+                    type="number"
+                    min="1"
+                    max="16"
+                    step="1"
+                    bind:value={llmWorkers}
+                    style="width: 120px;"
+                />
+                <p class="hint">{i18n.t.settings.llm_workers_hint}</p>
             </div>
 
             <div class="section-card">

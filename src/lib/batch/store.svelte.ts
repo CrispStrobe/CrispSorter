@@ -11,7 +11,7 @@ import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import type { BatchSession } from '../types';
 import { extractText } from '../extractors';
-import { flog } from '../log';
+import { flog, logDebug } from '../log';
 
 export interface ProcessOverrides {
     providerId?: string;
@@ -42,6 +42,19 @@ export class BatchManager {
     filterStatus = $state('all');
     filterMinSize = $state(0);
     isMetadataExtractionEnabled = $state(true);
+    /** Live worker counts -- bound to the bottom-left throughput chip
+     *  in +page.svelte. Updated as workers enter / leave their critical
+     *  section. `*Active` is "currently in flight"; `*Done` is the
+     *  cumulative count for the current `processAll` run.
+     *  `runStartTs` resets each `processAll`; the UI uses it +
+     *  `extractionDone` / `llmDone` to compute docs/min. */
+    extractionActive = $state(0);
+    llmActive = $state(0);
+    extractionDone = $state(0);
+    llmDone = $state(0);
+    extractionTargetWorkers = $state(1);
+    llmTargetWorkers = $state(1);
+    runStartTs = $state(0);
     private stopRequested = false;
     private extractionAbort: AbortController | null = null;
     private llmAbort: AbortController | null = null;
@@ -149,6 +162,10 @@ export class BatchManager {
         this.isProcessing = true;
         this.stopRequested = false;
         this.llmAbort = new AbortController();
+        this.extractionAbort = new AbortController();
+        this.runStartTs = Date.now();
+        this.extractionDone = 0;
+        this.llmDone = 0;
 
         const providers = await getSetting('providers', []);
         const activeProviderId = overrides?.providerId || await getSetting('activeProviderId', 'ollama');
@@ -244,47 +261,69 @@ export class BatchManager {
             ? conversionTimeoutSec * 1000
             : 0;
 
-        // Bounded queue between producer + consumer. 8 is enough to
-        // keep the LLM busy through one extraction stall (typical
-        // extraction takes seconds; an OCR pass that takes a minute
-        // can still feed the LLM the seven items already done while
-        // it grinds).
-        const QUEUE_CAP = 8;
-        const llmQueue: BatchItem[] = [];
-        let producerDone = false;
-        let wakeConsumer: (() => void) | null = null;
-        let wakeProducer: (() => void) | null = null;
-        const signalConsumer = () => {
-            if (wakeConsumer) { const fn = wakeConsumer; wakeConsumer = null; fn(); }
+        // PLAN P10 step c -- N extraction workers, M LLM workers.
+        //
+        // Worker counts come from Settings (Extraktion / KI-Optionen
+        // panels), clamped to [1, 16]. Default is 1 + 1, matching the
+        // pre-this-commit producer/consumer pipeline; users with fast
+        // CPUs / large round-robin pools can scale up.
+        const extractionN = Math.max(1, Math.min(16, (await getSetting('extractionWorkers', 1)) as number));
+        const llmN = Math.max(1, Math.min(16, (await getSetting('llmWorkers', 1)) as number));
+        this.extractionTargetWorkers = extractionN;
+        this.llmTargetWorkers = llmN;
+
+        // Async queue between extractors and LLM consumers. Workers
+        // park on `take()` when empty; the queue is `close()`d after
+        // all extractor workers finish, which wakes any consumer
+        // waiting on `take()` with a `null` sentinel so they can
+        // exit cleanly.
+        type Waiter = (v: BatchItem | null) => void;
+        const llmQueueItems: BatchItem[] = [];
+        const llmQueueWaiters: Waiter[] = [];
+        let llmQueueClosed = false;
+        const queuePush = (item: BatchItem) => {
+            if (llmQueueWaiters.length > 0) llmQueueWaiters.shift()!(item);
+            else llmQueueItems.push(item);
         };
-        const signalProducer = () => {
-            if (wakeProducer) { const fn = wakeProducer; wakeProducer = null; fn(); }
+        const queueClose = () => {
+            llmQueueClosed = true;
+            while (llmQueueWaiters.length > 0) llmQueueWaiters.shift()!(null);
+        };
+        const queueTake = (): Promise<BatchItem | null> => {
+            if (llmQueueItems.length > 0) return Promise.resolve(llmQueueItems.shift()!);
+            if (llmQueueClosed) return Promise.resolve(null);
+            return new Promise<BatchItem | null>(r => llmQueueWaiters.push(r));
         };
 
+        // Single shared next-item index. JS is single-threaded for
+        // state mutations, so the read-then-increment is atomic by
+        // construction; no lock needed.
+        let nextIdx = 0;
+
         try {
-            // ── Producer: extraction ────────────────────────────────────────
-            const extractor = (async () => {
-            for (const item of this.items) {
+            // ── Worker: extraction ──────────────────────────────────────────
+            // N workers run this body concurrently. Each pulls the next
+            // item via the shared `nextIdx`, runs the existing
+            // extraction logic with its own per-item watchdog, and
+            // pushes the ready item onto the queue. Stop button aborts
+            // via the shared `extractionAbort` signal.
+            const extractWorker = async (workerId: number) => {
+            while (true) {
+                if (this.stopRequested) break;
+                const idx = nextIdx++;
+                if (idx >= this.items.length) break;
+                const item = this.items[idx];
                 if (!needsProcessing(item) || item.extractedText) {
-                    // Already-extracted items should still be analysed
-                    // by the consumer if they're awaiting LLM. Push and
-                    // let the consumer skip-or-not based on its own
-                    // needsAnalysis predicate.
+                    // Already-extracted items still go to the LLM
+                    // queue so the consumer covers re-runs.
                     if (item.extractedText && !overrides?.extractionOnly) {
-                        llmQueue.push(item);
-                        signalConsumer();
+                        queuePush(item);
                     }
                     continue;
                 }
-                if (this.stopRequested) { flog('info', 'Stop requested, halting extraction phase'); break; }
-                // Back-pressure: pause the producer when the LLM
-                // consumer is behind by more than QUEUE_CAP items.
-                while (llmQueue.length >= QUEUE_CAP && !overrides?.extractionOnly) {
-                    if (this.stopRequested) break;
-                    await new Promise<void>(r => { wakeProducer = r; });
-                }
-                if (this.stopRequested) break;
 
+                logDebug(`extract worker ${workerId} -> ${item.originalName} (queue=${llmQueueItems.length})`);
+                this.extractionActive++;
                 item.status = 'extracting';
                 const forceOCR = overrides?.enforceOcr ?? false;
 
@@ -303,13 +342,22 @@ export class BatchManager {
                         item.extractedText = text;
                     } else {
                         flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
-                        this.extractionAbort = new AbortController();
+                        // Per-item AbortController. Listens to the shared
+                        // `this.extractionAbort` (Stop button) so cancelling
+                        // the run aborts every in-flight worker, but each
+                        // worker also has its own watchdog + file timeout
+                        // that can fire independently without affecting
+                        // sibling workers.
+                        const itemAbort = new AbortController();
+                        const onSharedAbort = () => itemAbort.abort(this.extractionAbort?.signal.reason);
+                        this.extractionAbort?.signal.addEventListener('abort', onSharedAbort, { once: true });
+
                         // Per-page watchdog: abort if no page progress for PAGE_WATCHDOG_MS
                         let watchdogId: ReturnType<typeof setTimeout> | null = null;
                         const resetWatchdog = () => {
                             if (watchdogId) clearTimeout(watchdogId);
                             watchdogId = setTimeout(() => {
-                                this.extractionAbort?.abort(new Error('EXTRACT_PAGE_TIMEOUT'));
+                                itemAbort.abort(new Error('EXTRACT_PAGE_TIMEOUT'));
                                 flog('warn', `Page watchdog fired (${PAGE_WATCHDOG_MS / 1000}s no progress): ${item.originalName}`);
                             }, PAGE_WATCHDOG_MS);
                         };
@@ -322,7 +370,7 @@ export class BatchManager {
                         let fileTimeoutId: ReturnType<typeof setTimeout> | null = null;
                         if (FILE_TIMEOUT_MS > 0) {
                             fileTimeoutId = setTimeout(() => {
-                                this.extractionAbort?.abort(new Error('EXTRACT_FILE_TIMEOUT'));
+                                itemAbort.abort(new Error('EXTRACT_FILE_TIMEOUT'));
                                 flog('warn', `File timeout fired (${FILE_TIMEOUT_MS / 1000}s wall-clock): ${item.originalName}`);
                             }, FILE_TIMEOUT_MS);
                         }
@@ -330,7 +378,7 @@ export class BatchManager {
                         const fileData = await readFile(item.originalPath);
                         if (this.stopRequested) {
                             if (watchdogId) clearTimeout(watchdogId);
-                            this.extractionAbort = null;
+                            this.extractionAbort?.signal.removeEventListener('abort', onSharedAbort);
                             item.status = 'queued';
                             break;
                         }
@@ -340,7 +388,7 @@ export class BatchManager {
                                 { name: item.originalName, arrayBuffer: fileData.buffer },
                                 {
                                     forceOCR,
-                                    signal: this.extractionAbort.signal,
+                                    signal: itemAbort.signal,
                                     maxPages: extractionMaxPages || undefined,
                                     onProgress: (page, total) => {
                                         item.statusDetail = `${page}/${total} pages`;
@@ -351,7 +399,7 @@ export class BatchManager {
                         } finally {
                             if (watchdogId) clearTimeout(watchdogId);
                             if (fileTimeoutId) clearTimeout(fileTimeoutId);
-                            this.extractionAbort = null;
+                            this.extractionAbort?.signal.removeEventListener('abort', onSharedAbort);
                         }
                         if (this.stopRequested) { item.status = 'queued'; break; }
                         item.extractedText = extraction.text;
@@ -397,8 +445,7 @@ export class BatchManager {
                     flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
-                        llmQueue.push(item);
-                        signalConsumer();
+                        queuePush(item);
                     }
                 } catch (e: any) {
                     const isAbort = this.stopRequested || e?.name === 'AbortError' || e?.message?.includes('EXTRACT');
@@ -412,36 +459,33 @@ export class BatchManager {
                         item.errorMessage = e.message || String(e);
                         flog('error', `Extraction error: ${item.originalName}: ${e.message || e}`);
                     }
+                } finally {
+                    this.extractionActive = Math.max(0, this.extractionActive - 1);
+                    this.extractionDone++;
                 }
                 await this.saveCurrentSession();
             }
-            producerDone = true;
-            signalConsumer();
-            })();
+            };
 
-            // ── Consumer: LLM analysis ──────────────────────────────────────
-            const analyser = (async () => {
-            // Skip the consumer entirely when we're only extracting,
-            // or when metadata extraction is disabled in Settings.
+            // ── Worker: LLM analysis ────────────────────────────────────────
+            // M workers run this concurrently. Each `take()`s the next
+            // item off the shared queue; when the queue is closed AND
+            // empty, `take()` resolves null and the worker exits.
+            const llmWorker = async (workerId: number) => {
+            // Skip entirely when we're only extracting, or when metadata
+            // extraction is disabled in Settings.
             if (overrides?.extractionOnly || !this.isMetadataExtractionEnabled) return;
 
-            // Drain `llmQueue` until both empty AND producer has flagged
-            // it's done emitting. Items pushed by the producer carry
-            // freshly-extracted text; pre-extracted items already in
-            // `this.items` are also pushed by the producer's early-skip
-            // branch above, so this single loop covers both cases.
             while (true) {
                 if (this.stopRequested || this.llmAbort?.signal.aborted) {
-                    flog('info', 'Stop requested, halting analysis phase');
+                    flog('info', `LLM worker ${workerId} halting (stop)`);
                     break;
                 }
-                if (llmQueue.length === 0) {
-                    if (producerDone) break;
-                    await new Promise<void>(r => { wakeConsumer = r; });
-                    continue;
-                }
-                const item = llmQueue.shift()!;
-                signalProducer(); // unblock back-pressure if the producer was waiting
+                const item = await queueTake();
+                if (item === null) break; // queue closed and empty
+
+                logDebug(`llm worker ${workerId} -> ${item.originalName} (remaining=${llmQueueItems.length})`);
+
                 // Re-check: the producer may have queued an item that
                 // the user has since edited, or the item may have
                 // already been analysed in a prior partial run.
@@ -449,6 +493,7 @@ export class BatchManager {
                     item.extractedText &&
                     (!onlyIds || onlyIds.has(item.id));
                 if (!needsAnalysis) continue;
+                this.llmActive++;
 
                 item.status = 'analyzing';
                 try {
@@ -518,21 +563,36 @@ export class BatchManager {
                         item.errorMessage = e.message || String(e);
                         flog('error', `Analysis error: ${item.originalName}: ${e.message || e}`);
                     }
+                } finally {
+                    this.llmActive = Math.max(0, this.llmActive - 1);
+                    this.llmDone++;
                 }
                 await this.saveCurrentSession();
             }
-            })();
+            };
 
-            await Promise.all([extractor, analyser]);
+            // Spawn N extraction workers + M LLM workers. The extraction
+            // workers' `Promise.all` finishes when every item has been
+            // processed; we then `queueClose()` so any LLM workers still
+            // waiting on `take()` see the queue end and exit.
+            const extractWorkers = Array.from({ length: extractionN }, (_, i) => extractWorker(i));
+            const llmWorkers = Array.from({ length: llmN }, (_, i) => llmWorker(i));
+
+            // When all extractors finish, close the queue so consumers
+            // can drain and exit.
+            const extractAllDone = Promise.all(extractWorkers).then(() => {
+                logDebug('all extraction workers finished -> closing llmQueue');
+                queueClose();
+            });
+
+            await Promise.all([extractAllDone, ...llmWorkers]);
         } finally {
             this.isProcessing = false;
             this.stopRequested = false;
             this.llmAbort = null;
-            // Flush any consumers / producers blocked in their await.
-            // (signalConsumer/signalProducer are no-ops when nobody is
-            // waiting, so this is safe to call even on the happy path.)
-            signalConsumer();
-            signalProducer();
+            this.extractionAbort = null;
+            this.extractionActive = 0;
+            this.llmActive = 0;
             flog('info', 'processAll finished');
         }
     }
