@@ -631,6 +631,275 @@ rest is incremental.
 
 ---
 
+### P11 — Remote-server architecture for terabyte scale
+
+P10 sized the foreground client for "millions of files on one
+machine"; P11 is the server side: a user with a multi-TB archive
+who runs CrispSorter on their laptop, the actual index on a
+beefier VPS or in-house GPU box. Three pillars (the user's three
+questions made concrete) plus the modularity work we should do
+**now** so the eventual transition is incremental, not a rewrite.
+
+#### Where we are today
+
+* `IndexBackend` trait already abstracts local vs remote.
+  `BackendType::Local` (default) drives `LocalIndex` (LanceDB +
+  Tantivy on disk); `BackendType::Remote` drives `RemoteClient`
+  (HTTP).
+* `RemoteClient` (`src-tauri/src/index/remote_client.rs`) is
+  wired and protocol-documented:
+  `POST /v1/ingest` (per-chunk, includes pre-computed embedding),
+  `POST /v1/search`, `POST /v1/docs/:id/location`,
+  `DELETE /v1/docs/:id`, `GET /v1/stats`, `GET /health`.
+* `crisp-index-server` (Axum) is a documented skeleton with stub
+  handlers — the wire shape is defined; the LanceDB / Tantivy
+  glue on the server side is not yet written.
+* The client today **always** embeds locally regardless of the
+  backend (`Local` or `Remote`). Remote-mode posts the
+  pre-computed vector with each chunk.
+* Each `index_ingest_document` call is one full extract → embed
+  → write cycle, and remote-mode does one POST per chunk. For
+  100 k files × ~10 chunks = 1 M HTTP round-trips before any
+  server-side queue.
+
+#### Pillar 1 — Async ingestion queue (server-side, 202 Accepted)
+
+The user is right: per-chunk synchronous POSTs don't scale. The
+shape we want:
+
+```
+client                                    crisp-index-server
+  │                                              │
+  │  POST /v1/ingest/batch  (N chunks)           │
+  │  Authorization: Bearer …                     │
+  │ ─────────────────────────────────────────►   │
+  │                                              │ SQLite-queue.push(payload)
+  │                                              │ ───────────────────────┐
+  │                                              │                        │
+  │                              ◄─── 202 Accepted, body { task_id }      │
+  │                                              │                        │
+  │  GET /v1/tasks/{task_id}                     │                        ▼
+  │ ─────────────────────────────────────────►   │  worker thread:
+  │                                              │   pop → embed (if needed) →
+  │                              ◄─── { state, progress, error? }         LanceDB.add → Tantivy.commit
+```
+
+Implementation:
+* New endpoint `POST /v1/ingest/batch` accepts `IngestBatch
+  { chunks: Vec<IngestPayload> }`. Returns `202 Accepted` with
+  `{ task_id, queue_depth }` immediately.
+* Persistent task queue. Start with **SQLite** (sqlx + a
+  `tasks(id, payload, state, error, created_at)` table) — it's
+  already the right tool and survives server restarts. Redis is
+  the upgrade for multi-writer fanout if/when the server itself
+  becomes the bottleneck.
+* Single writer thread drains the queue; LanceDB + Tantivy both
+  prefer one writer at a time anyway.
+* `GET /v1/tasks/{id}` reports `queued | processing | done |
+  failed`. Client batches polling every ~2 s while a run is
+  active.
+
+Bonus — bulk delete + bulk update-location land in the same
+queue, by the same path. Today they're synchronous which means
+"move 50k sorted files" stalls the UI for minutes.
+
+#### Pillar 2 — Optional server-side embedding
+
+Today client always embeds. For TB scale where the client is a
+laptop and the index lives on a GPU box, that's backwards. New
+config:
+
+```
+embedderLocation: 'client' | 'server'
+```
+
+When `client` (default, today's behaviour): client extracts +
+embeds + posts pre-computed vector. Privacy-preserving; works
+when the user runs the whole stack on one machine.
+
+When `server`: client extracts + chunks, posts **raw text only**.
+Server has its own `Embedder` (`crispembed-cuda` if GPU, fall
+back to fastembed-CPU otherwise) and embeds in batches before
+writing. New endpoint shape:
+
+```
+POST /v1/ingest/batch
+  body: IngestBatch where chunks[i].embedding may be null
+  202 ← { task_id }
+```
+
+Server worker thread checks each chunk: if `embedding` is null
+*and* `config.embedderLocation == 'server'`, batches into a
+GPU-friendly group of (e.g.) 64 chunks and runs the embedder.
+Otherwise writes verbatim.
+
+The split lets a single user mix: laptop runs in `client` mode
+on its own files for privacy, but a backfill from "the entire
+archive folder on the NAS" runs in `server` mode so the GPU box
+chews through it overnight.
+
+#### Pillar 3 — IVF-PQ at 100M+ vectors
+
+The user's concern is real. LanceDB's IVF-PQ build runs K-Means
+clustering over the vector column, which by default loads the
+column into memory. At 1024-dim float32 × 100 M vectors = ~400
+GB raw — won't fit, even on the beefiest VPS.
+
+The fix is in the LanceDB API (modulo version availability):
+
+```rust
+IvfPqIndexBuilder::default()
+    .distance_type(DistanceType::Cosine)
+    .num_partitions(K)         // sqrt(N) is a reasonable default
+    .num_sub_vectors(D / 8)    // 8-bit PQ codes, 1024d → 128 sub-vectors
+    .sample_rate(SAMPLE_RATE)  // ★ what we need: K-Means trains on a sample
+    .max_iters(50)
+```
+
+`sample_rate` exists in newer LanceDB (post-0.7); we're on 0.26
+and need to verify the exact API. If not exposed at the LanceDB
+layer, we drop to the lance crate directly (`lance::index::vector::ivf`)
+which has had the sample-rate knob for longer.
+
+Operational shape:
+* Don't rebuild on every ingest. Threshold-driven: when row count
+  crosses a power-of-2 milestone (1 M, 4 M, 16 M, …) **or** the
+  user explicitly clicks "Re-index" in admin, schedule a build
+  task.
+* Build is itself a queue task — runs in the same worker thread,
+  blocks new ingests until done (or gets a separate worker if
+  contention shows up).
+* Sample size needs tuning. LanceDB upstream recommends
+  `100 * num_partitions` rows as the floor; that's typically
+  `100 * sqrt(N)` so for 100 M vectors → 1 M sample rows = ~4 GB
+  of vectors in RAM during the build, manageable.
+
+#### End-state architecture
+
+```
+                ┌─────────────────────────────────────────────────────┐
+                │   user laptop (Tauri desktop app)                   │
+                │   ───────────────────────────────                   │
+                │   * Stapel UI + Catalog Übersicht                   │
+                │   * extractor pool (P10)                            │
+                │   * embedder ONLY if mode='client'                  │
+                │   * llmClient (OpenAI / Anthropic / local llama)    │
+                │   * IndexBackend trait → RemoteClient OR LocalIndex │
+                └────────────┬────────────────────────────────────────┘
+                             │
+                             │ POST /v1/ingest/batch (raw text or vectors)
+                             │ POST /v1/search       (text + maybe vector)
+                             │ GET  /v1/tasks/:id    (poll progress)
+                             ▼
+                ┌─────────────────────────────────────────────────────┐
+                │   crisp-index-server  (Axum + tokio)                │
+                │   ──────────────────────────────                    │
+                │   * /v1/ingest/batch → enqueue → 202                │
+                │   * /v1/search       → fan out to local LanceDB     │
+                │   * /v1/tasks/:id    → SQLite read                  │
+                │                                                     │
+                │   workers (tokio tasks):                             │
+                │     ingest_writer  → SQLite-queue → embed (opt) →   │
+                │                       LanceDB.add → Tantivy.commit  │
+                │     reindex_worker → IVF-PQ rebuild on milestones,  │
+                │                       sample_rate-bounded K-Means   │
+                │                                                     │
+                │   storage:                                           │
+                │     LanceDB  (or sharded Lance datasets in v3)      │
+                │     Tantivy  (single index in v1; per-shard in v3)  │
+                │     SQLite   (task queue + admin metadata)          │
+                └────────────┬────────────────────────────────────────┘
+                             │
+                             ▼
+                ┌─────────────────────────────────────────────────────┐
+                │   storage volume (SSD or NVMe array)                │
+                │   * /var/crispsorter/lance/...                      │
+                │   * /var/crispsorter/tantivy/...                    │
+                │   * /var/crispsorter/queue.sqlite                   │
+                └─────────────────────────────────────────────────────┘
+```
+
+Sharding (only if a single Lance dataset can't keep up):
+* Partition by `volume_id` — already a column in LanceDB. Each
+  shard is its own dataset. Search fans out, merges with RRF.
+  Eyeballed scale at which this matters: ~500 M vectors, or the
+  point where a single Lance scan + IVF-PQ index can't fit on
+  one box's SSD.
+
+#### What "build modularly toward this NOW" means
+
+Before P11 starts in earnest, three small refactors lower the
+eventual port cost. Each is independently shippable:
+
+1. **`IngestBatch` shape across the whole pipeline.** Today the
+   producer/consumer in `batch/store.svelte.ts` produces one
+   `BatchItem` at a time → `index_ingest_document(per-chunk)`.
+   The right next layer is: producer emits N `IngestPayload`s
+   in one go to `index_ingest_batch(items)`. The local backend
+   coalesces them on the LanceDB write; the remote backend
+   POSTs them as one `/v1/ingest/batch` call. Same pipeline,
+   one swap point.
+
+2. **`embedderLocation: 'client' | 'server'`** as a config flag
+   (not yet a feature toggle). Default `'client'`. The pipeline
+   reads it before deciding to load an embedder; `'server'`
+   short-circuits the local embedder entirely and posts raw
+   text. We already had `use_vector` (no embedder at all);
+   this adds the third state.
+
+3. **Make the local backend a queue too.** Today the local
+   write path is synchronous (caller awaits each chunk). If we
+   wrap it in a tokio mpsc + a single writer task, the same
+   "fire-and-forget plus poll" shape that the server will use
+   already works locally — and the UI gets non-blocking writes
+   for free. The local writer's queue depth becomes the same
+   metric we'll show for remote-mode queue depth in the
+   bottom-left chip from P10's throughput indicator.
+
+These three are net-no-feature-loss but turn the eventual
+client/server cutover from "rewrite the ingest path" into "swap
+the implementation behind one trait method."
+
+#### Migration order
+
+1. **Refactor (a):** `index_ingest_batch` Tauri command + LocalIndex
+   coalesced writes. Foreground Stapel pipeline (P10) feeds it
+   chunks-at-a-time instead of one-doc-at-a-time. **No server work
+   yet.** Client gets faster local ingest as a side effect (Arrow
+   record-batch overhead amortised).
+
+2. **Refactor (b):** `embedderLocation` config + the load gate.
+   Default `'client'`; the second value becomes meaningful in
+   step 5.
+
+3. **Refactor (c):** local writer queue. UI sees real queue depth
+   even in single-machine mode. Sets up the abstraction the
+   remote queue will land in.
+
+4. **Server step 1 — bulk ingest API.** Build out the
+   `crisp-index-server` stubs: `POST /v1/ingest/batch` returns
+   202 + task_id, SQLite-backed queue, single writer task that
+   actually writes (still expects pre-computed embeddings).
+   Client switches to bulk POSTs in remote mode.
+
+5. **Server step 2 — server-side embedding.** Add the embedder
+   to the server worker, gated by `embedderLocation == 'server'`.
+   Client stops embedding when this is on.
+
+6. **Server step 3 — IVF-PQ with sample_rate.** Background
+   reindex worker, threshold-driven. Drop to the `lance` crate
+   if `lancedb 0.26` doesn't expose the knob yet.
+
+7. **Server step 4 — sharding by `volume_id`.** Only when needed.
+
+Steps 1-3 are pure client refactors that ship CrispSorter
+desktop without any server work and pay off immediately
+(non-blocking writes, bulk Arrow batches, queue-depth
+visibility). Steps 4+ are the actual server build-out, but the
+client is already shaped right by then.
+
+---
+
 (For historical per-version changelog and shipped phase specs, see
 [HISTORY.md](HISTORY.md).)
 
