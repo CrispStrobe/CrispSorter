@@ -2155,6 +2155,7 @@ pub fn run() {
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_ingest_document,
+            index::tauri_commands::index_ingest_batch,
             index::tauri_commands::index_ingest_l1,
             index::tauri_commands::index_promote_l2,
             index::tauri_commands::index_import_caf,

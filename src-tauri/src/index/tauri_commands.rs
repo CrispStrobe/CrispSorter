@@ -577,6 +577,111 @@ pub async fn index_ingest_document(
     })
 }
 
+// ── Batched L3 ingest (PLAN P11 step 1) ───────────────────────────────────
+
+/// PLAN P11 step 1 -- bulk-ingest N already-extracted documents in one
+/// shot. Same per-doc inputs as `index_ingest_document`; the saving
+/// is server-side (one Arrow record-batch per ~64*4 chunks instead of
+/// one per doc, one Tantivy commit instead of one per doc -- Tantivy
+/// commits do segment merges so they're the dominant cost when doc
+/// count is high).
+///
+/// Foreground use case: the producer/consumer pipeline accumulates
+/// up to N freshly-embedded documents and flushes them through this
+/// command in one call instead of N. Programmatic use case
+/// (P12 step 13): the cb-manifest L1 import dispatches one batch
+/// per HARD_BATCH chunks of cloud-backup file_manifest rows.
+///
+/// Local-backend only; remote-mode bulk-ingest is P11 step 4 and goes
+/// through `crisp_index_protocol::IngestBatch` over HTTP. Calling this
+/// against `BackendType::Remote` returns an error today; callers
+/// should fall back to per-doc `index_ingest_document` against the
+/// remote backend, or wait for step 4.
+#[tauri::command]
+pub async fn index_ingest_batch(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    inputs: Vec<DocumentIngestInput>,
+) -> Result<IngestStats, String> {
+    if inputs.is_empty() {
+        return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
+    }
+
+    let lock = state.index.lock().await;
+
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+
+    let pipeline = lock.pipeline.clone();
+    drop(lock);
+
+    let pipeline = pipeline.ok_or(
+        "index_ingest_batch is local-backend only today; remote-mode \
+         bulk-ingest lands with PLAN P11 step 4. Use \
+         index_ingest_document per-doc in remote mode meanwhile."
+    )?;
+
+    use tauri::Emitter;
+    let total = inputs.len();
+
+    macro_rules! emit_batch {
+        ($step:expr, $msg:expr) => {
+            let _ = app.emit(
+                "index://ingest-progress",
+                IngestProgress {
+                    filename: format!("(batch of {})", total),
+                    step: $step,
+                    chunk_index: 0,
+                    chunk_total: 0,
+                    message: $msg.to_owned(),
+                },
+            );
+        };
+    }
+
+    emit_batch!("embedding", "Embedding & writing batch …");
+
+    let raws: Vec<RawDocument> = inputs
+        .into_iter()
+        .map(|input| RawDocument {
+            full_text: input.full_text,
+            full_text_md: input.full_text_md,
+            headings: input.headings,
+            title: input.title,
+            author: input.author,
+            year: input.year,
+            filename: input.filename,
+            ext: input.ext,
+            language: input.language,
+            source_hash: input.source_hash,
+            location_uri: input.location_uri,
+            owner_id: input.owner_id,
+            tags: input.tags,
+            // Same rationale as index_ingest_document: frontend ingest
+            // is path-less / mtime-less; bg_ingest skip-on-mtime
+            // treats None as "re-ingest" which is the safe default.
+            mtime_unix: None,
+            volume_id: None,
+        })
+        .collect();
+
+    let result = pipeline
+        .ingest_documents_batch(raws)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    emit_batch!(
+        "done",
+        format!(
+            "Done: {} docs / {} chunks, embed {} ms, write {} ms",
+            total, result.chunk_count, result.embed_time_ms, result.write_time_ms
+        )
+    );
+
+    Ok(result)
+}
+
 // ── Level-1 (filesystem-only) ingest ──────────────────────────────────────────
 
 /// Quick metadata-only ingest: writes one filesystem-info row per file.

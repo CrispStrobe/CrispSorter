@@ -107,6 +107,28 @@ pub struct IngestResponse {
     pub write_time_ms: u64,
 }
 
+/// Bulk-ingest request body for `POST /v1/ingest/batch` (PLAN P11
+/// step 4). Same chunk shape as the singular endpoint; the server
+/// coalesces all chunks into one Arrow record-batch + one Tantivy
+/// commit, which is materially faster than N individual writes for
+/// large ingests.
+///
+/// On the local side the same shape lets `index_ingest_batch` write N
+/// documents in a single LanceDB transaction; the wire format and the
+/// in-process struct are identical so the client/server cutover is a
+/// trait-impl swap, not a re-encode.
+///
+/// Server response is `IngestResponse` with `chunk_count = chunks.len()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IngestBatch {
+    /// Pre-embedded chunks. Every element is validated against the
+    /// server's `EMBED_DIMS` exactly the way the singular endpoint
+    /// does; one mismatch rejects the whole batch with HTTP 422 to
+    /// keep partial writes off the table.
+    #[serde(default)]
+    pub chunks: Vec<IngestChunk>,
+}
+
 // ── Search ──────────────────────────────────────────────────────────────────
 
 /// Hybrid-search request body for `POST /v1/search`. The server picks the
@@ -336,6 +358,47 @@ mod tests {
         assert_eq!(back.doc_id, "abc");
         assert_eq!(back.embedding.len(), 3);
         assert_eq!(back.tags.len(), 2);
+    }
+
+    #[test]
+    fn ingest_batch_round_trip() {
+        let chunk = |i: i32| IngestChunk {
+            doc_id: format!("doc-{i}"),
+            chunk_index: 0,
+            full_text: format!("text-{i}"),
+            full_text_md: None,
+            headings: None,
+            embedding: vec![0.0; 4],
+            title: None,
+            author: None,
+            year: None,
+            filename: format!("doc-{i}.txt"),
+            ext: "txt".into(),
+            language: "en".into(),
+            location_uri: format!("crisp+local://m/u/doc-{i}.txt"),
+            owner_id: "u".into(),
+            source_hash: format!("hash-{i}"),
+            tags: Vec::new(),
+        };
+        let b = IngestBatch {
+            chunks: (0..3).map(chunk).collect(),
+        };
+        let json = serde_json::to_string(&b).unwrap();
+        // Three chunks present; `chunks` array is non-null.
+        assert!(json.contains("\"chunks\":["));
+        assert!(json.contains("\"doc-0\""));
+        assert!(json.contains("\"doc-2\""));
+
+        let back: IngestBatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.chunks.len(), 3);
+        assert_eq!(back.chunks[1].doc_id, "doc-1");
+
+        // Empty / missing `chunks` deserialises to an empty Vec
+        // (forward-compat: a server that received `{}` would treat
+        // it as "ingest nothing" rather than rejecting on missing
+        // field).
+        let empty: IngestBatch = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.chunks.len(), 0);
     }
 
     #[test]
