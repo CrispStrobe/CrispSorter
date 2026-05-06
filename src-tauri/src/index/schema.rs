@@ -218,7 +218,7 @@ impl SearchFilters {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DocumentFilter {
-    /// Match rows whose `metadata_json.parent_dir` starts with this.
+    /// Match rows whose `parent_dir` column starts with this prefix.
     /// Empty / `None` = any folder.
     pub parent_dir_prefix: Option<String>,
     /// Lowercased extensions (without leading dot) to keep, e.g.
@@ -262,6 +262,8 @@ pub enum SortColumn {
     /// Always present — when nothing else is specified, this is the
     /// stable default (newest first).
     IndexedAt,
+    /// P9 step 3 — now a real column with a BTree scalar index.
+    ParentDir,
 }
 
 impl Default for SortColumn {
@@ -287,14 +289,13 @@ pub struct SortSpec {
     pub direction: SortDir,
 }
 
-/// Pagination cursor — opaque to the frontend. Step 1 of the migration
+/// Pagination cursor — opaque to the frontend. The current implementation
 /// uses offset-based pagination because LanceDB 0.26's public Rust API
 /// doesn't expose `ORDER BY`; without DB-side ordering, a keyset cursor
 /// would only work on the first page (storage order != sort order).
-/// Step 3+5 of the migration promote `parent_dir` to a column and
-/// upgrade the cursor to a real keyset once `Scanner::scan` is wired
-/// through. Encoded as a decimal string so it round-trips through the
-/// Tauri serde boundary cleanly.
+/// Step 5 upgrades this to a real keyset once `lance::Scanner` is wired
+/// in for DB-side ordering. Encoded as a decimal string so it
+/// round-trips through the Tauri serde boundary cleanly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PageCursor(pub String);

@@ -454,11 +454,14 @@ working scale for desktop-search parity (P7).
    No TanStack-Virtual yet — the page-of-200 model is enough at
    the current scale; full virtualisation comes with step 5.
 
-3. **Promote `parent_dir` to a column** + scalar index on it.
-   Backfill existing rows. Folder filter chip switches from
-   `metadata_json LIKE` (today's hack) to a column-indexed
-   equality scan. First step that lifts the 50k cap meaningfully
-   for path-prefix filtered views.
+3. ✅ **Promote `parent_dir` to a column** + scalar index on it.
+   `parent_dir Utf8` added at schema position 25; `migrate_add_parent_dir_column`
+   adds it non-destructively (AllNulls backfill) on existing tables.
+   `build_scalar_index()` creates a BTree index. `filter_to_sql` now
+   generates `parent_dir LIKE 'prefix%'` instead of the JSON LIKE hack.
+   L1 ingest writes the column directly; L3 derives it from `p.parent()`.
+   `SortColumn::ParentDir` added as a sort option. `build_scalar_index`
+   still needs a Tauri command + UI button so users can trigger it.
 
 4. **Folder-tree pane** + `index_folder_children`. Becomes the
    primary navigation; the path chip is now a click on a tree node.

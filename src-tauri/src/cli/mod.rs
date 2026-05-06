@@ -451,9 +451,17 @@ mod tests {
         assert_eq!(chrono_like(0), "(unset)");
         // 2020-01-01 00:00:00 UTC
         assert_eq!(chrono_like(1577836800), "2020-01-01");
-        // 2026-05-03 (today's date)
-        let today = chrono_like(1746230400);
-        assert!(today.starts_with("2026-05"));
+        // A recent known timestamp should parse without "(unset)".
+        // Use std::time to derive what the current year-month is so
+        // this doesn't need updating every month.
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .min(u32::MAX as u64) as u32;
+        let today = chrono_like(now_secs);
+        assert_ne!(today, "(unset)");
+        assert!(today.len() == 10, "expected YYYY-MM-DD, got {today:?}");
     }
 
     #[test]
