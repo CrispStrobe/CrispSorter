@@ -1409,6 +1409,114 @@ Pillar 7 on the server side) turns the entire backup pipeline
 into a continuous-indexing pipeline. No separate "indexer
 daemon" to run.
 
+#### Back-path: cross-tier resolution
+
+The forward path (above) covers "extract once, ship to the
+index." The back-path is the user opening / previewing / L3-
+promoting a file that *isn't on the device they're searching
+from* — they're on a laptop, the file lives on an external SSD
+that's not attached, on the VPS, in an Internxt blob, or in
+multiple tiers at once. Every Suche / Übersicht action needs
+to know **where the file actually is right now** and **which
+tier is fastest to fetch it from**.
+
+cloud-backup already solves this. `retrieve.py` exposes
+`ContentRetriever.locate_archive(archive_name, priority)` which
+walks a configurable cascade:
+
+```python
+# default cascade
+search_order = ['local', 'vps_incoming', 'vps_backup', 'cloud']
+# with priority='VPS' (when the user is on the VPS itself)
+search_order = ['vps_backup', 'vps_incoming', 'local', 'cloud']
+```
+
+Returns `(location_type, path)` without downloading anything.
+And `extract_from_vps(archive, path, out)` does the right
+thing for cloud-blob files: SSH to VPS, run 7z partial-extract
+there, download **only** the matching file (vs. pulling the
+whole archive). For a 2 GB encrypted archive containing a
+20 KB PDF the user wants to read, this is the difference
+between 5 seconds and 5 minutes.
+
+CrispSorter doesn't reimplement any of this. Two things need
+to happen on our side:
+
+1. **Wrap `retrieve.py` as a subprocess sidecar.** Long-lived
+   Python process started when CrispSorter detects a
+   cloud-backup install at the user's data dir. Stdin/stdout
+   JSON-RPC: `{"op": "locate", "doc_id": "..."}` →
+   `{"tier": "vps_backup", "archive": "...", "internal_path":
+   "..."}`. `{"op": "fetch", "doc_id": "...", "out": "..."}`
+   → streams progress events, returns final path. Same bridge
+   pattern as the Internxt / Filen CLIs from P11 Pillar 5;
+   different language, identical shape.
+2. **Track availability per row, surface in the UI.** New
+   JSON field on `metadata_json`:
+
+   ```json
+   {
+     "availability": {
+       "local":         { "present": true,  "path": "/Users/.../file.pdf" },
+       "vps_incoming":  { "present": false },
+       "vps_backup":    { "present": true,  "archive": "abc.7z" },
+       "cloud_blob":    { "present": true,  "blob_id": "..." },
+       "cloud_extracted": null,
+       "checked_at": 1762432000
+     },
+     "preferred_tier": "local"
+   }
+   ```
+
+   Populated lazily — first time the user runs a search, the
+   top hits get a `locate` call dispatched in parallel; the
+   UI badges them as soon as each result returns. Cached in
+   `metadata_json` for ~10 minutes (configurable; cloud
+   storage moves rarely so a long TTL is fine).
+
+#### UI: source-aware actions
+
+In Suche + Übersicht, every row shows a **tier badge** in a
+new column based on `availability.preferred_tier`:
+
+| badge | meaning | open / preview behaviour |
+|---|---|---|
+| 🟢 **local** | file on this device | instant — `tauri-plugin-fs::open` |
+| 🟡 **VPS-cache** | on VPS in `incoming` or `backup` dir | spawn `retrieve.py extract_from_vps` → progress bar (~seconds for small files) |
+| 🔵 **cloud-extracted** | in Internxt as a raw file (cloud-backup standard mode) | direct cloud-drive read via `CloudDrive::read_file` |
+| 🟣 **cloud-blob** | in Internxt as an encrypted 7z blob | spawn `retrieve.py` → VPS gateway → 7z partial-extract → progress bar (~minutes for first cold fetch) |
+| ⚪ **unknown** | not yet checked | trigger `locate` on hover |
+| ⚫ **unavailable** | the cascade returned nothing | grey out the row; surface a tooltip explaining where it should be |
+
+Click → "Open" routes through whichever tier is preferred;
+right-click → "Open from..." lets the user pick a non-default
+tier (useful for verification, or to force-cache locally).
+
+For L3 promotion + preview-pane PDF rendering, the same path
+is used: ask for the bytes, get a progress event stream, and
+when bytes arrive, run them through the existing extractor +
+Übersicht preview code. **No code path in CrispSorter should
+ever assume the file is locally readable** — it always goes
+through the resolver, which fast-paths the local case.
+
+#### Pre-fetch + cache hygiene
+
+* When the user types in the Suche box, CrispSorter
+  dispatches `locate` calls **in parallel** for the first
+  page of hits, so by the time results render the badges are
+  accurate. 200 ms budget; results without a determined tier
+  yet show ⚪ until the locate returns.
+* Successful fetches populate a local cache directory
+  (`~/.cache/crispsorter/fetched/`) keyed by doc_id. Cache is
+  size-bounded (default 10 GB), evicts oldest. cloud-backup's
+  own `cache_archives` directory is read-only from
+  CrispSorter's perspective — we don't write to retrieve.py's
+  cache, we mirror its successful retrievals into ours so we
+  can serve them without re-spawning the sidecar.
+* `availability.checked_at` invalidates after 10 minutes; a
+  search after that re-locates (cloud-backup's manifest may
+  have been updated by another node).
+
 #### Mode interactions
 
 cloud-backup integrates cleanly with the runtime modes from P11
@@ -1424,22 +1532,40 @@ Pillar 4:
 
 | step | what | status |
 |---|---|---|
-| 11   | URI scheme + `retrieve.py` subprocess bridge (consumer side) | small (~1 day) -- read-only integration; cloud-backup doesn't change |
-| 12   | `index_ingest_cb_manifest` Tauri command + Übersicht "Import cloud-backup manifest" button (`IndexPayload::Manifest` variant -- batched insert, no extraction) | small (~1 day) -- reads cloud-backup SQLite, writes L1 LanceDB rows |
-| 13   | Settings -> "Backup CrispSorter catalog with cloud-backup" toggle (just adds the data-dir to cloud-backup's source list via its config) | trivial |
-| 14   | **VPS-trigger indexing (cloud-backup as producer).** Hook in `vps_worker.py` that runs after archive extract / before cloud upload: `HEAD /v1/docs/{hash}` skip-or-extract, `POST /v1/ingest/batch` per N=64 files. Depends on P11 step 4 (server bulk-ingest API) + P11 Pillar 7 (unified payload format) being live. | medium (~3 days) -- ~100 lines of Python on cloud-backup side + crisp-index-server endpoint |
-| 15   | "frequently-accessed" export hook (CrispSorter -> cloud-backup) | optional, not v1 |
+| 11   | **`retrieve.py` sidecar bridge.** Persistent Python subprocess started when CrispSorter detects cloud-backup at the user's data dir; stdin/stdout JSON-RPC (`locate`, `fetch`). Wraps `ContentRetriever.locate_archive` + `extract_from_vps` + `extract_from_local`. New URI scheme `crisp+cb-archive://{archive-id}/{internal-path}` resolves through it. | medium (~2 days) -- the load-bearing back-path. cloud-backup unchanged. |
+| 12   | **Availability tracking + tier badges.** Lazy `locate` calls populate `availability` JSON in `metadata_json`; Suche / Übersicht render a tier-badge column (🟢/🟡/🔵/🟣/⚪/⚫); right-click "Open from..." picker; click routes through the resolver, never assuming local FS. Cache mirror at `~/.cache/crispsorter/fetched/`. | medium (~3 days) -- mostly UI + the small `locate`-on-search-hit dispatcher. |
+| 13   | `index_ingest_cb_manifest` Tauri command + Übersicht "Import cloud-backup manifest" button (`IndexPayload::Manifest` variant -- batched insert, no extraction) | small (~1 day) -- reads cloud-backup SQLite, writes L1 LanceDB rows |
+| 14   | Settings -> "Backup CrispSorter catalog with cloud-backup" toggle (just adds the data-dir to cloud-backup's source list via its config) | trivial |
+| 15   | **VPS-trigger indexing (cloud-backup as producer).** Hook in `vps_worker.py` that runs after archive extract / before cloud upload: `HEAD /v1/docs/{hash}` skip-or-extract, `POST /v1/ingest/batch` per N=64 files. Depends on P11 step 4 (server bulk-ingest API) + P11 Pillar 7 (unified payload format) being live. | medium (~3 days) -- ~100 lines of Python on cloud-backup side + crisp-index-server endpoint |
+| 16   | "frequently-accessed" export hook (CrispSorter -> cloud-backup) | optional, not v1 |
 
-Steps 11+12 are the load-bearing **consumer** pair (CrispSorter
-reads cloud-backup's storage). Step 14 is the load-bearing
-**producer** addition (cloud-backup feeds crisp-index-server) —
-this turns the whole backup pipeline into a continuous-indexing
-pipeline. After all three ship:
+Three load-bearing groups:
+
+* **Consumer side (back-path):** steps 11 + 12. Once these
+  ship, CrispSorter Suche / Übersicht know where every file
+  actually is, surface tier badges, and resolve open / preview
+  / L3-promote requests through cloud-backup's existing
+  cascade — the user can search a multi-TB archive from a
+  laptop with nothing local and the experience degrades
+  gracefully (instant for hot files, seconds for VPS-cached,
+  minutes for cloud-only).
+* **Manifest L1 import:** step 13. Reads cloud-backup's
+  `file_manifest` and writes L1 rows in seconds. The catalog
+  pane shows every backed-up file even though nothing has
+  been extracted.
+* **Producer side (forward-path):** step 15. cloud-backup's
+  VPS worker becomes a producer of `IndexPayload`s. Backup
+  latency = index latency.
+
+After all five ship (11-15):
 
 * A user backs up a fresh batch of files Sunday night.
 * Monday morning their CrispSorter desktop sees them already
   indexed at L3 with embeddings — no client-side extraction
   needed, the GPU-equipped VPS did it during the backup pass.
+* Suche from any device — laptop, web PWA, second desktop —
+  shows the new files with the right tier badges and lets the
+  user open them through the cheapest available path.
 * Documents already-indexed are skipped via the `HEAD /v1/docs`
   pre-check, so re-runs are free.
 
