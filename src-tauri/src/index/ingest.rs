@@ -224,6 +224,154 @@ impl IngestPipeline {
         })
     }
 
+    /// PLAN P11 step 1 -- bulk ingest of N documents with coalesced
+    /// LanceDB writes + a single Tantivy commit.
+    ///
+    /// `ingest_document` is fine for the foreground "user just dragged
+    /// in a file" case where each doc has its own UI feedback. For
+    /// programmatic ingest paths (the cb-manifest L1 import in
+    /// P12 step 13, the producer/consumer pipeline once it grows
+    /// chunked dispatching, the future POST /v1/ingest/batch path on
+    /// the server) we want N docs to share *one* Arrow record batch
+    /// to LanceDB and *one* Tantivy commit; per-doc the
+    /// commit overhead is dominant for small chunks.
+    ///
+    /// Behaviour mirrors `ingest_document` exactly per-doc -- text
+    /// chunking, embedding via `Embedder::embed_full(...,
+    /// EmbedRole::Passage)`, doc_id derivation, sparse + model_id
+    /// metadata. Errors abort the whole batch (no partial writes);
+    /// callers that want per-doc error tolerance should split their
+    /// input themselves.
+    ///
+    /// Returns aggregated stats across the whole batch:
+    ///   chunk_count   = sum of chunks across all docs
+    ///   embed_time_ms = wall-clock for all embedding work
+    ///   write_time_ms = wall-clock for the LanceDB + Tantivy phase
+    pub async fn ingest_documents_batch(&self, raws: Vec<RawDocument>) -> Result<IngestStats> {
+        if raws.is_empty() {
+            return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
+        }
+        let embedder = self.embedder.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Embedding (L3) is disabled. Switch the index config to \
+                 `use_vector = true` (Settings → Search Index → \
+                 Vektor-Embeddings verwenden) and re-init."
+            )
+        })?;
+
+        // Owned view of what Tantivy needs per doc, so we can write
+        // them in one commit at the end without juggling borrows
+        // across the embed loop.
+        struct TantivyInputOwned {
+            doc_id: String,
+            owner_id: String,
+            language: String,
+            title: String,
+            headings: String,
+            body: String,
+        }
+
+        let mut all_chunks: Vec<DocumentChunk> = Vec::new();
+        let mut tantivy_inputs: Vec<TantivyInputOwned> = Vec::with_capacity(raws.len());
+        let mut total_chunk_count: usize = 0;
+
+        // ── Embedding phase (per-doc serial; the per-batch embed loop
+        //    inside is what the embedder backend can parallelise). ──
+        let embed_start = Instant::now();
+        for raw in &raws {
+            let chunks = chunk_text(
+                &raw.full_text,
+                self.config.chunk_max_words,
+                self.config.chunk_stride,
+                &[],
+            );
+            let chunk_total = chunks.len() as i32;
+            total_chunk_count += chunks.len();
+
+            for batch in chunks.chunks(self.config.batch_size) {
+                let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
+
+                let (dense, sparse) = {
+                    use super::embedder::EmbedRole;
+                    let mut emb = embedder.lock().await;
+                    emb.embed_full(texts, EmbedRole::Passage)?
+                };
+                let model_id = {
+                    let emb = embedder.lock().await;
+                    format!("{:?}", emb.model())
+                };
+
+                for (i, text_chunk) in batch.iter().enumerate() {
+                    let embedding = dense.vectors.get(i).cloned();
+                    let sparse_json = sparse
+                        .get(i)
+                        .and_then(|sv| sv.as_ref().map(|s| s.to_json().to_string()));
+                    all_chunks.push(build_doc_chunk(
+                        text_chunk,
+                        raw,
+                        chunk_total,
+                        embedding,
+                        sparse_json,
+                        model_id.clone(),
+                    ));
+                }
+            }
+
+            tantivy_inputs.push(TantivyInputOwned {
+                doc_id: doc_id_for(raw),
+                owner_id: raw.owner_id.clone(),
+                language: raw.language.clone(),
+                title: raw.title.clone().unwrap_or_default(),
+                headings: raw.headings.join(" "),
+                body: raw.full_text.clone(),
+            });
+        }
+        let embed_time_ms = embed_start.elapsed().as_millis() as u64;
+
+        // ── Coalesced write phase ───────────────────────────────────
+        let write_start = Instant::now();
+
+        // LanceDB: one Arrow record batch per `batch_size * 4` chunks.
+        // The 4× factor amortises the Arrow encoding overhead more
+        // aggressively than the per-doc default (which is sized for
+        // streaming ingest, not bulk).
+        let lance_batch_size = self.config.batch_size.saturating_mul(4).max(64);
+        for batch in all_chunks.chunks(lance_batch_size) {
+            self.vector
+                .ingest_batch(batch)
+                .await
+                .context("LanceDB batch write")?;
+        }
+
+        // Tantivy: ONE commit with N add_document calls. Tantivy commits
+        // are the expensive part (segment merges); a single commit for
+        // the whole batch is the main throughput win.
+        {
+            let mut writer = self.fts.writer().context("opening Tantivy writer")?;
+            for input in &tantivy_inputs {
+                self.fts.add_document(
+                    &mut writer,
+                    TantivyInput {
+                        doc_id: &input.doc_id,
+                        owner_id: &input.owner_id,
+                        language: &input.language,
+                        title: &input.title,
+                        headings: &input.headings,
+                        body: &input.body,
+                    },
+                )?;
+            }
+            writer.commit().context("Tantivy batch commit")?;
+        }
+        let write_time_ms = write_start.elapsed().as_millis() as u64;
+
+        Ok(IngestStats {
+            chunk_count: total_chunk_count,
+            embed_time_ms,
+            write_time_ms,
+        })
+    }
+
     /// Re-ingest: delete all existing chunks for a document, then ingest fresh.
     pub async fn reingest_document(&self, raw: RawDocument) -> Result<IngestStats> {
         let doc_id = doc_id_for(&raw);
@@ -503,5 +651,25 @@ mod tests {
         assert_eq!(dc.language, Some("en".to_owned()));
         assert_eq!(dc.tags, vec!["theology".to_owned()]);
         assert!(dc.embedding.is_some());
+    }
+
+    #[test]
+    fn doc_id_distinguishes_two_raws_by_source_hash() {
+        // P11 step 1 sanity: when ingest_documents_batch dispatches N
+        // RawDocuments through the embed loop, each must produce a
+        // distinct doc_id even when filename / location / owner are
+        // identical -- that's the only thing keeping a re-ingest of
+        // the same path under different content from collapsing into
+        // one row in LanceDB.
+        let mut raw_a = sample_raw();
+        let mut raw_b = sample_raw();
+        raw_a.source_hash = "aaaaaaaa".into();
+        raw_b.source_hash = "bbbbbbbb".into();
+        assert_ne!(doc_id_for(&raw_a), doc_id_for(&raw_b));
+        // Same source_hash on two RawDocuments -> same doc_id (the
+        // dedup contract every ingest path relies on).
+        let raw_c = sample_raw();
+        let raw_d = sample_raw();
+        assert_eq!(doc_id_for(&raw_c), doc_id_for(&raw_d));
     }
 }

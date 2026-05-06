@@ -1221,11 +1221,23 @@ the implementation behind one trait method."
 
 #### Migration order
 
-1. **Refactor (a):** `index_ingest_batch` Tauri command + LocalIndex
-   coalesced writes. Foreground Stapel pipeline (P10) feeds it
-   chunks-at-a-time instead of one-doc-at-a-time. **No server work
-   yet.** Client gets faster local ingest as a side effect (Arrow
-   record-batch overhead amortised).
+1. ✅ **Refactor (a):** `index_ingest_batch` Tauri command +
+   LocalIndex coalesced writes. **Shipped in this commit
+   sequence.** Adds `IngestPipeline::ingest_documents_batch(Vec<RawDocument>)`
+   that runs the existing per-doc embed loop but coalesces:
+   one Arrow record-batch per ~`batch_size * 4` chunks
+   (vs. one per doc), one Tantivy commit for the whole batch
+   (vs. one per doc — Tantivy commits are dominant cost
+   because of segment merges). Tauri command +
+   `lib.rs` registration in place; `crisp-index-protocol` gains
+   a parallel `IngestBatch { chunks: Vec<IngestChunk> }`
+   wire-format struct (with round-trip + empty-`{}`-deserialise
+   tests, 5/5 protocol tests pass) so the future server-side
+   `POST /v1/ingest/batch` (step 4) shares the exact shape.
+   Frontend wiring is a follow-up commit -- the producer/consumer
+   pipeline in `batch/store.svelte.ts` will switch from per-doc
+   `index_ingest_document` to bucketed `index_ingest_batch`
+   calls of N=16 docs each.
 
 2. **Refactor (b):** `embedderLocation` config + the load gate.
    Default `'client'`; the second value becomes meaningful in
