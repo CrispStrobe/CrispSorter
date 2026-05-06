@@ -104,6 +104,72 @@ default.
   10-20 GB boot-drive risk and recommends an external SSD with the
   hf-hub layout. EN + DE.
 
+- [x] **Disk hygiene: redirect Cargo target dir to an external drive**
+  — shipped (commit `10ecaab`). After the workspace promotion (commit
+  `7326771`) `cargo build` writes to `/target/` at the repo root
+  instead of `src-tauri/target/`. Six scripts still pointed at the
+  legacy path and were silently recreating an orphan
+  `src-tauri/target/` on every dev run. On the user's notebook this
+  ate **26 GB** of pre-workspace artefacts that nobody was reading
+  any more, pushing the boot drive to 99 % full / 6.4 GB free.
+
+  Fix in two parts:
+
+  1. **Script rewrites** (commit `4654c18`) — `enable-crispembed.{ps1,sh}`,
+     `recompile-exe.ps1`, `release.sh`, `scripts/build.sh`, and
+     `scripts/bundle_macos_native_libs.sh` updated to write to / look
+     in the workspace-root `target/` first. Legacy
+     `src-tauri/target/` paths kept as graceful fallbacks for
+     branches that haven't picked up the workspace move yet.
+  2. **`CARGO_TARGET_DIR` honoured** (commit `10ecaab`) — Cargo's
+     standard env var. The DLL-staging code in
+     `enable-crispembed.ps1` and the .exe-locator in
+     `recompile-exe.ps1` now both read `$env:CARGO_TARGET_DIR` if
+     set, falling back to `$ProjectRoot\target`. The user-facing
+     "Staged N DLL(s) to ..." message reads from the same variable
+     so the printed path is honest.
+
+  **Workflow for a build with target on D:\\\\:**
+
+  ```powershell
+  $env:CARGO_TARGET_DIR = "D:\cargo-target\crispsorter"
+  .\enable-crispembed.ps1 -Backend cuda
+  ```
+
+  Or persistently, in the PowerShell profile:
+
+  ```powershell
+  [Environment]::SetEnvironmentVariable(
+      'CARGO_TARGET_DIR',
+      'D:\cargo-target\crispsorter',
+      [EnvironmentVariableTarget]::User)
+  ```
+
+  Same on Linux/macOS:
+
+  ```bash
+  export CARGO_TARGET_DIR=/Volumes/External/cargo-target/crispsorter
+  ./enable-crispembed.sh --backend metal
+  ```
+
+  Notes:
+
+  * The target drive must be NTFS (Windows) or APFS / ext4 / Btrfs
+    (Unix). exFAT / FAT32 break Rust builds because some crates use
+    symlinks at build time.
+  * `CARGO_TARGET_DIR` is shared across *every* Cargo project — if
+    you also build other Rust projects, give each one its own
+    sub-folder (`D:\cargo-target\crispsorter`,
+    `D:\cargo-target\some-other`, etc.) rather than pointing them
+    all at `D:\cargo-target\` directly.
+  * `scripts/build.sh` has a separate `CRISPSORTER_TARGET_VOLUME`
+    env var that sets up a symlink at `$REPO_ROOT/target` →
+    external SSD. Equivalent effect; preserved for users who'd set
+    it up before `CARGO_TARGET_DIR` was wired.
+  * To reclaim space at any time: `cargo clean` from the repo root
+    drops the workspace target dir entirely (regenerated on next
+    build).
+
 - [x] **i18n cleanup** — Settings.svelte + LogPanel.svelte audit
   shipped. ~80 strings keyed across both components: full LogPanel
   toolbar; shared sidecar badges (`settings.sidecar.*`) for Ollama +

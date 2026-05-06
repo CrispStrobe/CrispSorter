@@ -107,6 +107,64 @@ step is P11 refactor (a) — `index_ingest_batch` Tauri command + the
 parallel `crisp_index_protocol::IngestBatch { chunks: Vec<IngestChunk> }`
 wire type. Both can land in one commit since both halves live here.
 
+### Disk hygiene fallout from the workspace move (commits `4654c18`, `10ecaab`)
+
+The workspace promotion above silently changed where `cargo build`
+puts artefacts: from `src-tauri/target/` to `/target/` at the repo
+root. None of the developer scripts noticed:
+
+* `enable-crispembed.{ps1,sh}` kept staging DLLs into
+  `src-tauri/target/{debug,release}/` while cargo was writing the
+  .exe to the new location. STATUS_DLL_NOT_FOUND on every cuda /
+  vulkan build, except where a previous run had left the same DLLs
+  in `src-tauri\bin\` (Tauri's bundled-resources dir, which
+  *is* searched).
+* `recompile-exe.ps1` kept reporting "Build successful! Executable
+  located at: src-tauri\target\release\CrispSorter.exe" when the
+  .exe was actually somewhere else.
+* `release.sh`, `scripts/build.sh`, `scripts/bundle_macos_native_libs.sh`
+  all looked in the legacy paths. The macOS notarisation /
+  bundling pipeline would have failed on first run on any clean
+  machine.
+* `scripts/build.sh`'s `CRISPSORTER_TARGET_VOLUME` symlink-to-
+  external-SSD trick was silently broken — it created a symlink
+  at `$SRC_TAURI/target/` while cargo wrote to
+  `$REPO_ROOT/target/`. Users who'd set it up to keep build
+  artefacts off the boot drive were quietly seeing them back
+  on the boot drive.
+
+The workspace orphaned `src-tauri/target/` accumulated 26 GB of
+pre-workspace artefacts on the user's notebook (debug 20 GB +
+release 5.7 GB) — boot drive at 99% full, 6.4 GB free.
+
+Fix in two commits:
+
+* **`4654c18` — script paths.** All six callers now write to /
+  read from `target/` at the workspace root first; legacy
+  `src-tauri/target/` paths kept as graceful fallbacks for
+  branches that haven't picked up the workspace move.
+* **`10ecaab` — `CARGO_TARGET_DIR` honoured.** The DLL-staging
+  code in `enable-crispembed.ps1` and the .exe-locator in
+  `recompile-exe.ps1` both read `$env:CARGO_TARGET_DIR` if set,
+  falling back to `$ProjectRoot\target`. User-facing
+  "Staged N DLL(s) to ..." message reads from the same
+  variable so the printed path is honest.
+
+After cleanup:
+
+* `rm -rf src-tauri/target` recovered 26 GB instantly (build
+  cache only; .gitignored; regenerated on next build).
+* Repo size 31 GB → 5.2 GB on disk; free 6.4 GB → 32 GB.
+* User's standard incantation for "build with target on D:\":
+
+  ```powershell
+  $env:CARGO_TARGET_DIR = "D:\cargo-target\crispsorter"
+  .\enable-crispembed.ps1 -Backend cuda
+  ```
+
+  Documented in PLAN.md → P4 → "Disk hygiene: redirect Cargo
+  target dir to an external drive."
+
 ---
 
 ## Session log — May 2026 — index-test → main reconciliation + P9 step 1+2
