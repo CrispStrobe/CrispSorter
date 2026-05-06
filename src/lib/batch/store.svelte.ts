@@ -432,7 +432,11 @@ export class BatchManager {
                     // so this is purely a fallback for users who skip the LLM
                     // or for runs where phase 2 errors out. See lib.rs
                     // extract_pdf_metadata for the lopdf decoding details.
-                    const isPdf = item.originalName.toLowerCase().endsWith('.pdf');
+                    const ext = (item.extension ?? '').toLowerCase();
+                    const isPdf = ext === 'pdf';
+                    const hasMetadataConvention =
+                        // file types where metadata-read makes sense
+                        ['pdf', 'docx', 'epub', 'jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'].includes(ext);
                     if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
                         try {
                             const meta = await invoke<{
@@ -449,20 +453,39 @@ export class BatchManager {
                             if (typeof meta?.year === 'number' && !item.suggestedYear) {
                                 item.suggestedYear = String(meta.year);
                             }
-                            if (meta?.title || meta?.author || meta?.year) {
-                                flog('info', `PDF metadata prefilled: ${item.originalName}`);
+                            const got = !!(meta?.title || meta?.author || meta?.year);
+                            // 'ok' even when /Info was empty -- the read
+                            // succeeded, the dict just had nothing useful.
+                            // 'failed' is reserved for actual exceptions.
+                            item.metadataReadStatus = 'ok';
+                            if (got) {
+                                flog('info', `PDF metadata prefilled: ${item.originalName} (title=${meta?.title ? 'y' : '-'}, author=${meta?.author ? 'y' : '-'}, year=${meta?.year ?? '-'})`);
+                            } else {
+                                logDebug(`PDF /Info empty: ${item.originalName} (no usable Title/Author/Year)`);
                             }
                         } catch (e) {
-                            // Non-fatal — most PDFs have an Info dict, but
+                            // Non-fatal -- most PDFs have an Info dict, but
                             // missing or malformed ones shouldn't break extraction.
+                            item.metadataReadStatus = 'failed';
                             flog('warn', `PDF metadata read failed: ${item.originalName}: ${e}`);
                         }
+                    } else if (!hasMetadataConvention) {
+                        // Plain-text-ish formats have no embedded metadata
+                        // convention to read; render the M-pip as N/A.
+                        item.metadataReadStatus = 'na';
                     }
+                    // (DOCX / EPUB / image metadata are handled by the
+                    //  separate L2-promote path; the M-pip stays
+                    //  undefined until that runs.)
 
                     // Park at 'queued' with text so the consumer picks it up (unless extraction-only)
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);
-                    flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
+                    const extractedBytes = item.extractedText?.length ?? 0;
+                    const tool = isPdf && pdfBackend === 'rust' && !forceOCR ? 'pdf-extract (Rust)'
+                                : forceOCR ? 'OCR (Tesseract)'
+                                : `JS extractor (.${ext})`;
+                    flog('info', `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars via ${tool}`);
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
                         queuePush(item);
@@ -541,15 +564,24 @@ export class BatchManager {
                         throw lastErr ?? new Error('All LLM providers exhausted');
                     };
 
-                    flog('info', `LLM analyze: ${item.originalName}`);
+                    const activeRR = rrProviders[rrIdx] ?? rrProviders[0];
+                    flog(
+                        'info',
+                        `LLM analyze: ${item.originalName} via ${activeRR?.id ?? '?'}/${activeRR?.modelId ?? '?'}, sent ${prompt.length.toLocaleString()} chars (${textSample.length.toLocaleString()} from doc body)`
+                    );
+                    const llmStart = performance.now();
                     const response = await queryRR(prompt);
+                    const llmMs = Math.round(performance.now() - llmStart);
                     if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
                     const metadata = this.parseLLMResponse(response, parsingFormat);
 
                     item.suggestedTitle = metadata.title || 'Unknown Title';
                     item.suggestedAuthor = metadata.author || 'Unknown Author';
                     item.suggestedYear = metadata.year || 'Unknown Year';
-                    flog('info', `Analyzed: ${item.originalName} → "${item.suggestedTitle}" / ${item.suggestedAuthor}`);
+                    flog(
+                        'info',
+                        `Analyzed: ${item.originalName} -> title="${item.suggestedTitle}" author="${item.suggestedAuthor}" year=${item.suggestedYear} (${llmMs} ms, ${response.length.toLocaleString()} chars in response)`
+                    );
 
                     if (authorSortEnabled && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;

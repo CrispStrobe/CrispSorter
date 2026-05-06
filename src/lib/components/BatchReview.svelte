@@ -617,6 +617,53 @@
         return isUnknownSentinel(v);
     }
 
+    /** Per-row 3-pip progress indicator: M | T | L
+     *  (Metadata read / Text extracted / LLM analysed).
+     *
+     *  Each pip is one of:
+     *    'gray'    — pending / not yet attempted
+     *    'pulse'   — actively running (this stage is happening now)
+     *    'ok'      — succeeded
+     *    'partial' — got something but it's a placeholder (e.g. LLM
+     *                returned "Unknown Author")
+     *    'fail'    — explicit failure
+     *    'na'      — N/A for this filetype (semi-transparent)
+     *
+     *  Computed per-item; cheap (3 string comparisons + a sentinel
+     *  check) so a 1000-row Stapel re-renders without trouble. */
+    type PipState = 'gray' | 'pulse' | 'ok' | 'partial' | 'fail' | 'na';
+    function progressPips(item: BatchItem): { m: PipState; t: PipState; l: PipState } {
+        // ── M (metadata) ───────────────────────────────────────────
+        let m: PipState;
+        switch (item.metadataReadStatus) {
+            case 'ok':     m = 'ok';     break;
+            case 'failed': m = 'fail';   break;
+            case 'na':     m = 'na';     break;
+            default:       m = item.status === 'extracting' ? 'pulse' : 'gray';
+        }
+
+        // ── T (text) ───────────────────────────────────────────────
+        let t: PipState;
+        const textLen = item.extractedText?.length ?? 0;
+        if (textLen >= 100)                   t = 'ok';        // healthy extraction
+        else if (textLen > 0)                 t = 'partial';   // got something but suspiciously short
+        else if (item.status === 'extracting') t = 'pulse';
+        else if (item.status === 'error' && /extract/i.test(item.errorMessage ?? '')) t = 'fail';
+        else                                   t = 'gray';
+
+        // ── L (LLM) ────────────────────────────────────────────────
+        let l: PipState;
+        const author = item.suggestedAuthor;
+        const llmRan = !!(author || item.suggestedTitle || item.suggestedYear);
+        if (llmRan && author && !isUnknownSentinel(author))            l = 'ok';
+        else if (llmRan && author && isUnknownSentinel(author))        l = 'partial';
+        else if (item.status === 'analyzing')                          l = 'pulse';
+        else if (item.status === 'error' && !/extract/i.test(item.errorMessage ?? '')) l = 'fail';
+        else                                                            l = 'gray';
+
+        return { m, t, l };
+    }
+
     async function handleReportChoice(choice: 'keep_problematic' | 'remove_done' | 'empty' | 'keep_all') {
         showReportModal = false;
         if (choice === 'empty') {
@@ -1185,6 +1232,12 @@
                                 {#if col.visible}
                                     <td style="width: {col.width}px;">
                                         {#if col.id === 'status'}
+                                            {@const pips = progressPips(item)}
+                                            <span class="progress-pips" title={`Metadaten: ${pips.m} · Text: ${pips.t} · LLM: ${pips.l}`}>
+                                                <span class="pip pip-{pips.m}" aria-label={`Metadata ${pips.m}`}></span>
+                                                <span class="pip pip-{pips.t}" aria-label={`Text ${pips.t}`}></span>
+                                                <span class="pip pip-{pips.l}" aria-label={`LLM ${pips.l}`}></span>
+                                            </span>
                                             <span class="status-badge"
                                                 class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
                                                 class:status-unfinished={item.status === 'unfinished'}
@@ -1581,6 +1634,29 @@
     .dense-table input.fallback { color: #fbbf24; font-style: italic; }
     
     .status-badge { padding: 2px 6px; border-radius: 4px; background: #27272a; font-size: 0.7rem; font-weight: 600; color: #a1a1aa; text-transform: capitalize; }
+
+    /* Per-row progress indicator: 3 pips for Metadata / Text / LLM.
+       Sized to fit alongside the status badge inside the existing
+       status column without widening it. Hover shows the per-stage
+       state in the tooltip. */
+    .progress-pips {
+        display: inline-flex; gap: 2px; align-items: center;
+        margin-right: 4px; vertical-align: middle;
+    }
+    .pip {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: #3f3f46;             /* gray = pending */
+        flex-shrink: 0;
+    }
+    .pip-ok      { background: #22c55e; }
+    .pip-partial { background: #eab308; }
+    .pip-fail    { background: #ef4444; }
+    .pip-na      { background: #3f3f46; opacity: 0.18; }
+    .pip-pulse   { background: #71717a; animation: pip-pulse 1.4s ease-in-out infinite; }
+    @keyframes pip-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.3; }
+    }
     .status-active { color: #3b82f6; background: #1e3a8a33; }
     .status-unfinished { color: #f59e0b; background: #78350f33; }
     .status-error { color: #ef4444; background: #450a0a33; }

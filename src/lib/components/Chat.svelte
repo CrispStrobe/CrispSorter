@@ -17,6 +17,7 @@
     import katex from 'katex';
     import 'katex/dist/katex.min.css';
     import 'deep-chat';
+    import { logInfo, logWarn } from '../log';
 
     // Global KaTeX for Deep Chat
     if (typeof window !== 'undefined') {
@@ -112,9 +113,29 @@
             selectedModel = currentProv.selectedModel || currentProv.models[0] || '';
         }
 
+        // deep-chat is a custom element; the post-mount property
+        // assignment below depends on it being upgraded by the time
+        // we run. Two ticks is paranoid but reliable -- one for
+        // Svelte's `bind:this` to fire, one for the custom-element
+        // upgrade lifecycle to complete on the freshly-imported
+        // module (HMR / vite re-optimisation paths in particular
+        // can race the upgrade).
+        await tick();
+        if (typeof customElements !== 'undefined' && customElements.whenDefined) {
+            try { await customElements.whenDefined('deep-chat'); }
+            catch { /* element already registered or registry doesn't track it */ }
+        }
         await tick();
         if (chatElement) {
+            // Belt + suspenders: assign as a property AND set a
+            // boolean attribute so deep-chat sees a config either
+            // way. Pre-this-fix, when vite re-optimised after a
+            // package-lock churn the property assignment seemed to
+            // arrive too early or too late and the element rendered
+            // its "no config" demo screen.
             chatElement.connect = { handler: handleRequest };
+            try { chatElement.setAttribute('connected', ''); } catch { /* attribute is informational */ }
+            logInfo(`Chat: deep-chat connected (provider=${activeProviderId}, model=${selectedModel || 'auto'})`);
             chatElement.messageStyles = messageStyles;
             chatElement.submitButtonStyles = submitButtonStyles;
             chatElement.textInput = textInputConfig;
@@ -148,6 +169,11 @@
                     }
                 }
             };
+        } else {
+            // Couldn't bind. Pre-this-fix this would silently render
+            // the deep-chat demo screen ("To remove this message set
+            // the demo property to true."); now we yell.
+            logWarn('Chat: chatElement was null after tick()+whenDefined() -- deep-chat demo screen will show. Try clearing node_modules/.vite and restart.');
         }
     });
 
