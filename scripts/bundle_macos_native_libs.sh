@@ -55,7 +55,15 @@ set -euo pipefail
 # ── Locate the .app ─────────────────────────────────────────────────────
 APP="${1:-}"
 if [[ -z "$APP" ]]; then
+  # target/ moved to the workspace root with the crisp-index-server
+  # integration (commit 7326771); legacy src-tauri/target/ paths stay
+  # as fallbacks so this script keeps finding bundles built on older
+  # branches.
   for cand in \
+    target/aarch64-apple-darwin/release/bundle/macos/*.app \
+    target/x86_64-apple-darwin/release/bundle/macos/*.app \
+    target/release/bundle/macos/*.app \
+    target/debug/bundle/macos/*.app \
     src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app \
     src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app \
     src-tauri/target/release/bundle/macos/*.app \

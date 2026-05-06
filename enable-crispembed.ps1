@@ -155,15 +155,19 @@ Write-Host "CRISPEMBED_SYS_LIB_DIR = $env:CRISPEMBED_SYS_LIB_DIR" -ForegroundCol
 # or the launcher fails with STATUS_DLL_NOT_FOUND (0xc0000135).
 #
 # We copy them into:
-#   - src-tauri\target\debug\          (dev mode, run via cargo run / tauri dev)
-#   - src-tauri\target\release\        (production .exe in target/release)
-#   - src-tauri\bin\                   (Tauri bundles `bin/*.dll` into the
-#                                       installer per tauri.conf.json)
+#   - target\debug\          (dev mode, run via cargo run / tauri dev)
+#   - target\release\        (production .exe in target/release)
+#   - src-tauri\bin\         (Tauri bundles `bin/*.dll` into the
+#                             installer per tauri.conf.json)
+#
+# NOTE: target/ moved from src-tauri/target/ to the workspace root after
+# crisp-index-server / crisp-index-protocol joined the Cargo workspace
+# (commit 7326771). Anything still writing to src-tauri/target is stale.
 $RuntimeDlls = Get-ChildItem -Path $PrebuiltDir -Filter '*.dll' -ErrorAction SilentlyContinue
 if ($RuntimeDlls) {
     $TargetDirs = @(
-        (Join-Path $ProjectRoot 'src-tauri\target\debug'),
-        (Join-Path $ProjectRoot 'src-tauri\target\release'),
+        (Join-Path $ProjectRoot 'target\debug'),
+        (Join-Path $ProjectRoot 'target\release'),
         (Join-Path $ProjectRoot 'src-tauri\bin')
     )
     $copiedTotal = 0

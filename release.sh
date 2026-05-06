@@ -3,7 +3,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUNDLE_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle"
+# target/ moved to the workspace root with the crisp-index-server
+# integration (commit 7326771); fall back to the legacy path so this
+# script still works on branches that haven't picked it up.
+if [[ -d "$SCRIPT_DIR/target/release/bundle" ]]; then
+    BUNDLE_DIR="$SCRIPT_DIR/target/release/bundle"
+else
+    BUNDLE_DIR="$SCRIPT_DIR/src-tauri/target/release/bundle"
+fi
 
 # 1. Locate GitHub CLI
 if ! command -v gh &>/dev/null; then
