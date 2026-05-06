@@ -99,6 +99,9 @@ pub struct IndexState {
     /// GGUF on first scoring call.
     pub reranker: Option<RerankerHandle>,
     pub config: IndexConfig,
+    /// Last observed remote queue depth during a foreground remote ingest.
+    /// Used by the shared queue-depth chip when no local writer pipeline exists.
+    pub remote_queue_depth: usize,
     /// Set to `true` while an `index_init` is running so we can reject
     /// concurrent re-init attempts (each download is multi-GB; we don't want
     /// two of them racing on the same cache).
@@ -116,6 +119,7 @@ impl IndexState {
             pipeline: None,
             reranker: None,
             config: IndexConfig::default(),
+            remote_queue_depth: 0,
             initializing: false,
         }
     }
@@ -141,6 +145,12 @@ pub struct IndexConfig {
     /// when the user only wants offline file cataloguing.
     #[serde(default = "default_use_vector")]
     pub use_vector: bool,
+    /// Where embedding computation happens for remote-backend ingest.
+    /// `Client` (default): embed locally before posting.
+    /// `Server`: post raw text; server embeds (needs P11 step 5 on the server).
+    /// Ignored when `use_vector = false` or `backend_type = Local`.
+    #[serde(default)]
+    pub embedder_location: EmbedderLocation,
     /// Cross-encoder reranker model. `None` disables reranking.
     /// GGUF-only via CrispEmbed (requires the `crispembed` cargo feature).
     #[serde(default)]
@@ -218,6 +228,7 @@ impl Default for IndexConfig {
             embedder_device: EmbedderDevice::Auto,
             embedder_backend: EmbedderBackend::Onnx,
             use_vector: true,
+            embedder_location: EmbedderLocation::Client,
             reranker_model: None,
             rerank_top_n: default_rerank_top_n(),
             model_cache_dir: None,
@@ -294,4 +305,24 @@ pub enum BackendType {
     #[default]
     Local,
     Remote,
+}
+
+/// Where embedding computation happens for ingest.
+///
+/// `Client` (default): this machine loads the model and embeds before writing.
+///   Works for both Local and Remote backends; privacy-preserving since text
+///   never leaves the device unembedded.
+///
+/// `Server`: the remote `crisp-index-server` embeds on arrival; this machine
+///   only chunks text and posts raw strings. Requires `backend_type = Remote`
+///   and a server build that has an embedder loaded (P11 step 5). When
+///   `backend_type = Local`, setting this to `Server` is a no-op and the
+///   local pipeline embeds as usual (local writes always go through the
+///   IngestPipeline which owns the embedder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbedderLocation {
+    #[default]
+    Client,
+    Server,
 }

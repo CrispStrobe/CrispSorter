@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod cli;
 pub mod extractors;
 pub mod index;
+pub mod jobs;
 pub mod tts;
 pub mod volume;
 pub mod watcher;
@@ -738,6 +739,11 @@ pub struct AppState {
     /// AtomicUsize so reads + writes are lock-free — neither side
     /// pays for a Mutex hop.
     pub foreground_active: Arc<std::sync::atomic::AtomicUsize>,
+    /// Durable per-file ingest job queue (PLAN P10 job persistence).
+    /// Initialized in the Tauri setup hook once `app_data_dir` is known.
+    /// `None` only during the very brief window before setup completes;
+    /// all `jobs_*` commands return an error if accessed before init.
+    pub job_queue: Arc<std::sync::Mutex<Option<jobs::JobQueue>>>,
 }
 
 #[tauri::command]
@@ -2118,6 +2124,21 @@ pub fn run() {
                 *h = Some(app.handle().clone());
             }
             app_log!("info", "CrispSorter v{} starting", env!("CARGO_PKG_VERSION"));
+
+            // Initialise job queue now that the data directory is known.
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                let state: tauri::State<'_, AppState> = app.state();
+                match jobs::JobQueue::open_or_create(&data_dir) {
+                    Ok(q) => {
+                        if let Ok(mut guard) = state.job_queue.lock() {
+                            *guard = Some(q);
+                        }
+                    }
+                    Err(e) => {
+                        app_log!("error", "Failed to open job queue: {e}");
+                    }
+                }
+            }
             Ok(())
         })
         .manage(AppState {
@@ -2132,6 +2153,7 @@ pub fn run() {
             watcher: Mutex::new(watcher::WatcherState::new()),
             bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
             foreground_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            job_queue: Arc::new(std::sync::Mutex::new(None)),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -2164,6 +2186,7 @@ pub fn run() {
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
             index::tauri_commands::index_build_ivf_pq,
+            index::tauri_commands::index_queue_depth,
             index::tauri_commands::index_get_config,
             index::tauri_commands::index_set_config,
             index::tauri_commands::index_init,
@@ -2199,6 +2222,22 @@ pub fn run() {
             bg_ingest_resume,
             bg_ingest_cancel,
             bg_ingest_clear,
+            jobs::tauri_commands::jobs_create,
+            jobs::tauri_commands::jobs_list,
+            jobs::tauri_commands::jobs_get,
+            jobs::tauri_commands::jobs_set_status,
+            jobs::tauri_commands::jobs_delete,
+            jobs::tauri_commands::jobs_add_files,
+            jobs::tauri_commands::jobs_claim_batch,
+            jobs::tauri_commands::jobs_mark_done,
+            jobs::tauri_commands::jobs_mark_error,
+            jobs::tauri_commands::jobs_mark_skipped,
+            jobs::tauri_commands::jobs_set_doc_id,
+            jobs::tauri_commands::jobs_reclaim,
+            jobs::tauri_commands::jobs_pending_count,
+            jobs::tauri_commands::jobs_list_files,
+            jobs::tauri_commands::jobs_remove_file,
+            jobs::tauri_commands::jobs_remove_files_by_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

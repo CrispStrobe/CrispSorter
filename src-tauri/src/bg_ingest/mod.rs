@@ -324,11 +324,11 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     // Stat the file *before* reading it. If the documents table already
     // has this location at the same / newer mtime, we're done — no
     // hash, no extract, no embed.
-    let file_mtime: Option<u32> = std::fs::metadata(&p)
+    let file_mtime: Option<i64> = std::fs::metadata(&p)
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as u32);
+        .map(|d| d.as_secs() as i64);
     if let (Some(file_mt), Some(local)) = (file_mtime, local.as_ref()) {
         let owner = item
             .owner_id
@@ -404,7 +404,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as u32),
+            .map(|d| d.as_secs() as i64),
         // PLAN P7.6 — tag with the source volume's stable id so a
         // future search-time filter can hide rows from currently-
         // unmounted volumes. Best-effort; None when the helper fails.

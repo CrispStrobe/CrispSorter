@@ -1,9 +1,20 @@
 /// Ingest pipeline: text extraction output → chunks → embeddings → indexes.
 ///
 /// `IngestPipeline` owns a shared `FtsIndex`, `LocalIndex`, and `Embedder`.
-/// `ingest_document` is the single entry point: given a `RawDocument` with
-/// already-extracted text, it chunks, embeds, and writes to both indexes.
-use std::sync::Arc;
+/// Embedding (CPU/GPU-bound) runs on the caller's task; the resulting chunks
+/// are serialised through a single background writer task that owns all
+/// LanceDB + Tantivy mutations.  This gives three properties:
+///
+///   1. No concurrent writes to LanceDB / Tantivy — one writer at a time,
+///      regardless of how many concurrent callers embed in parallel.
+///   2. Queue depth (`pending`) is measurable — exposed via `queue_depth()`
+///      and the `index_queue_depth` Tauri command (PLAN P11 step 3).
+///   3. Callers still `await` the result via a oneshot channel, so no
+///      breaking changes to existing Tauri command signatures.
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -71,7 +82,7 @@ pub struct RawDocument {
     /// (PLAN P7.4.3). Default `None` keeps the existing
     /// `index_ingest_document` callers compiling — skip-check just
     /// returns "no record" for those.
-    pub mtime_unix: Option<u32>,
+    pub mtime_unix: Option<i64>,
 
     /// Stable id of the volume the source file lives on (PLAN P7.6).
     /// Populated by the `volume::volume_id_for_path` helper at ingest
@@ -91,6 +102,28 @@ pub struct IngestStats {
     pub write_time_ms: u64,
 }
 
+// ── Writer task types ────────────────────────────────────────────────────────
+
+/// Owned Tantivy inputs that can be sent across the channel boundary.
+struct TantivyInputOwned {
+    doc_id: String,
+    owner_id: String,
+    language: String,
+    title: String,
+    headings: String,
+    body: String,
+}
+
+/// One unit of work for the background writer task.
+struct WriterJob {
+    all_chunks: Vec<DocumentChunk>,
+    /// Empty for L1 writes (no full-text in Tantivy for metadata-only rows).
+    tantivy_inputs: Vec<TantivyInputOwned>,
+    total_chunk_count: usize,
+    embed_time_ms: u64,
+    reply: tokio::sync::oneshot::Sender<Result<IngestStats>>,
+}
+
 // ── Pipeline ─────────────────────────────────────────────────────────────────
 
 pub struct IngestPipeline {
@@ -101,6 +134,11 @@ pub struct IngestPipeline {
     /// L3 ingest checks this and errors clearly if not present.
     pub embedder: Option<Arc<Mutex<Embedder>>>,
     pub config: IngestConfig,
+    /// Channel to the single background writer task.
+    writer_tx: tokio::sync::mpsc::Sender<WriterJob>,
+    /// Jobs submitted to the writer but not yet completed (queued + in-flight).
+    /// Surfaced via `queue_depth()` → `index_queue_depth` Tauri command.
+    pending: Arc<AtomicUsize>,
 }
 
 impl IngestPipeline {
@@ -110,143 +148,130 @@ impl IngestPipeline {
         embedder: Option<Arc<Mutex<Embedder>>>,
         config: IngestConfig,
     ) -> Self {
+        let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel::<WriterJob>(256);
+        let pending = Arc::new(AtomicUsize::new(0));
+
+        // Clone Arcs for the writer task. The task owns these for its
+        // lifetime; the pipeline fields hold separate Arcs for query paths.
+        let fts_w = fts.clone();
+        let vector_w = vector.clone();
+        let pending_w = pending.clone();
+        let lance_batch_size = config.batch_size.saturating_mul(4).max(64);
+
+        tokio::spawn(async move {
+            while let Some(job) = writer_rx.recv().await {
+                let result: Result<IngestStats> = (async {
+                    let write_start = Instant::now();
+
+                    // LanceDB: batch inserts.
+                    for batch in job.all_chunks.chunks(lance_batch_size) {
+                        vector_w
+                            .ingest_batch(batch)
+                            .await
+                            .context("LanceDB write")?;
+                    }
+
+                    // Tantivy: one commit for all docs in this job.
+                    // Skipped for L1 jobs where tantivy_inputs is empty.
+                    if !job.tantivy_inputs.is_empty() {
+                        let mut writer =
+                            fts_w.writer().context("opening Tantivy writer")?;
+                        for input in &job.tantivy_inputs {
+                            fts_w.add_document(
+                                &mut writer,
+                                TantivyInput {
+                                    doc_id: &input.doc_id,
+                                    owner_id: &input.owner_id,
+                                    language: &input.language,
+                                    title: &input.title,
+                                    headings: &input.headings,
+                                    body: &input.body,
+                                },
+                            )?;
+                        }
+                        writer.commit().context("Tantivy commit")?;
+                    }
+
+                    let write_time_ms = write_start.elapsed().as_millis() as u64;
+                    Ok(IngestStats {
+                        chunk_count: job.total_chunk_count,
+                        embed_time_ms: job.embed_time_ms,
+                        write_time_ms,
+                    })
+                })
+                .await;
+
+                // Decrement AFTER the write completes (or errors) so
+                // `pending` counts both queued and in-flight jobs.
+                pending_w.fetch_sub(1, Ordering::Relaxed);
+                let _ = job.reply.send(result);
+            }
+        });
+
         IngestPipeline {
             fts,
             vector,
             embedder,
             config,
+            writer_tx,
+            pending,
         }
+    }
+
+    /// Number of write jobs currently queued or in flight.
+    /// Zero means the writer task is idle.
+    pub fn queue_depth(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    /// Enqueue a write job and block until the writer task completes it.
+    async fn submit_and_await(
+        &self,
+        all_chunks: Vec<DocumentChunk>,
+        tantivy_inputs: Vec<TantivyInputOwned>,
+        total_chunk_count: usize,
+        embed_time_ms: u64,
+    ) -> Result<IngestStats> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if let Err(_e) = self
+            .writer_tx
+            .send(WriterJob {
+                all_chunks,
+                tantivy_inputs,
+                total_chunk_count,
+                embed_time_ms,
+                reply: reply_tx,
+            })
+            .await
+        {
+            // Roll back the optimistic queue-depth increment when the writer
+            // task is already gone; otherwise the UI can get stuck showing a
+            // phantom pending write until the next re-init.
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+            return Err(anyhow::anyhow!(
+                "Writer task has stopped — index may need re-init"
+            ));
+        }
+        reply_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("Writer task dropped reply channel"))?
     }
 
     /// Full ingest pipeline for one document.
     ///
-    /// Steps:
-    /// 1. Split `raw.full_text` into overlapping `TextChunk`s.
-    /// 2. For each batch of chunks, embed dense vectors.
-    /// 3. Write batch to LanceDB.
-    /// 4. Write a single whole-document row to Tantivy (doc_id, owner_id, headings, body).
-    /// 5. Return timing stats.
+    /// Embeds the document inline, then submits the resulting chunks to the
+    /// background writer task and awaits completion.
     pub async fn ingest_document(&self, raw: RawDocument) -> Result<IngestStats> {
-        // L3 = Volltext + Embedding. Without an embedder we can't satisfy
-        // the contract. The frontend should never reach this from an L1 / L2
-        // code path; if it does, surface the misconfiguration clearly.
-        let embedder = self.embedder.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Embedding (L3) is disabled. Switch the index config to \
-                 `use_vector = true` (Settings → Search Index → \
-                 Vektor-Embeddings verwenden) and re-init."
-            )
-        })?;
-
-        let chunks = chunk_text(
-            &raw.full_text,
-            self.config.chunk_max_words,
-            self.config.chunk_stride,
-            &[],
-        );
-
-        let chunk_count = chunks.len();
-        let chunk_total = chunk_count as i32;
-
-        // ── Embedding phase ──────────────────────────────────────────────
-        let embed_start = Instant::now();
-        let mut all_doc_chunks: Vec<DocumentChunk> = Vec::with_capacity(chunk_count);
-
-        for batch in chunks.chunks(self.config.batch_size) {
-            let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-
-            let (dense, sparse) = {
-                use super::embedder::EmbedRole;
-                let mut emb = embedder.lock().await;
-                emb.embed_full(texts, EmbedRole::Passage)?
-            };
-
-            let model_id = {
-                let emb = embedder.lock().await;
-                format!("{:?}", emb.model())
-            };
-
-            for (i, text_chunk) in batch.iter().enumerate() {
-                let embedding = dense.vectors.get(i).cloned();
-                let sparse_json = sparse
-                    .get(i)
-                    .and_then(|sv| sv.as_ref().map(|s| s.to_json().to_string()));
-
-                let doc_chunk = build_doc_chunk(
-                    text_chunk,
-                    &raw,
-                    chunk_total,
-                    embedding,
-                    sparse_json,
-                    model_id.clone(),
-                );
-                all_doc_chunks.push(doc_chunk);
-            }
-        }
-        let embed_time_ms = embed_start.elapsed().as_millis() as u64;
-
-        // ── Write phase ──────────────────────────────────────────────────
-        let write_start = Instant::now();
-
-        // LanceDB: batch-insert all chunks at once (or in sub-batches).
-        for batch in all_doc_chunks.chunks(self.config.batch_size) {
-            self.vector
-                .ingest_batch(batch)
-                .await
-                .context("LanceDB write")?;
-        }
-
-        // Tantivy: one whole-document row.
-        let headings_joined = raw.headings.join(" ");
-        let doc_id = doc_id_for(&raw);
-        {
-            let mut writer = self.fts.writer().context("opening Tantivy writer")?;
-            self.fts.add_document(
-                &mut writer,
-                TantivyInput {
-                    doc_id: &doc_id,
-                    owner_id: &raw.owner_id,
-                    language: &raw.language,
-                    title: raw.title.as_deref().unwrap_or(""),
-                    headings: &headings_joined,
-                    body: &raw.full_text,
-                },
-            )?;
-            writer.commit().context("Tantivy commit")?;
-        }
-
-        let write_time_ms = write_start.elapsed().as_millis() as u64;
-
-        Ok(IngestStats {
-            chunk_count,
-            embed_time_ms,
-            write_time_ms,
-        })
+        self.ingest_documents_batch(vec![raw]).await
     }
 
-    /// PLAN P11 step 1 -- bulk ingest of N documents with coalesced
-    /// LanceDB writes + a single Tantivy commit.
+    /// Bulk ingest of N documents with coalesced LanceDB writes + one Tantivy commit.
     ///
-    /// `ingest_document` is fine for the foreground "user just dragged
-    /// in a file" case where each doc has its own UI feedback. For
-    /// programmatic ingest paths (the cb-manifest L1 import in
-    /// P12 step 13, the producer/consumer pipeline once it grows
-    /// chunked dispatching, the future POST /v1/ingest/batch path on
-    /// the server) we want N docs to share *one* Arrow record batch
-    /// to LanceDB and *one* Tantivy commit; per-doc the
-    /// commit overhead is dominant for small chunks.
-    ///
-    /// Behaviour mirrors `ingest_document` exactly per-doc -- text
-    /// chunking, embedding via `Embedder::embed_full(...,
-    /// EmbedRole::Passage)`, doc_id derivation, sparse + model_id
-    /// metadata. Errors abort the whole batch (no partial writes);
-    /// callers that want per-doc error tolerance should split their
-    /// input themselves.
-    ///
-    /// Returns aggregated stats across the whole batch:
-    ///   chunk_count   = sum of chunks across all docs
-    ///   embed_time_ms = wall-clock for all embedding work
-    ///   write_time_ms = wall-clock for the LanceDB + Tantivy phase
+    /// Embedding runs inline on the caller's task (GPU/CPU-bound).
+    /// The resulting chunks are submitted to the background writer task, which
+    /// serialises all LanceDB + Tantivy mutations so concurrent callers never
+    /// race on the indexes. Callers await the result via a oneshot channel.
     pub async fn ingest_documents_batch(&self, raws: Vec<RawDocument>) -> Result<IngestStats> {
         if raws.is_empty() {
             return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
@@ -259,24 +284,11 @@ impl IngestPipeline {
             )
         })?;
 
-        // Owned view of what Tantivy needs per doc, so we can write
-        // them in one commit at the end without juggling borrows
-        // across the embed loop.
-        struct TantivyInputOwned {
-            doc_id: String,
-            owner_id: String,
-            language: String,
-            title: String,
-            headings: String,
-            body: String,
-        }
-
         let mut all_chunks: Vec<DocumentChunk> = Vec::new();
         let mut tantivy_inputs: Vec<TantivyInputOwned> = Vec::with_capacity(raws.len());
         let mut total_chunk_count: usize = 0;
 
-        // ── Embedding phase (per-doc serial; the per-batch embed loop
-        //    inside is what the embedder backend can parallelise). ──
+        // ── Embedding phase ─────────────────────────────────────────────
         let embed_start = Instant::now();
         for raw in &raws {
             let chunks = chunk_text(
@@ -290,7 +302,6 @@ impl IngestPipeline {
 
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-
                 let (dense, sparse) = {
                     use super::embedder::EmbedRole;
                     let mut emb = embedder.lock().await;
@@ -300,7 +311,6 @@ impl IngestPipeline {
                     let emb = embedder.lock().await;
                     format!("{:?}", emb.model())
                 };
-
                 for (i, text_chunk) in batch.iter().enumerate() {
                     let embedding = dense.vectors.get(i).cloned();
                     let sparse_json = sparse
@@ -328,48 +338,9 @@ impl IngestPipeline {
         }
         let embed_time_ms = embed_start.elapsed().as_millis() as u64;
 
-        // ── Coalesced write phase ───────────────────────────────────
-        let write_start = Instant::now();
-
-        // LanceDB: one Arrow record batch per `batch_size * 4` chunks.
-        // The 4× factor amortises the Arrow encoding overhead more
-        // aggressively than the per-doc default (which is sized for
-        // streaming ingest, not bulk).
-        let lance_batch_size = self.config.batch_size.saturating_mul(4).max(64);
-        for batch in all_chunks.chunks(lance_batch_size) {
-            self.vector
-                .ingest_batch(batch)
-                .await
-                .context("LanceDB batch write")?;
-        }
-
-        // Tantivy: ONE commit with N add_document calls. Tantivy commits
-        // are the expensive part (segment merges); a single commit for
-        // the whole batch is the main throughput win.
-        {
-            let mut writer = self.fts.writer().context("opening Tantivy writer")?;
-            for input in &tantivy_inputs {
-                self.fts.add_document(
-                    &mut writer,
-                    TantivyInput {
-                        doc_id: &input.doc_id,
-                        owner_id: &input.owner_id,
-                        language: &input.language,
-                        title: &input.title,
-                        headings: &input.headings,
-                        body: &input.body,
-                    },
-                )?;
-            }
-            writer.commit().context("Tantivy batch commit")?;
-        }
-        let write_time_ms = write_start.elapsed().as_millis() as u64;
-
-        Ok(IngestStats {
-            chunk_count: total_chunk_count,
-            embed_time_ms,
-            write_time_ms,
-        })
+        // ── Write phase: submit to background writer task ───────────────
+        self.submit_and_await(all_chunks, tantivy_inputs, total_chunk_count, embed_time_ms)
+            .await
     }
 
     /// Re-ingest: delete all existing chunks for a document, then ingest fresh.
@@ -389,68 +360,58 @@ impl IngestPipeline {
 
     /// Level-1 ingest: write a single metadata-only row for each input file.
     ///
-    /// No text extraction, no embedding. The row uses `chunk_index = -1` and
-    /// stashes filesystem metadata + the analysis level in `metadata_json`.
-    /// Subsequent L2/L3 runs upgrade the same row by `doc_id` (via re-ingest).
+    /// No text extraction, no embedding. Goes through the background writer
+    /// task (same as L3) so all LanceDB mutations are serialised.
     pub async fn ingest_l1(&self, files: &[L1FileEntry]) -> Result<IngestStats> {
         let now_ms: i64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
 
-        let mut chunks: Vec<DocumentChunk> = Vec::with_capacity(files.len());
-        for f in files {
-            let meta = serde_json::json!({
-                "level":      1,
-                "fs_size":    f.size,
-                "fs_mtime":   f.mtime_ms,
-                "fs_ctime":   f.ctime_ms,
-                "parent_dir": f.parent_dir,
-            });
-            let doc_id = f.doc_id.clone();
-            chunks.push(DocumentChunk {
-                id: chunk_row_id(&doc_id, -1),
-                doc_id,
-                location_uri: f.location_uri.clone(),
-                owner_id: f.owner_id.clone(),
-                filename: Some(f.filename.clone()),
-                title: None,
-                author: None,
-                year: None,
-                ext: Some(f.ext.clone()),
-                language: None,
-                page_count: None,
-                headings_text: None,
-                full_text: None,
-                full_text_md: None,
-                embedding: None,
-                embedding_sparse: None,
-                embedding_model: None,
-                chunk_index: -1,
-                chunk_total: 0,
-                chunk_start_char: None,
-                chunk_end_char: None,
-                indexed_at: now_ms,
-                source_hash: f.source_hash.clone(),
-                tags: vec![],
-                metadata_json: Some(meta.to_string()),
-            });
-        }
+        let chunks: Vec<DocumentChunk> = files
+            .iter()
+            .map(|f| {
+                let meta = serde_json::json!({
+                    "level":      1,
+                    "fs_size":    f.size,
+                    "fs_mtime":   f.mtime_ms,
+                    "fs_ctime":   f.ctime_ms,
+                    "parent_dir": f.parent_dir,
+                });
+                let doc_id = f.doc_id.clone();
+                DocumentChunk {
+                    id: chunk_row_id(&doc_id, -1),
+                    doc_id,
+                    location_uri: f.location_uri.clone(),
+                    owner_id: f.owner_id.clone(),
+                    filename: Some(f.filename.clone()),
+                    title: None,
+                    author: None,
+                    year: None,
+                    ext: Some(f.ext.clone()),
+                    language: None,
+                    page_count: None,
+                    headings_text: None,
+                    full_text: None,
+                    full_text_md: None,
+                    embedding: None,
+                    embedding_sparse: None,
+                    embedding_model: None,
+                    chunk_index: -1,
+                    chunk_total: 0,
+                    chunk_start_char: None,
+                    chunk_end_char: None,
+                    indexed_at: now_ms,
+                    source_hash: f.source_hash.clone(),
+                    tags: vec![],
+                    metadata_json: Some(meta.to_string()),
+                }
+            })
+            .collect();
 
-        let write_start = Instant::now();
-        for batch in chunks.chunks(self.config.batch_size) {
-            self.vector
-                .ingest_batch(batch)
-                .await
-                .context("LanceDB write (L1)")?;
-        }
-        let write_time_ms = write_start.elapsed().as_millis() as u64;
-
-        Ok(IngestStats {
-            chunk_count: chunks.len(),
-            embed_time_ms: 0,
-            write_time_ms,
-        })
+        let total = chunks.len();
+        // L1 has no Tantivy entries (no full-text body yet).
+        self.submit_and_await(chunks, vec![], total, 0).await
     }
 }
 
@@ -547,7 +508,7 @@ fn build_doc_chunk(
     }
 }
 
-fn build_metadata_json(mtime_unix: Option<u32>, volume_id: Option<&str>) -> Option<String> {
+fn build_metadata_json(mtime_unix: Option<i64>, volume_id: Option<&str>) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(m) = mtime_unix {
         parts.push(format!(r#""mtime_unix":{m}"#));
