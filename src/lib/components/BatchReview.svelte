@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { batchManager, type ProcessOverrides } from '../batch/store.svelte';
+    import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
     import { SUPPORTED_EXTENSIONS } from '../extractors';
@@ -570,10 +570,13 @@
         }
     }
 
+    // Local alias for the shared sentinel-recogniser. Used to apply the
+    // .fallback CSS class on the Title/Author/Year inputs when the LLM
+    // came back with a placeholder. The single source of truth is in
+    // batch/store.svelte.ts so the auto-accept rule and the UI class
+    // can never disagree.
     function isUnknown(v: string | undefined): boolean {
-        if (!v) return false;
-        const u = v.trim().toLowerCase();
-        return u === 'unknown' || u.startsWith('unknown ') || u === '0000' || u === 'unknown year';
+        return isUnknownSentinel(v);
     }
 
     async function handleReportChoice(choice: 'keep_problematic' | 'remove_done' | 'empty' | 'keep_all') {

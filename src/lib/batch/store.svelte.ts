@@ -22,6 +22,26 @@ export interface ProcessOverrides {
     extractionOnly?: boolean;
 }
 
+/** Recognise the family of "no real value here" strings the LLM
+ *  produces when it can't extract an author/title/year. The default
+ *  prompt instructs it to output `Unknown Author` etc., but smaller
+ *  models drift to "Unknown", "unknown", "n.n.", "N.N.", "?", "-",
+ *  or a single bracket character. We never want any of those to
+ *  trigger the auto-accept green check on the Stapel row. */
+export function isUnknownSentinel(v: string | null | undefined): boolean {
+    if (!v) return true;
+    const u = v.trim().toLowerCase();
+    if (u.length === 0) return true;
+    if (u.length <= 2) return true; // "?", "-", "n.", "[]", etc.
+    if (u === 'unknown' || u === 'unbekannt') return true;
+    if (u.startsWith('unknown ') || u.startsWith('unbekannt ')) return true; // "Unknown Author", "Unbekannt Autor"
+    if (u === 'n.n.' || u === 'nn' || u === 'n. n.') return true;            // anonymous-author conventions
+    if (u === 'anonymous' || u === 'anonym') return true;
+    if (u === 'none' || u === 'null' || u === 'n/a' || u === 'na') return true;
+    if (u === '0000') return true;                                           // year sentinel
+    return false;
+}
+
 export function getDefaultPrompt(format: 'xml' | 'json', lang: string = 'en') {
     if (format === 'json') {
         return lang === 'de' 
@@ -531,7 +551,7 @@ export class BatchManager {
                     item.suggestedYear = metadata.year || 'Unknown Year';
                     flog('info', `Analyzed: ${item.originalName} → "${item.suggestedTitle}" / ${item.suggestedAuthor}`);
 
-                    if (authorSortEnabled && item.suggestedAuthor && item.suggestedAuthor !== 'Unknown Author') {
+                    if (authorSortEnabled && item.suggestedAuthor && !isUnknownSentinel(item.suggestedAuthor)) {
                         const sortPrompt = `Reformat author to "Lastname Firstname": "${item.suggestedAuthor}". Output ONLY <AUTHOR> tags.`;
                         const sortRes = await queryRR(sortPrompt);
                         if (this.stopRequested || this.llmAbort?.signal.aborted) { item.status = 'queued'; break; }
@@ -541,12 +561,13 @@ export class BatchManager {
 
                     item.status = 'review';
                     // Auto-accept (green check) only when the LLM came back
-                    // with a real Author. Items without Author stay
-                    // unaccepted (yellow) until the user explicitly ticks
+                    // with a *real* Author -- not a sentinel like "Unknown",
+                    // "Unknown Author", "n.n.", "?", or a single
+                    // punctuation char. Items without a real author stay
+                    // unaccepted (red X) until the user explicitly ticks
                     // them — see Stapel UX in PLAN.md.
                     const hasAuthor = !!item.suggestedAuthor &&
-                        item.suggestedAuthor.trim() !== '' &&
-                        item.suggestedAuthor !== 'Unknown Author';
+                        !isUnknownSentinel(item.suggestedAuthor);
                     item.isAccepted = hasAuthor;
                     await this.calculateTargetPath(item);
 
@@ -671,17 +692,45 @@ export class BatchManager {
                 if (item.status === 'extracting' || item.status === 'analyzing') {
                     return { ...item, status: 'unfinished', statusDetail: undefined };
                 }
+                // Repair: a previous build's auto-accept rule only
+                // recognised the literal string "Unknown Author" and
+                // would mark items with "Unknown" / "n.n." / "?" /
+                // empty author as accepted (green check). Tighten on
+                // resume so existing sessions don't carry the bad
+                // accepts forward.
+                if (item.isAccepted && isUnknownSentinel(item.suggestedAuthor)) {
+                    return { ...item, isAccepted: false };
+                }
                 return item;
             });
         }
     }
 
     async executeBatch(mode: string = 'move') {
-        // Include 'review' AND 'error' items so previously-failed items can be retried
-        const accepted = this.items.filter(i => i.isAccepted && i.targetPath && (i.status === 'review' || i.status === 'error'));
+        // The user's `isAccepted` flag is the affirmative consent;
+        // `status` is informational. Items at 'review' (LLM-analysed),
+        // 'error' (re-try), 'unfinished' (resumed from prior session),
+        // and 'queued' (waiting / metadata-prefilled, never analysed)
+        // are all sortable as long as the user ticked the green check
+        // and a target path is computable. Pre-fix, only 'review' and
+        // 'error' passed -- so resumed-session items the user OK'd
+        // would show a green check + enabled "Sortieren" button but
+        // executeBatch silently filtered them out and returned null.
+        const SORTABLE = new Set(['review', 'error', 'unfinished', 'queued']);
+        const accepted = this.items.filter(
+            i => i.isAccepted && i.targetPath && SORTABLE.has(i.status)
+        );
         console.log(`[BatchManager] executeBatch(${mode}): ${accepted.length} accepted out of ${this.items.length} total`);
         this.items.forEach(i => console.log(`  item: ${i.originalName} status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? '✓' : 'MISSING'}`));
-        if (accepted.length === 0) return null;
+        if (accepted.length === 0) {
+            // Surface the diagnostic to the user, not just the dev
+            // console -- the silent return was the user-visible bug.
+            const greenButFiltered = this.items.filter(i => i.isAccepted).length;
+            if (greenButFiltered > 0) {
+                flog('warn', `executeBatch: ${greenButFiltered} item(s) accepted but filtered out (missing targetPath or unsortable status). Re-process the batch and try again.`);
+            }
+            return null;
+        }
 
         const saveTxt = await getSetting('saveTxt', true);
         const payload = {
