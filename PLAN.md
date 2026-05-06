@@ -924,6 +924,142 @@ The outbox doubles as the foreground producer/consumer queue
 from P10/P11 step c. One implementation, two consumers (local
 writer and remote pusher).
 
+#### Pillar 7 — Unified payload format (multi-producer indexing)
+
+`crisp-index-server` ends up with **three independent producers**
+all feeding the same index:
+
+1. **CrispSorter desktop** — Stapel / Hinzufügen flow.
+2. **cloud-backup VPS worker** — opens 7z archives in transit on
+   the way to Internxt; extracts text or generates
+   thumbnails+embeddings for files not yet in the server's index.
+   Output is much smaller than input (a 50 MB PDF becomes a few
+   KB of extracted text + a 1 KB embedding), so cheap to ship.
+3. **CrispLens** — once it migrates to the shared server (P13),
+   produces image embeddings + face descriptors instead of text.
+
+For this to work without each producer reinventing the wire format,
+`/v1/ingest/batch` must accept a **discriminated-union payload**
+that's media-agnostic. Rough shape:
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IndexPayload {
+    /// Text chunk (PDF/DOCX/EPUB/HTML extraction). Today's
+    /// DocumentChunk is the seed of this variant.
+    Text {
+        doc_id: String,                // SHA-256(file content)
+        location_uri: String,          // crisp+local / crisp+vps / crisp+cb-archive / ...
+        owner_id: String,
+        chunk_index: i32,              // -1 = whole-doc metadata row, 0 = first chunk, ...
+        chunk_total: i32,
+        full_text: Option<String>,
+        full_text_md: Option<String>,
+        embedding: Option<Vec<f32>>,   // null if embedderLocation == 'server' (server fills)
+        embedding_sparse: Option<String>,
+        embedding_model: Option<String>,
+        // ── shared metadata block (same for every kind) ───────
+        filename: Option<String>,
+        title: Option<String>,
+        author: Option<String>,
+        year: Option<i32>,
+        ext: Option<String>,
+        language: Option<String>,
+        page_count: Option<i32>,
+        tags: Vec<String>,
+        source_hash: String,
+        indexed_at: i64,
+        metadata_json: Option<String>, // forward-compat escape hatch
+    },
+
+    /// Image (JPEG / PNG / WebP / RAW thumbnail).
+    Image {
+        doc_id: String,
+        location_uri: String,
+        owner_id: String,
+        // CLIP-style global embedding for "find similar"
+        clip_embedding: Option<Vec<f32>>,
+        clip_model: Option<String>,
+        // Face descriptors (ArcFace 512D, one per face).
+        // Empty when no faces detected or face engine disabled.
+        faces: Vec<FaceDescriptor>,
+        // Thumbnail bytes (JPEG, sized per server policy).
+        // Optional: when None, server fetches from `location_uri`.
+        thumbnail_jpeg: Option<Vec<u8>>,
+        // ── shared metadata block (same fields as Text) ───────
+        filename: Option<String>,
+        title: Option<String>,
+        ...
+    },
+
+    /// L1 manifest row -- filesystem metadata only, no content.
+    /// Used by cloud-backup's manifest-import path so a 482k-file
+    /// backup tree becomes browsable in seconds without any
+    /// extraction.
+    Manifest {
+        doc_id: String,
+        location_uri: String,
+        owner_id: String,
+        filename: String,
+        ext: Option<String>,
+        size: i64,
+        mtime_ms: i64,
+        ctime_ms: i64,
+        parent_dir: String,
+        volume_id: Option<String>,
+    },
+}
+```
+
+Why a tagged union and not three separate endpoints:
+
+* **One ingest queue** on the server side. Same SQLite outbox,
+  same writer thread, same retry semantics, same `task_id`
+  reporting. Adding a new media kind = adding a variant + a
+  `match` arm in the writer.
+* **Same `doc_id` namespace.** A text doc and an image with the
+  same SHA-256 (e.g. someone's PDF that's also been scanned and
+  shipped as JPEGs) collide — the server keeps both rows
+  (different `chunk_index` / `media_kind`) but the user sees
+  them grouped in Übersicht as one logical file.
+* **Same dedup check.** `HEAD /v1/docs/{doc_id}` returns 200 if
+  any kind is already indexed. cloud-backup's VPS worker uses
+  this to skip re-extraction: "do you already have this hash?"
+  → "yes, kind=text, last indexed 2 weeks ago" → skip.
+
+Server-side write path:
+
+```
+POST /v1/ingest/batch
+  body: { payloads: Vec<IndexPayload> }
+  202 ← { task_id, queue_depth }
+                              │
+                              ▼
+            outbox writer task pulls payloads, dispatches:
+              IndexPayload::Text     → run server-side embedder
+                                       if .embedding is None →
+                                       LanceDB.add(...) +
+                                       Tantivy.add_document(...)
+              IndexPayload::Image    → write to images table +
+                                       store thumbnail blob;
+                                       LanceDB.add(clip_embedding) +
+                                       face_db.add(faces)
+              IndexPayload::Manifest → metadata-only row in
+                                       LanceDB (chunk_index = -1),
+                                       no Tantivy entry yet
+                                       (no text)
+```
+
+Client-side: the `IngestPayload` shape from
+`src-tauri/src/index/remote_client.rs` becomes a thin alias /
+re-export of `IndexPayload::Text`. CrispSorter's existing
+`DocumentChunk` → `IndexPayload::Text` conversion is a single
+function. Image variant ships when P13 lands. Manifest variant
+ships with P12 step 12 (the cloud-backup manifest-import
+command). The shape is forward-stable; new variants are
+additive.
+
 #### End-state architecture
 
 ```
@@ -1109,6 +1245,21 @@ integration is well-defined boundaries, not a merge. Same runtime-
 mismatch story as CrispLens — patterns + HTTP/IPC contracts, not code
 import.
 
+**Important refinement (2026-05-06).** cloud-backup isn't only a
+*passive storage layer that CrispSorter reads from*; once
+`crisp-index-server` exists (P11 step 4), cloud-backup's VPS
+worker can also be a **producer of indexing payloads**. The VPS
+already decrypts each archive in transit on its way to Internxt
+— that's the cheapest place in the whole system to extract text
+or generate thumbnails+embeddings, because the file is already
+in RAM/temp, no extra download. Output payloads are an order of
+magnitude smaller than inputs (a 50 MB PDF → a few KB of text +
+a 4 KB embedding), so shipping them to crisp-index-server is
+nearly free. **A backup pass becomes an indexing pass for new
+content** — the user doesn't have to manually run extraction on
+every file from their desktop. See "Producer side: VPS-trigger
+indexing" below.
+
 #### Boundaries
 
 | concern | owner | how the other side reads it |
@@ -1172,6 +1323,85 @@ more:
    in the local cache tier longer; archives the rest. Optional
    future hook; doesn't need to land in v1.
 
+#### Producer side: VPS-trigger indexing (cloud-backup → crisp-index-server)
+
+Once both `vps_worker.py` and `crisp-index-server` are deployed
+on the same VPS, an indexing hook slots cleanly into the
+existing post-receipt phase of cloud-backup. Pseudocode for the
+worker addition:
+
+```python
+# vps_worker.py — new step between "extract" and "upload to cloud"
+def maybe_index_for_search(file_path: str, file_hash: str, manifest_row: dict):
+    # 1. Ask crisp-index-server: do you already have this doc_id?
+    resp = requests.head(f"{INDEX_SERVER}/v1/docs/{file_hash}",
+                         headers={"Authorization": f"Bearer {API_KEY}"})
+    if resp.status_code == 200:
+        return  # already indexed; skip
+
+    # 2. Build the right IndexPayload variant per file kind.
+    ext = Path(file_path).suffix.lower()
+    if ext in TEXT_EXTRACTORS:        # .pdf, .docx, .epub, .html, .doc
+        text, meta = extract_text(file_path)        # cloud-backup's existing extractors
+        payload = {
+            "kind": "text",
+            "doc_id": file_hash,
+            "location_uri": cb_archive_uri(manifest_row),  # crisp+cb-archive://...
+            "full_text": text,
+            "embedding": None,                              # let server embed (GPU)
+            **meta,
+        }
+    elif ext in IMAGE_EXTS:           # .jpg, .png, .heic, ...
+        thumbnail, clip_emb, faces = run_image_pipeline(file_path)  # P13 hook
+        payload = {
+            "kind": "image",
+            "doc_id": file_hash,
+            "location_uri": cb_archive_uri(manifest_row),
+            "thumbnail_jpeg": thumbnail,
+            "clip_embedding": clip_emb,                     # 512-dim float32
+            "faces": faces,
+            **meta,
+        }
+    else:
+        # Unknown / unsupported — emit a Manifest-only payload so
+        # the row at least exists at L1 in the catalog.
+        payload = {
+            "kind": "manifest",
+            "doc_id": file_hash,
+            "location_uri": cb_archive_uri(manifest_row),
+            **fs_meta_from(manifest_row),
+        }
+
+    # 3. Ship as one batch entry. Real implementation accumulates
+    #    payloads across N files and POSTs in batches of, say, 64.
+    requests.post(f"{INDEX_SERVER}/v1/ingest/batch",
+                  json={"payloads": [payload]},
+                  headers={"Authorization": f"Bearer {API_KEY}"})
+```
+
+Operational consequences:
+
+* **Index latency = backup latency.** The user runs cloud-backup
+  on Sunday night; by Monday morning everything new is searchable
+  in CrispSorter desktop without any client-side work.
+* **GPU stays on the VPS.** Server-side embedding (P11 Pillar 2)
+  is the right default for this path — cloud-backup's VPS already
+  has the file decrypted and a GPU available; the desktop just
+  receives metadata + queries.
+* **Idempotent.** The `HEAD /v1/docs/:hash` check makes re-runs
+  free. Manual re-index is `POST /v1/docs/:hash/reindex`.
+* **No double-extraction.** When the user *also* drags a file
+  into Stapel that's already in cloud-backup, CrispSorter
+  desktop's pipeline checks the same `HEAD /v1/docs/:hash`
+  endpoint before extracting locally. Hit → just attach the
+  doc_id to the Stapel row, skip extraction.
+
+This single worker addition (≈ 100 lines of Python on
+cloud-backup's side, plus the unified payload shape from P11
+Pillar 7 on the server side) turns the entire backup pipeline
+into a continuous-indexing pipeline. No separate "indexer
+daemon" to run.
+
 #### Mode interactions
 
 cloud-backup integrates cleanly with the runtime modes from P11
@@ -1187,17 +1417,24 @@ Pillar 4:
 
 | step | what | status |
 |---|---|---|
-| 11   | URI scheme + `retrieve.py` subprocess bridge | small (~1 day) -- read-only integration; cloud-backup doesn't change |
-| 12   | `index_ingest_cb_manifest` Tauri command + Übersicht "Import cloud-backup manifest" button | small (~1 day) -- reads cloud-backup SQLite, writes L1 LanceDB rows |
+| 11   | URI scheme + `retrieve.py` subprocess bridge (consumer side) | small (~1 day) -- read-only integration; cloud-backup doesn't change |
+| 12   | `index_ingest_cb_manifest` Tauri command + Übersicht "Import cloud-backup manifest" button (`IndexPayload::Manifest` variant -- batched insert, no extraction) | small (~1 day) -- reads cloud-backup SQLite, writes L1 LanceDB rows |
 | 13   | Settings -> "Backup CrispSorter catalog with cloud-backup" toggle (just adds the data-dir to cloud-backup's source list via its config) | trivial |
-| 14   | "frequently-accessed" export hook | optional, not v1 |
+| 14   | **VPS-trigger indexing (cloud-backup as producer).** Hook in `vps_worker.py` that runs after archive extract / before cloud upload: `HEAD /v1/docs/{hash}` skip-or-extract, `POST /v1/ingest/batch` per N=64 files. Depends on P11 step 4 (server bulk-ingest API) + P11 Pillar 7 (unified payload format) being live. | medium (~3 days) -- ~100 lines of Python on cloud-backup side + crisp-index-server endpoint |
+| 15   | "frequently-accessed" export hook (CrispSorter -> cloud-backup) | optional, not v1 |
 
-Steps 11+12 are the load-bearing pair. After they ship: a user with
-a multi-TB backed-up archive can browse + search the whole thing in
-CrispSorter without ever extracting anything that isn't directly
-useful — Übersicht columnar pane reads metadata from cloud-backup's
-manifest, only the rows the user opens get demand-extracted via
-`retrieve.py`.
+Steps 11+12 are the load-bearing **consumer** pair (CrispSorter
+reads cloud-backup's storage). Step 14 is the load-bearing
+**producer** addition (cloud-backup feeds crisp-index-server) —
+this turns the whole backup pipeline into a continuous-indexing
+pipeline. After all three ship:
+
+* A user backs up a fresh batch of files Sunday night.
+* Monday morning their CrispSorter desktop sees them already
+  indexed at L3 with embeddings — no client-side extraction
+  needed, the GPU-equipped VPS did it during the backup pass.
+* Documents already-indexed are skipped via the `HEAD /v1/docs`
+  pre-check, so re-runs are free.
 
 #### What we don't do
 
@@ -1214,6 +1451,63 @@ manifest, only the rows the user opens get demand-extracted via
   CrispSorter as plaintext bytes → CrispSorter's LanceDB stores
   whatever its own encryption settings dictate (today: at-rest
   via the OS filesystem encryption; future: per-row).
+
+#### Convergence checkpoint (the picture, end-to-end)
+
+When P11 (server + bulk ingest + unified payload), P12 (cloud-
+backup as producer), and P13 (CrispLens migrating onto the same
+server) all land, the system shape is:
+
+```
+                 ┌──────────────────────────────────────────────┐
+                 │     crisp-index-server  (Axum + LanceDB +    │
+                 │     Tantivy + SQLite outbox + GPU embedder)  │
+                 │                                              │
+                 │     POST /v1/ingest/batch  (IndexPayload)    │
+                 │     HEAD /v1/docs/{hash}                     │
+                 │     POST /v1/search                          │
+                 │     GET  /v1/sync/since?ts=…                 │
+                 └─────────▲─────────▲──────────▲───────────────┘
+                           │         │          │
+                           │         │          │
+       ┌───────────────────┘         │          └────────────────────────┐
+       │                             │                                    │
+┌──────────────┐         ┌────────────────────────┐         ┌──────────────────────┐
+│ CrispSorter  │         │  cloud-backup VPS      │         │ CrispLens v4 / suite │
+│ desktop      │         │  worker (vps_worker.py)│         │ (image vertical)     │
+│ (Tauri)      │         │                        │         │                      │
+│ * Stapel +   │         │ * decrypt 7z in transit│         │ * face engine        │
+│   Hinzufügen │         │ * extract text /       │         │   (SCRFD+ArcFace)    │
+│ * Sync local │         │   thumbnail+CLIP       │         │ * CLIP image emb     │
+│   ↔ remote   │         │ * HEAD /v1/docs skip   │         │ * gallery / lightbox │
+│ * IndexBackend│        │ * POST /v1/ingest      │         │                      │
+│   trait swap │         │   (Text or Image       │         │ * shares server +    │
+│              │         │   payload)             │         │   sync + auth        │
+└──────┬───────┘         └────────────┬───────────┘         └──────────┬───────────┘
+       │                              │                                │
+       │ POST /v1/ingest/batch        │ POST /v1/ingest/batch          │ POST /v1/ingest/batch
+       │   IndexPayload::Text         │   IndexPayload::Text           │   IndexPayload::Image
+       │   IndexPayload::Manifest     │   IndexPayload::Image          │
+       │                              │   IndexPayload::Manifest       │
+       └──────────────────────────────┴────────────────────────────────┘
+                              │
+                       (one queue, one writer,
+                        one search index, one
+                        sync history)
+```
+
+Three producers, one server, one canonical index. Each producer
+decides what kind of payload it can produce given the work
+already in front of it (cloud-backup has decrypted bytes →
+extract immediately; CrispSorter desktop has user-attention →
+extract on demand; CrispLens has the user's photo workflow →
+emit image payloads). The server doesn't care which client sent
+what — same dedup, same retry queue, same search responses.
+
+**This is the optimisation the user asked about**: the
+indexing-trigger doesn't have to live on the desktop. Whichever
+node already has the file in hand, in the right state, does the
+work — and only that node.
 
 ### P13 — Image-vertical convergence with CrispLens
 
