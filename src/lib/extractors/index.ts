@@ -3,6 +3,7 @@ import { extractDocx } from './docxExtractor';
 import { extractEpub } from './epubExtractor';
 import { extractHtml } from './htmlExtractor';
 import { extractImage } from './imageExtractor';
+import { logInfo, logWarn, logDebug } from '../log';
 
 export interface ExtractionResult {
     text: string;
@@ -41,7 +42,6 @@ export async function extractText(
     file: File | { name: string, arrayBuffer: ArrayBuffer },
     options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
-    console.log(`[ExtractorIndex] Routing file: ${file.name}, forceOCR: ${options.forceOCR}`);
     let name: string;
     let arrayBuffer: ArrayBuffer;
 
@@ -57,32 +57,40 @@ export async function extractText(
     let text = '';
     let markdownText: string | undefined;
     let headings: string[] | undefined;
+    let pickedTool = '';
 
-    console.log(`[ExtractorIndex] Extension detected: ${extension}`);
-
+    // info-level: which extractor was picked (visible to users by
+    // default). Per-page chatter inside the individual extractors
+    // stays at console.log (browser-devtools only); the milestone
+    // events the user actually wants to see go through flog.
     switch (extension) {
         case 'pdf':
-            console.log("[ExtractorIndex] Handing off to extractPdf");
+            pickedTool = 'pdfjs-dist (JS)';
+            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             text = await extractPdf(arrayBuffer, options);
             // PDF: build lightweight markdown with heuristic heading detection.
             ({ markdownText, headings } = pdfTextToMarkdown(text));
             break;
         case 'docx':
-            console.log("[ExtractorIndex] Handing off to extractDocx");
+            pickedTool = 'mammoth (DOCX)';
+            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             ({ text, markdownText, headings } = await extractDocx(arrayBuffer));
             break;
         case 'epub':
-            console.log("[ExtractorIndex] Handing off to extractEpub");
+            pickedTool = '@lingo-reader/epub-parser';
+            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             ({ text, markdownText, headings } = await extractEpub(arrayBuffer, name, options));
             break;
         case 'txt': {
-            console.log("[ExtractorIndex] Handling txt internally");
+            pickedTool = 'TextDecoder utf-8';
+            logDebug(`Extracting ${name} as plain text`);
             const decoder = new TextDecoder('utf-8');
             text = decoder.decode(arrayBuffer);
             break;
         }
         case 'md': {
-            console.log("[ExtractorIndex] Handling md internally");
+            pickedTool = 'TextDecoder utf-8 (md)';
+            logDebug(`Extracting ${name} as markdown`);
             const decoder = new TextDecoder('utf-8');
             text = decoder.decode(arrayBuffer);
             markdownText = text;
@@ -91,7 +99,8 @@ export async function extractText(
         }
         case 'html':
         case 'htm':
-            console.log("[ExtractorIndex] Handing off to extractHtml");
+            pickedTool = 'DOMParser (HTML)';
+            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             ({ text, markdownText, headings } = await extractHtml(arrayBuffer));
             break;
         case 'webp':
@@ -101,21 +110,23 @@ export async function extractText(
         case 'bmp':
         case 'tif':
         case 'tiff':
-            console.log(`[ExtractorIndex] Handing off to extractImage (${extension})`);
+            pickedTool = `tesseract.js OCR (.${extension})`;
+            logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
             ({ text, markdownText, headings } = await extractImage(arrayBuffer, name));
             break;
         case 'doc':
             // Legacy MS Word (CFB / OLE2). Browser libraries can't reliably read this.
             // Surface a clear message so the user can convert to .docx.
+            logWarn(`Legacy .doc rejected (no in-app extractor): ${name}`);
             throw new Error(
                 'Legacy .doc files are not supported in-app. Please convert the file to .docx, .pdf, or .txt and try again.'
             );
         default:
-            console.warn(`[ExtractorIndex] Unsupported type: ${extension}`);
+            logWarn(`Unsupported file type rejected: ${name} (.${extension})`);
             throw new Error(`Unsupported file type: ${extension}`);
     }
 
-    console.log(`[ExtractorIndex] Extraction finished, result length: ${text.length}, headings: ${headings?.length ?? 0}`);
+    logDebug(`Extraction finished for ${name}: ${text.length.toLocaleString()} chars, ${headings?.length ?? 0} headings (via ${pickedTool})`);
     return { text, markdownText, headings };
 }
 

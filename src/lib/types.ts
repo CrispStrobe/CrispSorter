@@ -11,13 +11,22 @@ export interface BatchItem {
     errorMessage?: string;
     statusDetail?: string;
     extractedText?: string;
-    
+    /** Per-stage outcome for the bottom-of-row 3-pip indicator
+     *  (M | T | L = Metadata / Text / LLM).
+     *
+     *  metadataReadStatus tracks the explicit "read embedded
+     *  document metadata" step (PDF /Info dict, DOCX core.xml,
+     *  EPUB OPF, image EXIF). Undefined = not yet attempted;
+     *  'ok' / 'failed' = result; 'na' = the file format has no
+     *  metadata convention to read (.txt, .md, .html). */
+    metadataReadStatus?: 'ok' | 'failed' | 'na';
+
     // LLM Suggestions
     suggestedTitle?: string;
     suggestedAuthor?: string;
     suggestedYear?: string;
     targetPath?: string;
-    
+
     // User edits/acceptance
     isAccepted: boolean;
     isIgnored?: boolean;
