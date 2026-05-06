@@ -507,6 +507,7 @@
     let indexDownloadProgress = $state<{ repo: string; file: string; bytes_done: number; bytes_total: number; pct: number } | null>(null);
     let indexInitPct        = $state(0);
     let indexIvfRunning     = $state(false);
+    let indexScalarRunning  = $state(false);
 
     // Benchmarking
     let benchProviders = $state<string[]>([]);
@@ -1149,6 +1150,18 @@
             alert('IVF-PQ build failed: ' + e);
         } finally {
             indexIvfRunning = false;
+        }
+    }
+
+    async function buildScalarIndex() {
+        indexScalarRunning = true;
+        try {
+            await invoke('index_build_scalar_index');
+            alert('Scalar index built successfully.');
+        } catch(e: any) {
+            alert('Scalar index build failed: ' + e);
+        } finally {
+            indexScalarRunning = false;
         }
     }
 
@@ -2487,6 +2500,17 @@
                     disabled={indexIvfRunning || indexStatus !== 'ok'}>
                     {#if indexIvfRunning}<Loader2 size={14} class="spin" />{/if}
                     {i18n.t.settings.index.build_ivf}
+                </button>
+            </div>
+
+            <!-- Scalar index (parent_dir BTree) -->
+            <div class="section-card">
+                <label><Code size={16} /> {i18n.t.settings.index.build_scalar}</label>
+                <p class="hint">{i18n.t.settings.index.build_scalar_hint}</p>
+                <button class="action-btn secondary" onclick={buildScalarIndex}
+                    disabled={indexScalarRunning || indexStatus !== 'ok'}>
+                    {#if indexScalarRunning}<Loader2 size={14} class="spin" />{/if}
+                    {i18n.t.settings.index.build_scalar}
                 </button>
             </div>
 

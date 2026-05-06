@@ -5,7 +5,8 @@
 ///   `index_init`             → builds LocalIndex + FtsIndex + Embedder + SearchEngine + Pipeline
 ///   `index_ingest_document`  → `IngestPipeline::ingest_document` (chunk → embed → write both)
 ///   `index_search`           → `SearchEngine` (FTS + ANN + RRF)
-///   `index_build_ivf_pq`     → `LocalIndex::build_vector_index`
+///   `index_build_ivf_pq`        → `LocalIndex::build_vector_index`
+///   `index_build_scalar_index`  → `LocalIndex::build_scalar_index` (BTree on parent_dir)
 ///
 /// ## Remote backend path
 ///
@@ -13,6 +14,7 @@
 ///   `index_ingest_document`  → chunk + embed locally → push per-chunk via HTTP to server
 ///   `index_search`           → embed query locally → send text + embedding to server → server does FTS+ANN+RRF
 ///   `index_build_ivf_pq`     → error (not supported for remote backend)
+///   `index_build_scalar_index` → error (not supported for remote backend)
 use tauri::{Manager, State};
 
 use super::ingest::{IngestStats, L1FileEntry, RawDocument};
@@ -1462,6 +1464,25 @@ pub async fn index_update_location_by_path(
 }
 
 // ── Index management ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn index_build_scalar_index(state: State<'_, AppState>) -> Result<(), String> {
+    let lock = state.index.lock().await;
+
+    if !lock.config.enabled {
+        return Err("Index is disabled".to_owned());
+    }
+
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Scalar index build is only supported for the local backend")?
+        .clone();
+
+    drop(lock);
+
+    local.build_scalar_index().await.map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub async fn index_build_ivf_pq(state: State<'_, AppState>) -> Result<(), String> {
