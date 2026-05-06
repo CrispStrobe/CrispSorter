@@ -219,7 +219,8 @@
      *  ever loaded — saves multi-GB downloads + minutes of init time when
      *  the user only wants offline file cataloguing (L1 + L2) and
      *  full-text search via Tantivy. Mirrored into IndexConfig. */
-    let indexUseVector      = $state(true);
+    let indexUseVector          = $state(true);
+    let indexEmbedderLocation   = $state<'client' | 'server'>('client');
     // Reranker: empty string = disabled (maps to null on the Rust side).
     // Other values are UI keys; mapped to Rust kebab-case via rerankerToRust.
     let indexRerankerModel  = $state<string>('');
@@ -687,7 +688,8 @@
         indexEmbedderModel = await getSetting('indexEmbedderModel', 'bge_m3') as any;
         indexEmbedderBackend = await getSetting('indexEmbedderBackend', 'onnx') as any;
         indexDevice        = await getSetting('indexDevice', 'auto') as any;
-        indexUseVector     = await getSetting('indexUseVector', true) as boolean;
+        indexUseVector          = await getSetting('indexUseVector', true) as boolean;
+        indexEmbedderLocation   = await getSetting('indexEmbedderLocation', 'client') as any;
         indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
@@ -948,7 +950,8 @@
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
-        await saveSetting('indexUseVector',     indexUseVector);
+        await saveSetting('indexUseVector',         indexUseVector);
+        await saveSetting('indexEmbedderLocation',  indexEmbedderLocation);
         await saveSetting('indexRerankerModel', indexRerankerModel);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
@@ -1066,8 +1069,9 @@
                     embedder_model:   indexEmbedderToRust(indexEmbedderModel),
                     embedder_device:  indexDeviceToRust(indexDevice),
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
-                    use_vector:       indexUseVector,
-                    reranker_model:   rerankerToRust(indexRerankerModel),
+                    use_vector:           indexUseVector,
+                    embedder_location:    indexEmbedderLocation,
+                    reranker_model:       rerankerToRust(indexRerankerModel),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
                     model_cache_dir:  indexModelCacheDir.trim() || null,
                     matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
@@ -2234,6 +2238,18 @@
                 <label for="index-remote-key" style="margin-top:10px;"><Key size={14} /> {i18n.t.settings.index.remote_api_key}</label>
                 <input id="index-remote-key" type="password" bind:value={indexRemoteApiKey} placeholder="••••••••" />
             </div>
+
+            {#if indexUseVector}
+            <!-- Embedder location (only relevant for remote backend + vectors on) -->
+            <div class="section-card">
+                <label for="index-embedder-location">{i18n.t.settings.index.embedder_location}</label>
+                <select id="index-embedder-location" bind:value={indexEmbedderLocation} class="styled-select">
+                    <option value="client">{i18n.t.settings.index.embedder_location_client}</option>
+                    <option value="server">{i18n.t.settings.index.embedder_location_server}</option>
+                </select>
+                <p class="hint">{i18n.t.settings.index.embedder_location_hint}</p>
+            </div>
+            {/if}
             {/if}
 
             <!-- Inference engine FIRST so the model dropdown below can filter

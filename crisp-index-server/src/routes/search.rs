@@ -36,9 +36,45 @@ pub async fn search(
             state.index.search_text(query, &filters, limit).await
         }
         "vector" => {
-            let emb = match &req.embedding {
+            let server_embedded = if let Some(e) = &req.embedding {
+                Some(e.clone())
+            } else if state.config.server_embed_enabled {
+                let query = match &req.query {
+                    Some(q) => q.as_str(),
+                    None => {
+                        return (
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            Json(json!({ "error": "query is required for vector search when SERVER_EMBED is on" })),
+                        )
+                    }
+                };
+                let Some(ref embedder) = state.embedder else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "SERVER_EMBED is on but no server embedder is loaded" })),
+                    );
+                };
+                match embedder.embed_query(query).await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::error!("server-side query embedding failed: {e:#}");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": e.to_string() })),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let emb = match server_embedded.as_ref() {
                 Some(e) => e.as_slice(),
-                None => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "embedding is required for vector search" }))),
+                None => {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({ "error": "embedding is required for vector search" })),
+                    )
+                }
             };
             state.index.search_vector(emb, &filters, limit).await
         }
@@ -47,9 +83,36 @@ pub async fn search(
                 Some(q) => q.as_str(),
                 None => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "query is required for hybrid search" }))),
             };
-            let emb = match &req.embedding {
+            let server_embedded = if let Some(e) = &req.embedding {
+                Some(e.clone())
+            } else if state.config.server_embed_enabled {
+                let Some(ref embedder) = state.embedder else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "SERVER_EMBED is on but no server embedder is loaded" })),
+                    );
+                };
+                match embedder.embed_query(query).await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::error!("server-side hybrid query embedding failed: {e:#}");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": e.to_string() })),
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+            let emb = match server_embedded.as_ref() {
                 Some(e) => e.as_slice(),
-                None => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "embedding is required for hybrid search" }))),
+                None => {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({ "error": "embedding is required for hybrid search" })),
+                    )
+                }
             };
             state.index.search_hybrid(query, emb, &filters, limit).await
         }

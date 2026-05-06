@@ -52,3 +52,5 @@ futures-util  = "0.3"
 tracing       = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait   = "0.1"
+fastembed    = { git = "https://github.com/CrispStrobe/fastembed-rs", branch = "feat/new-model-entries", features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }

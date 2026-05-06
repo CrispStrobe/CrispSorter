@@ -5,7 +5,10 @@
 ///   PORT            = 8473
 ///   CRISP_API_KEY   = ""          (required for authenticated endpoints)
 ///   LANCE_DATA_DIR  = ./data      (where lance/ and fts/ subdirs are created)
-///   EMBED_DIMS      = 1024        (must match the embedder used by the client)
+///   EMBED_DIMS          = 1024    (must match the embedder used by the client)
+///   QUEUE_LEASE_SECS    = 30      (task-lease timeout before reclaim)
+///   QUEUE_RETRY_BASE_MS = 1000    (base backoff before retrying failed work)
+///   QUEUE_MAX_ATTEMPTS  = 3       (including the first attempt)
 ///
 /// ## Routes
 ///
@@ -17,7 +20,9 @@
 ///   POST /v1/docs/:id/location    — update stored location URI (auth required)
 ///   POST /v1/admin/build-ivf-pq   — build IVF-PQ index (auth required)
 mod auth;
+mod embedder;
 mod index;
+mod queue;
 mod routes;
 mod state;
 
@@ -33,6 +38,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use index::{FtsStore, SearchIndex, VectorStore};
+use queue::{QueueConfig, TaskQueue};
 use state::{ServerConfig, SharedState};
 
 #[tokio::main]
@@ -55,6 +61,22 @@ async fn main() -> Result<()> {
     );
     let dims: usize = std::env::var("EMBED_DIMS")
         .ok().and_then(|d| d.parse().ok()).unwrap_or(1024);
+    let server_embed_enabled = std::env::var("SERVER_EMBED")
+        .ok()
+        .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false);
+    let queue_lease_secs: u64 = std::env::var("QUEUE_LEASE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let queue_retry_base_ms: u64 = std::env::var("QUEUE_RETRY_BASE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000);
+    let queue_max_attempts: u32 = std::env::var("QUEUE_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
 
     if api_key.is_empty() {
         tracing::warn!("CRISP_API_KEY is not set — all authenticated endpoints accept any token");
@@ -70,16 +92,44 @@ async fn main() -> Result<()> {
     let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts"))?);
 
     let search_index = Arc::new(SearchIndex::new(vector, fts));
+    let embedder = if server_embed_enabled {
+        tracing::info!("Loading server-side embedder (BGE-M3)");
+        Some(embedder::ServerEmbedder::load_bge_m3(&data_dir.join("models"))?)
+    } else {
+        None
+    };
+    let queue = TaskQueue::open_or_create(
+        &data_dir,
+        QueueConfig {
+            lease_secs: queue_lease_secs,
+            retry_base_ms: queue_retry_base_ms,
+            max_attempts: queue_max_attempts,
+        },
+    )?;
+    queue.spawn_worker(search_index.clone(), embedder.clone());
 
     let shared = Arc::new(SharedState {
         index: search_index,
-        config: ServerConfig { api_key, port, data_dir, embed_dims: dims },
+        queue,
+        embedder,
+        config: ServerConfig {
+            api_key,
+            port,
+            data_dir,
+            embed_dims: dims,
+            server_embed_enabled,
+            queue_lease_secs,
+            queue_retry_base_ms,
+            queue_max_attempts,
+        },
     });
 
     // Authenticated /v1/* router.
     let v1 = Router::new()
         .route("/stats",                    get(routes::stats::stats))
         .route("/ingest",                   post(routes::ingest::ingest))
+        .route("/ingest/batch",             post(routes::ingest::ingest_batch))
+        .route("/tasks/:task_id",           get(routes::tasks::task_status))
         .route("/search",                   post(routes::search::search))
         .route("/docs/:doc_id",             delete(routes::docs::delete_doc))
         .route("/docs/:doc_id/location",    post(routes::docs::update_location))

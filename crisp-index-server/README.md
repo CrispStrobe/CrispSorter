@@ -4,7 +4,7 @@ Self-hosted vector + full-text search backend for [CrispSorter](https://github.c
 
 CrispSorter embeds documents locally using fastembed (BGE-M3 or similar) and sends the pre-computed dense vectors to this server. The server stores them in **LanceDB** (ANN) and **Tantivy** (BM25 full-text), then handles hybrid search with Reciprocal Rank Fusion (RRF, k=60).
 
-**No GPU required on the server** — all embedding is done on the client.
+Optionally, the server can also embed missing vectors itself. Set `SERVER_EMBED=1` and the server loads a CPU-side BGE-M3 fastembed model; queued `/v1/ingest/batch` tasks with empty `embedding` arrays are hydrated on arrival before they are written, and `/v1/search` can derive the query embedding server-side for `vector` / `hybrid` requests when the client sends `query` but omits `embedding`.
 
 ---
 
@@ -64,6 +64,10 @@ All configuration is via environment variables. Create a `.env` file in the work
 | `LANCE_DATA_DIR` | `./data` | Directory where `lance/` (LanceDB) and `fts/` (Tantivy) subdirectories are created |
 | `EMBED_DIMS` | `1024` | Embedding dimension — **must match the embedder used by the CrispSorter client** |
 | `RUST_LOG` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `SERVER_EMBED` | `0` | When `1` / `true`, load a server-side BGE-M3 embedder and allow ingest chunks with empty `embedding` arrays, plus query-side embedding for `vector` / `hybrid` search |
+| `QUEUE_LEASE_SECS` | `30` | Lease timeout for queued batch tasks before stale `processing` rows are reclaimed |
+| `QUEUE_RETRY_BASE_MS` | `1000` | Base retry backoff in milliseconds; later retries use exponential backoff from this base |
+| `QUEUE_MAX_ATTEMPTS` | `3` | Maximum attempts per queued batch task, including the first try |
 
 **Example `.env`:**
 ```env
@@ -71,6 +75,10 @@ PORT=8473
 CRISP_API_KEY=your-secret-key-here
 LANCE_DATA_DIR=/var/lib/crisp-index/data
 EMBED_DIMS=1024
+SERVER_EMBED=1
+QUEUE_LEASE_SECS=30
+QUEUE_RETRY_BASE_MS=1000
+QUEUE_MAX_ATTEMPTS=3
 RUST_LOG=info
 ```
 
@@ -159,6 +167,7 @@ Store a single pre-embedded chunk.
 ```
 
 - `embedding` — pre-computed dense vector; length must equal `EMBED_DIMS`
+- if `SERVER_EMBED=1`, you may instead send `embedding: []` and the server will compute the vector with BGE-M3 before writing
 - `full_text_md` and `headings` are optional
 - Full-text indexing (Tantivy) only happens for `chunk_index == 0` to avoid duplicate BM25 entries
 - The endpoint is **idempotent**: re-ingesting the same `doc_id` + `chunk_index` overwrites the previous record
@@ -172,6 +181,64 @@ Store a single pre-embedded chunk.
 ```json
 { "error": "embedding length 384 != expected 1024" }
 ```
+
+---
+
+### `POST /v1/ingest/batch`
+
+Queue a batch ingest task and return immediately.
+
+**Request body:**
+```json
+{
+  "chunks": [
+    {
+      "doc_id": "sha256...",
+      "chunk_index": 0,
+      "full_text": "plain text",
+      "embedding": []
+    }
+  ]
+}
+```
+
+- when `SERVER_EMBED=0`, every chunk must carry a full embedding vector
+- when `SERVER_EMBED=1`, chunks may carry `embedding: []` and the server fills them during queue processing
+- the server persists the task in `crisp_jobs.db` and processes it asynchronously through a single background worker
+- queue rows carry lease / heartbeat / retry metadata so stale `processing` tasks can be reclaimed after a crash or restart
+- legacy `ingest_tasks.json` state is imported into `crisp_jobs.db` automatically on first startup after upgrade
+
+**Response 202:**
+```json
+{
+  "task_id": "6d9b0d31-8f4a-4e52-b12a-7d8d14a4b8e6",
+  "queue_depth": 3,
+  "chunk_count": 64
+}
+```
+
+### `GET /v1/tasks/:task_id`
+
+Poll the current state of one queued batch.
+
+**Response 200:**
+```json
+{
+  "task_id": "6d9b0d31-8f4a-4e52-b12a-7d8d14a4b8e6",
+  "state": "processing",
+  "total_chunks": 64,
+  "completed_chunks": 0,
+  "queue_depth": 2,
+  "attempt_count": 1,
+  "max_attempts": 3,
+  "last_heartbeat_at": 1746547800123,
+  "lease_expires_at": 1746547830123
+}
+```
+
+`state` is one of: `queued`, `processing`, `done`, `failed`.
+The lease / heartbeat / attempt fields are optional metadata for operators and
+may be absent on older servers or terminal rows.
 
 ---
 
@@ -197,7 +264,7 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 |---|---|---|
 | `mode` | yes | `"text"`, `"vector"`, or `"hybrid"` |
 | `query` | for `text` / `hybrid` | BM25 query string |
-| `embedding` | for `vector` / `hybrid` | pre-computed query vector |
+| `embedding` | for `vector` / `hybrid` unless `SERVER_EMBED=1` | pre-computed query vector |
 | `limit` | no | max results (default: 20) |
 | `owner_id` | no | filter to a specific user's documents |
 | `language` | no | filter by language code (`"en"`, `"de"`, …) |
@@ -226,6 +293,8 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 **Hybrid search (RRF):**
 Merges BM25 and ANN ranked lists using Reciprocal Rank Fusion with k=60:
 `score = 1/(k + rank_bm25) + 1/(k + rank_ann)`
+
+When `SERVER_EMBED=1`, the client may omit `embedding` for `vector` and `hybrid` requests as long as it still supplies `query`; the server embeds the query text with BGE-M3 before running ANN / RRF.
 
 **Response 422** — missing required fields for mode:
 ```json

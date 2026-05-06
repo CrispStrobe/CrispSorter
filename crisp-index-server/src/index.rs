@@ -18,7 +18,7 @@ use arrow_array::{
     builder::{ListBuilder, StringBuilder},
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use crisp_index_protocol::{IngestChunk, SearchFilters, SearchHit};
+use crisp_index_protocol::{IngestBatch, IngestChunk, SearchFilters, SearchHit};
 use futures_util::TryStreamExt;
 use lancedb::{
     connect, Connection, Table,
@@ -133,6 +133,24 @@ impl VectorStore {
         let batch  = chunk_to_record_batch(chunk, self.dims, &schema)?;
         let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
         self.table.add(reader).execute().await.context("LanceDB add")?;
+        Ok(())
+    }
+
+    /// Store many pre-embedded chunks in one LanceDB add call.
+    pub async fn ingest_batch(&self, chunks: &[IngestChunk]) -> Result<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let schema = build_lance_schema(self.dims);
+        let batches: Result<Vec<RecordBatch>> = chunks
+            .iter()
+            .map(|chunk| chunk_to_record_batch(chunk, self.dims, &schema))
+            .collect();
+        let reader = arrow_array::RecordBatchIterator::new(
+            batches?.into_iter().map(Ok::<RecordBatch, arrow_schema::ArrowError>),
+            schema,
+        );
+        self.table.add(reader).execute().await.context("LanceDB add batch")?;
         Ok(())
     }
 
@@ -286,6 +304,33 @@ impl FtsStore {
         Ok(())
     }
 
+    /// Add or replace many documents, committing once at the end.
+    pub fn add_documents(&self, docs: &[(&str, &str, &str, &str, &str)]) -> Result<()> {
+        if docs.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self.writer()?;
+        let doc_id_field = self.schema.get_field("doc_id").unwrap();
+        let owner_id_field = self.schema.get_field("owner_id").unwrap();
+        let language_field = self.schema.get_field("language").unwrap();
+        let headings_field = self.schema.get_field("headings").unwrap();
+        let body_field = self.schema.get_field("body").unwrap();
+
+        for (doc_id, owner_id, language, headings, body) in docs {
+            let term = Term::from_field_text(doc_id_field, doc_id);
+            writer.delete_term(term);
+            writer.add_document(doc!(
+                doc_id_field   => *doc_id,
+                owner_id_field => *owner_id,
+                language_field => *language,
+                headings_field => *headings,
+                body_field     => *body,
+            ))?;
+        }
+        writer.commit()?;
+        Ok(())
+    }
+
     pub fn delete_document(&self, doc_id: &str) -> Result<()> {
         let mut writer = self.writer()?;
         let doc_id_field = self.schema.get_field("doc_id").unwrap();
@@ -311,7 +356,7 @@ impl FtsStore {
         let doc_id_field = self.schema.get_field("doc_id").unwrap();
         let owner_id_field = self.schema.get_field("owner_id").unwrap();
 
-        let mut qp = QueryParser::for_index(&self.index, vec![body_field]);
+        let qp = QueryParser::for_index(&self.index, vec![body_field]);
         let parsed = qp.parse_query(query_text)
             .unwrap_or_else(|_| {
                 // Fall back to a term search on the raw text.
@@ -357,6 +402,37 @@ pub struct SearchIndex {
 impl SearchIndex {
     pub fn new(vector: Arc<VectorStore>, fts: Arc<FtsStore>) -> Self {
         SearchIndex { vector, fts }
+    }
+
+    pub async fn ingest_batch(&self, batch: &IngestBatch) -> Result<()> {
+        if batch.chunks.is_empty() {
+            return Ok(());
+        }
+        self.vector.ingest_batch(&batch.chunks).await?;
+
+        let first_chunks: Vec<(&str, &str, &str, String, &str)> = batch
+            .chunks
+            .iter()
+            .filter(|c| c.chunk_index == 0)
+            .map(|c| {
+                (
+                    c.doc_id.as_str(),
+                    c.owner_id.as_str(),
+                    c.language.as_str(),
+                    c.headings.as_ref().map(|h| h.join(" ")).unwrap_or_default(),
+                    c.full_text.as_str(),
+                )
+            })
+            .collect();
+
+        let fts_docs: Vec<(&str, &str, &str, &str, &str)> = first_chunks
+            .iter()
+            .map(|(doc_id, owner_id, language, headings, body)| {
+                (*doc_id, *owner_id, *language, headings.as_str(), *body)
+            })
+            .collect();
+        self.fts.add_documents(&fts_docs)?;
+        Ok(())
     }
 
     pub async fn search_text(
