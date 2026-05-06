@@ -165,10 +165,21 @@ Write-Host "CRISPEMBED_SYS_LIB_DIR = $env:CRISPEMBED_SYS_LIB_DIR" -ForegroundCol
 # (commit 7326771). Anything still writing to src-tauri/target is stale.
 $RuntimeDlls = Get-ChildItem -Path $PrebuiltDir -Filter '*.dll' -ErrorAction SilentlyContinue
 if ($RuntimeDlls) {
+    # Honour CARGO_TARGET_DIR (Cargo's standard knob for redirecting
+    # build artefacts to a different drive / partition). Set it before
+    # running this script to keep target/ off the boot drive, e.g.:
+    #   $env:CARGO_TARGET_DIR = 'D:\cargo-target\crispsorter'
+    #   .\enable-crispembed.ps1 -Backend cuda
+    # Without it, fall back to the workspace-root target/.
+    $CargoTargetRoot = if ($env:CARGO_TARGET_DIR) {
+        $env:CARGO_TARGET_DIR
+    } else {
+        Join-Path $ProjectRoot 'target'
+    }
     $TargetDirs = @(
-        (Join-Path $ProjectRoot 'target\debug'),
-        (Join-Path $ProjectRoot 'target\release'),
-        (Join-Path $ProjectRoot 'src-tauri\bin')
+        (Join-Path $CargoTargetRoot 'debug'),
+        (Join-Path $CargoTargetRoot 'release'),
+        (Join-Path $ProjectRoot   'src-tauri\bin')
     )
     $copiedTotal = 0
     $skippedLocked = 0
@@ -191,9 +202,9 @@ if ($RuntimeDlls) {
         }
     }
     if ($copiedTotal -gt 0) {
-        Write-Host ("Staged " + $copiedTotal + " runtime DLL(s) to target\debug, target\release, and bin\") -ForegroundColor Green
+        Write-Host ("Staged " + $copiedTotal + " runtime DLL(s) to '$CargoTargetRoot\{debug,release}\' and 'src-tauri\bin\'") -ForegroundColor Green
     } else {
-        Write-Host ("DLLs already up to date in target\debug, target\release, and bin\ (" + $RuntimeDlls.Count + " files, no copy needed)") -ForegroundColor DarkGreen
+        Write-Host ("DLLs already up to date in '$CargoTargetRoot\{debug,release}\' and 'src-tauri\bin\' (" + $RuntimeDlls.Count + " files, no copy needed)") -ForegroundColor DarkGreen
     }
     if ($skippedLocked -gt 0) {
         Write-Host ("(" + $skippedLocked + " copy(ies) skipped: file in use by a running CrispSorter -- restart it to pick up new DLLs.)") -ForegroundColor DarkYellow
