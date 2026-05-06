@@ -472,33 +472,46 @@
         }
         indexingSelected = true;
         const items = batchManager.items.filter(i => selectedIds.includes(i.id));
+        const BATCH_SIZE = 16;
         let ok = 0, fail = 0;
+
+        type IngestInput = {
+            fullText: string; fullTextMd: string; headings: string[];
+            title: string | null; author: string | null; year: number | null;
+            filename: string; ext: string; language: string;
+            locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+        };
+        const inputs: IngestInput[] = [];
         for (const item of items) {
             if (!item.extractedText || item.extractedText.length < 20) { fail++; continue; }
+            inputs.push({
+                fullText:    item.extractedText,
+                fullTextMd:  '',
+                headings:    [],
+                title:       item.suggestedTitle  || null,
+                author:      item.suggestedAuthor || null,
+                year:        item.suggestedYear   ? parseInt(item.suggestedYear) : null,
+                filename:    item.originalName,
+                ext:         item.extension || '',
+                language:    'de',
+                locationUri: `crisp+local://local/${item.originalPath}`,
+                ownerId:     'local',
+                sourceHash:  item.id,
+                tags:        [],
+            });
+        }
+
+        for (let off = 0; off < inputs.length; off += BATCH_SIZE) {
+            const batch = inputs.slice(off, off + BATCH_SIZE);
             try {
-                await invoke('index_ingest_document', {
-                    input: {
-                        fullText:    item.extractedText,
-                        fullTextMd:  '',
-                        headings:    [],
-                        title:       item.suggestedTitle  || null,
-                        author:      item.suggestedAuthor || null,
-                        year:        item.suggestedYear   ? parseInt(item.suggestedYear) : null,
-                        filename:    item.originalName,
-                        ext:         item.extension || '',
-                        language:    'de',
-                        locationUri: `crisp+local://local/${item.originalPath}`,
-                        ownerId:     'local',
-                        sourceHash:  item.id,
-                        tags:        [],
-                    }
-                });
-                ok++;
+                await invoke('index_ingest_batch', { inputs: batch });
+                ok += batch.length;
             } catch (e) {
-                console.error('[Index] ingest failed for', item.originalName, e);
-                fail++;
+                console.error('[Index] batch ingest failed:', e);
+                fail += batch.length;
             }
         }
+
         indexingSelected = false;
         showToast(`Index: ${ok} erfolgreich, ${fail} fehlgeschlagen`);
     }

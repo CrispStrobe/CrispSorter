@@ -12,6 +12,8 @@
 //! GET    /health                        — HealthResponse
 //! GET    /v1/stats                      — StatsResponse
 //! POST   /v1/ingest         IngestChunk → IngestResponse
+//! POST   /v1/ingest/batch    IngestBatch → BatchIngestResponse (202)
+//! GET    /v1/tasks/:id                  — TaskStatusResponse
 //! POST   /v1/search       SearchRequest → Vec<SearchHit>
 //! DELETE /v1/docs/:id                   — DeleteResponse
 //! POST   /v1/docs/:id/location  UpdateLocationBody → UpdateLocationResponse
@@ -105,6 +107,52 @@ pub struct IngestResponse {
     pub chunk_count: usize,
     /// Server-measured time spent in the LanceDB / Tantivy write path.
     pub write_time_ms: u64,
+}
+
+/// Response for `POST /v1/ingest/batch`.
+///
+/// The server persists the batch to its durable queue and returns
+/// immediately; the client polls `/v1/tasks/:id` for completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchIngestResponse {
+    /// Opaque server-generated task identifier.
+    pub task_id: String,
+    /// Number of tasks currently queued behind or alongside this one.
+    pub queue_depth: usize,
+    /// Number of chunks accepted into the queued batch.
+    pub chunk_count: usize,
+}
+
+/// Response for `GET /v1/tasks/:id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStatusResponse {
+    /// Echo of the looked-up task identifier.
+    pub task_id: String,
+    /// `queued` | `processing` | `done` | `failed`
+    pub state: String,
+    /// Number of chunks originally enqueued in this task.
+    pub total_chunks: usize,
+    /// Number of chunks written so far. For the initial batch queue this is
+    /// `0` until the task succeeds, then `total_chunks`.
+    pub completed_chunks: usize,
+    /// Current queue depth across all non-terminal tasks.
+    pub queue_depth: usize,
+    /// Number of attempts already consumed, including the current one when
+    /// `state = processing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_count: Option<u32>,
+    /// Maximum attempts before the task becomes terminally `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+    /// Unix epoch milliseconds when the worker most recently renewed the lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<i64>,
+    /// Unix epoch milliseconds when the current worker lease expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<i64>,
+    /// Human-readable error string when `state = "failed"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Bulk-ingest request body for `POST /v1/ingest/batch` (PLAN P11
