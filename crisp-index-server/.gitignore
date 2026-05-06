@@ -1,0 +1,27 @@
+# Build artifacts
+/target/
+
+# Index data (never commit — can be hundreds of GB)
+/data/
+*.lance
+*.ldb
+*.idx
+*.fst
+
+# Environment — contains API keys
+.env
+.env.local
+.env.production
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Logs
+*.log

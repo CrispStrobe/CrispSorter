@@ -22,6 +22,12 @@ tauri-build = { version = "2", features = [] }
 protoc-bin-vendored = "3"
 
 [dependencies]
+# Wire-format types shared with the in-tree crisp-index-server backend
+# (see ../crisp-index-server). Single source of truth for `IngestChunk`,
+# `SearchRequest`, etc. Path dep stays inside the workspace; both crates
+# rebuild together when the protocol changes.
+crisp-index-protocol = { path = "../crisp-index-protocol" }
+
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

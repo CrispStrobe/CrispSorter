@@ -9,6 +9,106 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-06 — `crisp-index-server` integrated as workspace member
+
+The Axum VPS backend that PLAN.md P11 names as the server side of the
+remote-architecture story used to live in a sibling directory
+(`../crisp-index-server`) without a git repo. P11 still described it as
+"a documented skeleton with stub handlers", but the local code had
+already grown a full LanceDB + Tantivy + RRF implementation. Two
+parallel definitions of the wire format (`IngestChunk` / server,
+`IngestPayload<'a>` / client) were drifting silently.
+
+This session vendored the server into the CrispSorter repo as a Cargo
+workspace member, with a third member crate (`crisp-index-protocol`)
+holding the wire types both sides depend on.
+
+### Layout change
+
+```
+CrispSorter/
+├── Cargo.toml             ← new workspace root (resolver = "2")
+├── Cargo.lock             ← unified workspace lockfile
+├── crisp-index-protocol/  ← wire types + serde tests (new)
+├── crisp-index-server/    ← copied from ../crisp-index-server (no prior git)
+└── src-tauri/             ← existing Tauri 2 desktop app, now a member
+```
+
+The previous `src-tauri/Cargo.lock` was deleted; the workspace root
+owns the lockfile.
+
+### Why a workspace, not a separate GitHub repo
+
+- P11 steps 1, 2, 4, 5 are intentionally paired client + server changes
+  (`embedderLocation` flag, `IngestBatch`, `/v1/ingest/batch` 202 +
+  task_id). One repo lets one PR touch both sides.
+- The protocol crate ends the parallel-types problem: change the
+  `IngestChunk` shape and both crates rebuild; change one and serde
+  tests in `crisp-index-protocol` catch it.
+- The server can still be released and deployed independently — its
+  `crisp-index-server/README.md` Docker / systemd / nginx recipes work
+  unchanged.
+- No prior git history existed for `../crisp-index-server`, so a clean
+  import was free.
+
+### Protocol crate (`crisp-index-protocol`)
+
+Single source of truth for: `IngestChunk`, `IngestResponse`,
+`SearchRequest`, `SearchFilters`, `SearchHit`, `UpdateLocationBody`,
+`UpdateLocationByUriBody`, `UpdateLocationResponse`, `DeleteResponse`,
+`StatsResponse`, `HealthResponse`, `ErrorResponse`. Plus
+`SearchFilters::to_lance_sql()` (pure-string), used by the server's
+LanceDB layer.
+
+`SearchHit` is the strict wire subset. The client-side `SearchResult`
+in `src-tauri/src/index/schema.rs` is a superset — its extra optional
+fields (`metadata_json`, `catalog_source`, `volume_id`) are populated
+locally for catalog-channel hits, ignored when reading server
+responses (default `None`). Keeping these split means the server
+doesn't depend on LanceDB schema details that are only meaningful
+client-side.
+
+Bonus correctness fix: `SearchHit` now includes `ext` (was missing
+from the server's old local `SearchResult`); the server reads it from
+the LanceDB `ext` column in `batches_to_results`.
+
+`tags` standardised to `Vec<String>` with `#[serde(default)]` on both
+sides — was `Option<Vec<String>>` on the server and `&[String]` on the
+client; round-trip was already compatible but the new shape removes
+one Option unwrap.
+
+### Build system tweaks
+
+- `crisp-index-server/build.rs` now mirrors `src-tauri/build.rs`'s
+  protoc fallback via `protoc-bin-vendored`. The transitive
+  lance-encoding requirement on `protoc` is now covered by both
+  workspace members independently.
+- Root `.gitignore` adds `/target` (workspace target dir) and
+  `crisp-index-server/{data,target}` so a real deployment's hundreds
+  of GB of LanceDB shards never get accidentally `git add`-ed.
+
+### Verification
+
+- `cargo build -p crisp-index-protocol` — green.
+- `cargo test  -p crisp-index-protocol` — 4/4 passing
+  (round-trip, omit-None, tolerant-deserialize, lance SQL).
+- `cargo build -p crisp-index-server` — green (with two pre-existing
+  unrelated `unused_mut` / `dead_code` warnings).
+- `cargo build -p tauri-app` — desktop app still compiles unchanged
+  modulo the protocol-crate dep (verified after the workspace
+  conversion; the move from `src-tauri/target` to `/target` triggers
+  a full re-link but no source changes).
+
+### What this unblocks
+
+P11 steps 4-7 (server bulk ingest API, server-side embedding, IVF-PQ
+with sample_rate, sharding) are now in-tree work. The next concrete
+step is P11 refactor (a) — `index_ingest_batch` Tauri command + the
+parallel `crisp_index_protocol::IngestBatch { chunks: Vec<IngestChunk> }`
+wire type. Both can land in one commit since both halves live here.
+
+---
+
 ## Session log — May 2026 — index-test → main reconciliation + P9 step 1+2
 
 ### Branch reunification (commits `400df29`, `33479da`)

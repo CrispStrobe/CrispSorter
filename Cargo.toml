@@ -1,0 +1,51 @@
+# CrispSorter Cargo workspace.
+#
+# Three members:
+#
+# - `src-tauri`             — the Tauri 2 desktop app (binary + lib).
+#                             Owns the UI, the local LanceDB+Tantivy index,
+#                             extractors, embedders, and `RemoteClient` for
+#                             talking to the server below.
+# - `crisp-index-server`    — the Axum VPS backend (binary).
+#                             Receives pre-embedded chunks, owns the
+#                             server-side LanceDB+Tantivy on a beefier box.
+#                             Deployed standalone (Docker / systemd); this
+#                             workspace is purely the build system.
+# - `crisp-index-protocol`  — the wire-format types both sides depend on.
+#                             Single source of truth for `IngestChunk`,
+#                             `SearchRequest`, `SearchHit`, etc.
+#
+# Why a workspace: P11 (PLAN.md) lands paired client + server changes
+# (`embedderLocation`, `IngestBatch`, async ingest queue). One repo means
+# one PR can touch both sides; the protocol crate stops the wire format
+# from drifting silently.
+#
+# The server can still be released and deployed independently — its
+# Docker recipe in `crisp-index-server/README.md` works unchanged. Build
+# only the desktop side with `cargo build -p tauri-app`; only the server
+# with `cargo build -p crisp-index-server --release`.
+
+[workspace]
+resolver = "2"
+members  = [
+    "src-tauri",
+    "crisp-index-server",
+    "crisp-index-protocol",
+]
+
+# Lockfile lives at the workspace root (`Cargo.lock`). The previous
+# `src-tauri/Cargo.lock` is removed in the same change that introduces
+# this file; Cargo regenerates it the first time anything is built.
+
+[workspace.package]
+version    = "0.1.38"
+edition    = "2021"
+license    = "AGPL-3.0-or-later"
+authors    = ["CrispSorter contributors"]
+repository = "https://github.com/CrispStrobe/CrispSorter"
+
+# Note: members do NOT inherit version/etc from `[workspace.package]`
+# automatically — they need explicit `version.workspace = true`. The
+# desktop app is at 0.1.38 (matches its current release tag); the
+# server and protocol crates are at 0.1.0 (separate cadence). They will
+# diverge intentionally.
