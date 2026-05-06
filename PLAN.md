@@ -666,9 +666,16 @@ the CrispLens reference (modes, cloud drives, sync).
   `POST /v1/ingest` (per-chunk, includes pre-computed embedding),
   `POST /v1/search`, `POST /v1/docs/:id/location`,
   `DELETE /v1/docs/:id`, `GET /v1/stats`, `GET /health`.
-* `crisp-index-server` (Axum) is a documented skeleton with stub
-  handlers — the wire shape is defined; the LanceDB / Tantivy
-  glue on the server side is not yet written.
+* `crisp-index-server` (Axum) **lives in this repo as a workspace
+  member** (since the May 2026 integration). It's no longer a
+  stub: real LanceDB writes via Arrow record batches, real Tantivy
+  BM25 + delete-by-doc-id, real cosine ANN, real RRF (k=60) hybrid
+  merge, real IVF-PQ admin endpoint. Deployed standalone via
+  Docker / systemd; the workspace is purely the build system.
+* Wire-format types (`IngestChunk`, `SearchRequest`, `SearchHit`,
+  …) live in the `crisp-index-protocol` workspace crate so the
+  client and server cannot drift on the JSON shape. Tests in the
+  protocol crate pin the on-the-wire serialisation.
 * The client today **always** embeds locally regardless of the
   backend (`Local` or `Remote`). Remote-mode posts the
   pre-computed vector with each chunk.

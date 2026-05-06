@@ -1,0 +1,54 @@
+[package]
+name        = "crisp-index-server"
+version     = "0.1.0"
+edition     = "2021"
+description = "Self-hosted vector + full-text search backend for CrispSorter"
+license     = "AGPL-3.0-or-later"
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "crisp-index-server"
+path = "src/main.rs"
+
+[build-dependencies]
+# lance-encoding (transitive via lancedb 0.26) compiles `.proto` files at
+# build time via prost-build, which spawns `protoc`. Same story as the
+# Tauri side; bundle it so the workspace builds without protobuf-compiler
+# pre-installed.
+protoc-bin-vendored = "3"
+
+[dependencies]
+# Wire-format types shared with the CrispSorter client (../src-tauri).
+crisp-index-protocol = { path = "../crisp-index-protocol" }
+
+# Web framework
+axum          = "0.8"
+tokio         = { version = "1", features = ["full"] }
+tower-http    = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialisation
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+anyhow        = "1"
+
+# Vector store (LanceDB) — client sends pre-computed embeddings; no GPU required
+lancedb       = { version = "0.26.2", default-features = false }
+
+# Full-text search (Tantivy) — same version as CrispSorter client
+tantivy       = "0.22"
+
+# Arrow columnar format — must match lancedb's arrow dependency exactly
+arrow         = { version = "57", default-features = false }
+arrow-array   = { version = "57", default-features = false }
+arrow-schema  = { version = "57", default-features = false }
+arrow-select  = { version = "57", default-features = false }
+
+# Utilities
+uuid          = { version = "1", features = ["v4"] }
+dotenvy       = "0.15"
+futures       = "0.3"
+futures-util  = "0.3"
+tracing       = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait   = "0.1"

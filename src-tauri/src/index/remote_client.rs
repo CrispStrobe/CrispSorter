@@ -5,89 +5,39 @@
 ///
 /// ### Wire format
 ///
-/// POST /v1/ingest
-///   body  → IngestPayload (includes pre-computed embedding)
-///   200   ← { chunk_count, write_time_ms }
+/// All wire types (`IngestChunk`, `SearchRequest`, `UpdateLocationBody`,
+/// etc.) live in the `crisp-index-protocol` workspace crate so that the
+/// server (../crisp-index-server) and this client cannot drift. The
+/// response shape for `/v1/search` is `Vec<SearchHit>` on the wire — we
+/// deserialize directly into the richer client-side `SearchResult`,
+/// which is a strict superset (extra optional fields default to `None`).
 ///
-/// POST /v1/search
-///   body  → SearchPayload (text query + optional pre-computed embedding)
-///   200   ← Vec<SearchResult>
-///
-/// POST /v1/docs/:id/location
-///   body  → { new_uri }
-///   200   ← {}
-///
+/// POST /v1/ingest                    crisp_index_protocol::IngestChunk
+///   200 ← IngestResponse
+/// POST /v1/search                    crisp_index_protocol::SearchRequest
+///   200 ← Vec<SearchHit>             (deserialized as Vec<SearchResult>)
+/// POST /v1/docs/:id/location         crisp_index_protocol::UpdateLocationBody
+///   200 ← UpdateLocationResponse
+/// POST /v1/docs/location/by-uri      crisp_index_protocol::UpdateLocationByUriBody
+///   200 ← UpdateLocationResponse
 /// DELETE /v1/docs/:id
-///   200   ← { deleted: true }
-///
-/// GET /v1/stats
-///   200   ← { row_count, doc_count }
-///
-/// GET /health  (no auth)
-///   200   ← { status: "ok" }
+///   200 ← DeleteResponse
+/// GET  /v1/stats
+///   200 ← StatsResponse
+/// GET  /health  (no auth)
+///   200 ← HealthResponse
 ///
 /// All authenticated requests carry `Authorization: Bearer <api_key>`.
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use crisp_index_protocol::{
+    IngestChunk, SearchRequest, UpdateLocationBody, UpdateLocationByUriBody,
+};
 use reqwest::Client;
 use serde::Serialize;
 
 use super::schema::{SearchFilters, SearchResult};
 use super::{DocumentChunk, IndexBackend};
-
-// ── Request payload types ─────────────────────────────────────────────────
-
-/// Sent for every indexed chunk.  The embedding is pre-computed on the client
-/// side so the server does not need a GPU or fastembed.
-#[derive(Debug, Serialize)]
-struct IngestPayload<'a> {
-    doc_id: &'a str,
-    chunk_index: i32,
-    full_text: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    full_text_md: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    headings: Option<&'a [String]>,
-    embedding: &'a [f32], // pre-computed dense vector
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    author: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    year: Option<i32>,
-    filename: &'a str,
-    ext: &'a str,
-    language: &'a str,
-    location_uri: &'a str,
-    owner_id: &'a str,
-    source_hash: &'a str,
-    tags: &'a [String],
-}
-
-/// Search request — one of three modes.
-/// `embedding` is required for `mode = vector | hybrid`.
-#[derive(Debug, Serialize)]
-struct SearchPayload<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    query: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    embedding: Option<&'a [f32]>,
-    mode: &'a str, // "text" | "vector" | "hybrid"
-    limit: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    owner_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    year_min: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    year_max: Option<i32>,
-}
-
-#[derive(Debug, Serialize)]
-struct UpdateLocationPayload<'a> {
-    new_uri: &'a str,
-}
 
 // ── RemoteClient ──────────────────────────────────────────────────────────────
 
@@ -138,24 +88,30 @@ impl IndexBackend for RemoteClient {
     /// `Embedder`).  If the embedding is missing the server will reject the
     /// request with 422.
     async fn ingest(&self, doc: DocumentChunk) -> Result<()> {
-        let embedding = doc.embedding.as_deref().unwrap_or(&[]);
-        let payload = IngestPayload {
-            doc_id: &doc.doc_id,
+        // Build the wire payload from the local document chunk. The
+        // protocol struct is owned (not borrowed) — one allocation per
+        // chunk, dwarfed by the HTTP body serialisation cost. Optional
+        // metadata that the local chunk leaves as `None` is serialised
+        // away by the protocol's `skip_serializing_if = Option::is_none`
+        // attributes, so the wire bytes are byte-identical to the
+        // previous lifetime-borrowed `IngestPayload`.
+        let payload = IngestChunk {
+            doc_id: doc.doc_id.clone(),
             chunk_index: doc.chunk_index,
-            full_text: doc.full_text.as_deref().unwrap_or(""),
-            full_text_md: doc.full_text_md.as_deref(),
+            full_text: doc.full_text.clone().unwrap_or_default(),
+            full_text_md: doc.full_text_md.clone(),
             headings: None, // headings stored in full_text_md already
-            embedding,
-            title: doc.title.as_deref(),
-            author: doc.author.as_deref(),
+            embedding: doc.embedding.clone().unwrap_or_default(),
+            title: doc.title.clone(),
+            author: doc.author.clone(),
             year: doc.year,
-            filename: doc.filename.as_deref().unwrap_or(""),
-            ext: doc.ext.as_deref().unwrap_or(""),
-            language: doc.language.as_deref().unwrap_or(""),
-            location_uri: &doc.location_uri,
-            owner_id: &doc.owner_id,
-            source_hash: &doc.source_hash,
-            tags: &doc.tags,
+            filename: doc.filename.clone().unwrap_or_default(),
+            ext: doc.ext.clone().unwrap_or_default(),
+            language: doc.language.clone().unwrap_or_default(),
+            location_uri: doc.location_uri.clone(),
+            owner_id: doc.owner_id.clone(),
+            source_hash: doc.source_hash.clone(),
+            tags: doc.tags.clone(),
         };
         self.post_json("/v1/ingest", &payload).await?;
         Ok(())
@@ -167,16 +123,7 @@ impl IndexBackend for RemoteClient {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let payload = SearchPayload {
-            query: Some(query),
-            embedding: None,
-            mode: "text",
-            limit,
-            owner_id: filters.owner_id.as_deref(),
-            language: filters.language.as_deref(),
-            year_min: filters.year_min,
-            year_max: filters.year_max,
-        };
+        let payload = build_search_request(Some(query), None, "text", filters, limit);
         let resp = self.post_json("/v1/search", &payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
@@ -187,16 +134,7 @@ impl IndexBackend for RemoteClient {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let payload = SearchPayload {
-            query: None,
-            embedding: Some(embedding),
-            mode: "vector",
-            limit,
-            owner_id: filters.owner_id.as_deref(),
-            language: filters.language.as_deref(),
-            year_min: filters.year_min,
-            year_max: filters.year_max,
-        };
+        let payload = build_search_request(None, Some(embedding), "vector", filters, limit);
         let resp = self.post_json("/v1/search", &payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
@@ -208,16 +146,7 @@ impl IndexBackend for RemoteClient {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let payload = SearchPayload {
-            query: Some(query),
-            embedding: Some(embedding),
-            mode: "hybrid",
-            limit,
-            owner_id: filters.owner_id.as_deref(),
-            language: filters.language.as_deref(),
-            year_min: filters.year_min,
-            year_max: filters.year_max,
-        };
+        let payload = build_search_request(Some(query), Some(embedding), "hybrid", filters, limit);
         let resp = self.post_json("/v1/search", &payload).await?;
         Ok(resp.json::<Vec<SearchResult>>().await?)
     }
@@ -239,17 +168,43 @@ impl IndexBackend for RemoteClient {
     }
 
     async fn update_location(&self, doc_id: &str, new_uri: &str) -> Result<()> {
-        let payload = UpdateLocationPayload { new_uri };
+        let payload = UpdateLocationBody { new_uri: new_uri.to_owned() };
         self.post_json(&format!("/v1/docs/{doc_id}/location"), &payload)
             .await?;
         Ok(())
     }
 
     async fn update_location_by_uri(&self, old_uri: &str, new_uri: &str) -> Result<()> {
-        #[derive(Serialize)]
-        struct ByUriPayload<'a> { old_uri: &'a str, new_uri: &'a str }
-        let payload = ByUriPayload { old_uri, new_uri };
+        let payload = UpdateLocationByUriBody {
+            old_uri: old_uri.to_owned(),
+            new_uri: new_uri.to_owned(),
+        };
         self.post_json("/v1/docs/location/by-uri", &payload).await?;
         Ok(())
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Build a `crisp_index_protocol::SearchRequest` from the local
+/// `SearchFilters` plus the per-call mode-specific arguments. Owns its
+/// strings and embedding (one clone per call) — search is rare enough
+/// vs ingest that the allocation cost is negligible.
+fn build_search_request(
+    query: Option<&str>,
+    embedding: Option<&[f32]>,
+    mode: &str,
+    filters: &SearchFilters,
+    limit: usize,
+) -> SearchRequest {
+    SearchRequest {
+        query: query.map(str::to_owned),
+        embedding: embedding.map(|e| e.to_vec()),
+        mode: Some(mode.to_owned()),
+        limit: Some(limit),
+        owner_id: filters.owner_id.clone(),
+        language: filters.language.clone(),
+        year_min: filters.year_min,
+        year_max: filters.year_max,
     }
 }

@@ -10,9 +10,18 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Tauri / Rust
+# Workspace target dir lives at the repo root since the integration of
+# crisp-index-server (May 2026). The legacy `src-tauri/target` glob is
+# kept for branches that still build pre-workspace.
+/target
 src-tauri/target
 src-tauri/gen
 src-tauri/bin
+
+# crisp-index-server runtime data (LanceDB + Tantivy index) — never commit;
+# can grow to terabytes on a real deployment.
+crisp-index-server/data
+crisp-index-server/target
 
 # Bootstrapped tools (paths.ps1 downloads protoc here)
 gh_temp/
