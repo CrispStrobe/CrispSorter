@@ -636,9 +636,24 @@ rest is incremental.
 P10 sized the foreground client for "millions of files on one
 machine"; P11 is the server side: a user with a multi-TB archive
 who runs CrispSorter on their laptop, the actual index on a
-beefier VPS or in-house GPU box. Three pillars (the user's three
-questions made concrete) plus the modularity work we should do
-**now** so the eventual transition is incremental, not a rewrite.
+beefier VPS or in-house GPU box.
+
+**Reference architecture (`../CrispLens` v4) studied 2026-05-06.**
+CrispLens already ships the multi-mode pattern we want — three
+runtime modes (Server / Standalone-PWA / Desktop-Electron) in one
+codebase, a unified `api.js` that switches adapters based on
+mode, a `SyncManager` for bidirectional cache sync (pull
+metadata+thumbnails, push offline-queued work on reconnect), and
+a `cloud_drive_manager` that abstracts SMB / SFTP / Filen /
+Internxt as mountable "drives." The patterns below are translated
+to CrispSorter's Rust + Svelte + Tauri shape. Eventual
+convergence (one Tauri suite that handles documents and images,
+sharing the same server + sync + cloud-drive layer) is sketched
+in P14.
+
+Six pillars: the original three from "scale concerns" (queue,
+server-side embedding, IVF-PQ at scale) plus three borrowed from
+the CrispLens reference (modes, cloud drives, sync).
 
 #### Where we are today
 
@@ -774,6 +789,141 @@ Operational shape:
   `100 * sqrt(N)` so for 100 M vectors → 1 M sample rows = ~4 GB
   of vectors in RAM during the build, manageable.
 
+#### Pillar 4 — Runtime modes (CrispLens parity)
+
+CrispLens v4 supports three explicit modes; CrispSorter today
+has effectively one (Tauri desktop with a stub `BackendType::Remote`).
+The target is the same triad, namable in Settings:
+
+| mode | DB | Inference | UI | Use case |
+|---|---|---|---|---|
+| **Standalone** | local LanceDB+Tantivy | local (CrispEmbed/fastembed/llamacpp) | Tauri desktop | "Just my MacBook." Offline. Privacy by default. |
+| **Server** | remote (`crisp-index-server`) | remote (server-side embedder) | Tauri desktop *or* a hosted web UI | "My VPS holds everything." |
+| **Hybrid** | local cache + remote authoritative | client embeds where viable, server elsewhere | Tauri desktop | "Laptop + Hetzner VPS + StorageBox." Mid-term default for power users. |
+
+A fourth mode — **Browser-only PWA** — is what CrispLens calls
+"Standalone (browser)" with WASM SQLite + IndexedDB. Out of
+scope for CrispSorter v1 because LanceDB doesn't have a WASM
+build yet, but the PWA shell is shippable for the search-side
+read-only view (see P14 convergence note).
+
+Modes are a runtime switch, not a build target. The same binary
+runs all three; what changes is which `IndexBackend` impl is
+wired and whether the embedder loads. Implementation:
+
+* Today's `BackendType::Local | Remote` becomes
+  `RuntimeMode::Standalone | Server | Hybrid` (additive — Hybrid
+  is new). Standalone == today's "use local backend, embed
+  locally"; Server == today's "remote backend, embed locally"
+  (will become "remote backend, server embeds" once P11 step 5
+  ships); Hybrid is two backends behind one trait.
+* `HybridBackend` wraps `LocalIndex` + `RemoteClient`. Reads go
+  local-first, fall through to remote for misses. Writes go to
+  whichever side the user picked as authoritative for the
+  catalog they're working in (per-catalog setting). The
+  `SyncManager` (Pillar 6) keeps them consistent.
+* Settings panel: a "Runtime mode" picker at the top of Such-
+  Index. Changing it triggers a re-init — same flow as switching
+  backends today.
+
+#### Pillar 5 — Cloud-drive abstraction
+
+CrispLens's `cloud_drive_manager.py` exposes SMB / SFTP / Filen /
+Internxt as mountable drives — credentials are encrypted at
+rest, sessions are cached in memory, and a "mount point" is
+either a local path (SMB/SFTP via OS mount) or a virtual API
+adapter (Filen/Internxt via their CLIs). CrispSorter today has
+none of this — files come from `tauri-plugin-fs` only.
+
+Architecture:
+
+* New Rust module `src-tauri/src/drives/` with traits and impls:
+  * `trait CloudDrive` — `list_dir(path)`, `read_file(path)`,
+    `write_file(path, bytes)`, `stat(path)`, `delete(path)`.
+  * `mod smb` / `mod sftp` — wrap a real OS mount; CloudDrive
+    just delegates to `tauri-plugin-fs` against the mount point.
+  * `mod filen` / `mod internxt` — subprocess to the official
+    CLIs (`internxt-cli`, `filen-cli`) for the API ops; same
+    bridge pattern CrispLens uses to its Python CLIs but
+    Rust→exe instead of Python→exe.
+* Credentials encrypted at rest in a Tauri-side keychain (one
+  symmetric key per install, `keyring` crate or
+  `tauri-plugin-stronghold`).
+* New Tauri commands: `drive_list / drive_create / drive_mount
+  / drive_unmount / drive_test`. Same shape as CrispLens's
+  `routers/cloud_drives.py`.
+* Übersicht filter chip "Volume" gains a "Mount" item
+  alongside the OS volumes — a Filen archive shows up as a
+  filter target the same way an SSD does.
+* Ingest: scanner uses the `CloudDrive` trait so an Internxt
+  folder can be L1-indexed without local mirror; L3 streams
+  files as needed. `crisp+filen://...` and `crisp+internxt://...`
+  URI schemes already reserved in `location.rs`.
+
+Order: SMB + SFTP first (both are "mount the OS path, point
+existing fs reads at it" — minimal new code). Internxt + Filen
+are heavier (require shipping/spawning their CLIs); we add them
+behind the `cloud-drives-cli` Cargo feature so users on minimal
+installs can opt out of the binary bundling.
+
+#### Pillar 6 — SyncManager (local ↔ remote)
+
+CrispLens's `SyncManager.js` is the model. Two stores in
+IndexedDB (images metadata + people / embeddings + a
+`pending_push` outbox); two operations (`sync()` pulls a recent
+window of metadata + thumbnails; `pushPending()` flushes the
+offline outbox to the server with retry counters). CrispSorter
+needs the analogous shape, but in Rust + LanceDB instead of
+JS + IDB:
+
+```
+   ┌───────────────────────┐     pull (server→local)     ┌─────────────────┐
+   │ local LanceDB+Tantivy │ ◄────────────────────────── │  crisp-index-   │
+   │                       │     sync_state.last_pull_ts │     server      │
+   │ + sync_outbox table   │ ──────────────────────────► │                 │
+   └───────────────────────┘   push (local→server)       └─────────────────┘
+                                + retry queue
+```
+
+Concrete shape:
+
+* New table `sync_outbox(id, op, payload, retries, last_err,
+  queued_at)` in the same SQLite database as the catalog
+  metadata. `op` ∈ {ingest, delete, update_location}.
+  Operations that today block on the remote round-trip become
+  fire-and-forget (write to outbox, return), with the outbox
+  worker draining it asynchronously.
+* `sync_state` row tracks `last_pull_ts`, `last_pull_cursor`,
+  `last_push_ts`, `pending_count`. Surfaced in the bottom-left
+  chip from P10.
+* Pull operation: `GET /v1/sync/since?ts=<last>&limit=N` returns
+  the metadata-row delta — additions, modifications, deletions
+  — since the timestamp. Local LanceDB applies them.
+  **Importantly:** pull doesn't transfer embeddings unless the
+  user opts into "full mirror" mode; the default is
+  metadata-only ("offline-readable index") which is enough for
+  the Übersicht columnar view to show every doc.
+* Compact embeddings: borrowed from CrispLens
+  `/api/people/embeddings`. Server exposes a "representative
+  embedding per author / per topic cluster" so basic local
+  search works offline without dragging the whole vector
+  column down. Today CrispSorter doesn't have these clusters —
+  P14 reranker work would compute them.
+* Reconnect detection: a tokio task pings `/v1/health` every
+  30 s. On `200` after a streak of failures, runs `pushPending`
+  + `sync` automatically. UI shows a small green/yellow/red
+  pill ("synced" / "syncing" / "offline").
+* Conflict resolution: server is authoritative for hash
+  collisions on `doc_id`. If a row was modified locally
+  (Übersicht edit) AND remotely between pulls, the server's
+  version wins; the local edit is queued in `conflict_log` for
+  the user to review (rare in practice — locks on edit-in-flight
+  prevent most cases).
+
+The outbox doubles as the foreground producer/consumer queue
+from P10/P11 step c. One implementation, two consumers (local
+writer and remote pusher).
+
 #### End-state architecture
 
 ```
@@ -897,6 +1047,105 @@ desktop without any server work and pay off immediately
 (non-blocking writes, bulk Arrow batches, queue-depth
 visibility). Steps 4+ are the actual server build-out, but the
 client is already shaped right by then.
+
+Three additional steps cover the CrispLens-parity pillars; they
+slot in alongside the original seven, not after:
+
+8. **`RuntimeMode` + `HybridBackend`.** Replaces today's two-state
+   `BackendType::Local | Remote` with `Standalone | Server |
+   Hybrid`. `HybridBackend` reads local-first, falls through to
+   remote on miss; writes go to the per-catalog "authoritative
+   side." Pairs naturally with step 4 (bulk ingest) — Hybrid
+   mode means most-requested writes hit local + are queued for
+   remote replication. Settings UI: a single mode picker at the
+   top of the Such-Index panel.
+
+9. **`sync_outbox` + reconnect detector.** New SQLite table for
+   the offline write queue, a tokio task that pings
+   `/v1/health` and drains the outbox on reconnect, a
+   metadata-delta `/v1/sync/since?ts=…` endpoint on the server
+   side. Surface "offline / syncing / synced" pill in the
+   nav-bottom area next to the existing throughput chip. This
+   is the load-bearing CrispLens-parity step — once it ships,
+   the laptop-and-VPS workflow becomes seamless.
+
+10. **`CloudDrive` trait + SMB/SFTP impls.** The minimal viable
+    cloud-drive abstraction (mount the OS path, point existing
+    `tauri-plugin-fs` reads at it). Adds `crisp+smb://...` and
+    `crisp+sftp://...` to the URI scheme. Internxt + Filen land
+    behind the `cloud-drives-cli` Cargo feature in a follow-up;
+    they require bundling/spawning the official CLIs.
+
+The total order, optimised for "every step ships value while
+shaping the next one":
+
+```
+  P11 step  | what                                | ships value                                 | unblocks
+  ──────────┼─────────────────────────────────────┼─────────────────────────────────────────────┼─────────────
+  1 (refac) | index_ingest_batch                  | faster local ingest (Arrow batching)        | step 4
+  2 (refac) | embedderLocation flag               | infrastructure                              | step 5
+  3 (refac) | local writer queue                  | non-blocking writes, queue-depth chip       | step 9
+  8         | RuntimeMode + HybridBackend         | Settings exposes 3 modes                    | step 9
+  9         | sync_outbox + reconnect detector    | "online/offline/syncing" pill                | step 4
+  4         | server bulk ingest API              | remote-mode 100x faster                     | -
+  5         | server-side embedding               | TB-scale workflows (laptop + GPU box)       | -
+  6         | IVF-PQ with sample_rate             | 100M+-vector search latency stays ms-class  | -
+  10        | CloudDrive (SMB/SFTP)               | Hetzner StorageBox + NAS as first-class     | (Internxt/Filen later)
+  7         | sharding by volume_id               | only when needed                            | -
+```
+
+### P12 — Image-vertical convergence with CrispLens
+
+CrispSorter today indexes images at L2 (EXIF) but never embeds
+them — no "find similar," no face recognition, no CLIP-style
+text-to-image search. CrispLens has all three. Long-term we
+either (a) merge the two codebases into one Tauri suite with a
+"Documents" mode and an "Images" mode, or (b) keep them
+separate but share the server + sync + cloud-drive layer from
+P11.
+
+P12 is option (a) — converge into a single tool. Justified
+because:
+
+* Most users hitting a TB-scale archive have *both* — papers
+  and photos in the same Fachbereich folder.
+* The server-side stack (LanceDB + Tantivy + reranker + sync
+  manager + cloud drives) is identical regardless of payload
+  type. Two front-ends maintaining their own copies of that
+  stack is duplicated work.
+* CrispLens's Electron app v4 is already pure Node/Express +
+  ONNX (Python-free). Porting its core to Tauri/Rust + ORT
+  reuses the inference path CrispSorter already uses
+  (`ort = "=2.0.0-rc.11"`, the same `ort` crate version).
+
+Concrete steps (long-term — not for the next release):
+
+1. **CLIP-style image embedder** — `EmbedderModel::ClipB32`
+   variant alongside the existing text embedders. CLIP ViT-B/32
+   ships ONNX in the open-clip repo; ~150 MB per backbone, fits
+   the existing `ort`/CrispEmbed pipeline. New
+   `IngestPayload.is_image` flag routes images through the
+   image branch on both client and server.
+2. **Face recognition module** — port CrispLens's SCRFD + ArcFace
+   pipeline (`renderer/src/lib/face-engine.js`) to a Rust
+   `crispface` sibling crate using `ort`. Same ONNX models,
+   same 512D representation, same `person_embeddings` table
+   shape so the SyncManager can pull them.
+3. **UI**: add an "Images" tab alongside "Stapel" / "Kataloge",
+   with the gallery / lightbox / face-clustering UI from
+   `electron-app-v4/renderer/src/lib/`. Shares the same
+   IndexBackend, the same sync chip, the same cloud drives.
+4. **One installer.** Single Tauri binary with both verticals;
+   the current document-only and image-only installers become
+   feature-gated builds for users who only want one.
+
+Out of scope for now. But P11's modularity (especially steps
+1-3 + 8-10) is what makes it eventually possible without
+re-doing every component. The right framing today: keep
+`IndexBackend` / `RuntimeMode` / `SyncManager` payload-shape-
+agnostic so that "an image with EXIF + CLIP vector + face
+embeddings" is just a different `DocumentChunk` flavour later,
+not a separate stack.
 
 ---
 
