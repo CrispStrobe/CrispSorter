@@ -409,6 +409,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         // future search-time filter can hide rows from currently-
         // unmounted volumes. Best-effort; None when the helper fails.
         volume_id: crate::volume::volume_id_for_path(&p),
+        // P9 step 3 — parent directory for scalar-indexed folder filter.
+        parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
     };
 
     pipeline

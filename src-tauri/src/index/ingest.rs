@@ -91,6 +91,12 @@ pub struct RawDocument {
     /// volumes without a schema migration. `None` for non-file ingests
     /// or when the platform helper fails (best-effort enrichment).
     pub volume_id: Option<String>,
+
+    /// Parent directory of the source file (PLAN P9 step 3).
+    /// Written directly to the `parent_dir` column so folder-prefix
+    /// filters in `query_documents` use a scalar index instead of a
+    /// JSON LIKE scan.  `None` for non-file ingests (pasted text, etc.).
+    pub parent_dir: Option<String>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -405,6 +411,7 @@ impl IngestPipeline {
                     source_hash: f.source_hash.clone(),
                     tags: vec![],
                     metadata_json: Some(meta.to_string()),
+                    parent_dir: Some(f.parent_dir.clone()),
                 }
             })
             .collect();
@@ -505,6 +512,7 @@ fn build_doc_chunk(
         // up to the next non-digit (which is `,` when volume_id is
         // present, `}` when it isn't).
         metadata_json: build_metadata_json(raw.mtime_unix, raw.volume_id.as_deref()),
+        parent_dir: raw.parent_dir.clone(),
     }
 }
 
@@ -551,6 +559,7 @@ mod tests {
             tags: vec!["theology".to_owned()],
             mtime_unix: None,
             volume_id: None,
+            parent_dir: None,
         }
     }
 

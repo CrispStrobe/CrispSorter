@@ -419,6 +419,8 @@ pub async fn index_ingest_path(
         // (best-effort; helper returns None on tmpfs / network share /
         // missing path / platform helper failure).
         volume_id: crate::volume::volume_id_for_path(&p),
+        // P9 step 3 — parent directory for scalar-indexed folder filter.
+        parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
     };
 
     let lock = state.index.lock().await;
@@ -471,6 +473,7 @@ pub async fn index_ingest_document(
         // PLAN P7.6 — frontend ingest is path-less (input is the
         // already-extracted text), so we don't have a volume to tag.
         volume_id: None,
+        parent_dir: None,
     };
 
     use tauri::Emitter;
@@ -592,6 +595,7 @@ pub async fn index_ingest_document(
             source_hash: raw.source_hash.clone(),
             tags: raw.tags.clone(),
             metadata_json: None,
+            parent_dir: raw.parent_dir.clone(),
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -687,6 +691,7 @@ pub async fn index_ingest_batch(
                 // treats None as "re-ingest" which is the safe default.
                 mtime_unix: None,
                 volume_id: None,
+                parent_dir: None,
             })
             .collect();
 
@@ -758,6 +763,7 @@ pub async fn index_ingest_batch(
             tags: input.tags,
             mtime_unix: None,
             volume_id: None,
+            parent_dir: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
