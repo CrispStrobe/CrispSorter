@@ -69,20 +69,23 @@ Write-Host "Building optimized executable with Tauri..." -ForegroundColor Cyan
 & npm run tauri build
 
 # 3. Success Reporting
-# target/ moved to the workspace root with the crisp-index-server
-# integration (commit 7326771); the legacy src-tauri\target\ path is
-# kept as a fallback so this script still finds the .exe in branches
-# that haven't picked up the workspace move yet.
-$ExePath = Join-Path $ProjectRoot "target\release\CrispSorter.exe"
-if (-not (Test-Path $ExePath)) {
-    $ExePath = Join-Path $ProjectRoot "target\release\tauri-app.exe"
+# Honour CARGO_TARGET_DIR (e.g. set to D:\cargo-target\crispsorter to
+# keep build artefacts off the boot drive). Falls back to the
+# workspace-root target/, then the legacy src-tauri\target\ path for
+# old branches that haven't picked up the workspace move.
+$CargoTargetRoot = if ($env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR
+} else {
+    Join-Path $ProjectRoot "target"
 }
-if (-not (Test-Path $ExePath)) {
-    $ExePath = Join-Path $ProjectRoot "src-tauri\target\release\CrispSorter.exe"
-}
-if (-not (Test-Path $ExePath)) {
-    $ExePath = Join-Path $ProjectRoot "src-tauri\target\release\tauri-app.exe"
-}
+$ExeCandidates = @(
+    (Join-Path $CargoTargetRoot   "release\CrispSorter.exe"),
+    (Join-Path $CargoTargetRoot   "release\tauri-app.exe"),
+    (Join-Path $ProjectRoot       "src-tauri\target\release\CrispSorter.exe"),
+    (Join-Path $ProjectRoot       "src-tauri\target\release\tauri-app.exe")
+)
+$ExePath = $ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $ExePath) { $ExePath = $ExeCandidates[0] }
 
 if (Test-Path $ExePath) {
     Write-Host "`nBuild Successful!" -ForegroundColor Green
