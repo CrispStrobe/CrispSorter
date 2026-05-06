@@ -46,12 +46,44 @@
         } catch { /* index disabled or not yet initialised */ }
     }
 
+    // Live worker counters from the Stapel pipeline. The numbers below
+    // come straight from $state on batchManager so they update on
+    // every increment without needing an interval.
+    const workerStats = $derived.by(() => {
+        const elapsed = batchManager.runStartTs > 0
+            ? (Date.now() - batchManager.runStartTs) / 1000
+            : 0;
+        const totalDone = batchManager.extractionDone + batchManager.llmDone;
+        const docsPerMin = elapsed >= 1
+            ? Math.round((totalDone / elapsed) * 60)
+            : 0;
+        return {
+            extractionActive: batchManager.extractionActive,
+            llmActive: batchManager.llmActive,
+            extractionTarget: batchManager.extractionTargetWorkers,
+            llmTarget: batchManager.llmTargetWorkers,
+            extractionDone: batchManager.extractionDone,
+            llmDone: batchManager.llmDone,
+            docsPerMin,
+            elapsed,
+            isProcessing: batchManager.isProcessing,
+        };
+    });
+
     onMount(() => {
         let cleanup = () => {};
         (async () => {
             // Load saved language
             const savedLang = await getSetting('language', 'en') as Language;
             i18n.setLanguage(savedLang);
+
+            // Restore the in-process log verbosity threshold so the
+            // Logs panel stays as quiet (or chatty) as the user left it.
+            try {
+                const v = await getSetting('logVerbosity', 'info') as any;
+                const { setLogVerbosity } = await import('$lib/log');
+                setLogVerbosity(v);
+            } catch (e) { /* log module not loaded yet -- non-fatal */ }
 
             try {
                 await batchManager.resumeLastSession();
@@ -275,6 +307,44 @@
                     {/if}
                 </button>
             {/if}
+
+            <!-- Live worker / throughput chip. Only shown while a
+                 processAll run is in flight; it's a separate visual
+                 group from the static Stapel/DB totals above. -->
+            {#if workerStats.isProcessing || workerStats.extractionActive > 0 || workerStats.llmActive > 0}
+                <button class="batch-stats stats-toggle worker-stats"
+                    onclick={() => statsExpanded = !statsExpanded}
+                    title="Workers (click for details)">
+                    {#if !navCollapsed}
+                        <div class="stats-summary">
+                            <span class="worker-dot" class:active={workerStats.extractionActive > 0} aria-hidden="true">●</span>
+                            <span class="stats-pair">
+                                <span class="stats-key">Ex:</span>
+                                <span class="stats-val">{workerStats.extractionActive}/{workerStats.extractionTarget}</span>
+                            </span>
+                            <span class="stats-sep" aria-hidden="true">·</span>
+                            <span class="worker-dot" class:active={workerStats.llmActive > 0} aria-hidden="true">●</span>
+                            <span class="stats-pair">
+                                <span class="stats-key">LLM:</span>
+                                <span class="stats-val">{workerStats.llmActive}/{workerStats.llmTarget}</span>
+                            </span>
+                            {#if workerStats.docsPerMin > 0}
+                                <span class="stats-sep" aria-hidden="true">·</span>
+                                <span class="stats-val">{workerStats.docsPerMin}/min</span>
+                            {/if}
+                        </div>
+                        {#if statsExpanded}
+                            <div class="stats-breakdown">
+                                <span class="stat-ext">{workerStats.extractionDone} extracted</span>
+                                <span class="stat-ext">{workerStats.llmDone} analyzed</span>
+                                <span class="stat-ext">{Math.round(workerStats.elapsed)}s elapsed</span>
+                            </div>
+                        {/if}
+                    {:else}
+                        <span class="stats-badge-collapsed" style="background:#16a34a33; color:#86efac;">{workerStats.extractionActive + workerStats.llmActive}</span>
+                    {/if}
+                </button>
+            {/if}
             <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}>
                 <Terminal size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.logs}</span>{/if}
@@ -458,4 +528,11 @@
     .stats-breakdown { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
     .stat-ext { font-size: 0.65rem; background: #27272a; border-radius: 3px; padding: 1px 5px; color: #71717a; text-transform: uppercase; font-weight: 600; }
     .stats-badge-collapsed { display: flex; align-items: center; justify-content: center; width: 28px; height: 20px; background: #3b82f633; border-radius: 4px; font-size: 0.7rem; font-weight: 700; color: #60a5fa; margin: 0 auto; }
+    .worker-stats { border-top: 1px dashed #27272a; }
+    .worker-dot { color: #3f3f46; font-size: 0.7rem; }
+    .worker-dot.active { color: #22c55e; animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+    }
 </style>

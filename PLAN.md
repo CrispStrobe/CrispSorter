@@ -579,13 +579,18 @@ b. **Per-stage timeout wrappers** (first-byte + total) in the
    extractor adapters. The `conversionTimeoutSeconds` Setting
    becomes a UI knob over the L3 *whole-file* budget; per-stage
    defaults stay sane.
-c. **Worker pool** in the background-ingest scheduler. N
-   configurable in Settings (default `min(num_cpus, 4)`). The
-   foreground Stapel flow gets the same treatment: today
-   `batch/store.svelte.ts` runs `EXTRACT all → ANALYZE all` in
-   two serial phases so a stalled LLM never blocks extraction.
-   The producer/consumer rewrite preserves that property while
-   also overlapping the phases:
+c. **Worker pool**. ✅ Foreground Stapel flow shipped
+   (commits `b70ebae` + the N+M-worker upgrade in this commit
+   sequence). N extraction workers + M LLM workers configurable
+   in Settings (Extraktion / KI-Optionen, default 1+1 each,
+   cap 16+16). Live worker / docs-per-min chip in the bottom-
+   left nav next to the existing Stapel + DB stats. Background-
+   ingest scheduler still TODO -- same shape, applied to the
+   `bg_ingest` module instead of `batchManager.processAll`.
+
+   The producer/consumer rewrite preserves the no-stalled-LLM
+   property of the original two-phase loop while overlapping
+   the phases:
 
    ```
    extractor producer ──► queue (bounded, ~8) ──► LLM consumer
