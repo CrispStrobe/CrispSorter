@@ -23,7 +23,8 @@
     type FileStatus = 'pending' | 'extracting' | 'embedding' | 'done' | 'error' | 'skipped';
 
     interface IngestEntry {
-        id:        string;
+        id:        string;   // String(rowId) for SQLite-backed entries
+        rowId?:    number;   // SQLite file_queue row id
         path:      string;
         filename:  string;
         ext:       string;
@@ -35,6 +36,28 @@
         writeMs?:  number;
         chunksDone?: number;
         chunksTotal?: number;
+    }
+
+    // Returned by jobs_list_files (display view)
+    interface ListedFile {
+        rowId:       number;
+        jobId:       string;
+        filePath:    string;
+        docId:       string | null;
+        targetLevel: number;
+        status:      string;
+        errorText:   string | null;
+        retryCount:  number;
+    }
+
+    // Returned by jobs_claim_batch (execution)
+    interface QueuedFile {
+        rowId:       number;
+        jobId:       string;
+        filePath:    string;
+        docId:       string | null;
+        targetLevel: number;
+        retryCount:  number;
     }
 
     interface ManagedFolder {
@@ -61,6 +84,9 @@
 
     let folders     = $state<ManagedFolder[]>([]);
     let scanningFolder = $state<string | null>(null);
+
+    /** Active durable job id in crisp_jobs.db (null = no active job yet). */
+    let activeJobId = $state<string | null>(null);
 
     /** Ingest depth requested by the user.
      *   L1 = filesystem metadata only (fast — path/size/date),
@@ -104,6 +130,7 @@
     // Ingest progress from Rust events
     let currentFile = $state('');
     let currentStep = $state('');
+    let currentMessage = $state('');
     let currentChunk = $state(0);
     let currentChunkTotal = $state(0);
 
@@ -149,6 +176,7 @@
                 (ev) => {
                     currentFile       = ev.payload.filename;
                     currentStep       = ev.payload.step;
+                    currentMessage    = ev.payload.message;
                     currentChunk      = ev.payload.chunk_index;
                     currentChunkTotal = ev.payload.chunk_total;
 
@@ -180,21 +208,26 @@
                 }
             });
 
-            // Restore pending Hinzufügen entries from a previous session so
-            // navigating to Settings + back doesn't drop them. Log the
-            // restore + persist outcomes so the user can see in the Logs
-            // panel whether the round-trip is actually working.
+            // Restore the active ingest job from the SQLite durable queue.
+            // Any files that were in_progress when the app was previously
+            // closed are reclaimed back to pending so they'll be re-tried.
             try {
-                const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
-                const savedEntries = await store.get<IngestEntry[]>('entries');
-                if (savedEntries && Array.isArray(savedEntries)) {
-                    entries = savedEntries.filter(e => e.status !== 'done');
-                    logInfo(`Hinzufügen: restored ${entries.length} entries from store (filtered ${savedEntries.length - entries.length} done)`);
+                const jobs = await invoke<{ id: string; status: string; jobType: string }[]>('jobs_list');
+                const active = jobs.find(j =>
+                    j.jobType === 'hinzufuegen' &&
+                    (j.status === 'pending' || j.status === 'running' || j.status === 'paused')
+                );
+                if (active) {
+                    activeJobId = active.id;
+                    const reclaimed = await invoke<number>('jobs_reclaim', { jobId: active.id });
+                    if (reclaimed > 0) logInfo(`Hinzufügen: reclaimed ${reclaimed} in-progress files from previous session`);
+                    await loadEntriesFromQueue();
+                    logInfo(`Hinzufügen: restored ${entries.length} entries from durable queue`);
                 } else {
-                    logInfo('Hinzufügen: no entries stored from a previous session');
+                    logInfo('Hinzufügen: no active job found — queue is empty');
                 }
             } catch (e: any) {
-                logError(`Hinzufügen: load failed -- ${e?.message ?? e}`);
+                logError(`Hinzufügen: queue restore failed -- ${e?.message ?? e}`);
             }
 
             cleanup = () => { unlistenProgress?.(); unlistenDrag?.(); unlistenDownload?.(); };
@@ -288,41 +321,110 @@
         await addPaths(Array.isArray(selected) ? selected : [selected]);
     }
 
-    async function addPaths(paths: string[]) {
-        const existing = new Set(entries.map(e => e.path));
-        const toAdd: IngestEntry[] = paths
-            .filter(p => !existing.has(p))
-            .filter(p => supported.has(p.split('.').pop()?.toLowerCase() ?? ''))
-            .map(p => {
-                const parts = p.replace(/\\/g, '/').split('/');
-                const filename = parts[parts.length - 1];
-                const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-                return { id: crypto.randomUUID(), path: p, filename, ext, size: 0, status: 'pending' as FileStatus };
-            });
-        entries = [...entries, ...toAdd];
-        await persistEntries();
+    // ── SQLite-backed queue helpers ────────────────────────────────────────────
+
+    function fileStatusToDisplay(s: string): FileStatus {
+        if (s === 'in_progress') return 'extracting';
+        return (s as FileStatus) ?? 'pending';
     }
 
-    async function removeEntry(id: string) { entries = entries.filter(e => e.id !== id); await persistEntries(); }
-    async function clearAll()  { if (!running) { entries = []; await persistEntries(); } }
-    async function clearDone() { entries = entries.filter(e => e.status !== 'done'); await persistEntries(); }
+    function listedFileToEntry(f: ListedFile): IngestEntry {
+        const parts = f.filePath.replace(/\\/g, '/').split('/');
+        const filename = parts[parts.length - 1];
+        const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+        return {
+            id: String(f.rowId),
+            rowId: f.rowId,
+            path: f.filePath,
+            filename,
+            ext,
+            size: 0,
+            status: fileStatusToDisplay(f.status),
+            error: f.errorText ?? undefined,
+        };
+    }
 
-    /** Persist the Hinzufügen queue across tab switches / app restarts.
-     *  Mirrors how the Stapel batch keeps state in tauri-plugin-store.
-     *  Called from every mutator (not via a `$effect`) so the write
-     *  always lands BEFORE Svelte unmounts the component on tab change. */
-    async function persistEntries() {
+    async function loadEntriesFromQueue(): Promise<void> {
+        if (!activeJobId) { entries = []; return; }
         try {
-            const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
-            const snapshot = $state.snapshot(entries);
-            await store.set('entries', snapshot);
-            await store.save();
-            // Useful when chasing "files disappeared on tab switch" --
-            // confirms each mutator's write actually reaches disk.
-            logInfo(`Hinzufügen: persisted ${snapshot.length} entries to store`);
+            const files = await invoke<ListedFile[]>('jobs_list_files', {
+                jobId: activeJobId,
+                statusFilter: null,
+                limit: 500,
+                offset: 0,
+            });
+            entries = files.map(listedFileToEntry);
         } catch (e: any) {
-            logError(`Hinzufügen: persist failed -- ${e?.message ?? e}`);
+            logError(`Hinzufügen: failed to load entries from queue — ${e?.message ?? e}`);
         }
+    }
+
+    async function ensureActiveJob(): Promise<boolean> {
+        if (activeJobId) return true;
+        try {
+            activeJobId = await invoke<string>('jobs_create', {
+                jobType: 'hinzufuegen',
+                sourcePaths: ['manual'],
+                targetLevel: ingestLevel,
+                configJson: null,
+            });
+            logInfo(`Hinzufügen: created job ${activeJobId}`);
+            return true;
+        } catch (e: any) {
+            logError(`Hinzufügen: failed to create job — ${e?.message ?? e}`);
+            return false;
+        }
+    }
+
+    // ── File queue mutations ───────────────────────────────────────────────────
+
+    async function addPaths(paths: string[]) {
+        const validPaths = paths.filter(p => supported.has(p.split('.').pop()?.toLowerCase() ?? ''));
+        if (validPaths.length === 0) return;
+        if (!(await ensureActiveJob())) return;
+        try {
+            const added = await invoke<number>('jobs_add_files', {
+                jobId: activeJobId,
+                files: validPaths.map(p => ({ filePath: p, docId: null, targetLevel: ingestLevel })),
+            });
+            logInfo(`Hinzufügen: queued ${added} new files (${validPaths.length - added} already present)`);
+        } catch (e: any) {
+            logError(`Hinzufügen: failed to add files — ${e?.message ?? e}`);
+        }
+        await loadEntriesFromQueue();
+    }
+
+    async function removeEntry(id: string) {
+        const rowId = parseInt(id, 10);
+        if (!isNaN(rowId)) {
+            await invoke('jobs_remove_file', { rowId }).catch((e: any) =>
+                logError(`Hinzufügen: remove_file failed — ${e?.message ?? e}`)
+            );
+        }
+        entries = entries.filter(e => e.id !== id);
+    }
+
+    async function clearAll() {
+        if (running) return;
+        if (activeJobId) {
+            await invoke('jobs_delete', { jobId: activeJobId }).catch((e: any) =>
+                logError(`Hinzufügen: delete job failed — ${e?.message ?? e}`)
+            );
+            activeJobId = null;
+        }
+        entries = [];
+    }
+
+    async function clearDone() {
+        if (activeJobId) {
+            await invoke<number>('jobs_remove_files_by_status', {
+                jobId: activeJobId,
+                status: 'done',
+            }).catch((e: any) =>
+                logError(`Hinzufügen: clear done failed — ${e?.message ?? e}`)
+            );
+        }
+        await loadEntriesFromQueue();
     }
 
     // ── Language detection ─────────────────────────────────────────────────────
@@ -397,70 +499,76 @@
 
     async function startL1Ingest() {
         if (l1Running || running) return;
-        if (!(await ensureIndexReady(false))) return;
-        const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
-        if (pending.length === 0) return;
+        if (!activeJobId || !(await ensureIndexReady(false))) return;
 
         l1Running = true;
         try {
-            const files = [];
-            for (const e of pending) {
-                const meta = await stat(e.path).catch(() => null);
-                const size = (meta as any)?.size ?? 0;
-                const mtime = ((meta as any)?.mtime ?? new Date()).valueOf();
-                const ctime = ((meta as any)?.birthtime ?? (meta as any)?.mtime ?? new Date()).valueOf();
-                const parentDir = e.path.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
-                const docId = await hashText(e.path);
-                files.push({
-                    docId,
-                    sourceHash: docId,
-                    locationUri: e.path,
-                    ownerId: 'local',
-                    filename: e.filename,
-                    ext: e.ext,
-                    parentDir,
-                    size,
-                    mtimeMs: mtime,
-                    ctimeMs: ctime,
+            while (true) {
+                const batch = await invoke<QueuedFile[]>('jobs_claim_batch', {
+                    jobId: activeJobId,
+                    batchSize: 64,
                 });
-                updateEntry(e.id, { status: 'embedding' });
+                if (batch.length === 0) break;
+
+                for (const qf of batch) updateEntry(String(qf.rowId), { status: 'embedding' });
+
+                const l1Files = [];
+                for (const qf of batch) {
+                    const meta = await stat(qf.filePath).catch(() => null);
+                    const size = (meta as any)?.size ?? 0;
+                    const mtime = ((meta as any)?.mtime ?? new Date()).valueOf();
+                    const ctime = ((meta as any)?.birthtime ?? (meta as any)?.mtime ?? new Date()).valueOf();
+                    const parentDir = qf.filePath.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
+                    const parts = qf.filePath.replace(/\\/g, '/').split('/');
+                    const filename = parts[parts.length - 1];
+                    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+                    const docId = await hashText(qf.filePath);
+                    l1Files.push({ docId, sourceHash: docId, locationUri: qf.filePath, ownerId: 'local', filename, ext, parentDir, size, mtimeMs: mtime, ctimeMs: ctime });
+                }
+
+                try {
+                    await invoke('index_ingest_l1', { files: l1Files });
+                    const rowIds = batch.map(qf => qf.rowId);
+                    await invoke('jobs_mark_done', { jobId: activeJobId, rowIds });
+                    for (const qf of batch) updateEntry(String(qf.rowId), { status: 'done', chunks: 0 });
+                } catch (err: any) {
+                    logError(`[L1] batch ingest failed: ${err?.message ?? err}`);
+                    for (const qf of batch) {
+                        await invoke('jobs_mark_error', { jobId: activeJobId, rowId: qf.rowId, error: String(err), maxRetries: 0 }).catch(() => {});
+                        updateEntry(String(qf.rowId), { status: 'error', error: String(err) });
+                    }
+                }
+
+                await loadEntriesFromQueue();
             }
-            await invoke('index_ingest_l1', { files });
-            for (const e of pending) updateEntry(e.id, { status: 'done', chunks: 0 });
-        } catch (err: any) {
-            console.error('[L1] ingest failed:', err);
-            for (const e of pending) updateEntry(e.id, { status: 'error', error: String(err) });
+            await invoke('jobs_set_status', { jobId: activeJobId, status: 'done' }).catch(() => {});
         } finally {
             l1Running = false;
         }
     }
 
-    /** L2 ingest: writes filesystem-only rows first (so the doc_id exists)
-     *  then immediately promotes them via the embedded-metadata reader.
-     *  Doesn't require Tantivy / embedder either. */
+    /** L2 ingest: L1 ingest first to create doc rows, then promote via
+     *  the embedded-metadata reader.  Doesn't require the embedder. */
     async function startL2Ingest() {
         if (l2RunningInline) return;
-        if (!(await ensureIndexReady(false))) return;
-        const pending = entries.filter(e => e.status === 'pending' || e.status === 'error');
-        if (pending.length === 0) return;
+        if (!activeJobId || !(await ensureIndexReady(false))) return;
         l2RunningInline = true;
         try {
-            // Step 1: L1 ingest to create doc rows.
+            // Step 1: L1 ingest all pending files (same claim_batch loop).
             await startL1Ingest();
-            // Step 2: collect doc_ids of just-ingested rows by hashing path.
-            // Frontend doesn't easily know the doc_id without re-fetching, so
-            // pull recent contents and match by filename+path.
+            // Step 2: promote to L2 by matching doc_id.
             const docs = await invoke<any[]>('index_list_documents', { limit: 1000 }).catch(() => []);
             const ids: string[] = [];
-            for (const e of pending) {
-                const found = docs.find(d => (d.filename ?? '') === e.filename && String(d.location_uri ?? '').includes(e.path.replace(/\\/g, '/')));
+            for (const e of entries.filter(e => e.status === 'done')) {
+                const found = docs.find(d =>
+                    (d.filename ?? '') === e.filename &&
+                    String(d.location_uri ?? '').includes(e.path.replace(/\\/g, '/'))
+                );
                 if (found?.doc_id) ids.push(found.doc_id);
             }
-            if (ids.length > 0) {
-                await invoke('index_promote_l2', { docIds: ids });
-            }
+            if (ids.length > 0) await invoke('index_promote_l2', { docIds: ids });
         } catch (err: any) {
-            console.error('[L2] ingest failed:', err);
+            logError(`[L2] ingest failed: ${err?.message ?? err}`);
         } finally {
             l2RunningInline = false;
         }
@@ -468,15 +576,11 @@
 
     async function startIngest() {
         if (running) return;
-        if (ingestLevel === 1) {
-            await startL1Ingest();
-            return;
-        }
-        if (ingestLevel === 2) {
-            await startL2Ingest();
-            return;
-        }
-        // L3 = full text + embedding -> must have the embedder loaded.
+        if (!activeJobId) return;
+        if (ingestLevel === 1) { await startL1Ingest(); return; }
+        if (ingestLevel === 2) { await startL2Ingest(); return; }
+
+        // L3 = full text + embedding.
         if (!(await ensureIndexReady(true))) return;
 
         running   = true;
@@ -484,80 +588,153 @@
         abortCtrl = new AbortController();
         const signal = abortCtrl.signal;
 
-        const toProcess = entries.filter(e => e.status === 'pending' || e.status === 'error');
+        const INGEST_BATCH_SIZE = 16;
 
-        for (const entry of toProcess) {
-            if (signal.aborted) break;
-            while (paused && !signal.aborted) await new Promise(r => setTimeout(r, 200));
-            if (signal.aborted) break;
+        type PendingWrite = {
+            rowId: number;
+            input: {
+                fullText: string; fullTextMd: string; headings: string[];
+                title: string | null; author: string | null; year: number | null;
+                filename: string; ext: string; language: string;
+                locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+            };
+        };
 
-            updateEntry(entry.id, { status: 'extracting', error: undefined });
-            logInfo(`Extract: ${entry.path} (.${entry.ext})`);
+        await invoke('jobs_set_status', { jobId: activeJobId, status: 'running' }).catch(() => {});
 
-            try {
-                let bytes: Uint8Array;
-                try {
-                    bytes = await readFile(entry.path);
-                } catch (fsErr: any) {
-                    logError(`Read failed: ${entry.path} -- ${fsErr?.message ?? fsErr}`);
-                    updateEntry(entry.id, { status: 'error', error: `Read failed: ${fsErr}` });
-                    continue;
+        try {
+            while (!signal.aborted) {
+                while (paused && !signal.aborted) await new Promise(r => setTimeout(r, 200));
+                if (signal.aborted) break;
+
+                const batch = await invoke<QueuedFile[]>('jobs_claim_batch', {
+                    jobId: activeJobId,
+                    batchSize: INGEST_BATCH_SIZE,
+                });
+                if (batch.length === 0) break; // queue drained
+
+                const pendingWrites: PendingWrite[] = [];
+                const errored: { rowId: number; error: string }[] = [];
+                const skipped: number[] = [];
+
+                for (const qf of batch) {
+                    if (signal.aborted) break;
+
+                    const parts = qf.filePath.replace(/\\/g, '/').split('/');
+                    const filename = parts[parts.length - 1];
+                    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+
+                    updateEntry(String(qf.rowId), { status: 'extracting', error: undefined });
+                    logInfo(`Extract: ${qf.filePath} (.${ext})`);
+
+                    try {
+                        let bytes: Uint8Array;
+                        try {
+                            bytes = await readFile(qf.filePath);
+                        } catch (fsErr: any) {
+                            const msg = `Read failed: ${fsErr?.message ?? fsErr}`;
+                            logError(`${msg}: ${qf.filePath}`);
+                            errored.push({ rowId: qf.rowId, error: msg });
+                            updateEntry(String(qf.rowId), { status: 'error', error: msg });
+                            continue;
+                        }
+
+                        const fileObj = new File([bytes.buffer as ArrayBuffer], filename, { type: mimeFor(ext) });
+                        const result = await extractText(fileObj);
+                        logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
+
+                        if (!result.text || result.text.trim().length < 20) {
+                            logWarn(`Skip ${filename}: too little text (${result.text?.length ?? 0} chars)`);
+                            skipped.push(qf.rowId);
+                            updateEntry(String(qf.rowId), { status: 'skipped', error: 'Zu wenig Text extrahiert' });
+                            continue;
+                        }
+
+                        updateEntry(String(qf.rowId), { status: 'embedding' });
+                        const language   = detectLanguage(result.text);
+                        const sourceHash = await hashText(result.text + qf.filePath);
+
+                        pendingWrites.push({
+                            rowId: qf.rowId,
+                            input: {
+                                fullText:    result.text,
+                                fullTextMd:  result.markdownText ?? '',
+                                headings:    result.headings ?? [],
+                                title:       result.metadata?.title  ?? null,
+                                author:      result.metadata?.author ?? null,
+                                year:        result.metadata?.year   ? Number(result.metadata.year) : null,
+                                filename,
+                                ext,
+                                language,
+                                locationUri: qf.filePath,
+                                ownerId:     'local',
+                                sourceHash,
+                                tags:        [],
+                            },
+                        });
+
+                    } catch (err: any) {
+                        const msg = String(err?.message ?? err);
+                        logError(`Extract failed for ${filename}: ${msg}`);
+                        errored.push({ rowId: qf.rowId, error: msg });
+                        updateEntry(String(qf.rowId), { status: 'error', error: msg });
+                    }
                 }
-                const ab      = bytes.buffer as ArrayBuffer;
-                const fileObj = new File([ab], entry.filename, { type: mimeFor(entry.ext) });
 
-                const result = await extractText(fileObj);
-                logInfo(`Extracted ${entry.filename}: ${(result.text?.length ?? 0)} chars, ${(result.headings?.length ?? 0)} headings`);
-
-                if (!result.text || result.text.trim().length < 20) {
-                    updateEntry(entry.id, { status: 'skipped', error: 'Zu wenig Text extrahiert' });
-                    logWarn(`Skip ${entry.filename}: too little text (${result.text?.length ?? 0} chars)`);
-                    continue;
-                }
-
-                updateEntry(entry.id, { status: 'embedding' });
-
-                const language   = detectLanguage(result.text);
-                const sourceHash = await hashText(result.text + entry.path);
-
-                const stats_res = await invoke<{ chunk_count: number; embed_time_ms: number; write_time_ms: number }>(
-                    'index_ingest_document',
-                    {
-                        input: {
-                            fullText:    result.text,
-                            fullTextMd:  result.markdownText ?? '',
-                            headings:    result.headings ?? [],
-                            title:       result.metadata?.title  ?? null,
-                            author:      result.metadata?.author ?? null,
-                            year:        result.metadata?.year   ? Number(result.metadata.year) : null,
-                            filename:    entry.filename,
-                            ext:         entry.ext,
-                            language,
-                            locationUri: entry.path,   // use raw absolute path as URI
-                            ownerId:     'local',
-                            sourceHash,
-                            tags:        [],
+                // Flush writes for this batch
+                if (pendingWrites.length > 0) {
+                    try {
+                        const batchStats = await invoke<{ chunk_count: number; embed_time_ms: number; write_time_ms: number }>(
+                            'index_ingest_batch', { inputs: pendingWrites.map(w => w.input) }
+                        );
+                        const n = pendingWrites.length;
+                        await invoke('jobs_mark_done', {
+                            jobId: activeJobId,
+                            rowIds: pendingWrites.map(w => w.rowId),
+                        });
+                        for (const w of pendingWrites) {
+                            updateEntry(String(w.rowId), {
+                                status: 'done',
+                                chunks:  Math.round(batchStats.chunk_count / n),
+                                embedMs: Math.round(batchStats.embed_time_ms / n),
+                                writeMs: Math.round(batchStats.write_time_ms / n),
+                            });
+                        }
+                    } catch (e: any) {
+                        logError(`Batch write failed: ${e?.message ?? e}`);
+                        for (const w of pendingWrites) {
+                            errored.push({ rowId: w.rowId, error: String(e) });
+                            updateEntry(String(w.rowId), { status: 'error', error: String(e) });
                         }
                     }
-                );
+                }
 
-                updateEntry(entry.id, {
-                    status:  'done',
-                    chunks:  stats_res.chunk_count,
-                    embedMs: stats_res.embed_time_ms,
-                    writeMs: stats_res.write_time_ms,
-                });
+                // Persist errors and skips
+                for (const { rowId, error } of errored) {
+                    await invoke('jobs_mark_error', { jobId: activeJobId, rowId, error, maxRetries: 0 }).catch(() => {});
+                }
+                for (const rowId of skipped) {
+                    await invoke('jobs_mark_skipped', { jobId: activeJobId, rowId }).catch(() => {});
+                }
 
-            } catch (err: any) {
-                logError(`Extract/index failed for ${entry.filename}: ${err?.message ?? err}`);
-                updateEntry(entry.id, { status: 'error', error: String(err) });
+                await loadEntriesFromQueue();
             }
-        }
 
-        running = false;
-        paused  = false;
-        abortCtrl = null;
-        currentFile = '';
+            if (!signal.aborted) {
+                await invoke('jobs_set_status', { jobId: activeJobId, status: 'done' }).catch(() => {});
+            } else {
+                await invoke('jobs_reclaim', { jobId: activeJobId }).catch(() => {});
+                await invoke('jobs_set_status', { jobId: activeJobId, status: 'paused' }).catch(() => {});
+            }
+
+        } finally {
+            running   = false;
+            paused    = false;
+            abortCtrl = null;
+            currentFile    = '';
+            currentMessage = '';
+            await loadEntriesFromQueue();
+        }
     }
 
     function pauseResume() {
@@ -567,14 +744,13 @@
 
     function stopIngest() {
         abortCtrl?.abort();
+        // The finally block in startIngest calls jobs_reclaim + loadEntriesFromQueue.
+        // Set flags immediately so the UI reflects the stop without waiting for the
+        // async teardown to finish.
         running = false;
         paused  = false;
-        entries = entries.map(e =>
-            (e.status === 'extracting' || e.status === 'embedding')
-                ? { ...e, status: 'pending' as FileStatus }
-                : e
-        );
-        currentFile = '';
+        currentFile    = '';
+        currentMessage = '';
     }
 
     // ── Index contents ─────────────────────────────────────────────────────────
@@ -919,7 +1095,7 @@
     /** Promote the selected catalog rows to full L3 (text + embedding).
      *  For each selected doc we resolve location_uri to a file path, read
      *  the bytes, extract text via the same pipeline used for fresh
-     *  ingest, then call `index_ingest_document`. Updates the live row
+     *  ingest, then batches via `index_ingest_batch`. Updates the live row
      *  in place — same `doc_id` is reused so the L1 metadata-only row is
      *  replaced by the new L3 chunks (deletion + insert is implicit
      *  because the source_hash matches). */
@@ -932,6 +1108,27 @@
         try {
             // L3 promotion needs the embedder — attach it now.
             if (!(await ensureIndexReady(true))) return;
+
+            const BATCH_SIZE = 16;
+            type L3Input = {
+                fullText: string; fullTextMd: string; headings: string[];
+                title: string | null; author: string | null; year: number | null;
+                filename: string; ext: string; language: string;
+                locationUri: string; ownerId: string; sourceHash: string; tags: string[];
+            };
+            const l3Buffer: L3Input[] = [];
+
+            const flushL3 = async () => {
+                if (l3Buffer.length === 0) return;
+                const batch = l3Buffer.splice(0);
+                try {
+                    await invoke('index_ingest_batch', { inputs: batch });
+                    ok += batch.length;
+                } catch (e) {
+                    console.error('[L3] batch promote failed:', e);
+                    fail += batch.length;
+                }
+            };
 
             // Find the rows we're promoting in the currently-loaded contents.
             for (const id of ids) {
@@ -962,30 +1159,29 @@
                     }
                     const language = detectLanguage(result.text);
                     const sourceHash = await hashText(result.text + path);
-                    await invoke('index_ingest_document', {
-                        input: {
-                            fullText:    result.text,
-                            fullTextMd:  result.markdownText ?? '',
-                            headings:    result.headings ?? [],
-                            title:       row.title  ?? null,
-                            author:      row.author ?? null,
-                            year:        row.year   ?? null,
-                            filename,
-                            ext,
-                            language,
-                            locationUri: row.location_uri,
-                            ownerId:     row.owner_id ?? 'local',
-                            sourceHash,
-                            tags:        [],
-                        },
+                    l3Buffer.push({
+                        fullText:    result.text,
+                        fullTextMd:  result.markdownText ?? '',
+                        headings:    result.headings ?? [],
+                        title:       row.title  ?? null,
+                        author:      row.author ?? null,
+                        year:        row.year   ?? null,
+                        filename,
+                        ext,
+                        language,
+                        locationUri: row.location_uri,
+                        ownerId:     row.owner_id ?? 'local',
+                        sourceHash,
+                        tags:        [],
                     });
-                    ok++;
+                    if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
                     console.error('[L3] promote failed for', id, e);
                     fail++;
                 }
                 l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
             }
+            await flushL3();
             await loadContents();
             console.log(`[L3] ${ok} promoted, ${skipped} skipped (no text), ${fail} errors`);
         } finally {
@@ -1048,9 +1244,6 @@
 
     function updateEntry(id: string, patch: Partial<IngestEntry>) {
         entries = entries.map(e => e.id === id ? { ...e, ...patch } : e);
-        // Fire-and-forget persist so per-file status updates survive a
-        // tab switch mid-ingest. Don't await — the ingest loop is hot.
-        void persistEntries();
     }
 
     function mimeFor(ext: string): string {
@@ -1196,6 +1389,9 @@
                 <Loader2 size={13} class="spin" />
                 <span class="current-filename">{currentFile}</span>
                 <span class="current-step">{currentStep}</span>
+                {#if currentMessage}
+                    <span class="current-step">{currentMessage}</span>
+                {/if}
                 {#if currentChunkTotal > 0}
                     <span class="current-chunks">{currentChunk + 1}/{currentChunkTotal} Chunks</span>
                     <div class="mini-bar">

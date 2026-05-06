@@ -31,7 +31,8 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use crisp_index_protocol::{
-    IngestChunk, SearchRequest, UpdateLocationBody, UpdateLocationByUriBody,
+    BatchIngestResponse, IngestBatch, IngestChunk, SearchRequest, TaskStatusResponse,
+    UpdateLocationBody, UpdateLocationByUriBody,
 };
 use reqwest::Client;
 use serde::Serialize;
@@ -75,6 +76,74 @@ impl RemoteClient {
             return Err(anyhow!("remote index {status}: {text}"));
         }
         Ok(resp)
+    }
+
+    async fn get(&self, path: &str) -> Result<reqwest::Response> {
+        let resp = self
+            .client
+            .get(self.url(path))
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("remote index {status}: {text}"));
+        }
+        Ok(resp)
+    }
+
+    pub async fn ingest_batch(&self, batch: &IngestBatch) -> Result<BatchIngestResponse> {
+        let resp = self.post_json("/v1/ingest/batch", batch).await?;
+        Ok(resp.json::<BatchIngestResponse>().await?)
+    }
+
+    pub async fn task_status(&self, task_id: &str) -> Result<TaskStatusResponse> {
+        let resp = self.get(&format!("/v1/tasks/{task_id}")).await?;
+        Ok(resp.json::<TaskStatusResponse>().await?)
+    }
+
+    pub async fn ingest_batch_and_wait(&self, batch: &IngestBatch) -> Result<TaskStatusResponse> {
+        let accepted = self.ingest_batch(batch).await?;
+        loop {
+            let status = self.task_status(&accepted.task_id).await?;
+            match status.state.as_str() {
+                "queued" | "processing" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                "done" => return Ok(status),
+                "failed" => {
+                    let msg = status
+                        .error
+                        .unwrap_or_else(|| format!("remote task {} failed", accepted.task_id));
+                    return Err(anyhow!(msg));
+                }
+                other => return Err(anyhow!("unknown remote task state: {other}")),
+            }
+        }
+    }
+
+    pub async fn search_vector_server(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let payload = build_search_request(Some(query), None, "vector", filters, limit);
+        let resp = self.post_json("/v1/search", &payload).await?;
+        Ok(resp.json::<Vec<SearchResult>>().await?)
+    }
+
+    pub async fn search_hybrid_server(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let payload = build_search_request(Some(query), None, "hybrid", filters, limit);
+        let resp = self.post_json("/v1/search", &payload).await?;
+        Ok(resp.json::<Vec<SearchResult>>().await?)
     }
 }
 

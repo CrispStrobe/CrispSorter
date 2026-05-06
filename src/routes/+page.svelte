@@ -34,6 +34,14 @@
     // without hammering Rust. Cheap query (LanceDB count_rows).
     let dbDocCount = $state(0);
     let statsExpanded = $state(false);
+    // Writer queue depth: jobs submitted to IngestPipeline's background
+    // writer task but not yet completed. Polled every 2s while processing.
+    let writeQueueDepth = $state(0);
+    async function refreshQueueDepth() {
+        try {
+            writeQueueDepth = await invoke<number>('index_queue_depth');
+        } catch { writeQueueDepth = 0; }
+    }
     function shortNumber(n: number): string {
         if (n < 1000) return n.toLocaleString();
         if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, '') + 'k';
@@ -67,7 +75,20 @@
             docsPerMin,
             elapsed,
             isProcessing: batchManager.isProcessing,
+            writeQueueDepth,
         };
+    });
+
+    // Start/stop the queue-depth poll based on active processing.
+    // Using a module-level reference so startQueuePoll / stopQueuePoll (defined
+    // inside onMount) can be called from the $effect.  We store the fns here
+    // and set them once the onMount async block has finished.
+    let _startQueuePoll: (() => void) | null = null;
+    let _stopQueuePoll:  (() => void) | null = null;
+    $effect(() => {
+        const active = batchManager.isProcessing || writeQueueDepth > 0;
+        if (active) _startQueuePoll?.();
+        else         _stopQueuePoll?.();
     });
 
     onMount(() => {
@@ -210,7 +231,8 @@
                     embedder_model:   embedderToRust(await getSetting('indexEmbedderModel', 'bge_m3')),
                     embedder_device:  deviceToRust(await getSetting('indexDevice', 'auto')),
                     embedder_backend: await getSetting('indexEmbedderBackend', 'onnx'),
-                    use_vector:       (await getSetting('indexUseVector', true)) as boolean,
+                    use_vector:           (await getSetting('indexUseVector', true)) as boolean,
+                    embedder_location:    await getSetting('indexEmbedderLocation', 'client'),
                     reranker_model:   rerankerToRust(await getSetting('indexRerankerModel', '')),
                     rerank_top_n:     (await getSetting('indexRerankerTopN', 50)) as number,
                     model_cache_dir:  (await getSetting('indexModelCacheDir', '')) || null,
@@ -235,8 +257,22 @@
             await refreshDbStats();
             const dbStatsTimer = setInterval(refreshDbStats, 4000);
 
+            // Writer queue depth: only poll while an ingest is active.
+            // The depth is always 0 between runs, so a 24/7 poll just wastes IPC.
+            let queueDepthTimer: ReturnType<typeof setInterval> | null = null;
+            const startQueuePoll = () => {
+                if (!queueDepthTimer) queueDepthTimer = setInterval(refreshQueueDepth, 2000);
+            };
+            const stopQueuePoll = () => {
+                if (queueDepthTimer) { clearInterval(queueDepthTimer); queueDepthTimer = null; writeQueueDepth = 0; }
+            };
+            // Expose to the $effect above so it can react to batchManager.isProcessing changes.
+            _startQueuePoll = startQueuePoll;
+            _stopQueuePoll  = stopQueuePoll;
+
             cleanup = () => {
                 clearInterval(dbStatsTimer);
+                stopQueuePoll();
                 unlistenWatch();
                 invoke('watch_stop_all').catch(() => {});
             };
@@ -311,7 +347,7 @@
             <!-- Live worker / throughput chip. Only shown while a
                  processAll run is in flight; it's a separate visual
                  group from the static Stapel/DB totals above. -->
-            {#if workerStats.isProcessing || workerStats.extractionActive > 0 || workerStats.llmActive > 0}
+            {#if workerStats.isProcessing || workerStats.extractionActive > 0 || workerStats.llmActive > 0 || workerStats.writeQueueDepth > 0}
                 <button class="batch-stats stats-toggle worker-stats"
                     onclick={() => statsExpanded = !statsExpanded}
                     title="Workers (click for details)">
@@ -328,6 +364,14 @@
                                 <span class="stats-key">LLM:</span>
                                 <span class="stats-val">{workerStats.llmActive}/{workerStats.llmTarget}</span>
                             </span>
+                            {#if workerStats.writeQueueDepth > 0}
+                                <span class="stats-sep" aria-hidden="true">·</span>
+                                <span class="worker-dot active" aria-hidden="true">●</span>
+                                <span class="stats-pair">
+                                    <span class="stats-key">W:</span>
+                                    <span class="stats-val">{workerStats.writeQueueDepth}</span>
+                                </span>
+                            {/if}
                             {#if workerStats.docsPerMin > 0}
                                 <span class="stats-sep" aria-hidden="true">·</span>
                                 <span class="stats-val">{workerStats.docsPerMin}/min</span>
@@ -337,11 +381,14 @@
                             <div class="stats-breakdown">
                                 <span class="stat-ext">{workerStats.extractionDone} extracted</span>
                                 <span class="stat-ext">{workerStats.llmDone} analyzed</span>
+                                {#if workerStats.writeQueueDepth > 0}
+                                    <span class="stat-ext">{workerStats.writeQueueDepth} write queue</span>
+                                {/if}
                                 <span class="stat-ext">{Math.round(workerStats.elapsed)}s elapsed</span>
                             </div>
                         {/if}
                     {:else}
-                        <span class="stats-badge-collapsed" style="background:#16a34a33; color:#86efac;">{workerStats.extractionActive + workerStats.llmActive}</span>
+                        <span class="stats-badge-collapsed" style="background:#16a34a33; color:#86efac;">{workerStats.extractionActive + workerStats.llmActive + workerStats.writeQueueDepth}</span>
                     {/if}
                 </button>
             {/if}

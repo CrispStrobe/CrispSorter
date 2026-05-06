@@ -89,6 +89,7 @@ arrow-array  = { version = "57", default-features = false }
 arrow-schema = { version = "57", default-features = false }
 arrow-select = { version = "57", default-features = false }
 uuid         = { version = "1", features = ["v4", "serde"] }
+rusqlite     = { version = "0.39.0", features = ["bundled"] }
 async-trait  = "0.1"
 # ort pinned to match fastembed 5.13.0; used directly for EP types and path-based ONNX loading.
 ort          = "=2.0.0-rc.11"

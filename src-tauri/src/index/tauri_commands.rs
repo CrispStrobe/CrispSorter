@@ -18,6 +18,7 @@ use tauri::{Manager, State};
 use super::ingest::{IngestStats, L1FileEntry, RawDocument};
 use super::{IndexConfig, IndexState, SearchResult};
 use crate::AppState;
+use crisp_index_protocol::{IngestBatch as RemoteIngestBatch, IngestChunk as RemoteIngestChunk};
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -75,18 +76,41 @@ pub async fn index_search(
             .ok_or("Index not initialised — call index_init first")?
             .clone();
         let embedder = lock.embedder.clone();
+        let config = lock.config.clone();
         drop(lock);
         match mode.as_str() {
             "text" => backend.search_text(&query, &filters, limit).await,
             "vector" => {
-                let embedding = embed_query(embedder, &query).await?;
-                backend.search_vector(&embedding, &filters, limit).await
+                if let Some(embedder) = embedder {
+                    let embedding = embed_query(Some(embedder), &query).await?;
+                    backend.search_vector(&embedding, &filters, limit).await
+                } else {
+                    let remote = super::remote_client::RemoteClient::new(
+                        config
+                            .remote_url
+                            .clone()
+                            .ok_or("remote_url must be set for Remote backend")?,
+                        config.remote_api_key.clone().unwrap_or_default(),
+                    );
+                    remote.search_vector_server(&query, &filters, limit).await
+                }
             }
             _ => {
-                let embedding = embed_query(embedder, &query).await?;
-                backend
-                    .search_hybrid(&query, &embedding, &filters, limit)
-                    .await
+                if let Some(embedder) = embedder {
+                    let embedding = embed_query(Some(embedder), &query).await?;
+                    backend
+                        .search_hybrid(&query, &embedding, &filters, limit)
+                        .await
+                } else {
+                    let remote = super::remote_client::RemoteClient::new(
+                        config
+                            .remote_url
+                            .clone()
+                            .ok_or("remote_url must be set for Remote backend")?,
+                        config.remote_api_key.clone().unwrap_or_default(),
+                    );
+                    remote.search_hybrid_server(&query, &filters, limit).await
+                }
             }
         }
         .map_err(|e| e.to_string())?
@@ -390,7 +414,7 @@ pub async fn index_ingest_path(
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as u32),
+            .map(|d| d.as_secs() as i64),
         // PLAN P7.6 — tag the row with the source volume's stable id
         // (best-effort; helper returns None on tmpfs / network share /
         // missing path / platform helper failure).
@@ -479,18 +503,14 @@ pub async fn index_ingest_document(
         return Ok(result);
     }
 
-    // ── Remote path: chunk + embed locally, push each chunk to server ─────
+    // ── Remote path: chunk, optionally embed locally, push to server ──────
     let backend = lock
         .backend
         .as_ref()
         .ok_or("Index not initialised — call index_init first")?
         .clone();
-    let embedder = lock
-        .embedder
-        .clone()
-        .ok_or("Embedder not available — check backend configuration")?;
     let config = lock.config.clone();
-
+    let embedder_opt = lock.embedder.clone(); // None when embedder_location=Server
     drop(lock);
 
     use super::embedder::chunk_text;
@@ -502,31 +522,40 @@ pub async fn index_ingest_document(
     let stride = cfg.chunk_stride;
     let text_chunks = chunk_text(&raw.full_text, max_tokens, stride, &[]);
     let chunk_count_total = text_chunks.len();
+    let chunk_total = chunk_count_total as i32;
 
-    emit_ingest!("embedding", 0, chunk_count_total, "Embedding …");
-
-    let start_embed = std::time::Instant::now();
-    let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
-
-    let dense = {
-        use super::embedder::EmbedRole;
-        let mut emb = embedder.lock().await;
-        emb.embed_dense(texts, EmbedRole::Passage)
-            .map_err(|e| e.to_string())?
-    };
-    let embed_ms = start_embed.elapsed().as_millis() as u64;
-
-    emit_ingest!("writing", 0, chunk_count_total, "Writing to index …");
-
-    let start_write = std::time::Instant::now();
-    let chunk_count = text_chunks.len();
-    let chunk_total = chunk_count as i32;
     let now_ms: i64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
 
-    for (i, (tc, vec)) in text_chunks.iter().zip(dense.vectors.iter()).enumerate() {
+    let embed_ms;
+    let embeddings: Vec<Option<Vec<f32>>>;
+
+    if let Some(embedder) = embedder_opt {
+        // embedder_location = Client: embed locally before posting.
+        emit_ingest!("embedding", 0, chunk_count_total, "Embedding …");
+        let start_embed = std::time::Instant::now();
+        let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
+        let dense = {
+            use super::embedder::EmbedRole;
+            let mut emb = embedder.lock().await;
+            emb.embed_dense(texts, EmbedRole::Passage)
+                .map_err(|e| e.to_string())?
+        };
+        embed_ms = start_embed.elapsed().as_millis() as u64;
+        embeddings = dense.vectors.into_iter().map(Some).collect();
+    } else {
+        // embedder_location = Server: post raw text, server embeds on arrival.
+        emit_ingest!("embedding", 0, chunk_count_total, "Skipping local embedding (server-side)");
+        embed_ms = 0;
+        embeddings = vec![None; chunk_count_total];
+    }
+
+    emit_ingest!("writing", 0, chunk_count_total, "Writing to index …");
+    let start_write = std::time::Instant::now();
+
+    for (i, (tc, emb_vec)) in text_chunks.iter().zip(embeddings.into_iter()).enumerate() {
         emit_ingest!(
             "writing",
             i,
@@ -552,7 +581,7 @@ pub async fn index_ingest_document(
             } else {
                 None
             },
-            embedding: Some(vec.clone()),
+            embedding: emb_vec,
             embedding_sparse: None,
             embedding_model: Some(format!("{:?}", config.embedder_model)),
             chunk_index: tc.chunk_index,
@@ -571,7 +600,7 @@ pub async fn index_ingest_document(
     let write_ms = start_write.elapsed().as_millis() as u64;
 
     Ok(IngestStats {
-        chunk_count,
+        chunk_count: chunk_count_total,
         embed_time_ms: embed_ms,
         write_time_ms: write_ms,
     })
@@ -616,16 +645,76 @@ pub async fn index_ingest_batch(
     let pipeline = lock.pipeline.clone();
     drop(lock);
 
-    let pipeline = pipeline.ok_or(
-        "index_ingest_batch is local-backend only today; remote-mode \
-         bulk-ingest lands with PLAN P11 step 4. Use \
-         index_ingest_document per-doc in remote mode meanwhile."
-    )?;
+    if let Some(pipeline) = pipeline {
+        use tauri::Emitter;
+        let total = inputs.len();
+
+        macro_rules! emit_batch {
+            ($step:expr, $msg:expr) => {
+                let _ = app.emit(
+                    "index://ingest-progress",
+                    IngestProgress {
+                        filename: format!("(batch of {})", total),
+                        step: $step,
+                        chunk_index: 0,
+                        chunk_total: 0,
+                        message: $msg.to_owned(),
+                    },
+                );
+            };
+        }
+
+        emit_batch!("embedding", "Embedding & writing batch …");
+
+        let raws: Vec<RawDocument> = inputs
+            .into_iter()
+            .map(|input| RawDocument {
+                full_text: input.full_text,
+                full_text_md: input.full_text_md,
+                headings: input.headings,
+                title: input.title,
+                author: input.author,
+                year: input.year,
+                filename: input.filename,
+                ext: input.ext,
+                language: input.language,
+                source_hash: input.source_hash,
+                location_uri: input.location_uri,
+                owner_id: input.owner_id,
+                tags: input.tags,
+                // Same rationale as index_ingest_document: frontend ingest
+                // is path-less / mtime-less; bg_ingest skip-on-mtime
+                // treats None as "re-ingest" which is the safe default.
+                mtime_unix: None,
+                volume_id: None,
+            })
+            .collect();
+
+        let result = pipeline
+            .ingest_documents_batch(raws)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        emit_batch!(
+            "done",
+            format!(
+                "Done: {} docs / {} chunks, embed {} ms, write {} ms",
+                total, result.chunk_count, result.embed_time_ms, result.write_time_ms
+            )
+        );
+
+        return Ok(result);
+    }
+
+    // ── Remote path: chunk + embed locally, enqueue one HTTP batch, poll ───
+    let lock = state.index.lock().await;
+    let config = lock.config.clone();
+    let embedder = lock.embedder.clone();
+    drop(lock);
 
     use tauri::Emitter;
     let total = inputs.len();
-
-    macro_rules! emit_batch {
+    macro_rules! emit_batch_remote {
         ($step:expr, $msg:expr) => {
             let _ = app.emit(
                 "index://ingest-progress",
@@ -640,11 +729,20 @@ pub async fn index_ingest_batch(
         };
     }
 
-    emit_batch!("embedding", "Embedding & writing batch …");
+    let server_embeds = embedder.is_none();
+    emit_batch_remote!(
+        "embedding",
+        if server_embeds {
+            "Preparing remote batch (server-side embedding) …"
+        } else {
+            "Embedding remote batch …"
+        }
+    );
+    let embed_start = std::time::Instant::now();
+    let mut chunks: Vec<RemoteIngestChunk> = Vec::new();
 
-    let raws: Vec<RawDocument> = inputs
-        .into_iter()
-        .map(|input| RawDocument {
+    for input in inputs {
+        let raw = RawDocument {
             full_text: input.full_text,
             full_text_md: input.full_text_md,
             headings: input.headings,
@@ -658,28 +756,165 @@ pub async fn index_ingest_batch(
             location_uri: input.location_uri,
             owner_id: input.owner_id,
             tags: input.tags,
-            // Same rationale as index_ingest_document: frontend ingest
-            // is path-less / mtime-less; bg_ingest skip-on-mtime
-            // treats None as "re-ingest" which is the safe default.
             mtime_unix: None,
             volume_id: None,
-        })
-        .collect();
+        };
+        let doc_id = super::ingest::doc_id_for(&raw);
+        let cfg = super::ingest::IngestConfig::default();
+        let text_chunks = super::embedder::chunk_text(
+            &raw.full_text,
+            cfg.chunk_max_words,
+            cfg.chunk_stride,
+            &[],
+        );
+        let dense = if let Some(ref embedder) = embedder {
+            let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
+            Some({
+                use super::embedder::EmbedRole;
+                let mut emb = embedder.lock().await;
+                emb.embed_dense(texts, EmbedRole::Passage)
+                    .map_err(|e| e.to_string())?
+            })
+        } else {
+            None
+        };
+        for (i, tc) in text_chunks.iter().enumerate() {
+            chunks.push(RemoteIngestChunk {
+                doc_id: doc_id.clone(),
+                chunk_index: tc.chunk_index,
+                full_text: tc.text.clone(),
+                full_text_md: if i == 0 {
+                    Some(raw.full_text_md.clone())
+                } else {
+                    None
+                },
+                headings: if i == 0 {
+                    Some(raw.headings.clone())
+                } else {
+                    None
+                },
+                embedding: dense
+                    .as_ref()
+                    .and_then(|d| d.vectors.get(i).cloned())
+                    .unwrap_or_default(),
+                title: raw.title.clone(),
+                author: raw.author.clone(),
+                year: raw.year,
+                filename: raw.filename.clone(),
+                ext: raw.ext.clone(),
+                language: raw.language.clone(),
+                location_uri: raw.location_uri.clone(),
+                owner_id: raw.owner_id.clone(),
+                source_hash: raw.source_hash.clone(),
+                tags: raw.tags.clone(),
+            });
+        }
+    }
+    let embed_time_ms = embed_start.elapsed().as_millis() as u64;
 
-    let result = pipeline
-        .ingest_documents_batch(raws)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    emit_batch!(
-        "done",
+    emit_batch_remote!("writing", "Queueing remote batch …");
+    let write_start = std::time::Instant::now();
+    let remote = super::remote_client::RemoteClient::new(
+        config.remote_url.clone().ok_or("remote_url missing for remote backend")?,
+        config.remote_api_key.clone().unwrap_or_default(),
+    );
+    let batch = RemoteIngestBatch { chunks };
+    let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
+    {
+        let mut lock = state.index.lock().await;
+        lock.remote_queue_depth = accepted.queue_depth;
+    }
+    emit_batch_remote!(
+        "writing",
         format!(
-            "Done: {} docs / {} chunks, embed {} ms, write {} ms",
-            total, result.chunk_count, result.embed_time_ms, result.write_time_ms
+            "Remote batch queued: {} chunks, server queue depth {}",
+            accepted.chunk_count, accepted.queue_depth
         )
     );
 
-    Ok(result)
+    // Poll task status with adaptive backoff: 500 ms for the first 4 polls
+    // (≤ 2 s), 2 s for the next 4 polls (≤ 10 s), 5 s thereafter.
+    let status = {
+        let mut poll_count: u32 = 0;
+        loop {
+            let status = remote
+                .task_status(&accepted.task_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            {
+                let mut lock = state.index.lock().await;
+                lock.remote_queue_depth = status.queue_depth;
+            }
+
+            let msg = match status.state.as_str() {
+                "queued" => format!(
+                    "Remote task queued: {} / {} chunks complete, server queue depth {}",
+                    status.completed_chunks, status.total_chunks, status.queue_depth
+                ),
+                "processing" => format!(
+                    "Remote task processing: {} / {} chunks complete, server queue depth {}",
+                    status.completed_chunks, status.total_chunks, status.queue_depth
+                ),
+                "done" => format!(
+                    "Remote task complete: {} / {} chunks, remaining queue depth {}",
+                    status.completed_chunks, status.total_chunks, status.queue_depth
+                ),
+                "failed" => status
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| format!("remote task {} failed", accepted.task_id)),
+                other => format!("Remote task state: {other}"),
+            };
+            let _ = app.emit(
+                "index://ingest-progress",
+                IngestProgress {
+                    filename: format!("(batch of {})", total),
+                    step: if status.state == "done" {
+                        "done"
+                    } else if status.state == "failed" {
+                        "error"
+                    } else {
+                        "writing"
+                    },
+                    chunk_index: status.completed_chunks,
+                    chunk_total: status.total_chunks,
+                    message: msg,
+                },
+            );
+
+            match status.state.as_str() {
+                "queued" | "processing" => {
+                    let delay_ms = if poll_count < 4 { 500 } else if poll_count < 8 { 2_000 } else { 5_000 };
+                    poll_count += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                "done" => break status,
+                "failed" => {
+                    let mut lock = state.index.lock().await;
+                    lock.remote_queue_depth = status.queue_depth;
+                    return Err(status
+                        .error
+                        .unwrap_or_else(|| format!("remote task {} failed", accepted.task_id)));
+                }
+                other => return Err(format!("unknown remote task state: {other}")),
+            }
+        }
+    };
+    let write_time_ms = write_start.elapsed().as_millis() as u64;
+
+    emit_batch_remote!(
+        "done",
+        format!(
+            "Done: {} docs / {} chunks, embed {} ms, remote queue depth {}",
+            total, status.completed_chunks, embed_time_ms, status.queue_depth
+        )
+    );
+
+    Ok(IngestStats {
+        chunk_count: status.completed_chunks,
+        embed_time_ms,
+        write_time_ms,
+    })
 }
 
 // ── Level-1 (filesystem-only) ingest ──────────────────────────────────────────
@@ -1273,11 +1508,14 @@ pub async fn index_init(
         lock.config.clone()
     };
 
-    // Three-way decision tree:
-    //   - global `use_vector = false`: never load an embedder.
+    // Four-way decision tree for whether to load a local embedder:
+    //   - global `use_vector = false`: never.
     //   - explicit `with_embedder = false` (L1 / L2 fast-path): skip.
-    //   - default: load (matches old behaviour).
-    let load_embedder = config.use_vector && with_embedder.unwrap_or(true);
+    //   - `embedder_location = Server` + Remote backend: server embeds; skip local load.
+    //   - default: load.
+    let server_embeds = config.embedder_location == super::EmbedderLocation::Server
+        && config.backend_type == super::BackendType::Remote;
+    let load_embedder = config.use_vector && with_embedder.unwrap_or(true) && !server_embeds;
 
     crate::app_log!(
         "info",
@@ -1515,6 +1753,22 @@ pub fn index_model_download_mb(model: String, backend: Option<String>) -> u32 {
     }
 }
 
+// ── Queue depth ───────────────────────────────────────────────────────────────
+
+/// Number of write jobs currently queued or in-flight.
+/// Local mode reports the in-process writer-task depth.
+/// Remote mode reports the last observed server queue depth for the active
+/// foreground remote ingest task.
+#[tauri::command]
+pub async fn index_queue_depth(state: State<'_, AppState>) -> Result<usize, String> {
+    let lock = state.index.lock().await;
+    Ok(lock
+        .pipeline
+        .as_ref()
+        .map(|p| p.queue_depth())
+        .unwrap_or(lock.remote_queue_depth))
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1530,6 +1784,7 @@ pub async fn index_set_config(
 ) -> Result<(), String> {
     let mut lock = state.index.lock().await;
     lock.config = config;
+    lock.remote_queue_depth = 0;
     Ok(())
 }
 
@@ -1665,6 +1920,7 @@ pub async fn init_index(
                 pipeline: None,
                 reranker: reranker_handle,
                 config,
+                remote_queue_depth: 0,
                 initializing: false,
             })
         }
@@ -1711,6 +1967,7 @@ pub async fn init_index(
                 pipeline: Some(pipeline),
                 reranker: reranker_handle,
                 config,
+                remote_queue_depth: 0,
                 initializing: false,
             })
         }

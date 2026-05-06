@@ -602,7 +602,7 @@ impl LocalIndex {
     /// Background ingest uses this to mtime-skip files that haven't
     /// changed since last index — saves the read + extract + embed
     /// cost on the common "no new content" case.
-    pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<u32>> {
+    pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<i64>> {
         let pred = format!(
             "location_uri = '{}' AND chunk_index = 0",
             location_uri.replace('\'', "''")
@@ -640,7 +640,7 @@ impl LocalIndex {
                         // Read the integer up to the next non-digit.
                         let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
                         if end > 0 {
-                            if let Ok(v) = rest[..end].parse::<u32>() {
+                            if let Ok(v) = rest[..end].parse::<i64>() {
                                 return Ok(Some(v));
                             }
                         }

@@ -12,8 +12,20 @@
 
 ## In Progress
 
-- **Wire CrispEmbed sparse encoding into search pipeline** — BGE-M3/SPLADE sparse vectors via GGUF backend (C API ready, needs UI integration). Tracked under P2.
-- **CrispEmbed reranking in search** — cross-encoder and bi-encoder reranking APIs are wired in `CrispEmbedBackend` but not yet used by the search pipeline. Tracked under P2.
+- **P11 step 5 — UI polish + server queue blob fix** — see open items below.
+- **P11 step 5 — server-side embedding hardening** — the initial path is live behind `SERVER_EMBED=1`: remote mode can now post chunks with empty `embedding` vectors and the server fills them with BGE-M3 before writing, and remote vector/hybrid search can omit query embeddings too. Remaining work is operational hardening (model/config selection, better progress reporting, and integrating this into the eventual file-level SQLite queue design).
+
+## Recently Shipped
+
+- **Sparse retrieval in the search pipeline** — hybrid search now opportunistically adds a sparse BGE-M3 / SPLADE channel when the active embedder exposes a sparse head.
+- **Cross-encoder reranking in the search pipeline** — `SearchEngine` can rerank post-RRF candidates via `RerankerHandle`, with Settings/UI wiring for model selection and top-N.
+- **P11 step 1 — batched ingest across the frontend + local backend** — the Svelte call sites now buffer documents into `index_ingest_batch` calls (N=16), coalescing LanceDB writes and Tantivy commits.
+- **P11 step 2 — `embedderLocation: client | server`** — shipped end-to-end in Rust + Settings UI; remote mode can post raw text for a future embedding-capable server.
+- **P11 step 3 — local single-writer queue** — `IngestPipeline` now serialises LanceDB/Tantivy mutations through one tokio writer task and exposes queue depth via `index_queue_depth`.
+- **P11 step 4a/4b bridge — remote bulk-ingest queue** — `crisp-index-server` accepts `POST /v1/ingest/batch`, persists queued tasks in `crisp_jobs.db`, drains them through one background worker with lease/heartbeat/retry semantics, and exposes `/v1/tasks/:id`; the Tauri remote batch path enqueues and polls to completion instead of erroring. The server now auto-imports legacy `ingest_tasks.json` state on upgrade, claims work with `BEGIN IMMEDIATE` + `UPDATE ... RETURNING`, and exposes optional operator metadata for attempts / lease timing on task-status reads.
+- **P11 step 4d — UI wired to durable job queue** — `IndexIngest.svelte` (Hinzufügen tab) now routes all file additions through `jobs_create` (`job_type: 'hinzufuegen'`) + `jobs_add_files`, and the L1/L2/L3 ingest loops use `jobs_claim_batch` → process → `jobs_mark_done/error/skipped`. On mount, the component restores any active `hinzufuegen` job via `jobs_list` + `jobs_reclaim` (resets in-progress rows) + `jobs_list_files` (repopulates display). `clearAll` calls `jobs_delete`; `clearDone` calls `jobs_remove_files_by_status`; `removeEntry` calls `jobs_remove_file`. Three new Tauri commands added (`jobs_list_files`, `jobs_remove_file`, `jobs_remove_files_by_status`); `jobs_create` gains an optional `job_type` parameter. `BatchReview.svelte` (Stapel) already has session persistence via `batchManager.saveCurrentSession()` and doesn't require the same migration.
+- **P11 step 4c — client durable file-level queue** — `src-tauri/src/jobs/` ships `JobQueue` (rusqlite WAL, bundled SQLite) with a two-table schema: `ingest_jobs` (one row per logical batch job — type, status, source paths, target level, timestamps, error) + `file_queue` (one row per file — per-file status `pending|in_progress|done|skipped|error`, retry count, doc_id, error message; `INSERT OR IGNORE` dedup on `(job_id, path)`). Key methods: `claim_batch` (immediate `BEGIN IMMEDIATE` tx), `mark_done`, `mark_error` (requeue up to `max_retries` or terminal error), `reclaim_in_progress` (reset stale in-flight rows on startup). Wrapped in `Arc<Mutex<Option<JobQueue>>>` in `AppState`, initialised in the Tauri setup hook from `app_data_dir`. Exposed via 13 `jobs_*` Tauri commands (all use `spawn_blocking`). `mtime_unix` promoted from `Option<u32>` to `Option<i64>` (Y2038 fix) across `ingest.rs`, `bg_ingest/mod.rs`, `tauri_commands.rs`, `local_index.rs`. Remaining: wire the Svelte ingest flows to consume the queue.
+- **P11 step 5a — initial server-side embedding** — with `SERVER_EMBED=1`, `crisp-index-server` loads a CPU-side BGE-M3 fastembed model and hydrates missing chunk embeddings before LanceDB/Tantivy writes. The remote Tauri ingest paths now send empty vectors when `embedderLocation = server`, and the remote vector/hybrid search path can let the server embed the query too when no local query embedder is loaded.
 
 ---
 
@@ -750,7 +762,20 @@ the CrispLens reference (modes, cloud drives, sync).
   100 k files × ~10 chunks = 1 M HTTP round-trips before any
   server-side queue.
 
-#### Pillar 1 — Async ingestion queue (server-side, 202 Accepted)
+#### Pillar 1 — Async ingestion queue ✅ shipped (both tiers)
+
+**What shipped (steps 4a–4c):**
+
+*Server tier (`crisp-index-server/src/queue.rs` — `TaskQueue`):*
+SQLite-backed (`crisp_jobs.db`), `rusqlite` with WAL mode. Schema: `ingest_tasks(id TEXT PK, payload_json TEXT, state TEXT, attempt_count INT, max_attempts INT, lease_expires_at INT, last_heartbeat_at INT, created_at INT, done_at INT, error TEXT)`. `claim_next_task` uses `BEGIN IMMEDIATE` + `UPDATE … RETURNING`. Background worker loops with 30 s heartbeat lease; on crash/restart `reclaim_expired_tasks` resets stale rows. Operator env knobs: `QUEUE_LEASE_SECS`, `QUEUE_RETRY_BASE_MS`, `QUEUE_MAX_ATTEMPTS`. `GET /v1/tasks/:id` exposes `queued|processing|done|failed` + optional attempt/lease metadata. Legacy `ingest_tasks.json` auto-migrated on first boot. Known limitation (issue C): `payload_json` stores the full `IngestBatch` including pre-computed embeddings — ~112 KB per 16-chunk batch at BGE-M3 dims; 3.5 GB SQLite risk for a 500K-file backlog. Fix: store only chunk references; re-embed at work time.
+
+*Client tier (`src-tauri/src/jobs/` — `JobQueue`):*
+SQLite-backed (bundled rusqlite, WAL mode) in `app_data_dir`. Two tables: `ingest_jobs(id TEXT PK, job_type TEXT, status TEXT, source_paths TEXT, target_level INT, config_json TEXT, created_at INT, updated_at INT, error TEXT)` and `file_queue(id INT PK, job_id TEXT FK, path TEXT, status TEXT, retry_count INT, max_retries INT, doc_id TEXT, error TEXT, created_at INT, updated_at INT)` with unique index on `(job_id, path)` for `INSERT OR IGNORE` dedup. Key methods (all synchronous, called via `spawn_blocking` from Tauri commands): `create_job`, `add_files` (bulk insert, returns added count), `claim_batch` (`BEGIN IMMEDIATE` tx, marks rows `in_progress`), `mark_done`, `mark_error` (requeue or terminal), `mark_skipped`, `set_doc_id`, `reclaim_in_progress` (startup reset), `pending_count`. `Arc<Mutex<Option<JobQueue>>>` in `AppState`, initialised in Tauri setup hook. 13 `jobs_*` Tauri commands exposed.
+
+**Remaining (step 4d):**
+Wire Svelte ingest flows (`IndexIngest.svelte`, `BatchReview.svelte`) to consume `jobs_*` commands instead of ephemeral component state. Adaptive polling backoff in remote task poll path (issue F). Server queue blob-size fix (issue C above).
+
+The original design spec (for reference):
 
 The user is right: per-chunk synchronous POSTs don't scale. The
 shape we want:
@@ -1190,30 +1215,26 @@ Sharding (only if a single Lance dataset can't keep up):
 Before P11 starts in earnest, three small refactors lower the
 eventual port cost. Each is independently shippable:
 
-1. **`IngestBatch` shape across the whole pipeline.** Today the
-   producer/consumer in `batch/store.svelte.ts` produces one
-   `BatchItem` at a time → `index_ingest_document(per-chunk)`.
-   The right next layer is: producer emits N `IngestPayload`s
-   in one go to `index_ingest_batch(items)`. The local backend
-   coalesces them on the LanceDB write; the remote backend
-   POSTs them as one `/v1/ingest/batch` call. Same pipeline,
-   one swap point.
+1. **`IngestBatch` shape across the whole pipeline.** Shipped.
+   The Svelte ingest paths now buffer extracted docs and flush
+   them via `index_ingest_batch` in groups of 16; the local
+   backend coalesces them into one Arrow write batch and one
+   Tantivy commit per flush. The remote backend still needs the
+   matching HTTP bulk endpoint (`/v1/ingest/batch`) from step 4.
 
-2. **`embedderLocation: 'client' | 'server'`** as a config flag
-   (not yet a feature toggle). Default `'client'`. The pipeline
-   reads it before deciding to load an embedder; `'server'`
-   short-circuits the local embedder entirely and posts raw
-   text. We already had `use_vector` (no embedder at all);
-   this adds the third state.
+2. **`embedderLocation: 'client' | 'server'`** as a config flag.
+   Shipped. Default `'client'`; in remote mode `'server'`
+   short-circuits local embedder loading and posts raw text.
+   This is infrastructure only until the server learns to embed
+   missing vectors in step 5.
 
-3. **Make the local backend a queue too.** Today the local
-   write path is synchronous (caller awaits each chunk). If we
-   wrap it in a tokio mpsc + a single writer task, the same
-   "fire-and-forget plus poll" shape that the server will use
-   already works locally — and the UI gets non-blocking writes
-   for free. The local writer's queue depth becomes the same
-   metric we'll show for remote-mode queue depth in the
-   bottom-left chip from P10's throughput indicator.
+3. **Make the local backend a queue too.** Partially shipped.
+   The local write path now runs through a tokio mpsc + a single
+   writer task, so concurrent callers no longer race on LanceDB /
+   Tantivy and the UI can poll real queue depth. What this does
+   **not** give us is durable pause/resume or crash recovery:
+   once the process exits, the in-memory queue disappears. The
+   SQLite design below is the next step for days-long jobs.
 
 These three are net-no-feature-loss but turn the eventual
 client/server cutover from "rewrite the ingest path" into "swap
@@ -1234,24 +1255,156 @@ the implementation behind one trait method."
    wire-format struct (with round-trip + empty-`{}`-deserialise
    tests, 5/5 protocol tests pass) so the future server-side
    `POST /v1/ingest/batch` (step 4) shares the exact shape.
-   Frontend wiring is a follow-up commit -- the producer/consumer
-   pipeline in `batch/store.svelte.ts` will switch from per-doc
-   `index_ingest_document` to bucketed `index_ingest_batch`
-   calls of N=16 docs each.
+   Frontend wiring is now also shipped: `BatchReview.svelte`,
+   `IndexIngest.svelte`, and the L3-promotion path all flush
+   `index_ingest_batch` in N=16 buckets.
 
-2. **Refactor (b):** `embedderLocation` config + the load gate.
-   Default `'client'`; the second value becomes meaningful in
-   step 5.
+2. ✅ **Refactor (b):** `embedderLocation` config + the load gate.
+   Default `'client'`; remote + `'server'` skips local embedder
+   load and posts raw text chunks. This becomes semantically live
+   once step 5 lands on the server.
 
-3. **Refactor (c):** local writer queue. UI sees real queue depth
-   even in single-machine mode. Sets up the abstraction the
-   remote queue will land in.
+3. ✅ **Refactor (c):** local writer queue. `IngestPipeline`
+   serialises LanceDB/Tantivy mutations through a single writer
+   task and exposes queue depth via `index_queue_depth`. Important
+   limit: this is an in-memory process-local queue, not a durable
+   resumable job system.
 
-4. **Server step 1 — bulk ingest API.** Build out the
-   `crisp-index-server` stubs: `POST /v1/ingest/batch` returns
-   202 + task_id, SQLite-backed queue, single writer task that
-   actually writes (still expects pre-computed embeddings).
-   Client switches to bulk POSTs in remote mode.
+4. ✅ **Step 4a operator visibility:** foreground remote batch ingest
+   no longer waits silently. The client now enqueues with
+   `POST /v1/ingest/batch`, polls `/v1/tasks/:id`, emits live
+   `queued` / `processing` / `done` progress messages, and mirrors
+   the server-reported queue depth into the same bottom-left queue
+   chip the local writer path already uses.
+
+#### Durable queue design for step 4b
+
+For 500k-file / multi-day remote backfills, the server ultimately
+needs a **SQLite-backed durable work queue** distinct from the
+LanceDB result store.
+LanceDB tracks what has been successfully indexed; it is the wrong
+place to track transient job state (`pending` / `in_progress` /
+`retrying` / `failed`) because every status flip would create new
+dataset versions without buying us queue semantics.
+
+Current shipped state vs target:
+
+| layer | shipped now | target |
+|---|---|---|
+| **Remote task persistence** | SQLite (`crisp_jobs.db`) task table with JSON payload column | SQLite (`crisp_jobs.db`) with richer `ingest_jobs` + `file_queue` tables |
+| **Worker model** | single background worker with lease / heartbeat / retry semantics | one or more lease-aware workers |
+| **Resume after restart** | yes, via leases / heartbeats / reclaim | yes, via leases / heartbeats / reclaim |
+| **Task granularity** | batch task (`IngestBatch`) | file-level queue rows + richer job metadata |
+
+The long-term split is:
+
+| store | purpose |
+|---|---|
+| **SQLite** (`crisp_jobs.db`) | durable ingest/sort job state: what is queued, leased, failed, retried, paused, resumed |
+| **LanceDB + Tantivy** | successful indexed result rows only |
+
+Suggested schema:
+
+```sql
+CREATE TABLE ingest_jobs (
+    id            TEXT PRIMARY KEY,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    status        TEXT NOT NULL,   -- pending|running|paused|done|error|cancelled
+    source_paths  TEXT NOT NULL,   -- JSON array of roots
+    config_json   TEXT,            -- embedder, batch size, target level, etc.
+    total_files   INTEGER NOT NULL DEFAULT 0,
+    done_files    INTEGER NOT NULL DEFAULT 0,
+    error_files   INTEGER NOT NULL DEFAULT 0,
+    skipped_files INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE file_queue (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id           TEXT NOT NULL REFERENCES ingest_jobs(id),
+    file_path        TEXT NOT NULL,
+    file_hash        TEXT,
+    doc_id           TEXT,
+    target_level     INTEGER NOT NULL,   -- 1, 2, 3
+    status           TEXT NOT NULL DEFAULT 'pending',
+    retry_count      INTEGER NOT NULL DEFAULT 0,
+    error            TEXT,
+    worker_id        TEXT,
+    lease_expires_at INTEGER,
+    last_attempted   INTEGER,
+    completed_at     INTEGER,
+    UNIQUE(job_id, file_path)
+);
+
+CREATE INDEX file_queue_claim_idx
+    ON file_queue(job_id, status, lease_expires_at, id);
+```
+
+Key design points:
+
+* **Use leases, not just `in_progress`.** A row needs
+  `worker_id + lease_expires_at` (optionally heartbeat) so a
+  crash or disconnect turns into "lease expired, reclaimable"
+  rather than requiring bespoke cleanup.
+* **Claim work atomically.** Do **not** `SELECT ... LIMIT N`
+  then `UPDATE ... WHERE id IN (...)` in two separate logical
+  steps. Use `BEGIN IMMEDIATE` plus one `UPDATE ... RETURNING`
+  statement that both claims and returns the rows.
+* **Avoid `BEGIN EXCLUSIVE`.** WAL mode + `BEGIN IMMEDIATE`
+  is the right lock level for a short claim transaction.
+  `EXCLUSIVE` is heavier than needed.
+* **Treat counters as cached summaries.** `done_files` /
+  `error_files` are useful, but `file_queue` remains the source
+  of truth. Either update counters transactionally with row-state
+  changes or periodically recompute.
+* **Use explicit completion criteria.** For L3, a `doc_id`
+  presence check in LanceDB can be the idempotency tie-breaker on
+  resume; for L1 / L2 / sort jobs we should define per-job-type
+  completion rules instead of assuming `chunk_index = 0` means
+  "done" universally.
+
+Recommended claim shape:
+
+```sql
+BEGIN IMMEDIATE;
+WITH picked AS (
+  SELECT id
+  FROM file_queue
+  WHERE job_id = ? AND status = 'pending'
+  ORDER BY id
+  LIMIT 16
+)
+UPDATE file_queue
+SET status = 'in_progress',
+    worker_id = ?,
+    last_attempted = ?,
+    lease_expires_at = ?
+WHERE id IN (SELECT id FROM picked)
+RETURNING id, file_path, target_level, file_hash, doc_id;
+COMMIT;
+```
+
+On restart / reconnect:
+
+* Rows with expired leases become eligible for reclaim.
+* The worker checks LanceDB/Tantivy for the relevant result row
+  before re-processing, so a task that wrote successfully just
+  before a crash can still be marked done.
+* Retries increment `retry_count`; after `max_retries` the row
+  moves to `error` with the last message preserved.
+
+4. ✅ **Server step 1 — bulk ingest API + SQLite lease queue bridge.**
+   `crisp-index-server` exposes `POST /v1/ingest/batch`
+   returning `202 Accepted + { task_id, queue_depth }`, persists
+   queued tasks in `crisp_jobs.db`, and drains them through a
+   single writer with lease / heartbeat / retry semantics while
+   preserving the existing `queued | processing | done | failed`
+   client contract. The Tauri remote batch path now switches from
+   "error in remote mode" to enqueue + poll. This bridge now also
+   supports env-configurable lease / retry tuning and optional
+   task-status metadata for `attempt_count`, `max_attempts`,
+   `last_heartbeat_at`, and `lease_expires_at`. Follow-up work is
+   the richer file-level queue design described above.
 
 5. **Server step 2 — server-side embedding.** Add the embedder
    to the server worker, gated by `embedderLocation == 'server'`.
@@ -1305,10 +1458,10 @@ shaping the next one":
   ──────────┼─────────────────────────────────────┼─────────────────────────────────────────────┼─────────────
   1 (refac) | index_ingest_batch                  | faster local ingest (Arrow batching)        | step 4
   2 (refac) | embedderLocation flag               | infrastructure                              | step 5
-  3 (refac) | local writer queue                  | non-blocking writes, queue-depth chip       | step 9
+  3 (refac) | local writer queue                  | serialized local writes + queue-depth chip  | durable queue design
   8         | RuntimeMode + HybridBackend         | Settings exposes 3 modes                    | step 9
   9         | sync_outbox + reconnect detector    | "online/offline/syncing" pill                | step 4
-  4         | server bulk ingest API              | remote-mode 100x faster                     | -
+  4         | server bulk ingest API              | remote-mode 100x faster + resumable batches | step 4b
   5         | server-side embedding               | TB-scale workflows (laptop + GPU box)       | -
   6         | IVF-PQ with sample_rate             | 100M+-vector search latency stays ms-class  | -
   10        | CloudDrive (SMB/SFTP)               | Hetzner StorageBox + NAS as first-class     | (Internxt/Filen later)
@@ -1777,4 +1930,3 @@ not a separate stack.
 
 (For historical per-version changelog and shipped phase specs, see
 [HISTORY.md](HISTORY.md).)
-
