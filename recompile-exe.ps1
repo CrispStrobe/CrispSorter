@@ -69,9 +69,18 @@ Write-Host "Building optimized executable with Tauri..." -ForegroundColor Cyan
 & npm run tauri build
 
 # 3. Success Reporting
-$ExePath = Join-Path $ProjectRoot "src-tauri\target\release\CrispSorter.exe"
+# target/ moved to the workspace root with the crisp-index-server
+# integration (commit 7326771); the legacy src-tauri\target\ path is
+# kept as a fallback so this script still finds the .exe in branches
+# that haven't picked up the workspace move yet.
+$ExePath = Join-Path $ProjectRoot "target\release\CrispSorter.exe"
 if (-not (Test-Path $ExePath)) {
-    # Fallback check for default tauri-app name
+    $ExePath = Join-Path $ProjectRoot "target\release\tauri-app.exe"
+}
+if (-not (Test-Path $ExePath)) {
+    $ExePath = Join-Path $ProjectRoot "src-tauri\target\release\CrispSorter.exe"
+}
+if (-not (Test-Path $ExePath)) {
     $ExePath = Join-Path $ProjectRoot "src-tauri\target\release\tauri-app.exe"
 }
 

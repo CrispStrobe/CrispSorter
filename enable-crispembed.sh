@@ -76,8 +76,11 @@ shopt -s nullglob
 SHARED_LIBS+=("$PREBUILT_DIR"/*.dylib "$PREBUILT_DIR"/*.so "$PREBUILT_DIR"/*.so.* "$PREBUILT_DIR"/*.dll)
 shopt -u nullglob
 if [[ ${#SHARED_LIBS[@]} -gt 0 ]]; then
-    for d in "$PROJECT_ROOT/src-tauri/target/debug" \
-             "$PROJECT_ROOT/src-tauri/target/release" \
+    # target/ moved from src-tauri/target/ to the workspace root once
+    # crisp-index-server / crisp-index-protocol joined the Cargo
+    # workspace (commit 7326771).
+    for d in "$PROJECT_ROOT/target/debug" \
+             "$PROJECT_ROOT/target/release" \
              "$PROJECT_ROOT/src-tauri/bin"; do
         mkdir -p "$d"
         for lib in "${SHARED_LIBS[@]}"; do

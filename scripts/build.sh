@@ -69,7 +69,7 @@ profile="debug"
 # hasn't disabled the dance via CRISPSORTER_TARGET_VOLUME="".
 ensure_target_symlink() {
   if [ -z "$TARGET_VOLUME" ]; then
-    echo "[build] CRISPSORTER_TARGET_VOLUME unset — using local src-tauri/target/"
+    echo "[build] CRISPSORTER_TARGET_VOLUME unset — using local target/"
     return
   fi
   # Volume parent must be reachable; if not, fall through to local
@@ -81,7 +81,10 @@ ensure_target_symlink() {
     return
   fi
   mkdir -p "$TARGET_VOLUME"
-  local current="$SRC_TAURI/target"
+  # target/ moved to the workspace root with the crisp-index-server
+  # integration (commit 7326771). The symlink-to-external-volume trick
+  # follows -- now $REPO_ROOT/target instead of $REPO_ROOT/target.
+  local current="$REPO_ROOT/target"
   if [ -L "$current" ]; then
     local cur_dest
     cur_dest="$(readlink "$current")"
@@ -114,7 +117,7 @@ ensure_target_symlink
 
 if [ "$DO_CLEAN" = "1" ]; then
   echo "[build] cleaning $profile intermediates"
-  rm -rf "$SRC_TAURI/target/$profile" "$BUILD_DIR"
+  rm -rf "$REPO_ROOT/target/$profile" "$BUILD_DIR"
 fi
 
 if [ "$DO_FRONTEND" = "1" ]; then
@@ -148,9 +151,9 @@ echo "[build] done."
 binary_path=""
 if [ "$DO_BACKEND" = "1" ]; then
   if [ "$RELEASE" = "1" ]; then
-    binary_path="$SRC_TAURI/target/release/tauri-app"
+    binary_path="$REPO_ROOT/target/release/tauri-app"
   else
-    binary_path="$SRC_TAURI/target/debug/tauri-app"
+    binary_path="$REPO_ROOT/target/debug/tauri-app"
   fi
   if [ -e "$binary_path" ]; then
     size_mb=$(du -m "$binary_path" 2>/dev/null | cut -f1)
@@ -168,4 +171,4 @@ echo "  npm run tauri dev                      # live dev (vite + cargo, hot rel
 if [ -n "$binary_path" ] && [ "$RELEASE" = "1" ]; then
   echo "  $binary_path                           # release binary, uses static build/"
 fi
-echo "  $SRC_TAURI/target/debug/tauri-app version    # CLI mode (no GUI)"
+echo "  $REPO_ROOT/target/debug/tauri-app version    # CLI mode (no GUI)"
