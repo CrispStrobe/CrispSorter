@@ -580,7 +580,39 @@ b. **Per-stage timeout wrappers** (first-byte + total) in the
    becomes a UI knob over the L3 *whole-file* budget; per-stage
    defaults stay sane.
 c. **Worker pool** in the background-ingest scheduler. N
-   configurable in Settings (default `min(num_cpus, 4)`).
+   configurable in Settings (default `min(num_cpus, 4)`). The
+   foreground Stapel flow gets the same treatment: today
+   `batch/store.svelte.ts` runs `EXTRACT all → ANALYZE all` in
+   two serial phases so a stalled LLM never blocks extraction.
+   The producer/consumer rewrite preserves that property while
+   also overlapping the phases:
+
+   ```
+   extractor producer ──► queue (bounded, ~8) ──► LLM consumer
+        │ pulls items needing                      │ pulls ready
+        │ extraction one at a time                 │ items, runs
+        │ (preserves the existing per-stage        │ queryRR with
+        │ timeouts + page watchdog)                │ round-robin
+        └─ stops when this.items exhausted         │ fallback
+                                                   └─ keeps draining
+                                                      until queue
+                                                      empty + producer
+                                                      done
+   ```
+
+   Both run as `Promise.all([producer, consumer])`. An LLM stall
+   stops draining the queue but doesn't stop extraction — the
+   queue just fills to its bound, then extraction back-pressures
+   on `await wakeProducer`. An extraction error doesn't block
+   already-extracted items; the consumer keeps draining. Stop
+   button aborts both cooperatively via the existing
+   `extractionAbort` + `llmAbort` signals.
+
+   This lands first as `Promise.all` over single-worker
+   producer + single-worker consumer (the easy correctness
+   win); the actual N-worker pool follows once the failure
+   taxonomy from step (a) is in place so a wedged worker can
+   be killed without taking the pool with it.
 d. **DRM detection** for EPUB + password-protected PDF. Surfaces
    the right reason even when the underlying extractor would
    otherwise give a generic error.

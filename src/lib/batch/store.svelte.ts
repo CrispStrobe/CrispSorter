@@ -217,9 +217,22 @@ export class BatchManager {
 
         flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
 
-        // Two-phase: EXTRACT all → ANALYZE all.
-        // This decouples text extraction from LLM analysis so a stalled LLM
-        // queue never blocks extraction of remaining items.
+        // Producer/consumer pipeline (PLAN P10 step c, foreground variant).
+        //
+        // Pre-P10 this was a strict two-phase EXTRACT-all -> ANALYZE-all
+        // loop, which held the LLM idle while extraction worked through
+        // the queue (and vice-versa). Now both run concurrently:
+        //   - the producer pulls items off `this.items` one at a time,
+        //     runs extraction with the existing per-stage timeouts +
+        //     page watchdog, and pushes ready items onto `llmQueue`;
+        //   - the consumer drains `llmQueue` and runs queryRR.
+        //
+        // An LLM stall stops draining the queue but doesn't stop
+        // extraction -- the queue back-pressures at QUEUE_CAP via the
+        // wakeProducer promise. An extraction error doesn't block
+        // already-extracted items from being analysed; the consumer
+        // keeps draining. Stop button aborts both via the existing
+        // extractionAbort + llmAbort signals.
         const needsProcessing = (item: BatchItem) =>
             (item.status === 'queued' || item.status === 'error' || item.status === 'unfinished') &&
             (!onlyIds || onlyIds.has(item.id));
@@ -231,11 +244,46 @@ export class BatchManager {
             ? conversionTimeoutSec * 1000
             : 0;
 
+        // Bounded queue between producer + consumer. 8 is enough to
+        // keep the LLM busy through one extraction stall (typical
+        // extraction takes seconds; an OCR pass that takes a minute
+        // can still feed the LLM the seven items already done while
+        // it grinds).
+        const QUEUE_CAP = 8;
+        const llmQueue: BatchItem[] = [];
+        let producerDone = false;
+        let wakeConsumer: (() => void) | null = null;
+        let wakeProducer: (() => void) | null = null;
+        const signalConsumer = () => {
+            if (wakeConsumer) { const fn = wakeConsumer; wakeConsumer = null; fn(); }
+        };
+        const signalProducer = () => {
+            if (wakeProducer) { const fn = wakeProducer; wakeProducer = null; fn(); }
+        };
+
         try {
-            // ── Phase 1: extraction ─────────────────────────────────────────
+            // ── Producer: extraction ────────────────────────────────────────
+            const extractor = (async () => {
             for (const item of this.items) {
-                if (!needsProcessing(item) || item.extractedText) continue;
+                if (!needsProcessing(item) || item.extractedText) {
+                    // Already-extracted items should still be analysed
+                    // by the consumer if they're awaiting LLM. Push and
+                    // let the consumer skip-or-not based on its own
+                    // needsAnalysis predicate.
+                    if (item.extractedText && !overrides?.extractionOnly) {
+                        llmQueue.push(item);
+                        signalConsumer();
+                    }
+                    continue;
+                }
                 if (this.stopRequested) { flog('info', 'Stop requested, halting extraction phase'); break; }
+                // Back-pressure: pause the producer when the LLM
+                // consumer is behind by more than QUEUE_CAP items.
+                while (llmQueue.length >= QUEUE_CAP && !overrides?.extractionOnly) {
+                    if (this.stopRequested) break;
+                    await new Promise<void>(r => { wakeProducer = r; });
+                }
+                if (this.stopRequested) break;
 
                 item.status = 'extracting';
                 const forceOCR = overrides?.enforceOcr ?? false;
@@ -343,10 +391,15 @@ export class BatchManager {
                         }
                     }
 
-                    // Park at 'queued' with text so phase 2 picks it up (unless extraction-only)
+                    // Park at 'queued' with text so the consumer picks it up (unless extraction-only)
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
                     if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                     flog('info', `Extracted: ${item.originalName} — ${item.extractedText?.length ?? 0} chars`);
+                    // Hand the freshly-extracted item to the LLM consumer.
+                    if (!overrides?.extractionOnly && item.extractedText) {
+                        llmQueue.push(item);
+                        signalConsumer();
+                    }
                 } catch (e: any) {
                     const isAbort = this.stopRequested || e?.name === 'AbortError' || e?.message?.includes('EXTRACT');
                     if (isAbort) {
@@ -362,22 +415,40 @@ export class BatchManager {
                 }
                 await this.saveCurrentSession();
             }
+            producerDone = true;
+            signalConsumer();
+            })();
 
-            if (overrides?.extractionOnly) return; // done after phase 1
+            // ── Consumer: LLM analysis ──────────────────────────────────────
+            const analyser = (async () => {
+            // Skip the consumer entirely when we're only extracting,
+            // or when metadata extraction is disabled in Settings.
+            if (overrides?.extractionOnly || !this.isMetadataExtractionEnabled) return;
 
-            // ── Phase 2: LLM analysis ───────────────────────────────────────
-            if (!this.isMetadataExtractionEnabled) return;
-
-            for (const item of this.items) {
-                // Analyze items that have text but no metadata yet, or were previously queued/unfinished
-                const needsAnalysis = (item.status === 'queued' || item.status === 'unfinished') &&
-                    item.extractedText &&
-                    (!onlyIds || onlyIds.has(item.id));
-                if (!needsAnalysis) continue;
+            // Drain `llmQueue` until both empty AND producer has flagged
+            // it's done emitting. Items pushed by the producer carry
+            // freshly-extracted text; pre-extracted items already in
+            // `this.items` are also pushed by the producer's early-skip
+            // branch above, so this single loop covers both cases.
+            while (true) {
                 if (this.stopRequested || this.llmAbort?.signal.aborted) {
                     flog('info', 'Stop requested, halting analysis phase');
                     break;
                 }
+                if (llmQueue.length === 0) {
+                    if (producerDone) break;
+                    await new Promise<void>(r => { wakeConsumer = r; });
+                    continue;
+                }
+                const item = llmQueue.shift()!;
+                signalProducer(); // unblock back-pressure if the producer was waiting
+                // Re-check: the producer may have queued an item that
+                // the user has since edited, or the item may have
+                // already been analysed in a prior partial run.
+                const needsAnalysis = (item.status === 'queued' || item.status === 'unfinished') &&
+                    item.extractedText &&
+                    (!onlyIds || onlyIds.has(item.id));
+                if (!needsAnalysis) continue;
 
                 item.status = 'analyzing';
                 try {
@@ -450,10 +521,18 @@ export class BatchManager {
                 }
                 await this.saveCurrentSession();
             }
+            })();
+
+            await Promise.all([extractor, analyser]);
         } finally {
             this.isProcessing = false;
             this.stopRequested = false;
             this.llmAbort = null;
+            // Flush any consumers / producers blocked in their await.
+            // (signalConsumer/signalProducer are no-ops when nobody is
+            // waiting, so this is safe to call even on the happy path.)
+            signalConsumer();
+            signalProducer();
             flog('info', 'processAll finished');
         }
     }
