@@ -21,8 +21,9 @@ use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use lancedb::{
     connect,
-    index::{vector::IvfPqIndexBuilder, Index},
+    index::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder, Index},
     query::{ExecutableQuery, QueryBase},
+    table::NewColumnTransform,
     Connection, DistanceType, Table,
 };
 
@@ -69,6 +70,10 @@ impl LocalIndex {
             }
             Err(e) => return Err(e).context("opening LanceDB table"),
         };
+
+        migrate_add_parent_dir_column(&table)
+            .await
+            .context("schema v2: adding parent_dir column")?;
 
         Ok(LocalIndex {
             _db: db,
@@ -459,6 +464,19 @@ impl LocalIndex {
             .execute()
             .await
             .context("building IVF-PQ index")?;
+        Ok(())
+    }
+
+    /// Build a BTree scalar index on `parent_dir` for fast folder-prefix
+    /// filtering in `query_documents`.  Safe to call repeatedly — LanceDB
+    /// will replace the old index.  Typically called once after the first
+    /// bulk L1 ingest or whenever the table grows significantly.
+    pub async fn build_scalar_index(&self) -> Result<()> {
+        self.table
+            .create_index(&["parent_dir"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .context("building BTree scalar index on parent_dir")?;
         Ok(())
     }
 
@@ -865,6 +883,9 @@ fn chunks_to_record_batch(
     // metadata_json
     let metadata_jsons: StringArray = chunks.iter().map(|c| c.metadata_json.as_deref()).collect();
 
+    // parent_dir (P9 step 3 — scalar-indexed for folder-prefix filter)
+    let parent_dirs: StringArray = chunks.iter().map(|c| c.parent_dir.as_deref()).collect();
+
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -893,6 +914,7 @@ fn chunks_to_record_batch(
             Arc::new(source_hashes),
             tags_col,
             Arc::new(metadata_jsons),
+            Arc::new(parent_dirs),
         ],
     )
     .context("building RecordBatch")?;
@@ -1068,6 +1090,29 @@ fn is_table_not_found(e: &lancedb::Error) -> bool {
     matches!(e, lancedb::Error::TableNotFound { .. })
 }
 
+// ── Schema migration helpers ───────────────────────────────────────────────
+
+/// Add the `parent_dir` column to an existing table that predates P9 step 3.
+/// No-op if the column is already present (e.g. freshly-created tables).
+async fn migrate_add_parent_dir_column(table: &Table) -> Result<()> {
+    let schema = table
+        .schema()
+        .await
+        .context("reading table schema for migration")?;
+    if schema.field_with_name("parent_dir").is_ok() {
+        return Ok(());
+    }
+    let col_schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("parent_dir", arrow_schema::DataType::Utf8, true),
+    ]));
+    table
+        .add_columns(NewColumnTransform::AllNulls(col_schema), None)
+        .await
+        .context("adding parent_dir column (schema v2)")?;
+    eprintln!("[index] migrated LanceDB table: added parent_dir column");
+    Ok(())
+}
+
 // ── PLAN P9 query helpers ─────────────────────────────────────────────────
 
 /// Translate a `DocumentFilter` into the predicate string we hand to
@@ -1081,15 +1126,14 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
     let mut parts: Vec<String> = vec!["chunk_index <= 0".to_owned()];
 
     if let Some(prefix) = f.parent_dir_prefix.as_ref().filter(|s| !s.is_empty()) {
-        // parent_dir lives in metadata_json until step 3 of the
-        // migration promotes it to a column. LIKE '%"parent_dir":"<p>%'
-        // is a hack — fast enough for tens of thousands of rows but
-        // intentionally on the migration path.
-        let escaped = prefix.replace('\'', "''").replace('\\', "\\\\");
-        parts.push(format!(
-            "metadata_json LIKE '%\"parent_dir\":\"{}%'",
-            escaped
-        ));
+        // parent_dir is now a first-class column with a BTree scalar index
+        // (P9 step 3). Escape single-quotes for SQL safety; escape LIKE
+        // wildcards (%_) so they are treated as literals within the prefix.
+        let escaped = prefix
+            .replace('\'', "''")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        parts.push(format!("parent_dir LIKE '{}%'", escaped));
     }
     if !f.ext.is_empty() {
         let lits: Vec<String> = f

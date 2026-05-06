@@ -63,6 +63,11 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // paths, CrispSorter session links, etc. all live here without schema
         // migrations. Once a field stabilises, promote it to a first-class column.
         Field::new("metadata_json", DataType::Utf8, true),
+        // ── P9 step 3 — promoted from metadata_json ───────────────────────
+        // Scalar-indexed for fast folder-prefix filtering in query_documents.
+        // New column appended at the end so existing tables are migrated
+        // non-destructively via ALTER TABLE ADD COLUMN (all-null backfill).
+        Field::new("parent_dir", DataType::Utf8, true),
     ]))
 }
 
@@ -109,6 +114,9 @@ pub struct DocumentChunk {
 
     // Escape hatch
     pub metadata_json: Option<String>,
+
+    // P9 step 3 — promoted from metadata_json; scalar-indexed for fast folder prefix filter
+    pub parent_dir: Option<String>,
 }
 
 /// Lightweight search result returned to the frontend.

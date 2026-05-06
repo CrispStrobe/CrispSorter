@@ -121,7 +121,7 @@ default.
   `7326771`) `cargo build` writes to `/target/` at the repo root
   instead of `src-tauri/target/`. Six scripts still pointed at the
   legacy path and were silently recreating an orphan
-  `src-tauri/target/` on every dev run. On the user's notebook this
+  `src-tauri/target/` on every dev run. On our notebook this
   ate **26 GB** of pre-workspace artefacts that nobody was reading
   any more, pushing the boot drive to 99 % full / 6.4 GB free.
 
@@ -853,7 +853,7 @@ chews through it overnight.
 
 #### Pillar 3 — IVF-PQ at 100M+ vectors
 
-The user's concern is real. LanceDB's IVF-PQ build runs K-Means
+The concern is real. LanceDB's IVF-PQ build runs K-Means
 clustering over the vector column, which by default loads the
 column into memory. At 1024-dim float32 × 100 M vectors = ~400
 GB raw — won't fit, even on the beefiest VPS.
