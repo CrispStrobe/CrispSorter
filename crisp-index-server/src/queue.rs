@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use crisp_index_protocol::{IngestBatch, TaskStatusResponse};
+use crisp_index_protocol::{IngestBatch, IngestChunk, TaskStatusResponse};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use tokio::time::MissedTickBehavior;
@@ -98,6 +98,7 @@ impl TaskQueue {
             .context("setting sqlite synchronous mode")?;
         conn.execute_batch(SCHEMA)
             .context("creating queue schema")?;
+        migrate_schema_v2(&conn).context("schema v2 migration")?;
 
         let queue = Self {
             db_path,
@@ -116,9 +117,39 @@ impl TaskQueue {
 
     pub fn enqueue_batch(&self, batch: &IngestBatch) -> Result<(String, usize)> {
         let task_id = uuid::Uuid::new_v4().to_string();
-        let payload_json = serde_json::to_string(batch).context("serializing ingest batch")?;
         let now = now_ms();
         let total_chunks = i64::try_from(batch.chunks.len()).context("chunk count exceeds i64")?;
+
+        // Pack pre-computed embeddings into compact little-endian binary so
+        // payload_json stays small (text + metadata only).  If the batch
+        // uses server-side embedding (all embedding vectors are empty) the
+        // blob stays null, saving both the packing work and the column space.
+        let embed_dims = batch.chunks.first().map_or(0, |c| c.embedding.len());
+        let (embeddings_blob, embed_dims_stored): (Option<Vec<u8>>, i64) = if embed_dims > 0 {
+            let mut blob = Vec::with_capacity(batch.chunks.len() * embed_dims * 4);
+            for chunk in &batch.chunks {
+                for &f in &chunk.embedding {
+                    blob.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+            (Some(blob), i64::try_from(embed_dims).context("embed_dims exceeds i64")?)
+        } else {
+            (None, 0)
+        };
+
+        // Strip embeddings from the JSON payload — they are in the blob.
+        let compact_batch = if embed_dims > 0 {
+            IngestBatch {
+                chunks: batch.chunks.iter().map(|c| IngestChunk {
+                    embedding: Vec::new(),
+                    ..c.clone()
+                }).collect(),
+            }
+        } else {
+            batch.clone()
+        };
+        let payload_json = serde_json::to_string(&compact_batch)
+            .context("serializing compact ingest batch")?;
 
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().context("starting enqueue transaction")?;
@@ -127,11 +158,13 @@ impl TaskQueue {
             INSERT INTO ingest_tasks (
                 id, payload_json, state, total_chunks, completed_chunks, error,
                 created_at, updated_at, attempt_count, max_attempts, worker_id,
-                lease_expires_at, last_heartbeat_at, last_attempt_started_at, next_retry_at
+                lease_expires_at, last_heartbeat_at, last_attempt_started_at, next_retry_at,
+                embeddings_blob, embed_dims
             )
-            VALUES (?1, ?2, 'queued', ?3, 0, NULL, ?4, ?4, 0, ?5, NULL, NULL, NULL, NULL, NULL)
+            VALUES (?1, ?2, 'queued', ?3, 0, NULL, ?4, ?4, 0, ?5, NULL, NULL, NULL, NULL, NULL, ?6, ?7)
             "#,
-            params![task_id, payload_json, total_chunks, now, i64::from(self.max_attempts)],
+            params![task_id, payload_json, total_chunks, now, i64::from(self.max_attempts),
+                    embeddings_blob, embed_dims_stored],
         )
         .context("inserting queued task")?;
         let queue_depth = queue_depth_tx(&tx)?;
@@ -215,7 +248,7 @@ impl TaskQueue {
         reclaim_expired_tasks_tx(&tx, self.lease_ms, self.retry_base_ms)?;
 
         let now = now_ms();
-        let claimed: Option<(String, String, i64, i64)> = tx
+        let claimed: Option<(String, String, i64, i64, Option<Vec<u8>>, i64)> = tx
             .query_row(
                 r#"
                 WITH picked AS (
@@ -238,22 +271,27 @@ impl TaskQueue {
                     next_retry_at = NULL,
                     updated_at = ?1
                 WHERE id IN (SELECT id FROM picked)
-                RETURNING id, payload_json, total_chunks, attempt_count
+                RETURNING id, payload_json, total_chunks, attempt_count, embeddings_blob, embed_dims
                 "#,
                 params![now, worker_id, now + self.lease_ms],
-                |row: &Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row: &Row<'_>| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .optional()
             .context("claiming next queued task")?;
 
-        let Some((task_id, payload_json, total_chunks_i64, attempt_count_i64)) = claimed else {
+        let Some((task_id, payload_json, total_chunks_i64, attempt_count_i64, embeddings_blob, embed_dims_i64)) = claimed else {
             tx.commit().context("committing empty claim transaction")?;
             return Ok(None);
         };
         tx.commit().context("committing claim transaction")?;
 
-        let payload: IngestBatch = serde_json::from_str(&payload_json)
+        let mut payload: IngestBatch = serde_json::from_str(&payload_json)
             .with_context(|| format!("deserializing queued payload for task {task_id}"))?;
+
+        if let Some(blob) = embeddings_blob.as_deref() {
+            let dims = usize::try_from(embed_dims_i64).unwrap_or(0);
+            unpack_embeddings(&mut payload, blob, dims);
+        }
 
         Ok(Some(QueuedTask {
             id: task_id,
@@ -533,7 +571,12 @@ CREATE TABLE IF NOT EXISTS ingest_tasks (
     lease_expires_at INTEGER,
     last_heartbeat_at INTEGER,
     last_attempt_started_at INTEGER,
-    next_retry_at INTEGER
+    next_retry_at INTEGER,
+    -- compact binary embedding storage (added in schema v2):
+    -- embeddings_blob: little-endian f32 bytes packed sequentially per chunk
+    -- embed_dims: dims per chunk (0 when server-side embedding fills them)
+    embeddings_blob BLOB,
+    embed_dims INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ingest_tasks_claim_idx
@@ -542,6 +585,28 @@ CREATE INDEX IF NOT EXISTS ingest_tasks_claim_idx
 CREATE INDEX IF NOT EXISTS ingest_tasks_lease_idx
     ON ingest_tasks(state, lease_expires_at);
 "#;
+
+/// Migrate existing databases that predate the embeddings_blob columns.
+/// `ALTER TABLE ADD COLUMN` is idempotent in practice because we check
+/// column existence first.
+fn migrate_schema_v2(conn: &Connection) -> Result<()> {
+    let has_blob: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('ingest_tasks') WHERE name = 'embeddings_blob'",
+            [],
+            |r: &Row<'_>| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_blob {
+        conn.execute_batch(
+            "ALTER TABLE ingest_tasks ADD COLUMN embeddings_blob BLOB;
+             ALTER TABLE ingest_tasks ADD COLUMN embed_dims INTEGER NOT NULL DEFAULT 0;",
+        )
+        .context("adding embeddings_blob / embed_dims columns (schema v2)")?;
+    }
+    Ok(())
+}
 
 fn reclaim_expired_tasks_tx(tx: &Transaction<'_>, lease_ms: i64, retry_base_ms: i64) -> Result<()> {
     let now = now_ms();
@@ -690,6 +755,26 @@ fn default_max_attempts() -> u32 {
 fn retry_delay_ms(base_ms: i64, attempt_count: u32) -> i64 {
     let shift = attempt_count.saturating_sub(1).min(8);
     base_ms.saturating_mul(1_i64 << shift)
+}
+
+/// Restore per-chunk embeddings from a packed little-endian f32 blob.
+/// Each chunk occupies exactly `dims * 4` bytes in `blob`.
+fn unpack_embeddings(batch: &mut IngestBatch, blob: &[u8], dims: usize) {
+    if dims == 0 || blob.is_empty() {
+        return;
+    }
+    let bytes_per_chunk = dims * 4;
+    for (i, chunk) in batch.chunks.iter_mut().enumerate() {
+        let start = i * bytes_per_chunk;
+        let end = start + bytes_per_chunk;
+        if end > blob.len() {
+            break;
+        }
+        chunk.embedding = blob[start..end]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+    }
 }
 
 fn usize_from_i64(value: i64, field: &str) -> Result<usize> {
