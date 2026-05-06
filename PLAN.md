@@ -1094,7 +1094,128 @@ shaping the next one":
   7         | sharding by volume_id               | only when needed                            | -
 ```
 
-### P12 — Image-vertical convergence with CrispLens
+### P12 — `cloud-backup` integration (storage layer)
+
+The user already runs a 3-tier backup pipeline (`../cloud-backup`)
+in Python: `controller.py` archives + uploads to VPS, `vps_worker.py`
+mirrors to Internxt, `retrieve.py` does smart cross-tier retrieval,
+SQLite manifest DB tracks every file's location across `local /
+VPS-incoming / VPS-processing / cloud-blob / cloud-extracted`. ~12 k
+lines, mature, encrypted-config + receipt-based verification.
+
+CrispSorter and cloud-backup are **complementary, not competing**:
+content/search layer vs. storage/replication layer. The right
+integration is well-defined boundaries, not a merge. Same runtime-
+mismatch story as CrispLens — patterns + HTTP/IPC contracts, not code
+import.
+
+#### Boundaries
+
+| concern | owner | how the other side reads it |
+|---|---|---|
+| **Where a file is** (local path / VPS path / cloud blob ID / extracted cloud path) | cloud-backup `manifest_sync` DB | CrispSorter reads via a new URI scheme (below) |
+| **What a file says** (extracted text, embeddings, metadata) | CrispSorter LanceDB+Tantivy | cloud-backup never reads it |
+| **Backup orchestration** (when, what, encryption, receipts) | cloud-backup | CrispSorter just triggers / schedules |
+| **Search & sort** | CrispSorter | cloud-backup never touches it |
+| **Smart retrieval** (cheapest tier first) | cloud-backup `retrieve.py` | CrispSorter calls it as a subprocess for L3 promotion of files only in archives |
+
+#### URI scheme additions
+
+CrispSorter already has `crisp+local://`, `crisp+vps://`,
+`crisp+internxt://`, `crisp+internxt-zip://`. cloud-backup adds two
+more:
+
+* **`crisp+cb-archive://{archive-id}/{internal-path}`** — file lives
+  inside cloud-backup archive `archive-id` (encrypted 7z on the VPS,
+  also replicated to Internxt as a blob). Resolution: subprocess
+  `retrieve.py --archive {id} --extract {internal-path}` which picks
+  the cheapest tier (local cache → VPS remote extract → cloud).
+* **`crisp+cb-extracted://{cloud-path}`** — file was extracted on
+  the VPS and uploaded to Internxt's `/root/` tree (cloud-backup's
+  "standard mode"). Resolution: ordinary `crisp+internxt://` read.
+
+#### Read paths CrispSorter wants
+
+1. **L1 ingest of an entire backed-up tree, zero extraction.**
+   `index_ingest_cb_manifest(manifest_db_path, owner_id)` reads
+   cloud-backup's SQLite (`SELECT path, size, mtime, hash FROM
+   file_manifest`) and writes one L1 LanceDB row per file. Catalog
+   sees "you have 482k files indexed at the filesystem-metadata
+   level" without any 7z work — the entire backup tree becomes
+   browsable in Übersicht in seconds.
+
+2. **L2/L3 promotion via `retrieve.py`.** When the user clicks
+   "Promote to L3" on a row whose `location_uri` starts with
+   `crisp+cb-archive://`, CrispSorter spawns `retrieve.py` to
+   stream just that one file from the cheapest tier, runs the
+   existing extractor pipeline against it, and writes the L3
+   chunks/embedding rows. Bridge pattern matches the
+   CrispLens-style CLI bridges in P11 Pillar 5.
+
+3. **Reverse lookup**: clicking a hit in Suche surfaces "This file
+   is at: local cache / VPS / Internxt blob / Internxt extracted"
+   — read directly from cloud-backup's manifest. No new code on
+   cloud-backup's side.
+
+#### Write paths cloud-backup gives CrispSorter
+
+4. **Backup CrispSorter's catalog itself.** cloud-backup gets
+   pointed at `~/Library/Application Support/CrispSorter/` (or the
+   data-dir override) so the LanceDB+Tantivy databases + .caf files
+   are part of the same encrypted backup pipeline as the user's
+   documents. No changes needed in cloud-backup — just a config
+   line.
+
+5. **Search-driven backup priority.** CrispSorter exports a
+   "frequently-accessed-files" list (the docs the user actually
+   opens via the Übersicht/Stapel flow). cloud-backup keeps those
+   in the local cache tier longer; archives the rest. Optional
+   future hook; doesn't need to land in v1.
+
+#### Mode interactions
+
+cloud-backup integrates cleanly with the runtime modes from P11
+Pillar 4:
+
+| RuntimeMode | cloud-backup's role |
+|---|---|
+| **Standalone** (laptop only) | invisible — CrispSorter reads the local copies; cloud-backup runs in the background as before |
+| **Server** (CrispSorter on VPS) | the *same* VPS is `vps_worker.py`'s host. CrispSorter's `crispembed-cuda` GPU index sits next to cloud-backup's processing dir; both reference the same files via VPS-local paths instead of `crisp+vps://` URIs |
+| **Hybrid** (laptop + VPS, the load-bearing case) | CrispSorter's `crisp+cb-archive://` resolution + the SyncManager from P11 Pillar 6 share the same reconnect detector. Offline edits queue in `sync_outbox`; cloud-backup ops queue in cloud-backup's existing checkpoint system; both flush when the VPS becomes reachable |
+
+#### Migration order (slots into P11's table)
+
+| step | what | status |
+|---|---|---|
+| 11   | URI scheme + `retrieve.py` subprocess bridge | small (~1 day) -- read-only integration; cloud-backup doesn't change |
+| 12   | `index_ingest_cb_manifest` Tauri command + Übersicht "Import cloud-backup manifest" button | small (~1 day) -- reads cloud-backup SQLite, writes L1 LanceDB rows |
+| 13   | Settings -> "Backup CrispSorter catalog with cloud-backup" toggle (just adds the data-dir to cloud-backup's source list via its config) | trivial |
+| 14   | "frequently-accessed" export hook | optional, not v1 |
+
+Steps 11+12 are the load-bearing pair. After they ship: a user with
+a multi-TB backed-up archive can browse + search the whole thing in
+CrispSorter without ever extracting anything that isn't directly
+useful — Übersicht columnar pane reads metadata from cloud-backup's
+manifest, only the rows the user opens get demand-extracted via
+`retrieve.py`.
+
+#### What we don't do
+
+* **Don't rewrite cloud-backup in Rust.** It's mature, encrypted,
+  in production. Subprocess bridge is enough and matches the
+  CrispLens-CLI bridge pattern from P11.
+* **Don't duplicate the manifest DB.** cloud-backup's
+  `file_manifest` stays the source of truth for "where is this
+  file"; CrispSorter's LanceDB row carries `crisp+cb-archive://...`
+  and resolves at read time. Drift is impossible because resolution
+  always re-asks cloud-backup.
+* **Don't encrypt-encrypt.** When CrispSorter ingests via
+  `retrieve.py`, the file is decrypted by cloud-backup → handed to
+  CrispSorter as plaintext bytes → CrispSorter's LanceDB stores
+  whatever its own encryption settings dictate (today: at-rest
+  via the OS filesystem encryption; future: per-row).
+
+### P13 — Image-vertical convergence with CrispLens
 
 CrispSorter today indexes images at L2 (EXIF) but never embeds
 them — no "find similar," no face recognition, no CLIP-style
