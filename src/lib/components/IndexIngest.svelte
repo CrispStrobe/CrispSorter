@@ -1472,18 +1472,18 @@
                             checked={selectedDocIds.size === contents.length && contents.length > 0} />
                     </div>
                     <div class="cell col-ext">Ext</div>
-                    <div class="cell col-name col-sortable" onclick={() => setSort('filename')}>
+                    <button class="cell col-name col-sortable col-header-btn" type="button" onclick={() => setSort('filename')}>
                         Name
                         {#if sortColumn === 'filename'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </div>
-                    <div class="cell col-author col-sortable" onclick={() => setSort('author')}>
+                    </button>
+                    <button class="cell col-author col-sortable col-header-btn" type="button" onclick={() => setSort('author')}>
                         Autor
                         {#if sortColumn === 'author'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </div>
-                    <div class="cell col-year col-sortable" onclick={() => setSort('year')}>
+                    </button>
+                    <button class="cell col-year col-sortable col-header-btn" type="button" onclick={() => setSort('year')}>
                         Jahr
                         {#if sortColumn === 'year'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </div>
+                    </button>
                     <div class="cell col-size">Größe</div>
                     <div class="cell col-mtime">Geändert</div>
                     <div class="cell col-folder">Ordner</div>
@@ -1498,10 +1498,19 @@
                         {@const fsSize = metaField(doc, 'fs_size')}
                         {@const fsMtime = metaField(doc, 'fs_mtime')}
                         {@const parentDir = metaField(doc, 'parent_dir') ?? ''}
-                        <div class="catalog-row" role="row"
+                        <div class="catalog-row" role="row" tabindex="0"
                              class:selected={isSelected} class:deleting={isDeleting}
-                             onclick={(e) => handleDocRowClick(e, idx, doc.doc_id)}>
-                            <div class="cell col-check" onclick={(e) => e.stopPropagation()}>
+                             onclick={(e) => handleDocRowClick(e, idx, doc.doc_id)}
+                             onkeydown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleDocRowClick(e, idx, doc.doc_id);
+                                }
+                             }}>
+                            <div class="cell col-check"
+                                 role="presentation"
+                                 onclick={(e) => e.stopPropagation()}
+                                 onkeydown={(e) => e.stopPropagation()}>
                                 <input type="checkbox" checked={isSelected}
                                     onchange={() => toggleSelect(doc.doc_id)} />
                             </div>
@@ -1523,7 +1532,10 @@
                             <div class="cell col-level">
                                 <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3}>L{lvl}</span>
                             </div>
-                            <div class="cell col-actions" onclick={(e) => e.stopPropagation()}>
+                            <div class="cell col-actions"
+                                 role="presentation"
+                                 onclick={(e) => e.stopPropagation()}
+                                 onkeydown={(e) => e.stopPropagation()}>
                                 <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
                                     <ExternalLink size={13} />
                                 </button>
@@ -1767,6 +1779,18 @@
     }
     .catalog-thead .col-sortable { cursor: pointer; user-select: none; }
     .catalog-thead .col-sortable:hover { color: #fafafa; }
+    /* Column-header buttons used to be plain <div onclick=...>. Now
+       they're real <button>s for a11y, but they still need to look
+       like the other thead cells (no border, no default font, same
+       text colour, left-aligned). */
+    .catalog-thead .col-header-btn {
+        background: transparent; border: none; padding: 0;
+        color: inherit; font: inherit; text-align: left;
+        text-transform: inherit; letter-spacing: inherit;
+    }
+    .catalog-thead .col-header-btn:focus-visible {
+        outline: 2px solid #3b82f6; outline-offset: 2px; border-radius: 3px;
+    }
     .sort-arrow { color: #3b82f6; margin-left: 4px; }
     .catalog-tbody { display: contents; }
     .catalog-row {

@@ -3138,7 +3138,6 @@
     .license-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 16px; color: #71717a; font-size: 0.85rem; }
     .license-empty.error { color: #fca5a5; }
     .license-empty code { background: #18181b; border: 1px solid #27272a; padding: 1px 5px; border-radius: 3px; font-size: 0.75rem; }
-    .license-footer { padding-top: 8px; margin-top: 4px; border-top: 1px solid #18181b; color: #52525b; font-size: 0.7rem; text-align: right; }
 
     /* Improved Benchmark UI Styles */
     .benchmark-ui .bench-config-label { width: 100px; font-size: 0.75rem; color: #71717a; font-weight: 700; }
