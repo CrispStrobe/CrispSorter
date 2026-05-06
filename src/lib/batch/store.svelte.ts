@@ -720,15 +720,34 @@ export class BatchManager {
         const accepted = this.items.filter(
             i => i.isAccepted && i.targetPath && SORTABLE.has(i.status)
         );
-        console.log(`[BatchManager] executeBatch(${mode}): ${accepted.length} accepted out of ${this.items.length} total`);
-        this.items.forEach(i => console.log(`  item: ${i.originalName} status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? '✓' : 'MISSING'}`));
+        flog('info', `executeBatch(${mode}) starting: ${accepted.length} sortable / ${this.items.length} total`);
+
+        // Per-item rejection diagnosis at debug level. Each rejected
+        // item logs WHICH gate it failed (no green check / no
+        // targetPath / unsortable status). Set Log-Verbosity=debug
+        // in Settings -> Allgemein to see this.
+        for (const i of this.items) {
+            const reasons: string[] = [];
+            if (!i.isAccepted)              reasons.push('not accepted');
+            if (!i.targetPath)              reasons.push('no targetPath');
+            if (!SORTABLE.has(i.status))    reasons.push(`unsortable status='${i.status}'`);
+            const verdict = reasons.length === 0
+                ? 'will sort'
+                : `skip (${reasons.join(', ')})`;
+            flog('debug', `  item ${i.originalName}: status=${i.status} accepted=${i.isAccepted} target=${i.targetPath ? 'set' : 'MISSING'} -> ${verdict}`);
+        }
+
         if (accepted.length === 0) {
-            // Surface the diagnostic to the user, not just the dev
-            // console -- the silent return was the user-visible bug.
-            const greenButFiltered = this.items.filter(i => i.isAccepted).length;
-            if (greenButFiltered > 0) {
-                flog('warn', `executeBatch: ${greenButFiltered} item(s) accepted but filtered out (missing targetPath or unsortable status). Re-process the batch and try again.`);
-            }
+            // Surface the reason at warn level so the silent-null case
+            // isn't silent.
+            const greenCount = this.items.filter(i => i.isAccepted).length;
+            const noTargetCount = this.items.filter(i => i.isAccepted && !i.targetPath).length;
+            const wrongStatusCount = this.items.filter(i => i.isAccepted && i.targetPath && !SORTABLE.has(i.status)).length;
+            flog('warn',
+                `executeBatch returning null: 0 sortable items. ` +
+                `${greenCount} have green check, ${noTargetCount} of those lack a targetPath, ` +
+                `${wrongStatusCount} have a non-sortable status. Re-process the batch and try again.`
+            );
             return null;
         }
 

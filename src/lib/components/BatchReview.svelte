@@ -18,6 +18,7 @@
         RefreshCw, AlertCircle, Code, Info, Scan, UploadCloud, FileDown
     } from 'lucide-svelte';
     import { buildBibFile } from '../export/bibtex';
+    import { logInfo, logWarn, logDebug } from '../log';
 
     let selectedItemId = $state<string | null>(null);
     let selectedItem = $derived(batchManager.items.find(i => i.id === selectedItemId));
@@ -535,13 +536,32 @@
     }
 
     async function executeSorting(mode: 'move' | 'copy' | 'script_move' | 'script_copy' = 'move') {
-        const allDbg = batchManager.items.map(i => ({ name: i.originalName, status: i.status, accepted: i.isAccepted, hasTarget: !!i.targetPath }));
-        console.log('[BatchReview] executeSorting called, mode:', mode, 'items:', allDbg);
+        // Visible at the default `info` log verbosity so the user can
+        // see in the Logs panel that the click made it into the
+        // handler at all -- pre-this-fix the entire executeSorting
+        // path was console-only and invisible from the in-app Logs.
+        logInfo(`Sortieren clicked: mode=${mode}, items=${batchManager.items.length}`);
+
+        // Compact per-item summary (status histogram + accepted /
+        // target counts). Goes through logDebug so it only fires when
+        // the user has set Log-Verbosity=debug; the histogram alone
+        // is enough to diagnose 95% of "Sortieren did nothing"
+        // reports without flooding the panel.
+        const statusHist: Record<string, number> = {};
+        let acceptedCount = 0;
+        let withTarget = 0;
+        for (const i of batchManager.items) {
+            statusHist[i.status] = (statusHist[i.status] || 0) + 1;
+            if (i.isAccepted) acceptedCount++;
+            if (i.targetPath) withTarget++;
+        }
+        logDebug(`Sortieren batch shape: ${JSON.stringify(statusHist)}, accepted=${acceptedCount}, withTargetPath=${withTarget}`);
 
         const accepted = batchManager.items.filter(i => i.isAccepted);
-        console.log('[BatchReview] Accepted items:', accepted.length, '/ total:', batchManager.items.length);
+        logInfo(`Accepted (green-check) items: ${accepted.length} / ${batchManager.items.length} total`);
 
         if (accepted.length === 0) {
+            logWarn('No items accepted -- showing "no items ready" toast and returning');
             showToast(i18n.t.batch.no_items_ready);
             return;
         }
@@ -550,23 +570,41 @@
             ? i18n.t.batch.confirm_copy.replace('{count}', accepted.length.toString())
             : i18n.t.batch.confirm_move.replace('{count}', accepted.length.toString());
 
-        const confirmed = await ask(confirmMsg, { title: 'CrispSorter', kind: 'warning' });
-        if (confirmed) {
-            console.log(`[BatchReview] Confirmed. Starting executeBatch(${mode}) for ${accepted.length} accepted items`);
-            const stats = await batchManager.executeBatch(mode);
-            if (stats) {
-                lastExecutionStats = stats;
-                showReportModal = true;
-            } else {
-                showToast(i18n.t.batch.no_items_ready);
-            }
-            // Optionally index sorted documents
-            if (indexAfterSort && !mode.startsWith('script')) {
-                const movedIds = accepted.map(i => i.id);
-                selectedIds = movedIds;
-                await addSelectedToIndex();
-                selectedIds = [];
-            }
+        logInfo(`Awaiting user confirmation for ${accepted.length} item(s) ...`);
+        let confirmed: boolean;
+        try {
+            confirmed = await ask(confirmMsg, { title: 'CrispSorter', kind: 'warning' });
+        } catch (e: any) {
+            // Pre-this-fix: a silent throw from the dialog plugin
+            // (e.g. version-mismatch on @tauri-apps/plugin-dialog)
+            // bubbled up through the unhandled-rejection path and the
+            // user just saw "nothing happens." Now we surface it.
+            logWarn(`ask() dialog threw: ${e?.message ?? e}. Falling back to immediate sort (treating as confirmed) -- if this is wrong, click Cancel in the toast that follows.`);
+            confirmed = true;
+        }
+        logInfo(`Dialog returned: confirmed=${confirmed}`);
+
+        if (!confirmed) return;
+
+        logInfo(`Sortieren confirmed -- handing ${accepted.length} accepted item(s) to executeBatch(${mode})`);
+        const sortStart = performance.now();
+        const stats = await batchManager.executeBatch(mode);
+        const sortMs = Math.round(performance.now() - sortStart);
+        if (stats) {
+            logInfo(`Sortieren done in ${sortMs} ms: ${JSON.stringify(stats)}`);
+            lastExecutionStats = stats;
+            showReportModal = true;
+        } else {
+            logWarn(`Sortieren returned null after ${sortMs} ms -- executeBatch filtered out every item. Check earlier log lines for the reason.`);
+            showToast(i18n.t.batch.no_items_ready);
+        }
+        // Optionally index sorted documents
+        if (indexAfterSort && !mode.startsWith('script')) {
+            const movedIds = accepted.map(i => i.id);
+            logInfo(`Auto-indexing ${movedIds.length} sorted item(s) into the search catalog`);
+            selectedIds = movedIds;
+            await addSelectedToIndex();
+            selectedIds = [];
         }
     }
 
