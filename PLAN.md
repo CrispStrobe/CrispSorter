@@ -481,9 +481,16 @@ working scale for desktop-search parity (P7).
    Virtual on the frontend so the visible row window stays
    bounded regardless of dataset size.
 
-6. **Column registry** + persistence. User can toggle Title /
-   Author / Year / Size / Mtime / Volume / Path / Language /
-   Tags. State persisted via `tauri-plugin-store`.
+6. ✅ **Column registry** + persistence. `COLUMN_DEFS` array in
+   `IndexIngest.svelte` declares 9 toggleable columns (Name, Autor,
+   Jahr, Größe, Geändert, Ordner, Sprache, Volume, L). A `Columns2`
+   icon button in the result-count bar opens a checkbox picker; user
+   choices saved to `catalogCols` in `index-ingest.json` via
+   `tauri-plugin-store`. The `--cat-cols` CSS variable on `.catalog-table`
+   drives `grid-template-columns` on thead + every row (single point of
+   truth). Two new columns exposed: `language` (from `doc.language`)
+   and `volume` (from `doc.volume_id`, truncated to 8 chars + ellipsis).
+   A `$effect` closes the picker on outside click.
 
 7. ✅ **Promote `volume_id` to a column** + scalar index on it.
    `volume_id Utf8` added at schema position 26; `migrate_add_volume_id_column`

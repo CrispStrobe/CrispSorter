@@ -10,7 +10,8 @@
     import {
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
-        UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck
+        UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
+        Columns2
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -127,6 +128,45 @@
      *  Übersicht table. Reset whenever the result set changes. */
     let lastClickedDocIdx = $state<number | null>(null);
 
+    // PLAN P9 step 6 — column registry + persistence.
+    interface ColumnDef {
+        id:        string;
+        label:     string;
+        width:     string;
+        defaultOn: boolean;
+        sortKey?:  SortColumn;
+    }
+    const COLUMN_DEFS: ColumnDef[] = [
+        { id: 'name',     label: 'Name',     width: 'minmax(220px,1.6fr)', defaultOn: true,  sortKey: 'filename' },
+        { id: 'author',   label: 'Autor',    width: 'minmax(120px,1fr)',   defaultOn: true,  sortKey: 'author'   },
+        { id: 'year',     label: 'Jahr',     width: '60px',               defaultOn: true,  sortKey: 'year'     },
+        { id: 'size',     label: 'Größe',    width: '70px',               defaultOn: true  },
+        { id: 'mtime',    label: 'Geändert', width: '90px',               defaultOn: true  },
+        { id: 'folder',   label: 'Ordner',   width: 'minmax(140px,1.4fr)', defaultOn: true  },
+        { id: 'language', label: 'Sprache',  width: '70px',               defaultOn: false, sortKey: 'language' },
+        { id: 'volume',   label: 'Volume',   width: '80px',               defaultOn: false },
+        { id: 'level',    label: 'L',        width: '28px',               defaultOn: true  },
+    ];
+    const DEFAULT_COL_VIS = Object.fromEntries(COLUMN_DEFS.map(c => [c.id, c.defaultOn]));
+    let colVisibility = $state<Record<string, boolean>>({ ...DEFAULT_COL_VIS });
+    let colPickerOpen = $state(false);
+
+    const gridCols = $derived(
+        '28px 50px ' +
+        COLUMN_DEFS.filter(c => colVisibility[c.id]).map(c => c.width).join(' ') +
+        ' 64px'
+    );
+
+    // Close column picker when user clicks outside it.
+    $effect(() => {
+        if (!colPickerOpen) return;
+        const handler = (e: MouseEvent) => {
+            if (!(e.target as Element).closest('.col-picker-wrap')) colPickerOpen = false;
+        };
+        document.addEventListener('click', handler, true);
+        return () => document.removeEventListener('click', handler, true);
+    });
+
     // Ingest progress from Rust events
     let currentFile = $state('');
     let currentStep = $state('');
@@ -163,11 +203,13 @@
     onMount(() => {
         let cleanup = () => {};
         (async () => {
-            // Load persisted folder list
+            // Load persisted folder list and column visibility
             try {
                 const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
                 const saved = await store.get<ManagedFolder[]>('folders');
                 if (saved) folders = saved;
+                const savedCols = await store.get<Record<string, boolean>>('catalogCols');
+                if (savedCols) colVisibility = { ...DEFAULT_COL_VIS, ...savedCols };
             } catch (e) { /* store not yet created */ }
 
             // Listen to ingest progress events from Rust
@@ -242,6 +284,13 @@
             const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
             await store.set('folders', folders);
         } catch (e) { console.error('Could not save folder list:', e); }
+    }
+
+    async function saveColVisibility() {
+        try {
+            const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
+            await store.set('catalogCols', colVisibility);
+        } catch (e) { console.error('Could not save column visibility:', e); }
     }
 
     async function addFolder() {
@@ -1743,32 +1792,72 @@
                             checked={selectedDocIds.size === contents.length && contents.length > 0} />
                     </label>
                     {contents.length} Dokument{contents.length !== 1 ? 'e' : ''}{contentsQuery ? ` (gefiltert)` : ''}
+                    <div class="col-picker-wrap">
+                        <button class="icon-btn col-picker-btn" onclick={() => colPickerOpen = !colPickerOpen}
+                            title="Spalten anpassen" class:active={colPickerOpen}>
+                            <Columns2 size={13} />
+                        </button>
+                        {#if colPickerOpen}
+                            <div class="col-picker-dropdown" role="menu">
+                                {#each COLUMN_DEFS as col}
+                                    <label class="col-picker-item">
+                                        <input type="checkbox" bind:checked={colVisibility[col.id]}
+                                            onchange={saveColVisibility} />
+                                        {col.label}
+                                    </label>
+                                {/each}
+                            </div>
+                        {/if}
+                    </div>
                 </div>
             {/if}
 
-            <div class="catalog-table" role="grid">
+            <div class="catalog-table" role="grid" style="--cat-cols: {gridCols}">
                 <div class="catalog-thead" role="row">
                     <div class="cell col-check">
                         <input type="checkbox" onchange={toggleSelectAll}
                             checked={selectedDocIds.size === contents.length && contents.length > 0} />
                     </div>
                     <div class="cell col-ext">Ext</div>
-                    <button class="cell col-name col-sortable col-header-btn" type="button" onclick={() => setSort('filename')}>
-                        Name
-                        {#if sortColumn === 'filename'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </button>
-                    <button class="cell col-author col-sortable col-header-btn" type="button" onclick={() => setSort('author')}>
-                        Autor
-                        {#if sortColumn === 'author'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </button>
-                    <button class="cell col-year col-sortable col-header-btn" type="button" onclick={() => setSort('year')}>
-                        Jahr
-                        {#if sortColumn === 'year'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
-                    </button>
-                    <div class="cell col-size">Größe</div>
-                    <div class="cell col-mtime">Geändert</div>
-                    <div class="cell col-folder">Ordner</div>
-                    <div class="cell col-level" title="Analyse-Tiefe">L</div>
+                    {#if colVisibility.name}
+                        <button class="cell col-name col-sortable col-header-btn" type="button" onclick={() => setSort('filename')}>
+                            Name
+                            {#if sortColumn === 'filename'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                        </button>
+                    {/if}
+                    {#if colVisibility.author}
+                        <button class="cell col-author col-sortable col-header-btn" type="button" onclick={() => setSort('author')}>
+                            Autor
+                            {#if sortColumn === 'author'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                        </button>
+                    {/if}
+                    {#if colVisibility.year}
+                        <button class="cell col-year col-sortable col-header-btn" type="button" onclick={() => setSort('year')}>
+                            Jahr
+                            {#if sortColumn === 'year'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                        </button>
+                    {/if}
+                    {#if colVisibility.size}
+                        <div class="cell col-size">Größe</div>
+                    {/if}
+                    {#if colVisibility.mtime}
+                        <div class="cell col-mtime">Geändert</div>
+                    {/if}
+                    {#if colVisibility.folder}
+                        <div class="cell col-folder">Ordner</div>
+                    {/if}
+                    {#if colVisibility.language}
+                        <button class="cell col-language col-sortable col-header-btn" type="button" onclick={() => setSort('language')}>
+                            Sprache
+                            {#if sortColumn === 'language'}<span class="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+                        </button>
+                    {/if}
+                    {#if colVisibility.volume}
+                        <div class="cell col-volume">Volume</div>
+                    {/if}
+                    {#if colVisibility.level}
+                        <div class="cell col-level" title="Analyse-Tiefe">L</div>
+                    {/if}
                     <div class="cell col-actions"></div>
                 </div>
                 <div class="catalog-tbody">
@@ -1802,17 +1891,39 @@
                                     <span class="ext-badge">–</span>
                                 {/if}
                             </div>
-                            <div class="cell col-name" title={doc.location_uri ?? doc.filename ?? ''}>
-                                {doc.title || doc.filename || doc.doc_id?.slice(0, 16)}
-                            </div>
-                            <div class="cell col-author">{doc.author ?? ''}</div>
-                            <div class="cell col-year">{doc.year ?? ''}</div>
-                            <div class="cell col-size">{fmtSize(fsSize)}</div>
-                            <div class="cell col-mtime">{fmtMtime(fsMtime)}</div>
-                            <div class="cell col-folder" title={parentDir}>{parentDir}</div>
-                            <div class="cell col-level">
-                                <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3}>L{lvl}</span>
-                            </div>
+                            {#if colVisibility.name}
+                                <div class="cell col-name" title={doc.location_uri ?? doc.filename ?? ''}>
+                                    {doc.title || doc.filename || doc.doc_id?.slice(0, 16)}
+                                </div>
+                            {/if}
+                            {#if colVisibility.author}
+                                <div class="cell col-author">{doc.author ?? ''}</div>
+                            {/if}
+                            {#if colVisibility.year}
+                                <div class="cell col-year">{doc.year ?? ''}</div>
+                            {/if}
+                            {#if colVisibility.size}
+                                <div class="cell col-size">{fmtSize(fsSize)}</div>
+                            {/if}
+                            {#if colVisibility.mtime}
+                                <div class="cell col-mtime">{fmtMtime(fsMtime)}</div>
+                            {/if}
+                            {#if colVisibility.folder}
+                                <div class="cell col-folder" title={parentDir}>{parentDir}</div>
+                            {/if}
+                            {#if colVisibility.language}
+                                <div class="cell col-language">{doc.language ?? ''}</div>
+                            {/if}
+                            {#if colVisibility.volume}
+                                <div class="cell col-volume" title={doc.volume_id ?? ''}>
+                                    {doc.volume_id ? doc.volume_id.slice(0, 8) + '…' : ''}
+                                </div>
+                            {/if}
+                            {#if colVisibility.level}
+                                <div class="cell col-level">
+                                    <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3}>L{lvl}</span>
+                                </div>
+                            {/if}
                             <div class="cell col-actions"
                                  role="presentation"
                                  onclick={(e) => e.stopPropagation()}
@@ -2067,7 +2178,10 @@
         color: #fafafa; font-size: 0.875rem; padding: 8px 0;
     }
 
-    .result-count { font-size: 0.75rem; color: #71717a; margin-top: 8px; padding-bottom: 4px; }
+    .result-count {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.75rem; color: #71717a; margin-top: 8px; padding-bottom: 4px;
+    }
 
     .selection-bar {
         display: flex; align-items: center; gap: 8px; padding: 6px 16px;
@@ -2086,7 +2200,7 @@
     .catalog-table { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
     .catalog-thead, .catalog-row {
         display: grid;
-        grid-template-columns: 28px 50px minmax(220px, 1.6fr) minmax(120px, 1fr) 60px 70px 90px minmax(140px, 1.4fr) 28px 64px;
+        grid-template-columns: var(--cat-cols, 28px 50px minmax(220px,1.6fr) minmax(120px,1fr) 60px 70px 90px minmax(140px,1.4fr) 28px 64px);
         align-items: center;
         gap: 8px;
         padding: 0 16px;
@@ -2131,7 +2245,8 @@
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .catalog-row .col-name { color: #e4e4e7; font-weight: 500; }
-    .catalog-row .col-author, .catalog-row .col-folder, .catalog-row .col-mtime {
+    .catalog-row .col-author, .catalog-row .col-folder, .catalog-row .col-mtime,
+    .catalog-row .col-language, .catalog-row .col-volume {
         color: #a1a1aa;
     }
     .catalog-row .col-size, .catalog-row .col-year { color: #a1a1aa; text-align: right; }
@@ -2149,6 +2264,24 @@
         display: flex; justify-content: center;
     }
     .load-more-bar .muted-small { font-size: 0.7rem; color: #71717a; margin-left: 8px; }
+
+    /* P9 step 6 — column picker */
+    .col-picker-wrap { position: relative; margin-left: auto; }
+    .col-picker-btn { color: #71717a; }
+    .col-picker-btn:hover, .col-picker-btn.active { color: #a1a1aa; }
+    .col-picker-dropdown {
+        position: absolute; right: 0; top: calc(100% + 4px); z-index: 10;
+        background: #18181b; border: 1px solid #27272a; border-radius: 6px;
+        padding: 8px 0; min-width: 140px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    .col-picker-item {
+        display: flex; align-items: center; gap: 8px;
+        padding: 5px 12px; font-size: 0.78rem; color: #a1a1aa;
+        cursor: pointer; user-select: none;
+    }
+    .col-picker-item:hover { background: #27272a; color: #e4e4e7; }
+    .col-picker-item input[type="checkbox"] { cursor: pointer; accent-color: #3b82f6; }
 
     .ext-badge {
         font-size: 0.6rem; font-weight: 800; padding: 3px 5px; border-radius: 4px;
