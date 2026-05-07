@@ -84,6 +84,12 @@ pub struct RawDocument {
     /// returns "no record" for those.
     pub mtime_unix: Option<i64>,
 
+    /// Byte size of the source file (PLAN P9 open UX follow-up).
+    /// Written into `metadata_json` as `fs_size` so the Übersicht
+    /// size column renders for L3 rows (L1 already writes it via
+    /// `L1FileEntry.size`). `None` for non-file ingests.
+    pub file_size: Option<i64>,
+
     /// Stable id of the volume the source file lives on (PLAN P7.6).
     /// Populated by the `volume::volume_id_for_path` helper at ingest
     /// time. Stored alongside `mtime_unix` in `metadata_json` so a
@@ -521,21 +527,33 @@ fn build_doc_chunk(
         // working — it only finds the `mtime_unix` key and reads digits
         // up to the next non-digit (which is `,` when volume_id is
         // present, `}` when it isn't).
-        metadata_json: build_metadata_json(raw.mtime_unix, raw.volume_id.as_deref()),
+        metadata_json: build_metadata_json(raw.mtime_unix, raw.file_size, raw.volume_id.as_deref()),
         parent_dir: raw.parent_dir.clone(),
         volume_id: raw.volume_id.clone(),
     }
 }
 
-fn build_metadata_json(mtime_unix: Option<i64>, volume_id: Option<&str>) -> Option<String> {
+fn build_metadata_json(
+    mtime_unix: Option<i64>,
+    file_size:  Option<i64>,
+    volume_id:  Option<&str>,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(m) = mtime_unix {
+        // mtime_unix (seconds) is read by the tiny hand-parser in
+        // `indexed_mtime_for_uri`; it must stay first in the object so
+        // the parser's digit-scan terminates at the comma.
         parts.push(format!(r#""mtime_unix":{m}"#));
+        // fs_mtime (milliseconds) is what the Übersicht frontend reads
+        // for the "Geändert" column (same as L1 rows).
+        parts.push(format!(r#""fs_mtime":{}"#, m.saturating_mul(1000)));
+    }
+    if let Some(s) = file_size {
+        parts.push(format!(r#""fs_size":{s}"#));
     }
     if let Some(v) = volume_id {
         // Volume ids are UUIDs / hex serials in practice (no quotes,
-        // no backslashes), but escape defensively in case a future
-        // platform helper returns something exotic.
+        // no backslashes), but escape defensively.
         let escaped = v.replace('\\', "\\\\").replace('"', "\\\"");
         parts.push(format!(r#""volume_id":"{escaped}""#));
     }
@@ -569,7 +587,8 @@ mod tests {
             owner_id: "user-uuid".to_owned(),
             tags: vec!["theology".to_owned()],
             mtime_unix: None,
-            volume_id: None,
+            file_size:  None,
+            volume_id:  None,
             parent_dir: None,
         }
     }
@@ -588,18 +607,22 @@ mod tests {
 
     #[test]
     fn metadata_json_packs_both_fields() {
-        assert_eq!(build_metadata_json(None, None), None);
+        assert_eq!(build_metadata_json(None, None, None), None);
         assert_eq!(
-            build_metadata_json(Some(1700000000), None).as_deref(),
-            Some(r#"{"mtime_unix":1700000000}"#)
+            build_metadata_json(Some(1700000000), None, None).as_deref(),
+            Some(r#"{"mtime_unix":1700000000,"fs_mtime":1700000000000}"#)
         );
         assert_eq!(
-            build_metadata_json(None, Some("ABCD-1234")).as_deref(),
+            build_metadata_json(None, Some(12345), None).as_deref(),
+            Some(r#"{"fs_size":12345}"#)
+        );
+        assert_eq!(
+            build_metadata_json(None, None, Some("ABCD-1234")).as_deref(),
             Some(r#"{"volume_id":"ABCD-1234"}"#)
         );
         assert_eq!(
-            build_metadata_json(Some(42), Some("ABCD-1234")).as_deref(),
-            Some(r#"{"mtime_unix":42,"volume_id":"ABCD-1234"}"#)
+            build_metadata_json(Some(42), Some(999), Some("ABCD-1234")).as_deref(),
+            Some(r#"{"mtime_unix":42,"fs_mtime":42000,"fs_size":999,"volume_id":"ABCD-1234"}"#)
         );
     }
 
@@ -607,8 +630,8 @@ mod tests {
     fn metadata_json_keeps_mtime_parser_compatible() {
         // The hand-parser in LocalIndex::indexed_mtime_for_uri reads
         // digits after `"mtime_unix":` up to the next non-digit. Adding
-        // a second key after must not break that contract.
-        let s = build_metadata_json(Some(1700000000), Some("ABCD")).unwrap();
+        // fs_mtime and other keys after must not break that contract.
+        let s = build_metadata_json(Some(1700000000), Some(0), Some("ABCD")).unwrap();
         let start = s.find("\"mtime_unix\"").unwrap();
         let after = &s[start + "\"mtime_unix\"".len()..];
         let after = after.trim_start().strip_prefix(':').unwrap().trim_start();
