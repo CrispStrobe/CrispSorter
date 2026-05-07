@@ -412,7 +412,7 @@ impl IngestPipeline {
                     tags: vec![],
                     metadata_json: Some(meta.to_string()),
                     parent_dir: Some(f.parent_dir.clone()),
-                    volume_id: None,
+                    volume_id: f.volume_id.clone(),
                 }
             })
             .collect();
@@ -427,6 +427,9 @@ impl IngestPipeline {
 ///
 /// Frontend sends camelCase (Tauri convention) so the deserialisation
 /// needs the rename: `docId` -> `doc_id`, `mtimeMs` -> `mtime_ms`, etc.
+/// `volume_id` is optional (`#[serde(default)]`) so existing frontends that
+/// don't send it yet don't break — they get `None` and the row is simply not
+/// filtered by volume availability.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct L1FileEntry {
@@ -440,6 +443,12 @@ pub struct L1FileEntry {
     pub size: i64,
     pub mtime_ms: i64,
     pub ctime_ms: i64,
+    /// Stable volume identifier (diskutil UUID on macOS, blkid UUID on
+    /// Linux, hex VolumeSerialNumber on Windows). `None` when the source
+    /// drive was not mounted at ingest time (e.g., offline .caf import)
+    /// or when the caller did not supply one.
+    #[serde(default)]
+    pub volume_id: Option<String>,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
