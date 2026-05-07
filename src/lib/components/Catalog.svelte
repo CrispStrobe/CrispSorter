@@ -414,10 +414,10 @@
                                 {@const tooltipParts = [
                                     mountTitle,
                                     meta.volume && `${i18n.t.caf_catalog.volume}: ${meta.volume}`,
-                                    meta.alias && meta.alias !== meta.volume && `Alias: ${meta.alias}`,
-                                    meta.serial && `Serial: 0x${meta.serial.toString(16).toUpperCase().padStart(8, '0')}`,
-                                    meta.freesize > 0 && `Free at scan: ${formatSize(meta.freesize)}`,
-                                    meta.archive ? 'Archive flag set' : null,
+                                    meta.alias && meta.alias !== meta.volume && `${i18n.t.caf_catalog.alias}: ${meta.alias}`,
+                                    meta.serial && `${i18n.t.caf_catalog.serial}: 0x${meta.serial.toString(16).toUpperCase().padStart(8, '0')}`,
+                                    meta.freesize > 0 && `${i18n.t.caf_catalog.free_at_scan}: ${formatSize(meta.freesize)}`,
+                                    meta.archive ? i18n.t.caf_catalog.archive_flag : null,
                                     meta.comment && `${i18n.t.caf_catalog.comment}: ${meta.comment}`,
                                     `.caf v${meta.version}`,
                                 ].filter(Boolean).join('\n')}

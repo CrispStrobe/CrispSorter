@@ -627,6 +627,11 @@
                 for (const qf of batch) updateEntry(String(qf.rowId), { status: 'embedding' });
 
                 const l1Files = [];
+                // Resolve volume once per batch — all files share the same mount.
+                const batchDir = batch[0]?.filePath?.replace(/\\/g, '/').replace(/\/[^/]+$/, '') || '';
+                const batchVolumeId: string | null = batchDir
+                    ? await invoke<string | null>('index_volume_id_for_path', { path: batchDir }).catch(() => null)
+                    : null;
                 for (const qf of batch) {
                     const meta = await stat(qf.filePath).catch(() => null);
                     const size = (meta as any)?.size ?? 0;
@@ -637,7 +642,7 @@
                     const filename = parts[parts.length - 1];
                     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
                     const docId = await hashText(qf.filePath);
-                    l1Files.push({ docId, sourceHash: docId, locationUri: qf.filePath, ownerId: 'local', filename, ext, parentDir, size, mtimeMs: mtime, ctimeMs: ctime });
+                    l1Files.push({ docId, sourceHash: docId, locationUri: qf.filePath, ownerId: 'local', filename, ext, parentDir, size, mtimeMs: mtime, ctimeMs: ctime, volumeId: batchVolumeId ?? undefined });
                 }
 
                 try {

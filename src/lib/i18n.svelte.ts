@@ -586,7 +586,11 @@ export const translations = {
             err_no_device_path: 'Catalog has no recorded device path to rescan',
             drive_mounted: 'Drive mounted at {path}',
             drive_unmounted: 'Drive not mounted',
-            drive_unknown: 'Mount status unknown'
+            drive_unknown: 'Mount status unknown',
+            alias: 'Alias',
+            serial: 'Serial',
+            free_at_scan: 'Free at scan',
+            archive_flag: 'Archive flag set'
         },
         crispembed_engine_built: 'CrispEmbed was built with the **{backend}** backend. To switch (e.g. CUDA → Vulkan), rebuild with `.\\enable-crispembed.ps1 -Backend <cuda|vulkan|metal>`.',
         crispembed_engine_built_cpu: 'CrispEmbed was built CPU-only. To enable a GPU backend, rebuild with `.\\enable-crispembed.ps1 -Backend cuda` (or vulkan / metal).'
@@ -1170,7 +1174,11 @@ export const translations = {
             err_no_device_path: 'Katalog hat keinen aufgezeichneten Gerätepfad zum Neu-Scannen',
             drive_mounted: 'Laufwerk eingebunden unter {path}',
             drive_unmounted: 'Laufwerk nicht eingebunden',
-            drive_unknown: 'Einbindungsstatus unbekannt'
+            drive_unknown: 'Einbindungsstatus unbekannt',
+            alias: 'Alias',
+            serial: 'Seriennummer',
+            free_at_scan: 'Frei beim Scan',
+            archive_flag: 'Archiv-Flag gesetzt'
         },
         crispembed_engine_built: 'CrispEmbed wurde mit dem **{backend}**-Backend gebaut. Zum Wechseln (z. B. CUDA → Vulkan) erneut bauen mit `.\\enable-crispembed.ps1 -Backend <cuda|vulkan|metal>`.',
         crispembed_engine_built_cpu: 'CrispEmbed wurde nur mit CPU-Unterstützung gebaut. Für ein GPU-Backend erneut bauen mit `.\\enable-crispembed.ps1 -Backend cuda` (oder vulkan / metal).'

@@ -300,13 +300,10 @@ pub struct SortSpec {
     pub direction: SortDir,
 }
 
-/// Pagination cursor — opaque to the frontend. The current implementation
-/// uses offset-based pagination because LanceDB 0.26's public Rust API
-/// doesn't expose `ORDER BY`; without DB-side ordering, a keyset cursor
-/// would only work on the first page (storage order != sort order).
-/// Step 5 upgrades this to a real keyset once `lance::Scanner` is wired
-/// in for DB-side ordering. Encoded as a decimal string so it
-/// round-trips through the Tauri serde boundary cleanly.
+/// Pagination cursor — opaque to the frontend. Uses offset-based pagination;
+/// the offset is encoded as a decimal string so it round-trips through the
+/// Tauri serde boundary cleanly. DB-side ordering via `lance::Scanner` means
+/// the 50k-row cap is gone and this is now O(1) at any offset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PageCursor(pub String);
