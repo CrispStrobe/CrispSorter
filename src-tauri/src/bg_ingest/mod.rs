@@ -98,6 +98,12 @@ pub struct BgStatusSnapshot {
     pub last_error: Option<String>,
 }
 
+/// Max seconds the extractor may run before we classify the file as
+/// `TaskFailureReason::Timeout` and fall through to the L2 path.
+/// Five minutes covers slow PDFs; OCR-heavy scans may still time out
+/// (that's intentional — they get a retryable Timeout badge).
+const EXTRACTION_TIMEOUT_SECS: u64 = 300;
+
 /// Mutable state held inside `AppState`. The worker takes the inner
 /// lock briefly per iteration; tauri commands take it briefly per call.
 pub struct BackgroundIngest {
@@ -107,12 +113,15 @@ pub struct BackgroundIngest {
     done: usize,
     errored: usize,
     last_error: Option<String>,
-    /// Some(handle) while a worker task is alive. The task observes
-    /// `status == Stopping` to exit cleanly between iterations.
-    worker: Option<tokio::task::JoinHandle<()>>,
+    /// How many worker tasks to run in parallel. Default 1 (safe for
+    /// single-writer LanceDB). Raise to 2–4 when the embedder is the
+    /// bottleneck (CPU/GPU-bound) rather than IO.
+    pub concurrency: usize,
+    /// Live count of running worker tasks. Workers self-decrement on exit;
+    /// `ensure_worker` uses this to avoid spawning extras.
+    active_workers: Arc<AtomicUsize>,
     /// ms to sleep between ingest iterations — keeps the foreground
-    /// runtime responsive. Fixed 50ms for now; 7.4.4 wires the real
-    /// QoS that pauses on foreground embedder activity.
+    /// runtime responsive.
     pub sleep_between_ms: u64,
 }
 
@@ -125,7 +134,8 @@ impl Default for BackgroundIngest {
             done: 0,
             errored: 0,
             last_error: None,
-            worker: None,
+            concurrency: 1,
+            active_workers: Arc::new(AtomicUsize::new(0)),
             sleep_between_ms: 50,
         }
     }
@@ -186,46 +196,50 @@ impl BackgroundIngest {
     }
 }
 
-/// Spawn the worker task if not already running. Safe to call repeatedly
-/// — the second call is a no-op when a worker is alive.
-///
-/// Takes `Arc<Mutex<BackgroundIngest>>` so the worker holds its own
-/// reference (the Tauri State<'_, …> isn't 'static).
+/// Spawn worker tasks up to the configured concurrency.  Safe to call
+/// repeatedly — already-running workers are counted via `active_workers`
+/// so no extras are spawned.
 pub fn ensure_worker(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
-    let state_for_check = state.clone();
     tokio::spawn(async move {
-        // Quick guard — if a worker's already alive, exit.
-        {
-            let mut g = state_for_check.lock().await;
-            if g.worker.is_some() {
+        let (target, active, already_running) = {
+            let mut g = state.lock().await;
+            let running = g.active_workers.load(Ordering::Relaxed);
+            let target = g.concurrency.max(1);
+            let need = target.saturating_sub(running);
+            if need == 0 {
                 return;
             }
             g.status = BgStatus::Running;
+            (target, g.active_workers.clone(), running > 0)
+        };
+        let _ = (target, already_running); // suppress unused warnings
+        let to_spawn = {
+            let g = state.lock().await;
+            g.concurrency.max(1).saturating_sub(active.load(Ordering::Relaxed))
+        };
+        for _ in 0..to_spawn {
+            active.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(worker_loop(state.clone(), app.clone(), active.clone()));
         }
-
-        let worker_state = state_for_check.clone();
-        let app_for_worker = app.clone();
-        let h = tokio::spawn(worker_loop(worker_state, app_for_worker));
-        state_for_check.lock().await.worker = Some(h);
     });
 }
 
-/// The worker loop — drains the queue, calls the per-path ingest, emits
-/// progress events, sleeps between iterations.
-async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
+/// Each worker task runs this loop. Multiple concurrent instances share the
+/// `state` mutex — pops are serialised by the lock, processing runs in
+/// parallel.  Each worker decrements `active_workers` on exit so
+/// `ensure_worker` can respawn exactly the right number.
+async fn worker_loop(
+    state: Arc<Mutex<BackgroundIngest>>,
+    app: AppHandle,
+    active_workers: Arc<AtomicUsize>,
+) {
     use crate::AppState;
     use tauri::Manager;
     let foreground = app.state::<AppState>().foreground_active.clone();
 
     loop {
         // ── QoS: yield to foreground (P7.4.4) ───────────────────────────
-        // If any foreground command is in-flight (search, reranker, …),
-        // sleep 100ms and re-check. The check is a single atomic read so
-        // we pay essentially nothing in the steady "no foreground"
-        // state, and a typical search returns in well under 100ms so
-        // we'll never block ingest for long.
         while foreground.load(Ordering::Relaxed) > 0 {
-            // Honour Stopping even while waiting on foreground.
             if matches!(state.lock().await.status, BgStatus::Stopping) {
                 break;
             }
@@ -233,12 +247,15 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
         }
 
         // ── Take next item under the lock; release immediately. ─────────
-        let next = {
+        let (next, sleep_ms) = {
             let mut g = state.lock().await;
             if matches!(g.status, BgStatus::Stopping) {
-                g.status = BgStatus::Idle;
-                g.current = None;
-                g.worker = None;
+                let remaining = active_workers.fetch_sub(1, Ordering::Relaxed);
+                if remaining == 1 {
+                    // Last worker: clean up shared state.
+                    g.status = BgStatus::Idle;
+                    g.current = None;
+                }
                 let _ = app.emit("bg-ingest:status", g.snapshot());
                 return;
             }
@@ -251,12 +268,15 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
                 Some(item) => {
                     g.current = Some(item.path.to_string_lossy().into_owned());
                     let _ = app.emit("bg-ingest:status", g.snapshot());
-                    item
+                    (item, g.sleep_between_ms)
                 }
                 None => {
-                    g.status = BgStatus::Idle;
-                    g.current = None;
-                    g.worker = None;
+                    // Queue empty — this worker exits.
+                    let remaining = active_workers.fetch_sub(1, Ordering::Relaxed);
+                    if remaining == 1 {
+                        g.status = BgStatus::Idle;
+                        g.current = None;
+                    }
                     let _ = app.emit("bg-ingest:status", g.snapshot());
                     return;
                 }
@@ -267,7 +287,7 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
         let result = ingest_one(&next, &app).await;
 
         // ── Update counters under the lock. ─────────────────────────────
-        let sleep_ms = {
+        {
             let mut g = state.lock().await;
             match result {
                 Ok(()) => g.done += 1,
@@ -278,8 +298,7 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
             }
             g.current = None;
             let _ = app.emit("bg-ingest:status", g.snapshot());
-            g.sleep_between_ms
-        };
+        }
         if sleep_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
@@ -291,19 +310,15 @@ async fn worker_loop(state: Arc<Mutex<BackgroundIngest>>, app: AppHandle) {
 /// `IngestPipeline` from `AppState.index`. Returns Ok on success, or
 /// Err(message) — both sides are reported via the status snapshot.
 ///
-/// PLAN P7.4.3 — mtime-skip: stat the file first, look up the indexed
-/// mtime via `LocalIndex::indexed_mtime_for_uri`, return Ok(()) without
-/// doing any work if the index already has this file at the same or
-/// newer mtime. The skip-on-success counts in `done` so the user sees
-/// progress even when nothing's actually changing.
+/// P7.4.3 — mtime-skip: stat first, skip if index is already up-to-date.
+/// P10    — extraction timeout + DRM detection + L2 fallback on failure.
 async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String> {
+    use crate::index::task_failure::{epub_is_drm_protected, TaskFailureReason};
     use crate::AppState;
     use sha2::{Digest, Sha256};
+    use std::time::Duration;
     use tauri::Manager;
 
-    // Pull the pipeline + the local index out of AppState. We need
-    // both: pipeline to do the actual ingest, local-index to do the
-    // mtime-skip lookup.
     let app_state = app.state::<AppState>();
     let (pipeline, local) = {
         let g = app_state.index.lock().await;
@@ -320,38 +335,43 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
 
     let p = item.path.clone();
 
-    // ── mtime-skip (P7.4.3) ────────────────────────────────────────────
-    // Stat the file *before* reading it. If the documents table already
-    // has this location at the same / newer mtime, we're done — no
-    // hash, no extract, no embed.
+    // ── mtime-skip + failure-skip (P7.4.3 / P10) ──────────────────────
     let file_mtime: Option<i64> = std::fs::metadata(&p)
         .ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
-    if let (Some(file_mt), Some(local)) = (file_mtime, local.as_ref()) {
-        let owner = item
+    if let Some(local) = local.as_ref() {
+        let owner_probe = item
             .owner_id
             .clone()
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
         let probe_uri = crate::index::location::FileLocation::Local {
-            user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+            user_id: uuid::Uuid::parse_str(&owner_probe)
+                .unwrap_or_else(|_| uuid::Uuid::nil()),
             machine_id: uuid::Uuid::nil(),
             path: p.clone(),
         }
         .to_uri();
-        if let Ok(Some(indexed_mt)) = local.indexed_mtime_for_uri(&probe_uri).await {
+        // mtime-skip: already up-to-date.
+        if let (Some(file_mt), Ok(Some(indexed_mt))) =
+            (file_mtime, local.indexed_mtime_for_uri(&probe_uri).await)
+        {
             if indexed_mt >= file_mt {
-                // Idempotent skip — caller treats Ok as a success and
-                // bumps `done`. The frontend status badge will show
-                // "N done" climbing without doing real work, which is
-                // exactly what we want for a "rescan that found
-                // nothing new" UX.
                 return Ok(());
             }
         }
+        // Failure-skip: non-retryable reason already stored — don't waste
+        // extraction time on DRM EPUBs, corrupt files, or unsupported types.
+        if let Ok(Some(reason)) = local.extraction_failure_reason_for_uri(&probe_uri).await {
+            match reason.as_str() {
+                "drm" | "corrupt" | "unsupported" | "password" => return Ok(()),
+                _ => {} // Timeout / Other — still worth retrying.
+            }
+        }
     }
-    // File read off the runtime — pdf_extract / large reads can block.
+
+    // ── Read bytes + hash ───────────────────────────────────────────────
     let bytes = tokio::task::spawn_blocking({
         let p = p.clone();
         move || std::fs::read(&p)
@@ -363,14 +383,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     h.update(&bytes);
     let source_hash = hex::encode(h.finalize());
 
-    let extracted = tokio::task::spawn_blocking({
-        let p = p.clone();
-        move || crate::extractors::extract_text_from_path(&p)
-    })
-    .await
-    .map_err(|e| format!("extract join: {e}"))?
-    .map_err(|e| format!("extracting {}: {e}", p.display()))?;
-
+    // ── Shared fields used by both success and L2-fallback paths ───────
     let owner = item
         .owner_id
         .clone()
@@ -380,40 +393,161 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         machine_id: uuid::Uuid::nil(),
         path: p.clone(),
     };
-
-    // Stat once for mtime (P7.4.3 skip-check) and size (P9 UX: Übersicht size column).
+    let location_uri = loc.to_uri();
+    let filename = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext_from_path = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let bg_meta = std::fs::metadata(&p).ok();
-    let raw = crate::index::ingest::RawDocument {
-        full_text: extracted.full_text,
-        full_text_md: String::new(),
-        headings: extracted.headings,
-        title: item.title.clone(),
-        author: item.author.clone(),
-        year: item.year,
-        filename: p
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        ext: extracted.ext,
-        language: item.language.clone().unwrap_or_default(),
-        source_hash,
-        location_uri: loc.to_uri(),
-        owner_id: owner,
-        tags: Vec::new(),
-        mtime_unix: bg_meta.as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64),
-        file_size: bg_meta.map(|m| m.len() as i64),
-        volume_id: crate::volume::volume_id_for_path(&p),
-        parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
-    };
+    let mtime_unix = bg_meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    let file_size = bg_meta.map(|m| m.len() as i64);
+    let volume_id = crate::volume::volume_id_for_path(&p);
+    let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
+    let doc_id = uuid::Uuid::new_v4().to_string();
 
-    pipeline
-        .ingest_document(raw)
-        .await
-        .map_err(|e| e.to_string())
-        .map(|_| ())
+    // ── Extract with timeout (P10) ──────────────────────────────────────
+    let extract_fut = tokio::task::spawn_blocking({
+        let p = p.clone();
+        move || crate::extractors::extract_text_from_path(&p)
+    });
+    let extract_result = tokio::time::timeout(
+        Duration::from_secs(EXTRACTION_TIMEOUT_SECS),
+        extract_fut,
+    )
+    .await;
+
+    match extract_result {
+        // ── Success ─────────────────────────────────────────────────────
+        Ok(Ok(Ok(extracted))) => {
+            let raw = crate::index::ingest::RawDocument {
+                full_text: extracted.full_text,
+                full_text_md: String::new(),
+                headings: extracted.headings,
+                title: item.title.clone(),
+                author: item.author.clone(),
+                year: item.year,
+                filename,
+                ext: extracted.ext,
+                language: item.language.clone().unwrap_or_default(),
+                source_hash,
+                location_uri,
+                owner_id: owner,
+                tags: Vec::new(),
+                mtime_unix,
+                file_size,
+                volume_id,
+                parent_dir,
+            };
+            pipeline
+                .ingest_document(raw)
+                .await
+                .map_err(|e| e.to_string())
+                .map(|_| ())
+        }
+
+        // ── Extraction error (anyhow) ────────────────────────────────────
+        Ok(Ok(Err(extract_err))) => {
+            let err_msg = extract_err.to_string();
+            let reason = if ext_from_path == "epub" && epub_is_drm_protected(&p) {
+                TaskFailureReason::Drm
+            } else {
+                TaskFailureReason::classify(&err_msg)
+            };
+            let l2 = crate::index::l2_metadata::read(&p);
+            let _ = pipeline
+                .ingest_l2_row(
+                    doc_id,
+                    location_uri,
+                    owner,
+                    filename,
+                    ext_from_path,
+                    source_hash,
+                    mtime_unix,
+                    file_size,
+                    parent_dir,
+                    volume_id,
+                    item.title.clone().or(l2.title),
+                    item.author.clone().or(l2.author),
+                    item.year.or(l2.year),
+                    item.language.clone().or(l2.language),
+                    l2.page_count,
+                    &reason,
+                    &err_msg,
+                )
+                .await;
+            Ok(())
+        }
+
+        // ── spawn_blocking panicked ──────────────────────────────────────
+        Ok(Err(join_err)) => {
+            let err_msg = join_err.to_string();
+            let l2 = crate::index::l2_metadata::read(&p);
+            let _ = pipeline
+                .ingest_l2_row(
+                    doc_id,
+                    location_uri,
+                    owner,
+                    filename,
+                    ext_from_path,
+                    source_hash,
+                    mtime_unix,
+                    file_size,
+                    parent_dir,
+                    volume_id,
+                    item.title.clone().or(l2.title),
+                    item.author.clone().or(l2.author),
+                    item.year.or(l2.year),
+                    item.language.clone().or(l2.language),
+                    l2.page_count,
+                    &TaskFailureReason::Other,
+                    &err_msg,
+                )
+                .await;
+            Ok(())
+        }
+
+        // ── Timeout ──────────────────────────────────────────────────────
+        Err(_elapsed) => {
+            let err_msg = format!(
+                "extraction timed out after {}s",
+                EXTRACTION_TIMEOUT_SECS
+            );
+            let l2 = crate::index::l2_metadata::read(&p);
+            let _ = pipeline
+                .ingest_l2_row(
+                    doc_id,
+                    location_uri,
+                    owner,
+                    filename,
+                    ext_from_path,
+                    source_hash,
+                    mtime_unix,
+                    file_size,
+                    parent_dir,
+                    volume_id,
+                    item.title.clone().or(l2.title),
+                    item.author.clone().or(l2.author),
+                    item.year.or(l2.year),
+                    item.language.clone().or(l2.language),
+                    l2.page_count,
+                    &TaskFailureReason::Timeout,
+                    &err_msg,
+                )
+                .await;
+            // Timeout is retryable — count as errored so the user can
+            // see which files didn't complete and retry them later.
+            Err(err_msg)
+        }
+    }
 }
 
 #[cfg(test)]

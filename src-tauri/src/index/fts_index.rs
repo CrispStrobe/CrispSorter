@@ -112,6 +112,12 @@ impl FtsIndex {
         Ok(self.index.writer(WRITER_HEAP_MB * 1_024 * 1_024)?)
     }
 
+    /// Total number of documents (across all segments) in the Tantivy index.
+    pub fn doc_count(&self) -> u64 {
+        let _ = self.reader.reload();
+        self.reader.searcher().num_docs()
+    }
+
     /// Add a document to an open writer. Call `writer.commit()` when done.
     pub fn add_document(&self, writer: &mut IndexWriter, input: TantivyInput) -> Result<()> {
         let mut doc = TantivyDocument::default();

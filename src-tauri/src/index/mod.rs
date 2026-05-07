@@ -6,6 +6,7 @@ pub mod ingest;
 pub mod l2_metadata;
 pub mod local_index;
 pub mod reranker;
+pub mod task_failure;
 /// CrispSorter search / RAG index module.
 ///
 /// Sub-modules:

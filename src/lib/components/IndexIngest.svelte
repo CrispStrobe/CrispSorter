@@ -145,7 +145,7 @@
         { id: 'folder',   label: 'Ordner',   width: 'minmax(140px,1.4fr)', defaultOn: true  },
         { id: 'language', label: 'Sprache',  width: '70px',               defaultOn: false, sortKey: 'language' },
         { id: 'volume',   label: 'Volume',   width: '80px',               defaultOn: false },
-        { id: 'level',    label: 'L',        width: '28px',               defaultOn: true  },
+        { id: 'level',    label: 'L',        width: '56px',               defaultOn: true  },
     ];
     const DEFAULT_COL_VIS = Object.fromEntries(COLUMN_DEFS.map(c => [c.id, c.defaultOn]));
     let colVisibility = $state<Record<string, boolean>>({ ...DEFAULT_COL_VIS });
@@ -874,19 +874,48 @@
 
     // ── Index contents ─────────────────────────────────────────────────────────
 
-    /** Pull `level` (1 or 3) out of the row's metadata_json, falling back to a
-     *  reasonable default by inspecting which fields are populated. */
-    function docLevel(d: any): 1 | 3 {
+    /** Pull `level` (1, 2, or 3) out of the row's metadata_json. */
+    function docLevel(d: any): 1 | 2 | 3 {
         if (d.metadata_json) {
             try {
                 const m = JSON.parse(d.metadata_json);
                 if (m.level === 1) return 1;
+                if (m.level === 2) return 2;
                 if (m.level === 3) return 3;
             } catch { /* malformed JSON — ignore */ }
         }
-        // No metadata blob: if the row has a snippet/full_text it's L3.
         return d.snippet ? 3 : 1;
     }
+
+    /** Return the `extraction_failure` object from metadata_json, or null. */
+    function extractionFailure(d: any): { reason: string; msg: string } | null {
+        if (!d.metadata_json) return null;
+        try {
+            const m = JSON.parse(d.metadata_json);
+            return m.extraction_failure ?? null;
+        } catch { return null; }
+    }
+
+    const FAIL_LABELS: Record<string, string> = {
+        drm:         'DRM',
+        timeout:     'timeout',
+        corrupt:     'korrupt',
+        password:    'passwort',
+        unsupported: 'N/A',
+        other:       'fehler',
+    };
+
+    const FAIL_HINTS: Record<string, string> = {
+        drm:
+            'DRM-geschützt: Nur der verschlüsselte Text konnte nicht extrahiert werden.\n' +
+            'Titel und Autor sind ggf. trotzdem vorhanden.\n' +
+            'Tipp: Calibre + DeDRM-Plugin (falls rechtlich zulässig).',
+        timeout:     'Zeitlimit überschritten — Datei wird beim nächsten Lauf erneut versucht.',
+        corrupt:     'Datei scheint beschädigt oder ist kein gültiges Format.',
+        password:    'Passwortgeschützt — Entschlüsselung erforderlich.',
+        unsupported: 'Kein Extraktor für diesen Dateityp verfügbar.',
+        other:       'Unbekannter Extraktionsfehler.',
+    };
 
     /** Resolve location_uri to a normalised local-path string for prefix
      *  matching (forward slashes, lowercased on Windows). Used by the
@@ -1937,6 +1966,7 @@
                         {@const isSelected = selectedDocIds.has(doc.doc_id)}
                         {@const isDeleting = deletingIds.has(doc.doc_id)}
                         {@const lvl = docLevel(doc)}
+                        {@const failure = extractionFailure(doc)}
                         {@const fsSize = metaField(doc, 'fs_size')}
                         {@const fsMtime = metaField(doc, 'fs_mtime')}
                         {@const parentDir = metaField(doc, 'parent_dir') ?? ''}
@@ -1993,7 +2023,12 @@
                             {/if}
                             {#if colVisibility.level}
                                 <div class="cell col-level">
-                                    <span class="level-badge" class:l1={lvl === 1} class:l3={lvl === 3}>L{lvl}</span>
+                                    <span class="level-badge" class:l1={lvl === 1} class:l2={lvl === 2} class:l3={lvl === 3}>L{lvl}</span>
+                                    {#if failure}
+                                        <span class="fail-badge fail-{failure.reason}"
+                                              title={FAIL_HINTS[failure.reason] ?? failure.msg}
+                                        >{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                    {/if}
                                 </div>
                             {/if}
                             <div class="cell col-actions"
@@ -2322,7 +2357,7 @@
     .catalog-table { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
     .catalog-thead, .catalog-row {
         display: grid;
-        grid-template-columns: var(--cat-cols, 28px 50px minmax(220px,1.6fr) minmax(120px,1fr) 60px 70px 90px minmax(140px,1.4fr) 28px 88px);
+        grid-template-columns: var(--cat-cols, 28px 50px minmax(220px,1.6fr) minmax(120px,1fr) 60px 70px 90px minmax(140px,1.4fr) 56px 88px);
         align-items: center;
         gap: 8px;
         padding: 0 16px;
@@ -2464,7 +2499,18 @@
         flex-shrink: 0; min-width: 22px; text-align: center; margin-top: 2px;
     }
     .level-badge.l1 { background: #44403c33; color: #d6d3d1; }
+    .level-badge.l2 { background: #1e3a5f33; color: #93c5fd; }
     .level-badge.l3 { background: #14532d33; color: #86efac; }
+    .fail-badge {
+        font-size: 0.55rem; font-weight: 800; padding: 2px 4px; border-radius: 3px;
+        margin-top: 2px; margin-left: 2px; text-transform: uppercase; flex-shrink: 0;
+    }
+    .fail-badge.fail-drm      { background: #451a0333; color: #fbbf24; }
+    .fail-badge.fail-timeout  { background: #431a0033; color: #fb923c; }
+    .fail-badge.fail-corrupt  { background: #450a0a33; color: #f87171; }
+    .fail-badge.fail-password { background: #2e1a5233; color: #c084fc; }
+    .fail-badge.fail-unsupported { background: #27272a;   color: #71717a; }
+    .fail-badge.fail-other    { background: #1a1a2e33; color: #94a3b8; }
 
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

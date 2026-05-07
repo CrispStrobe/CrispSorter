@@ -10954,6 +10954,7 @@ dependencies = [
  "image",
  "jwalk",
  "kamadak-exif",
+ "lance",
  "lancedb",
  "lopdf",
  "md-5",
