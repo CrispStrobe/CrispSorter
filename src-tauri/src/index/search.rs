@@ -479,6 +479,7 @@ mod tests {
                 metadata_json: None,
                 catalog_source: None,
                 volume_id: None,
+                indexed_at: 0,
             })
             .collect()
     }
@@ -506,6 +507,7 @@ mod tests {
                 metadata_json: None,
                 catalog_source: None,
                 volume_id: None,
+                indexed_at: 0,
             });
         }
         vec.push(SearchResult {
@@ -524,6 +526,7 @@ mod tests {
             metadata_json: None,
             catalog_source: None,
             volume_id: None,
+            indexed_at: 0,
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);

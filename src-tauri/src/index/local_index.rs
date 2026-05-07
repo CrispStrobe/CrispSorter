@@ -74,6 +74,9 @@ impl LocalIndex {
         migrate_add_parent_dir_column(&table)
             .await
             .context("schema v2: adding parent_dir column")?;
+        migrate_add_volume_id_column(&table)
+            .await
+            .context("schema v3: adding volume_id column")?;
 
         Ok(LocalIndex {
             _db: db,
@@ -267,6 +270,8 @@ impl LocalIndex {
             let chunk_idx_col = i32_col(batch, "chunk_index")?;
             let full_text_col = str_col_opt(batch, "full_text");
             let metadata_col = str_col_opt(batch, "metadata_json");
+            let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
+            let volume_id_col = str_col_opt(batch, "volume_id");
 
             for i in 0..n {
                 if sparse_col.is_null(i) {
@@ -292,10 +297,12 @@ impl LocalIndex {
                     .unwrap_or("");
                 let snippet = full_text.chars().take(400).collect::<String>();
 
-                let volume_id = metadata_col
-                    .as_ref()
-                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
-                    .and_then(parse_volume_id_from_metadata);
+                let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
+                    metadata_col
+                        .as_ref()
+                        .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                        .and_then(parse_volume_id_from_metadata)
+                });
 
                 let result = SearchResult {
                     doc_id: str_val(doc_id_col, i),
@@ -319,6 +326,7 @@ impl LocalIndex {
                     metadata_json: str_col_val_opt(&metadata_col, i),
                     catalog_source: None,
                     volume_id,
+                    indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -467,9 +475,9 @@ impl LocalIndex {
         Ok(())
     }
 
-    /// Build a BTree scalar index on `parent_dir` for fast folder-prefix
-    /// filtering in `query_documents`.  Safe to call repeatedly — LanceDB
-    /// will replace the old index.  Typically called once after the first
+    /// Build BTree scalar indexes on `parent_dir` and `volume_id` for fast
+    /// filtering in `query_documents`. Safe to call repeatedly — LanceDB
+    /// will replace old indexes. Typically called once after the first
     /// bulk L1 ingest or whenever the table grows significantly.
     pub async fn build_scalar_index(&self) -> Result<()> {
         self.table
@@ -477,6 +485,11 @@ impl LocalIndex {
             .execute()
             .await
             .context("building BTree scalar index on parent_dir")?;
+        self.table
+            .create_index(&["volume_id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .context("building BTree scalar index on volume_id")?;
         Ok(())
     }
 
@@ -745,6 +758,8 @@ pub fn batches_to_search_results_with_scores(
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
         let metadata_col = str_col_opt(batch, "metadata_json");
+        let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
+        let volume_id_col = str_col_opt(batch, "volume_id");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -756,10 +771,12 @@ pub fn batches_to_search_results_with_scores(
                 .unwrap_or("");
             let snippet = full_text.chars().take(400).collect::<String>();
 
-            let volume_id = metadata_col
-                .as_ref()
-                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
-                .and_then(parse_volume_id_from_metadata);
+            let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
+                metadata_col
+                    .as_ref()
+                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                    .and_then(parse_volume_id_from_metadata)
+            });
 
             results.push(SearchResult {
                 doc_id,
@@ -783,6 +800,7 @@ pub fn batches_to_search_results_with_scores(
                 metadata_json: str_col_val_opt(&metadata_col, i),
                 catalog_source: None,
                 volume_id,
+                indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
             });
         }
     }
@@ -884,6 +902,8 @@ fn chunks_to_record_batch(
 
     // parent_dir (P9 step 3 — scalar-indexed for folder-prefix filter)
     let parent_dirs: StringArray = chunks.iter().map(|c| c.parent_dir.as_deref()).collect();
+    // volume_id (P9 step 7 — scalar-indexed for volume-availability filter)
+    let volume_ids: StringArray = chunks.iter().map(|c| c.volume_id.as_deref()).collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -914,6 +934,7 @@ fn chunks_to_record_batch(
             tags_col,
             Arc::new(metadata_jsons),
             Arc::new(parent_dirs),
+            Arc::new(volume_ids),
         ],
     )
     .context("building RecordBatch")?;
@@ -941,6 +962,8 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         let chunk_idx_col = i32_col(batch, "chunk_index")?;
         let full_text_col = str_col_opt(batch, "full_text");
         let metadata_col = str_col_opt(batch, "metadata_json");
+        let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
+        let volume_id_col = str_col_opt(batch, "volume_id");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -957,10 +980,14 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
             let distance = score_col.as_ref().map(|c| c.value(i)).unwrap_or(1.0);
             let score = 1.0 - distance.clamp(0.0, 2.0) / 2.0;
 
-            let volume_id = metadata_col
-                .as_ref()
-                .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
-                .and_then(parse_volume_id_from_metadata);
+            // Prefer the dedicated column; fall back to metadata_json for
+            // rows ingested before the column was added.
+            let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
+                metadata_col
+                    .as_ref()
+                    .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
+                    .and_then(parse_volume_id_from_metadata)
+            });
 
             results.push(SearchResult {
                 doc_id: str_val(doc_id_col, i),
@@ -984,6 +1011,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 metadata_json: str_col_val_opt(&metadata_col, i),
                 catalog_source: None,
                 volume_id,
+                indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
             });
         }
     }
@@ -1076,6 +1104,13 @@ fn f32_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Float32Arra
         .downcast_ref::<Float32Array>()
 }
 
+fn ts_ms_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a TimestampMillisecondArray> {
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<TimestampMillisecondArray>()
+}
+
 fn str_val(arr: &StringArray, i: usize) -> String {
     if arr.is_null(i) {
         String::new()
@@ -1121,6 +1156,27 @@ async fn migrate_add_parent_dir_column(table: &Table) -> Result<()> {
         .await
         .context("adding parent_dir column (schema v2)")?;
     eprintln!("[index] migrated LanceDB table: added parent_dir column");
+    Ok(())
+}
+
+/// Add the `volume_id` column to an existing table that predates P9 step 7.
+/// No-op if the column is already present.
+async fn migrate_add_volume_id_column(table: &Table) -> Result<()> {
+    let schema = table
+        .schema()
+        .await
+        .context("reading table schema for migration")?;
+    if schema.field_with_name("volume_id").is_ok() {
+        return Ok(());
+    }
+    let col_schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("volume_id", arrow_schema::DataType::Utf8, true),
+    ]));
+    table
+        .add_columns(NewColumnTransform::AllNulls(col_schema), None)
+        .await
+        .context("adding volume_id column (schema v3)")?;
+    eprintln!("[index] migrated LanceDB table: added volume_id column");
     Ok(())
 }
 
@@ -1197,18 +1253,12 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
         parts.push(format!("owner_id = '{}'", oid.replace('\'', "''")));
     }
     if let Some(vols) = f.volume_ids.as_ref().filter(|v| !v.is_empty()) {
-        // volume_id lives in metadata_json (P7.6); same caveat as
-        // parent_dir, on the migration path to a real column in step 6.
-        let alts: Vec<String> = vols
+        // volume_id is now a first-class column (P9 step 7).
+        let lits: Vec<String> = vols
             .iter()
-            .map(|v| {
-                format!(
-                    "metadata_json LIKE '%\"volume_id\":\"{}\"%'",
-                    v.replace('\'', "''").replace('\\', "\\\\")
-                )
-            })
+            .map(|v| format!("'{}'", v.replace('\'', "''")))
             .collect();
-        parts.push(format!("({})", alts.join(" OR ")));
+        parts.push(format!("volume_id IN ({})", lits.join(", ")));
     }
 
     Some(parts.join(" AND "))
@@ -1228,10 +1278,7 @@ fn sort_rows(rows: &mut [SearchResult], sort: super::schema::SortSpec) {
             SortColumn::Author => a.author.cmp(&b.author),
             SortColumn::Year => a.year.cmp(&b.year),
             SortColumn::Language => a.language.cmp(&b.language),
-            // SearchResult doesn't carry indexed_at directly; fall back
-            // to doc_id ordering which is stable per ingest. Step 5 of
-            // the migration adds an explicit indexed_at field.
-            SortColumn::IndexedAt => a.doc_id.cmp(&b.doc_id),
+            SortColumn::IndexedAt => a.indexed_at.cmp(&b.indexed_at),
             // parent_dir is a real column but SearchResult doesn't expose
             // it yet; parse from metadata_json as a fallback. L1 rows
             // always have it there; L3 rows without it sort last.
@@ -1369,6 +1416,7 @@ mod query_documents_tests {
             metadata_json: None,
             catalog_source: None,
             volume_id: None,
+            indexed_at: 0,
         }
     }
 
