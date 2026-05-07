@@ -1,9 +1,9 @@
 <script lang="ts">
-    import { invoke } from '@tauri-apps/api/core';
+    import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
     import { open as openDialog } from '@tauri-apps/plugin-dialog';
     import { openPath } from '@tauri-apps/plugin-opener';
-    import { readDir, readFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
+    import { readDir, readFile, readTextFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
@@ -11,7 +11,7 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2
+        Columns2, Eye
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -154,7 +154,7 @@
     const gridCols = $derived(
         '28px 50px ' +
         COLUMN_DEFS.filter(c => colVisibility[c.id]).map(c => c.width).join(' ') +
-        ' 64px'
+        ' 88px'
     );
 
     // Close column picker when user clicks outside it.
@@ -166,6 +166,71 @@
         document.addEventListener('click', handler, true);
         return () => document.removeEventListener('click', handler, true);
     });
+
+    // PLAN P9 step 8 — preview pane for Übersicht rows.
+    const TEXT_EXTS  = new Set(['txt','md','markdown','rst','log','csv','tsv',
+        'json','jsonl','yaml','yml','toml','xml','html',
+        'rs','py','js','ts','svelte','go','java','c','cpp','h','hpp','sh','bash','zsh']);
+    const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','avif','bmp','svg','ico']);
+
+    function uriToPath(uri: string): string | null {
+        if (uri.startsWith('crisp+local://')) {
+            const rest = uri.slice('crisp+local://'.length);
+            const slashIdx = rest.indexOf('/');
+            return slashIdx === -1 ? null : rest.slice(slashIdx);
+        }
+        if (uri.startsWith('/') || /^[A-Za-z]:[\\/]/.test(uri)) return uri;
+        return null;
+    }
+
+    let previewDoc     = $state<any | null>(null);
+    let previewKind    = $state<'pdf' | 'image' | 'text' | 'unsupported'>('unsupported');
+    let previewSrc     = $state('');
+    let previewText    = $state('');
+    let previewLoading = $state(false);
+    let previewError   = $state('');
+
+    async function openDocPreview(doc: any) {
+        if (previewDoc && previewDoc.doc_id === doc.doc_id) { closeDocPreview(); return; }
+        const path = uriToPath(doc.location_uri ?? '');
+        if (!path) {
+            previewDoc    = doc;
+            previewKind   = 'unsupported';
+            previewError  = 'Kein lokaler Pfad (Remote-Speicherort)';
+            return;
+        }
+        previewDoc    = doc;
+        previewLoading = true;
+        previewError  = '';
+        previewSrc    = '';
+        previewText   = '';
+        const ext = (doc.ext ?? path.split('.').pop() ?? '').toLowerCase();
+        if (ext === 'pdf') {
+            previewKind = 'pdf';
+            previewSrc  = convertFileSrc(path);
+        } else if (IMAGE_EXTS.has(ext)) {
+            previewKind = 'image';
+            previewSrc  = convertFileSrc(path);
+        } else if (TEXT_EXTS.has(ext)) {
+            previewKind = 'text';
+            try {
+                const raw = await readTextFile(path);
+                previewText = raw.length > 512 * 1024
+                    ? raw.slice(0, 512 * 1024) + '\n\n…(abgeschnitten; Datei > 512 KB)'
+                    : raw;
+            } catch (e: any) { previewError = `Lesefehler: ${e?.message ?? e}`; }
+        } else {
+            previewKind = 'unsupported';
+        }
+        previewLoading = false;
+    }
+
+    function closeDocPreview() {
+        previewDoc    = null;
+        previewSrc    = '';
+        previewText   = '';
+        previewError  = '';
+    }
 
     // Ingest progress from Rust events
     let currentFile = $state('');
@@ -1812,6 +1877,8 @@
                 </div>
             {/if}
 
+            <div class="overview-split" class:with-preview={previewDoc !== null}>
+            <div class="catalog-col">
             <div class="catalog-table" role="grid" style="--cat-cols: {gridCols}">
                 <div class="catalog-thead" role="row">
                     <div class="cell col-check">
@@ -1928,6 +1995,11 @@
                                  role="presentation"
                                  onclick={(e) => e.stopPropagation()}
                                  onkeydown={(e) => e.stopPropagation()}>
+                                <button class="icon-btn" onclick={() => openDocPreview(doc)}
+                                    title="Vorschau"
+                                    class:preview-active={previewDoc && previewDoc.doc_id === doc.doc_id}>
+                                    <Eye size={13} />
+                                </button>
                                 <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
                                     <ExternalLink size={13} />
                                 </button>
@@ -1950,6 +2022,51 @@
                     </button>
                 </div>
             {/if}
+            </div><!-- /catalog-col -->
+
+            {#if previewDoc !== null}
+                <aside class="preview-pane">
+                    <header class="preview-header">
+                        <span class="preview-title" title={previewDoc.location_uri}>
+                            {previewDoc.title || previewDoc.filename || (previewDoc.doc_id?.slice(0, 24) + '…')}
+                        </span>
+                        <button class="preview-close" onclick={closeDocPreview} title="Vorschau schließen">
+                            <X size={14} />
+                        </button>
+                    </header>
+                    <div class="preview-body">
+                        {#if previewLoading}
+                            <div class="preview-msg"><Loader2 size={20} class="spin" /> Lade …</div>
+                        {:else if previewError}
+                            <div class="preview-msg preview-error">{previewError}</div>
+                        {:else if previewKind === 'pdf'}
+                            <object data={previewSrc} type="application/pdf"
+                                width="100%" height="100%"
+                                aria-label="PDF-Vorschau: {previewDoc.title || previewDoc.filename || 'Dokument'}">
+                                <p class="preview-msg">
+                                    PDF nicht unterstützt.
+                                    <button class="open-ext-btn" onclick={() => openIndexedFile(previewDoc.location_uri)}>
+                                        <ExternalLink size={12} /> In App öffnen
+                                    </button>
+                                </p>
+                            </object>
+                        {:else if previewKind === 'image'}
+                            <img src={previewSrc} alt={previewDoc.filename ?? ''} class="preview-image" />
+                        {:else if previewKind === 'text'}
+                            <pre class="preview-text">{previewText}</pre>
+                        {:else}
+                            <div class="preview-msg">
+                                Vorschau für diesen Dateityp nicht verfügbar.
+                                <br />
+                                <button class="open-ext-btn" onclick={() => openIndexedFile(previewDoc.location_uri)}>
+                                    <ExternalLink size={12} /> In App öffnen
+                                </button>
+                            </div>
+                        {/if}
+                    </div>
+                </aside>
+            {/if}
+            </div><!-- /overview-split -->
         {/if}
     {/if}
 </div>
@@ -2200,7 +2317,7 @@
     .catalog-table { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
     .catalog-thead, .catalog-row {
         display: grid;
-        grid-template-columns: var(--cat-cols, 28px 50px minmax(220px,1.6fr) minmax(120px,1fr) 60px 70px 90px minmax(140px,1.4fr) 28px 64px);
+        grid-template-columns: var(--cat-cols, 28px 50px minmax(220px,1.6fr) minmax(120px,1fr) 60px 70px 90px minmax(140px,1.4fr) 28px 88px);
         align-items: center;
         gap: 8px;
         padding: 0 16px;
@@ -2264,6 +2381,56 @@
         display: flex; justify-content: center;
     }
     .load-more-bar .muted-small { font-size: 0.7rem; color: #71717a; margin-left: 8px; }
+
+    /* P9 step 8 — preview pane */
+    .overview-split {
+        display: flex; flex: 1; gap: 8px; overflow: hidden; min-height: 0;
+    }
+    .catalog-col {
+        flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
+    }
+    .catalog-col .catalog-table { flex: 1; min-height: 0; }
+    .preview-pane {
+        flex: 0 0 380px; max-width: 45%;
+        display: flex; flex-direction: column;
+        background: #18181b; border: 1px solid #3f3f46;
+        border-radius: 8px; overflow: hidden;
+    }
+    .preview-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 12px; background: #27272a;
+        border-bottom: 1px solid #3f3f46; font-size: 0.85rem;
+    }
+    .preview-title {
+        flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: #fafafa; font-weight: 600; margin-right: 8px;
+    }
+    .preview-close {
+        background: none; border: none; cursor: pointer; color: #a1a1aa; padding: 2px;
+    }
+    .preview-close:hover { color: #fafafa; }
+    .preview-body { flex: 1; overflow: auto; background: #0a0a0c; }
+    .preview-body object { display: block; width: 100%; height: 100%; border: 0; }
+    .preview-image { max-width: 100%; max-height: 100%; display: block; margin: 0 auto; }
+    .preview-text {
+        margin: 0; padding: 12px;
+        font-family: var(--mono, ui-monospace, monospace);
+        font-size: 0.78rem; line-height: 1.4;
+        white-space: pre-wrap; word-break: break-all;
+        color: #d4d4d8;
+    }
+    .preview-msg {
+        padding: 24px 16px; text-align: center; color: #71717a; font-size: 0.85rem;
+    }
+    .preview-error { color: #f87171; }
+    .open-ext-btn {
+        display: inline-flex; align-items: center; gap: 4px;
+        margin-top: 8px; background: none; border: 1px solid #3f3f46;
+        color: #a1a1aa; border-radius: 4px; padding: 4px 8px;
+        font-size: 0.78rem; cursor: pointer;
+    }
+    .open-ext-btn:hover { color: #3b82f6; border-color: #3b82f6; }
+    .icon-btn.preview-active { color: #3b82f6; }
 
     /* P9 step 6 — column picker */
     .col-picker-wrap { position: relative; margin-left: auto; }

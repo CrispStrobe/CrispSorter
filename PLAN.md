@@ -502,8 +502,16 @@ working scale for desktop-search parity (P7).
    `SearchResult.indexed_at` promoted to a real field (was doc_id fallback).
    `SortColumn::IndexedAt` now sorts by the real timestamp.
 
-8. **Preview pane** wired to existing `extractPdfNative` /
-   `extractDocxText` paths, lazy-rendered on row selection.
+8. ✅ **Preview pane** wired to existing extractor paths, lazy-rendered
+   on Eye-button click. `openDocPreview(doc)` resolves the URI via
+   `uriToPath`, classifies the extension into `pdf | image | text |
+   unsupported`, and either sets `convertFileSrc(path)` for native
+   `<object>`/`<img>` rendering or reads up to 512 KB via
+   `readTextFile` into a `<pre>`. The table area is now wrapped in
+   `.overview-split` (flex row) → `.catalog-col` (flex column) +
+   `<aside class="preview-pane">`. An Eye icon button appears in the
+   actions cell; it highlights blue when that row's preview is open;
+   clicking the same row again closes the pane.
 
 Each step is independently shippable — the UI never breaks mid-flight,
 because the Rust command keeps returning the same `SearchResult`-shaped
