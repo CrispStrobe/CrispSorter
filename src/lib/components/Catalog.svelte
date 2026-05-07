@@ -20,9 +20,10 @@
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { getSetting, saveSetting } from '$lib/store';
     import { flog } from '$lib/log';
+    import { i18n } from '$lib/i18n.svelte';
     import {
         FolderPlus, FilePlus, RefreshCw, Trash2, Eye, Loader2,
-        HardDrive, Calendar, Files, Database
+        HardDrive, Files, Database
     } from 'lucide-svelte';
 
     // ── Types ──────────────────────────────────────────────────────────────────
@@ -107,7 +108,7 @@
         });
         if (typeof picked !== 'string') return;
         if (registered.some(c => c.path === picked)) {
-            error = 'Catalog already registered';
+            error = i18n.t.caf_catalog.err_already_registered;
             return;
         }
         registered = [...registered, { path: picked, active: false, added_at: Date.now() }];
@@ -157,7 +158,7 @@
         // Re-scan the catalog's original device path and overwrite the .caf.
         const meta = metadataCache[path];
         if (!meta || !meta.device) {
-            error = 'Catalog has no recorded device path to rescan';
+            error = i18n.t.caf_catalog.err_no_device_path;
             return;
         }
         loading = true;
@@ -309,57 +310,50 @@
     });
 </script>
 
-<div class="catalog-tab">
-    <header class="catalog-header">
-        <h1>Catalog</h1>
-        <p class="subtitle">
-            Drive cataloging via the classic Cathy <code>.caf</code> format.
-            Catalogs are bit-perfect compatible with Cathy / Catfish.
-        </p>
+<div class=”catalog-tab”>
+    <header class=”catalog-header”>
+        <h1>{i18n.t.caf_catalog.title}</h1>
+        <p class=”subtitle”>{i18n.t.caf_catalog.subtitle}</p>
     </header>
 
-    <div class="actions">
-        <button class="btn primary" onclick={createFromFolder} disabled={loading}>
+    <div class=”actions”>
+        <button class=”btn primary” onclick={createFromFolder} disabled={loading}>
             <FolderPlus size={16} />
-            <span>Scan folder → new catalog</span>
+            <span>{i18n.t.caf_catalog.create_from_folder}</span>
         </button>
-        <button class="btn" onclick={pickAndAddCaf} disabled={loading}>
+        <button class=”btn” onclick={pickAndAddCaf} disabled={loading}>
             <FilePlus size={16} />
-            <span>Add existing .caf</span>
+            <span>{i18n.t.caf_catalog.add_existing}</span>
         </button>
         {#if loading}
-            <span class="loading-inline">
-                <Loader2 size={16} class="spin" />
-                <span>Working…</span>
+            <span class=”loading-inline”>
+                <Loader2 size={16} class=”spin” />
+                <span>{i18n.t.caf_catalog.working}</span>
             </span>
         {/if}
     </div>
 
     {#if error}
-        <div class="error">{error}</div>
+        <div class=”error”>{error}</div>
     {/if}
 
     {#if registered.length === 0}
-        <div class="empty">
+        <div class=”empty”>
             <Database size={32} />
-            <p>No catalogs registered yet.</p>
-            <p class="hint">
-                Use “Scan folder → new catalog” to index a drive into a fresh
-                <code>.caf</code>, or “Add existing .caf” to register one
-                produced by Cathy / Catfish.
-            </p>
+            <p>{i18n.t.caf_catalog.empty_state}</p>
+            <p class=”hint”>{i18n.t.caf_catalog.empty_hint}</p>
         </div>
     {:else}
-        <table class="catalog-table">
+        <table class=”catalog-table”>
             <thead>
                 <tr>
-                    <th>Active</th>
-                    <th>Catalog file</th>
-                    <th>Device</th>
-                    <th>Files</th>
-                    <th>Total size</th>
-                    <th>Created</th>
-                    <th>Actions</th>
+                    <th>{i18n.t.caf_catalog.col_active}</th>
+                    <th>{i18n.t.caf_catalog.col_file}</th>
+                    <th>{i18n.t.caf_catalog.col_device}</th>
+                    <th>{i18n.t.caf_catalog.col_files}</th>
+                    <th>{i18n.t.caf_catalog.col_size}</th>
+                    <th>{i18n.t.caf_catalog.col_created}</th>
+                    <th>{i18n.t.caf_catalog.col_actions}</th>
                 </tr>
             </thead>
             <tbody>
@@ -368,59 +362,59 @@
                     <tr class:active={cat.active}>
                         <td>
                             <input
-                                type="checkbox"
+                                type=”checkbox”
                                 checked={cat.active}
                                 onchange={() => toggleActive(cat.path)}
-                                title="When checked, this catalog's entries will participate in the unified search (Phase 4b — wiring not yet active)."
+                                title={i18n.t.caf_catalog.active_tooltip}
                             />
                         </td>
-                        <td class="path-cell" title={cat.path}>
+                        <td class=”path-cell” title={cat.path}>
                             {cat.path.split(/[\\/]/).pop()}
                         </td>
                         <td>
                             {#if meta}
                                 {@const tooltipParts = [
-                                    meta.volume && `Label: ${meta.volume}`,
+                                    meta.volume && `${i18n.t.caf_catalog.volume}: ${meta.volume}`,
                                     meta.alias && meta.alias !== meta.volume && `Alias: ${meta.alias}`,
                                     meta.serial && `Serial: 0x${meta.serial.toString(16).toUpperCase().padStart(8, '0')}`,
                                     meta.freesize > 0 && `Free at scan: ${formatSize(meta.freesize)}`,
                                     meta.archive ? 'Archive flag set' : null,
-                                    meta.comment && `Comment: ${meta.comment}`,
+                                    meta.comment && `${i18n.t.caf_catalog.comment}: ${meta.comment}`,
                                     `.caf v${meta.version}`,
                                 ].filter(Boolean).join('\n')}
                                 <HardDrive size={12} />
-                                <span class="muted" title={tooltipParts}>
+                                <span class=”muted” title={tooltipParts}>
                                     {meta.volume || meta.device || '—'}
                                 </span>
                             {:else if meta === null}
-                                <span class="warn">(unreadable)</span>
+                                <span class=”warn”>{i18n.t.caf_catalog.metadata_unreadable}</span>
                             {:else}
-                                <span class="muted">…</span>
+                                <span class=”muted”>…</span>
                             {/if}
                         </td>
                         <td>{meta ? meta.file_count.toLocaleString() : '—'}</td>
                         <td>{meta ? formatSize(meta.total_size) : '—'}</td>
                         <td>{meta ? formatDate(meta.date) : '—'}</td>
-                        <td class="actions-cell">
+                        <td class=”actions-cell”>
                             <button
-                                class="icon-btn"
+                                class=”icon-btn”
                                 onclick={() => browse(cat.path)}
-                                title="Browse entries (works offline)"
+                                title={i18n.t.caf_catalog.btn_view_title}
                             >
                                 <Eye size={14} />
                             </button>
                             <button
-                                class="icon-btn"
+                                class=”icon-btn”
                                 onclick={() => refreshFromSource(cat.path)}
                                 disabled={!meta || !meta.device}
-                                title="Re-scan the original device path and overwrite the .caf"
+                                title={i18n.t.caf_catalog.btn_refresh_title}
                             >
                                 <RefreshCw size={14} />
                             </button>
                             <button
-                                class="icon-btn danger"
+                                class=”icon-btn danger”
                                 onclick={() => removeCatalog(cat.path)}
-                                title="Remove from registry (does not delete the .caf file)"
+                                title={i18n.t.caf_catalog.btn_remove_title}
                             >
                                 <Trash2 size={14} />
                             </button>
@@ -431,49 +425,54 @@
         </table>
 
         {#if browsing}
-            <section class="browse-pane">
+            <section class=”browse-pane”>
                 <header>
                     <h2>
                         <Files size={16} />
-                        Browsing: {browsing.split(/[\\/]/).pop()}
+                        {i18n.t.caf_catalog.browsing_header.replace('{name}', browsing.split(/[\\/]/).pop() ?? '')}
                     </h2>
                     <input
-                        type="text"
-                        placeholder="Filter entries by path…"
+                        type=”text”
+                        placeholder={i18n.t.caf_catalog.entries_filter}
                         bind:value={browsingFilter}
                     />
-                    <span class="muted">
-                        {browsingEntries.length.toLocaleString()} entries
+                    <span class=”muted”>
+                        {i18n.t.caf_catalog.entries_count.replace('{count}', browsingEntries.length.toLocaleString())}
                         {#if browsingFilter}
-                            ({filteredEntries.length} matched, capped at 500)
+                            {i18n.t.caf_catalog.entries_count_filtered.replace('{matched}', String(filteredEntries.length))}
                         {:else}
-                            (showing first 500)
+                            {i18n.t.caf_catalog.entries_count_showing}
                         {/if}
                     </span>
                     <button
-                        class="btn small"
+                        class=”btn small”
                         onclick={importToBatch}
                         disabled={importing || browsingEntries.length === 0}
-                        title="Add every entry in this catalog to the sort batch (no auto-process — press Start in Batch Review)"
+                        title={i18n.t.caf_catalog.import_btn_title}
                     >
                         {#if importing}
-                            <Loader2 size={12} class="spin" /> Importing… ({importedCount})
+                            <Loader2 size={12} class=”spin” />
+                            {i18n.t.caf_catalog.importing_btn.replace('{count}', String(importedCount))}
                         {:else}
-                            <FilePlus size={12} /> Import to batch
+                            <FilePlus size={12} /> {i18n.t.caf_catalog.import_btn}
                         {/if}
                     </button>
                 </header>
                 {#if browsingLoading}
-                    <div class="loading"><Loader2 size={20} class="spin" /> Loading…</div>
+                    <div class=”loading”><Loader2 size={20} class=”spin” /> {i18n.t.caf_catalog.entries_loading}</div>
                 {:else}
-                    <table class="entries-table">
+                    <table class=”entries-table”>
                         <thead>
-                            <tr><th>Path</th><th>Size</th><th>Modified</th></tr>
+                            <tr>
+                                <th>{i18n.t.caf_catalog.col_path}</th>
+                                <th>{i18n.t.caf_catalog.col_size}</th>
+                                <th>{i18n.t.caf_catalog.col_modified}</th>
+                            </tr>
                         </thead>
                         <tbody>
                             {#each filteredEntries as e (e.path)}
                                 <tr>
-                                    <td class="path-cell" title={e.path}>{e.path}</td>
+                                    <td class=”path-cell” title={e.path}>{e.path}</td>
                                     <td>{formatSize(e.size)}</td>
                                     <td>{formatDate(e.mtime)}</td>
                                 </tr>
