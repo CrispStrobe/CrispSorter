@@ -78,6 +78,7 @@ hex         = "0.4"
 # lancedb 0.26.2 is the latest stable on crates.io.
 # 0.27.0-beta.5 is git-only and adds nothing relevant (JS native arrays, Lance rc bump).
 lancedb      = { version = "0.26.2", default-features = false }
+lance        = { version = "2.0.0", default-features = false }
 tantivy      = "0.22"
 deunicode    = "1.6.0"
 hf-hub       = { version = "0.4.3", features = ["tokio"] }

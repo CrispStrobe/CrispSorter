@@ -553,12 +553,14 @@ impl LocalIndex {
         sort: super::schema::SortSpec,
         page: super::schema::PageSpec,
     ) -> Result<super::schema::DocumentPage> {
-        use super::schema::{DocumentPage, PageCursor};
+        use lance::dataset::scanner::ColumnOrdering;
+        use super::schema::{DocumentPage, PageCursor, SortColumn, SortDir};
 
         let limit = page.limit.clamp(1, 1000) as usize;
         let offset = page.cursor.as_ref().map(|c| c.offset()).unwrap_or(0) as usize;
         let base_filter = filter_to_sql(filter);
 
+        // count_rows is a cheap metadata scan — no row materialisation.
         let total_estimate = self
             .table
             .count_rows(base_filter.clone())
@@ -573,47 +575,64 @@ impl LocalIndex {
             });
         }
 
-        // Bounded window — until step 5 we have to materialise + sort
-        // [0..offset+limit]. Cap at 50k rows to keep memory bounded;
-        // beyond that the call returns rows unsorted with a warning
-        // logged (the UI shows them, the user is told to add filters
-        // to narrow). 50k * ~1KB/row ~= 50MB peak, acceptable.
-        const HARD_CAP: usize = 50_000;
-        let window = (offset + limit).min(HARD_CAP);
+        // P9 step 5 — drop to lance::Scanner for DB-side ORDER BY + LIMIT + OFFSET.
+        // Dataset::scan() clones the dataset into an Arc internally, so the read
+        // guard can be released immediately after calling scan().
+        let mut scanner = {
+            let guard = self
+                .table
+                .dataset()
+                .ok_or_else(|| anyhow!("local index: not a native LanceDB table"))?
+                .get()
+                .await
+                .context("acquiring lance dataset read guard")?;
+            guard.scan()
+        };
 
-        let mut q = self.table.query();
-        if let Some(sql) = base_filter {
-            q = q.only_if(sql);
+        if let Some(ref sql) = base_filter {
+            scanner.filter(sql).context("scanner filter")?;
         }
 
-        let batches: Vec<RecordBatch> = q
-            .limit(window)
-            .execute()
-            .await?
+        let col_name = match sort.column {
+            SortColumn::Filename  => "filename",
+            SortColumn::Title     => "title",
+            SortColumn::Author    => "author",
+            SortColumn::Year      => "year",
+            SortColumn::Language  => "language",
+            SortColumn::IndexedAt => "indexed_at",
+            SortColumn::ParentDir => "parent_dir",
+        };
+        let ordering = match sort.direction {
+            SortDir::Asc  => ColumnOrdering::asc_nulls_last(col_name.to_owned()),
+            SortDir::Desc => ColumnOrdering::desc_nulls_last(col_name.to_owned()),
+        };
+        scanner
+            .order_by(Some(vec![ordering]))
+            .context("scanner order_by")?;
+
+        scanner
+            .limit(Some(limit as i64), Some(offset as i64))
+            .context("scanner limit")?;
+
+        let batches: Vec<RecordBatch> = scanner
+            .try_into_stream()
+            .await
+            .context("scanner try_into_stream")?
             .try_collect()
-            .await?;
+            .await
+            .context("collecting scanner batches")?;
 
-        let mut rows = record_batches_to_search_results(&batches)?;
-        sort_rows(&mut rows, sort);
+        let rows = record_batches_to_search_results(&batches)?;
 
-        // Slice to the requested page.
-        let end = (offset + limit).min(rows.len());
-        let page_rows: Vec<_> = rows.drain(offset.min(rows.len())..end).collect();
-
-        // Next cursor: bump the offset, but `None` when we hit either
-        // the end of the result set or the hard cap.
-        let next_offset = offset + page_rows.len();
-        let next_cursor = if page_rows.len() < limit
-            || (next_offset as u64) >= total_estimate
-            || next_offset >= HARD_CAP
-        {
+        let next_offset = offset + rows.len();
+        let next_cursor = if rows.len() < limit || (next_offset as u64) >= total_estimate {
             None
         } else {
             Some(PageCursor::from_offset(next_offset as u32))
         };
 
         Ok(DocumentPage {
-            rows: page_rows,
+            rows,
             next_cursor,
             total_estimate,
         })
@@ -1134,7 +1153,8 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
 /// unescape), but we tolerate `\"` and `\\` to match the writer in
 /// `index/ingest.rs::build_metadata_json`.
 /// Tiny hand-parser for `"parent_dir":"<path>"` in `metadata_json`.
-/// Used by `sort_rows` until `SearchResult` gains a first-class field.
+/// Used by `sort_rows` in tests.
+#[cfg(test)]
 fn parse_parent_dir_from_metadata(json: &str) -> Option<String> {
     let key = "\"parent_dir\"";
     let start = json.find(key)?;
@@ -1376,6 +1396,7 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
 /// query API doesn't expose ORDER BY, so we sort client-side after
 /// fetching `[0..offset+limit]`. See `query_documents` for the
 /// scaling envelope and the migration path off this implementation.
+#[cfg(test)]
 fn sort_rows(rows: &mut [SearchResult], sort: super::schema::SortSpec) {
     use super::schema::{SortColumn, SortDir};
 
