@@ -619,6 +619,114 @@ impl LocalIndex {
         })
     }
 
+    /// PLAN P9 step 4 — enumerate the immediate subdirectories of `parent`.
+    ///
+    /// Returns one [`FolderChild`] per unique path component that immediately
+    /// follows `parent` in the `parent_dir` column, with the total count of
+    /// L1/L3 rows in that subtree. Callers can use this to build a lazy-
+    /// loaded folder tree without fetching row payloads.
+    ///
+    /// `parent = ""` returns the top-level path roots (e.g. `/Users`,
+    /// `/Volumes/Archive`) from all indexed rows. `parent = "/Users/alice"`
+    /// returns `Documents`, `Downloads`, etc.
+    ///
+    /// The BTree scalar index on `parent_dir` means the `LIKE 'parent%'`
+    /// predicate is index-accelerated — only the relevant leaf pages are
+    /// scanned, not the whole table.
+    pub async fn folder_children(
+        &self,
+        parent: &str,
+        owner_id: Option<&str>,
+    ) -> Result<Vec<super::schema::FolderChild>> {
+        use super::schema::FolderChild;
+        use std::collections::HashMap;
+
+        // Build the LanceDB predicate: chunk_index <= 0 limits to metadata rows;
+        // the parent_dir LIKE clause narrows to the subtree (index-assisted).
+        let mut pred = "chunk_index <= 0".to_owned();
+        if !parent.is_empty() {
+            let escaped = parent.replace('\'', "''").replace('%', "\\%").replace('_', "\\_");
+            pred.push_str(&format!(" AND parent_dir LIKE '{}%'", escaped));
+        }
+        if let Some(oid) = owner_id.filter(|s| !s.is_empty()) {
+            pred.push_str(&format!(" AND owner_id = '{}'", oid.replace('\'', "''")));
+        }
+
+        // We only need the parent_dir column — project it to minimise data transfer.
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .select(lancedb::query::Select::Columns(vec!["parent_dir".to_owned()]))
+            .limit(200_000)   // safety cap: 200k distinct rows at ~50 B/row ≈ 10 MB
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Group by immediate child segment. For parent="/Users/alice", a row
+        // with parent_dir="/Users/alice/Documents/Papers" contributes 1 to "Documents".
+        // A row with parent_dir="/Users/alice" itself is a direct-child doc and
+        // produces no subfolder entry.
+        let prefix = if parent.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", parent)
+        };
+
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for batch in &batches {
+            let Some(col) = str_col_opt(batch, "parent_dir") else { continue };
+            for i in 0..batch.num_rows() {
+                if col.is_null(i) {
+                    continue;
+                }
+                let pd = col.value(i);
+                // Skip rows whose parent_dir IS the parent (direct children —
+                // they live in this folder, not in a subfolder of it).
+                let rest = if prefix.is_empty() {
+                    pd
+                } else {
+                    match pd.strip_prefix(&prefix) {
+                        Some(r) => r,
+                        None => continue,
+                    }
+                };
+                // The immediate child is the first path component of `rest`.
+                // For Unix paths from root (empty prefix), `rest` starts with
+                // "/" — take everything up to the next "/" after the leading one.
+                let child_name = if prefix.is_empty() {
+                    // e.g. rest = "/Users/alice/Documents" → child = "/Users"
+                    let without_slash = rest.trim_start_matches('/');
+                    let seg = without_slash.split('/').next().unwrap_or("");
+                    if seg.is_empty() { continue; }
+                    // Re-add the leading slash so the path is usable as a prefix.
+                    format!("/{}", seg)
+                } else {
+                    let seg = rest.split('/').next().unwrap_or("");
+                    if seg.is_empty() { continue; }
+                    seg.to_owned()
+                };
+
+                *counts.entry(child_name).or_insert(0) += 1;
+            }
+        }
+
+        let mut children: Vec<FolderChild> = counts
+            .into_iter()
+            .map(|(name, doc_count)| {
+                let path = if prefix.is_empty() {
+                    name.clone()   // already has leading "/"
+                } else {
+                    format!("{}{}", prefix, name)
+                };
+                FolderChild { name, path, doc_count }
+            })
+            .collect();
+        children.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(children)
+    }
+
     /// PLAN P7.4.3 — read the source-file mtime stored in the documents
     /// table for this `location_uri`, if any.
     ///

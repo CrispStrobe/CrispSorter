@@ -463,8 +463,16 @@ working scale for desktop-search parity (P7).
    L3 derives it from `p.parent()`. `SortColumn::ParentDir` added.
    `index_build_scalar_index` Tauri command + Settings UI button added.
 
-4. **Folder-tree pane** + `index_folder_children`. Becomes the
-   primary navigation; the path chip is now a click on a tree node.
+4. ✅ **Folder-tree breadcrumb** + `index_folder_children` command.
+   `LocalIndex::folder_children(parent, owner_id)` queries the BTree-indexed
+   `parent_dir` column, groups by immediate child segment in Rust, returns
+   `Vec<FolderChild> { name, path, doc_count }`. Tauri command
+   `index_folder_children` exposes it. Übersicht filter bar now shows a
+   clickable breadcrumb (root `/` → each path segment is a button) with a
+   dropdown listing immediate subfolders + their subtree doc counts.
+   Navigating a child sets `contentsFolder` (triggers server-side filter)
+   and re-issues `index_folder_children` for the new parent. Full left-pane
+   tree layout left for a future step.
 
 5. **DB-side ordering via `lance::Scanner`**. Drop down to
    `lance::dataset::Dataset::scan` to get a real Datafusion

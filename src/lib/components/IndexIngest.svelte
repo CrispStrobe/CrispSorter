@@ -8,7 +8,7 @@
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
     import {
-        FolderOpen, FileText, RefreshCw, Play, Pause, X,
+        FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck
     } from 'lucide-svelte';
@@ -887,7 +887,55 @@
      *  `location_uri` is inside that subtree. */
     async function pickContentsFolder() {
         const sel = await openDialog({ directory: true, multiple: false });
-        if (typeof sel === 'string') contentsFolder = sel;
+        if (typeof sel === 'string') {
+            contentsFolder = sel;
+            void loadFolderChildren(sel);
+            folderTreeOpen = true;
+        }
+    }
+
+    // ── Folder tree (P9 step 4) ────────────────────────────────────────────────
+
+    interface FolderChild { name: string; path: string; docCount: number; }
+
+    let folderChildren    = $state<FolderChild[]>([]);
+    let folderTreeLoading = $state(false);
+    let folderTreeOpen    = $state(false);
+
+    async function loadFolderChildren(path: string) {
+        folderTreeLoading = true;
+        try {
+            folderChildren = await invoke<FolderChild[]>('index_folder_children', { parent: path });
+        } catch { folderChildren = []; }
+        finally { folderTreeLoading = false; }
+    }
+
+    function navigateFolder(path: string) {
+        contentsFolder = path;
+        void loadFolderChildren(path);
+        folderTreeOpen = true;
+    }
+
+    function clearFolder() {
+        contentsFolder = '';
+        folderChildren = [];
+        folderTreeOpen = false;
+    }
+
+    /** Split a path into clickable breadcrumb segments. */
+    function folderSegments(path: string): { label: string; fullPath: string }[] {
+        if (!path) return [];
+        const isUnix = path.startsWith('/');
+        const parts = path.split(/[\\/]/).filter(Boolean);
+        const segs: { label: string; fullPath: string }[] = [];
+        let acc = isUnix ? '' : '';
+        for (const p of parts) {
+            acc = isUnix
+                ? (acc === '' ? `/${p}` : `${acc}/${p}`)
+                : (acc === '' ? p : `${acc}\\${p}`);
+            segs.push({ label: p, fullPath: acc });
+        }
+        return segs;
     }
 
     // Server-side filter / sort: any change to the chip inputs (or the
@@ -1569,16 +1617,53 @@
 
         <!-- Filters -->
         <div class="filter-bar">
+            <!-- Folder breadcrumb tree (P9 step 4) -->
             <span class="filter-label">Ordner:</span>
-            <input class="folder-filter" type="text"
-                bind:value={contentsFolder}
-                placeholder="Pfad-Präfix (z. B. C:/Books/Theology)" />
-            <button class="chip" onclick={pickContentsFolder} title="Ordner auswählen">
-                <FolderOpen size={11} />
-            </button>
-            {#if contentsFolder}
-                <button class="chip ghost" onclick={() => contentsFolder = ''}>×</button>
-            {/if}
+            <div class="folder-breadcrumb-wrap">
+                <div class="folder-breadcrumb">
+                    <button
+                        class="crumb root"
+                        onclick={() => { clearFolder(); loadFolderChildren(''); folderTreeOpen = true; }}
+                        title="Alle Ordner anzeigen"
+                    >/</button>
+                    {#each folderSegments(contentsFolder) as seg}
+                        <span class="crumb-sep">›</span>
+                        <button class="crumb" onclick={() => navigateFolder(seg.fullPath)}>{seg.label}</button>
+                    {/each}
+                    <button
+                        class="crumb-chevron"
+                        class:open={folderTreeOpen}
+                        onclick={() => {
+                            if (!folderTreeOpen) void loadFolderChildren(contentsFolder);
+                            folderTreeOpen = !folderTreeOpen;
+                        }}
+                        title="Unterordner anzeigen"
+                    >▾</button>
+                    {#if contentsFolder}
+                        <button class="chip ghost" style="margin-left:4px" onclick={clearFolder}>×</button>
+                    {/if}
+                    <button class="chip" onclick={pickContentsFolder} title="Ordner auswählen" style="margin-left:2px">
+                        <FolderOpen size={11} />
+                    </button>
+                </div>
+                {#if folderTreeOpen}
+                    <div class="folder-dropdown">
+                        {#if folderTreeLoading}
+                            <div class="folder-item muted"><Loader2 size={11} class="spin" /> …</div>
+                        {:else if folderChildren.length === 0}
+                            <div class="folder-item muted">Keine Unterordner</div>
+                        {:else}
+                            {#each folderChildren as child}
+                                <button class="folder-item" onclick={() => navigateFolder(child.path)}>
+                                    <Folder size={11} />
+                                    <span class="folder-item-name">{child.name}</span>
+                                    <span class="folder-item-count">{child.docCount.toLocaleString()}</span>
+                                </button>
+                            {/each}
+                        {/if}
+                    </div>
+                {/if}
+            </div>
 
             <span class="filter-label" style="margin-left:8px;">Tiefe:</span>
             <button class="chip" class:active={contentsLevel === 'all'} onclick={() => contentsLevel = 'all'}>Alle</button>
@@ -1872,6 +1957,47 @@
         min-width: 220px; max-width: 320px;
     }
     .folder-filter:focus { border-color: #3b82f6; outline: none; }
+
+    /* P9 step 4 — folder breadcrumb tree */
+    .folder-breadcrumb-wrap { position: relative; }
+    .folder-breadcrumb {
+        display: flex; align-items: center; gap: 2px;
+        background: #18181b; border: 1px solid #27272a; border-radius: 4px;
+        padding: 2px 6px; min-width: 160px; max-width: 420px;
+        font-size: 0.72rem;
+    }
+    .crumb {
+        background: none; border: none; color: #a1a1aa; cursor: pointer;
+        padding: 1px 3px; border-radius: 3px; font-size: 0.72rem;
+    }
+    .crumb:hover { background: #27272a; color: #d4d4d8; }
+    .crumb.root { color: #71717a; font-weight: 600; }
+    .crumb-sep { color: #52525b; font-size: 0.65rem; user-select: none; }
+    .crumb-chevron {
+        background: none; border: none; color: #71717a; cursor: pointer;
+        padding: 0 2px; font-size: 0.7rem; margin-left: 2px;
+        transition: transform 0.15s;
+    }
+    .crumb-chevron.open { transform: rotate(180deg); }
+    .crumb-chevron:hover { color: #a1a1aa; }
+    .folder-dropdown {
+        position: absolute; top: calc(100% + 3px); left: 0; z-index: 200;
+        background: #18181b; border: 1px solid #27272a; border-radius: 6px;
+        min-width: 220px; max-width: 380px; max-height: 280px; overflow-y: auto;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        padding: 4px;
+    }
+    .folder-item {
+        display: flex; align-items: center; gap: 5px;
+        width: 100%; background: none; border: none;
+        color: #a1a1aa; cursor: pointer; padding: 4px 6px; border-radius: 4px;
+        font-size: 0.75rem; text-align: left;
+    }
+    .folder-item:hover { background: #27272a; color: #d4d4d8; }
+    .folder-item.muted { cursor: default; color: #52525b; }
+    .folder-item.muted:hover { background: none; }
+    .folder-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .folder-item-count { color: #52525b; font-size: 0.7rem; flex-shrink: 0; }
 
     .ext-pdf  { background: #7f1d1d33; color: #fca5a5; }
     .ext-docx { background: #1e3a5f33; color: #93c5fd; }

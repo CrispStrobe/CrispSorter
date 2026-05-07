@@ -303,6 +303,34 @@ pub async fn index_query_documents(
         .map_err(|e| e.to_string())
 }
 
+/// PLAN P9 step 4 — return the immediate subdirectories of `parent` with
+/// their subtree doc counts. Used by the folder-tree pane in Übersicht.
+///
+/// `parent` is the `parent_dir` value to explore one level deeper.
+/// Pass `""` (empty string) to enumerate top-level roots from all indexed rows.
+/// `owner_id` is the same per-user filter applied everywhere else.
+///
+/// Returns an empty array when the index isn't ready or the parent has no
+/// children — the UI treats both cases identically (no chevron / leaf node).
+#[tauri::command]
+pub async fn index_folder_children(
+    state: State<'_, AppState>,
+    parent: String,
+    owner_id: Option<String>,
+) -> Result<Vec<super::schema::FolderChild>, String> {
+    let lock = state.index.lock().await;
+    let local = match (lock.config.enabled, lock.local.as_ref()) {
+        (false, _) | (true, None) => return Ok(vec![]),
+        (true, Some(l)) => l.clone(),
+    };
+    drop(lock);
+
+    local
+        .folder_children(&parent, owner_id.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Ingest ────────────────────────────────────────────────────────────────────
 
 /// Ingest progress event emitted as `index://ingest-progress`.

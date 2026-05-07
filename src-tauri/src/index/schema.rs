@@ -350,6 +350,23 @@ pub struct DocumentPage {
     pub total_estimate: u64,
 }
 
+/// One node in the lazy-loaded folder tree (`index_folder_children`).
+///
+/// `doc_count` is the total number of documents in the entire subtree rooted at
+/// `path` — not just direct children. This lets the UI render a badge like
+/// "Papers (347)" without issuing a recursive count query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderChild {
+    /// The folder's last path component, e.g. `"Papers"`.
+    pub name: String,
+    /// The full parent_dir value that should become the next
+    /// `parentDirPrefix` when the user clicks this node.
+    pub path: String,
+    /// Total document rows whose `parent_dir` starts with `path`.
+    pub doc_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
