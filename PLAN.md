@@ -524,23 +524,21 @@ we use today when the embedder model changes.
 These came out of the post-merge user-walkthrough and aren't yet
 captured under their own phases:
 
-* **`Catalog.svelte` (the `.caf` registry sub-tab) still has
-  hard-coded English strings.** The `caf_catalog.*` i18n keys
-  exist (EN+DE) but the component hasn't been wired through them
-  yet. Same shape as the recent Duplicates pass.
-* **Duplicates results-table actions** (`per-row tooltips, the
-  bash/batch/ps1 format option labels`) — the form + script
-  builder are i18n'd; a few internal action attributes still leak
-  English.
-* **Settings → bench panel + a few dialog strings** still hold
-  inline literals from earlier sessions. Audit pass needed.
-* **Catalog overview metadata for L3 rows.** L1 rows carry
-  `fs_size` / `fs_mtime` / `parent_dir` in `metadata_json` so the
-  Übersicht columns render. The L3 ingest path
-  (`build_metadata_json` in `index/ingest.rs`) only writes
-  `mtime_unix` + `volume_id` — so L3 rows show blanks for size
-  and folder. Step 3 of P9 fixes this for parent_dir; size needs
-  to be plumbed through `RawDocument` first.
+* **`Catalog.svelte` tooltip fragments** (Alias / Serial / Free at
+  scan / Archive flag set, lines ~417–420) — 4 keys needed in
+  `caf_catalog.*` EN+DE. Main body is already wired; only these
+  inline string-builder fragments remain.
+* ✅ **Duplicates results-table actions** — per-row tooltips
+  (Keep newest / Keep only / Delete all / Remove from list /
+  Toggle Accept) and bash/batch/ps1 format option labels wired
+  to `i18n.t.batch.dupe_*` / `i18n.t.duplicates.script_format_*`.
+* ✅ **Settings → bench panel** — `embed_bench_*` and `alert_*`
+  keys added EN+DE; all hardcoded literals in the embedding
+  benchmark section replaced with `i18n.t.settings.benchmark.*`.
+* ✅ **Catalog overview metadata for L3 rows** — `file_size: Option<i64>`
+  added to `RawDocument`; `build_metadata_json` now emits `fs_size`
+  and `fs_mtime` (ms) alongside `mtime_unix`; `tauri_commands.rs`
+  and `bg_ingest/mod.rs` hoist `fs::metadata` and pass file size.
 
 ---
 
