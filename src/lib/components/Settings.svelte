@@ -1541,8 +1541,8 @@
 
     // Benchmarking
     async function runBenchmark() {
-        if (benchProviders.length === 0) return alert('Select at least one provider.');
-        if (benchDocuments.length === 0 && benchPromptMode === 'batch') return alert('Add documents to the batch or use a custom prompt.');
+        if (benchProviders.length === 0) return alert(i18n.t.settings.benchmark.alert_select_provider);
+        if (benchDocuments.length === 0 && benchPromptMode === 'batch') return alert(i18n.t.settings.benchmark.alert_add_documents);
         
         benchRunning = true;
         benchResults = [];
@@ -2070,14 +2070,14 @@
             <!-- Embedding Benchmark: ONNX vs GGUF for the same model -->
             <div class="section-card">
                 <div class="header" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;">
-                    <h2 style="font-size:1rem; color:#a1a1aa; margin:0;"><Cpu size={16} /> Embedding Benchmark (FastEmbed vs CrispEmbed)</h2>
+                    <h2 style="font-size:1rem; color:#a1a1aa; margin:0;"><Cpu size={16} /> {i18n.t.settings.benchmark.embed_bench_title}</h2>
                 </div>
                 <p class="hint" style="margin-bottom:12px;">
-                    Loads a fresh embedder for each engine, embeds a fixed corpus once, and reports load time, embed throughput, and dimension. Does not affect the running index. CrispEmbed must be linked into the build (run <code>.\enable-crispembed.ps1</code> if greyed out).
+                    {i18n.t.settings.benchmark.embed_bench_hint}
                 </p>
 
                 <div class="bench-config-row">
-                    <span class="bench-config-label">Model</span>
+                    <span class="bench-config-label">{i18n.t.settings.benchmark.embed_bench_model}</span>
                     <select bind:value={embedderBenchModel} class="styled-select" style="flex:1;">
                         <option value="bge_small_en_v15">BGE Small EN v1.5 (384d, fast)</option>
                         <option value="all_mini_lm_l6_v2">all-MiniLM-L6-v2 (384d, fastest)</option>
@@ -2090,35 +2090,35 @@
                 </div>
 
                 <div class="bench-config-row">
-                    <span class="bench-config-label">Texts</span>
+                    <span class="bench-config-label">{i18n.t.settings.benchmark.embed_bench_texts}</span>
                     <textarea class="bench-prompt-input" rows="3"
                         bind:value={embedderBenchTexts}
-                        placeholder="One text per line. Leave empty for the built-in 8-line default corpus."></textarea>
+                        placeholder={i18n.t.settings.benchmark.embed_bench_texts_placeholder}></textarea>
                 </div>
 
                 <button class="action-btn primary large-bench-btn" onclick={runEmbedderBenchmark}
                     disabled={embedderBenchRunning}>
                     {#if embedderBenchRunning}<Loader2 size={20} class="loader-spin" />{:else}<Play size={20} />{/if}
-                    <span>Run Embedding Benchmark</span>
+                    <span>{i18n.t.settings.benchmark.embed_bench_run_btn}</span>
                 </button>
 
                 {#if embedderBenchResults.length > 0}
                     <table class="bench-table" style="margin-top:14px;">
                         <thead>
                             <tr>
-                                <th>Engine</th>
-                                <th>Model</th>
-                                <th class="bench-num">Load (ms)</th>
-                                <th class="bench-num">Embed (ms)</th>
-                                <th class="bench-num">Throughput (texts/s)</th>
-                                <th class="bench-num">Dim</th>
-                                <th>Status</th>
+                                <th>{i18n.t.settings.benchmark.embed_bench_col_engine}</th>
+                                <th>{i18n.t.settings.benchmark.embed_bench_model}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.embed_bench_col_load_ms}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.embed_bench_col_embed_ms}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.embed_bench_col_throughput}</th>
+                                <th class="bench-num">{i18n.t.settings.benchmark.embed_bench_col_dim}</th>
+                                <th>{i18n.t.settings.benchmark.embed_bench_col_status}</th>
                             </tr>
                         </thead>
                         <tbody>
                             {#each embedderBenchResults as r}
                                 <tr>
-                                    <td>{r.backend === 'onnx' ? 'FastEmbed (ONNX)' : 'CrispEmbed (GGUF)'}</td>
+                                    <td>{r.backend === 'onnx' ? i18n.t.settings.benchmark.embed_bench_engine_onnx : i18n.t.settings.benchmark.embed_bench_engine_gguf}</td>
                                     <td><div class="bench-model">{r.model_id}</div></td>
                                     <td class="bench-num">{r.load_time_ms.toLocaleString()}</td>
                                     <td class="bench-num">{r.error ? '—' : r.embed_time_ms.toLocaleString()}</td>
@@ -2128,7 +2128,7 @@
                                         {#if r.error}
                                             <span style="color:#f87171;" title={r.error}>error</span>
                                         {:else}
-                                            <span style="color:#22c55e;">ok ({r.vectors_count})</span>
+                                            <span style="color:#22c55e;">{i18n.t.settings.benchmark.embed_bench_status_ok} ({r.vectors_count})</span>
                                         {/if}
                                     </td>
                                 </tr>
