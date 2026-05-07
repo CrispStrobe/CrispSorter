@@ -198,6 +198,7 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // populate this so catalog hits also disappear when the
         // archive drive isn't mounted.
         volume_id: None,
+        indexed_at: 0,
     }
 }
 
@@ -598,6 +599,7 @@ pub async fn index_ingest_document(
             tags: raw.tags.clone(),
             metadata_json: None,
             parent_dir: raw.parent_dir.clone(),
+            volume_id: raw.volume_id.clone(),
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }

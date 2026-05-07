@@ -412,6 +412,7 @@ impl IngestPipeline {
                     tags: vec![],
                     metadata_json: Some(meta.to_string()),
                     parent_dir: Some(f.parent_dir.clone()),
+                    volume_id: None,
                 }
             })
             .collect();
@@ -513,6 +514,7 @@ fn build_doc_chunk(
         // present, `}` when it isn't).
         metadata_json: build_metadata_json(raw.mtime_unix, raw.volume_id.as_deref()),
         parent_dir: raw.parent_dir.clone(),
+        volume_id: raw.volume_id.clone(),
     }
 }
 

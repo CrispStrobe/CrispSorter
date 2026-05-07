@@ -68,6 +68,9 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // New column appended at the end so existing tables are migrated
         // non-destructively via ALTER TABLE ADD COLUMN (all-null backfill).
         Field::new("parent_dir", DataType::Utf8, true),
+        // ── P9 step 7 — promoted from metadata_json ───────────────────────
+        // volume_id for offline-volume filtering; same migration strategy.
+        Field::new("volume_id", DataType::Utf8, true),
     ]))
 }
 
@@ -117,6 +120,8 @@ pub struct DocumentChunk {
 
     // P9 step 3 — promoted from metadata_json; scalar-indexed for fast folder prefix filter
     pub parent_dir: Option<String>,
+    // P9 step 7 — promoted from metadata_json; scalar-indexed for volume-availability filter
+    pub volume_id: Option<String>,
 }
 
 /// Lightweight search result returned to the frontend.
@@ -148,7 +153,7 @@ pub struct SearchResult {
     pub catalog_source: Option<String>,
     /// PLAN P7.6 follow-up — the source volume's stable id (macOS
     /// `diskutil` UUID, Linux blkid UUID, Windows volume serial),
-    /// parsed out of `metadata_json` at search time. `None` for rows
+    /// read from the `volume_id` column (P9 step 7). `None` for rows
     /// ingested before P7.6 landed, for path-less ingests, or for any
     /// row whose volume helper failed at ingest time. The
     /// `index_search` caller drops hits whose `volume_id` is `Some`
@@ -156,6 +161,12 @@ pub struct SearchResult {
     /// `include_unmounted` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_id: Option<String>,
+    /// Unix milliseconds when this row was indexed. Used by
+    /// `SortColumn::IndexedAt` (newest first by default).
+    /// `#[serde(default)]` so existing JSON without this field deserialises
+    /// as 0 rather than failing.
+    #[serde(default)]
+    pub indexed_at: i64,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

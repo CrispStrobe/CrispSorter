@@ -457,11 +457,11 @@ working scale for desktop-search parity (P7).
 3. ✅ **Promote `parent_dir` to a column** + scalar index on it.
    `parent_dir Utf8` added at schema position 25; `migrate_add_parent_dir_column`
    adds it non-destructively (AllNulls backfill) on existing tables.
-   `build_scalar_index()` creates a BTree index. `filter_to_sql` now
-   generates `parent_dir LIKE 'prefix%'` instead of the JSON LIKE hack.
-   L1 ingest writes the column directly; L3 derives it from `p.parent()`.
-   `SortColumn::ParentDir` added as a sort option. `build_scalar_index`
-   still needs a Tauri command + UI button so users can trigger it.
+   `build_scalar_index()` creates BTree indexes on `parent_dir` **and**
+   `volume_id`. `filter_to_sql` now generates `parent_dir LIKE 'prefix%'`
+   instead of the JSON LIKE hack. L1 ingest writes the column directly;
+   L3 derives it from `p.parent()`. `SortColumn::ParentDir` added.
+   `index_build_scalar_index` Tauri command + Settings UI button added.
 
 4. **Folder-tree pane** + `index_folder_children`. Becomes the
    primary navigation; the path chip is now a click on a tree node.
@@ -477,9 +477,15 @@ working scale for desktop-search parity (P7).
    Author / Year / Size / Mtime / Volume / Path / Language /
    Tags. State persisted via `tauri-plugin-store`.
 
-7. **Promote `volume_id` + `source_kind`** to columns + indexes
-   (last because they have the smallest filter-cost win and the
-   biggest schema-migration cost).
+7. ✅ **Promote `volume_id` to a column** + scalar index on it.
+   `volume_id Utf8` added at schema position 26; `migrate_add_volume_id_column`
+   adds it non-destructively (AllNulls backfill) on existing tables.
+   `filter_to_sql` now generates `volume_id IN (...)` instead of the
+   LIKE-on-JSON hack. `build_scalar_index` covers both columns. L3
+   ingest writes the column directly from `RawDocument.volume_id`;
+   L1 rows get `None` (L1FileEntry doesn't carry volume_id yet).
+   `SearchResult.indexed_at` promoted to a real field (was doc_id fallback).
+   `SortColumn::IndexedAt` now sorts by the real timestamp.
 
 8. **Preview pane** wired to existing `extractPdfNative` /
    `extractDocxText` paths, lazy-rendered on row selection.
