@@ -46,6 +46,13 @@
         path: string;          // absolute path to the .caf file
         active: boolean;       // Phase 4b: include in unified search
         added_at: number;      // unix epoch ms
+        volume_id?: string;    // diskutil UUID / blkid UUID / win serial (captured at add-time)
+    }
+
+    interface MountedVolume {
+        id: string;
+        mount_point: string;
+        name: string;
     }
 
     interface FileEntry {
@@ -67,6 +74,23 @@
     let metadataCache = $state<Record<string, CafMetadata | null>>({});
     let loading = $state(false);
     let error = $state('');
+
+    // Mounted volumes — refreshed on mount and after catalog operations
+    let mountedVolumes = $state<MountedVolume[]>([]);
+
+    async function refreshMountedVolumes() {
+        try {
+            mountedVolumes = await invoke<MountedVolume[]>('index_list_mounted_volumes');
+        } catch {
+            mountedVolumes = [];
+        }
+    }
+
+    /** Returns the current mount point for a catalog, or null if unmounted. */
+    function mountPointFor(cat: RegisteredCatalog): string | null {
+        if (!cat.volume_id) return null;
+        return mountedVolumes.find(v => v.id === cat.volume_id)?.mount_point ?? null;
+    }
 
     // Browse pane: selected catalog + loaded entries
     let browsing = $state<string | null>(null);
@@ -111,7 +135,13 @@
             error = i18n.t.caf_catalog.err_already_registered;
             return;
         }
-        registered = [...registered, { path: picked, active: false, added_at: Date.now() }];
+        // Capture the volume UUID from the catalog's device path so we can
+        // show mount status and tag L1 rows with the drive's stable id.
+        const meta = await invoke<CafMetadata | null>('catalog_metadata', { path: picked }).catch(() => null);
+        const volumeId = meta?.device
+            ? await invoke<string | null>('index_volume_id_for_path', { path: meta.device }).catch(() => null)
+            : null;
+        registered = [...registered, { path: picked, active: false, added_at: Date.now(), volume_id: volumeId ?? undefined }];
         await persistRegistered();
         await refreshMetadata(picked);
     }
@@ -143,8 +173,9 @@
                 createdDate: Math.floor(Date.now() / 1000),
             });
             flog('info', `Created catalog: ${out} (${idx.all_files.length} files)`);
-            // 3. Auto-register
-            registered = [...registered, { path: out, active: false, added_at: Date.now() }];
+            // 3. Auto-register + capture volume UUID while the drive is still mounted
+            const volumeId = await invoke<string | null>('index_volume_id_for_path', { path: folder }).catch(() => null);
+            registered = [...registered, { path: out, active: false, added_at: Date.now(), volume_id: volumeId ?? undefined }];
             await persistRegistered();
             await refreshMetadata(out);
         } catch (e: any) {
@@ -307,6 +338,7 @@
 
     onMount(() => {
         void loadRegistered();
+        void refreshMountedVolumes();
     });
 </script>
 
@@ -373,7 +405,14 @@
                         </td>
                         <td>
                             {#if meta}
+                                {@const mountAt = mountPointFor(cat)}
+                                {@const mountTitle = cat.volume_id
+                                    ? mountAt
+                                        ? i18n.t.caf_catalog.drive_mounted.replace('{path}', mountAt)
+                                        : i18n.t.caf_catalog.drive_unmounted
+                                    : i18n.t.caf_catalog.drive_unknown}
                                 {@const tooltipParts = [
+                                    mountTitle,
                                     meta.volume && `${i18n.t.caf_catalog.volume}: ${meta.volume}`,
                                     meta.alias && meta.alias !== meta.volume && `Alias: ${meta.alias}`,
                                     meta.serial && `Serial: 0x${meta.serial.toString(16).toUpperCase().padStart(8, '0')}`,
@@ -382,9 +421,15 @@
                                     meta.comment && `${i18n.t.caf_catalog.comment}: ${meta.comment}`,
                                     `.caf v${meta.version}`,
                                 ].filter(Boolean).join('\n')}
+                                <span
+                                    class=”mount-dot”
+                                    class:mounted={!!mountAt}
+                                    class:unmounted={cat.volume_id && !mountAt}
+                                    title={mountTitle}
+                                ></span>
                                 <HardDrive size={12} />
                                 <span class=”muted” title={tooltipParts}>
-                                    {meta.volume || meta.device || '—'}
+                                    {mountAt ? mountAt.split(/[\\/]/).pop() || mountAt : (meta.volume || meta.device || '—')}
                                 </span>
                             {:else if meta === null}
                                 <span class=”warn”>{i18n.t.caf_catalog.metadata_unreadable}</span>
@@ -593,6 +638,19 @@
 
     .muted { color: var(--text-muted, #666); }
     .warn { color: #cc6600; font-style: italic; }
+
+    .mount-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--text-muted, #aaa);
+        margin-right: 4px;
+        vertical-align: middle;
+        flex-shrink: 0;
+    }
+    .mount-dot.mounted   { background: #22aa44; }
+    .mount-dot.unmounted { background: #cc4444; }
 
     .browse-pane {
         margin-top: 24px;

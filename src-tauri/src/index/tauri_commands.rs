@@ -1166,6 +1166,15 @@ pub async fn index_import_caf(
         .unwrap_or_default()
         .as_millis() as i64;
 
+    // Try to resolve the volume UUID for the scan root. Succeeds when the
+    // drive is currently mounted (the root_path exists); returns None when
+    // cataloging an offline archive — callers must supply the UUID via the
+    // stored `RegisteredCatalog.volumeId` if they want volume-filter to work.
+    let caf_volume_id = crate::volume::volume_id_for_path(&idx.root_path);
+    if let Some(ref vid) = caf_volume_id {
+        crate::app_log!("info", "CAF: volume UUID = {vid}");
+    }
+
     // Convert each FileEntry into an L1 row. doc_id is sha256 of the
     // absolute path so subsequent imports of the same .caf are idempotent
     // (same id => updates the row instead of duplicating).
@@ -1200,6 +1209,7 @@ pub async fn index_import_caf(
             size: f.size as i64,
             mtime_ms: (f.mtime as i64) * 1000,
             ctime_ms: (f.mtime as i64) * 1000,
+            volume_id: caf_volume_id.clone(),
         });
     }
 
@@ -2001,6 +2011,36 @@ pub async fn init_index(
             })
         }
     }
+}
+
+// ── Volume helpers ────────────────────────────────────────────────────────────
+
+/// List all currently-mounted volumes with their stable UUID, mount point,
+/// and human label. Used by the frontend to:
+///   1. Show "drive plugged in / unplugged" status next to catalog entries.
+///   2. Build the `volume_ids` allowlist for `index_query_documents` so
+///      search results from unmounted drives can be hidden.
+///
+/// Returns an empty array on platforms where the helper isn't available or
+/// any OS call fails — frontend falls back to "no per-volume filter".
+#[tauri::command]
+pub fn index_list_mounted_volumes() -> Vec<crate::volume::MountedVolume> {
+    crate::volume::list_mounted_volumes()
+}
+
+/// Resolve a filesystem path to its volume's stable UUID (diskutil UUID on
+/// macOS, blkid UUID on Linux, VolumeSerialNumber on Windows).
+///
+/// Returns `None` when:
+///   * `path` does not currently exist (drive not mounted)
+///   * the volume has no UUID (tmpfs, some network shares)
+///   * the platform helper fails
+///
+/// Intended for one-time capture at catalog-creation or scan time so the
+/// UUID can be stored in `RegisteredCatalog.volumeId` for later offline use.
+#[tauri::command]
+pub fn index_volume_id_for_path(path: String) -> Option<String> {
+    crate::volume::volume_id_for_path(std::path::Path::new(&path))
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
