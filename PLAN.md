@@ -474,12 +474,12 @@ working scale for desktop-search parity (P7).
    and re-issues `index_folder_children` for the new parent. Full left-pane
    tree layout left for a future step.
 
-5. **DB-side ordering via `lance::Scanner`**. Drop down to
-   `lance::dataset::Dataset::scan` to get a real Datafusion
-   query with `order_by` + `limit` + `offset`. Keyset cursor
-   replaces offset; 50k cap goes away. Combine with TanStack-
-   Virtual on the frontend so the visible row window stays
-   bounded regardless of dataset size.
+5. ✅ **DB-side ordering via `lance::Scanner`**. Dropped to
+   `lance::dataset::Dataset::scan` (lance 2.0 direct dep added).
+   `Scanner::order_by` + `limit(n, offset)` replaces the in-process
+   sort + 50k-row hard cap. `sort_rows` is now `#[cfg(test)]`.
+   Offset cursor wire format unchanged — only the query engine changed.
+   TanStack-Virtual still optional (page-of-200 is fine at current scale).
 
 6. ✅ **Column registry** + persistence. `COLUMN_DEFS` array in
    `IndexIngest.svelte` declares 9 toggleable columns (Name, Autor,
@@ -498,7 +498,9 @@ working scale for desktop-search parity (P7).
    `filter_to_sql` now generates `volume_id IN (...)` instead of the
    LIKE-on-JSON hack. `build_scalar_index` covers both columns. L3
    ingest writes the column directly from `RawDocument.volume_id`;
-   L1 rows get `None` (L1FileEntry doesn't carry volume_id yet).
+   L1 rows now get the mount's volume ID: `startL1Ingest` resolves
+   `index_volume_id_for_path` once per batch and includes `volumeId`
+   in every L1FileEntry push.
    `SearchResult.indexed_at` promoted to a real field (was doc_id fallback).
    `SortColumn::IndexedAt` now sorts by the real timestamp.
 
@@ -524,10 +526,9 @@ we use today when the embedder model changes.
 These came out of the post-merge user-walkthrough and aren't yet
 captured under their own phases:
 
-* **`Catalog.svelte` tooltip fragments** (Alias / Serial / Free at
-  scan / Archive flag set, lines ~417–420) — 4 keys needed in
-  `caf_catalog.*` EN+DE. Main body is already wired; only these
-  inline string-builder fragments remain.
+* ✅ **`Catalog.svelte` tooltip fragments** — alias / serial /
+  free_at_scan / archive_flag keys added to `caf_catalog.*` EN+DE
+  and wired in the volume-metadata tooltip builder.
 * ✅ **Duplicates results-table actions** — per-row tooltips
   (Keep newest / Keep only / Delete all / Remove from list /
   Toggle Accept) and bash/batch/ps1 format option labels wired
