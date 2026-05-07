@@ -43,7 +43,7 @@ use std::process::ExitCode;
 /// argv[1] sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "help", "--help", "-h",
+    "version", "doctor", "catalog", "index", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -80,6 +80,14 @@ enum Command {
     Catalog {
         #[command(subcommand)]
         cmd: CatalogCmd,
+    },
+    /// Search index operations (LanceDB + Tantivy).
+    Index {
+        /// Override the app data directory. Default: OS-standard location.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: IndexCmd,
     },
 }
 
@@ -158,6 +166,7 @@ pub fn run() -> ExitCode {
                 cmd_catalog_find_dupes(cli.format, source, destinations, strategy)
             }
         },
+        Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
     };
 
     match result {
@@ -405,6 +414,252 @@ fn cmd_catalog_find_dupes(
     Ok(())
 }
 
+// ── index ──────────────────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum IndexCmd {
+    /// Show document and chunk counts.
+    Stats,
+    /// List indexed documents.
+    List {
+        /// Maximum rows to print.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Full-text search without loading the embedder (BM25 only).
+    Search {
+        /// Query string.
+        query: String,
+        /// Maximum results.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Ingest a file or folder into the index (requires the app to have
+    /// already initialised the embedder via the GUI or `index init`).
+    /// Currently stubbed — use the GUI Hinzufügen tab for full ingest.
+    Ingest {
+        /// Paths to ingest.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
+    /// Delete a document by doc_id.
+    Delete {
+        /// Document ID (UUID).
+        doc_id: String,
+    },
+}
+
+/// Return the OS-default app data dir for CrispSorter, or the override.
+fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
+    if let Some(p) = override_ {
+        return Ok(p);
+    }
+    // Mirror what tauri::path::app_data_dir() returns per OS.
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "$HOME not set".to_string())?;
+        return Ok(home
+            .join("Library/Application Support")
+            .join("com.<user>.crispsorter"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| "%APPDATA% not set".to_string())?;
+        return Ok(appdata.join("com.<user>.crispsorter"));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // XDG: $XDG_DATA_HOME or ~/.local/share
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join(".local/share")
+            });
+        return Ok(base.join("com.<user>.crispsorter"));
+    }
+}
+
+fn cmd_index(out: OutFormat, data_dir: Option<PathBuf>, cmd: IndexCmd) -> Result<(), String> {
+    let data_dir = resolve_data_dir(data_dir)?;
+    if !data_dir.exists() {
+        return Err(format!(
+            "data dir not found: {} — run the GUI once to initialise the index",
+            data_dir.display()
+        ));
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    rt.block_on(cmd_index_async(out, data_dir, cmd))
+}
+
+async fn cmd_index_async(
+    out: OutFormat,
+    data_dir: PathBuf,
+    cmd: IndexCmd,
+) -> Result<(), String> {
+    match cmd {
+        IndexCmd::Stats => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let chunks = local.count().await.map_err(|e| e.to_string())?;
+            let docs = local.count_docs().await.map_err(|e| e.to_string())?;
+            let fts_dir = data_dir.join("fts");
+            let fts_docs: u64 = if fts_dir.exists() {
+                crate::index::FtsIndex::open_or_create(&fts_dir)
+                    .map(|fts| fts.doc_count())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            match out {
+                OutFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "docs": docs,
+                            "chunks": chunks,
+                            "fts_docs": fts_docs,
+                            "data_dir": data_dir.display().to_string(),
+                        })
+                    );
+                }
+                OutFormat::Text => {
+                    println!("Documents : {docs}");
+                    println!("Chunks    : {chunks}");
+                    println!("FTS docs  : {fts_docs}");
+                    println!("Data dir  : {}", data_dir.display());
+                }
+            }
+        }
+
+        IndexCmd::List { limit } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let rows = local
+                .list_documents(limit)
+                .await
+                .map_err(|e| e.to_string())?;
+            for r in &rows {
+                match out {
+                    OutFormat::Json => {
+                        let payload = serde_json::json!({
+                            "doc_id": r.doc_id,
+                            "filename": r.filename,
+                            "title": r.title,
+                            "author": r.author,
+                            "year": r.year,
+                            "ext": r.ext,
+                            "location_uri": r.location_uri,
+                        });
+                        println!("{payload}");
+                    }
+                    OutFormat::Text => {
+                        let title = r.title.as_deref().unwrap_or(
+                            r.filename.as_deref().unwrap_or("(unknown)"),
+                        );
+                        let author = r.author.as_deref().unwrap_or("");
+                        let year = r.year.map(|y| y.to_string()).unwrap_or_default();
+                        let ext = r.ext.as_deref().unwrap_or("");
+                        println!("{:<50} {:>4}  {:<8}  {}", title, year, ext, author);
+                    }
+                }
+            }
+            eprintln!("{} document(s) shown (limit {})", rows.len(), limit);
+        }
+
+        IndexCmd::Search { query, limit } => {
+            let fts_dir = data_dir.join("fts");
+            if !fts_dir.exists() {
+                return Err("FTS index not found — run the app and ingest some files first".into());
+            }
+            let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
+                .map_err(|e| e.to_string())?;
+            let filters = crate::index::SearchFilters::default();
+            let hits = fts
+                .search(&query, &filters, limit)
+                .map_err(|e| e.to_string())?;
+            // Resolve doc metadata from LanceDB.
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+            let meta_map: std::collections::HashMap<String, crate::index::SearchResult> = local
+                .fetch_search_results_by_ids(&doc_ids)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.doc_id.clone(), r))
+                .collect();
+            for hit in &hits {
+                let meta = meta_map.get(&hit.doc_id);
+                match out {
+                    OutFormat::Json => {
+                        let payload = serde_json::json!({
+                            "doc_id": hit.doc_id,
+                            "score": hit.score,
+                            "filename": meta.and_then(|m| m.filename.as_deref()),
+                            "title": meta.and_then(|m| m.title.as_deref()),
+                            "author": meta.and_then(|m| m.author.as_deref()),
+                            "year": meta.and_then(|m| m.year),
+                        });
+                        println!("{payload}");
+                    }
+                    OutFormat::Text => {
+                        let title = meta
+                            .and_then(|m| m.title.as_deref())
+                            .or_else(|| meta.and_then(|m| m.filename.as_deref()))
+                            .unwrap_or(&hit.doc_id);
+                        println!("[{:.3}] {}", hit.score, title);
+                    }
+                }
+            }
+            eprintln!("{} result(s)", hits.len());
+        }
+
+        IndexCmd::Ingest { .. } => {
+            return Err(
+                "headless ingest is not yet implemented — use the GUI Hinzufügen tab \
+                 or background ingest scheduler".into(),
+            );
+        }
+
+        IndexCmd::Delete { doc_id } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            local.delete_doc(&doc_id).await.map_err(|e| e.to_string())?;
+            let fts_dir = data_dir.join("fts");
+            if fts_dir.exists() {
+                if let Ok(fts) = crate::index::FtsIndex::open_or_create(&fts_dir) {
+                    if let Ok(mut writer) = fts.writer() {
+                        fts.delete_document(&mut writer, &doc_id)
+                            .map_err(|e| e.to_string())?;
+                        writer.commit().map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::json!({ "deleted": doc_id }));
+                }
+                OutFormat::Text => {
+                    println!("deleted {doc_id}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn load_or_scan(path: &str) -> Result<crate::catalog::index::FileIndex, String> {
     let p = std::path::PathBuf::from(path);
     if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("caf") {
@@ -469,8 +724,8 @@ mod tests {
         // Sanity that every value clap routes is in our argv[1] sniff
         // list. If a new subcommand lands in `Command` without an
         // entry here, main.rs would silently fall through to the GUI.
-        for s in ["version", "doctor", "catalog"] {
-            assert!(SUBCOMMANDS.contains(&s));
+        for s in ["version", "doctor", "catalog", "index"] {
+            assert!(SUBCOMMANDS.contains(&s), "SUBCOMMANDS missing {s}");
         }
     }
 }

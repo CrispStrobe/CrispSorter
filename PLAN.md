@@ -295,11 +295,13 @@ foreground-active counter) is available without bootstrapping the
 webview. Each family below is a separate ~1-day task on top of the
 existing scaffold.
 
-- [ ] **`index`** — `init` / `ingest <folder|file>...` /
-  `search <query> [--mode hybrid|text|vector]` / `stats` /
-  `delete <doc-id>` / `list` / `build-ivf-pq`. Wraps the existing
-  `index_*` Tauri commands; needs an in-process `IndexState` constructor
-  that mirrors what the Tauri builder does today.
+- [x] **`index`** (partial) — `stats` (docs/chunks/fts-docs counts) /
+  `list [--limit N]` (LanceDB document browse) / `search <query>`
+  (BM25 FTS, resolves metadata from LanceDB; no embedder required) /
+  `delete <doc-id>` (LanceDB + Tantivy). All use a tokio current-thread
+  runtime and auto-detect the OS data dir (`--data-dir` override).
+  Remaining: `init` (embedder download), `ingest` (full pipeline),
+  `search --mode vector|hybrid` (needs embedder), `build-ivf-pq`.
 
 - [ ] **`batch`** — `add <file>...` (appends to the same persisted
   store the GUI reads, so the next GUI launch sees them) / `process
@@ -681,21 +683,19 @@ title nor a useful next step. Better:
 
 #### Migration path
 
-a. **`TaskFailureReason` enum** in `index/mod.rs` + the
-   `extraction_failure` field on `metadata_json`. Wire L2 fallback
-   in the L3 extractor on first-byte timeout / parse error.
+a. ✅ **`TaskFailureReason` enum** in `index/task_failure.rs` + the
+   `extraction_failure` field on `metadata_json`. L2 fallback via
+   `IngestPipeline::ingest_l2_row()` on timeout / parse error.
+   EPUB DRM detection via `epub_is_drm_protected()`.
 b. **Per-stage timeout wrappers** (first-byte + total) in the
    extractor adapters. The `conversionTimeoutSeconds` Setting
    becomes a UI knob over the L3 *whole-file* budget; per-stage
-   defaults stay sane.
-c. **Worker pool**. ✅ Foreground Stapel flow shipped
-   (commits `b70ebae` + the N+M-worker upgrade in this commit
-   sequence). N extraction workers + M LLM workers configurable
-   in Settings (Extraktion / KI-Optionen, default 1+1 each,
-   cap 16+16). Live worker / docs-per-min chip in the bottom-
-   left nav next to the existing Stapel + DB stats. Background-
-   ingest scheduler still TODO -- same shape, applied to the
-   `bg_ingest` module instead of `batchManager.processAll`.
+   defaults stay sane. (Whole-file 300s timeout: ✅ done.)
+c. ✅ **Worker pool** (bg_ingest). N-concurrent worker tasks via
+   `Arc<AtomicUsize>` counter + `ensure_worker`. `ingest_one` now
+   wraps extraction in `tokio::time::timeout(300s)`, classifies
+   errors via `TaskFailureReason::classify`, falls back to L2.
+   Foreground Stapel flow shipped separately.
 
    The producer/consumer rewrite preserves the no-stalled-LLM
    property of the original two-phase loop while overlapping
@@ -727,16 +727,21 @@ c. **Worker pool**. ✅ Foreground Stapel flow shipped
    win); the actual N-worker pool follows once the failure
    taxonomy from step (a) is in place so a wedged worker can
    be killed without taking the pool with it.
-d. **DRM detection** for EPUB + password-protected PDF. Surfaces
-   the right reason even when the underlying extractor would
-   otherwise give a generic error.
-e. **Übersicht status badges** + the help-popover for `Drm`.
-f. **CLI `--skip-failed`** flag and the `--retry-failed` complement.
+d. ✅ **DRM detection** for EPUB (`epub_is_drm_protected`). Surfaces
+   `TaskFailureReason::Drm` even when the extractor gives a generic error.
+e. ✅ **Übersicht failure badges** — `fail-badge` CSS class per reason
+   (DRM=yellow, Timeout=orange, Corrupt=red, Password=purple,
+   Unsupported=grey). L2 badge added (blue). Human-readable labels +
+   `title` tooltip per reason (DRM: Calibre hint; timeout: retryable note).
+   Help-popover (clickable): TODO.
+f. ✅ **Skip non-retryable failures on re-run** — `extraction_failure_reason_for_uri`
+   in `LocalIndex`; `bg_ingest::ingest_one` skips DRM/corrupt/unsupported/
+   password rows without re-attempting extraction. Timeout/Other remain retryable.
+g. **CLI `--skip-failed`** flag and the `--retry-failed` complement. TODO.
 
-Steps (a) and (b) are the load-bearing ones — once those land, the
+Steps (a–e) are the load-bearing ones — once those land, the
 "the file is encrypted with AES" message becomes a yellow DRM
-badge in Übersicht with title + author still showing, and the
-rest is incremental.
+badge in Übersicht with title + author still showing.
 
 ---
 

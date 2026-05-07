@@ -427,6 +427,100 @@ impl IngestPipeline {
         // L1 has no Tantivy entries (no full-text body yet).
         self.submit_and_await(chunks, vec![], total, 0).await
     }
+
+    /// Level-2 fallback: write one metadata-only row for a file whose L3
+    /// extraction failed or was skipped. Carries the L2 title/author/year
+    /// (from `l2_metadata::read`) plus an `extraction_failure` blob so
+    /// Übersicht can show the right badge and subsequent runs can skip/retry.
+    ///
+    /// Like `ingest_l1`, this goes through the background writer task —
+    /// no embedding is produced.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn ingest_l2_row(
+        &self,
+        doc_id: String,
+        location_uri: String,
+        owner_id: String,
+        filename: String,
+        ext: String,
+        source_hash: String,
+        // Filesystem metadata
+        mtime_unix: Option<i64>,
+        file_size: Option<i64>,
+        parent_dir: Option<String>,
+        volume_id: Option<String>,
+        // L2 metadata (best-effort; None when not available)
+        title: Option<String>,
+        author: Option<String>,
+        year: Option<i32>,
+        language: Option<String>,
+        page_count: Option<i32>,
+        // Why L3 failed — stored so Übersicht can render the badge.
+        failure_reason: &super::task_failure::TaskFailureReason,
+        failure_msg: &str,
+    ) -> Result<IngestStats> {
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let mut meta = serde_json::json!({
+            "level": 2,
+            "extraction_failure": {
+                "reason": failure_reason.as_tag(),
+                "msg": &failure_msg[..failure_msg.len().min(512)],
+                "at": now_ms
+            }
+        });
+        if let Some(m) = mtime_unix {
+            meta["mtime_unix"] = serde_json::Value::from(m);
+            meta["fs_mtime"] = serde_json::Value::from(m.saturating_mul(1000));
+        }
+        if let Some(s) = file_size {
+            meta["fs_size"] = serde_json::Value::from(s);
+        }
+        if let Some(ref pd) = parent_dir {
+            meta["parent_dir"] = serde_json::Value::from(pd.as_str());
+        }
+        if let Some(ref v) = volume_id {
+            meta["volume_id"] = serde_json::Value::from(v.as_str());
+        }
+        if let Some(pc) = page_count {
+            meta["page_count"] = serde_json::Value::from(pc);
+        }
+
+        let chunk = DocumentChunk {
+            id: chunk_row_id(&doc_id, -1),
+            doc_id,
+            location_uri,
+            owner_id,
+            filename: Some(filename),
+            title,
+            author,
+            year,
+            ext: Some(ext),
+            language,
+            page_count,
+            headings_text: None,
+            full_text: None,
+            full_text_md: None,
+            embedding: None,
+            embedding_sparse: None,
+            embedding_model: None,
+            chunk_index: -1,
+            chunk_total: 0,
+            chunk_start_char: None,
+            chunk_end_char: None,
+            indexed_at: now_ms,
+            source_hash,
+            tags: vec![],
+            metadata_json: Some(meta.to_string()),
+            parent_dir,
+            volume_id,
+        };
+
+        self.submit_and_await(vec![chunk], vec![], 1, 0).await
+    }
 }
 
 /// One file's filesystem-only metadata for the L1 ingest path.

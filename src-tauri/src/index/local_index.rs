@@ -377,6 +377,17 @@ impl LocalIndex {
         Ok(batches)
     }
 
+    /// Fetch `SearchResult`s for a set of doc IDs — combines `fetch_by_doc_ids`
+    /// with the private batch→result conversion. Useful in CLI and test contexts
+    /// that can't call the private `record_batches_to_search_results` directly.
+    pub async fn fetch_search_results_by_ids(
+        &self,
+        doc_ids: &[String],
+    ) -> Result<Vec<SearchResult>> {
+        let batches = self.fetch_by_doc_ids(doc_ids).await?;
+        record_batches_to_search_results(&batches)
+    }
+
     // ── Mutation ───────────────────────────────────────────────────────────
 
     /// Delete all rows for a document (all chunks).
@@ -759,6 +770,56 @@ impl LocalIndex {
     /// Background ingest uses this to mtime-skip files that haven't
     /// changed since last index — saves the read + extract + embed
     /// cost on the common "no new content" case.
+    /// Return the `extraction_failure.reason` tag for a URI if one exists,
+    /// so `bg_ingest` can skip non-retryable failures (Drm / Corrupt /
+    /// Unsupported) on subsequent scans without re-attempting extraction.
+    pub async fn extraction_failure_reason_for_uri(
+        &self,
+        location_uri: &str,
+    ) -> Result<Option<String>> {
+        let pred = format!(
+            "location_uri = '{}' AND chunk_index = 0",
+            location_uri.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        for batch in &batches {
+            if let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() {
+                let col = batch.column(meta_idx);
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("metadata_json column not StringArray"))?;
+                for i in 0..batch.num_rows() {
+                    if arr.is_null(i) {
+                        continue;
+                    }
+                    let json = arr.value(i);
+                    let Ok(v): std::result::Result<serde_json::Value, _> =
+                        serde_json::from_str(json)
+                    else {
+                        continue;
+                    };
+                    if let Some(reason) = v
+                        .get("extraction_failure")
+                        .and_then(|f| f.get("reason"))
+                        .and_then(|r| r.as_str())
+                    {
+                        return Ok(Some(reason.to_owned()));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn indexed_mtime_for_uri(&self, location_uri: &str) -> Result<Option<i64>> {
         let pred = format!(
             "location_uri = '{}' AND chunk_index = 0",
