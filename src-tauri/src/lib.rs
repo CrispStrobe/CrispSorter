@@ -2189,6 +2189,7 @@ pub fn run() {
             index::tauri_commands::index_build_scalar_index,
             index::tauri_commands::index_list_mounted_volumes,
             index::tauri_commands::index_volume_id_for_path,
+            index::tauri_commands::index_folder_children,
             index::tauri_commands::index_queue_depth,
             index::tauri_commands::index_get_config,
             index::tauri_commands::index_set_config,
