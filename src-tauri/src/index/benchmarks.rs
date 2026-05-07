@@ -98,6 +98,7 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             owner_id: "user1".to_owned(),
             tags: vec![],
             mtime_unix: None,
+            file_size: None,
             volume_id: None,
             parent_dir: None,
         },
@@ -116,6 +117,7 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             owner_id: "user1".to_owned(),
             tags: vec![],
             mtime_unix: None,
+            file_size: None,
             volume_id: None,
             parent_dir: None,
         },
@@ -134,6 +136,7 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             owner_id: "user1".to_owned(),
             tags: vec![],
             mtime_unix: None,
+            file_size: None,
             volume_id: None,
             parent_dir: None,
         }

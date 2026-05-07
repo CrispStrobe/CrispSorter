@@ -425,9 +425,11 @@ pub async fn index_ingest_path(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    // Stat once for mtime (P7.4.3 skip-check) and file size (P9 UX: Übersicht size column).
+    let p_meta = std::fs::metadata(&p).ok();
     let raw = RawDocument {
         full_text: extracted.full_text,
-        full_text_md: String::new(), // path-based ingest has no Markdown view
+        full_text_md: String::new(),
         headings: extracted.headings,
         title,
         author,
@@ -439,18 +441,12 @@ pub async fn index_ingest_path(
         location_uri,
         owner_id: owner,
         tags: Vec::new(),
-        // Cheap path-based ingest stat()s the file for mtime so the
-        // P7.4.3 mtime-skip on re-ingest can short-circuit.
-        mtime_unix: std::fs::metadata(&p)
-            .ok()
+        mtime_unix: p_meta.as_ref()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64),
-        // PLAN P7.6 — tag the row with the source volume's stable id
-        // (best-effort; helper returns None on tmpfs / network share /
-        // missing path / platform helper failure).
+        file_size: p_meta.map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&p),
-        // P9 step 3 — parent directory for scalar-indexed folder filter.
         parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
     };
 
@@ -501,6 +497,7 @@ pub async fn index_ingest_document(
         // bg_ingest will treat None as "no recorded mtime → re-ingest"
         // which is the safe default.
         mtime_unix: None,
+        file_size: None,
         // PLAN P7.6 — frontend ingest is path-less (input is the
         // already-extracted text), so we don't have a volume to tag.
         volume_id: None,
@@ -722,6 +719,7 @@ pub async fn index_ingest_batch(
                 // is path-less / mtime-less; bg_ingest skip-on-mtime
                 // treats None as "re-ingest" which is the safe default.
                 mtime_unix: None,
+                file_size: None,
                 volume_id: None,
                 parent_dir: None,
             })
@@ -794,6 +792,7 @@ pub async fn index_ingest_batch(
             owner_id: input.owner_id,
             tags: input.tags,
             mtime_unix: None,
+            file_size: None,
             volume_id: None,
             parent_dir: None,
         };
