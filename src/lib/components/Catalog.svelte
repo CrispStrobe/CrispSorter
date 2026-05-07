@@ -349,7 +349,7 @@
     </header>
 
     <div class=”actions”>
-        <button class=”btn primary” onclick={createFromFolder} disabled={loading}>
+        <button class={'btn primary'} onclick={createFromFolder} disabled={loading}>
             <FolderPlus size={16} />
             <span>{i18n.t.caf_catalog.create_from_folder}</span>
         </button>
@@ -457,7 +457,7 @@
                                 <RefreshCw size={14} />
                             </button>
                             <button
-                                class=”icon-btn danger”
+                                class={'icon-btn danger'}
                                 onclick={() => removeCatalog(cat.path)}
                                 title={i18n.t.caf_catalog.btn_remove_title}
                             >
@@ -490,7 +490,7 @@
                         {/if}
                     </span>
                     <button
-                        class=”btn small”
+                        class={'btn small'}
                         onclick={importToBatch}
                         disabled={importing || browsingEntries.length === 0}
                         title={i18n.t.caf_catalog.import_btn_title}
