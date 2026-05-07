@@ -314,9 +314,9 @@
                 <div class="row">
                     <span class="row-label">{i18n.t.duplicates.script_format}</span>
                     <select bind:value={scriptFormat}>
-                        <option value="bash">Bash (.sh)</option>
-                        <option value="batch">Batch (.bat)</option>
-                        <option value="powershell">PowerShell (.ps1)</option>
+                        <option value="bash">{i18n.t.duplicates.script_format_bash}</option>
+                        <option value="batch">{i18n.t.duplicates.script_format_batch}</option>
+                        <option value="powershell">{i18n.t.duplicates.script_format_powershell}</option>
                     </select>
                     <span class="row-label" style="margin-left: 12px;">{i18n.t.duplicates.script_delete}</span>
                     <select bind:value={scriptTarget}>

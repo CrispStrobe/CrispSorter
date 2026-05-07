@@ -1156,13 +1156,13 @@
                             <div class="dupe-group-header">
                                 <span class="dupe-size">{(group.size / 1024).toFixed(1)} KB — {group.items.length} files</span>
                                 <div class="dupe-group-actions">
-                                    <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title="Keep newest, remove others from list">
+                                    <button class="action-btn small" onclick={() => keepNewestInGroup(gi, false)} title={i18n.t.batch.dupe_keep_newest_remove}>
                                         Newest
                                     </button>
-                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} title="Keep newest, delete others from disk">
+                                    <button class="action-btn small danger" onclick={() => keepNewestInGroup(gi, true)} title={i18n.t.batch.dupe_keep_newest_delete}>
                                         Newest + 🗑
                                     </button>
-                                    <button class="action-btn small danger" onclick={() => { if (confirm('Delete ALL files in this group from disk?')) removeAllInGroup(gi, true); }} title="Delete all from disk">
+                                    <button class="action-btn small danger" onclick={() => { if (confirm(i18n.t.batch.dupe_confirm_delete_all)) removeAllInGroup(gi, true); }} title={i18n.t.batch.dupe_delete_all}>
                                         All 🗑
                                     </button>
                                 </div>
@@ -1174,9 +1174,9 @@
                                         <span class="dupe-meta">{item.originalPath.substring(0, item.originalPath.lastIndexOf('/') + 1)} · {new Date(item.modifiedAt).toLocaleDateString()}</span>
                                     </div>
                                     <div class="dupe-item-actions">
-                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title="Keep only this one">Keep</button>
-                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} title="Keep this, delete others from disk">Keep+🗑</button>
-                                        <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title="Remove from list">×</button>
+                                        <button class="action-btn small" onclick={() => keepOnlyInGroup(gi, item.id, false)} title={i18n.t.batch.dupe_keep_only}>Keep</button>
+                                        <button class="action-btn small danger" onclick={() => keepOnlyInGroup(gi, item.id, true)} title={i18n.t.batch.dupe_keep_only_delete}>Keep+🗑</button>
+                                        <button class="close-btn-minimal" onclick={() => batchManager.removeItems([item.id]).then(() => handleFindDuplicates())} title={i18n.t.settings.action_remove_from_list}>×</button>
                                     </div>
                                 </div>
                             {/each}
@@ -1279,7 +1279,7 @@
                                                 {/if}
                                             {/if}
                                         {:else if col.id === 'accepted'}
-                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; batchManager.saveCurrentSession(); }} title="Toggle Accept">
+                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; batchManager.saveCurrentSession(); }} title={i18n.t.batch.dupe_toggle_accept}>
                                                 {#if item.isAccepted}
                                                     <Check size={16} style="color: #10b981;" />
                                                 {:else}
