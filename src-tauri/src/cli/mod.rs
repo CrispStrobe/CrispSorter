@@ -487,13 +487,21 @@ enum IndexCmd {
         #[arg(long, default_value = "cpu")]
         device: String,
     },
-    /// Ingest a file or folder into the index (requires the app to have
-    /// already initialised the embedder via the GUI or `index init`).
-    /// Currently stubbed — use the GUI Hinzufügen tab for full ingest.
+    /// Ingest files/folders into the local index — full extraction + embedding pipeline.
+    /// Run `index init` first to download the embedder model.
     Ingest {
-        /// Paths to ingest.
+        /// Files or directories to ingest (directories are walked recursively).
         #[arg(required = true)]
         paths: Vec<PathBuf>,
+        /// Owner UUID. Default: nil (single-user install).
+        #[arg(long)]
+        owner_id: Option<String>,
+        /// Embedder model. Default: bge-m3.
+        #[arg(long, default_value = "bge-m3")]
+        model: String,
+        /// Device for inference. Default: cpu.
+        #[arg(long, default_value = "cpu")]
+        device: String,
     },
     /// Delete a document by doc_id.
     Delete {
@@ -729,11 +737,119 @@ async fn cmd_index_async(
             eprintln!("{} result(s)", hits.len());
         }
 
-        IndexCmd::Ingest { .. } => {
-            return Err(
-                "headless ingest is not yet implemented — use the GUI Hinzufügen tab \
-                 or background ingest scheduler".into(),
+        IndexCmd::Ingest { paths, owner_id, model, device } => {
+            use crate::index::embedder::{EmbedderConfig, EmbedderDevice, EmbedderModel};
+            use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
+            use sha2::{Digest, Sha256};
+
+            let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+            // Parse model + device (same logic as Init).
+            let m = match model.to_ascii_lowercase().replace('-', "_").as_str() {
+                "bge_m3" | "bgem3"          => EmbedderModel::BgeM3,
+                "multilingual_e5_small"     => EmbedderModel::MultilingualE5Small,
+                "multilingual_e5_base"      => EmbedderModel::MultilingualE5Base,
+                "multilingual_e5_large"     => EmbedderModel::MultilingualE5Large,
+                "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
+                "bge_base_en_v1.5"  | "bge_base_en"  => EmbedderModel::BgeBaseEnV15,
+                "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
+                "nomic_embed_text_v1.5" | "nomic"     => EmbedderModel::NomicEmbedTextV15,
+                "all_minilm_l6_v2"  | "minilm"        => EmbedderModel::AllMiniLmL6V2,
+                _ => EmbedderModel::BgeM3,
+            };
+            let d = match device.to_ascii_lowercase().as_str() {
+                "cuda"          => EmbedderDevice::Cuda,
+                "metal" | "mps" => EmbedderDevice::Metal,
+                "auto"          => EmbedderDevice::Auto,
+                _               => EmbedderDevice::Cpu,
+            };
+
+            let cache_dir = data_dir.join("models");
+            std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+            let embedder_config = EmbedderConfig::new(m, d, cache_dir);
+            eprintln!("loading embedder model ({})…", model);
+            let embedder = crate::index::embedder::Embedder::new(embedder_config)
+                .await.map_err(|e| e.to_string())?;
+            let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
+
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            let pipeline = IngestPipeline::new(
+                std::sync::Arc::new(fts),
+                std::sync::Arc::new(local),
+                Some(embedder_arc),
+                IngestConfig::default(),
             );
+
+            // Collect all files.
+            let mut files: Vec<std::path::PathBuf> = Vec::new();
+            for path in &paths {
+                if path.is_dir() {
+                    for entry in jwalk::WalkDir::new(path)
+                        .into_iter().filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().is_file())
+                    {
+                        files.push(entry.path().to_path_buf());
+                    }
+                } else if path.exists() {
+                    files.push(path.clone());
+                } else {
+                    eprintln!("skip (not found): {}", path.display());
+                }
+            }
+            eprintln!("ingesting {} file(s)…", files.len());
+
+            let mut ok = 0usize;
+            let mut errs = 0usize;
+            for p in &files {
+                let bytes = match std::fs::read(p) {
+                    Ok(b) => b, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                };
+                let mut h = Sha256::new(); h.update(&bytes);
+                let source_hash = hex::encode(h.finalize());
+                let extracted = match tokio::task::spawn_blocking({
+                    let pp = p.clone();
+                    move || crate::extractors::extract_text_from_path(&pp)
+                }).await {
+                    Ok(Ok(e)) => e,
+                    Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Err(e)    => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                };
+                let loc = crate::index::location::FileLocation::Local {
+                    user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+                    machine_id: uuid::Uuid::nil(),
+                    path: p.clone(),
+                };
+                let meta = p.metadata().ok();
+                let raw = RawDocument {
+                    full_text: extracted.full_text, full_text_md: String::new(),
+                    headings: extracted.headings, title: None, author: None, year: None,
+                    filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    ext: extracted.ext, language: String::new(),
+                    source_hash, location_uri: loc.to_uri(), owner_id: owner.clone(), tags: vec![],
+                    mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64),
+                    file_size: meta.map(|m| m.len() as i64),
+                    volume_id: crate::volume::volume_id_for_path(p),
+                    parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+                };
+                match pipeline.ingest_document(raw).await {
+                    Ok(stats) => {
+                        match out {
+                            OutFormat::Json => println!("{}", serde_json::json!({
+                                "path": p.display().to_string(), "chunks": stats.chunk_count
+                            })),
+                            OutFormat::Text => println!("✓ {} ({} chunks)", p.display(), stats.chunk_count),
+                        }
+                        ok += 1;
+                    }
+                    Err(e) => { eprintln!("error {}: {e}", p.display()); errs += 1; }
+                }
+            }
+            eprintln!("{ok} ingested, {errs} errors");
         }
 
         IndexCmd::Init { model, device } => {
