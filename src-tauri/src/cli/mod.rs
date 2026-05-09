@@ -43,7 +43,8 @@ use std::process::ExitCode;
 /// argv[1] sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "index", "completion", "help", "--help", "-h",
+    "version", "doctor", "catalog", "index", "batch", "manpage",
+    "completion", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -94,6 +95,21 @@ enum Command {
         /// Target shell.
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+    /// Generate man page(s) and write them to a directory (or stdout).
+    Manpage {
+        /// Output directory. Defaults to the current directory.
+        /// One `crispsorter.1` file is written per top-level command.
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+    },
+    /// Durable sort-job queue operations.
+    Batch {
+        /// Override the app data directory.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: BatchCmd,
     },
 }
 
@@ -173,6 +189,7 @@ pub fn run() -> ExitCode {
             }
         },
         Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
+        Command::Batch { data_dir, cmd } => cmd_batch(cli.format, data_dir, cmd),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             use clap_complete::generate;
@@ -181,6 +198,7 @@ pub fn run() -> ExitCode {
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
+        Command::Manpage { out } => cmd_manpage(out),
     };
 
     match result {
@@ -461,6 +479,22 @@ enum IndexCmd {
         /// Document ID (UUID).
         doc_id: String,
     },
+    /// Export a volume (or full index snapshot) to a portable .cidx archive.
+    ExportCidx {
+        /// Output directory (created if absent). Conventionally ends in `.cidx`.
+        dest: PathBuf,
+        /// Export only rows for this volume_id. Omit for a full snapshot.
+        #[arg(long)]
+        volume_id: Option<String>,
+        /// Include embedding vectors (large — disabled by default).
+        #[arg(long)]
+        include_embeddings: bool,
+    },
+    /// Show stats for a .cidx archive (docs, chunks).
+    InspectCidx {
+        /// Path to the .cidx directory.
+        path: PathBuf,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -646,6 +680,51 @@ async fn cmd_index_async(
             );
         }
 
+        IndexCmd::ExportCidx { dest, volume_id, include_embeddings } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let rows = local
+                .export_cidx(&dest, volume_id.as_deref(), include_embeddings)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::json!({
+                        "dest": dest.display().to_string(),
+                        "rows_exported": rows,
+                        "volume_id": volume_id,
+                        "embeddings": include_embeddings,
+                    }));
+                }
+                OutFormat::Text => {
+                    println!("exported {rows} row(s) → {}", dest.display());
+                }
+            }
+        }
+
+        IndexCmd::InspectCidx { path } => {
+            let idx = crate::index::LocalIndex::open_cidx(&path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let chunks = idx.count().await.map_err(|e| e.to_string())?;
+            let docs = idx.count_docs().await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::json!({
+                        "path": path.display().to_string(),
+                        "docs": docs,
+                        "chunks": chunks,
+                    }));
+                }
+                OutFormat::Text => {
+                    println!("Documents : {docs}");
+                    println!("Chunks    : {chunks}");
+                    println!("Path      : {}", path.display());
+                }
+            }
+        }
+
         IndexCmd::Delete { doc_id } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
@@ -669,6 +748,245 @@ async fn cmd_index_async(
                     println!("deleted {doc_id}");
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+// ── manpage ────────────────────────────────────────────────────────────────
+
+fn cmd_manpage(out: PathBuf) -> Result<(), String> {
+    use clap::CommandFactory;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let cmd = Cli::command();
+    let man = clap_mangen::Man::new(cmd);
+    let mut buf = Vec::new();
+    man.render(&mut buf).map_err(|e| e.to_string())?;
+    let dest = out.join("crispsorter.1");
+    std::fs::write(&dest, &buf).map_err(|e| e.to_string())?;
+    eprintln!("wrote {}", dest.display());
+    Ok(())
+}
+
+// ── batch ──────────────────────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum BatchCmd {
+    /// Add files to the durable ingest queue (visible in the GUI on next launch).
+    Add {
+        /// Files or folders to enqueue for ingest.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Target ingest level. 1=filesystem metadata only, 3=full extraction (default).
+        #[arg(long, default_value_t = 3)]
+        level: u8,
+        /// Append to an existing job instead of creating a new one.
+        #[arg(long)]
+        job_id: Option<String>,
+    },
+    /// List ingest jobs and their file counts.
+    List {
+        /// Show all files for a specific job.
+        #[arg(long)]
+        job_id: Option<String>,
+        /// Filter files by status (pending / done / error / skipped).
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Execute a JSON sort plan — move or copy files as described in the plan.
+    ///
+    /// Plan format:
+    ///   { "mode": "move"|"copy", "items": [{ "src": "...", "dst": "..." }, ...] }
+    Apply {
+        /// Path to the plan JSON file. Use `-` to read from stdin.
+        plan: String,
+        /// Override mode from plan (move / copy).
+        #[arg(long)]
+        mode: Option<String>,
+        /// Dry-run: print what would happen without actually moving/copying.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(serde::Deserialize)]
+struct SortPlan {
+    #[serde(default = "default_move")]
+    mode: String,
+    items: Vec<SortPlanItem>,
+}
+#[derive(serde::Deserialize)]
+struct SortPlanItem {
+    src: String,
+    dst: String,
+}
+fn default_move() -> String { "move".to_owned() }
+
+fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result<(), String> {
+    let data_dir = resolve_data_dir(data_dir)?;
+    match cmd {
+        BatchCmd::Add { paths, level, job_id } => {
+            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+
+            // Expand folders to individual files.
+            let mut files: Vec<crate::jobs::FileEntry> = Vec::new();
+            for p in &paths {
+                if p.is_dir() {
+                    for entry in jwalk::WalkDir::new(p)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().is_file())
+                    {
+                        files.push(crate::jobs::FileEntry {
+                            file_path: entry.path().to_string_lossy().into_owned(),
+                            doc_id: None,
+                            target_level: level,
+                        });
+                    }
+                } else if p.exists() {
+                    files.push(crate::jobs::FileEntry {
+                        file_path: p.to_string_lossy().into_owned(),
+                        doc_id: None,
+                        target_level: level,
+                    });
+                } else {
+                    eprintln!("warning: path does not exist: {}", p.display());
+                }
+            }
+
+            let jid = if let Some(id) = job_id {
+                id
+            } else {
+                let source_paths: Vec<String> = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                queue
+                    .create_job("cli_add", &source_paths, level, None)
+                    .map_err(|e| e.to_string())?
+            };
+
+            let added = queue
+                .add_files(&jid, &files)
+                .map_err(|e| e.to_string())?;
+
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::json!({
+                        "job_id": jid,
+                        "files_added": added,
+                        "total_queued": files.len(),
+                    }));
+                }
+                OutFormat::Text => {
+                    println!("job {jid}: queued {added} file(s)");
+                    println!("Open the GUI to process them (Hinzufügen → Resume).");
+                }
+            }
+        }
+
+        BatchCmd::List { job_id, status } => {
+            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            if let Some(jid) = job_id {
+                let files = queue
+                    .list_files(&jid, status.as_deref(), 10_000, 0)
+                    .map_err(|e| e.to_string())?;
+                for f in &files {
+                    match out {
+                        OutFormat::Json => println!("{}", serde_json::to_string(f).unwrap_or_default()),
+                        OutFormat::Text => {
+                            println!("[{}] {}", f.status, f.file_path);
+                            if let Some(ref e) = f.error_text {
+                                println!("    error: {e}");
+                            }
+                        }
+                    }
+                }
+                eprintln!("{} file(s)", files.len());
+            } else {
+                let jobs = queue.list_jobs().map_err(|e| e.to_string())?;
+                for j in &jobs {
+                    match out {
+                        OutFormat::Json => println!("{}", serde_json::to_string(j).unwrap_or_default()),
+                        OutFormat::Text => {
+                            println!(
+                                "[{}] {} — {}/{} done  {} err  type={}",
+                                j.status, j.id,
+                                j.done_files, j.total_files,
+                                j.error_files, j.job_type
+                            );
+                        }
+                    }
+                }
+                eprintln!("{} job(s)", jobs.len());
+            }
+        }
+
+        BatchCmd::Apply { plan, mode, dry_run } => {
+            let json = if plan == "-" {
+                use std::io::Read;
+                let mut s = String::new();
+                std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+                s
+            } else {
+                std::fs::read_to_string(&plan)
+                    .map_err(|e| format!("reading {plan}: {e}"))?
+            };
+            let mut p: SortPlan = serde_json::from_str(&json)
+                .map_err(|e| format!("parsing plan: {e}"))?;
+            if let Some(m) = mode { p.mode = m; }
+
+            let is_move = p.mode == "move";
+            let mut done = 0usize;
+            let mut errs = 0usize;
+            for item in &p.items {
+                let src = std::path::Path::new(&item.src);
+                let dst = std::path::Path::new(&item.dst);
+                if !src.exists() {
+                    eprintln!("skip (not found): {}", item.src);
+                    errs += 1;
+                    continue;
+                }
+                if dry_run {
+                    println!("{} {} -> {}", if is_move { "mv" } else { "cp" }, item.src, item.dst);
+                    done += 1;
+                    continue;
+                }
+                if let Some(parent) = dst.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        eprintln!("mkdir {}: {e}", parent.display());
+                        errs += 1;
+                        continue;
+                    }
+                }
+                let result = if is_move {
+                    std::fs::rename(src, dst).or_else(|_| {
+                        std::fs::copy(src, dst).and_then(|_| std::fs::remove_file(src))
+                    })
+                } else {
+                    std::fs::copy(src, dst).map(|_| ())
+                };
+                match result {
+                    Ok(()) => {
+                        match out {
+                            OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "src": item.src, "dst": item.dst})),
+                            OutFormat::Text => println!("ok  {}", item.dst),
+                        }
+                        done += 1;
+                    }
+                    Err(e) => {
+                        match out {
+                            OutFormat::Json => println!("{}", serde_json::json!({"ok": false, "src": item.src, "error": e.to_string()})),
+                            OutFormat::Text => eprintln!("err {} -> {}: {e}", item.src, item.dst),
+                        }
+                        errs += 1;
+                    }
+                }
+            }
+            eprintln!("{done} ok, {errs} errors{}",
+                if dry_run { " (dry-run)" } else { "" });
         }
     }
     Ok(())

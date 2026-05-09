@@ -1268,6 +1268,45 @@ pub async fn index_import_caf(
 /// Write the catalog's L1+ rows out as a `.caf` file readable by
 /// Catfish / Cathy and any other CrispSorter installation.
 ///
+/// Export a volume slice (or full snapshot) as a portable `.cidx` archive.
+///
+/// `dest_path` — directory path for the output (created if absent). Conventionally
+///   ends in `.cidx`, e.g. `/Volumes/MyDrive/MyDrive.cidx`.
+/// `volume_id` — if set, only rows for that volume are exported.
+/// `include_embeddings` — include the vector column (large; off by default).
+///
+/// Returns the number of rows exported.
+#[tauri::command]
+pub async fn index_export_cidx(
+    state: State<'_, AppState>,
+    dest_path: String,
+    volume_id: Option<String>,
+    include_embeddings: Option<bool>,
+) -> Result<usize, String> {
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    let dest = std::path::PathBuf::from(&dest_path);
+    local
+        .export_cidx(&dest, volume_id.as_deref(), include_embeddings.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Open a `.cidx` archive for read-only search. Returns basic stats.
+#[tauri::command]
+pub async fn index_open_cidx(
+    _state: State<'_, AppState>,
+    cidx_path: String,
+) -> Result<serde_json::Value, String> {
+    let path = std::path::PathBuf::from(&cidx_path);
+    let idx = crate::index::LocalIndex::open_cidx(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let chunks = idx.count().await.map_err(|e| e.to_string())?;
+    let docs = idx.count_docs().await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "path": cidx_path, "docs": docs, "chunks": chunks }))
+}
+
 /// `doc_ids` (optional) limits the export to those ids; otherwise every
 /// row in the active catalog is written.
 #[tauri::command]

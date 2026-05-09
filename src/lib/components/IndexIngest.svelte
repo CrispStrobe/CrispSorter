@@ -1251,6 +1251,8 @@
     // .caf round-trip state.
     let cafBusy       = $state(false);
     let cafLastResult = $state<string | null>(null);
+    let cidxBusy      = $state(false);
+    let cidxLastResult = $state<string | null>(null);
 
     /** Open a `.caf` file produced by Cathy / Catfish / a previous
      *  CrispSorter session. Each entry becomes an L1 row in the active
@@ -1288,6 +1290,34 @@
      *  Cathy / Catfish / another CrispSorter installation. When the
      *  user has a selection in the Übersicht, only those rows are
      *  exported; otherwise the entire catalog. */
+    async function exportCidxArchive() {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const savePath = await save({
+            defaultPath: 'index-snapshot.cidx',
+            filters: [{ name: 'CrispSorter index archive', extensions: ['cidx'] }],
+        });
+        if (typeof savePath !== 'string') return;
+        cidxBusy = true;
+        cidxLastResult = null;
+        try {
+            // Export all rows (no volume filter from UI; use CLI for per-volume export).
+            const volumeId: string | null = null;
+            logInfo(`cidx: exporting all rows → ${savePath}`);
+            const rows = await invoke<number>('index_export_cidx', {
+                destPath: savePath,
+                volumeId,
+                includeEmbeddings: false,
+            });
+            cidxLastResult = `Exportiert: ${rows} Einträge → ${savePath}`;
+            logInfo(`cidx: ${cidxLastResult}`);
+        } catch (e: any) {
+            cidxLastResult = `Export fehlgeschlagen: ${e?.message ?? e}`;
+            logError(`cidx export failed: ${e?.message ?? e}`);
+        } finally {
+            cidxBusy = false;
+        }
+    }
+
     async function exportCafFile() {
         const filterDocIds = selectedDocIds.size > 0 ? [...selectedDocIds] : null;
         const out = await openDialog({
@@ -1724,7 +1754,15 @@
                 {#if cafBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
                 .caf exportieren
             </button>
+            <button class="tb-btn" onclick={exportCidxArchive} disabled={cidxBusy}
+                    title="Suchindex als portable .cidx-Datei exportieren (offline nutzbar)">
+                {#if cidxBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
+                .cidx exportieren
+            </button>
         </div>
+        {#if cidxLastResult}
+            <div class="caf-result-bar">{cidxLastResult}</div>
+        {/if}
         {#if cafLastResult}
             <div class="caf-result-bar">
                 {cafLastResult}

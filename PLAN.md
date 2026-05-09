@@ -235,13 +235,17 @@ ocrs OCR. See HISTORY.md for the original spec and design rationale.
 The two follow-ups below close the loop on offline archive use and
 higher-quality OCR.)
 
-- [ ] **Phase 7.7 — Mountable archive index files** (~1-2 wks)
-  Serialise a per-volume slice of the documents table to a portable
-  `.cidx` file (Lance dataset export format). Load → drive's full
-  search index lights up offline. Same offline-browse property the
-  P6 catalog already has, extended to the rich content+embedding
-  rows. Useful for archived backups: ship the archive drive + a
-  `.cidx` file in the same backup snapshot.
+- [x] **Phase 7.7 — Mountable archive index files** (first cut shipped)
+  `LocalIndex::export_cidx(dest, volume_id, include_embeddings)` streams
+  filtered rows into a fresh LanceDB at `dest` (`documents.lance/` inside).
+  `LocalIndex::open_cidx(path)` opens it read-only — all `query_documents` /
+  `search_*` / `count_docs` APIs work on the snapshot.
+  Tauri commands: `index_export_cidx` (volume filter, embedding opt-out) +
+  `index_open_cidx` (stats). GUI: ".cidx exportieren" button alongside the
+  existing ".caf exportieren". CLI: `index export-cidx <dest> [--volume-id V]`
+  + `index inspect-cidx <path>`.
+  Remaining: load a `.cidx` as a secondary read-only tab in Übersicht;
+  background-ingest re-index on `.cidx` import; FTS export companion.
 
 **Phase 7.8 — OCR Tiers 3 + 4** (Tiers 1-2 shipped — see HISTORY.md):
 
@@ -303,11 +307,12 @@ existing scaffold.
   Remaining: `init` (embedder download), `ingest` (full pipeline),
   `search --mode vector|hybrid` (needs embedder), `build-ivf-pq`.
 
-- [ ] **`batch`** — `add <file>...` (appends to the same persisted
-  store the GUI reads, so the next GUI launch sees them) / `process
-  [--filter STATUS] [--limit N]` (runs the batch pipeline headless,
-  dumps proposed moves) / `apply <plan.json>` (executes a previously-
-  processed plan).
+- [x] **`batch`** (partial) — `add <paths>... [--level N] [--job-id ID]`
+  (adds files/folders to the durable job queue; GUI resumes on next launch) /
+  `list [--job-id ID] [--status STATUS]` (prints jobs or per-job file list) /
+  `apply <plan.json> [--mode move|copy] [--dry-run]` (execute a JSON sort plan:
+  `{"mode":"move","items":[{"src":"...","dst":"..."}]}`).
+  Remaining: `process` (headless LLM extraction pass).
 
 - [ ] **`chat`** — `query "<prompt>" [--context-files X,Y,Z]` /
   `transcribe <audio-file>` (ASR via P3 backend) / `tts "<text>"`
@@ -318,7 +323,9 @@ existing scaffold.
   emits the shell-completion script via `clap_complete`. Install e.g.
   `crispsorter completion zsh > ~/.zsh/completions/_crispsorter`.
 
-- [ ] **Polish** — man-page generation via `clap_mangen`, single-binary
+- [x] **Polish (partial)** — `crispsorter manpage [--out DIR]` generates
+  `crispsorter.1` via `clap_mangen`. Single-binary install story deferred.
+- [ ] **Polish (remaining)** — single-binary
   install story (`brew formula` / `winget` / `cargo install
   crispsorter` — the `cargo install` path needs the P6 Phase 5
   `crispcat` workspace-crate extraction so the CLI doesn't drag in

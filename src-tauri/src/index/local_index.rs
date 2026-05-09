@@ -959,6 +959,82 @@ impl LocalIndex {
         }
         Ok(None)
     }
+
+    // ── P7.7 — .cidx export / import ──────────────────────────────────────
+
+    /// Export a per-volume (or full) slice of the documents table to a
+    /// portable LanceDB directory at `dest_path` (the `.cidx` dir).
+    ///
+    /// The exported directory has the same structure as the main index
+    /// (`dest_path/documents.lance/`) so it can be opened with the same
+    /// `LocalIndex::open_cidx` API.
+    ///
+    /// `volume_id` — export only rows for this volume. `None` = full snapshot.
+    /// `include_embeddings` — when `false` (default) the embedding columns
+    ///   are stripped; the snapshot supports FTS + columnar browse offline.
+    pub async fn export_cidx(
+        &self,
+        dest_path: &Path,
+        volume_id: Option<&str>,
+        include_embeddings: bool,
+    ) -> Result<usize> {
+        // Build query.
+        let filter_sql: Option<String> = volume_id.map(|v| {
+            format!("volume_id = '{}'", v.replace('\'', "''"))
+        });
+        let meta_columns: Vec<String> = vec![
+            "id", "doc_id", "location_uri", "owner_id",
+            "filename", "title", "author", "year", "ext",
+            "language", "page_count", "chunk_index", "chunk_total",
+            "chunk_start_char", "chunk_end_char",
+            "indexed_at", "source_hash", "tags",
+            "metadata_json", "parent_dir", "volume_id",
+        ].into_iter().map(String::from).collect();
+
+        let mut q = self.table.query();
+        if let Some(ref sql) = filter_sql {
+            q = q.only_if(sql.as_str());
+        }
+        if !include_embeddings {
+            q = q.select(lancedb::query::Select::Columns(meta_columns));
+        }
+        let batches: Vec<RecordBatch> = q.execute().await?.try_collect().await?;
+        let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+        if row_count == 0 {
+            return Err(anyhow!("no rows matched the export filter (volume_id={volume_id:?})"));
+        }
+
+        // Write into a fresh LanceDB at dest_path.
+        std::fs::create_dir_all(dest_path)
+            .with_context(|| format!("creating cidx dir {}", dest_path.display()))?;
+        let dest_uri = dest_path.to_string_lossy().into_owned();
+        let db_out = connect(&dest_uri).execute().await
+            .with_context(|| format!("opening output DB at {dest_uri}"))?;
+
+        let schema = batches[0].schema();
+        let reader = arrow_array::record_batch::RecordBatchIterator::new(
+            batches.into_iter().map(Ok),
+            schema,
+        );
+        db_out.create_table("documents", Box::new(reader))
+            .execute()
+            .await
+            .context("writing documents table to .cidx")?;
+
+        Ok(row_count)
+    }
+
+    /// Open an existing `.cidx` archive (a LanceDB-structured directory)
+    /// and return a `LocalIndex` wrapping it. Read-only in practice since
+    /// the ingest pipeline isn't wired; `query_documents` / `search_*` all work.
+    pub async fn open_cidx(cidx_path: &Path) -> Result<Self> {
+        let uri = cidx_path.to_string_lossy().into_owned();
+        let db = connect(&uri).execute().await
+            .with_context(|| format!("opening .cidx at {}", cidx_path.display()))?;
+        let table = db.open_table("documents").execute().await
+            .with_context(|| format!("opening documents table in .cidx at {}", cidx_path.display()))?;
+        Ok(Self { table })
+    }
 }
 
 // ── IndexBackend impl ──────────────────────────────────────────────────────
