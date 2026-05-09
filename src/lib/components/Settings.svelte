@@ -1771,18 +1771,18 @@
                 </div>
                 {#if ocrEnabled}
                     <div class="field-row" style="margin-top: 8px;">
-                        <label for="ocr-tier-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">OCR-Tier:</label>
-                        <select id="ocr-tier-select" bind:value={ocrTier} style="flex:1; max-width:220px;">
-                            <option value="auto">Auto (bester verfügbarer Tier)</option>
-                            <option value="tier3">Tier 3 — PaddleOCR (multilingal, ort)</option>
-                            <option value="tier2">Tier 2 — ocrs (Rust, nur Latein)</option>
-                            <option value="tier1">Tier 1 — Tesseract (System-Install)</option>
+                        <label for="ocr-tier-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">OCR-Engine:</label>
+                        <select id="ocr-tier-select" bind:value={ocrTier} style="flex:1; max-width:260px;">
+                            <option value="auto">Automatisch (beste verfügbare)</option>
+                            <option value="tier3">PaddleOCR — multilingual, schnell (empfohlen)</option>
+                            <option value="tier2">ocrs — Rust, nur lateinische Schrift</option>
+                            <option value="tier1">Tesseract — System-Installation erforderlich</option>
                         </select>
                     </div>
                     <p class="hint" style="margin-bottom:8px;">
-                        Tier 3 (PaddleOCR) benötigt <code>--features paddle-ocr</code> beim Build.
-                        Tier 2 (ocrs) ist in der Standard-Binary enthalten.
-                        Tier 1 braucht Tesseract als System-Programm.
+                        PaddleOCR benötigt <code>--features paddle-ocr</code> beim Build.
+                        ocrs ist in der Standard-Binary enthalten und braucht keine Installation.
+                        Tesseract muss separat installiert werden (brew / apt / winget).
                     </p>
                 {/if}
                 <p class="hint" style="margin-bottom: 16px;">{i18n.t.settings.ocr_tesseract_hint}</p>

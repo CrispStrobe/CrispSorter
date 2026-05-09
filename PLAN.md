@@ -1576,13 +1576,15 @@ more:
 
 #### Read paths CrispSorter wants
 
-1. **L1 ingest of an entire backed-up tree, zero extraction.**
-   `index_ingest_cb_manifest(manifest_db_path, owner_id)` reads
-   cloud-backup's SQLite (`SELECT path, size, mtime, hash FROM
-   file_manifest`) and writes one L1 LanceDB row per file. Catalog
-   sees "you have 482k files indexed at the filesystem-metadata
-   level" without any 7z work — the entire backup tree becomes
-   browsable in Übersicht in seconds.
+1. ✅ **L1 ingest of an entire backed-up tree, zero extraction.**
+   `index_ingest_cb_manifest(manifest_db_path, owner_id)` queries
+   cloud-backup's `source_files` table (path, size, mtime, hash,
+   archived_in) and writes L1 LanceDB rows. Non-archived files get
+   `crisp+local://...` URIs; archived files get `crisp+cb-archive://
+   {archive_id}/{hash}#{path}` URIs. Batch size 64. Available as a
+   Tauri command + CLI `index ingest-cb-manifest <db>` + "cloud-backup"
+   button in the Sources tab. `FileLocation::CbArchive` variant added
+   to location.rs (retrieval via `retrieve.py` in a future step).
 
 2. **L2/L3 promotion via `retrieve.py`.** When the user clicks
    "Promote to L3" on a row whose `location_uri` starts with

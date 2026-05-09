@@ -64,6 +64,15 @@ pub enum FileLocation {
         archive_cloud_path: String,
         internal_path: String,
     },
+    /// A file inside a cloud-backup encrypted 7z archive.
+    /// `archive_id` matches cloud-backup's `archives.archive_id`.
+    /// `file_hash` is the SHA-256 (or other) hash from `file_manifest.file_hash`.
+    /// Resolution: spawn `retrieve.py --archive {archive_id} --hash {file_hash}`.
+    CbArchive {
+        archive_id: i64,
+        file_hash: String,
+        original_path: String,
+    },
 }
 
 impl FileLocation {
@@ -124,6 +133,14 @@ impl FileLocation {
                     user_id, archive_str, internal_path
                 )
             }
+            FileLocation::CbArchive {
+                archive_id,
+                file_hash,
+                original_path,
+            } => {
+                let path_enc = original_path.replace(' ', "%20");
+                format!("crisp+cb-archive://{}/{}#{}", archive_id, file_hash, path_enc)
+            }
         }
     }
 
@@ -150,6 +167,7 @@ impl FileLocation {
             FileLocation::Vps { user_id, .. } => *user_id,
             FileLocation::Internxt { user_id, .. } => *user_id,
             FileLocation::InternxtZip { user_id, .. } => *user_id,
+            FileLocation::CbArchive { .. } => Uuid::nil(),
         }
     }
 
@@ -159,6 +177,7 @@ impl FileLocation {
             FileLocation::Vps { .. } => RetrievalCost::Cheap,
             FileLocation::Internxt { .. } => RetrievalCost::Expensive,
             FileLocation::InternxtZip { .. } => RetrievalCost::Expensive,
+            FileLocation::CbArchive { .. } => RetrievalCost::Expensive,
         }
     }
 
@@ -174,6 +193,9 @@ impl FileLocation {
             }
             FileLocation::InternxtZip { internal_path, .. } => {
                 internal_path.split('/').next_back().map(str::to_owned)
+            }
+            FileLocation::CbArchive { original_path, .. } => {
+                original_path.split('/').next_back().map(str::to_owned)
             }
         }
     }
