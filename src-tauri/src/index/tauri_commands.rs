@@ -2201,6 +2201,148 @@ pub async fn index_retry_all_failed(
     local.retry_all_failed_extractions().await.map_err(|e| e.to_string())
 }
 
+// ── P12 — cloud-backup manifest import ───────────────────────────────────────
+
+/// Import file metadata from a cloud-backup SQLite manifest database as L1
+/// index rows. No file content is read — this is a filesystem-metadata-only
+/// pass that makes the entire backup tree browsable in Übersicht instantly.
+///
+/// Queries `source_files` (original paths + sizes + mtimes + hashes) and
+/// builds one L1 `DocumentChunk` per row with a `crisp+cb-archive://...`
+/// or `crisp+local://...` URI depending on whether the file is archived.
+///
+/// Returns `{ ingested, skipped, errors }`.
+#[tauri::command]
+pub async fn index_ingest_cb_manifest(
+    state: State<'_, AppState>,
+    manifest_db_path: String,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let pipeline = state.index.lock().await.pipeline.clone()
+        .ok_or("No local ingest pipeline initialised")?;
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    // Open the cloud-backup SQLite read-only.
+    let db_path = std::path::PathBuf::from(&manifest_db_path);
+    if !db_path.exists() {
+        return Err(format!("manifest DB not found: {}", db_path.display()));
+    }
+    let conn = tokio::task::spawn_blocking(move || {
+        Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    })
+    .await
+    .map_err(|e| format!("spawn: {e}"))?
+    .map_err(|e| format!("open sqlite: {e}"))?;
+
+    // Pull all non-deleted source files.
+    let rows: Vec<(String, i64, f64, Option<String>, Option<i64>)> =
+        tokio::task::spawn_blocking(move || {
+            let mut stmt = conn.prepare(
+                "SELECT file_path, file_size_bytes, modified_time, file_hash, archived_in
+                 FROM source_files
+                 WHERE status NOT IN ('deleted','error')
+                 ORDER BY file_path",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, f64>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>();
+            Ok::<_, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|e| format!("spawn: {e}"))?
+        .map_err(|e| format!("query: {e}"))?;
+
+    // Build L1FileEntry batch (64 at a time).
+    let mut ingested = 0usize;
+    let mut errors   = 0usize;
+    const BATCH: usize = 64;
+
+    let chunks = rows.chunks(BATCH);
+    for chunk in chunks {
+        let entries: Vec<crate::index::ingest::L1FileEntry> = chunk
+            .iter()
+            .map(|(path, size, mtime, hash, archived_in)| {
+                let hash_str = hash.clone().unwrap_or_default();
+                // doc_id: use hash; fall back to UUID if empty.
+                let doc_id = if hash_str.is_empty() {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    hash_str.clone()
+                };
+                // URI: crisp+cb-archive when archived, crisp+local otherwise.
+                let location_uri = if let Some(archive_id) = archived_in {
+                    crate::index::location::FileLocation::CbArchive {
+                        archive_id: *archive_id,
+                        file_hash: hash_str.clone(),
+                        original_path: path.clone(),
+                    }
+                    .to_uri()
+                } else {
+                    crate::index::location::FileLocation::Local {
+                        user_id: uuid::Uuid::parse_str(&owner)
+                            .unwrap_or_else(|_| uuid::Uuid::nil()),
+                        machine_id: uuid::Uuid::nil(),
+                        path: std::path::PathBuf::from(path),
+                    }
+                    .to_uri()
+                };
+
+                let p = std::path::Path::new(path);
+                let filename = p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let ext = p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let parent_dir = p.parent()
+                    .and_then(|d| d.to_str())
+                    .unwrap_or("")
+                    .to_owned();
+
+                crate::index::ingest::L1FileEntry {
+                    doc_id,
+                    location_uri,
+                    owner_id: owner.clone(),
+                    filename,
+                    ext,
+                    source_hash: hash_str,
+                    mtime_ms: (*mtime * 1000.0) as i64,
+                    ctime_ms: 0,
+                    size: *size,
+                    parent_dir,
+                    volume_id: None,
+                }
+            })
+            .collect();
+
+        match pipeline.ingest_l1(&entries).await {
+            Ok(stats) => ingested += stats.chunk_count,
+            Err(e) => {
+                errors += 1;
+                eprintln!("[cb-manifest] batch error: {e}");
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "ingested": ingested,
+        "total_rows": rows.len(),
+        "errors": errors,
+    }))
+}
+
 // ── Volume helpers ────────────────────────────────────────────────────────────
 
 /// List all currently-mounted volumes with their stable UUID, mount point,

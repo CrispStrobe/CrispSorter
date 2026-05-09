@@ -1296,6 +1296,27 @@
      *  Cathy / Catfish / another CrispSorter installation. When the
      *  user has a selection in the Übersicht, only those rows are
      *  exported; otherwise the entire catalog. */
+    async function importCbManifest() {
+        const sel = await openDialog({ multiple: false, filters: [{ name: 'SQLite Database', extensions: ['db', 'sqlite', 'sqlite3'] }], title: 'cloud-backup Manifest öffnen' });
+        if (typeof sel !== 'string') return;
+        cafBusy = true;
+        cafLastResult = null;
+        try {
+            const res = await invoke<{ ingested: number; total_rows: number; errors: number }>('index_ingest_cb_manifest', {
+                manifestDbPath: sel,
+                ownerId: null,
+            });
+            cafLastResult = `cloud-backup: ${res.ingested} von ${res.total_rows} Einträgen importiert (${res.errors} Fehler)`;
+            logInfo(`cloud-backup manifest import: ${JSON.stringify(res)}`);
+            await loadContents();
+        } catch (e: any) {
+            cafLastResult = `Fehler: ${e?.message ?? e}`;
+            logError(`cloud-backup manifest import failed: ${e?.message ?? e}`);
+        } finally {
+            cafBusy = false;
+        }
+    }
+
     async function mountCidxArchive() {
         const { open: openD } = await import('@tauri-apps/plugin-dialog');
         const sel = await openD({ directory: true, multiple: false,
@@ -1865,6 +1886,11 @@
                     title="Suchindex als portable .cidx-Datei exportieren (offline nutzbar)">
                 {#if cidxBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
                 .cidx exportieren
+            </button>
+            <button class="tb-btn" onclick={importCbManifest} disabled={cafBusy}
+                    title="cloud-backup Manifest-SQLite importieren (L1-Metadaten für alle gesicherten Dateien)">
+                {#if cafBusy}<Loader2 size={13} class="spin" />{:else}<Database size={13} />{/if}
+                cloud-backup
             </button>
         </div>
         {#if cidxLastResult}

@@ -511,6 +511,15 @@ enum IndexCmd {
         /// Path to the .cidx directory.
         path: PathBuf,
     },
+    /// Import file metadata from a cloud-backup manifest SQLite as L1 rows.
+    /// Reads source_files table: original paths, sizes, mtimes, hashes.
+    IngestCbManifest {
+        /// Path to the cloud-backup manifest SQLite database.
+        manifest_db: PathBuf,
+        /// Owner UUID (defaults to nil UUID for single-user installs).
+        #[arg(long)]
+        owner_id: Option<String>,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -766,6 +775,65 @@ async fn cmd_index_async(
                 OutFormat::Text => {
                     println!("exported {rows} row(s) → {}", dest.display());
                 }
+            }
+        }
+
+        IndexCmd::IngestCbManifest { manifest_db, owner_id } => {
+            use rusqlite::{Connection, OpenFlags};
+            if !manifest_db.exists() {
+                return Err(format!("not found: {}", manifest_db.display()));
+            }
+            let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
+            eprintln!("opening manifest: {}", manifest_db.display());
+            let conn = Connection::open_with_flags(&manifest_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| format!("open sqlite: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT file_path, file_size_bytes, modified_time, file_hash, archived_in
+                 FROM source_files WHERE status NOT IN ('deleted','error') ORDER BY file_path"
+            ).map_err(|e| e.to_string())?;
+            let rows: Vec<(String,i64,f64,Option<String>,Option<i64>)> = stmt
+                .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            eprintln!("found {} rows", rows.len());
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            let pipe = crate::index::IngestPipeline::new(
+                std::sync::Arc::new(fts),
+                std::sync::Arc::new(local),
+                None,
+                crate::index::ingest::IngestConfig::default(),
+            );
+            let mut ingested = 0usize;
+            const BATCH: usize = 64;
+            for chunk in rows.chunks(BATCH) {
+                let entries: Vec<crate::index::ingest::L1FileEntry> = chunk.iter().map(|(path,size,mtime,hash,archived_in)| {
+                    let hash_str = hash.clone().unwrap_or_default();
+                    let doc_id = if hash_str.is_empty() { uuid::Uuid::new_v4().to_string() } else { hash_str.clone() };
+                    let location_uri = if let Some(aid) = archived_in {
+                        crate::index::location::FileLocation::CbArchive { archive_id: *aid, file_hash: hash_str.clone(), original_path: path.clone() }.to_uri()
+                    } else {
+                        crate::index::location::FileLocation::Local { user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()), machine_id: uuid::Uuid::nil(), path: std::path::PathBuf::from(path) }.to_uri()
+                    };
+                    let p = std::path::Path::new(path);
+                    crate::index::ingest::L1FileEntry {
+                        doc_id, location_uri, owner_id: owner.clone(),
+                        filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                        ext: p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default(),
+                        source_hash: hash_str,
+                        mtime_ms: (*mtime * 1000.0) as i64, ctime_ms: 0, size: *size,
+                        parent_dir: p.parent().and_then(|d| d.to_str()).unwrap_or("").to_owned(),
+                        volume_id: None,
+                    }
+                }).collect();
+                if let Ok(stats) = pipe.ingest_l1(&entries).await { ingested += stats.chunk_count; }
+            }
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({ "ingested": ingested, "total": rows.len() })),
+                OutFormat::Text => println!("ingested {ingested} / {} rows from manifest", rows.len()),
             }
         }
 
