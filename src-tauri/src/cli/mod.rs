@@ -234,6 +234,7 @@ fn cmd_version(out: OutFormat) -> Result<(), String> {
 fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let tesseract = crate::extractors::ocr::is_tesseract_installed();
     let ocrs_models = crate::extractors::ocr_ocrs::is_ocrs_available();
+    let paddle_ocr = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let pdf_extract_ok = true; // pulled in unconditionally
     let lance_dir = std::env::var_os("HOME").map(|h| {
         std::path::PathBuf::from(h)
@@ -244,6 +245,7 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
             let payload = serde_json::json!({
                 "tesseract_installed": tesseract,
                 "ocrs_models_available": ocrs_models,
+                "paddle_ocr_available": paddle_ocr,
                 "pdf_extract_compiled_in": pdf_extract_ok,
                 "lance_dir_exists": lance_dir
                     .as_ref()
@@ -256,7 +258,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
         OutFormat::Text => {
             println!("OCR Tier 1 (tesseract installed): {}", yn(tesseract));
             println!("OCR Tier 2 (ocrs models present): {}", yn(ocrs_models));
-            println!("PDF extractor (pdf-extract):     {}", yn(pdf_extract_ok));
+            println!("OCR Tier 3 (PaddleOCR compiled):  {}", yn(paddle_ocr));
+            println!("PDF extractor (pdf-extract):      {}", yn(pdf_extract_ok));
             if let Some(p) = lance_dir {
                 println!("Lance dir: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" });
             }

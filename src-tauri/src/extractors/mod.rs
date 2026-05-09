@@ -34,6 +34,7 @@ use std::path::Path;
 pub mod html;
 pub mod ocr;
 pub mod ocr_ocrs;
+pub mod ocr_paddle;
 pub mod pdf;
 pub mod text;
 
@@ -84,19 +85,36 @@ pub fn supported(ext: &str) -> bool {
     )
 }
 
+/// Which OCR tier to try, in descending quality order.
+///
+/// `Auto` = try the best available tier at runtime:
+///   Tier 3 (PaddleOCR) if compiled in → Tier 2 (ocrs) if models present →
+///   Tier 1 (Tesseract) if installed → nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OcrTier {
+    /// Pick the best available tier automatically.
+    #[default]
+    Auto,
+    /// Tier 1 — Tesseract shell-out.
+    Tier1,
+    /// Tier 2 — ocrs (pure Rust, Latin-script).
+    Tier2,
+    /// Tier 3 — PaddleOCR via usls (requires `paddle-ocr` feature).
+    Tier3,
+}
+
 /// PLAN P7.8 options for the extractor dispatcher.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExtractOptions {
-    /// Run Tesseract on image extensions (png/jpg/tiff/…) and on
-    /// PDFs whose text layer is empty after the regular `pdf::extract`
-    /// pass. Off by default — OCR is CPU-heavy and most catalogs
-    /// don't need it.
+    /// Run OCR on image extensions (png/jpg/tiff/…) and on PDFs whose
+    /// text layer is empty after the regular `pdf::extract` pass.
+    /// Off by default — OCR is CPU-heavy and most catalogs don't need it.
     pub try_ocr: bool,
     /// PDFs with fewer than this many extracted characters fall through
-    /// to OCR if `try_ocr` is on. 50 is a tuning point that catches
-    /// "scanned PDF with embedded but-junk header text" without
-    /// firing on legitimately-short PDFs (single-page memos, etc.).
+    /// to OCR if `try_ocr` is on.
     pub ocr_pdf_min_chars: usize,
+    /// Which OCR tier to use. Default `Auto` picks the best available.
+    pub ocr_tier: OcrTier,
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -108,6 +126,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
         ExtractOptions {
             try_ocr: false,
             ocr_pdf_min_chars: 50,
+            ocr_tier: OcrTier::Auto,
         },
     )
 }
@@ -147,16 +166,20 @@ pub fn extract_text_from_path_with_opts(
             doc
         }),
         e if OCR_IMAGE_EXTS.contains(&e) && opts.try_ocr => {
-            // PLAN P7.8 — tiered OCR for images. Try Tier 2 (ocrs,
-            // pure Rust, no system deps) first when its models are
-            // available; fall through to Tier 1 (Tesseract shell-out)
-            // on any failure. ocrs is Latin-script only, so even when
-            // it succeeds Tier 1 may produce better results for
-            // German / CJK / Arabic — but the dispatcher prefers ocrs
-            // for the speed + zero-install win on Latin-only docs.
-            // Settings will eventually let users pin a tier; for now
-            // it's auto-fall-through.
-            if ocr_ocrs::is_ocrs_available() {
+            // PLAN P7.8 — tiered OCR for images.
+            // Tier 3 (PaddleOCR, best quality, requires --features paddle-ocr)
+            // → Tier 2 (ocrs, pure Rust, Latin-script)
+            // → Tier 1 (Tesseract, system install).
+            let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
+            let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
+
+            if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+                if let Ok(mut doc) = ocr_paddle::ocr_via_paddle(path) {
+                    doc.ext = ext.clone();
+                    return Ok(doc);
+                }
+            }
+            if want_tier2 && ocr_ocrs::is_ocrs_available() {
                 if let Ok(mut doc) = ocr_ocrs::ocr_via_ocrs(path) {
                     doc.ext = ext.clone();
                     return Ok(doc);

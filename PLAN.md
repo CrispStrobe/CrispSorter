@@ -251,15 +251,18 @@ higher-quality OCR.)
 
 **Phase 7.8 — OCR Tiers 3 + 4** (Tiers 1-2 shipped — see HISTORY.md):
 
-- [ ] **Tier 3 — `usls` PaddleOCR pipeline** (~3-5 days)
-  MIT, ONNXRuntime via the existing `ort` dep already in our
-  binaries (no new heavy install). Provides PaddleOCR DB+SVTR
-  multilingual text + SLANet table recognition + DocLayout-YOLO
-  for structure. ~200-500 MB models that download from
-  HuggingFace on first use, same auto-download pattern as our
-  embedders. Massive quality jump for German / CJK / Arabic.
-  Caveat: "personal project, spare time" maintenance — pin a
-  known-good version.
+- [x] **Tier 3 — `usls` PaddleOCR pipeline** (first cut shipped)
+  `usls = "=0.2.0-alpha.3"` (pins to our ort rc.11) behind
+  `--features paddle-ocr` Cargo feature. `extractors/ocr_paddle.rs`:
+  `ocr_via_paddle(path)` runs DB detection (`ppocr_det_v4_ch`) →
+  polygon→Hbb crop → SVTR recognition (`ppocr_rec_v4_en`), sorts
+  regions top-to-bottom for reading order.
+  `OcrTier` enum added to `ExtractOptions`; dispatch tries Tier 3
+  before Tier 2 (ocrs) before Tier 1 (Tesseract) in `Auto` mode.
+  `crispsorter doctor` reports paddle-ocr availability.
+  Models auto-download from HuggingFace on first call (~50 MB det +
+  ~10 MB rec). Remaining: Settings UI knob for tier selection;
+  per-document CJK/Latin model selection; SLANet table extraction.
 
 - [ ] **Tier 4 — `deepseek-ocr.rs`-style VLM OCR** (~1 wk, opt-in
   cargo feature like `crispembed`/`crispasr`).
@@ -2084,7 +2087,7 @@ Known suffix tokens and their sort priority (representative selection):
 
 #### Implementation status
 
-- [ ] **P15a** ✅ in progress (see commit below)
+- [x] **P15a** ✅ shipped
   - [x] `file_sha256` Tauri command
   - [x] `BatchItem` fields: `duplicateGroupId`, `isDuplicatePrimary`
   - [x] `detectAndMarkDuplicates()` in BatchManager
@@ -2092,7 +2095,7 @@ Known suffix tokens and their sort priority (representative selection):
   - [x] Inline duplicate badges in filename column
   - [x] Orange row tint for non-primary duplicates
   - [x] "Duplikate überspringen" checkbox in sort-options dropdown
-- [ ] **P15b** ✅ in progress (see commit below)
+- [x] **P15b** ✅ shipped
   - [x] `BatchItem` fields: `chapterGroupId`, `chapterSuffix`, `isChapterRepresentative`, `chapterGroupSize`
   - [x] `detectChapterGroups()` in BatchManager — ISBN-13 + generic suffix patterns
   - [x] LLM skip for non-representatives in `processAll()`
