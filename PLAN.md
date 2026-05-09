@@ -114,10 +114,24 @@ Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
   `InternxtDrive` (Python `internxt-cli` bridge — patched cli.py adds
   `--json` on `whoami`/`list-path`/`resolve`) + `FilenDrive` (Python
   `filen-cli` bridge — patched cli.py adds `--json` on `whoami`/`ls`/
-  `resolve`/`trash`, plus a missing `handle_trash` impl). `DriveRegistry`
-  (drives.json persistence) routes each `DriveType` to its real backend
-  (was previously a stub that funnelled everything through `LocalDrive`).
-  5 Tauri commands. SFTP path still piggybacks on OS-mount via `LocalDrive`.
+  `resolve`/`trash`, plus a missing `handle_trash` impl) + `WebDavDrive`
+  (generic HTTP — Nextcloud/ownCloud/mailbox.org/Synology + the local
+  WebDAV servers that filen-cli and internxt-cli expose; PROPFIND parser
+  handles both `D:`-prefixed and default-namespace wire shapes).
+  `DriveRegistry` (drives.json persistence; new optional `username` /
+  `password` fields for WebDAV basic-auth) routes each `DriveType` to its
+  real backend.  5 Tauri commands. SFTP path still piggybacks on OS-mount
+  via `LocalDrive`.
+- [x] **Generic remote ingest + promote (`crisp+drive://`)** —
+  `FileLocation::Drive { drive_id, remote_path }` URI scheme;
+  `crate::drives::walk()` recursive walker over any registered drive;
+  `index_ingest_drive_manifest` Tauri command (manifest-only L1 ingest,
+  no bandwidth cost beyond directory listings); `index_promote_drive_archive`
+  Tauri command (fetch a single file via `read_file`, stage, route
+  through the existing cb-archive `promote_path` pipeline → L3).
+  53/53 tests pass (drives:: + index::location::).  UI wiring (drive
+  picker + per-row "Promote to L3" button on `crisp+drive://` rows) still
+  pending — Tauri commands work today via direct invoke from the console.
 - [x] **SyncManager** — `src-tauri/src/sync/`: SQLite outbox (`sync_outbox.db`),
   `enqueue/claim_batch/mark_done/mark_error/clear_failed`, `push_pending`
   (POST per op type), `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),
