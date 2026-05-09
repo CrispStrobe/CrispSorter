@@ -31,6 +31,8 @@ members  = [
     "src-tauri",
     "crisp-index-server",
     "crisp-index-protocol",
+    "crates/crispcat",
+    "crates/crispcat-cli",
 ]
 
 # Lockfile lives at the workspace root (`Cargo.lock`). The previous

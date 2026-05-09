@@ -339,7 +339,7 @@ pub fn read_file(path: &Path) -> Result<FileIndex, CafError> {
     let comment = if version >= 4 { read_cstr_latin1(&mut r)? } else { String::new() };
     let freesize = if version >= 1 { read_f32_le(&mut r)? } else { 0.0 };
     let archive = if version >= 6 { read_i16_le(&mut r)? } else { 0 };
-    index.header = crate::catalog::index::VolumeHeader {
+    index.header = crate::index::VolumeHeader {
         label,
         alias,
         serial,
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn volume_header_round_trips() {
-        use crate::catalog::index::VolumeHeader;
+        use crate::index::VolumeHeader;
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("hdr.caf");
         let mut idx = fake_index();

@@ -1810,6 +1810,34 @@ name = "crispasr-sys"
 version = "0.5.7"
 
 [[package]]
+name = "crispcat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "futures-util",
+ "hex",
+ "jwalk",
+ "lancedb",
+ "md-5",
+ "rayon",
+ "serde",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
+name = "crispcat-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crispcat",
+ "serde_json",
+]
+
+[[package]]
 name = "crispembed"
 version = "0.1.0"
 dependencies = [
@@ -11004,6 +11032,7 @@ dependencies = [
  "crisp-index-protocol",
  "crispasr",
  "crispasr-sys",
+ "crispcat",
  "crispembed",
  "crispembed-sys",
  "deunicode",

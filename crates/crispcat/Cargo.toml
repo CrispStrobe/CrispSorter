@@ -1,0 +1,40 @@
+[package]
+name        = "crispcat"
+version     = "0.1.0"
+edition     = "2021"
+description = "Cathy/Catfish .caf catalog reader/writer + parallel scanner + duplicate engine."
+license     = "MIT"
+repository  = "https://github.com/CrispStrobe/CrispSorter"
+
+# This crate is the catalog-only slice of CrispSorter — extracted from
+# `src-tauri/src/catalog/` (PLAN P6 Phase 5) so a thin standalone CLI
+# (`crispcat-cli`) and other consumers can use it without pulling in the
+# full Tauri / LanceDB / Tantivy stack.
+#
+# By default the `lance` feature is OFF, keeping the dep graph at:
+#   serde + anyhow + rayon + jwalk + (md-5/sha1/sha2 hashers)
+# Turn it on to get LanceDB-backed materialisation (used by the desktop
+# app's "active catalog" toggle).
+
+[lib]
+
+[dependencies]
+serde       = { version = "1", features = ["derive"] }
+anyhow      = "1"
+rayon       = "1.10"
+jwalk       = "0.8"
+md-5        = "0.10"
+sha1        = "0.10"
+sha2        = "0.10"
+hex         = "0.4"
+
+# Optional: LanceDB-backed materialisation
+arrow-array  = { version = "57.3", optional = true }
+arrow-schema = { version = "57.3", optional = true }
+futures-util = { version = "0.3",  optional = true }
+lancedb      = { version = "0.26.2", default-features = false, optional = true }
+
+[features]
+default = []
+# Enables `crispcat::lance` — LanceDB materialisation (heavy: arrow + lancedb).
+lance = ["dep:arrow-array", "dep:arrow-schema", "dep:futures-util", "dep:lancedb"]
