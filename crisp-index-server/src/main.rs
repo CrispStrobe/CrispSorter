@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
         .route("/docs/:doc_id",             delete(routes::docs::delete_doc))
         .route("/docs/:doc_id/location",    post(routes::docs::update_location))
         .route("/admin/build-ivf-pq",       post(routes::admin::build_ivf_pq))
+        .route("/sync/since",               get(routes::sync::since))
         .layer(middleware::from_fn_with_state(
             shared.clone(),
             auth::require_bearer,

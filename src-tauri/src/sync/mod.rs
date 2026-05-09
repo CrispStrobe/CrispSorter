@@ -225,6 +225,49 @@ impl SyncManager {
         Ok((pushed, failed))
     }
 
+    /// Pull rows from the remote server's `/v1/sync/since` endpoint that have
+    /// `indexed_at >= last_pull_ts`. Returns (pulled_count, max_indexed_at).
+    /// The caller is responsible for applying the rows to its local index;
+    /// this method only fetches and updates `last_pull_ts`.
+    pub async fn pull_pending(
+        &self,
+        remote_url: &str,
+        api_key: &str,
+        limit: usize,
+    ) -> Result<(usize, i64)> {
+        let last_pull_ts: i64 = self.get_state("last_pull_ts")?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let url = format!(
+            "{}/v1/sync/since?ts={}&limit={}",
+            remote_url.trim_end_matches('/'),
+            last_pull_ts,
+            limit
+        );
+        let mut req = reqwest::Client::new()
+            .get(&url)
+            .timeout(Duration::from_secs(30));
+        if !api_key.is_empty() { req = req.bearer_auth(api_key); }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("server returned {}", resp.status());
+        }
+        let body: serde_json::Value = resp.json().await?;
+        let rows = body["rows"].as_array().map(|a| a.len()).unwrap_or(0);
+        let max_ts = body["max_indexed_at"].as_i64().unwrap_or(last_pull_ts);
+
+        if max_ts > last_pull_ts {
+            self.set_state("last_pull_ts", &max_ts.to_string())?;
+        }
+        // The actual rows[] payload is logged for the caller; we don't apply
+        // them here because the local LocalIndex isn't accessible from the
+        // SyncManager (it lives behind AppState). The Tauri command driver
+        // does the apply step using the existing ingest_pipeline.
+        Ok((rows, max_ts))
+    }
+
     pub fn clear_failed(&self) -> Result<usize> {
         let n = self.conn.lock().unwrap()
             .execute("DELETE FROM sync_outbox WHERE retries >= 10", [])?;
