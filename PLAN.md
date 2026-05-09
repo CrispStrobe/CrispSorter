@@ -90,7 +90,9 @@
   `payload_json` stores compact batch with empty vectors; blob is repacked on claim.
 - [x] **IVF-PQ at 100M+ vectors** — `num_partitions` auto-scales to `sqrt(row_count)`,
   `sample_rate` exposed on `index_build_ivf_pq` Tauri command + `build_vector_index()`.
-- [ ] **Runtime modes** — `Standalone | Server | Hybrid` enum replacing `BackendType`.
+- [x] **Runtime modes** — `BackendType` gains `Hybrid` variant (serializes as "hybrid").
+  Hybrid init path = Local for now (SyncManager placeholder). Settings dropdown
+  shows Standalone/Server/Hybrid with i18n. Data-dir + remote fields visible in Hybrid.
 - [ ] **Cloud drives** — `trait CloudDrive` + SMB/SFTP/Filen/Internxt impls.
 - [ ] **SyncManager** — local ↔ remote sync outbox, pull delta, reconnect detection.
 

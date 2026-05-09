@@ -211,7 +211,7 @@
     // ── Search Index Settings ────────────────────────────────────────────────
     let indexEnabled        = $state(false);
     let indexSearchMode     = $state<'text' | 'vector' | 'hybrid'>('hybrid');
-    let indexBackendType    = $state<'local' | 'remote'>('local');
+    let indexBackendType    = $state<'local' | 'remote' | 'hybrid'>('local');
     let indexRemoteUrl      = $state('');
     let indexRemoteApiKey   = $state('');
     let indexEmbedderModel  = $state<string>('bge_m3');
@@ -242,7 +242,7 @@
         name:     string;            // user-visible
         dataDir:  string;            // override of indexDataDir for this catalog
         mode:     'text' | 'vector' | 'hybrid';
-        backend:  'local' | 'remote';
+        backend:  'local' | 'remote' | 'hybrid';
         remoteUrl: string;
         embedderModel: string;
         embedderBackend: 'onnx' | 'gguf';
@@ -1005,7 +1005,9 @@
         return { text: 'text_only', vector: 'vector_only', hybrid: 'hybrid' }[m] ?? 'hybrid';
     }
     function indexBackendToRust(b: string): string {
-        return b === 'remote' ? 'remote' : 'local';
+        if (b === 'remote') return 'remote';
+        if (b === 'hybrid') return 'hybrid';
+        return 'local';
     }
     /// UI key → serde kebab string for `RerankerModel`. Empty input
     /// (= disabled) maps to null on the Rust side. Pinned by the
@@ -2274,10 +2276,11 @@
                 <select id="index-backend-select" bind:value={indexBackendType} class="styled-select">
                     <option value="local">{i18n.t.settings.index.backend_local}</option>
                     <option value="remote">{i18n.t.settings.index.backend_remote}</option>
+                    <option value="hybrid">{i18n.t.settings.index.backend_hybrid}</option>
                 </select>
             </div>
 
-            {#if indexBackendType === 'remote'}
+            {#if indexBackendType === 'remote' || indexBackendType === 'hybrid'}
             <!-- Remote URL + Key -->
             <div class="section-card">
                 <label for="index-remote-url">{i18n.t.settings.index.remote_url}</label>
@@ -2471,7 +2474,7 @@
             </div>
 
             <!-- Data directory -->
-            {#if indexBackendType === 'local'}
+            {#if indexBackendType === 'local' || indexBackendType === 'hybrid'}
             <div class="section-card">
                 <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
                 <div class="input-with-action">

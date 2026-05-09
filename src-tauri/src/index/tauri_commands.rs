@@ -2083,9 +2083,9 @@ pub async fn init_index(
             })
         }
 
-        BackendType::Local => {
-            // Use the matryoshka-aware effective dim so the LanceDB column
-            // width matches what the embedder will actually emit.
+        // Hybrid: local-first reads, mirror writes once SyncManager ships.
+        // For now behaves identically to Local — same init path.
+        BackendType::Hybrid | BackendType::Local => {
             let dims = effective_dim;
             let fts_dir = data_dir.join("fts");
 

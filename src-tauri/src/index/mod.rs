@@ -312,12 +312,28 @@ pub enum SearchMode {
     Hybrid,
 }
 
+/// Runtime operating mode.
+///
+/// | Mode       | Reads              | Writes                     | When to use                      |
+/// |------------|--------------------|----------------------------|----------------------------------|
+/// | `Local`    | local LanceDB      | local only                 | single-machine (default)         |
+/// | `Remote`   | remote server      | remote only via HTTP       | index on a VPS / GPU box         |
+/// | `Hybrid`   | local-first        | local + mirror to remote   | laptop + VPS, offline capable    |
+///
+/// `Hybrid` reads prefer the local cache; on a cache miss it falls through to
+/// the remote.  Writes go to the local store and are mirrored to the remote via
+/// the SyncManager outbox (P11 Pillar 6).  Until SyncManager ships, `Hybrid`
+/// behaves identically to `Local` — the variant is reserved so Settings can
+/// persist it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendType {
     #[default]
     Local,
     Remote,
+    /// Hybrid (local cache + remote authoritative). Reads local-first;
+    /// writes mirror to remote via SyncManager outbox once that ships.
+    Hybrid,
 }
 
 /// Where embedding computation happens for ingest.
