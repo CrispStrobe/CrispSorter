@@ -17,6 +17,7 @@
 //! stable `id` (UUID), a human label, and a type tag.  The registry is
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
+pub mod filen;
 pub mod internxt;
 pub mod tauri_commands;
 
@@ -210,9 +211,16 @@ impl DriveRegistry {
     /// Instantiate a drive from its config.
     pub fn instantiate(config: &DriveConfig) -> Box<dyn CloudDrive> {
         match config.kind {
-            DriveType::Local | DriveType::Sftp | DriveType::Filen | DriveType::Internxt => {
-                // All types use LocalDrive for now — CLI-based impls come later.
+            DriveType::Local | DriveType::Sftp => {
+                // Local + raw SFTP both go through `LocalDrive` for now;
+                // SFTP relies on the user mounting the share via OS/FUSE.
                 Box::new(LocalDrive::new(config.label.clone(), PathBuf::from(&config.path)))
+            }
+            DriveType::Filen => {
+                Box::new(filen::FilenDrive::new(config.label.clone(), PathBuf::from(&config.path)))
+            }
+            DriveType::Internxt => {
+                Box::new(internxt::InternxtDrive::new(config.label.clone(), PathBuf::from(&config.path)))
             }
         }
     }
@@ -361,14 +369,26 @@ mod tests {
     }
 
     #[test]
-    fn registry_instantiate_returns_local_drive_for_all_kinds() {
-        // First-cut: all drive types currently route through LocalDrive.
-        for kind in [DriveType::Local, DriveType::Filen, DriveType::Internxt, DriveType::Sftp] {
+    fn registry_instantiate_routes_each_kind_correctly() {
+        // Local + Sftp both go through LocalDrive for now (Sftp relies on
+        // OS-level mounts).  Filen / Internxt route to their own subprocess
+        // drives.  This guards against future refactors silently swapping
+        // the dispatch back to LocalDrive.
+        for (kind, expected) in [
+            (DriveType::Local,    DriveType::Local),
+            // Sftp piggybacks on LocalDrive (which only knows DriveType::Local),
+            // so the instance reports Local even though the config said Sftp.
+            (DriveType::Sftp,     DriveType::Local),
+            (DriveType::Filen,    DriveType::Filen),
+            (DriveType::Internxt, DriveType::Internxt),
+        ] {
             let cfg = DriveConfig {
-                id: "x".into(), label: "lbl".into(), kind, path: "/tmp".into(),
+                id: "x".into(), label: "lbl".into(), kind: kind.clone(), path: "/tmp".into(),
             };
             let drive = DriveRegistry::instantiate(&cfg);
-            assert_eq!(drive.drive_type(), DriveType::Local);
+            assert_eq!(drive.drive_type(), expected,
+                "DriveType::{:?} should instantiate to a drive that reports drive_type() == {:?}",
+                kind, expected);
             assert_eq!(drive.label(), "lbl");
         }
     }
