@@ -16,14 +16,18 @@ pub async fn drive_list(state: State<'_, AppState>) -> Result<Vec<DriveConfig>, 
 
 /// Add or update a drive entry.
 ///
-/// `kind` must be one of: "local", "filen", "internxt", "sftp".
-/// `path` is the root path (for local/sftp/filen: OS mount-point or CLI root).
+/// `kind` must be one of: "local", "filen", "internxt", "sftp", "webdav".
+/// `path` is the root path (for local/sftp/filen: OS mount-point or CLI
+/// root; for `webdav`: base URL like `https://host/dav/`).
+/// `username` / `password` are only used for `webdav`.
 #[tauri::command]
 pub async fn drive_create(
     state: State<'_, AppState>,
     label: String,
     kind: String,
     path: String,
+    username: Option<String>,
+    password: Option<String>,
 ) -> Result<DriveConfig, String> {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
@@ -31,11 +35,12 @@ pub async fn drive_create(
         "filen"    => DriveType::Filen,
         "internxt" => DriveType::Internxt,
         "sftp"     => DriveType::Sftp,
+        "webdav"   => DriveType::WebDav,
         _          => DriveType::Local,
     };
     let config = DriveConfig {
         id:    uuid::Uuid::new_v4().to_string(),
-        label, kind: drive_type, path,
+        label, kind: drive_type, path, username, password,
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     reg.add(config.clone()).map_err(|e| e.to_string())?;
