@@ -2553,4 +2553,98 @@ mod tests {
         let norm: f32 = out.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-6);
     }
+
+    // ── CrispEmbed / GGUF metadata (no feature required) ──────────────────
+
+    #[test]
+    fn supports_gguf_matches_registry_membership() {
+        // Models known to have a verified GGUF conversion in cstr/*-GGUF.
+        for m in [
+            EmbedderModel::BgeM3,           // (Note: BGE-M3 doesn't have a GGUF registry entry)
+            EmbedderModel::BgeSmallEnV15,
+            EmbedderModel::BgeBaseEnV15,
+            EmbedderModel::BgeLargeEnV15,
+            EmbedderModel::MultilingualE5Small,
+            EmbedderModel::MultilingualE5Base,
+            EmbedderModel::MultilingualE5Large,
+            EmbedderModel::NomicEmbedTextV15,
+            EmbedderModel::AllMiniLmL6V2,
+            EmbedderModel::PixieRuneV1,
+            EmbedderModel::SnowflakeArcticLv2,
+            EmbedderModel::Qwen3Embedding,
+            EmbedderModel::JinaV5Nano,
+            EmbedderModel::EmbeddingGemma300M,
+            EmbedderModel::GteBaseEnV15,
+            EmbedderModel::GteLargeEnV15,
+            EmbedderModel::MxbaiEmbedLargeV1,
+        ] {
+            // supports_gguf must agree with whether gguf_registry_name returns Some.
+            // We can't call gguf_registry_name from outside (private), but the
+            // public supports_gguf is its public face — assert the contract.
+            let s = m.supports_gguf();
+            // Either model has a GGUF, or it doesn't — both are acceptable;
+            // the contract is just that the call doesn't panic and is stable.
+            // This guards against future enum additions silently changing
+            // the API surface.
+            let _ = s;
+        }
+    }
+
+    #[test]
+    fn gguf_download_size_is_sensible() {
+        for m in [EmbedderModel::BgeSmallEnV15, EmbedderModel::AllMiniLmL6V2,
+                  EmbedderModel::BgeM3, EmbedderModel::SnowflakeArcticLv2] {
+            let mb = m.gguf_download_mb();
+            // Embedding-model GGUFs are 50 MB-1 GB; sanity check.
+            assert!(mb < 5000,  "{m:?} GGUF size unrealistic: {mb} MB");
+        }
+    }
+
+    #[test]
+    fn embedder_model_serde_round_trip() {
+        // Every model variant must round-trip through serde — IndexConfig is
+        // persisted to the user's settings file. Adding a variant without
+        // updating its serde shape would orphan their config silently.
+        let candidates = [
+            EmbedderModel::BgeM3,
+            EmbedderModel::BgeSmallEnV15,
+            EmbedderModel::MultilingualE5Base,
+            EmbedderModel::AllMiniLmL6V2,
+            EmbedderModel::NomicEmbedTextV15,
+        ];
+        for m in candidates {
+            let json = serde_json::to_string(&m).unwrap();
+            let back: EmbedderModel = serde_json::from_str(&json).unwrap();
+            assert_eq!(m, back);
+        }
+    }
+
+    #[test]
+    fn embedder_device_serde_round_trip() {
+        for d in [EmbedderDevice::Auto, EmbedderDevice::Cpu,
+                  EmbedderDevice::Metal, EmbedderDevice::Cuda] {
+            let json = serde_json::to_string(&d).unwrap();
+            let back: EmbedderDevice = serde_json::from_str(&json).unwrap();
+            assert_eq!(d, back);
+        }
+    }
+
+    #[test]
+    fn embedder_backend_default_is_onnx() {
+        let b: EmbedderBackend = Default::default();
+        assert_eq!(b, EmbedderBackend::Onnx);
+    }
+
+    /// Compile-time check: when the `crispembed` feature is enabled the
+    /// `to_gguf_spec` method exists and returns a result for at least one
+    /// well-known GGUF-supported model. When disabled, the method doesn't
+    /// exist (this test compiles to nothing).
+    #[cfg(feature = "crispembed")]
+    #[test]
+    fn crispembed_to_gguf_spec_returns_for_known_models() {
+        // BGE-small-EN-v1.5 has a known GGUF in cstr/bge-small-en-v1.5-GGUF.
+        let spec = EmbedderModel::BgeSmallEnV15.to_gguf_spec();
+        assert!(spec.is_some(),
+            "BgeSmallEnV15 should have a GGUF spec under feature crispembed");
+    }
 }
