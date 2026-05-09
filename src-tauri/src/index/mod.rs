@@ -113,6 +113,9 @@ pub struct IndexState {
     pub mounted_cidx: Option<std::sync::Arc<LocalIndex>>,
     /// Path of the currently mounted `.cidx` (for display in the UI).
     pub mounted_cidx_path: Option<String>,
+    /// FTS index companion for the mounted `.cidx` (loaded from `{cidx}/fts/`
+    /// if present). `None` when the .cidx was exported without `--include-fts`.
+    pub mounted_cidx_fts: Option<std::sync::Arc<FtsIndex>>,
 }
 
 impl IndexState {
@@ -122,6 +125,7 @@ impl IndexState {
             local: None,
             mounted_cidx: None,
             mounted_cidx_path: None,
+            mounted_cidx_fts: None,
             fts: None,
             embedder: None,
             engine: None,

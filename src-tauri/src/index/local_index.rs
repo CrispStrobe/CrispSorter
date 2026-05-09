@@ -1063,24 +1063,35 @@ impl LocalIndex {
     /// `volume_id` — export only rows for this volume. `None` = full snapshot.
     /// `include_embeddings` — when `false` (default) the embedding columns
     ///   are stripped; the snapshot supports FTS + columnar browse offline.
+    /// `include_fts` — when `true` (default `false`), a Tantivy FTS index is
+    ///   built at `dest_path/fts/` from the exported rows' title + full_text.
+    ///   Enables offline BM25 full-text search on the `.cidx` archive.
+    ///   Implies exporting `full_text` + `headings_text` columns.
     pub async fn export_cidx(
         &self,
         dest_path: &Path,
         volume_id: Option<&str>,
         include_embeddings: bool,
+        include_fts: bool,
     ) -> Result<usize> {
         // Build query.
         let filter_sql: Option<String> = volume_id.map(|v| {
             format!("volume_id = '{}'", v.replace('\'', "''"))
         });
-        let meta_columns: Vec<String> = vec![
+        let mut meta_cols: Vec<&str> = vec![
             "id", "doc_id", "location_uri", "owner_id",
             "filename", "title", "author", "year", "ext",
             "language", "page_count", "chunk_index", "chunk_total",
             "chunk_start_char", "chunk_end_char",
             "indexed_at", "source_hash", "tags",
             "metadata_json", "parent_dir", "volume_id",
-        ].into_iter().map(String::from).collect();
+        ];
+        // Include text columns when building FTS.
+        if include_fts {
+            meta_cols.push("full_text");
+            meta_cols.push("headings_text");
+        }
+        let meta_columns: Vec<String> = meta_cols.into_iter().map(String::from).collect();
 
         let mut q = self.table.query();
         if let Some(ref sql) = filter_sql {
@@ -1102,15 +1113,72 @@ impl LocalIndex {
         let db_out = connect(&dest_uri).execute().await
             .with_context(|| format!("opening output DB at {dest_uri}"))?;
 
-        let schema = batches[0].schema();
+        // Clone schema (Arc<Schema>) before consuming batches.
+        let schema = batches[0].schema().clone();
+        let batches_for_write = batches.clone(); // cheap Arc clones
         let reader = arrow_array::RecordBatchIterator::new(
-            batches.into_iter().map(Ok),
+            batches_for_write.into_iter().map(Ok),
             schema,
         );
         db_out.create_table("documents", Box::new(reader))
             .execute()
             .await
             .context("writing documents table to .cidx")?;
+
+        // ── FTS companion ────────────────────────────────────────────────
+        if include_fts {
+            let fts_dir = dest_path.join("fts");
+            let fts = super::fts_index::FtsIndex::open_or_create(&fts_dir)
+                .context("creating .cidx FTS index")?;
+            let mut writer = fts.writer().context("opening FTS writer")?;
+            let mut fts_docs = 0usize;
+
+            for batch in &batches {
+                let doc_id_col  = batch.schema().index_of("doc_id").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let owner_col   = batch.schema().index_of("owner_id").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let lang_col    = batch.schema().index_of("language").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let title_col   = batch.schema().index_of("title").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let heads_col   = batch.schema().index_of("headings_text").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let text_col    = batch.schema().index_of("full_text").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                let cidx_col    = batch.schema().index_of("chunk_index").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<arrow_array::Int32Array>());
+
+                let (Some(doc_id_col), Some(owner_col)) = (doc_id_col, owner_col)
+                else { continue };
+
+                for i in 0..batch.num_rows() {
+                    // Only index chunk_index = 0 (first/only chunk per doc).
+                    if let Some(cidx) = cidx_col.as_ref() {
+                        if !cidx.is_null(i) && cidx.value(i) != 0 { continue; }
+                    }
+                    if doc_id_col.is_null(i) { continue; }
+                    let doc_id  = doc_id_col.value(i).to_owned();
+                    let owner   = if owner_col.is_null(i) { String::new() } else { owner_col.value(i).to_owned() };
+                    let lang    = lang_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
+                    let title   = title_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
+                    let heads   = heads_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
+                    let body    = text_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
+
+                    fts.add_document(&mut writer, super::fts_index::TantivyInput {
+                        doc_id: &doc_id,
+                        owner_id: &owner,
+                        language: &lang,
+                        title: &title,
+                        headings: &heads,
+                        body: &body,
+                    })?;
+                    fts_docs += 1;
+                }
+            }
+            writer.commit().context("committing .cidx FTS index")?;
+            eprintln!("[cidx] FTS: indexed {fts_docs} documents in {}", fts_dir.display());
+        }
 
         Ok(row_count)
     }

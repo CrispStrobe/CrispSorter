@@ -1282,12 +1282,18 @@ pub async fn index_export_cidx(
     dest_path: String,
     volume_id: Option<String>,
     include_embeddings: Option<bool>,
+    include_fts: Option<bool>,
 ) -> Result<usize, String> {
     let local = state.index.lock().await.local.clone()
         .ok_or("Local index not initialised")?;
     let dest = std::path::PathBuf::from(&dest_path);
     local
-        .export_cidx(&dest, volume_id.as_deref(), include_embeddings.unwrap_or(false))
+        .export_cidx(
+            &dest,
+            volume_id.as_deref(),
+            include_embeddings.unwrap_or(false),
+            include_fts.unwrap_or(false),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -2065,6 +2071,7 @@ pub async fn init_index(
                 initializing: false,
                 mounted_cidx: None,
                 mounted_cidx_path: None,
+                mounted_cidx_fts: None,
             })
         }
 
@@ -2114,6 +2121,7 @@ pub async fn init_index(
                 initializing: false,
                 mounted_cidx: None,
                 mounted_cidx_path: None,
+                mounted_cidx_fts: None,
             })
         }
     }
@@ -2134,20 +2142,32 @@ pub async fn index_mount_cidx(
         .map_err(|e| e.to_string())?;
     let docs   = idx.count_docs().await.map_err(|e| e.to_string())?;
     let chunks = idx.count().await.map_err(|e| e.to_string())?;
+
+    // Load FTS companion if present.
+    let fts_dir = cidx_path.join("fts");
+    let fts = if fts_dir.exists() {
+        crate::index::FtsIndex::open_or_create(&fts_dir).ok().map(std::sync::Arc::new)
+    } else {
+        None
+    };
+    let has_fts = fts.is_some();
+
     {
         let mut lock = state.index.lock().await;
-        lock.mounted_cidx = Some(std::sync::Arc::new(idx));
+        lock.mounted_cidx      = Some(std::sync::Arc::new(idx));
         lock.mounted_cidx_path = Some(path.clone());
+        lock.mounted_cidx_fts  = fts;
     }
-    Ok(serde_json::json!({ "path": path, "docs": docs, "chunks": chunks }))
+    Ok(serde_json::json!({ "path": path, "docs": docs, "chunks": chunks, "has_fts": has_fts }))
 }
 
 /// Unmount the currently-mounted `.cidx`.
 #[tauri::command]
 pub async fn index_unmount_cidx(state: State<'_, AppState>) -> Result<(), String> {
     let mut lock = state.index.lock().await;
-    lock.mounted_cidx = None;
+    lock.mounted_cidx      = None;
     lock.mounted_cidx_path = None;
+    lock.mounted_cidx_fts  = None;
     Ok(())
 }
 
