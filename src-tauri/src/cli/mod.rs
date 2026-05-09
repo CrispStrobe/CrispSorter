@@ -43,7 +43,7 @@ use std::process::ExitCode;
 /// argv[1] sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "index", "batch", "manpage",
+    "version", "doctor", "catalog", "index", "batch", "chat", "manpage",
     "completion", "help", "--help", "-h",
 ];
 
@@ -110,6 +110,35 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: BatchCmd,
+    },
+    /// Query an LLM or transcribe audio / synthesise speech (headless).
+    Chat {
+        #[command(subcommand)]
+        cmd: ChatCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ChatCmd {
+    /// Send a chat prompt to an LLM and print the response.
+    Query {
+        /// The user prompt. Wrap in quotes.
+        prompt: String,
+        /// OpenAI-compatible base URL. Default: http://localhost:11434/v1
+        #[arg(long, default_value = "http://localhost:11434/v1")]
+        llm_url: String,
+        /// Model name.
+        #[arg(long, default_value = "llama3")]
+        llm_model: String,
+        /// API key for the endpoint.
+        #[arg(long, default_value = "")]
+        api_key: String,
+        /// Optional system prompt.
+        #[arg(long)]
+        system: Option<String>,
+        /// Files whose text content is appended as context.
+        #[arg(long)]
+        context_files: Vec<PathBuf>,
     },
 }
 
@@ -190,6 +219,7 @@ pub fn run() -> ExitCode {
         },
         Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
         Command::Batch { data_dir, cmd } => cmd_batch(cli.format, data_dir, cmd),
+        Command::Chat { cmd } => cmd_chat(cli.format, cmd),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             use clap_complete::generate;
@@ -1114,6 +1144,72 @@ async fn cmd_index_async(
                 OutFormat::Text => {
                     println!("deleted {doc_id}");
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── chat ──────────────────────────────────────────────────────────────────
+
+fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
+    match cmd {
+        ChatCmd::Query { prompt, llm_url, llm_model, api_key, system, context_files } => {
+            // Build context from optional files.
+            let mut context = String::new();
+            for path in &context_files {
+                match crate::extractors::extract_text_from_path(path) {
+                    Ok(doc) if !doc.full_text.is_empty() => {
+                        context.push_str(&format!("\n--- {} ---\n{}\n", path.display(), doc.full_text));
+                    }
+                    _ => eprintln!("warning: could not extract text from {}", path.display()),
+                }
+            }
+
+            let user_content = if context.is_empty() {
+                prompt.clone()
+            } else {
+                format!("{prompt}\n\nContext:{context}")
+            };
+
+            let mut messages = Vec::new();
+            if let Some(sys) = system {
+                messages.push(serde_json::json!({"role": "system", "content": sys}));
+            }
+            messages.push(serde_json::json!({"role": "user", "content": user_content}));
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().map_err(|e| e.to_string())?;
+
+            let reply = rt.block_on(async {
+                let client = reqwest::Client::new();
+                let body = serde_json::json!({
+                    "model": llm_model,
+                    "messages": messages,
+                    "stream": false,
+                });
+                let mut req = client
+                    .post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
+                    .json(&body);
+                if !api_key.is_empty() {
+                    req = req.bearer_auth(&api_key);
+                }
+                let resp = req.send().await.map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(format!("LLM returned {}", resp.status()));
+                }
+                let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+                json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .map(|s| s.to_owned())
+                    .ok_or_else(|| "unexpected response shape".to_string())
+            })?;
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "prompt": prompt, "reply": reply
+                })),
+                OutFormat::Text => println!("{reply}"),
             }
         }
     }

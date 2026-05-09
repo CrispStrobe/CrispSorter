@@ -34,6 +34,21 @@
     // without hammering Rust. Cheap query (LanceDB count_rows).
     let dbDocCount = $state(0);
     let statsExpanded = $state(false);
+
+    // Sync outbox status (P11 SyncManager).
+    type SyncStatus = { pending_count: number; last_push_ts: number | null; remote_online: boolean };
+    let syncStatus = $state<SyncStatus | null>(null);
+    async function refreshSyncStatus() {
+        try {
+            syncStatus = await invoke<SyncStatus>('sync_status');
+        } catch { syncStatus = null; }
+    }
+    // Poll sync status every 30 s when in Hybrid mode.
+    $effect(() => {
+        const interval = setInterval(refreshSyncStatus, 30_000);
+        refreshSyncStatus();
+        return () => clearInterval(interval);
+    });
     // Writer queue depth: jobs submitted to IngestPipeline's background
     // writer task but not yet completed. Polled every 2s while processing.
     let writeQueueDepth = $state(0);
@@ -393,6 +408,18 @@
                     {/if}
                 </button>
             {/if}
+            {#if syncStatus && (syncStatus.pending_count > 0 || syncStatus.remote_online)}
+                <button class="batch-stats sync-chip"
+                        onclick={() => invoke('sync_push').catch(() => {})}
+                        title="{syncStatus.pending_count} ausstehend · {syncStatus.remote_online ? 'Server online' : 'Server offline'} · Klick zum Senden">
+                    {#if !navCollapsed}
+                        <span class="sync-dot" class:online={syncStatus.remote_online} aria-hidden="true">⇅</span>
+                        <span class="stats-val">{syncStatus.pending_count}</span>
+                    {:else}
+                        <span class="stats-badge-collapsed" style="background:{syncStatus.remote_online ? '#16a34a33' : '#45222233'}; color:{syncStatus.remote_online ? '#86efac' : '#f87171'};">{syncStatus.pending_count}</span>
+                    {/if}
+                </button>
+            {/if}
             <button class="nav-item" class:active={showLogs} onclick={() => showLogs = !showLogs} title={i18n.t.nav.logs}>
                 <Terminal size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.logs}</span>{/if}
@@ -577,6 +604,9 @@
     .stat-ext { font-size: 0.65rem; background: #27272a; border-radius: 3px; padding: 1px 5px; color: #71717a; text-transform: uppercase; font-weight: 600; }
     .stats-badge-collapsed { display: flex; align-items: center; justify-content: center; width: 28px; height: 20px; background: #3b82f633; border-radius: 4px; font-size: 0.7rem; font-weight: 700; color: #60a5fa; margin: 0 auto; }
     .worker-stats { border-top: 1px dashed #27272a; }
+    .sync-chip { border-top: 1px dashed #27272a; }
+    .sync-dot { font-size: 0.9rem; margin-right: 4px; color: #3f3f46; }
+    .sync-dot.online { color: #22c55e; }
     .worker-dot { color: #3f3f46; font-size: 0.7rem; }
     .worker-dot.active { color: #22c55e; animation: pulse 1.4s ease-in-out infinite; }
     @keyframes pulse {

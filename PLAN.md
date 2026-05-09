@@ -77,7 +77,9 @@
   `crispsorter batch process [--job-id J] [--limit N] [--llm-url URL] [--llm-model M]
   [--export-path DIR] [--path-template T] [--out-plan FILE] [--dry-run]`
   Extracts text → calls chat/completions → parses XML metadata → emits sort plan JSON.
-- [ ] **`chat`** — `query "<prompt>"` / `transcribe` / `tts` headless
+- [x] **`chat query "<prompt>"`** — POSTs to OpenAI-compatible /chat/completions;
+  `--context-files` extracts + appends text from files; `--system` sets system prompt.
+  transcribe / tts deferred (need ASR/TTS headless bootstrap).
 - [ ] **Polish** — `cargo install crispsorter` story (needs crispcat extraction first)
 
 ### P10 — Remaining
@@ -100,7 +102,13 @@
   delete/stat) + `LocalDrive` (std::fs, covers OS-mounted SMB/SFTP/NFS) +
   `DriveRegistry` (drives.json persistence) + 5 Tauri commands (drive_list/create/
   delete/list_dir/stat). AppState.data_dir field added. Filen/Internxt CLI impls deferred.
-- [ ] **SyncManager** — local ↔ remote sync outbox, pull delta, reconnect detection.
+- [x] **SyncManager (first cut)** — `src-tauri/src/sync/`: SQLite outbox
+  (`sync_outbox.db`), `enqueue/claim_batch/mark_done/mark_error/clear_failed`,
+  `push_pending` (POST to remote per op type), `is_remote_online` (GET /health),
+  `sync_state` kv table (last_push_ts/last_pull_ts). 4 Tauri commands:
+  `sync_status/sync_push/sync_enqueue/sync_clear_failed`. Nav sync chip (⇅ N)
+  polls every 30 s in +page.svelte; click triggers push. Pull delta deferred
+  (needs /v1/sync/since endpoint on server).
 
 ### P12 — cloud-backup (remaining)
 

@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod cli;
 pub mod drives;
 pub mod extractors;
+pub mod sync;
 pub mod index;
 pub mod jobs;
 pub mod tts;
@@ -2228,6 +2229,10 @@ pub fn run() {
             index::tauri_commands::index_export_caf,
             index::tauri_commands::index_export_cidx,
             index::tauri_commands::index_open_cidx,
+            sync::tauri_commands::sync_status,
+            sync::tauri_commands::sync_push,
+            sync::tauri_commands::sync_enqueue,
+            sync::tauri_commands::sync_clear_failed,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_delete,
