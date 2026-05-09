@@ -1160,6 +1160,40 @@ enum BatchCmd {
         #[arg(long)]
         status: Option<String>,
     },
+    /// Extract text + call an LLM to infer title/author/year, then emit a sort plan.
+    ///
+    /// Requires an OpenAI-compatible chat endpoint (Ollama, llamacpp, OpenAI).
+    /// Output: JSON sort plan `{ mode, items: [{src, dst}] }` written to --out-plan
+    /// (or stdout when --out-plan is omitted). Pipe to `batch apply` to execute.
+    Process {
+        /// Job ID to process. Omit to process the most-recent pending job.
+        #[arg(long)]
+        job_id: Option<String>,
+        /// Max files to process in one run. Default: all pending.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// OpenAI-compatible chat base URL. Default: http://localhost:11434/v1
+        #[arg(long, default_value = "http://localhost:11434/v1")]
+        llm_url: String,
+        /// Model name to pass to the chat endpoint. Default: llama3
+        #[arg(long, default_value = "llama3")]
+        llm_model: String,
+        /// API key for the endpoint. Leave empty for Ollama.
+        #[arg(long, default_value = "")]
+        api_key: String,
+        /// Sort destination root. Default: sibling folder named "Sorted".
+        #[arg(long)]
+        export_path: Option<PathBuf>,
+        /// Path template. Default: {Author}/{Year}/{Title}
+        #[arg(long, default_value = "{Author}/{Year}/{Title}")]
+        path_template: String,
+        /// Write the sort plan to this file. Default: stdout.
+        #[arg(long)]
+        out_plan: Option<PathBuf>,
+        /// Dry-run: compute plan without marking files as done.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Execute a JSON sort plan — move or copy files as described in the plan.
     ///
     /// Plan format:
@@ -1291,6 +1325,140 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
             }
         }
 
+        BatchCmd::Process { job_id, limit, llm_url, llm_model, api_key, export_path, path_template, out_plan, dry_run } => {
+            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+
+            // Find job.
+            let effective_job_id = if let Some(jid) = job_id {
+                jid
+            } else {
+                let jobs = queue.list_jobs().map_err(|e| e.to_string())?;
+                jobs.into_iter()
+                    .filter(|j| j.status == "pending" || j.status == "running")
+                    .max_by_key(|j| j.created_at)
+                    .map(|j| j.id)
+                    .ok_or_else(|| "No pending job found — run `batch add` first".to_string())?
+            };
+
+            let files = queue
+                .list_files(&effective_job_id, Some("pending"), limit.unwrap_or(10_000) as i64, 0)
+                .map_err(|e| e.to_string())?;
+
+            if files.is_empty() {
+                eprintln!("no pending files in job {effective_job_id}");
+                return Ok(());
+            }
+            eprintln!("processing {} file(s) from job {effective_job_id}…", files.len());
+
+            // Build tokio runtime for async HTTP + extraction.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().map_err(|e| e.to_string())?;
+
+            let mut plan_items: Vec<serde_json::Value> = Vec::new();
+            let sanitize = |s: &str| s.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
+                .chars().take(100).collect::<String>();
+
+            for file in &files {
+                let p = std::path::PathBuf::from(&file.file_path);
+                if !p.exists() {
+                    eprintln!("skip (not found): {}", p.display());
+                    continue;
+                }
+
+                // Extract text.
+                let extracted = rt.block_on(tokio::task::spawn_blocking({
+                    let pp = p.clone();
+                    move || crate::extractors::extract_text_from_path(&pp)
+                }))
+                    .map_err(|e| e.to_string())?.ok();
+
+                let text_sample = extracted.as_ref()
+                    .map(|e| e.full_text.chars().take(4000).collect::<String>())
+                    .unwrap_or_default();
+
+                // Call LLM.
+                let filename = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let prompt = format!(
+                    "Extract bibliographic metadata from the text and filename.\n\
+                     Output ONLY in this XML format:\n\
+                     <METADATA>\n  <TITLE>...</TITLE>\n  <AUTHOR>Lastname, Firstname</AUTHOR>\n  <YEAR>YYYY</YEAR>\n</METADATA>\n\
+                     Use \"Unknown\" when unavailable.\n\nFilename: \"{filename}\"\n\nText:\n{text_sample}"
+                );
+
+                let (title, author, year) = rt.block_on(async {
+                    let client = reqwest::Client::new();
+                    let body = serde_json::json!({
+                        "model": llm_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": false
+                    });
+                    let mut req = client.post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
+                        .json(&body);
+                    if !api_key.is_empty() {
+                        req = req.bearer_auth(&api_key);
+                    }
+                    let resp = req.send().await.ok()?.json::<serde_json::Value>().await.ok()?;
+                    let text = resp["choices"][0]["message"]["content"].as_str()?.to_owned();
+                    let title  = regex_capture(&text, r"<TITLE>(.*?)</TITLE>");
+                    let author = regex_capture(&text, r"<AUTHOR>(.*?)</AUTHOR>");
+                    let year   = regex_capture(&text, r"<YEAR>(\d{4})</YEAR>");
+                    Some((title, author, year))
+                }).unwrap_or_default();
+
+                let title_s  = title.as_deref().unwrap_or("Unknown Title");
+                let author_s = author.as_deref().unwrap_or("Unknown Author");
+                let year_s   = year.as_deref().unwrap_or("0000");
+                let ext      = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+                // Compute destination path.
+                let relative = path_template
+                    .replace("{Title}",    &sanitize(title_s))
+                    .replace("{Author}",   &sanitize(author_s))
+                    .replace("{Year}",     &sanitize(year_s))
+                    .replace("{Filename}", &sanitize(&filename))
+                    .replace("{Ext}",      ext);
+                let base = export_path.clone().unwrap_or_else(|| {
+                    p.parent().map(|d| d.join("Sorted")).unwrap_or_else(|| std::path::PathBuf::from("Sorted"))
+                });
+                let has_ext_token = path_template.contains("{Ext}");
+                let dst = if has_ext_token {
+                    base.join(&relative)
+                } else {
+                    base.join(format!("{relative}.{ext}"))
+                };
+
+                plan_items.push(serde_json::json!({
+                    "src": file.file_path,
+                    "dst": dst.display().to_string(),
+                    "title": title_s,
+                    "author": author_s,
+                    "year": year_s,
+                }));
+
+                if !dry_run {
+                    queue.mark_done(&effective_job_id, &[file.row_id])
+                        .map_err(|e| e.to_string())?;
+                }
+
+                match out {
+                    OutFormat::Text => eprintln!("  ✓ {} → {}", filename, dst.display()),
+                    OutFormat::Json => {}
+                }
+            }
+
+            let plan_json = serde_json::json!({ "mode": "move", "items": plan_items });
+            let plan_str = serde_json::to_string_pretty(&plan_json).unwrap_or_default();
+
+            if let Some(ref plan_path) = out_plan {
+                std::fs::write(plan_path, &plan_str).map_err(|e| e.to_string())?;
+                eprintln!("plan written to {}", plan_path.display());
+            } else {
+                println!("{plan_str}");
+            }
+            eprintln!("{} items in plan{}", plan_items.len(), if dry_run { " (dry-run)" } else { "" });
+        }
+
         BatchCmd::Apply { plan, mode, dry_run } => {
             let json = if plan == "-" {
                 use std::io::Read;
@@ -1357,6 +1525,24 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
         }
     }
     Ok(())
+}
+
+/// Cheap XML-tag capture without a regex crate — finds the first match of
+/// `<TAG>content</TAG>` and returns `content`. Case-sensitive.
+fn regex_capture(text: &str, pattern: &str) -> Option<String> {
+    // Pattern is like r"<TITLE>(.*?)</TITLE>" — extract tag name and reconstruct.
+    let open_end = pattern.find('>')?;
+    let open_tag = &pattern[..=open_end]; // "<TITLE>"
+    let close_tag_start = pattern.rfind('<')?;
+    let close_tag = &pattern[close_tag_start..]; // "</TITLE>"
+    let tag_name = &open_tag[1..open_tag.len() - 1]; // "TITLE"
+    let _ = close_tag; let _ = tag_name;
+
+    let start = text.find(open_tag)? + open_tag.len();
+    let end_tag = format!("</{}>", &open_tag[1..open_tag.len()-1]);
+    let end = text[start..].find(&end_tag)?;
+    let content = text[start..start + end].trim().to_owned();
+    if content.is_empty() { None } else { Some(content) }
 }
 
 fn load_or_scan(path: &str) -> Result<crate::catalog::index::FileIndex, String> {

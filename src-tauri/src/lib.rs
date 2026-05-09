@@ -2,6 +2,7 @@ pub mod asr;
 pub mod bg_ingest;
 pub mod catalog;
 pub mod cli;
+pub mod drives;
 pub mod extractors;
 pub mod index;
 pub mod jobs;
@@ -777,6 +778,10 @@ pub struct AppState {
     /// `None` only during the very brief window before setup completes;
     /// all `jobs_*` commands return an error if accessed before init.
     pub job_queue: Arc<std::sync::Mutex<Option<jobs::JobQueue>>>,
+    /// App data directory, set once in the Tauri setup hook.
+    /// Used by drive_* commands and any future component that needs the
+    /// data-dir without going through the index or job subsystems.
+    pub data_dir: tokio::sync::Mutex<Option<std::path::PathBuf>>,
 }
 
 #[tauri::command]
@@ -2158,9 +2163,14 @@ pub fn run() {
             }
             app_log!("info", "CrispSorter v{} starting", env!("CARGO_PKG_VERSION"));
 
-            // Initialise job queue now that the data directory is known.
+            // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
                 let state: tauri::State<'_, AppState> = app.state();
+                // Store data_dir for drive_* commands and similar.
+                // Use try_lock so we don't block the sync setup hook.
+                if let Ok(mut dd) = state.data_dir.try_lock() {
+                    *dd = Some(data_dir.clone());
+                }
                 match jobs::JobQueue::open_or_create(&data_dir) {
                     Ok(q) => {
                         if let Ok(mut guard) = state.job_queue.lock() {
@@ -2187,6 +2197,7 @@ pub fn run() {
             bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
             foreground_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             job_queue: Arc::new(std::sync::Mutex::new(None)),
+            data_dir: tokio::sync::Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_logs,
@@ -2217,6 +2228,11 @@ pub fn run() {
             index::tauri_commands::index_export_caf,
             index::tauri_commands::index_export_cidx,
             index::tauri_commands::index_open_cidx,
+            drives::tauri_commands::drive_list,
+            drives::tauri_commands::drive_create,
+            drives::tauri_commands::drive_delete,
+            drives::tauri_commands::drive_list_dir,
+            drives::tauri_commands::drive_stat,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,

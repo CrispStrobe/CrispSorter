@@ -73,7 +73,10 @@
   supports bge-m3, multilingual-e5-*, bge-*-en-v1.5, nomic, minilm
 - [x] **`index ingest <paths>... [--model M] [--device D]`** — full extraction+embedding
   pipeline headless; walks directories; SHA-256 + extract + embed + LanceDB+Tantivy write
-- [ ] **`batch process`** — headless LLM extraction pass (needs llm_client without GUI)
+- [x] **`batch process`** — headless LLM extraction pass via OpenAI-compatible endpoint.
+  `crispsorter batch process [--job-id J] [--limit N] [--llm-url URL] [--llm-model M]
+  [--export-path DIR] [--path-template T] [--out-plan FILE] [--dry-run]`
+  Extracts text → calls chat/completions → parses XML metadata → emits sort plan JSON.
 - [ ] **`chat`** — `query "<prompt>"` / `transcribe` / `tts` headless
 - [ ] **Polish** — `cargo install crispsorter` story (needs crispcat extraction first)
 
@@ -93,7 +96,10 @@
 - [x] **Runtime modes** — `BackendType` gains `Hybrid` variant (serializes as "hybrid").
   Hybrid init path = Local for now (SyncManager placeholder). Settings dropdown
   shows Standalone/Server/Hybrid with i18n. Data-dir + remote fields visible in Hybrid.
-- [ ] **Cloud drives** — `trait CloudDrive` + SMB/SFTP/Filen/Internxt impls.
+- [x] **Cloud drives (first cut)** — `trait CloudDrive` (list_dir/read_file/write_file/
+  delete/stat) + `LocalDrive` (std::fs, covers OS-mounted SMB/SFTP/NFS) +
+  `DriveRegistry` (drives.json persistence) + 5 Tauri commands (drive_list/create/
+  delete/list_dir/stat). AppState.data_dir field added. Filen/Internxt CLI impls deferred.
 - [ ] **SyncManager** — local ↔ remote sync outbox, pull delta, reconnect detection.
 
 ### P12 — cloud-backup (remaining)
