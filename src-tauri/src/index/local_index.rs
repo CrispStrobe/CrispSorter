@@ -425,6 +425,54 @@ impl LocalIndex {
         Ok(())
     }
 
+    /// Remove `extraction_failure` from `metadata_json` so the next background
+    /// ingest run re-attempts extraction. Only meaningful for retryable reasons
+    /// (Timeout / Other); the caller should check `is_retryable()` first.
+    /// Also sets `level` back to 1 so the row doesn't look like a completed L2.
+    pub async fn clear_extraction_failure(&self, doc_id: &str) -> Result<()> {
+        // Read the current metadata_json.
+        let pred = format!(
+            "doc_id = '{}' AND chunk_index <= 0",
+            doc_id.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let current_meta: Option<serde_json::Value> = batches
+            .iter()
+            .find_map(|b| {
+                let idx = b.schema().index_of("metadata_json").ok()?;
+                let arr = b.column(idx)
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()?;
+                let raw = arr.value(0);
+                serde_json::from_str(raw).ok()
+            });
+        let new_meta = if let Some(mut m) = current_meta {
+            m.as_object_mut().map(|o| {
+                o.remove("extraction_failure");
+                o.insert("level".to_owned(), serde_json::Value::from(1i64));
+            });
+            m.to_string()
+        } else {
+            r#"{"level":1}"#.to_owned()
+        };
+        self.table
+            .update()
+            .only_if(pred)
+            .column("metadata_json", format!("'{}'", new_meta.replace('\'', "''")))
+            .execute()
+            .await
+            .context("clear_extraction_failure update")?;
+        Ok(())
+    }
+
     /// Patch L2 metadata fields on an existing row. Pass `None` to leave a
     /// column untouched. `metadata_json_merge` is JSON that gets shallow-merged
     /// into the existing `metadata_json` (the caller is responsible for
@@ -770,6 +818,49 @@ impl LocalIndex {
     /// Background ingest uses this to mtime-skip files that haven't
     /// changed since last index — saves the read + extract + embed
     /// cost on the common "no new content" case.
+    /// Same as `extraction_failure_reason_for_uri` but looks up by `doc_id`.
+    pub async fn extraction_failure_reason_for_uri_by_doc_id(
+        &self,
+        doc_id: &str,
+    ) -> Result<Option<String>> {
+        let pred = format!(
+            "doc_id = '{}' AND chunk_index <= 0",
+            doc_id.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(&pred)
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        for batch in &batches {
+            if let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() {
+                let col = batch.column(meta_idx);
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("metadata_json column not StringArray"))?;
+                for i in 0..batch.num_rows() {
+                    if arr.is_null(i) { continue; }
+                    let Ok(v): std::result::Result<serde_json::Value, _> =
+                        serde_json::from_str(arr.value(i))
+                    else { continue; };
+                    if let Some(reason) = v
+                        .get("extraction_failure")
+                        .and_then(|f| f.get("reason"))
+                        .and_then(|r| r.as_str())
+                    {
+                        return Ok(Some(reason.to_owned()));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Return the `extraction_failure.reason` tag for a URI if one exists,
     /// so `bg_ingest` can skip non-retryable failures (Drm / Corrupt /
     /// Unsupported) on subsequent scans without re-attempting extraction.

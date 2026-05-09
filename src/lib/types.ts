@@ -47,6 +47,9 @@ export interface BatchItem {
     isChapterRepresentative?: boolean;
     /** Total number of files in this chapter group. */
     chapterGroupSize?: number;
+    /** When true, author propagation is suppressed for this group —
+     *  chapters are from different authors (edited volume). */
+    chapterIsEditedVolume?: boolean;
 }
 
 export interface Metadata {

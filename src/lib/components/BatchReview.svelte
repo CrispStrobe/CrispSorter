@@ -1316,9 +1316,12 @@
                                             {/if}
                                             {#if item.chapterGroupId}
                                                 {@const n = item.chapterGroupSize ?? 0}
+                                                {@const isEV = !!item.chapterIsEditedVolume}
                                                 <span class="inline-badge chapter-badge"
-                                                      title="Kapitel-Gruppe: {item.chapterGroupId} ({n} Dateien){item.isChapterRepresentative ? ' — Repräsentant (LLM)' : ` — Kapitel ${item.chapterSuffix ?? ''}`}">
-                                                    📚{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
+                                                      class:chapter-edited-vol={isEV}
+                                                      title="{isEV ? 'Sammelband (Autor pro Kapitel)' : 'Monographie (Autor vererbt)'} — {item.chapterGroupId} ({n} Kap.){item.isChapterRepresentative ? ' · Repräsentant' : ` · ${item.chapterSuffix ?? ''}`}. Klick: Sammelband-Modus umschalten"
+                                                      onclick={(e) => { e.stopPropagation(); batchManager.toggleChapterEditedVolume(item.chapterGroupId!); }}>
+                                                    {isEV ? '📖' : '📚'}{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
                                                 </span>
                                             {/if}
                                         {:else if col.id === 'title'}
@@ -1687,7 +1690,8 @@
     }
     .dupe-badge        { background: #451a0388; color: #fbbf24; }
     .dupe-primary-badge { background: #78350f55; color: #fde68a; }
-    .chapter-badge     { background: #1e3a5f55; color: #93c5fd; }
+    .chapter-badge              { background: #1e3a5f55; color: #93c5fd; }
+    .chapter-badge.chapter-edited-vol { background: #2e1a5255; color: #c084fc; }
     
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }
