@@ -503,12 +503,43 @@ If EPUB extraction fails with a reference to the Node.js `process` global, ensur
 ## Testing
 
 ```bash
-cargo test -p tauri-app --lib                    # ~195 unit tests in the desktop app
-cargo test -p crispcat                           # ~20 unit tests in the catalog crate
-cargo test --workspace                           # full workspace suite
+# Fast unit tests (no network, no model download)
+cargo test -p tauri-app --lib                    # ~200 unit tests across the desktop app
+cargo test -p crispcat                           # ~20 unit tests in the catalog library
+
+# Standalone CLI integration tests (compile + spawn `crispcat` binary)
+cargo test -p crispcat-cli                       # 8 e2e tests on real .caf files
+
+# Full Tauri-binary smoke tests (require ~30 GB free disk for the build).
+# Each test spawns the actual `crispsorter` binary and exercises a real subcommand.
+cargo test -p tauri-app --test cli_smoke -- --ignored
+
+# Heavy: full ingest → search → delete e2e.
+# Downloads ~90 MB of all-MiniLM-L6-v2 ONNX weights from HuggingFace on first run.
+cargo test -p tauri-app --test cli_e2e_embedder -- --ignored
 ```
 
-Coverage spans the cross-cutting components: location URI round-trips (incl. `crisp+cb-archive://`), failure-reason classification, EPUB DRM detection (built fixtures with the `zip` crate), background-ingest state machine, OCR tier dispatch, runtime-mode serde, sync outbox lifecycle (claim/mark_done/mark_error/clear_failed), drive registry persistence, FTS query parser, embedder backend selection, and the full `.caf` v6/v7/v8 round-trip.
+The unit-test sweep (`cargo test --workspace`) covers cross-cutting components:
+URI round-trips (incl. `crisp+cb-archive://`), failure-reason classification,
+EPUB DRM detection (real zip fixtures), background-ingest state machine, OCR
+tier dispatch, runtime-mode serde, sync outbox lifecycle, drive registry,
+FTS query parser, embedder backend selection, full `.caf` v6/v7/v8 round-trip,
+and CrispEmbed GGUF metadata.
+
+The integration tests (`--ignored`) use real files: the `crispcat-cli`
+suite scans real folder trees and validates SHA-256 deduplication; the
+`cli_smoke` suite exercises `version` / `doctor` / `catalog scan|browse|find-dupes` /
+`batch add|list|apply` / `index list-failed|stats` / `completion` / `manpage`;
+the `cli_e2e_embedder` suite downloads a small embedder, ingests three text
+files, runs BM25 search, exports a `.cidx` archive with the FTS companion,
+and verifies `inspect-cidx` reports the right counts.
+
+> **Tip for laptops with tight boot disks:** point Cargo at an external
+> volume to keep the build artifacts off `/`:
+> ```bash
+> CARGO_TARGET_DIR=/Volumes/External/cargo-target/crispsorter \
+> cargo test --workspace
+> ```
 
 ---
 
