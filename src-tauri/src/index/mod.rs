@@ -301,6 +301,62 @@ mod resolve_cache_tests {
             assert_eq!(resolved, tmp.path().join("models"));
         }
     }
+
+    #[test]
+    fn backend_type_serializes_to_documented_strings() {
+        // These strings are what get persisted in app settings — changing
+        // them silently would orphan every existing user's config.
+        assert_eq!(serde_json::to_value(&BackendType::Local).unwrap(),  "local");
+        assert_eq!(serde_json::to_value(&BackendType::Remote).unwrap(), "remote");
+        assert_eq!(serde_json::to_value(&BackendType::Hybrid).unwrap(), "hybrid");
+
+        // Parse back.
+        let local: BackendType  = serde_json::from_str("\"local\"").unwrap();
+        let remote: BackendType = serde_json::from_str("\"remote\"").unwrap();
+        let hybrid: BackendType = serde_json::from_str("\"hybrid\"").unwrap();
+        assert_eq!(local,  BackendType::Local);
+        assert_eq!(remote, BackendType::Remote);
+        assert_eq!(hybrid, BackendType::Hybrid);
+    }
+
+    #[test]
+    fn backend_type_default_is_local() {
+        let b: BackendType = Default::default();
+        assert_eq!(b, BackendType::Local);
+    }
+
+    #[test]
+    fn search_mode_serde_round_trip() {
+        for m in [SearchMode::TextOnly, SearchMode::VectorOnly, SearchMode::Hybrid] {
+            let json = serde_json::to_string(&m).unwrap();
+            let back: SearchMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(m, back);
+        }
+    }
+
+    #[test]
+    fn search_mode_default_is_hybrid() {
+        let m: SearchMode = Default::default();
+        assert_eq!(m, SearchMode::Hybrid);
+    }
+
+    #[test]
+    fn embedder_location_default_is_client() {
+        let l: EmbedderLocation = Default::default();
+        assert_eq!(l, EmbedderLocation::Client);
+    }
+
+    #[test]
+    fn index_config_defaults_are_safe() {
+        let cfg = IndexConfig::default();
+        assert!(!cfg.enabled,                          "index disabled by default");
+        assert_eq!(cfg.backend_type, BackendType::Local);
+        assert_eq!(cfg.mode,         SearchMode::Hybrid);
+        assert!(cfg.use_vector,                        "vector capabilities on by default");
+        assert!(cfg.remote_url.is_none());
+        assert!(cfg.reranker_model.is_none());
+        assert_eq!(cfg.rerank_top_n, 50);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]

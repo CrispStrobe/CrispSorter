@@ -216,3 +216,159 @@ impl DriveRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, LocalDrive) {
+        let tmp = tempfile::tempdir().unwrap();
+        let drive = LocalDrive::new("test", tmp.path().to_owned());
+        (tmp, drive)
+    }
+
+    #[test]
+    fn local_drive_label_and_type() {
+        let (_tmp, drive) = fixture();
+        assert_eq!(drive.label(), "test");
+        assert_eq!(drive.drive_type(), DriveType::Local);
+    }
+
+    #[test]
+    fn local_drive_write_then_read_round_trips() {
+        let (_tmp, drive) = fixture();
+        drive.write_file(Path::new("hello.txt"), b"world").unwrap();
+        let bytes = drive.read_file(Path::new("hello.txt")).unwrap();
+        assert_eq!(bytes, b"world");
+    }
+
+    #[test]
+    fn local_drive_creates_parent_dirs_on_write() {
+        let (_tmp, drive) = fixture();
+        drive.write_file(Path::new("nested/deep/file.txt"), b"x").unwrap();
+        assert_eq!(drive.read_file(Path::new("nested/deep/file.txt")).unwrap(), b"x");
+    }
+
+    #[test]
+    fn local_drive_list_dir_sorted() {
+        let (_tmp, drive) = fixture();
+        drive.write_file(Path::new("zzz.txt"), b"z").unwrap();
+        drive.write_file(Path::new("aaa.txt"), b"a").unwrap();
+        drive.write_file(Path::new("mmm/inner.txt"), b"m").unwrap();
+        let entries = drive.list_dir(Path::new(".")).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].name, "aaa.txt");
+        assert_eq!(entries[1].name, "mmm");
+        assert_eq!(entries[2].name, "zzz.txt");
+        assert!(entries[1].is_dir);
+        assert!(!entries[0].is_dir);
+        assert_eq!(entries[0].size, Some(1));
+        assert_eq!(entries[1].size, None);  // dirs report no size
+    }
+
+    #[test]
+    fn local_drive_stat_file_and_dir() {
+        let (_tmp, drive) = fixture();
+        drive.write_file(Path::new("a.txt"), b"hello").unwrap();
+        let s = drive.stat(Path::new("a.txt")).unwrap();
+        assert_eq!(s.size, 5);
+        assert!(!s.is_dir);
+        assert!(s.mtime_unix.is_some());
+
+        drive.write_file(Path::new("subdir/x.txt"), b"x").unwrap();
+        let d = drive.stat(Path::new("subdir")).unwrap();
+        assert!(d.is_dir);
+    }
+
+    #[test]
+    fn local_drive_delete_file_and_dir() {
+        let (_tmp, drive) = fixture();
+        drive.write_file(Path::new("doomed.txt"), b"!").unwrap();
+        drive.delete(Path::new("doomed.txt")).unwrap();
+        assert!(drive.stat(Path::new("doomed.txt")).is_err());
+    }
+
+    #[test]
+    fn local_drive_read_missing_file_errors() {
+        let (_tmp, drive) = fixture();
+        assert!(drive.read_file(Path::new("does/not/exist")).is_err());
+    }
+
+    #[test]
+    fn drive_registry_persists_across_open_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = DriveConfig {
+            id: "abc-123".to_owned(),
+            label: "Backup SSD".to_owned(),
+            kind: DriveType::Local,
+            path: "/Volumes/Backup".to_owned(),
+        };
+        {
+            let mut reg = DriveRegistry::open(tmp.path()).unwrap();
+            assert_eq!(reg.drives.len(), 0);
+            reg.add(cfg.clone()).unwrap();
+        }
+        // Re-open and verify persistence.
+        let reg = DriveRegistry::open(tmp.path()).unwrap();
+        assert_eq!(reg.drives.len(), 1);
+        assert_eq!(reg.drives[0].id,    "abc-123");
+        assert_eq!(reg.drives[0].label, "Backup SSD");
+        assert_eq!(reg.drives[0].kind,  DriveType::Local);
+    }
+
+    #[test]
+    fn drive_registry_dedupes_by_id_on_add() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = DriveRegistry::open(tmp.path()).unwrap();
+        reg.add(DriveConfig {
+            id: "x".into(), label: "v1".into(),
+            kind: DriveType::Local, path: "/a".into(),
+        }).unwrap();
+        // Same id, different label → must replace not duplicate.
+        reg.add(DriveConfig {
+            id: "x".into(), label: "v2".into(),
+            kind: DriveType::Local, path: "/b".into(),
+        }).unwrap();
+        assert_eq!(reg.drives.len(), 1);
+        assert_eq!(reg.drives[0].label, "v2");
+        assert_eq!(reg.drives[0].path, "/b");
+    }
+
+    #[test]
+    fn drive_registry_remove_returns_found_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut reg = DriveRegistry::open(tmp.path()).unwrap();
+        reg.add(DriveConfig {
+            id: "abc".into(), label: "a".into(),
+            kind: DriveType::Local, path: "/a".into(),
+        }).unwrap();
+        assert!( reg.remove("abc").unwrap());
+        assert!(!reg.remove("abc").unwrap()); // already gone
+        assert!(!reg.remove("never-existed").unwrap());
+        assert_eq!(reg.drives.len(), 0);
+    }
+
+    #[test]
+    fn drive_type_serializes_snake_case() {
+        let json = serde_json::to_string(&DriveType::Local).unwrap();
+        assert_eq!(json, "\"local\"");
+        let json = serde_json::to_string(&DriveType::Filen).unwrap();
+        assert_eq!(json, "\"filen\"");
+        // Round-trips.
+        let back: DriveType = serde_json::from_str("\"internxt\"").unwrap();
+        assert_eq!(back, DriveType::Internxt);
+    }
+
+    #[test]
+    fn registry_instantiate_returns_local_drive_for_all_kinds() {
+        // First-cut: all drive types currently route through LocalDrive.
+        for kind in [DriveType::Local, DriveType::Filen, DriveType::Internxt, DriveType::Sftp] {
+            let cfg = DriveConfig {
+                id: "x".into(), label: "lbl".into(), kind, path: "/tmp".into(),
+            };
+            let drive = DriveRegistry::instantiate(&cfg);
+            assert_eq!(drive.drive_type(), DriveType::Local);
+            assert_eq!(drive.label(), "lbl");
+        }
+    }
+}

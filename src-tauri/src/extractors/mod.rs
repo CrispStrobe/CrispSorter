@@ -252,4 +252,61 @@ mod tests {
         let res = extract_text_from_path(&p);
         assert!(res.is_err());
     }
+
+    #[test]
+    fn extract_options_defaults_are_safe() {
+        let opts = ExtractOptions::default();
+        assert!(!opts.try_ocr,                                "OCR off by default");
+        assert_eq!(opts.ocr_pdf_min_chars, 0);                // Default<usize> is 0
+        assert_eq!(opts.ocr_tier,     OcrTier::Auto);
+        assert_eq!(opts.ocr_rec_lang, OcrRecLang::Auto);
+    }
+
+    #[test]
+    fn ocr_tier_default_is_auto() {
+        let t: OcrTier = Default::default();
+        assert_eq!(t, OcrTier::Auto);
+    }
+
+    #[test]
+    fn ocr_rec_lang_default_is_auto() {
+        let l: OcrRecLang = Default::default();
+        assert_eq!(l, OcrRecLang::Auto);
+    }
+
+    #[test]
+    fn supported_handles_uppercase_extensions() {
+        // Insensitivity is critical for files coming from Windows / camera ROMs.
+        for ext in ["PDF", "Pdf", "MD", "Rs", "Html", "TXT"] {
+            assert!(supported(ext), "should accept {ext}");
+        }
+    }
+
+    #[test]
+    fn supported_rejects_image_exts_unless_ocr() {
+        // Image OCR is opt-in via try_ocr; supported() returns false so callers
+        // pre-filtering accept lists don't surface them as text-extractable.
+        for ext in OCR_IMAGE_EXTS {
+            assert!(!supported(ext), "image ext {ext} must not be in supported()");
+        }
+    }
+
+    #[test]
+    fn extract_text_with_opts_no_ocr_skips_image() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("scan.png");
+        std::fs::write(&p, b"\x89PNG").unwrap(); // not really a PNG but extension is enough
+        let opts = ExtractOptions { try_ocr: false, ..Default::default() };
+        let res = extract_text_from_path_with_opts(&p, opts);
+        assert!(res.is_err(), "no-OCR + image must error (no extractor)");
+    }
+
+    #[test]
+    fn ext_is_lowercased_on_dispatch() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("FILE.TXT");
+        std::fs::write(&p, b"data").unwrap();
+        let doc = extract_text_from_path(&p).unwrap();
+        assert_eq!(doc.ext, "txt"); // not "TXT"
+    }
 }

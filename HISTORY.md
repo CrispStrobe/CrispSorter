@@ -1323,3 +1323,51 @@ orange row tint, "Duplikate überspringen" checkbox).
 P15b: book-chapter detection (ISBN-13 prefix, fm/001/bm suffix priority,
 representative LLM pass only, metadata propagation, edited-volume toggle).
 
+
+---
+
+## Test sweep — 2026-05-09
+
+Coverage push across recently-shipped surfaces that had no tests:
+
+- **`task_failure.rs`** — 11 tests: classify recognises DRM keywords (encryption.xml,
+  ADEPT, FairPlay, AES, drm), distinguishes password from drm, falls back to
+  Corrupt, is case-insensitive; `is_retryable()` matches the documented matrix;
+  `as_tag()` agrees with serde's `rename_all = "snake_case"` output for every
+  variant; `epub_is_drm_protected` returns `false` for missing files / non-zip
+  files / clean EPUBs and `true` when `META-INF/encryption.xml` is present
+  (built with the `zip::ZipWriter` API).
+
+- **`drives/mod.rs`** — 12 tests: LocalDrive label/type, write→read round-trip,
+  parent-dir creation on write, list_dir is sorted alphabetically with size
+  metadata, stat for files/dirs, delete for files/dirs, missing-file error,
+  DriveRegistry persistence across `open` calls, dedup by id on `add`,
+  remove returns found-flag, DriveType serialises snake_case, `instantiate`
+  returns LocalDrive for all kinds (Filen/Internxt placeholders).
+
+- **`sync/mod.rs`** — 10 tests: open is idempotent, enqueue returns increasing
+  rowids, pending_count excludes max-retried entries, claim_batch respects
+  limit + FIFO order, mark_done removes, mark_error increments + records
+  message, clear_failed only removes max-retried, sync_state KV round-trip,
+  status snapshot is consistent, payload is preserved verbatim.
+
+- **`bg_ingest/mod.rs`** — +6 tests: default OCR settings off, cancel is no-op
+  when idle, resume only works when paused, snapshot consistency,
+  PendingIngest serde round-trip, `EXTRACTION_TIMEOUT_SECS = 300` sanity guard.
+
+- **`extractors/mod.rs`** — +6 tests: `ExtractOptions::default()` is safe (OCR
+  off), `OcrTier::default() == Auto`, `OcrRecLang::default() == Auto`,
+  case-insensitive extension dispatch, image extensions excluded from
+  `supported()`, no-OCR + image errors, dispatch lowercases extensions.
+
+- **`index/location.rs`** — +5 tests for the new `CbArchive` URI variant: format
+  starts with `crisp+cb-archive://`, filename extracted from path,
+  retrieval_cost == Expensive, user_id falls back to `Uuid::nil()`,
+  spaces in path get %20-encoded.
+
+- **`index/mod.rs`** — +5 tests: `BackendType` serialises to "local"/"remote"/
+  "hybrid" (the persisted strings), defaults to Local, `SearchMode` round-trips
+  + defaults to Hybrid, `EmbedderLocation` defaults to Client, `IndexConfig`
+  defaults are safe (disabled, vector on, no remote URL).
+
+Result: **195 tauri-app + 20 crispcat = 215 unit tests passing**, 0 failed.

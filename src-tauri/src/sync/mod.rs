@@ -247,3 +247,129 @@ impl SyncManager {
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> (tempfile::TempDir, SyncManager) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SyncManager::open(tmp.path()).unwrap();
+        (tmp, mgr)
+    }
+
+    #[test]
+    fn open_creates_db_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Two opens of the same dir must succeed and share state.
+        let m1 = SyncManager::open(tmp.path()).unwrap();
+        m1.enqueue("ingest", r#"{"x":1}"#).unwrap();
+        drop(m1);
+        let m2 = SyncManager::open(tmp.path()).unwrap();
+        assert_eq!(m2.pending_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn enqueue_returns_increasing_ids() {
+        let (_tmp, mgr) = fresh();
+        let id1 = mgr.enqueue("ingest", "{}").unwrap();
+        let id2 = mgr.enqueue("delete", "{}").unwrap();
+        let id3 = mgr.enqueue("move",   "{}").unwrap();
+        assert!(id1 < id2 && id2 < id3, "rowids must be monotonic");
+    }
+
+    #[test]
+    fn pending_count_excludes_permanent_failures() {
+        let (_tmp, mgr) = fresh();
+        let id = mgr.enqueue("ingest", "{}").unwrap();
+        assert_eq!(mgr.pending_count().unwrap(), 1);
+        // Bump retries to 10 — should drop out of pending_count.
+        for _ in 0..10 { mgr.mark_error(id, "fail").unwrap(); }
+        assert_eq!(mgr.pending_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn claim_batch_respects_limit_and_order() {
+        let (_tmp, mgr) = fresh();
+        for i in 0..5 {
+            mgr.enqueue("ingest", &format!(r#"{{"i":{i}}}"#)).unwrap();
+        }
+        let batch = mgr.claim_batch(3).unwrap();
+        assert_eq!(batch.len(), 3);
+        // Oldest first (FIFO).
+        assert!(batch[0].id < batch[1].id);
+        assert!(batch[1].id < batch[2].id);
+        assert_eq!(batch[0].op, "ingest");
+        assert!(batch[0].payload.contains("\"i\":0"));
+    }
+
+    #[test]
+    fn mark_done_removes_entry() {
+        let (_tmp, mgr) = fresh();
+        let id = mgr.enqueue("ingest", "{}").unwrap();
+        mgr.mark_done(id).unwrap();
+        assert_eq!(mgr.pending_count().unwrap(), 0);
+        assert_eq!(mgr.claim_batch(10).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn mark_error_increments_retries_and_records_msg() {
+        let (_tmp, mgr) = fresh();
+        let id = mgr.enqueue("delete", r#"{"doc_id":"x"}"#).unwrap();
+        mgr.mark_error(id, "HTTP 503").unwrap();
+        let entries = mgr.claim_batch(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].retries, 1);
+        assert_eq!(entries[0].last_err.as_deref(), Some("HTTP 503"));
+        // Second failure increments again.
+        mgr.mark_error(id, "HTTP 502").unwrap();
+        let entries = mgr.claim_batch(10).unwrap();
+        assert_eq!(entries[0].retries, 2);
+        assert_eq!(entries[0].last_err.as_deref(), Some("HTTP 502"));
+    }
+
+    #[test]
+    fn clear_failed_removes_only_max_retried() {
+        let (_tmp, mgr) = fresh();
+        let id_ok    = mgr.enqueue("ingest", "{}").unwrap();
+        let id_fail  = mgr.enqueue("delete", "{}").unwrap();
+        for _ in 0..10 { mgr.mark_error(id_fail, "boom").unwrap(); }
+        let cleared = mgr.clear_failed().unwrap();
+        assert_eq!(cleared, 1);
+        // The healthy entry is still there.
+        let remaining = mgr.claim_batch(10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, id_ok);
+    }
+
+    #[test]
+    fn state_kv_round_trip() {
+        let (_tmp, mgr) = fresh();
+        assert_eq!(mgr.get_state("nope").unwrap(), None);
+        mgr.set_state("last_pull_ts", "1234").unwrap();
+        assert_eq!(mgr.get_state("last_pull_ts").unwrap().as_deref(), Some("1234"));
+        // Replace.
+        mgr.set_state("last_pull_ts", "5678").unwrap();
+        assert_eq!(mgr.get_state("last_pull_ts").unwrap().as_deref(), Some("5678"));
+    }
+
+    #[test]
+    fn status_reports_pending_count_correctly() {
+        let (_tmp, mgr) = fresh();
+        mgr.enqueue("ingest", "{}").unwrap();
+        mgr.enqueue("ingest", "{}").unwrap();
+        let s = mgr.status(None);
+        assert_eq!(s.pending_count, 2);
+        assert!(!s.remote_online); // no async ping done in status() itself
+        assert_eq!(s.last_pull_ts, None);
+    }
+
+    #[test]
+    fn outbox_entry_payload_preserved() {
+        let (_tmp, mgr) = fresh();
+        let payload = r#"{"chunks":[{"doc_id":"a"}]}"#;
+        mgr.enqueue("ingest", payload).unwrap();
+        let entries = mgr.claim_batch(1).unwrap();
+        assert_eq!(entries[0].payload, payload);
+    }
+}
