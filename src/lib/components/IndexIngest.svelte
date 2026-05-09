@@ -68,7 +68,7 @@
         fileCount:   number;
     }
 
-    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates';
+    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates' | 'cidxArchive';
 
     // ── State ──────────────────────────────────────────────────────────────────
 
@@ -1251,8 +1251,14 @@
     // .caf round-trip state.
     let cafBusy       = $state(false);
     let cafLastResult = $state<string | null>(null);
-    let cidxBusy      = $state(false);
+    let cidxBusy       = $state(false);
     let cidxLastResult = $state<string | null>(null);
+    // Mounted archive
+    let mountedCidx    = $state<{ path: string; docs: number; chunks: number } | null>(null);
+    let cidxContents   = $state<any[]>([]);
+    let cidxPage       = $state(0);
+    let cidxLoading    = $state(false);
+    let cidxNextCursor = $state<any>(null);
 
     /** Open a `.caf` file produced by Cathy / Catfish / a previous
      *  CrispSorter session. Each entry becomes an L1 row in the active
@@ -1290,6 +1296,54 @@
      *  Cathy / Catfish / another CrispSorter installation. When the
      *  user has a selection in the Übersicht, only those rows are
      *  exported; otherwise the entire catalog. */
+    async function mountCidxArchive() {
+        const { open: openD } = await import('@tauri-apps/plugin-dialog');
+        const sel = await openD({ directory: true, multiple: false,
+            title: '.cidx-Archiv öffnen' });
+        if (typeof sel !== 'string') return;
+        cidxBusy = true;
+        cidxLastResult = null;
+        try {
+            const info = await invoke<{ path: string; docs: number; chunks: number }>('index_mount_cidx', { path: sel });
+            mountedCidx = info;
+            cidxContents = [];
+            cidxPage = 0;
+            cidxNextCursor = null;
+            activeTab = 'cidxArchive';
+            await loadCidxContents();
+        } catch (e: any) {
+            cidxLastResult = `Fehler: ${e?.message ?? e}`;
+        } finally {
+            cidxBusy = false;
+        }
+    }
+
+    async function unmountCidxArchive() {
+        await invoke('index_unmount_cidx').catch(() => {});
+        mountedCidx = null;
+        cidxContents = [];
+        if (activeTab === 'cidxArchive') activeTab = 'overview';
+    }
+
+    async function loadCidxContents(append = false) {
+        if (!mountedCidx) return;
+        cidxLoading = true;
+        try {
+            const filter = buildDocumentFilter();
+            const page = { limit: 200, cursor: append ? cidxNextCursor : null };
+            const sort  = buildSortSpec();
+            const res = await invoke<{ rows: any[]; next_cursor: any; total_estimate: number }>(
+                'index_query_cidx_documents', { filter, sort, page }
+            );
+            cidxContents = append ? [...cidxContents, ...res.rows] : res.rows;
+            cidxNextCursor = res.next_cursor ?? null;
+        } catch (e: any) {
+            console.error('cidx query failed:', e);
+        } finally {
+            cidxLoading = false;
+        }
+    }
+
     async function exportCidxArchive() {
         const { save } = await import('@tauri-apps/plugin-dialog');
         const savePath = await save({
@@ -1580,12 +1634,65 @@
         <button class="tab" class:active={activeTab === 'duplicates'} onclick={() => activeTab = 'duplicates'}>
             <CopyCheck size={14} /> {i18n.t.indexIngest.tab_duplicates}
         </button>
+        {#if mountedCidx}
+            <button class="tab cidx-tab" class:active={activeTab === 'cidxArchive'}
+                    onclick={() => { activeTab = 'cidxArchive'; loadCidxContents(); }}>
+                <Database size={14} /> Archiv ({mountedCidx.docs})
+            </button>
+        {/if}
+        <button class="tab tb-btn-flat" onclick={mountCidxArchive} disabled={cidxBusy}
+                title=".cidx-Archiv einlesen (offline-Index)">
+            {#if cidxBusy}<Loader2 size={12} class="spin" />{:else}+.cidx{/if}
+        </button>
     </div>
 
     {#if activeTab === 'cafCatalog'}
         <CafCatalog />
     {:else if activeTab === 'duplicates'}
         <Duplicates />
+    {:else if activeTab === 'cidxArchive' && mountedCidx}
+        <div class="cidx-archive-panel">
+            <div class="cidx-header">
+                <span class="cidx-path" title={mountedCidx.path}>
+                    <Database size={13} /> {mountedCidx.path.split(/[\\/]/).pop()} —
+                    {mountedCidx.docs} Dok., {mountedCidx.chunks} Chunks
+                </span>
+                <button class="icon-btn danger-icon" onclick={unmountCidxArchive} title="Archiv aushängen">
+                    <X size={13} />
+                </button>
+            </div>
+            {#if cidxLoading && cidxContents.length === 0}
+                <div class="empty-state"><Loader2 size={20} class="spin" /></div>
+            {:else if cidxContents.length === 0}
+                <div class="empty-state">Keine Einträge</div>
+            {:else}
+                <div class="catalog-tbody cidx-rows">
+                    {#each cidxContents as doc (doc.doc_id)}
+                        {@const failure = extractionFailure(doc)}
+                        {@const lvl = docLevel(doc)}
+                        <div class="catalog-row cidx-row" role="row" tabindex="0">
+                            <div class="cell col-title">{doc.title ?? doc.filename ?? ''}</div>
+                            <div class="cell col-author">{doc.author ?? ''}</div>
+                            <div class="cell col-year">{doc.year ?? ''}</div>
+                            <div class="cell col-level">
+                                <span class="level-badge" class:l1={lvl===1} class:l2={lvl===2} class:l3={lvl===3}>L{lvl}</span>
+                                {#if failure}
+                                    <span class="fail-badge fail-{failure.reason}" title={FAIL_HINTS[failure.reason] ?? failure.msg}>{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                {/if}
+                            </div>
+                            <div class="cell col-ext">{doc.ext ?? ''}</div>
+                        </div>
+                    {/each}
+                    {#if cidxNextCursor}
+                        <div class="load-more-bar">
+                            <button class="action-btn small" onclick={() => loadCidxContents(true)} disabled={cidxLoading}>
+                                {cidxLoading ? 'Lade…' : 'Mehr laden'}
+                            </button>
+                        </div>
+                    {/if}
+                </div>
+            {/if}
+        </div>
     {/if}
 
     <!-- ══════════════════ HINZUFÜGEN (queue + ingest run) ══════════════════ -->
@@ -2591,6 +2698,20 @@
     .fail-badge.fail-password { background: #2e1a5233; color: #c084fc; }
     .fail-badge.fail-unsupported { background: #27272a;   color: #71717a; }
     .fail-badge.fail-other    { background: #1a1a2e33; color: #94a3b8; }
+
+    /* .cidx archive tab */
+    .cidx-tab { border-bottom: 2px solid #6366f1; color: #a5b4fc; }
+    .tb-btn-flat { background: none; border: 1px dashed #3f3f46; color: #71717a;
+        font-size: 0.7rem; padding: 3px 7px; border-radius: 4px; cursor: pointer; }
+    .tb-btn-flat:hover { border-color: #6366f1; color: #a5b4fc; }
+    .cidx-archive-panel { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+    .cidx-header { display: flex; align-items: center; gap: 8px;
+        padding: 6px 12px; background: #1e1b4b33; border-bottom: 1px solid #312e81; }
+    .cidx-path { font-size: 0.78rem; color: #a5b4fc; display: flex; align-items: center;
+        gap: 5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cidx-rows { overflow-y: auto; }
+    .cidx-row { border-left: 3px solid #6366f133; background: #0f0e2222; }
+    .cidx-row:hover { background: #1e1b4b33; }
 
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

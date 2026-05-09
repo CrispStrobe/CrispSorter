@@ -2063,6 +2063,8 @@ pub async fn init_index(
                 config,
                 remote_queue_depth: 0,
                 initializing: false,
+                mounted_cidx: None,
+                mounted_cidx_path: None,
             })
         }
 
@@ -2110,9 +2112,93 @@ pub async fn init_index(
                 config,
                 remote_queue_depth: 0,
                 initializing: false,
+                mounted_cidx: None,
+                mounted_cidx_path: None,
             })
         }
     }
+}
+
+// ── .cidx mount / browse ─────────────────────────────────────────────────────
+
+/// Mount a `.cidx` archive for offline browse. Stores the read-only
+/// `LocalIndex` in `IndexState.mounted_cidx`. Replaces any prior mount.
+#[tauri::command]
+pub async fn index_mount_cidx(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let cidx_path = std::path::PathBuf::from(&path);
+    let idx = crate::index::LocalIndex::open_cidx(&cidx_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let docs   = idx.count_docs().await.map_err(|e| e.to_string())?;
+    let chunks = idx.count().await.map_err(|e| e.to_string())?;
+    {
+        let mut lock = state.index.lock().await;
+        lock.mounted_cidx = Some(std::sync::Arc::new(idx));
+        lock.mounted_cidx_path = Some(path.clone());
+    }
+    Ok(serde_json::json!({ "path": path, "docs": docs, "chunks": chunks }))
+}
+
+/// Unmount the currently-mounted `.cidx`.
+#[tauri::command]
+pub async fn index_unmount_cidx(state: State<'_, AppState>) -> Result<(), String> {
+    let mut lock = state.index.lock().await;
+    lock.mounted_cidx = None;
+    lock.mounted_cidx_path = None;
+    Ok(())
+}
+
+/// Query documents from the mounted `.cidx`. Identical call shape to
+/// `index_query_documents` so the frontend can reuse the same code path.
+#[tauri::command]
+pub async fn index_query_cidx_documents(
+    state: State<'_, AppState>,
+    filter: super::schema::DocumentFilter,
+    sort: super::schema::SortSpec,
+    page: super::schema::PageSpec,
+) -> Result<super::schema::DocumentPage, String> {
+    let cidx = state.index.lock().await.mounted_cidx.clone()
+        .ok_or("No .cidx mounted — call index_mount_cidx first")?;
+    cidx.query_documents(&filter, sort, page)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── P10 — failed-extraction CLI helpers ──────────────────────────────────────
+
+/// List all documents that have an `extraction_failure` in their metadata.
+/// `retryable_only` restricts to Timeout / Other reasons.
+#[tauri::command]
+pub async fn index_list_failed_extractions(
+    state: State<'_, AppState>,
+    retryable_only: Option<bool>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    let rows = local
+        .list_failed_extractions(retryable_only.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows.iter().map(|r| serde_json::json!({
+        "doc_id":       r.doc_id,
+        "location_uri": r.location_uri,
+        "filename":     r.filename,
+        "reason":       r.reason,
+        "retryable":    r.retryable,
+    })).collect())
+}
+
+/// Clear `extraction_failure` for all retryable rows (Timeout / Other).
+#[tauri::command]
+pub async fn index_retry_all_failed(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    local.retry_all_failed_extractions().await.map_err(|e| e.to_string())
 }
 
 // ── Volume helpers ────────────────────────────────────────────────────────────
