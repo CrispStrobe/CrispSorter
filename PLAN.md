@@ -111,11 +111,13 @@ Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
   shows Standalone/Server/Hybrid with i18n. Data-dir + remote fields visible in Hybrid.
 - [x] **Cloud drives** — `trait CloudDrive` (list_dir/read_file/write_file/
   delete/stat) + `LocalDrive` (std::fs, covers OS-mounted SMB/SFTP/NFS) +
-  `InternxtDrive` (Python `internxt-cli` bridge with `--json` output —
-  patched cli.py to add `--json` flags on `whoami`/`list-path`/`resolve`,
-  Rust deserialises structured JSON instead of scraping emoji text) +
-  `DriveRegistry` (drives.json persistence) + 5 Tauri commands. Filen
-  CLI impl still deferred (analogous bridge would work the same way).
+  `InternxtDrive` (Python `internxt-cli` bridge — patched cli.py adds
+  `--json` on `whoami`/`list-path`/`resolve`) + `FilenDrive` (Python
+  `filen-cli` bridge — patched cli.py adds `--json` on `whoami`/`ls`/
+  `resolve`/`trash`, plus a missing `handle_trash` impl). `DriveRegistry`
+  (drives.json persistence) routes each `DriveType` to its real backend
+  (was previously a stub that funnelled everything through `LocalDrive`).
+  5 Tauri commands. SFTP path still piggybacks on OS-mount via `LocalDrive`.
 - [x] **SyncManager** — `src-tauri/src/sync/`: SQLite outbox (`sync_outbox.db`),
   `enqueue/claim_batch/mark_done/mark_error/clear_failed`, `push_pending`
   (POST per op type), `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),
