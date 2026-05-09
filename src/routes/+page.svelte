@@ -183,7 +183,8 @@
                 // dictionaries of ~20 entries each.
                 const modeToRust = (m: string) =>
                     ({ text: 'text_only', vector: 'vector_only', hybrid: 'hybrid' } as Record<string,string>)[m] ?? 'hybrid';
-                const backendToRust = (b: string) => b === 'remote' ? 'remote' : 'local';
+                const backendToRust = (b: string) =>
+                    ({ remote: 'remote', hybrid: 'hybrid' } as Record<string,string>)[b] ?? 'local';
                 const deviceToRust = (d: string) =>
                     ({ auto: 'auto', cpu: 'cpu', metal: 'metal', cuda: 'cuda' } as Record<string,string>)[d] ?? 'auto';
                 const embedderToRust = (m: string) => ({
