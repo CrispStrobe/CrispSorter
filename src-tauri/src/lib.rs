@@ -1,6 +1,8 @@
 pub mod asr;
 pub mod bg_ingest;
-pub mod catalog;
+/// Re-export the extracted crispcat workspace crate as `catalog` so existing
+/// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
+pub use crispcat as catalog;
 pub mod cli;
 pub mod drives;
 pub mod extractors;

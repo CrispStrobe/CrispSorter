@@ -27,6 +27,7 @@ protoc-bin-vendored = "3"
 # `SearchRequest`, etc. Path dep stays inside the workspace; both crates
 # rebuild together when the protocol changes.
 crisp-index-protocol = { path = "../crisp-index-protocol" }
+crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

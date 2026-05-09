@@ -273,7 +273,7 @@ pub async fn list_active(data_dir: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::index::FileEntry;
+    use crate::index::FileEntry;
     use std::path::PathBuf;
     use tempfile::TempDir;
 

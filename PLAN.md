@@ -46,8 +46,13 @@
 
 ### P6 — Catalog
 
-- [ ] **Phase 5 — extract `crispcat` workspace crate** (optional/deferred)
-  Move `src-tauri/src/catalog/` to `crates/crispcat/` for a thin standalone CLI.
+- [x] **Phase 5 — `crispcat` workspace crate** — `crates/crispcat/` ships
+  caf/dedup/index/scan modules; `lance` module is feature-gated (default off)
+  so a `cargo install crispcat-cli` build doesn't pull in lancedb. The Tauri
+  app uses `crispcat = { features = ["lance"] }` and re-exports it as
+  `crate::catalog` so existing call sites are unchanged.
+  `crates/crispcat-cli/` ships a standalone `crispcat scan|info|browse|find-dupes`
+  binary — no Tauri, no LanceDB, no embedder.
 
 ### P7.7 — Mountable archive index
 
@@ -80,7 +85,9 @@
 - [x] **`chat query "<prompt>"`** — POSTs to OpenAI-compatible /chat/completions;
   `--context-files` extracts + appends text from files; `--system` sets system prompt.
   transcribe / tts deferred (need ASR/TTS headless bootstrap).
-- [ ] **Polish** — `cargo install crispsorter` story (needs crispcat extraction first)
+- [x] **Polish (partial)** — `cargo install --path crates/crispcat-cli` works
+  for the standalone catalog CLI. Full `cargo install crispsorter` story for
+  the Tauri-app binary is still WIP (needs binstall recipe + signing).
 
 ### P10 — Remaining
 

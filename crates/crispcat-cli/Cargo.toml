@@ -1,0 +1,23 @@
+[package]
+name        = "crispcat-cli"
+version     = "0.1.0"
+edition     = "2021"
+description = "Standalone CLI for the crispcat catalog library — scan folders, write/read .caf files, find duplicates."
+license     = "MIT"
+repository  = "https://github.com/CrispStrobe/CrispSorter"
+
+# Install with:
+#   cargo install crispcat-cli --path crates/crispcat-cli
+#
+# Provides `crispcat scan / info / browse / find-dupes`. No LanceDB,
+# no Tauri, no embedder — just the catalog primitives.
+
+[[bin]]
+name = "crispcat"
+path = "src/main.rs"
+
+[dependencies]
+crispcat    = { path = "../crispcat" }
+clap        = { version = "4.6", features = ["derive"] }
+serde_json  = "1"
+anyhow      = "1"
