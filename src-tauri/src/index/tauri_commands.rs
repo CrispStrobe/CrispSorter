@@ -2359,11 +2359,16 @@ pub async fn index_promote_cb_archive(
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir: {e}"))?;
 
     // Spawn retrieve.py — search by original_path, auto-restore first match.
+    // Default interpreter is `python` (Miniconda's name on the user's box).
+    // Override via CRISPSORTER_PYTHON env var on hosts where the interpreter
+    // is `python3` or lives at an absolute path.
     let py = retrieve_py_path.clone();
     let search_q = original_path.clone();
     let out_arg = out_dir.to_string_lossy().into_owned();
+    let py_interp = std::env::var("CRISPSORTER_PYTHON")
+        .unwrap_or_else(|_| "python".to_owned());
     let retrieve_out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("python3")
+        std::process::Command::new(&py_interp)
             .args([&py, "-s", &search_q, "-y", "-o", &out_arg])
             .output()
     })

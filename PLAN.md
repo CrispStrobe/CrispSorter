@@ -109,10 +109,13 @@ Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
 - [x] **Runtime modes** — `BackendType` gains `Hybrid` variant (serializes as "hybrid").
   Hybrid init path = Local for now (SyncManager placeholder). Settings dropdown
   shows Standalone/Server/Hybrid with i18n. Data-dir + remote fields visible in Hybrid.
-- [x] **Cloud drives (first cut)** — `trait CloudDrive` (list_dir/read_file/write_file/
+- [x] **Cloud drives** — `trait CloudDrive` (list_dir/read_file/write_file/
   delete/stat) + `LocalDrive` (std::fs, covers OS-mounted SMB/SFTP/NFS) +
-  `DriveRegistry` (drives.json persistence) + 5 Tauri commands (drive_list/create/
-  delete/list_dir/stat). AppState.data_dir field added. Filen/Internxt CLI impls deferred.
+  `InternxtDrive` (Python `internxt-cli` bridge with `--json` output —
+  patched cli.py to add `--json` flags on `whoami`/`list-path`/`resolve`,
+  Rust deserialises structured JSON instead of scraping emoji text) +
+  `DriveRegistry` (drives.json persistence) + 5 Tauri commands. Filen
+  CLI impl still deferred (analogous bridge would work the same way).
 - [x] **SyncManager** — `src-tauri/src/sync/`: SQLite outbox (`sync_outbox.db`),
   `enqueue/claim_batch/mark_done/mark_error/clear_failed`, `push_pending`
   (POST per op type), `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),
