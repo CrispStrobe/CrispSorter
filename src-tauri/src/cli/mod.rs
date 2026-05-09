@@ -479,6 +479,19 @@ enum IndexCmd {
         /// Document ID (UUID).
         doc_id: String,
     },
+    /// List documents whose extraction failed (have an extraction_failure blob).
+    ListFailed {
+        /// Show only retryable failures (timeout / other).
+        #[arg(long)]
+        retryable_only: bool,
+    },
+    /// Clear extraction_failure for all retryable rows (timeout / other) so the
+    /// background ingest worker re-attempts them on the next run.
+    RetryFailed {
+        /// Print what would be retried without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Export a volume (or full index snapshot) to a portable .cidx archive.
     ExportCidx {
         /// Output directory (created if absent). Conventionally ends in `.cidx`.
@@ -678,6 +691,56 @@ async fn cmd_index_async(
                 "headless ingest is not yet implemented — use the GUI Hinzufügen tab \
                  or background ingest scheduler".into(),
             );
+        }
+
+        IndexCmd::ListFailed { retryable_only } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let rows = local
+                .list_failed_extractions(retryable_only)
+                .await
+                .map_err(|e| e.to_string())?;
+            for r in &rows {
+                match out {
+                    OutFormat::Json => {
+                        println!("{}", serde_json::json!({
+                            "doc_id":       r.doc_id,
+                            "reason":       r.reason,
+                            "retryable":    r.retryable,
+                            "filename":     r.filename,
+                            "location_uri": r.location_uri,
+                        }));
+                    }
+                    OutFormat::Text => {
+                        let label = if r.retryable { "(retryable)" } else { "          " };
+                        let name = r.filename.as_deref().unwrap_or(&r.location_uri);
+                        println!("{:<12} {} {}", r.reason, label, name);
+                    }
+                }
+            }
+            eprintln!("{} failed extraction(s){}",
+                rows.len(),
+                if retryable_only { " (retryable only)" } else { "" });
+        }
+
+        IndexCmd::RetryFailed { dry_run } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            if dry_run {
+                let rows = local.list_failed_extractions(true).await.map_err(|e| e.to_string())?;
+                for r in &rows {
+                    println!("would retry: {} ({})", r.filename.as_deref().unwrap_or(&r.doc_id), r.reason);
+                }
+                eprintln!("{} row(s) would be retried (dry-run)", rows.len());
+            } else {
+                let n = local.retry_all_failed_extractions().await.map_err(|e| e.to_string())?;
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({ "retried": n })),
+                    OutFormat::Text => println!("cleared {n} failed extraction(s) — bg_ingest will re-attempt on next run"),
+                }
+            }
         }
 
         IndexCmd::ExportCidx { dest, volume_id, include_embeddings } => {

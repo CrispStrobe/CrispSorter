@@ -35,6 +35,15 @@ use super::IndexBackend;
 
 const TABLE_NAME: &str = "documents";
 
+/// One row returned by `list_failed_extractions`.
+pub struct FailedExtractionRow {
+    pub doc_id:       String,
+    pub location_uri: String,
+    pub filename:     Option<String>,
+    pub reason:       String,
+    pub retryable:    bool,
+}
+
 // ── Struct ─────────────────────────────────────────────────────────────────
 
 pub struct LocalIndex {
@@ -960,6 +969,88 @@ impl LocalIndex {
         Ok(None)
     }
 
+    // ── P10 — failed-extraction helpers ────────────────────────────────────
+
+    /// Scan for all rows that carry an `extraction_failure.reason` blob.
+    /// When `retryable_only = true` only Timeout / Other are returned.
+    pub async fn list_failed_extractions(
+        &self,
+        retryable_only: bool,
+    ) -> Result<Vec<FailedExtractionRow>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index <= 0")
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut out = Vec::new();
+        for batch in &batches {
+            let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() else { continue };
+            let Some(doc_id_idx) = batch.schema().index_of("doc_id").ok() else { continue };
+            let Some(uri_idx) = batch.schema().index_of("location_uri").ok() else { continue };
+            let fname_idx = batch.schema().index_of("filename").ok();
+
+            let meta_arr = batch.column(meta_idx).as_any().downcast_ref::<StringArray>();
+            let doc_arr  = batch.column(doc_id_idx).as_any().downcast_ref::<StringArray>();
+            let uri_arr  = batch.column(uri_idx).as_any().downcast_ref::<StringArray>();
+
+            let (Some(meta_arr), Some(doc_arr), Some(uri_arr)) = (meta_arr, doc_arr, uri_arr)
+            else { continue };
+
+            for i in 0..batch.num_rows() {
+                if meta_arr.is_null(i) { continue; }
+                let Ok(v): std::result::Result<serde_json::Value, _> =
+                    serde_json::from_str(meta_arr.value(i))
+                else { continue; };
+                let Some(reason) = v
+                    .get("extraction_failure")
+                    .and_then(|f| f.get("reason"))
+                    .and_then(|r| r.as_str())
+                    .map(|s| s.to_owned())
+                else { continue; };
+
+                use crate::index::task_failure::TaskFailureReason;
+                let tfr = match reason.as_str() {
+                    "timeout" => TaskFailureReason::Timeout,
+                    "other"   => TaskFailureReason::Other,
+                    _         => {
+                        if retryable_only { continue; }
+                        TaskFailureReason::Corrupt
+                    }
+                };
+                let retryable = tfr.is_retryable();
+                if retryable_only && !retryable { continue; }
+
+                let filename: Option<String> = fname_idx.and_then(|fi| {
+                    let arr = batch.column(fi).as_any().downcast_ref::<StringArray>()?;
+                    if arr.is_null(i) { None } else { Some(arr.value(i).to_owned()) }
+                });
+
+                out.push(FailedExtractionRow {
+                    doc_id:       if doc_arr.is_null(i) { String::new() } else { doc_arr.value(i).to_owned() },
+                    location_uri: if uri_arr.is_null(i) { String::new() } else { uri_arr.value(i).to_owned() },
+                    filename,
+                    reason,
+                    retryable,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Clear `extraction_failure` for all retryable rows (Timeout / Other).
+    /// Returns the number of rows cleared.
+    pub async fn retry_all_failed_extractions(&self) -> Result<usize> {
+        let rows = self.list_failed_extractions(true).await?;
+        for row in &rows {
+            self.clear_extraction_failure(&row.doc_id).await?;
+        }
+        Ok(rows.len())
+    }
+
     // ── P7.7 — .cidx export / import ──────────────────────────────────────
 
     /// Export a per-volume (or full) slice of the documents table to a
@@ -1012,7 +1103,7 @@ impl LocalIndex {
             .with_context(|| format!("opening output DB at {dest_uri}"))?;
 
         let schema = batches[0].schema();
-        let reader = arrow_array::record_batch::RecordBatchIterator::new(
+        let reader = arrow_array::RecordBatchIterator::new(
             batches.into_iter().map(Ok),
             schema,
         );
@@ -1033,7 +1124,10 @@ impl LocalIndex {
             .with_context(|| format!("opening .cidx at {}", cidx_path.display()))?;
         let table = db.open_table("documents").execute().await
             .with_context(|| format!("opening documents table in .cidx at {}", cidx_path.display()))?;
-        Ok(Self { table })
+        // dims=0: .cidx is read-only; the dim value only matters for new
+        // table creation (not applicable here) and embedding operations
+        // (not performed on snapshots).
+        Ok(Self { _db: db, table, dims: 0 })
     }
 }
 

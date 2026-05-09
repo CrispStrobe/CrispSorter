@@ -244,8 +244,10 @@ higher-quality OCR.)
   `index_open_cidx` (stats). GUI: ".cidx exportieren" button alongside the
   existing ".caf exportieren". CLI: `index export-cidx <dest> [--volume-id V]`
   + `index inspect-cidx <path>`.
-  Remaining: load a `.cidx` as a secondary read-only tab in Übersicht;
-  background-ingest re-index on `.cidx` import; FTS export companion.
+  Second cut: `IndexState.mounted_cidx`; `index_mount_cidx` / `index_unmount_cidx` /
+  `index_query_cidx_documents` Tauri commands; "Archiv" tab in Übersicht with
+  "+.cidx" button and browse/pagination; indigo row tint + level/fail badges.
+  Remaining: FTS companion export; background-ingest on `.cidx` import.
 
 **Phase 7.8 — OCR Tiers 3 + 4** (Tiers 1-2 shipped — see HISTORY.md):
 
@@ -2098,7 +2100,8 @@ Known suffix tokens and their sort priority (representative selection):
   - [x] Inline chapter-group badges (📚 N) + blue row tint
   - [x] "Treat as edited volume" per-group toggle — click chapter-badge to
         switch 📚 (monograph) ↔ 📖 (edited volume, author not propagated)
-  - [ ] `--skip-failed` / `--retry-failed` CLI flags (see P10f)
+  - [x] `--list-failed` / `--retry-failed` CLI flags:
+        `index list-failed [--retryable-only]` + `index retry-failed [--dry-run]`
 
 (For historical per-version changelog and shipped phase specs, see
 [HISTORY.md](HISTORY.md).)

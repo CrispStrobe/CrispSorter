@@ -107,6 +107,12 @@ pub struct IndexState {
     /// concurrent re-init attempts (each download is multi-GB; we don't want
     /// two of them racing on the same cache).
     pub initializing: bool,
+    /// A `.cidx` archive mounted for read-only offline browse. Set by
+    /// `index_mount_cidx`, cleared by `index_unmount_cidx`. The Übersicht
+    /// "Archiv" tab queries this instead of `local` when non-null.
+    pub mounted_cidx: Option<std::sync::Arc<LocalIndex>>,
+    /// Path of the currently mounted `.cidx` (for display in the UI).
+    pub mounted_cidx_path: Option<String>,
 }
 
 impl IndexState {
@@ -114,6 +120,8 @@ impl IndexState {
         IndexState {
             backend: None,
             local: None,
+            mounted_cidx: None,
+            mounted_cidx_path: None,
             fts: None,
             embedder: None,
             engine: None,
