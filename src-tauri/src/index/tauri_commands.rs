@@ -1605,14 +1605,20 @@ pub async fn index_build_scalar_index(state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
-pub async fn index_build_ivf_pq(state: State<'_, AppState>) -> Result<(), String> {
+/// `num_partitions` — Voronoi cell count. `null` = auto (`sqrt(row_count)`).
+/// `sample_rate`    — K-Means training sample = `sample_rate × num_partitions`.
+///   Default 256; raise to 512-1024 for very large tables.
+pub async fn index_build_ivf_pq(
+    state: State<'_, AppState>,
+    num_partitions: Option<u32>,
+    sample_rate: Option<u32>,
+) -> Result<(), String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
         return Err("Index is disabled".to_owned());
     }
 
-    // LocalIndex is stored separately so we can call build_vector_index.
     let local = lock
         .local
         .as_ref()
@@ -1621,7 +1627,9 @@ pub async fn index_build_ivf_pq(state: State<'_, AppState>) -> Result<(), String
 
     drop(lock);
 
-    local.build_vector_index().await.map_err(|e| e.to_string())
+    local.build_vector_index(num_partitions, sample_rate)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Initialise (or re-initialise) the index from a data directory path and the
