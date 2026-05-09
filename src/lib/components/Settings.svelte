@@ -110,7 +110,8 @@
     let llmContextLimit = $state(4096);
     let llmPrompt = $state(''); 
     let ocrEnabled = $state(false);
-    let ocrTier = $state<'auto' | 'tier1' | 'tier2' | 'tier3'>('auto');
+    let ocrTier    = $state<'auto' | 'tier1' | 'tier2' | 'tier3'>('auto');
+    let ocrRecLang = $state<'auto' | 'latin' | 'cjk'>('auto');
     let authorSortEnabled = $state(false);
     let noThinking = $state(true);
     let pdfBackend = $state<'js' | 'rust'>('js');
@@ -629,8 +630,9 @@
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         ocrEnabled = await getSetting('ocrEnabled', false);
-        ocrTier = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier }).catch(() => {});
+        ocrTier    = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
+        ocrRecLang = await getSetting('ocrRecLang', 'auto') as 'auto' | 'latin' | 'cjk';
+        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
@@ -926,8 +928,9 @@
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('ocrTier', ocrTier);
+        await saveSetting('ocrRecLang', ocrRecLang);
         // Sync OCR options to the background ingest worker.
-        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier }).catch(() => {});
+        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
@@ -1779,6 +1782,16 @@
                             <option value="tier1">Tesseract — System-Installation erforderlich</option>
                         </select>
                     </div>
+                    {#if ocrTier === 'tier3' || ocrTier === 'auto'}
+                        <div class="field-row" style="margin-top: 6px;">
+                            <label for="ocr-rec-lang-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">Schrift:</label>
+                            <select id="ocr-rec-lang-select" bind:value={ocrRecLang} style="flex:1; max-width:260px;">
+                                <option value="auto">Automatisch (Pfad-Heuristik)</option>
+                                <option value="latin">Lateinisch (EN, DE, FR, …)</option>
+                                <option value="cjk">CJK (Chinesisch, Japanisch, Koreanisch)</option>
+                            </select>
+                        </div>
+                    {/if}
                     <p class="hint" style="margin-bottom:8px;">
                         PaddleOCR benötigt <code>--features paddle-ocr</code> beim Build.
                         ocrs ist in der Standard-Binary enthalten und braucht keine Installation.

@@ -1320,10 +1320,12 @@
     let cidxIncludeFts = $state(true); // default: include FTS for offline search
     // Mounted archive
     let mountedCidx    = $state<{ path: string; docs: number; chunks: number; has_fts: boolean } | null>(null);
-    let cidxContents   = $state<any[]>([]);
-    let cidxPage       = $state(0);
-    let cidxLoading    = $state(false);
-    let cidxNextCursor = $state<any>(null);
+    let cidxContents    = $state<any[]>([]);
+    let cidxPage        = $state(0);
+    let cidxLoading     = $state(false);
+    let cidxNextCursor  = $state<any>(null);
+    let cidxSelected    = $state(new Set<string>());  // selected doc_ids
+    let cidxPromoting   = $state(false);
 
     /** Open a `.caf` file produced by Cathy / Catfish / a previous
      *  CrispSorter session. Each entry becomes an L1 row in the active
@@ -1382,6 +1384,43 @@
         } finally {
             cafBusy = false;
         }
+    }
+
+    async function promoteSelectedCidxRows() {
+        if (cidxSelected.size === 0 || cidxPromoting) return;
+        const pyPath = await getSetting('cbRetrievePyPath', null);
+        if (!pyPath) {
+            const { open: od } = await import('@tauri-apps/plugin-dialog');
+            const sel = await od({ filters: [{ name: 'Python script', extensions: ['py'] }], title: 'retrieve.py auswählen' });
+            if (typeof sel !== 'string') return;
+            saveSetting('cbRetrievePyPath', sel).catch(() => {});
+        }
+        const effectivePyPath = pyPath ?? await getSetting('cbRetrievePyPath', null);
+        if (!effectivePyPath) return;
+
+        cidxPromoting = true;
+        const selected = [...cidxSelected];
+        let ok = 0; let errs = 0;
+        for (const docId of selected) {
+            const doc = cidxContents.find(d => d.doc_id === docId);
+            if (!doc) continue;
+            const originalPath = cbArchiveOriginalPath(doc.location_uri ?? '');
+            if (!originalPath) { errs++; continue; }
+            try {
+                await invoke('index_promote_cb_archive', {
+                    docId, originalPath, retrievePyPath: effectivePyPath, outputDir: null, ownerId: null,
+                });
+                ok++;
+                logInfo(`Promoted ${originalPath}`);
+            } catch (e: any) {
+                errs++;
+                logError(`Promote failed ${originalPath}: ${e?.message ?? e}`);
+            }
+        }
+        cidxSelected = new Set();
+        cidxPromoting = false;
+        logInfo(`Archiv-Promote: ${ok} ok, ${errs} Fehler`);
+        if (ok > 0) await loadContents(); // refresh main catalog
     }
 
     async function mountCidxArchive() {
@@ -1756,11 +1795,27 @@
             {:else if cidxContents.length === 0}
                 <div class="empty-state">Keine Einträge</div>
             {:else}
+                {#if cidxSelected.size > 0}
+                    <div class="cidx-sel-bar">
+                        <span>{cidxSelected.size} ausgewählt</span>
+                        <button class="action-btn small primary" onclick={promoteSelectedCidxRows} disabled={cidxPromoting}>
+                            {#if cidxPromoting}<Loader2 size={12} class="spin" /> Lade…{:else}<CloudDownload size={12} /> Auf L3 hochstufen{/if}
+                        </button>
+                        <button class="action-btn small" onclick={() => cidxSelected = new Set()}>Abwählen</button>
+                    </div>
+                {/if}
                 <div class="catalog-tbody cidx-rows">
                     {#each cidxContents as doc (doc.doc_id)}
                         {@const failure = extractionFailure(doc)}
                         {@const lvl = docLevel(doc)}
-                        <div class="catalog-row cidx-row" role="row" tabindex="0">
+                        {@const isCbArchive = doc.location_uri?.startsWith('crisp+cb-archive://')}
+                        <div class="catalog-row cidx-row" class:cidx-sel={cidxSelected.has(doc.doc_id)} role="row" tabindex="0"
+                             onclick={() => { if (cidxSelected.has(doc.doc_id)) { cidxSelected.delete(doc.doc_id); cidxSelected = new Set(cidxSelected); } else { cidxSelected = new Set([...cidxSelected, doc.doc_id]); } }}>
+                            <div class="cell" style="width:20px;flex-shrink:0;">
+                                <input type="checkbox" checked={cidxSelected.has(doc.doc_id)}
+                                       onclick={(e) => e.stopPropagation()}
+                                       onchange={() => { if (cidxSelected.has(doc.doc_id)) { cidxSelected.delete(doc.doc_id); cidxSelected = new Set(cidxSelected); } else { cidxSelected = new Set([...cidxSelected, doc.doc_id]); } }} />
+                            </div>
                             <div class="cell col-title">{doc.title ?? doc.filename ?? ''}</div>
                             <div class="cell col-author">{doc.author ?? ''}</div>
                             <div class="cell col-year">{doc.year ?? ''}</div>
@@ -1768,6 +1823,9 @@
                                 <span class="level-badge" class:l1={lvl===1} class:l2={lvl===2} class:l3={lvl===3}>L{lvl}</span>
                                 {#if failure}
                                     <span class="fail-badge fail-{failure.reason}" title={FAIL_HINTS[failure.reason] ?? failure.msg}>{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                {/if}
+                                {#if isCbArchive && lvl === 1}
+                                    <span class="inline-badge" style="background:#1e3a5f55;color:#93c5fd;" title="Aus cloud-backup-Archiv — klick zum Hochstufen">archiv</span>
                                 {/if}
                             </div>
                             <div class="cell col-ext">{doc.ext ?? ''}</div>
@@ -2868,8 +2926,11 @@
     .cidx-path { font-size: 0.78rem; color: #a5b4fc; display: flex; align-items: center;
         gap: 5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cidx-rows { overflow-y: auto; }
-    .cidx-row { border-left: 3px solid #6366f133; background: #0f0e2222; }
+    .cidx-row { border-left: 3px solid #6366f133; background: #0f0e2222; cursor: pointer; }
     .cidx-row:hover { background: #1e1b4b33; }
+    .cidx-row.cidx-sel { background: #1e1b4b55; border-left-color: #6366f1; }
+    .cidx-sel-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+        background: #1e1b4b33; border-bottom: 1px solid #312e81; font-size: 0.78rem; color: #a5b4fc; }
 
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

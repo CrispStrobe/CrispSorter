@@ -394,10 +394,12 @@ async fn bg_ingest_set_ocr(
     state: tauri::State<'_, AppState>,
     enabled: bool,
     tier: String,
+    rec_lang: Option<String>,
 ) -> Result<(), String> {
     let mut bg = state.bg_ingest.lock().await;
     bg.ocr_enabled = enabled;
     bg.ocr_tier = tier;
+    if let Some(lang) = rec_lang { bg.ocr_rec_lang = lang; }
     Ok(())
 }
 
