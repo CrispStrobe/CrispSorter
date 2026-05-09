@@ -5,6 +5,7 @@
     import { openPath } from '@tauri-apps/plugin-opener';
     import { readDir, readFile, readTextFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
+    import { getSetting, saveSetting } from '$lib/store';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -184,6 +185,8 @@
     }
 
     let previewDoc     = $state<any | null>(null);
+    let cbLookupResult = $state<any | null>(null);
+    let cbLookupLoading = $state(false);
     let previewKind    = $state<'pdf' | 'image' | 'text' | 'unsupported'>('unsupported');
     let previewSrc     = $state('');
     let previewText    = $state('');
@@ -191,7 +194,22 @@
     let previewError   = $state('');
 
     async function openDocPreview(doc: any) {
+        cbLookupResult = null;
         if (previewDoc && previewDoc.doc_id === doc.doc_id) { closeDocPreview(); return; }
+        // P12 reverse lookup for cb-archive rows.
+        if (doc.location_uri?.startsWith('crisp+cb-archive://')) {
+            const stored = await getSetting('cbManifestDbPath', null);
+            if (stored) {
+                const hashMatch = /crisp\+cb-archive:\/\/\d+\/([^#]+)/.exec(doc.location_uri ?? '');
+                const fileHash = hashMatch?.[1];
+                if (fileHash) {
+                    cbLookupLoading = true;
+                    invoke<any>('index_lookup_cb_file', { manifestDbPath: stored, fileHash })
+                        .then(r => { cbLookupResult = r; cbLookupLoading = false; })
+                        .catch(() => { cbLookupLoading = false; });
+                }
+            }
+        }
         const path = uriToPath(doc.location_uri ?? '');
         if (!path) {
             previewDoc    = doc;
@@ -909,7 +927,7 @@
         drm:
             'DRM-geschützt: Nur der verschlüsselte Text konnte nicht extrahiert werden.\n' +
             'Titel und Autor sind ggf. trotzdem vorhanden.\n' +
-            'Tipp: Calibre + DeDRM-Plugin (falls rechtlich zulässig).',
+            'Die Datei ist verschlüsselt — CrispSorter kann nur Metadaten lesen.',
         timeout:     'Zeitlimit überschritten — Datei wird beim nächsten Lauf erneut versucht.',
         corrupt:     'Datei scheint beschädigt oder ist kein gültiges Format.',
         password:    'Passwortgeschützt — Entschlüsselung erforderlich.',
@@ -1189,6 +1207,7 @@
     }
 
     let retryingIds = $state(new Set<string>());
+    let drmPopoverDocId = $state<string | null>(null);
 
     /** Clear the extraction_failure blob and reset to L1 so the bg_ingest
      *  worker re-attempts on next run. Only works for retryable reasons
@@ -1237,14 +1256,14 @@
         if (!originalPath) return;
 
         // Ask the user for the retrieve.py path (persisted in settings).
-        const stored = await invoke<string | null>('get_setting', { key: 'cbRetrievePyPath' }).catch(() => null);
+        const stored = await getSetting('cbRetrievePyPath', null);
         let pyPath = stored;
         if (!pyPath) {
             const { open: od } = await import('@tauri-apps/plugin-dialog');
             const sel = await od({ filters: [{ name: 'Python script', extensions: ['py'] }], title: 'retrieve.py auswählen' });
             if (typeof sel !== 'string') return;
             pyPath = sel;
-            invoke('save_setting', { key: 'cbRetrievePyPath', value: pyPath }).catch(() => {});
+            saveSetting('cbRetrievePyPath', pyPath).catch(() => {});
         }
 
         promotingIds = new Set([...promotingIds, doc.doc_id]);
@@ -1347,6 +1366,8 @@
         if (typeof sel !== 'string') return;
         cafBusy = true;
         cafLastResult = null;
+        // Persist manifest DB path for reverse lookups.
+        saveSetting('cbManifestDbPath', sel).catch(() => {});
         try {
             const res = await invoke<{ ingested: number; total_rows: number; errors: number }>('index_ingest_cb_manifest', {
                 manifestDbPath: sel,
@@ -2279,12 +2300,26 @@
                                 </div>
                             {/if}
                             {#if colVisibility.level}
-                                <div class="cell col-level">
+                                <div class="cell col-level" style="position:relative;">
                                     <span class="level-badge" class:l1={lvl === 1} class:l2={lvl === 2} class:l3={lvl === 3}>L{lvl}</span>
                                     {#if failure}
-                                        <span class="fail-badge fail-{failure.reason}"
-                                              title={FAIL_HINTS[failure.reason] ?? failure.msg}
-                                        >{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                        {#if failure.reason === 'drm'}
+                                            <button class="fail-badge fail-drm"
+                                                    onclick={(e) => { e.stopPropagation(); drmPopoverDocId = drmPopoverDocId === doc.doc_id ? null : doc.doc_id; }}
+                                                    title="Klick für Details zu DRM-Schutz">DRM</button>
+                                            {#if drmPopoverDocId === doc.doc_id}
+                                                <div class="drm-popover" role="tooltip">
+                                                    <p><strong>DRM-geschützt</strong></p>
+                                                    <p>Diese Datei ist verschlüsselt (ADEPT/FairPlay/AES). CrispSorter kann nur die unverschlüsselten Metadaten lesen.</p>
+                                                    <p style="margin-top:6px;">Wende dich an den Anbieter oder Verlag, um eine nicht-verschlüsselte Version zu erhalten.</p>
+                                                    <button class="drm-close" onclick={(e) => { e.stopPropagation(); drmPopoverDocId = null; }}>✕</button>
+                                                </div>
+                                            {/if}
+                                        {:else}
+                                            <span class="fail-badge fail-{failure.reason}"
+                                                  title={FAIL_HINTS[failure.reason] ?? failure.msg}
+                                            >{FAIL_LABELS[failure.reason] ?? failure.reason}</span>
+                                        {/if}
                                     {/if}
                                 </div>
                             {/if}
@@ -2347,6 +2382,21 @@
                             <X size={14} />
                         </button>
                     </header>
+                    {#if cbLookupLoading}
+                        <div class="cb-tier-bar"><Loader2 size={12} class="spin" /> Standort prüfen…</div>
+                    {:else if cbLookupResult?.found}
+                        <div class="cb-tier-bar">
+                            <span class="cb-tier" class:tier-ok={cbLookupResult.local_available} title="Lokale Originaldatei">
+                                Lokal: {cbLookupResult.local_available ? '✓' : '✗'}
+                            </span>
+                            <span class="cb-tier" class:tier-ok={cbLookupResult.archived_in != null} title="Im cloud-backup Archiv gesichert">
+                                VPS: {cbLookupResult.archived_in != null ? `✓ (Archiv #${cbLookupResult.archived_in})` : '✗'}
+                            </span>
+                            {#if cbLookupResult.archive_filename}
+                                <span class="cb-archive-name" title={cbLookupResult.archive_filename}>{cbLookupResult.archive_filename.slice(-32)}</span>
+                            {/if}
+                        </div>
+                    {/if}
                     <div class="preview-body">
                         {#if previewLoading}
                             <div class="preview-msg"><Loader2 size={20} class="spin" /> Lade …</div>
@@ -2778,13 +2828,32 @@
         font-size: 0.55rem; font-weight: 800; padding: 2px 4px; border-radius: 3px;
         margin-top: 2px; margin-left: 2px; text-transform: uppercase; flex-shrink: 0;
     }
-    .fail-badge.fail-drm      { background: #451a0333; color: #fbbf24; }
+    .fail-badge.fail-drm      { background: #451a0333; color: #fbbf24; cursor: pointer; }
+    .fail-badge.fail-drm:hover { background: #451a0366; }
+    .drm-popover {
+        position: absolute; z-index: 200; background: #1c1917; border: 1px solid #451a03;
+        border-radius: 8px; padding: 12px 14px; width: 280px;
+        font-size: 0.78rem; color: #fef3c7; line-height: 1.5;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .drm-popover p { margin: 0 0 4px; }
+    .drm-popover a { color: #fbbf24; text-decoration: underline; }
+    .drm-close {
+        position: absolute; top: 6px; right: 8px; background: none; border: none;
+        color: #78716c; cursor: pointer; font-size: 0.85rem;
+    }
+    .drm-close:hover { color: #fef3c7; }
     .fail-badge.fail-timeout  { background: #431a0033; color: #fb923c; }
     .fail-badge.fail-corrupt  { background: #450a0a33; color: #f87171; }
     .fail-badge.fail-password { background: #2e1a5233; color: #c084fc; }
     .fail-badge.fail-unsupported { background: #27272a;   color: #71717a; }
     .fail-badge.fail-other    { background: #1a1a2e33; color: #94a3b8; }
 
+    .cb-tier-bar { display: flex; align-items: center; gap: 8px; padding: 5px 12px;
+        background: #1c1917; border-bottom: 1px solid #292524; font-size: 0.72rem; flex-wrap: wrap; }
+    .cb-tier { color: #78716c; }
+    .cb-tier.tier-ok { color: #10b981; }
+    .cb-archive-name { color: #57534e; font-size: 0.67rem; margin-left: auto; }
     .tb-toggle-small { display: flex; align-items: center; gap: 4px; font-size: 0.72rem;
         color: #71717a; cursor: pointer; padding: 2px 6px; white-space: nowrap; }
     .tb-toggle-small input { cursor: pointer; }
