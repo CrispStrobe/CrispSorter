@@ -26,8 +26,7 @@
 
 ## In Progress
 
-- **P11 server queue blob fix** — `payload_json` stores full embeddings (~112 KB/batch);
-  fix: store chunk references, re-embed at work time. Server-side change in `crisp-index-server/src/queue.rs`.
+*(nothing actively in-flight — see Open TODOs below)*
 
 ---
 
@@ -75,14 +74,16 @@
 
 ### P10 — Remaining
 
-- [ ] **DRM help-popover** — clicking a `fail-badge.fail-drm` opens a small popover
-  explaining DRM, linking to Calibre/DeDRM workflow.
+- [x] **DRM help-popover** — clicking `fail-badge.fail-drm` opens an inline popover
+  explaining the encryption, with a close button. No third-party tool recommendations.
 - [ ] **CLI `--skip-failed`** — `bg_ingest start --skip-failed` flag honours the
   skip-on-fail rules from `extraction_failure_reason_for_uri`.
 
 ### P11 — Remote server (remaining)
 
-- [ ] **Server queue blob fix** — `payload_json` stores full embeddings; fix to store refs.
+- [x] **Server queue blob fix** — shipped: `embeddings_blob BLOB` + `embed_dims` columns;
+  `payload_json` stores compact batch with empty vectors; blob is repacked on claim.
+- [ ] **IVF-PQ at 100M+ vectors** — `sample_rate` knob in LanceDB IVF-PQ build.
 - [ ] **IVF-PQ at 100M+ vectors** — `sample_rate` knob in LanceDB IVF-PQ build.
 - [ ] **Runtime modes** — `Standalone | Server | Hybrid` enum replacing `BackendType`.
 - [ ] **Cloud drives** — `trait CloudDrive` + SMB/SFTP/Filen/Internxt impls.
@@ -92,8 +93,10 @@
 
 - [x] L1 manifest import via `index_ingest_cb_manifest`
 - [x] L3 promotion via `retrieve.py` (`index_promote_cb_archive` + CloudDownload button)
-- [ ] **Reverse lookup UI** — clicking a hit surfaces "local / VPS / Internxt blob" tiers
-  read from cloud-backup's manifest (no new code on cloud-backup side).
+- [x] **Reverse lookup UI** — `index_lookup_cb_file` Tauri command queries
+  `source_files`+`archives`; preview pane shows Lokal/VPS availability when
+  a `crisp+cb-archive://` row is opened. Manifest DB path persisted as
+  `cbManifestDbPath` setting on first import.
 - [ ] **VPS-trigger indexing** — cloud-backup `vps_worker.py` hook posts to
   `crisp-index-server` after decrypting each archive. ~100 lines of Python.
 

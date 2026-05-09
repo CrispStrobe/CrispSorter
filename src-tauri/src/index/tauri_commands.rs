@@ -2127,6 +2127,79 @@ pub async fn init_index(
     }
 }
 
+// ── P12 — cloud-backup reverse lookup ────────────────────────────────────────
+
+/// Look up a file's cross-tier availability in cloud-backup's manifest SQLite.
+/// Reads `source_files` + `archives` to determine where the file lives:
+/// local (original_path exists on disk), VPS (archived), cloud (replicated).
+///
+/// `file_hash`       — from the `crisp+cb-archive://` URI
+/// `manifest_db_path` — path to cloud-backup's SQLite database
+///
+/// Returns `{ original_path, local: bool, vps_archive_id: int|null, status: str }`
+#[tauri::command]
+pub async fn index_lookup_cb_file(
+    manifest_db_path: String,
+    file_hash: String,
+) -> Result<serde_json::Value, String> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let db_path = std::path::PathBuf::from(&manifest_db_path);
+    if !db_path.exists() {
+        return Err(format!("manifest DB not found: {}", db_path.display()));
+    }
+
+    tokio::task::spawn_blocking(move || {
+        use rusqlite::OptionalExtension;
+        let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("open: {e}"))?;
+
+        // Look up source_files by hash.
+        let row: Option<(String, i64, f64, String, Option<i64>)> = conn.query_row(
+            "SELECT file_path, file_size_bytes, modified_time, status, archived_in
+             FROM source_files WHERE file_hash = ?1 LIMIT 1",
+            [&file_hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        ).optional().map_err(|e| format!("query: {e}"))?;
+
+        let Some((original_path, size, mtime, status, archived_in)) = row else {
+            return Ok(serde_json::json!({
+                "found": false,
+                "file_hash": file_hash,
+            }));
+        };
+
+        // Check local availability.
+        let local_available = std::path::Path::new(&original_path).exists();
+
+        // If archived, get the archive filename for VPS availability hint.
+        let archive_filename: Option<String> = if let Some(aid) = archived_in {
+            conn.query_row(
+                "SELECT archive_filename FROM archives WHERE archive_id = ?1 LIMIT 1",
+                [aid],
+                |r| r.get(0),
+            ).optional().map_err(|e| format!("archives query: {e}"))?
+            .flatten()
+        } else {
+            None
+        };
+
+        Ok(serde_json::json!({
+            "found": true,
+            "file_hash": file_hash,
+            "original_path": original_path,
+            "file_size_bytes": size,
+            "modified_time": mtime,
+            "status": status,
+            "local_available": local_available,
+            "archived_in": archived_in,
+            "archive_filename": archive_filename,
+        }))
+    })
+    .await
+    .map_err(|e| format!("spawn: {e}"))?
+}
+
 // ── .cidx mount / browse ─────────────────────────────────────────────────────
 
 /// Mount a `.cidx` archive for offline browse. Stores the read-only
