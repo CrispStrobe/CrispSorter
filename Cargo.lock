@@ -1823,8 +1823,10 @@ dependencies = [
  "md-5",
  "rayon",
  "serde",
+ "serde_json",
  "sha1",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

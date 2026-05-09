@@ -403,4 +403,63 @@ mod tests {
     fn unknown_scheme_errors() {
         assert!(FileLocation::from_uri("http://example.com/file.pdf").is_err());
     }
+
+    // ── P12 — crisp+cb-archive:// URI ─────────────────────────────────────
+
+    #[test]
+    fn cb_archive_uri_format() {
+        let loc = FileLocation::CbArchive {
+            archive_id: 42,
+            file_hash: "deadbeefcafe1234".to_owned(),
+            original_path: "/Users/me/docs/chapter.pdf".to_owned(),
+        };
+        let uri = loc.to_uri();
+        assert!(uri.starts_with("crisp+cb-archive://"),
+            "expected crisp+cb-archive scheme, got: {uri}");
+        assert!(uri.contains("/42/"),               "archive_id missing: {uri}");
+        assert!(uri.contains("deadbeefcafe1234"),   "hash missing: {uri}");
+        assert!(uri.contains("#"),                  "fragment separator missing: {uri}");
+    }
+
+    #[test]
+    fn cb_archive_filename_extracted_from_path() {
+        let loc = FileLocation::CbArchive {
+            archive_id: 1,
+            file_hash: "abc".to_owned(),
+            original_path: "/some/folder/Chapter 5.pdf".to_owned(),
+        };
+        assert_eq!(loc.filename().as_deref(), Some("Chapter 5.pdf"));
+    }
+
+    #[test]
+    fn cb_archive_retrieval_cost_is_expensive() {
+        let loc = FileLocation::CbArchive {
+            archive_id: 1,
+            file_hash: "x".to_owned(),
+            original_path: "/x".to_owned(),
+        };
+        assert_eq!(loc.retrieval_cost(), RetrievalCost::Expensive);
+    }
+
+    #[test]
+    fn cb_archive_user_id_is_nil() {
+        // CbArchive doesn't carry user_id; it returns Uuid::nil() per design.
+        let loc = FileLocation::CbArchive {
+            archive_id: 1,
+            file_hash: "x".to_owned(),
+            original_path: "/x".to_owned(),
+        };
+        assert_eq!(loc.user_id(), Uuid::nil());
+    }
+
+    #[test]
+    fn cb_archive_uri_encodes_spaces_in_path() {
+        let loc = FileLocation::CbArchive {
+            archive_id: 7,
+            file_hash: "h".to_owned(),
+            original_path: "/path with spaces/file.pdf".to_owned(),
+        };
+        let uri = loc.to_uri();
+        assert!(uri.contains("%20"), "spaces must be encoded in URI: {uri}");
+    }
 }

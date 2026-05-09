@@ -28,6 +28,10 @@
 
 *(nothing actively in-flight — see Open TODOs below)*
 
+**Test coverage:** 215 unit tests pass (195 tauri-app + 20 crispcat).
+Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
+— 2026-05-09" for a per-module breakdown.
+
 ---
 
 ## Open TODOs

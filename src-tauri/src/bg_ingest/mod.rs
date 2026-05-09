@@ -661,4 +661,76 @@ mod tests {
         assert_eq!(snap.pending, 0);
         assert!(snap.last_error.is_none());
     }
+
+    #[test]
+    fn default_ocr_settings_are_off() {
+        let s = BackgroundIngest::new();
+        assert!(!s.ocr_enabled);
+        assert_eq!(s.ocr_tier,     "auto");
+        assert_eq!(s.ocr_rec_lang, "auto");
+    }
+
+    #[test]
+    fn cancel_is_a_no_op_when_idle() {
+        let mut s = BackgroundIngest::new();
+        s.cancel();
+        // Idle stays idle — cancel only takes effect on a running worker.
+        assert_eq!(s.snapshot().status, BgStatus::Idle);
+    }
+
+    #[test]
+    fn resume_only_works_when_paused() {
+        let mut s = BackgroundIngest::new();
+        s.resume();
+        assert_eq!(s.snapshot().status, BgStatus::Idle);
+        s.status = BgStatus::Paused;
+        s.resume();
+        assert_eq!(s.snapshot().status, BgStatus::Running);
+    }
+
+    #[test]
+    fn snapshot_is_consistent_with_internal_state() {
+        let mut s = BackgroundIngest::new();
+        s.done = 7;
+        s.errored = 3;
+        s.current = Some("/path/to/active.pdf".to_owned());
+        s.last_error = Some("oh no".to_owned());
+        s.queue.push_back(PendingIngest {
+            path: PathBuf::from("/q"),
+            owner_id: None, title: None, author: None, year: None, language: None,
+        });
+        let snap = s.snapshot();
+        assert_eq!(snap.done, 7);
+        assert_eq!(snap.errored, 3);
+        assert_eq!(snap.pending, 1);
+        assert_eq!(snap.current.as_deref(), Some("/path/to/active.pdf"));
+        assert_eq!(snap.last_error.as_deref(), Some("oh no"));
+    }
+
+    #[test]
+    fn pending_ingest_serde_round_trip() {
+        let item = PendingIngest {
+            path: PathBuf::from("/data/foo bar.pdf"),
+            owner_id: Some("u1".to_owned()),
+            title: Some("Title".to_owned()),
+            author: Some("Doe, John".to_owned()),
+            year: Some(2024),
+            language: Some("en".to_owned()),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: PendingIngest = serde_json::from_str(&json).unwrap();
+        assert_eq!(item.path,     back.path);
+        assert_eq!(item.owner_id, back.owner_id);
+        assert_eq!(item.title,    back.title);
+        assert_eq!(item.year,     back.year);
+    }
+
+    #[test]
+    fn extraction_timeout_const_is_sensible() {
+        // Sanity: 300s = 5min, the documented value. Catching a typo would
+        // cause silent data loss (every file flagged as Timeout).
+        assert!(EXTRACTION_TIMEOUT_SECS >= 60,  "timeout too short");
+        assert!(EXTRACTION_TIMEOUT_SECS <= 3600,"timeout too long");
+        assert_eq!(EXTRACTION_TIMEOUT_SECS, 300);
+    }
 }

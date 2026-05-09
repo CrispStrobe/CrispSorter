@@ -38,3 +38,7 @@ lancedb      = { version = "0.26.2", default-features = false, optional = true }
 default = []
 # Enables `crispcat::lance` — LanceDB materialisation (heavy: arrow + lancedb).
 lance = ["dep:arrow-array", "dep:arrow-schema", "dep:futures-util", "dep:lancedb"]
+
+[dev-dependencies]
+tempfile   = "3"
+serde_json = "1"

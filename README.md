@@ -20,9 +20,9 @@ Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 | Format | Extraction method |
 |---|---|
 | PDF (digital) | pdfjs-dist (JS) or pdf-extract (native Rust) |
-| PDF (scanned) | Tesseract.js OCR — multi-language |
+| PDF (scanned) | OCR — three tiers: PaddleOCR, ocrs (pure Rust), Tesseract |
 | DOCX / Word | mammoth.js |
-| EPUB | @lingo-reader/epub-parser |
+| EPUB | @lingo-reader/epub-parser (DRM detection via META-INF/encryption.xml) |
 | TXT / Markdown | direct UTF-8 |
 
 ---
@@ -48,19 +48,76 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 
 ## Features
 
-- **OCR** — Tesseract with English, German, French, Spanish, Italian and more; force-OCR per file
-- **Batch operations** — multi-select, bulk re-analyse with different models, bulk accept/reject
-- **Duplicate detection** — content hashing identifies near-identical files across a batch
-- **Session persistence** — auto-save and resume; full session history
+- **Three-tier OCR** (in quality order):
+  - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
+  - **Tier 2 — ocrs**: pure Rust, zero system install, Latin-script (EN/DE/FR/…)
+  - **Tier 1 — Tesseract**: shell-out for users with the system install
+- **Batch operations** — multi-select, bulk re-analyse with different models, bulk accept/reject, **content-confirmed duplicate detection** (size → SHA-256), **book-chapter grouping** (ISBN-13 prefix detection — De Gruyter, Brill, Mohr Siebeck, etc.; only the representative file goes through the LLM, metadata propagates to siblings), edited-volume toggle
+- **Robust ingest at scale**: 300 s extraction timeout, L2 fallback row when extraction fails (title/author still searchable), automatic DRM detection (EPUB ADEPT/FairPlay), classified failure reasons (timeout / DRM / corrupt / unsupported / password) with retryable-vs-permanent semantics, N-worker parallel pool, retry-on-fail UI button
+- **Session persistence** — auto-save and resume; full session history; durable SQLite job queue
 - **Built-in AI chat** — query across the documents in your current batch using any configured provider
 - **Voice chat (push-to-talk + auto-speak)** — mic button transcribes speech via on-device CrispASR; replies are read back through the platform's native synth (macOS `say`, Windows SAPI, Linux espeak/spd-say). All offline; opt-in.
 - **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
-- **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs; useful fallback when you skip the LLM or it fails
+- **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs
 - **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
 - **Script export** — generate a `.bat` / `.sh` script to review moves before executing them
+- **JSON sort plans** — `batch process` → `batch apply` pipeline produces a structured plan you can audit before applying
 - **Customisable output** — `{Author}/{Year}/{Title}` template configurable in Settings, save extracted `.txt` transcript alongside files
-- **Editable grid** — column visibility, width, sort; inline field editing
-- **Search index** — optional semantic + full-text search over all sorted documents (local or remote), with optional cross-encoder reranking, sparse retrieval (BGE-M3/SPLADE), and Matryoshka dim truncation
+- **Editable grid** — column visibility, width, sort; inline field editing; metadata edits immediately update the sort destination path
+- **Search index** — optional semantic + full-text search over all sorted documents (local, remote, or hybrid), with optional cross-encoder reranking, sparse retrieval (BGE-M3/SPLADE), and Matryoshka dim truncation
+- **Mountable archive index (`.cidx`)** — export a per-volume slice of the search index as a portable directory (LanceDB + optional Tantivy FTS companion). Ship the archive drive + `.cidx` in the same backup snapshot; CrispSorter mounts it as a read-only "Archiv" tab and full-text search works offline.
+- **cloud-backup integration** ([`../cloud-backup`](https://github.com/CrispStrobe/cloud-backup)): import 482k+ files as L1 metadata in seconds (`index_ingest_cb_manifest`), promote individual files to L3 on demand via `retrieve.py`, reverse-lookup tier availability (Lokal/VPS) in the preview pane, opt-in VPS-side indexing trigger
+
+---
+
+## Headless CLI mode
+
+The same binary doubles as a CLI tool. Detection is on the first argument — running `crispsorter` with no args (the typical GUI launch) bypasses clap entirely.
+
+```bash
+crispsorter version
+crispsorter doctor                                     # OCR engines, embedder cache, etc.
+crispsorter index init --model bge-m3 --device metal   # download embedder weights
+crispsorter index ingest /path/to/docs                 # full extraction + embedding pipeline
+crispsorter index stats                                # docs / chunks / fts-docs counts
+crispsorter index search "karl barth"                  # BM25 FTS
+crispsorter index list-failed --retryable-only
+crispsorter index retry-failed [--dry-run]
+crispsorter index export-cidx my-archive.cidx --include-fts
+crispsorter index inspect-cidx my-archive.cidx
+crispsorter index ingest-cb-manifest cloud-backup.db   # bulk import 482 k file metadata
+
+crispsorter batch add ~/Downloads/papers/              # enqueue for the GUI
+crispsorter batch list
+crispsorter batch process --llm-url http://localhost:11434/v1 --llm-model llama3 \
+                          --path-template '{Author}/{Year}/{Title}' \
+                          --out-plan plan.json         # → JSON sort plan
+crispsorter batch apply plan.json                      # execute the plan
+
+crispsorter chat query "Was ist die Hauptthese?" --context-files paper.pdf
+
+crispsorter catalog scan ~/Volumes/Backup --hash sha256 --out backup.caf
+crispsorter catalog find-dupes Backup1.caf Backup2.caf --strategy hash:sha256
+
+crispsorter completion zsh > ~/.zsh/completions/_crispsorter
+crispsorter manpage --out /usr/share/man/man1/
+```
+
+The catalog primitives also ship as a tiny standalone binary (`crispcat`) — `cargo install --path crates/crispcat-cli`. No Tauri, no LanceDB, no embedder; just `.caf` I/O, parallel scanner, duplicate engine.
+
+---
+
+## Runtime modes
+
+CrispSorter has three runtime modes (Settings → Search Index → Backend):
+
+| Mode | Reads | Writes | Use case |
+|---|---|---|---|
+| **Standalone** (`local`) | local LanceDB + Tantivy | local | single machine, fully offline (default) |
+| **Server** (`remote`) | self-hosted `crisp-index-server` | remote via HTTP | index lives on a VPS or GPU box |
+| **Hybrid** (`hybrid`) | local-first cache | local + mirror to remote outbox | laptop ↔ VPS, offline-capable |
+
+In Hybrid mode, writes go to the local cache and queue to a SQLite **sync outbox** (`sync_outbox.db`). A background worker drains the outbox to the remote server when it's reachable. The nav sidebar shows a `⇅ N` chip indicating pending count + online state; clicking it triggers an immediate push.
 
 ---
 
@@ -437,6 +494,21 @@ If EPUB extraction fails with a reference to the Node.js `process` global, ensur
 | Folder watcher | `notify` (FSEvents/inotify/ReadDirectoryChangesW) |
 | PDF metadata | `lopdf` (/Info dict) + `quick-xml` (XMP packet) |
 | Search server | crisp-index-server (axum + LanceDB + Tantivy) |
+| Catalog primitives | `crispcat` workspace crate (extracted from `src-tauri/src/catalog/`); standalone CLI in `crates/crispcat-cli` |
+| OCR Tier 3 | PaddleOCR DB + SVTR via [`usls`](https://crates.io/crates/usls) (ONNXRuntime); CJK + Latin recognition models |
+| Wire types | `crisp-index-protocol` workspace crate — single source of truth for `IngestChunk` / `SearchRequest` / `SearchHit` shapes |
+
+---
+
+## Testing
+
+```bash
+cargo test -p tauri-app --lib                    # ~195 unit tests in the desktop app
+cargo test -p crispcat                           # ~20 unit tests in the catalog crate
+cargo test --workspace                           # full workspace suite
+```
+
+Coverage spans the cross-cutting components: location URI round-trips (incl. `crisp+cb-archive://`), failure-reason classification, EPUB DRM detection (built fixtures with the `zip` crate), background-ingest state machine, OCR tier dispatch, runtime-mode serde, sync outbox lifecycle (claim/mark_done/mark_error/clear_failed), drive registry persistence, FTS query parser, embedder backend selection, and the full `.caf` v6/v7/v8 round-trip.
 
 ---
 
