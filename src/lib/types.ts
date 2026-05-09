@@ -30,6 +30,23 @@ export interface BatchItem {
     // User edits/acceptance
     isAccepted: boolean;
     isIgnored?: boolean;
+
+    // P15a — content-dedup
+    /** First 8 hex chars of the SHA-256 shared by all files in the same
+     *  content-identical group. Set by detectAndMarkDuplicates(). */
+    duplicateGroupId?: string;
+    /** true = keep this one; false = skip on sort (non-primary duplicate). */
+    isDuplicatePrimary?: boolean;
+
+    // P15b — book-chapter grouping
+    /** The ISBN-13 or shared filename prefix that identifies the book. */
+    chapterGroupId?: string;
+    /** The chapter suffix token: "fm", "001", "bm", etc. */
+    chapterSuffix?: string;
+    /** Only the representative file (fm > 001 > …) gets the full LLM pass. */
+    isChapterRepresentative?: boolean;
+    /** Total number of files in this chapter group. */
+    chapterGroupSize?: number;
 }
 
 export interface Metadata {

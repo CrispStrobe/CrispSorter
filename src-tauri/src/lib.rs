@@ -136,6 +136,23 @@ async fn catalog_save_caf(
 }
 
 /// Walk a directory tree (rayon-parallel) and produce a FileIndex.
+/// Compute the SHA-256 hex digest of a single file. Used by the batch
+/// pre-processor (P15a) to confirm content-identical duplicates after a
+/// size-bucket match — cheaper than reading the file in JS.
+/// Returns an error string if the file is unreadable.
+#[tauri::command]
+async fn file_sha256(path: String) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        Ok(hex::encode(h.finalize()))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
 /// `hash_algo` is one of `"md5"`, `"sha1"`, `"sha256"`, or absent for
 /// no hashing (Cathy-classic behaviour).
 #[tauri::command]
@@ -2210,6 +2227,7 @@ pub fn run() {
             watch_stop_all,
             watch_list,
             volume_list_mounted,
+            file_sha256,
             catalog_load_caf,
             catalog_save_caf,
             catalog_scan_dir,

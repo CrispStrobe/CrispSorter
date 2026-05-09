@@ -115,6 +115,8 @@
     let lastExecutionStats = $state<any>(null);
     let showReportModal = $state(false);
 
+    // Sort options (P15)
+    let skipDuplicatesOnSort = $state(false);
     // Index integration
     let indexAfterSort     = $state(false);
     let indexingSelected   = $state(false);
@@ -570,7 +572,14 @@
         }
         logDebug(`Sortieren batch shape: ${JSON.stringify(statusHist)}, accepted=${acceptedCount}, withTargetPath=${withTarget}`);
 
-        const accepted = batchManager.items.filter(i => i.isAccepted);
+        let accepted = batchManager.items.filter(i => i.isAccepted);
+        // P15a — skip non-primary duplicates if the option is set.
+        if (skipDuplicatesOnSort) {
+            const before = accepted.length;
+            accepted = accepted.filter(i => i.isDuplicatePrimary !== false);
+            const skipped = before - accepted.length;
+            if (skipped > 0) logInfo(`P15a: skipped ${skipped} non-primary duplicate(s) from sort`);
+        }
         logInfo(`Accepted (green-check) items: ${accepted.length} / ${batchManager.items.length} total`);
 
         if (accepted.length === 0) {
@@ -601,7 +610,7 @@
 
         logInfo(`Sortieren confirmed -- handing ${accepted.length} accepted item(s) to executeBatch(${mode})`);
         const sortStart = performance.now();
-        const stats = await batchManager.executeBatch(mode);
+        const stats = await batchManager.executeBatch(mode, { skipNonPrimaryDupes: skipDuplicatesOnSort });
         const sortMs = Math.round(performance.now() - sortStart);
         if (stats) {
             logInfo(`Sortieren done in ${sortMs} ms: ${JSON.stringify(stats)}`);
@@ -1094,6 +1103,10 @@
                             <Code size={14} /> {i18n.t.batch.execute_script_copy}
                         </button>
                         <div class="dropdown-separator"></div>
+                        <label class="dropdown-toggle-row" title="Inhaltsidentische Duplikate beim Sortieren überspringen (nicht-primäre Kopien bleiben in der Liste)">
+                            <Copy size={13} /> Duplikate überspringen
+                            <input type="checkbox" bind:checked={skipDuplicatesOnSort} />
+                        </label>
                         <label class="dropdown-toggle-row" title="Dokumente nach dem Sortieren automatisch in den Suchindex aufnehmen">
                             <UploadCloud size={13} /> Index nach Sort
                             <input type="checkbox" bind:checked={indexAfterSort} />
@@ -1226,13 +1239,16 @@
                 </thead>
                 <tbody>
                     {#each sortedItems as item (item.id)}
-                        <tr 
+                        <tr
                             class:selected={selectedIds.includes(item.id)}
                             class:active-row={selectedItemId === item.id}
                             onclick={(e) => handleRowClick(e, item.id)}
                             onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleRowClick(e, item.id)}
                             class:status-error={item.status === 'error'}
                             class:status-done={item.status === 'done'}
+                            class:is-dupe-nonprimary={item.isDuplicatePrimary === false}
+                            class:is-chapter-member={!!item.chapterGroupId && !item.isChapterRepresentative}
+                            class:is-chapter-rep={!!item.chapterGroupId && item.isChapterRepresentative}
                             tabindex="0"
                         >
                             <td onclick={e => { e.stopPropagation(); }} style="width: 35px; text-align: center;">
@@ -1288,6 +1304,23 @@
                                             </button>
                                         {:else if col.id === 'file_name'}
                                             <span class="file-name" title={item.originalPath}>{item.originalName}</span>
+                                            {#if item.isDuplicatePrimary === false}
+                                                <span class="inline-badge dupe-badge"
+                                                      title="Inhaltsidentisches Duplikat (Gruppe {item.duplicateGroupId}). Wird beim Sortieren übersprungen wenn 'Duplikate überspringen' aktiv ist."
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>= dup</span>
+                                            {:else if item.isDuplicatePrimary === true && item.duplicateGroupId}
+                                                {@const nDupes = batchManager.items.filter(i => i.duplicateGroupId === item.duplicateGroupId && i.isDuplicatePrimary === false).length}
+                                                <span class="inline-badge dupe-primary-badge"
+                                                      title="{nDupes} identische Kopie(n) in der Liste (Gruppe {item.duplicateGroupId})"
+                                                      onclick={(e) => { e.stopPropagation(); showDuplicates = true; }}>+{nDupes} dup</span>
+                                            {/if}
+                                            {#if item.chapterGroupId}
+                                                {@const n = item.chapterGroupSize ?? 0}
+                                                <span class="inline-badge chapter-badge"
+                                                      title="Kapitel-Gruppe: {item.chapterGroupId} ({n} Dateien){item.isChapterRepresentative ? ' — Repräsentant (LLM)' : ` — Kapitel ${item.chapterSuffix ?? ''}`}">
+                                                    📚{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
+                                                </span>
+                                            {/if}
                                         {:else if col.id === 'title'}
                                             <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
@@ -1641,6 +1674,20 @@
     .dense-table tr.selected { background: #1e3a8a; }
     .dense-table tr.active-row { border-left: 3px solid #3b82f6; }
     .dense-table tr.status-done { background: #064e3b33; }
+    /* P15a — duplicate rows */
+    .dense-table tr.is-dupe-nonprimary { background: #451a0322; border-left: 3px solid #f59e0b88; }
+    /* P15b — chapter rows */
+    .dense-table tr.is-chapter-member { background: #0c1a3022; border-left: 3px solid #3b82f644; }
+    .dense-table tr.is-chapter-rep    { background: #0c1a3044; border-left: 3px solid #3b82f6; }
+    /* P15 — inline badges in file-name cell */
+    .inline-badge {
+        display: inline-block; font-size: 0.6rem; font-weight: 800;
+        padding: 1px 4px; border-radius: 3px; margin-left: 4px;
+        vertical-align: middle; cursor: pointer; flex-shrink: 0;
+    }
+    .dupe-badge        { background: #451a0388; color: #fbbf24; }
+    .dupe-primary-badge { background: #78350f55; color: #fde68a; }
+    .chapter-badge     { background: #1e3a5f55; color: #93c5fd; }
     
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }
