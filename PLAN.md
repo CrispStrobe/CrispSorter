@@ -1964,5 +1964,130 @@ not a separate stack.
 
 ---
 
+### P15 — Batch pre-processing: content-dedup + book-chapter grouping
+
+Two independent optimisations applied before the extraction/LLM pipeline
+runs. Both are non-destructive: they only set flags on `BatchItem`; no
+files are moved or deleted without user confirmation.
+
+#### P15a — Content-confirmed duplicate detection
+
+The existing "Find Duplicates" panel groups by filename+size. This misses
+renamed copies and has false positives when different files happen to be
+the same size. The new flow:
+
+1. **Size bucketing first.** Any file whose size is unique in the batch
+   is immediately excluded from further checks — no hashing needed.
+2. **SHA-256 for size-collision candidates.** A new Tauri command
+   `file_sha256(path)` computes the hash Rust-side (no GB of bytes
+   crossing IPC). Only files that share a size with at least one other
+   file get hashed.
+3. **Mark items in place.** `BatchItem` gains `duplicateGroupId` (the
+   first 8 hex chars of the shared hash) and `isDuplicatePrimary` (the
+   first file in each hash group = `true`; the rest = `false`).
+4. **Inline UI signals.** Non-primary duplicate rows get an orange tint
+   and an "(= dup)" badge in the filename column. The primary row shows
+   "(+N dups)". Both are clickable — click jumps to the duplicates panel.
+5. **Sort-time option** in the sort-options dropdown: "Duplikate
+   überspringen" — when enabled, non-primary duplicates are excluded from
+   the sort run (they stay in the batch at `status='queued'`, never move).
+6. **Dedup auto-run.** `detectAndMarkDuplicates()` is called automatically
+   at the start of `processAll()` so inline badges appear before the user
+   even opens the duplicates panel.
+
+Notes:
+- Zero-size files (empty files) are excluded from dedup (they collide
+  by size trivially).
+- Files > 500 MB are skipped for hashing (too large for the use case;
+  such files are unlikely to be duplicated document pairs anyway).
+- The existing "Find Duplicates" panel retains its hash-based dedup
+  with delete-from-disk; P15a adds only the inline batch-flow markers.
+
+#### P15b — Book-chapter group detection
+
+Academic publishers deliver PDF chapter sets with a shared ISBN-13 prefix:
+
+| Publisher | Example prefix | Notes |
+|---|---|---|
+| De Gruyter | `9783110…` / `9783111…` | All 978-3-11-x ISBNs |
+| Nomos / Inlibra | `9783848…` / `9783849…` | 978-3-84-x |
+| Brill | `9789004…` / `9789003…` | 978-90-0x |
+| Mohr Siebeck | `9783161…` / `9783162…` | 978-3-16-x |
+| Transcript Verlag | `9783837…` / `9783839…` | 978-3-83-x |
+| Springer | `9783030…` / `97894xx…` | Various 978-3-0xx + 978-94 |
+| Böhlau / UTB | `9783412…` / `9783825…` | Various |
+| JSTOR Books | any ISBN-13 | Same pattern |
+
+The filename structure is: `{ISBN13}_{suffix}.{ext}` where suffix is one
+of the known tokens below or a page-range number.
+
+Known suffix tokens and their sort priority (representative selection):
+
+| Suffix | Meaning | Priority |
+|---|---|---|
+| `fm` | frontmatter | **1st** (best metadata: title + editor/author) |
+| `ck` / `cover` | cover / acknowledgements | 2nd |
+| `toc` | table of contents | 3rd |
+| `\d+` (ascending) | body pages / chapters | 4th, ascending |
+| `bm` | backmatter | last |
+| `ind` | index | last |
+
+**Processing strategy:**
+
+1. **Detect groups.** Regex `^(97[89]\d{10})[_-]([a-z0-9]+)\.(pdf|epub)$`
+   on the original filename (case-insensitive). Group by the ISBN prefix.
+   Also detect the general pattern `^(.+)[_-](fm|bm|ind|toc|ch\d+|part\d+|kap\d+|\d{2,4})\.(pdf|epub)$`
+   for non-ISBN prefixes (catches other publishers that follow the same
+   naming style).
+2. **Mark items.** `BatchItem` gains `chapterGroupId` (the ISBN or shared
+   prefix), `chapterSuffix` (normalised suffix), `isChapterRepresentative`
+   (only one per group), `chapterGroupSize` (total count in group).
+3. **LLM skip for non-representatives.** In `processAll()`, non-representative
+   chapter files skip the LLM analysis step. Extraction still runs (we want
+   the text available for future re-analysis).
+4. **Metadata propagation.** After `processAll()` finishes, a post-pass
+   copies `suggestedTitle` and `suggestedYear` from the representative to
+   all group members. `suggestedAuthor` is propagated only when the
+   representative's author is non-sentinel (monograph detection); for
+   edited volumes where individual chapters have different authors, each
+   chapter's author remains independent and the user can run per-item
+   re-analysis.
+5. **Inline UI signals.** Chapter-group rows get a blue-tinted left border
+   and a "📚 N" badge (book icon + chapter count) in the filename column.
+   The representative row shows "📚 N rep." and has a slightly brighter
+   tint. Hovering the badge shows the group key (ISBN).
+6. **Sort behaviour.** Chapter files are sorted with their suffixes intact
+   so the book stays together at the destination. Target paths use the
+   representative's title/author but each file keeps its original
+   `{ISBN}_{suffix}.pdf` filename.
+
+**Edited-volume handling (initial design):**
+- Default: propagate author from representative (`_fm` is usually the
+  editor for edited volumes, labelled as "Hrsg." / "Ed.").
+- Each non-representative chapter can have its own author overridden
+  manually.
+- A future "treat as edited volume" toggle (per group) will suppress
+  author propagation and instead set author = "various" so chapters sort
+  at their individual authors.
+
+#### Implementation status
+
+- [ ] **P15a** ✅ in progress (see commit below)
+  - [x] `file_sha256` Tauri command
+  - [x] `BatchItem` fields: `duplicateGroupId`, `isDuplicatePrimary`
+  - [x] `detectAndMarkDuplicates()` in BatchManager
+  - [x] Auto-run at start of `processAll()`
+  - [x] Inline duplicate badges in filename column
+  - [x] Orange row tint for non-primary duplicates
+  - [x] "Duplikate überspringen" checkbox in sort-options dropdown
+- [ ] **P15b** ✅ in progress (see commit below)
+  - [x] `BatchItem` fields: `chapterGroupId`, `chapterSuffix`, `isChapterRepresentative`, `chapterGroupSize`
+  - [x] `detectChapterGroups()` in BatchManager — ISBN-13 + generic suffix patterns
+  - [x] LLM skip for non-representatives in `processAll()`
+  - [x] Post-run metadata propagation
+  - [x] Inline chapter-group badges (📚 N) + blue row tint
+  - [ ] "Treat as edited volume" per-group toggle (deferred)
+  - [ ] `--skip-failed` / `--retry-failed` CLI flags (see P10f)
+
 (For historical per-version changelog and shipped phase specs, see
 [HISTORY.md](HISTORY.md).)

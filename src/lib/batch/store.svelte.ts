@@ -254,6 +254,18 @@ export class BatchManager {
 
         flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
 
+        // P15a — content-dedup: mark duplicates before extraction so
+        // UI shows orange badges immediately and sort-skip works.
+        if (!onlyIds) {
+            const dupeCount = await this.detectAndMarkDuplicates();
+            if (dupeCount > 0) flog('info', `P15a dedup: ${dupeCount} non-primary duplicate(s) marked`);
+        }
+        // P15b — chapter groups: detect ISBN/suffix patterns.
+        if (!onlyIds) {
+            const groupCount = this.detectChapterGroups();
+            if (groupCount > 0) flog('info', `P15b chapters: ${groupCount} book-chapter group(s) detected`);
+        }
+
         // Producer/consumer pipeline (PLAN P10 step c, foreground variant).
         //
         // Pre-P10 this was a strict two-phase EXTRACT-all -> ANALYZE-all
@@ -532,10 +544,17 @@ export class BatchManager {
                 // Re-check: the producer may have queued an item that
                 // the user has since edited, or the item may have
                 // already been analysed in a prior partial run.
+                // P15b: skip LLM for non-representative chapter files —
+                // metadata will be propagated from the representative.
+                const isNonRepChapter = !!item.chapterGroupId && item.isChapterRepresentative === false;
                 const needsAnalysis = (item.status === 'queued' || item.status === 'unfinished') &&
                     item.extractedText &&
-                    (!onlyIds || onlyIds.has(item.id));
-                if (!needsAnalysis) continue;
+                    (!onlyIds || onlyIds.has(item.id)) &&
+                    !isNonRepChapter;
+                if (!needsAnalysis) {
+                    if (isNonRepChapter) item.status = 'review';
+                    continue;
+                }
                 this.llmActive++;
 
                 item.status = 'analyzing';
@@ -639,6 +658,9 @@ export class BatchManager {
             });
 
             await Promise.all([extractAllDone, ...llmWorkers]);
+
+            // P15b — propagate chapter representative metadata to group members.
+            if (!onlyIds) this.propagateChapterMetadata();
         } finally {
             this.isProcessing = false;
             this.stopRequested = false;
@@ -647,6 +669,7 @@ export class BatchManager {
             this.extractionActive = 0;
             this.llmActive = 0;
             flog('info', 'processAll finished');
+            await this.saveCurrentSession();
         }
     }
 
@@ -738,7 +761,7 @@ export class BatchManager {
         }
     }
 
-    async executeBatch(mode: string = 'move') {
+    async executeBatch(mode: string = 'move', opts: { skipNonPrimaryDupes?: boolean } = {}) {
         // The user's `isAccepted` flag is the affirmative consent;
         // `status` is informational. Items at 'review' (LLM-analysed),
         // 'error' (re-try), 'unfinished' (resumed from prior session),
@@ -751,6 +774,7 @@ export class BatchManager {
         const SORTABLE = new Set(['review', 'error', 'unfinished', 'queued']);
         const accepted = this.items.filter(
             i => i.isAccepted && i.targetPath && SORTABLE.has(i.status)
+                && !(opts.skipNonPrimaryDupes && i.isDuplicatePrimary === false)
         );
         flog('info', `executeBatch(${mode}) starting: ${accepted.length} sortable / ${this.items.length} total`);
 
@@ -888,6 +912,157 @@ export class BatchManager {
         return Object.values(groups)
             .filter(g => g.length > 1)
             .map(items => ({ size: items[0].size, items }));
+    }
+
+    // ── P15a — content dedup ────────────────────────────────────────────────
+
+    /** SHA-256 via Rust (avoids reading large files into JS). */
+    private async fileHash(path: string): Promise<string> {
+        try {
+            return await invoke<string>('file_sha256', { path });
+        } catch {
+            return `__error_${path}`;
+        }
+    }
+
+    /** Group by size → hash; mark duplicateGroupId / isDuplicatePrimary.
+     *  Returns number of non-primary duplicates found. */
+    async detectAndMarkDuplicates(): Promise<number> {
+        // Clear old marks.
+        for (const item of this.items) {
+            item.duplicateGroupId = undefined;
+            item.isDuplicatePrimary = undefined;
+        }
+        // Skip zero-size and very large files.
+        const MAX_HASH_BYTES = 500 * 1024 * 1024;
+        const candidates = this.items.filter(i => i.size > 0 && i.size <= MAX_HASH_BYTES);
+
+        // Bucket by size.
+        const bySize = new Map<number, BatchItem[]>();
+        for (const item of candidates) {
+            const g = bySize.get(item.size) ?? [];
+            g.push(item);
+            bySize.set(item.size, g);
+        }
+        let dupeCount = 0;
+        for (const [, sizeGroup] of bySize) {
+            if (sizeGroup.length < 2) continue;
+            // Hash only size-collision candidates in parallel.
+            const hashed = await Promise.all(
+                sizeGroup.map(async item => ({ item, hash: await this.fileHash(item.originalPath) }))
+            );
+            // Re-group by hash.
+            const byHash = new Map<string, BatchItem[]>();
+            for (const { item, hash } of hashed) {
+                const g = byHash.get(hash) ?? [];
+                g.push(item);
+                byHash.set(hash, g);
+            }
+            for (const [hash, dupeGroup] of byHash) {
+                if (dupeGroup.length < 2) continue;
+                const shortId = hash.slice(0, 8);
+                for (let i = 0; i < dupeGroup.length; i++) {
+                    dupeGroup[i].duplicateGroupId = shortId;
+                    dupeGroup[i].isDuplicatePrimary = i === 0;
+                }
+                dupeCount += dupeGroup.length - 1;
+            }
+        }
+        return dupeCount;
+    }
+
+    // ── P15b — book chapter grouping ────────────────────────────────────────
+
+    /** Detect ISBN-13-prefixed chapter sets and generic `stem_suffix` groups.
+     *  Marks chapterGroupId / chapterSuffix / isChapterRepresentative /
+     *  chapterGroupSize on each item. Returns number of groups found. */
+    detectChapterGroups(): number {
+        // Clear old marks.
+        for (const item of this.items) {
+            item.chapterGroupId = undefined;
+            item.chapterSuffix = undefined;
+            item.isChapterRepresentative = undefined;
+            item.chapterGroupSize = undefined;
+        }
+
+        // ISBN-13 pattern: 97[89] + 10 digits + _ + suffix + .ext
+        const isbnRe = /^(97[89]\d{10})[_-]([a-z0-9]+)\.(pdf|epub|docx)$/i;
+        // Generic suffix pattern: stem + _ or - + known suffix or 2-4 digit number
+        const genericRe = /^(.+)[_-](fm|bm|ind|toc|cover|ck|ch\d+|part\d+|kap\d+|vol\d+|\d{2,4})\.(pdf|epub|docx)$/i;
+
+        const groups = new Map<string, Array<{ item: BatchItem; suffix: string }>>();
+
+        for (const item of this.items) {
+            const name = item.originalName;
+            let groupId: string | null = null;
+            let suffix: string | null = null;
+
+            const isbnM = isbnRe.exec(name);
+            if (isbnM) {
+                groupId = isbnM[1].toLowerCase();
+                suffix  = isbnM[2].toLowerCase();
+            } else {
+                const genM = genericRe.exec(name);
+                if (genM) {
+                    groupId = genM[1].toLowerCase();
+                    suffix  = genM[2].toLowerCase();
+                }
+            }
+            if (!groupId || !suffix) continue;
+            const g = groups.get(groupId) ?? [];
+            g.push({ item, suffix });
+            groups.set(groupId, g);
+        }
+
+        // Suffix priority for representative selection (lower = higher priority).
+        const suffixPriority = (s: string): number => {
+            if (s === 'fm')    return 0;
+            if (s === 'cover' || s === 'ck') return 1;
+            if (s === 'toc')   return 2;
+            if (/^\d+$/.test(s)) return 3 + parseInt(s, 10); // numeric: ascending
+            if (s === 'bm' || s === 'ind') return 9999;
+            return 5000;
+        };
+
+        let groupCount = 0;
+        for (const [groupId, members] of groups) {
+            if (members.length < 2) continue; // single file = not a group
+            groupCount++;
+            // Sort by priority to pick representative.
+            members.sort((a, b) => suffixPriority(a.suffix) - suffixPriority(b.suffix));
+            for (let i = 0; i < members.length; i++) {
+                members[i].item.chapterGroupId    = groupId;
+                members[i].item.chapterSuffix     = members[i].suffix;
+                members[i].item.isChapterRepresentative = i === 0;
+                members[i].item.chapterGroupSize  = members.length;
+            }
+        }
+        return groupCount;
+    }
+
+    /** After processAll completes, copy title/year from the representative
+     *  to all other chapter-group members. Author propagated only when
+     *  non-sentinel (monograph assumption; edited volumes need per-chapter). */
+    propagateChapterMetadata(): void {
+        const reps = new Map<string, BatchItem>();
+        for (const item of this.items) {
+            if (item.chapterGroupId && item.isChapterRepresentative) {
+                reps.set(item.chapterGroupId, item);
+            }
+        }
+        for (const item of this.items) {
+            if (!item.chapterGroupId || item.isChapterRepresentative) continue;
+            const rep = reps.get(item.chapterGroupId);
+            if (!rep) continue;
+            if (!item.suggestedTitle  && rep.suggestedTitle)  item.suggestedTitle  = rep.suggestedTitle;
+            if (!item.suggestedYear   && rep.suggestedYear)   item.suggestedYear   = rep.suggestedYear;
+            if (!item.suggestedAuthor && rep.suggestedAuthor && !isUnknownSentinel(rep.suggestedAuthor)) {
+                item.suggestedAuthor = rep.suggestedAuthor;
+            }
+            if (item.status === 'queued' || item.status === 'unfinished') {
+                item.status = 'review';
+            }
+        }
     }
 }
 
