@@ -66,7 +66,8 @@
 ### P8.2 — CLI (continuation)
 
 - [x] `catalog` / `index stats|list|search|delete|export-cidx|inspect-cidx|list-failed|retry-failed|ingest-cb-manifest` / `batch add|list|apply` / `completion` / `manpage`
-- [ ] **`index init`** — download embedder model from CLI (tokio + hf-hub)
+- [x] **`index init --model M --device D`** — downloads embedder model to data-dir/models/;
+  supports bge-m3, multilingual-e5-*, bge-*-en-v1.5, nomic, minilm
 - [ ] **`index ingest <path>`** — full extraction+embedding pipeline headless
 - [ ] **`batch process`** — headless LLM extraction pass (needs llm_client without GUI)
 - [ ] **`chat`** — `query "<prompt>"` / `transcribe` / `tts` headless
@@ -76,15 +77,15 @@
 
 - [x] **DRM help-popover** — clicking `fail-badge.fail-drm` opens an inline popover
   explaining the encryption, with a close button. No third-party tool recommendations.
-- [ ] **CLI `--skip-failed`** — `bg_ingest start --skip-failed` flag honours the
-  skip-on-fail rules from `extraction_failure_reason_for_uri`.
+- [x] **CLI `skip-failed`** — `crispsorter index skip-failed [--dry-run]` permanently
+  marks timeout/other rows as "unsupported" so the worker stops retrying them.
 
 ### P11 — Remote server (remaining)
 
 - [x] **Server queue blob fix** — shipped: `embeddings_blob BLOB` + `embed_dims` columns;
   `payload_json` stores compact batch with empty vectors; blob is repacked on claim.
-- [ ] **IVF-PQ at 100M+ vectors** — `sample_rate` knob in LanceDB IVF-PQ build.
-- [ ] **IVF-PQ at 100M+ vectors** — `sample_rate` knob in LanceDB IVF-PQ build.
+- [x] **IVF-PQ at 100M+ vectors** — `num_partitions` auto-scales to `sqrt(row_count)`,
+  `sample_rate` exposed on `index_build_ivf_pq` Tauri command + `build_vector_index()`.
 - [ ] **Runtime modes** — `Standalone | Server | Hybrid` enum replacing `BackendType`.
 - [ ] **Cloud drives** — `trait CloudDrive` + SMB/SFTP/Filen/Internxt impls.
 - [ ] **SyncManager** — local ↔ remote sync outbox, pull delta, reconnect detection.

@@ -235,7 +235,13 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let tesseract = crate::extractors::ocr::is_tesseract_installed();
     let ocrs_models = crate::extractors::ocr_ocrs::is_ocrs_available();
     let paddle_ocr = crate::extractors::ocr_paddle::is_paddle_ocr_available();
-    let pdf_extract_ok = true; // pulled in unconditionally
+    let pdf_extract_ok = true;
+    // Check if the default embedder model (BGE-M3) is already cached.
+    let model_cache = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.<user>.crispsorter/models"))
+        .unwrap_or_default();
+    let embedder_cached = model_cache.exists() &&
+        std::fs::read_dir(&model_cache).map(|d| d.count() > 0).unwrap_or(false);
     let lance_dir = std::env::var_os("HOME").map(|h| {
         std::path::PathBuf::from(h)
             .join("Library/Application Support/com.<user>.crispsorter/lance")
@@ -247,6 +253,7 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
                 "ocrs_models_available": ocrs_models,
                 "paddle_ocr_available": paddle_ocr,
                 "pdf_extract_compiled_in": pdf_extract_ok,
+                "embedder_model_cached": embedder_cached,
                 "lance_dir_exists": lance_dir
                     .as_ref()
                     .map(|p| p.exists())
@@ -256,10 +263,11 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
             println!("{}", payload);
         }
         OutFormat::Text => {
-            println!("OCR Tier 1 (tesseract installed): {}", yn(tesseract));
-            println!("OCR Tier 2 (ocrs models present): {}", yn(ocrs_models));
-            println!("OCR Tier 3 (PaddleOCR compiled):  {}", yn(paddle_ocr));
+            println!("OCR Tesseract installed:          {}", yn(tesseract));
+            println!("OCR ocrs models present:          {}", yn(ocrs_models));
+            println!("OCR PaddleOCR compiled:           {}", yn(paddle_ocr));
             println!("PDF extractor (pdf-extract):      {}", yn(pdf_extract_ok));
+            println!("Embedder model cached:            {}", yn(embedder_cached));
             if let Some(p) = lance_dir {
                 println!("Lance dir: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" });
             }
@@ -469,6 +477,16 @@ enum IndexCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Download the embedder model weights to the local cache.
+    /// Run this once on a fresh install before the first `index ingest`.
+    Init {
+        /// Model to download. Default: bge-m3.
+        #[arg(long, default_value = "bge-m3")]
+        model: String,
+        /// Device hint: cpu (default), cuda, mps, coreml.
+        #[arg(long, default_value = "cpu")]
+        device: String,
+    },
     /// Ingest a file or folder into the index (requires the app to have
     /// already initialised the embedder via the GUI or `index init`).
     /// Currently stubbed — use the GUI Hinzufügen tab for full ingest.
@@ -492,6 +510,15 @@ enum IndexCmd {
     /// background ingest worker re-attempts them on the next run.
     RetryFailed {
         /// Print what would be retried without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Permanently mark all timeout/other failure rows as "other-permanent" so
+    /// the background worker skips them in future runs without retrying.
+    /// Use when you want to suppress noisy retries (e.g. very large files
+    /// that always time out) without deleting the L2 metadata row.
+    SkipFailed {
+        /// Print which rows would be marked without making changes.
         #[arg(long)]
         dry_run: bool,
     },
@@ -709,6 +736,51 @@ async fn cmd_index_async(
             );
         }
 
+        IndexCmd::Init { model, device } => {
+            use crate::index::embedder::{EmbedderConfig, EmbedderDevice, EmbedderModel};
+
+            // Parse model name (common aliases).
+            let m = match model.to_ascii_lowercase().replace('-', "_").as_str() {
+                "bge_m3" | "bgem3"          => EmbedderModel::BgeM3,
+                "multilingual_e5_small"     => EmbedderModel::MultilingualE5Small,
+                "multilingual_e5_base"      => EmbedderModel::MultilingualE5Base,
+                "multilingual_e5_large"     => EmbedderModel::MultilingualE5Large,
+                "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
+                "bge_base_en_v1.5"  | "bge_base_en"  => EmbedderModel::BgeBaseEnV15,
+                "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
+                "nomic_embed_text_v1.5" | "nomic"     => EmbedderModel::NomicEmbedTextV15,
+                "all_minilm_l6_v2" | "minilm"         => EmbedderModel::AllMiniLmL6V2,
+                _ => return Err(format!(
+                    "unknown model '{model}'. Try: bge-m3, multilingual-e5-base, bge-small-en-v1.5, …"
+                )),
+            };
+
+            // Parse device.
+            let d = match device.to_ascii_lowercase().as_str() {
+                "cuda"           => EmbedderDevice::Cuda,
+                "metal" | "mps"  => EmbedderDevice::Metal,
+                "auto"           => EmbedderDevice::Auto,
+                _                => EmbedderDevice::Cpu,
+            };
+
+            let cache = data_dir.join("models");
+            std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+            eprintln!("downloading {} (device={:?}) → {}", model, d, cache.display());
+
+            let config = EmbedderConfig::new(m, d, cache.clone());
+            // Embedder::new is async and downloads the model on first call.
+            let _embedder = crate::index::embedder::Embedder::new(config)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "model": model, "cache": cache.display().to_string(), "status": "ready"
+                })),
+                OutFormat::Text => println!("model '{}' ready in {}", model, cache.display()),
+            }
+        }
+
         IndexCmd::ListFailed { retryable_only } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
@@ -755,6 +827,44 @@ async fn cmd_index_async(
                 match out {
                     OutFormat::Json => println!("{}", serde_json::json!({ "retried": n })),
                     OutFormat::Text => println!("cleared {n} failed extraction(s) — bg_ingest will re-attempt on next run"),
+                }
+            }
+        }
+
+        IndexCmd::SkipFailed { dry_run } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            // List retryable failures (timeout / other).
+            let rows = local.list_failed_extractions(true).await.map_err(|e| e.to_string())?;
+            if dry_run {
+                for r in &rows {
+                    println!("would mark permanent: {} ({})", r.filename.as_deref().unwrap_or(&r.doc_id), r.reason);
+                }
+                eprintln!("{} row(s) would be permanently skipped (dry-run)", rows.len());
+            } else {
+                // Mark each row's extraction_failure.reason as "unsupported"
+                // so the worker treats it as non-retryable on future runs.
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let new_meta = format!(
+                    r#"{{"level":2,"extraction_failure":{{"reason":"unsupported","msg":"manually skipped via CLI","at":{}}}}}"#,
+                    now_ms
+                );
+                let mut n = 0usize;
+                for row in &rows {
+                    let _ = local.update_l2_fields(
+                        &row.doc_id,
+                        None, None, None, None, None,
+                        Some(&new_meta),
+                    ).await;
+                    n += 1;
+                }
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({ "marked_permanent": n })),
+                    OutFormat::Text => println!("marked {n} row(s) as permanently skipped"),
                 }
             }
         }

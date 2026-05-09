@@ -525,16 +525,35 @@ impl LocalIndex {
     // ── Index building ─────────────────────────────────────────────────────
 
     /// Build an IVF-PQ ANN index on the `embedding` column.
-    /// Call this once after the initial bulk ingest (≥ 256 rows recommended).
-    pub async fn build_vector_index(&self) -> Result<()> {
+    ///
+    /// `num_partitions` — number of Voronoi cells. `None` auto-scales to
+    ///   `sqrt(row_count)` clamped to [64, 65536], which is the standard
+    ///   heuristic. Pass an explicit value to override.
+    /// `sample_rate` — K-Means trains on `sample_rate × num_partitions`
+    ///   randomly-sampled rows. Default 256. Raise to 512-1024 for very
+    ///   large tables to improve centroid quality at the cost of more RAM.
+    ///
+    /// Call this once after initial bulk ingest (≥ num_partitions rows).
+    pub async fn build_vector_index(
+        &self,
+        num_partitions: Option<u32>,
+        sample_rate: Option<u32>,
+    ) -> Result<()> {
+        let row_count = self.count().await?.max(1);
+        let partitions = num_partitions.unwrap_or_else(|| {
+            let auto = (row_count as f64).sqrt() as u32;
+            auto.clamp(64, 65536)
+        });
+        let sr = sample_rate.unwrap_or(256);
         self.table
             .create_index(
                 &["embedding"],
                 Index::IvfPq(
                     IvfPqIndexBuilder::default()
                         .distance_type(DistanceType::Cosine)
-                        .num_partitions(256)
-                        .num_sub_vectors(self.dims as u32 / 8),
+                        .num_partitions(partitions)
+                        .num_sub_vectors(self.dims as u32 / 8)
+                        .sample_rate(sr),
                 ),
             )
             .execute()
