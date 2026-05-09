@@ -11,7 +11,7 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2, Eye, RotateCcw
+        Columns2, Eye, RotateCcw, CloudDownload
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -1222,6 +1222,51 @@
         }
     }
 
+    let promotingIds = $state(new Set<string>());
+
+    /** Parse `crisp+cb-archive://{archive_id}/{hash}#{original_path}` → original_path */
+    function cbArchiveOriginalPath(uri: string): string | null {
+        if (!uri.startsWith('crisp+cb-archive://')) return null;
+        const hashIdx = uri.indexOf('#');
+        return hashIdx >= 0 ? decodeURIComponent(uri.slice(hashIdx + 1)) : null;
+    }
+
+    /** Promote a cb-archive row to L3 by calling retrieve.py */
+    async function promoteCbArchive(doc: any) {
+        const originalPath = cbArchiveOriginalPath(doc.location_uri ?? '');
+        if (!originalPath) return;
+
+        // Ask the user for the retrieve.py path (persisted in settings).
+        const stored = await invoke<string | null>('get_setting', { key: 'cbRetrievePyPath' }).catch(() => null);
+        let pyPath = stored;
+        if (!pyPath) {
+            const { open: od } = await import('@tauri-apps/plugin-dialog');
+            const sel = await od({ filters: [{ name: 'Python script', extensions: ['py'] }], title: 'retrieve.py auswählen' });
+            if (typeof sel !== 'string') return;
+            pyPath = sel;
+            invoke('save_setting', { key: 'cbRetrievePyPath', value: pyPath }).catch(() => {});
+        }
+
+        promotingIds = new Set([...promotingIds, doc.doc_id]);
+        try {
+            logInfo(`P12: promoting ${originalPath} via retrieve.py`);
+            const result = await invoke<{ doc_id: string; chunks: number }>('index_promote_cb_archive', {
+                docId: doc.doc_id,
+                originalPath,
+                retrievePyPath: pyPath,
+                outputDir: null,
+                ownerId: null,
+            });
+            logInfo(`P12: promoted to L3: ${result.chunks} chunks`);
+            await loadContents();
+        } catch (e: any) {
+            logError(`P12 promote failed: ${e?.message ?? e}`);
+        } finally {
+            promotingIds.delete(doc.doc_id);
+            promotingIds = new Set(promotingIds);
+        }
+    }
+
     async function deleteFromIndex(docId: string) {
         deletingIds = new Set([...deletingIds, docId]);
         try {
@@ -2255,6 +2300,14 @@
                                 <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
                                     <ExternalLink size={13} />
                                 </button>
+                                {#if doc.location_uri?.startsWith('crisp+cb-archive://')}
+                                    {@const isPromoting = promotingIds.has(doc.doc_id)}
+                                    <button class="icon-btn" onclick={() => promoteCbArchive(doc)}
+                                        disabled={isPromoting}
+                                        title="Datei von cloud-backup abrufen und auf L3 hochstufen (retrieve.py)">
+                                        {#if isPromoting}<Loader2 size={13} class="spin" />{:else}<CloudDownload size={13} />{/if}
+                                    </button>
+                                {/if}
                                 {#if failure && (failure.reason === 'timeout' || failure.reason === 'other')}
                                     {@const isRetrying = retryingIds.has(doc.doc_id)}
                                     <button class="icon-btn" onclick={() => retryExtraction(doc.doc_id)}

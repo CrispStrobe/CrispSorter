@@ -1239,3 +1239,87 @@ same span but lack the rationale lines).
 - Round-robin Settings UI — ordered checklist in LLM Options with up/down reorder (v0.1.23)
 - Index location update on move — `index_update_location_by_path` Rust command + TS call (v0.1.23)
 - i18n audit: Chat.svelte — "Docs:", "Chat:", "Clear Messages" use i18n keys (v0.1.23)
+
+---
+
+## Archived phase specs — 2026-05-09
+
+The following are full design documents for phases that have shipped.
+Kept here for "why does this code look this way" context.
+See PLAN.md for the current active plan and open items.
+
+### P3 — Voice chat / CrispASR (shipped except hotword/wake)
+
+Full-spec in earlier HISTORY entries. Core shipped: Whisper + CrispASR
+backend, ASR UI in Chat panel, TTS, push-to-talk, Rust audio bridge.
+Remaining: hotword/wake word (out of scope for v1).
+
+### P4 — Code quality / maintenance (shipped)
+
+Model-cache boot-drive hint, CARGO_TARGET_DIR redirect, i18n audit
+(Settings.svelte + LogPanel.svelte ~80 strings). All shipped.
+
+### P5 — Future / planned
+
+Auto-process toggle on watch detection (needs UX design), PWA demo
+(File System Access API). Deferred.
+
+### P6 — Catalog / Cathy integration (shipped, Phase 5 deferred)
+
+.caf I/O, parallel scanner, duplicate engine, deletion-script generator,
+Catalog/Duplicates UI tabs, hybrid-storage catalog_entries Lance table.
+Phase 5 (crispcat workspace crate extraction) optional/deferred.
+
+### P7.1–P7.6 — Full-volume desktop search (shipped)
+
+Unified catalog/documents search, operator-grade query syntax, live
+preview pane, background full-content ingest, saved searches, cross-mount
+UUID tagging with availability filtering, Tesseract + ocrs OCR (Tiers 1-2).
+
+### P8.1 — Per-file conversion timeout (shipped)
+
+Settings knob conversionTimeoutSeconds, page watchdog in JS extractor.
+
+### P9 — Übersicht at million-file scale (fully shipped)
+
+8 steps: index_query_documents + columnar Übersicht, parent_dir column +
+scalar index, folder-tree breadcrumb + index_folder_children, DB-side
+ORDER BY via lance::Scanner, column registry + persistence, volume_id
+column + scalar index, preview pane, mtime/size/parent_dir metadata.
+
+### P10 — Robust ingest at scale (shipped, minor items remain)
+
+TaskFailureReason enum, extraction timeouts (300s), L2 fallback via
+ingest_l2_row, EPUB DRM detection, N-worker bg_ingest, Übersicht failure
+badges + retry button, skip non-retryable failures on re-run.
+Remaining: DRM help-popover (clickable), CLI --skip-failed (deferred).
+
+### P11 — Remote-server architecture (partially shipped)
+
+Shipped: IndexBackend trait, RemoteClient, crisp-index-server (Axum,
+real LanceDB+Tantivy+RRF+IVF-PQ), crisp-index-protocol wire types,
+async SQLite job queue (both tiers), batched ingest, embedderLocation
+config, local single-writer queue, UI wired to durable job queue,
+server-side embedding (SERVER_EMBED=1).
+Remaining: server queue blob-size fix (store refs not full embeddings),
+IVF-PQ at 100M+, runtime modes enum, cloud drives, SyncManager.
+
+### P12 — cloud-backup integration (L1 shipped, L3 shipped 2026-05-09)
+
+Shipped: index_ingest_cb_manifest (source_files → L1 LanceDB rows,
+crisp+cb-archive:// URI scheme), index_promote_cb_archive (retrieve.py
+bridge for L3 promotion), CloudDownload button in Übersicht.
+Remaining: reverse lookup UI, VPS-trigger indexing hook, global_catalog sync.
+
+### P13 — Image-vertical convergence with CrispLens (future)
+
+CLIP image embedder, face recognition (SCRFD+ArcFace), Images tab.
+Deferred until P11 server + sync layer is stable.
+
+### P15 — Batch pre-processing (shipped 2026-05-09)
+
+P15a: content-dedup (size→SHA-256, duplicateGroupId/isDuplicatePrimary,
+orange row tint, "Duplikate überspringen" checkbox).
+P15b: book-chapter detection (ISBN-13 prefix, fm/001/bm suffix priority,
+representative LLM pass only, metadata propagation, edited-volume toggle).
+

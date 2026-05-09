@@ -2221,6 +2221,167 @@ pub async fn index_retry_all_failed(
     local.retry_all_failed_extractions().await.map_err(|e| e.to_string())
 }
 
+// ── P12 — cloud-backup L3 promotion via retrieve.py ──────────────────────────
+
+/// Promote a `crisp+cb-archive://...` row to L3 by spawning `retrieve.py`
+/// to download the file from cloud-backup's cheapest available tier, then
+/// running the standard extraction + embedding pipeline on it.
+///
+/// `doc_id`           — the LanceDB doc_id to update
+/// `original_path`    — the original file path stored in the cb-archive URI
+///                      (used as the --search query for retrieve.py)
+/// `retrieve_py_path` — absolute path to the cloud-backup `retrieve.py` script
+/// `output_dir`       — where retrieve.py drops the restored file.
+///                      Default: `{app_data_dir}/cb_retrieve/`
+/// `owner_id`         — owner UUID (nil = single-user install)
+///
+/// Returns the IngestStats from the full L3 pipeline on success.
+#[tauri::command]
+pub async fn index_promote_cb_archive(
+    state: State<'_, AppState>,
+    handle: tauri::AppHandle,
+    doc_id: String,
+    original_path: String,
+    retrieve_py_path: String,
+    output_dir: Option<String>,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use sha2::{Digest, Sha256};
+    use tauri::Manager;
+
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    // Resolve output directory.
+    let out_dir = if let Some(d) = output_dir {
+        std::path::PathBuf::from(d)
+    } else {
+        handle.path().app_data_dir()
+            .map_err(|e| format!("app data dir: {e}"))?
+            .join("cb_retrieve")
+    };
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir: {e}"))?;
+
+    // Spawn retrieve.py — search by original_path, auto-restore first match.
+    let py = retrieve_py_path.clone();
+    let search_q = original_path.clone();
+    let out_arg = out_dir.to_string_lossy().into_owned();
+    let retrieve_out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("python3")
+            .args([&py, "-s", &search_q, "-y", "-o", &out_arg])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("spawn: {e}"))?
+    .map_err(|e| format!("retrieve.py: {e}"))?;
+
+    if !retrieve_out.status.success() {
+        let stderr = String::from_utf8_lossy(&retrieve_out.stderr);
+        return Err(format!("retrieve.py failed: {}", stderr.trim()));
+    }
+
+    // Find the restored file in out_dir (newest file added).
+    let basename = std::path::Path::new(&original_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let restored_path = out_dir.join(&basename);
+    if !restored_path.exists() {
+        // Fallback: find newest file in out_dir.
+        let newest = std::fs::read_dir(&out_dir)
+            .ok()
+            .and_then(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                    .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+            })
+            .map(|e| e.path());
+        if let Some(p) = newest {
+            return promote_path(state, doc_id, p, owner, original_path).await;
+        }
+        return Err(format!("restored file not found at {}", restored_path.display()));
+    }
+
+    promote_path(state, doc_id, restored_path, owner, original_path).await
+}
+
+async fn promote_path(
+    state: State<'_, AppState>,
+    doc_id: String,
+    restored_path: std::path::PathBuf,
+    owner: String,
+    original_path: String,
+) -> Result<serde_json::Value, String> {
+    use sha2::{Digest, Sha256};
+
+    let pipeline = state.index.lock().await.pipeline.clone()
+        .ok_or("No local ingest pipeline")?;
+
+    let bytes = tokio::task::spawn_blocking({
+        let p = restored_path.clone();
+        move || std::fs::read(&p)
+    }).await
+    .map_err(|e| format!("read join: {e}"))?
+    .map_err(|e| format!("read: {e}"))?;
+
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let source_hash = hex::encode(h.finalize());
+
+    let extracted = tokio::task::spawn_blocking({
+        let p = restored_path.clone();
+        move || crate::extractors::extract_text_from_path(&p)
+    }).await
+    .map_err(|e| format!("extract join: {e}"))?
+    .map_err(|e| format!("extract: {e}"))?;
+
+    let loc = crate::index::location::FileLocation::Local {
+        user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+        machine_id: uuid::Uuid::nil(),
+        path: std::path::PathBuf::from(&original_path),
+    };
+
+    let bg_meta = restored_path.metadata().ok();
+    let raw = crate::index::ingest::RawDocument {
+        full_text: extracted.full_text,
+        full_text_md: String::new(),
+        headings: extracted.headings,
+        title: None,
+        author: None,
+        year: None,
+        filename: restored_path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        ext: extracted.ext,
+        language: String::new(),
+        source_hash,
+        location_uri: loc.to_uri(),
+        owner_id: owner,
+        tags: vec![],
+        mtime_unix: bg_meta.as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64),
+        file_size: bg_meta.map(|m| m.len() as i64),
+        volume_id: None,
+        parent_dir: std::path::Path::new(&original_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .map(|s| s.to_owned()),
+    };
+
+    // Delete the existing L1 row before re-ingesting.
+    if let Some(local) = state.index.lock().await.local.clone() {
+        let _ = local.delete_doc(&doc_id).await;
+    }
+
+    let stats = pipeline.ingest_document(raw).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "doc_id": doc_id,
+        "chunks": stats.chunk_count,
+        "embed_ms": stats.embed_time_ms,
+    }))
+}
+
 // ── P12 — cloud-backup manifest import ───────────────────────────────────────
 
 /// Import file metadata from a cloud-backup SQLite manifest database as L1

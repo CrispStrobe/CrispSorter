@@ -2216,6 +2216,7 @@ pub fn run() {
             index::tauri_commands::index_export_cidx,
             index::tauri_commands::index_open_cidx,
             index::tauri_commands::index_ingest_cb_manifest,
+            index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_mount_cidx,
             index::tauri_commands::index_unmount_cidx,
             index::tauri_commands::index_query_cidx_documents,
