@@ -43,7 +43,7 @@ use std::process::ExitCode;
 /// argv[1] sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "index", "help", "--help", "-h",
+    "version", "doctor", "catalog", "index", "completion", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -88,6 +88,12 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: IndexCmd,
+    },
+    /// Emit shell-completion scripts to stdout.
+    Completion {
+        /// Target shell.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -167,6 +173,14 @@ pub fn run() -> ExitCode {
             }
         },
         Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
+        Command::Completion { shell } => {
+            use clap::CommandFactory;
+            use clap_complete::generate;
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_owned();
+            generate(shell, &mut cmd, name, &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     match result {

@@ -2202,6 +2202,7 @@ pub fn run() {
             index::tauri_commands::index_ingest_path,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
+            index::tauri_commands::index_retry_extraction,
             index::tauri_commands::index_build_ivf_pq,
             index::tauri_commands::index_build_scalar_index,
             index::tauri_commands::index_list_mounted_volumes,

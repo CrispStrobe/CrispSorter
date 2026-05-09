@@ -11,7 +11,7 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2, Eye
+        Columns2, Eye, RotateCcw
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -1188,6 +1188,40 @@
         } catch { return ''; }
     }
 
+    let retryingIds = $state(new Set<string>());
+
+    /** Clear the extraction_failure blob and reset to L1 so the bg_ingest
+     *  worker re-attempts on next run. Only works for retryable reasons
+     *  (timeout / other). Refreshes the row in-place after success. */
+    async function retryExtraction(docId: string) {
+        retryingIds = new Set([...retryingIds, docId]);
+        try {
+            const reason = await invoke<string | null>('index_retry_extraction', { docId });
+            if (reason === null) {
+                // No failure recorded — nothing to retry.
+                return;
+            }
+            // Refresh just this row by reloading from the table.
+            const idx = contents.findIndex((c: any) => c.doc_id === docId);
+            if (idx >= 0) {
+                // Optimistically clear the failure badge while bg_ingest works.
+                const updated = { ...contents[idx] };
+                try {
+                    const parsed = JSON.parse(updated.metadata_json ?? '{}');
+                    delete parsed.extraction_failure;
+                    parsed.level = 1;
+                    updated.metadata_json = JSON.stringify(parsed);
+                } catch { /* ignore parse error */ }
+                contents = [...contents.slice(0, idx), updated, ...contents.slice(idx + 1)];
+            }
+        } catch (e) {
+            console.error('Retry extraction failed:', e);
+        } finally {
+            retryingIds.delete(docId);
+            retryingIds = new Set(retryingIds);
+        }
+    }
+
     async function deleteFromIndex(docId: string) {
         deletingIds = new Set([...deletingIds, docId]);
         try {
@@ -2043,6 +2077,14 @@
                                 <button class="icon-btn" onclick={() => openIndexedFile(doc.location_uri)} title="Öffnen">
                                     <ExternalLink size={13} />
                                 </button>
+                                {#if failure && (failure.reason === 'timeout' || failure.reason === 'other')}
+                                    {@const isRetrying = retryingIds.has(doc.doc_id)}
+                                    <button class="icon-btn" onclick={() => retryExtraction(doc.doc_id)}
+                                        disabled={isRetrying}
+                                        title="Extraktion erneut versuchen (Timeout/Fehler rückgängig machen)">
+                                        {#if isRetrying}<Loader2 size={13} class="spin" />{:else}<RotateCcw size={13} />{/if}
+                                    </button>
+                                {/if}
                                 <button class="icon-btn danger-icon" onclick={() => deleteFromIndex(doc.doc_id)}
                                     disabled={isDeleting} title="Aus Index löschen">
                                     {#if isDeleting}<Loader2 size={13} class="spin" />{:else}<Trash2 size={13} />{/if}

@@ -1450,6 +1450,42 @@ pub async fn index_delete_document(
     Ok(())
 }
 
+// ── Extraction failure management ─────────────────────────────────────────────
+
+/// Clear the `extraction_failure` blob from a document's `metadata_json` so
+/// the background ingest worker will re-attempt extraction on the next run.
+/// Returns the failure reason that was stored (to let the caller check
+/// retryability), or `null` when no failure was recorded.
+#[tauri::command]
+pub async fn index_retry_extraction(
+    state: State<'_, AppState>,
+    doc_id: String,
+) -> Result<Option<String>, String> {
+    let local = state.index.lock().await.local.clone();
+    let local = local.ok_or("Local index not initialised")?;
+    // Read the stored reason first.
+    let reason = local
+        .extraction_failure_reason_for_uri_by_doc_id(&doc_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(ref r) = reason {
+        use crate::index::task_failure::TaskFailureReason;
+        // Only clear if the reason is retryable.
+        let tfr = match r.as_str() {
+            "timeout" => TaskFailureReason::Timeout,
+            "other"   => TaskFailureReason::Other,
+            _         => return Ok(reason), // non-retryable — refuse
+        };
+        if tfr.is_retryable() {
+            local
+                .clear_extraction_failure(&doc_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(reason)
+}
+
 // ── Location update ───────────────────────────────────────────────────────────
 
 #[tauri::command]

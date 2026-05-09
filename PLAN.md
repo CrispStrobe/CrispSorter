@@ -314,8 +314,9 @@ existing scaffold.
   (platform synth via P3 TTS). The mistralrs / llama-server spawn
   needs to work without the GUI's process-tracking.
 
-- [ ] **`completion`** — emit shell-completion scripts (`bash`, `zsh`,
-  `fish`) via clap's built-in generator.
+- [x] **`completion`** — `crispsorter completion bash|zsh|fish|powershell`
+  emits the shell-completion script via `clap_complete`. Install e.g.
+  `crispsorter completion zsh > ~/.zsh/completions/_crispsorter`.
 
 - [ ] **Polish** — man-page generation via `clap_mangen`, single-binary
   install story (`brew formula` / `winget` / `cargo install
@@ -729,11 +730,13 @@ c. ✅ **Worker pool** (bg_ingest). N-concurrent worker tasks via
    be killed without taking the pool with it.
 d. ✅ **DRM detection** for EPUB (`epub_is_drm_protected`). Surfaces
    `TaskFailureReason::Drm` even when the extractor gives a generic error.
-e. ✅ **Übersicht failure badges** — `fail-badge` CSS class per reason
+e. ✅ **Übersicht failure badges + retry button** — `fail-badge` CSS class per reason
    (DRM=yellow, Timeout=orange, Corrupt=red, Password=purple,
    Unsupported=grey). L2 badge added (blue). Human-readable labels +
    `title` tooltip per reason (DRM: Calibre hint; timeout: retryable note).
-   Help-popover (clickable): TODO.
+   Retry button (RotateCcw icon) on timeout/other rows: calls
+   `index_retry_extraction`, clears `extraction_failure` blob, resets
+   level to 1 so bg_ingest re-attempts on next run. Help-popover (clickable): TODO.
 f. ✅ **Skip non-retryable failures on re-run** — `extraction_failure_reason_for_uri`
    in `LocalIndex`; `bg_ingest::ingest_one` skips DRM/corrupt/unsupported/
    password rows without re-attempting extraction. Timeout/Other remain retryable.
@@ -2086,7 +2089,8 @@ Known suffix tokens and their sort priority (representative selection):
   - [x] LLM skip for non-representatives in `processAll()`
   - [x] Post-run metadata propagation
   - [x] Inline chapter-group badges (📚 N) + blue row tint
-  - [ ] "Treat as edited volume" per-group toggle (deferred)
+  - [x] "Treat as edited volume" per-group toggle — click chapter-badge to
+        switch 📚 (monograph) ↔ 📖 (edited volume, author not propagated)
   - [ ] `--skip-failed` / `--retry-failed` CLI flags (see P10f)
 
 (For historical per-version changelog and shipped phase specs, see

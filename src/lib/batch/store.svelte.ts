@@ -1040,6 +1040,16 @@ export class BatchManager {
         return groupCount;
     }
 
+    /** Toggle the "edited volume" flag for all items in a chapter group.
+     *  When enabled, author propagation is suppressed in propagateChapterMetadata. */
+    toggleChapterEditedVolume(groupId: string): void {
+        const members = this.items.filter(i => i.chapterGroupId === groupId);
+        if (members.length === 0) return;
+        const next = !members[0].chapterIsEditedVolume;
+        for (const m of members) m.chapterIsEditedVolume = next;
+        this.saveCurrentSession();
+    }
+
     /** After processAll completes, copy title/year from the representative
      *  to all other chapter-group members. Author propagated only when
      *  non-sentinel (monograph assumption; edited volumes need per-chapter). */
@@ -1054,9 +1064,13 @@ export class BatchManager {
             if (!item.chapterGroupId || item.isChapterRepresentative) continue;
             const rep = reps.get(item.chapterGroupId);
             if (!rep) continue;
-            if (!item.suggestedTitle  && rep.suggestedTitle)  item.suggestedTitle  = rep.suggestedTitle;
-            if (!item.suggestedYear   && rep.suggestedYear)   item.suggestedYear   = rep.suggestedYear;
-            if (!item.suggestedAuthor && rep.suggestedAuthor && !isUnknownSentinel(rep.suggestedAuthor)) {
+            if (!item.suggestedTitle && rep.suggestedTitle)   item.suggestedTitle = rep.suggestedTitle;
+            if (!item.suggestedYear  && rep.suggestedYear)    item.suggestedYear  = rep.suggestedYear;
+            // Don't propagate author for edited volumes — each chapter has its own.
+            if (!item.chapterIsEditedVolume &&
+                !item.suggestedAuthor &&
+                rep.suggestedAuthor &&
+                !isUnknownSentinel(rep.suggestedAuthor)) {
                 item.suggestedAuthor = rep.suggestedAuthor;
             }
             if (item.status === 'queued' || item.status === 'unfinished') {
