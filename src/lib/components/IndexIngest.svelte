@@ -1253,8 +1253,9 @@
     let cafLastResult = $state<string | null>(null);
     let cidxBusy       = $state(false);
     let cidxLastResult = $state<string | null>(null);
+    let cidxIncludeFts = $state(true); // default: include FTS for offline search
     // Mounted archive
-    let mountedCidx    = $state<{ path: string; docs: number; chunks: number } | null>(null);
+    let mountedCidx    = $state<{ path: string; docs: number; chunks: number; has_fts: boolean } | null>(null);
     let cidxContents   = $state<any[]>([]);
     let cidxPage       = $state(0);
     let cidxLoading    = $state(false);
@@ -1325,7 +1326,7 @@
         cidxBusy = true;
         cidxLastResult = null;
         try {
-            const info = await invoke<{ path: string; docs: number; chunks: number }>('index_mount_cidx', { path: sel });
+            const info = await invoke<{ path: string; docs: number; chunks: number; has_fts: boolean }>('index_mount_cidx', { path: sel });
             mountedCidx = info;
             cidxContents = [];
             cidxPage = 0;
@@ -1382,8 +1383,9 @@
                 destPath: savePath,
                 volumeId,
                 includeEmbeddings: false,
+                includeFts: cidxIncludeFts,
             });
-            cidxLastResult = `Exportiert: ${rows} Einträge → ${savePath}`;
+            cidxLastResult = `Exportiert: ${rows} Einträge → ${savePath}${cidxIncludeFts ? ' (+ Volltextsuche)' : ''}`;
             logInfo(`cidx: ${cidxLastResult}`);
         } catch (e: any) {
             cidxLastResult = `Export fehlgeschlagen: ${e?.message ?? e}`;
@@ -1677,6 +1679,7 @@
                 <span class="cidx-path" title={mountedCidx.path}>
                     <Database size={13} /> {mountedCidx.path.split(/[\\/]/).pop()} —
                     {mountedCidx.docs} Dok., {mountedCidx.chunks} Chunks
+                    {#if mountedCidx.has_fts}<span style="color:#6366f1;font-size:0.7rem;margin-left:4px">• FTS</span>{/if}
                 </span>
                 <button class="icon-btn danger-icon" onclick={unmountCidxArchive} title="Archiv aushängen">
                     <X size={13} />
@@ -1882,6 +1885,10 @@
                 {#if cafBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
                 .caf exportieren
             </button>
+            <label class="tb-toggle-small" title="Volltextsuche (.cidx FTS) einschließen — ermöglicht offline BM25-Suche im Archiv">
+                <input type="checkbox" bind:checked={cidxIncludeFts} />
+                FTS
+            </label>
             <button class="tb-btn" onclick={exportCidxArchive} disabled={cidxBusy}
                     title="Suchindex als portable .cidx-Datei exportieren (offline nutzbar)">
                 {#if cidxBusy}<Loader2 size={13} class="spin" />{:else}<UploadCloud size={13} />{/if}
@@ -2725,6 +2732,9 @@
     .fail-badge.fail-unsupported { background: #27272a;   color: #71717a; }
     .fail-badge.fail-other    { background: #1a1a2e33; color: #94a3b8; }
 
+    .tb-toggle-small { display: flex; align-items: center; gap: 4px; font-size: 0.72rem;
+        color: #71717a; cursor: pointer; padding: 2px 6px; white-space: nowrap; }
+    .tb-toggle-small input { cursor: pointer; }
     /* .cidx archive tab */
     .cidx-tab { border-bottom: 2px solid #6366f1; color: #a5b4fc; }
     .tb-btn-flat { background: none; border: 1px dashed #3f3f46; color: #71717a;

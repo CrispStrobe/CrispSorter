@@ -505,6 +505,10 @@ enum IndexCmd {
         /// Include embedding vectors (large — disabled by default).
         #[arg(long)]
         include_embeddings: bool,
+        /// Build a Tantivy FTS index at dest/fts/ for offline full-text search.
+        /// Implies exporting full_text + headings_text columns.
+        #[arg(long)]
+        include_fts: bool,
     },
     /// Show stats for a .cidx archive (docs, chunks).
     InspectCidx {
@@ -755,12 +759,12 @@ async fn cmd_index_async(
             }
         }
 
-        IndexCmd::ExportCidx { dest, volume_id, include_embeddings } => {
+        IndexCmd::ExportCidx { dest, volume_id, include_embeddings, include_fts } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
             let rows = local
-                .export_cidx(&dest, volume_id.as_deref(), include_embeddings)
+                .export_cidx(&dest, volume_id.as_deref(), include_embeddings, include_fts)
                 .await
                 .map_err(|e| e.to_string())?;
             match out {
@@ -770,10 +774,13 @@ async fn cmd_index_async(
                         "rows_exported": rows,
                         "volume_id": volume_id,
                         "embeddings": include_embeddings,
+                        "fts": include_fts,
                     }));
                 }
                 OutFormat::Text => {
-                    println!("exported {rows} row(s) → {}", dest.display());
+                    println!("exported {rows} row(s) → {}{}",
+                        dest.display(),
+                        if include_fts { " (+ FTS index)" } else { "" });
                 }
             }
         }
