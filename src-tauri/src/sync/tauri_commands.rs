@@ -62,27 +62,88 @@ pub async fn sync_enqueue(
     mgr.enqueue(&op, &payload).map_err(|e| e.to_string())
 }
 
-/// Pull rows from the remote server that have changed since `last_pull_ts`.
-/// First-cut: just refreshes `last_pull_ts` so the chip shows progress;
-/// applying remote rows to the local LanceDB is a follow-up task.
+/// Pull rows from the remote server that have changed since `last_pull_ts`,
+/// then apply them to the local LanceDB as L1 metadata-only rows
+/// (no full text, no embedding — those are fetched on demand via "Promote
+/// to L3", same UX as cb-archive rows).
+///
+/// At-least-once semantics: `last_pull_ts` only advances after the
+/// LanceDB writes succeed. A mid-apply crash will re-fetch the same rows
+/// on the next pull (LanceDB add-with-existing-id is idempotent because
+/// our `id = doc_id + ":" + chunk_index` row PK is stable).
 #[tauri::command]
 pub async fn sync_pull(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (data_dir, remote_url, api_key) = {
-        let dd = state.data_dir.lock().await.clone();
+    let (data_dir, remote_url, api_key, local) = {
+        let dd  = state.data_dir.lock().await.clone();
         let idx = state.index.lock().await;
         let url = idx.config.remote_url.clone()
             .ok_or_else(|| "remote_url not configured".to_string())?;
         let key = idx.config.remote_api_key.clone().unwrap_or_default();
-        (dd, url, key)
+        let local = idx.local.clone();
+        (dd, url, key, local)
     };
     let data_dir = data_dir.ok_or("data_dir not initialised")?;
+    let local = local.ok_or("Local index not initialised — Hybrid mode requires a local cache")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
-    let (pulled, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
+
+    let (rows, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "pulled": pulled, "max_indexed_at": max_ts }))
+
+    if rows.is_empty() {
+        return Ok(serde_json::json!({ "pulled": 0, "applied": 0, "max_indexed_at": max_ts }));
+    }
+
+    // Convert each SearchHit → L1 DocumentChunk (chunk_index = -1 sentinel,
+    // matching how the L1 ingest path / L2 fallback path build their rows).
+    let chunks: Vec<crate::index::schema::DocumentChunk> = rows.iter()
+        .map(|hit| {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let row_id = crate::index::ingest::chunk_row_id(&hit.doc_id, -1);
+            crate::index::schema::DocumentChunk {
+                id:                 row_id,
+                doc_id:             hit.doc_id.clone(),
+                location_uri:       hit.location_uri.clone(),
+                owner_id:           hit.owner_id.clone(),
+                filename:           hit.filename.clone(),
+                title:              hit.title.clone(),
+                author:             hit.author.clone(),
+                year:               hit.year,
+                ext:                hit.ext.clone(),
+                language:           hit.language.clone(),
+                page_count:         None,
+                headings_text:      None,
+                full_text:          None,
+                full_text_md:       None,
+                embedding:          None,
+                embedding_sparse:   None,
+                embedding_model:    None,
+                chunk_index:        -1,
+                chunk_total:        0,
+                chunk_start_char:   None,
+                chunk_end_char:     None,
+                indexed_at:         now_ms,
+                source_hash:        hit.doc_id.clone(),
+                tags:               vec![],
+                metadata_json:      Some(r#"{"level":1,"source":"sync_pull"}"#.to_owned()),
+                parent_dir:         None,
+                volume_id:          None,
+            }
+        })
+        .collect();
+
+    let applied = chunks.len();
+    local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+
+    // Only after a successful apply do we advance the watermark.
+    mgr.set_state("last_pull_ts", &max_ts.to_string()).map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "pulled": rows.len(), "applied": applied, "max_indexed_at": max_ts }))
 }
 
 /// Clear all permanently-failed outbox entries (retries ≥ 10).

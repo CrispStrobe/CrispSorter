@@ -17,6 +17,7 @@
 //! stable `id` (UUID), a human label, and a type tag.  The registry is
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
+pub mod internxt;
 pub mod tauri_commands;
 
 use anyhow::{Context, Result};
