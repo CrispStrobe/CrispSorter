@@ -20,6 +20,7 @@
 pub mod filen;
 pub mod internxt;
 pub mod tauri_commands;
+pub mod webdav;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,9 @@ pub enum DriveType {
     Internxt,
     /// Raw SFTP (future — via russh or OS mount).
     Sftp,
+    /// Generic WebDAV server (Nextcloud, ownCloud, mailbox.org,
+    /// `filen webdav-start`, `internxt webdav-enable`, Synology DSM, …).
+    WebDav,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +82,66 @@ pub struct FileStat {
     pub size: u64,
     pub is_dir: bool,
     pub mtime_unix: Option<i64>,
+}
+
+/// A flat row produced by `walk` — one per file (or per dir, if requested).
+/// `path` is the full path relative to the drive root, so callers can pass
+/// it back to `read_file` / `stat` directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalkEntry {
+    pub path:        PathBuf,
+    pub is_dir:      bool,
+    pub size:        Option<u64>,
+    pub mtime_unix:  Option<i64>,
+}
+
+/// Recursively walk a drive starting at `root`, returning one entry per
+/// file (folders are descended into but not emitted, by default).
+/// Stops at `max_depth` (counting from `root`), `None` = unbounded.
+///
+/// This is a free function rather than a default trait method so we can
+/// keep the trait object-safe (associated functions with `Self: Sized`
+/// would prevent `Box<dyn CloudDrive>` from being usable as the receiver).
+pub fn walk(
+    drive: &dyn CloudDrive,
+    root: &Path,
+    max_depth: Option<usize>,
+    on_error: &mut dyn FnMut(&Path, anyhow::Error),
+) -> Vec<WalkEntry> {
+    let mut out = Vec::new();
+    let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if let Some(max) = max_depth {
+            if depth > max { continue; }
+        }
+        let entries = match drive.list_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => { on_error(&dir, e); continue; }
+        };
+        for ent in entries {
+            // Build the full path relative to the drive root.
+            let full = if dir.as_os_str().is_empty() {
+                PathBuf::from(&ent.name)
+            } else {
+                dir.join(&ent.name)
+            };
+            if ent.is_dir {
+                stack.push((full, depth + 1));
+            } else {
+                // Stat for mtime; tolerate failure (some drives are flaky
+                // about modificationTime on individual files).
+                let mtime = drive.stat(&full).ok().and_then(|s| s.mtime_unix);
+                out.push(WalkEntry {
+                    path: full,
+                    is_dir: false,
+                    size: ent.size,
+                    mtime_unix: mtime,
+                });
+            }
+        }
+    }
+    out
 }
 
 // ── LocalDrive ──────────────────────────────────────────────────────────────
@@ -157,6 +221,12 @@ impl CloudDrive for LocalDrive {
 // ── DriveConfig + Registry ────────────────────────────────────────────────
 
 /// Serialisable config for one drive entry in the registry.
+///
+/// For backwards compatibility, the auth fields are `#[serde(default)]` so
+/// existing `drives.json` files (written before WebDAV support) round-trip
+/// unchanged.  Auth lives in plaintext inside `drives.json`; users with
+/// secret-store ambitions should mount a WebDAV server locally and use a
+/// `Local` drive on the FUSE path instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveConfig {
     pub id:    String,
@@ -165,7 +235,15 @@ pub struct DriveConfig {
     /// For `Local` drives: the root path.
     /// For CLI-based drives: the mount-point path (if OS-mounted) or the
     /// base path used by the CLI tool.
+    /// For `WebDav`: the base URL ending in `/` (e.g.
+    /// `https://webdav.example.com/dav/`).
     pub path:  String,
+    /// Optional WebDAV basic-auth username.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Optional WebDAV basic-auth password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// Loads and saves the list of configured drives.
@@ -221,6 +299,14 @@ impl DriveRegistry {
             }
             DriveType::Internxt => {
                 Box::new(internxt::InternxtDrive::new(config.label.clone(), PathBuf::from(&config.path)))
+            }
+            DriveType::WebDav => {
+                Box::new(webdav::WebDavDrive::new(
+                    config.label.clone(),
+                    config.path.clone(),
+                    config.username.clone(),
+                    config.password.clone(),
+                ))
             }
         }
     }
@@ -311,6 +397,8 @@ mod tests {
             label: "Backup SSD".to_owned(),
             kind: DriveType::Local,
             path: "/Volumes/Backup".to_owned(),
+            username: None,
+            password: None,
         };
         {
             let mut reg = DriveRegistry::open(tmp.path()).unwrap();
@@ -332,11 +420,13 @@ mod tests {
         reg.add(DriveConfig {
             id: "x".into(), label: "v1".into(),
             kind: DriveType::Local, path: "/a".into(),
+            username: None, password: None,
         }).unwrap();
         // Same id, different label → must replace not duplicate.
         reg.add(DriveConfig {
             id: "x".into(), label: "v2".into(),
             kind: DriveType::Local, path: "/b".into(),
+            username: None, password: None,
         }).unwrap();
         assert_eq!(reg.drives.len(), 1);
         assert_eq!(reg.drives[0].label, "v2");
@@ -350,6 +440,7 @@ mod tests {
         reg.add(DriveConfig {
             id: "abc".into(), label: "a".into(),
             kind: DriveType::Local, path: "/a".into(),
+            username: None, password: None,
         }).unwrap();
         assert!( reg.remove("abc").unwrap());
         assert!(!reg.remove("abc").unwrap()); // already gone
@@ -381,9 +472,14 @@ mod tests {
             (DriveType::Sftp,     DriveType::Local),
             (DriveType::Filen,    DriveType::Filen),
             (DriveType::Internxt, DriveType::Internxt),
+            (DriveType::WebDav,   DriveType::WebDav),
         ] {
+            let path = if matches!(kind, DriveType::WebDav) {
+                "https://example.com/dav/".to_owned()
+            } else { "/tmp".to_owned() };
             let cfg = DriveConfig {
-                id: "x".into(), label: "lbl".into(), kind: kind.clone(), path: "/tmp".into(),
+                id: "x".into(), label: "lbl".into(), kind: kind.clone(), path,
+                username: None, password: None,
             };
             let drive = DriveRegistry::instantiate(&cfg);
             assert_eq!(drive.drive_type(), expected,

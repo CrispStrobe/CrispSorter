@@ -10,6 +10,7 @@ use std::fmt;
 ///   crisp+vps://{user-uuid}@{host}:{port}/{path}
 ///   crisp+internxt://{user-uuid}/{cloud-path}
 ///   crisp+internxt-zip://{user-uuid}/{archive-cloud-path}#{internal-path}
+///   crisp+drive://{drive-id}/{remote-path}     ← generic CloudDrive registry entry
 ///
 /// Single-user installs: both UUIDs are auto-populated from config; they never appear in UI.
 /// The `#fragment` convention for InternxtZip mirrors standard URL fragments.
@@ -72,6 +73,15 @@ pub enum FileLocation {
         archive_id: i64,
         file_hash: String,
         original_path: String,
+    },
+    /// A file on a registered CloudDrive (WebDAV / Filen / Internxt / SFTP / …).
+    /// `drive_id` is the registry UUID; resolution looks up the
+    /// drive via `DriveRegistry::open(...).drives` and calls
+    /// `CloudDrive::read_file(remote_path)` on it.  The same row works
+    /// regardless of which backend the user picked when adding the drive.
+    Drive {
+        drive_id: String,
+        remote_path: String,
     },
 }
 
@@ -141,6 +151,17 @@ impl FileLocation {
                 let path_enc = original_path.replace(' ', "%20");
                 format!("crisp+cb-archive://{}/{}#{}", archive_id, file_hash, path_enc)
             }
+            FileLocation::Drive { drive_id, remote_path } => {
+                let path_str = if remote_path.starts_with('/') {
+                    remote_path.clone()
+                } else {
+                    format!("/{}", remote_path)
+                };
+                // Encode spaces only (RFC 3986 unreserved is wider, but the
+                // round-trip pair just needs to survive `from_uri`).
+                let path_enc = path_str.replace(' ', "%20");
+                format!("crisp+drive://{}{}", drive_id, path_enc)
+            }
         }
     }
 
@@ -158,6 +179,9 @@ impl FileLocation {
         if let Some(rest) = s.strip_prefix("crisp+internxt://") {
             return parse_internxt(rest);
         }
+        if let Some(rest) = s.strip_prefix("crisp+drive://") {
+            return parse_drive(rest);
+        }
         anyhow::bail!("Unknown crisp URI scheme: {}", s)
     }
 
@@ -168,6 +192,7 @@ impl FileLocation {
             FileLocation::Internxt { user_id, .. } => *user_id,
             FileLocation::InternxtZip { user_id, .. } => *user_id,
             FileLocation::CbArchive { .. } => Uuid::nil(),
+            FileLocation::Drive { .. } => Uuid::nil(),
         }
     }
 
@@ -178,6 +203,12 @@ impl FileLocation {
             FileLocation::Internxt { .. } => RetrievalCost::Expensive,
             FileLocation::InternxtZip { .. } => RetrievalCost::Expensive,
             FileLocation::CbArchive { .. } => RetrievalCost::Expensive,
+            // Conservative: `Drive` rows can be local (LocalDrive on a USB
+            // disk) or cloud-bandwidth-bound (Filen).  Treat as Expensive
+            // until we plumb a per-drive cost annotation through the
+            // registry.  The UI can still show "Lokal" if the drive
+            // happens to be DriveType::Local.
+            FileLocation::Drive { .. } => RetrievalCost::Expensive,
         }
     }
 
@@ -196,6 +227,9 @@ impl FileLocation {
             }
             FileLocation::CbArchive { original_path, .. } => {
                 original_path.split('/').next_back().map(str::to_owned)
+            }
+            FileLocation::Drive { remote_path, .. } => {
+                remote_path.split('/').next_back().map(str::to_owned)
             }
         }
     }
@@ -263,6 +297,18 @@ fn parse_internxt(rest: &str) -> anyhow::Result<FileLocation> {
     Ok(FileLocation::Internxt {
         user_id,
         cloud_path: format!("/{}", path_str),
+    })
+}
+
+/// Parse the part after `crisp+drive://`
+/// Format: `{drive-id}/{remote-path}` — the drive_id is opaque (typically
+/// a UUID written by `DriveRegistry`); the remote_path is whatever the
+/// drive's `CloudDrive::read_file` accepts.  Spaces are %20-decoded.
+fn parse_drive(rest: &str) -> anyhow::Result<FileLocation> {
+    let (drive_id, path_str) = split_authority_path(rest)?;
+    Ok(FileLocation::Drive {
+        drive_id: drive_id.to_owned(),
+        remote_path: format!("/{}", path_str.replace("%20", " ")),
     })
 }
 
@@ -461,5 +507,71 @@ mod tests {
         };
         let uri = loc.to_uri();
         assert!(uri.contains("%20"), "spaces must be encoded in URI: {uri}");
+    }
+
+    // ── crisp+drive:// — generic registry-backed file location ──────────────
+
+    #[test]
+    fn drive_uri_roundtrip_basic() {
+        let loc = FileLocation::Drive {
+            drive_id: "abc-123".to_owned(),
+            remote_path: "/Documents/report.pdf".to_owned(),
+        };
+        let uri = loc.to_uri();
+        assert!(uri.starts_with("crisp+drive://"), "wrong scheme: {uri}");
+        assert!(uri.contains("/abc-123/"), "drive_id missing: {uri}");
+        let parsed = FileLocation::from_uri(&uri).unwrap();
+        assert_eq!(loc, parsed);
+    }
+
+    #[test]
+    fn drive_uri_encodes_spaces() {
+        let loc = FileLocation::Drive {
+            drive_id: "d".to_owned(),
+            remote_path: "/Photos/2024 holiday/img.jpg".to_owned(),
+        };
+        let uri = loc.to_uri();
+        assert!(uri.contains("%20"), "spaces must be encoded: {uri}");
+        // Round-trip survives decoding.
+        let parsed = FileLocation::from_uri(&uri).unwrap();
+        assert_eq!(parsed, loc);
+    }
+
+    #[test]
+    fn drive_filename_extracted() {
+        let loc = FileLocation::Drive {
+            drive_id: "d".to_owned(),
+            remote_path: "/folder/Chapter 5.pdf".to_owned(),
+        };
+        assert_eq!(loc.filename().as_deref(), Some("Chapter 5.pdf"));
+    }
+
+    #[test]
+    fn drive_user_id_is_nil() {
+        let loc = FileLocation::Drive {
+            drive_id: "d".to_owned(),
+            remote_path: "/x".to_owned(),
+        };
+        assert_eq!(loc.user_id(), Uuid::nil());
+    }
+
+    #[test]
+    fn drive_retrieval_cost_conservative() {
+        let loc = FileLocation::Drive {
+            drive_id: "d".to_owned(),
+            remote_path: "/x".to_owned(),
+        };
+        assert_eq!(loc.retrieval_cost(), RetrievalCost::Expensive);
+    }
+
+    #[test]
+    fn drive_uri_normalises_leading_slash() {
+        // Producer omitted the leading slash on remote_path; we normalise.
+        let loc = FileLocation::Drive {
+            drive_id: "d".to_owned(),
+            remote_path: "Documents/file.pdf".to_owned(),
+        };
+        let uri = loc.to_uri();
+        assert_eq!(uri, "crisp+drive://d/Documents/file.pdf");
     }
 }

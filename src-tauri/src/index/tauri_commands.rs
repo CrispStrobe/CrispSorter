@@ -2626,6 +2626,201 @@ pub async fn index_ingest_cb_manifest(
     }))
 }
 
+// ── P11/Pillar 5 — generic CloudDrive ingest + promote ───────────────────────
+
+/// Walk a registered cloud drive and write **L1 metadata-only** rows to the
+/// local index.  No file content is fetched; the user can hit "Promote to L3"
+/// later via `index_promote_drive_archive` to download + extract a specific
+/// file on demand.
+///
+/// `root_path` is the subroot inside the drive to walk (e.g. `/Documents`).
+/// `allowed_exts` is a case-insensitive ext filter (without the dot); when
+/// empty / None, every file is indexed.  `max_depth` caps recursion (`None`
+/// = unbounded).
+///
+/// Returns `{ ingested, walked, errors }`.  `walked` is the count of file
+/// entries the recursive walker emitted; `ingested` is how many made it
+/// into LanceDB+Tantivy after L1FileEntry batches went through.
+#[tauri::command]
+pub async fn index_ingest_drive_manifest(
+    state: State<'_, AppState>,
+    drive_id: String,
+    root_path: String,
+    allowed_exts: Option<Vec<String>>,
+    max_depth: Option<usize>,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let pipeline = state.index.lock().await.pipeline.clone()
+        .ok_or("No local ingest pipeline initialised")?;
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+
+    // Walk the drive on a blocking thread (CloudDrive ops are sync).
+    let did = drive_id.clone();
+    let root = root_path.clone();
+    let allowed: std::collections::HashSet<String> = allowed_exts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+        .collect();
+    let walk_res = tokio::task::spawn_blocking(move || {
+        let reg = crate::drives::DriveRegistry::open(&data_dir)
+            .map_err(|e| format!("open registry: {e}"))?;
+        let cfg = reg.drives.iter().find(|d| d.id == did)
+            .ok_or_else(|| format!("drive '{did}' not found"))?
+            .clone();
+        let drive = crate::drives::DriveRegistry::instantiate(&cfg);
+        let mut walk_errors: Vec<String> = Vec::new();
+        let entries = crate::drives::walk(
+            drive.as_ref(),
+            std::path::Path::new(&root),
+            max_depth,
+            &mut |p, e| walk_errors.push(format!("{}: {e:#}", p.display())),
+        );
+        Ok::<_, String>((entries, walk_errors))
+    })
+    .await
+    .map_err(|e| format!("walk join: {e}"))??;
+
+    let (entries, walk_errors) = walk_res;
+    let walked = entries.len();
+
+    // Filter by extension and convert to L1FileEntry.
+    let mut to_ingest: Vec<crate::index::ingest::L1FileEntry> = Vec::with_capacity(entries.len());
+    for ent in &entries {
+        let p = ent.path.clone();
+        let ext = p.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !allowed.is_empty() && !allowed.contains(&ext) { continue; }
+
+        let location_uri = crate::index::location::FileLocation::Drive {
+            drive_id:    drive_id.clone(),
+            remote_path: p.to_string_lossy().into_owned(),
+        }
+        .to_uri();
+
+        let filename = p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parent_dir = p.parent()
+            .and_then(|d| d.to_str())
+            .unwrap_or("")
+            .to_owned();
+
+        // doc_id = sha256(location_uri).  We never read the bytes during
+        // manifest scan, so a content hash isn't available; the URI is
+        // stable enough to dedupe within the drive.
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(location_uri.as_bytes());
+        let doc_id = hex::encode(h.finalize());
+
+        to_ingest.push(crate::index::ingest::L1FileEntry {
+            doc_id,
+            source_hash: String::new(),
+            location_uri,
+            owner_id: owner.clone(),
+            filename,
+            ext,
+            parent_dir,
+            size: ent.size.unwrap_or(0) as i64,
+            mtime_ms: ent.mtime_unix.unwrap_or(0).saturating_mul(1000),
+            ctime_ms: 0,
+            volume_id: Some(format!("drive:{drive_id}")),
+        });
+    }
+
+    let mut ingested = 0usize;
+    let mut errors = walk_errors.len();
+    const BATCH: usize = 64;
+    for chunk in to_ingest.chunks(BATCH) {
+        match pipeline.ingest_l1(chunk).await {
+            Ok(stats) => ingested += stats.chunk_count,
+            Err(e) => {
+                errors += 1;
+                eprintln!("[drive-ingest] batch error: {e}");
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "ingested":   ingested,
+        "walked":     walked,
+        "errors":     errors,
+        "walk_errors": walk_errors,
+    }))
+}
+
+/// Fetch a file from a registered cloud drive and re-ingest it as L3
+/// (full content + embeddings).  Mirrors `index_promote_cb_archive` but
+/// uses the `CloudDrive` trait instead of cloud-backup's `retrieve.py`.
+///
+/// Triggered by the "Promote to L3" button in Übersicht's preview pane
+/// when a `crisp+drive://...` row is open.
+#[tauri::command]
+pub async fn index_promote_drive_archive(
+    state: State<'_, AppState>,
+    handle: tauri::AppHandle,
+    doc_id: String,
+    drive_id: String,
+    remote_path: String,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use tauri::Manager;
+
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    // Resolve a staging dir under app_data/drive_retrieve/.
+    let out_dir = handle.path().app_data_dir()
+        .map_err(|e| format!("app data dir: {e}"))?
+        .join("drive_retrieve");
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir: {e}"))?;
+
+    // Fetch bytes via the registered drive (off the runtime thread).
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let drive_id_clone = drive_id.clone();
+    let remote = remote_path.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        let reg = crate::drives::DriveRegistry::open(&data_dir)
+            .map_err(|e| format!("open registry: {e}"))?;
+        let cfg = reg.drives.iter().find(|d| d.id == drive_id_clone)
+            .ok_or_else(|| format!("drive '{drive_id_clone}' not found"))?
+            .clone();
+        let drive = crate::drives::DriveRegistry::instantiate(&cfg);
+        drive.read_file(std::path::Path::new(&remote))
+            .map_err(|e| format!("read_file: {e:#}"))
+    })
+    .await
+    .map_err(|e| format!("drive read join: {e}"))??;
+
+    // Stage the file under app_data/drive_retrieve/ so promote_path can
+    // re-read + extract from disk like it does for cb-archive.  We use
+    // the basename verbatim (collisions get overwritten — same file
+    // re-promote is idempotent).
+    let basename = std::path::Path::new(&remote_path).file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("remote path has no basename: {remote_path}"))?;
+    let staged = out_dir.join(&basename);
+    tokio::task::spawn_blocking({
+        let p = staged.clone();
+        let b = bytes;
+        move || std::fs::write(&p, &b)
+    })
+    .await
+    .map_err(|e| format!("stage join: {e}"))?
+    .map_err(|e| format!("stage write: {e}"))?;
+
+    // Reuse the cb-archive promote pipeline: it does dedup, extract,
+    // embed, ingest — and crucially deletes the existing L1 row before
+    // re-inserting at L3 so we don't end up with duplicate doc_ids.
+    promote_path(state, doc_id, staged, owner, remote_path).await
+}
+
 // ── Volume helpers ────────────────────────────────────────────────────────────
 
 /// List all currently-mounted volumes with their stable UUID, mount point,
