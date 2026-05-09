@@ -113,22 +113,26 @@ Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
   delete/stat) + `LocalDrive` (std::fs, covers OS-mounted SMB/SFTP/NFS) +
   `DriveRegistry` (drives.json persistence) + 5 Tauri commands (drive_list/create/
   delete/list_dir/stat). AppState.data_dir field added. Filen/Internxt CLI impls deferred.
-- [x] **SyncManager (first cut)** — `src-tauri/src/sync/`: SQLite outbox
-  (`sync_outbox.db`), `enqueue/claim_batch/mark_done/mark_error/clear_failed`,
-  `push_pending` (POST to remote per op type), `is_remote_online` (GET /health),
-  `sync_state` kv table (last_push_ts/last_pull_ts). 4 Tauri commands:
-  `sync_status/sync_push/sync_enqueue/sync_clear_failed`. Nav sync chip (⇅ N)
-  polls every 30 s in +page.svelte; click triggers push. Pull delta deferred
-  (needs /v1/sync/since endpoint on server).
+- [x] **SyncManager** — `src-tauri/src/sync/`: SQLite outbox (`sync_outbox.db`),
+  `enqueue/claim_batch/mark_done/mark_error/clear_failed`, `push_pending`
+  (POST per op type), `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),
+  `is_remote_online` (GET /health), `sync_state` kv table.
+  Server: new `routes/sync.rs` + `VectorStore::rows_since(since_ms, limit)`
+  + stdlib `iso_from_ms` formatter; returns paginated chunk_index=0 rows
+  with `{rows, max_indexed_at, has_more}` shape.
+  5 Tauri commands: `sync_status/sync_push/sync_pull/sync_enqueue/sync_clear_failed`.
+  Nav sync chip (⇅ N) polls every 30 s; click triggers push.
 
 ### P12 — cloud-backup (remaining)
 
 - [x] L1 manifest import via `index_ingest_cb_manifest`
 - [x] L3 promotion via `retrieve.py` (`index_promote_cb_archive` + CloudDownload button)
 - [x] **Reverse lookup UI** — `index_lookup_cb_file` Tauri command queries
-  `source_files`+`archives`; preview pane shows Lokal/VPS availability when
-  a `crisp+cb-archive://` row is opened. Manifest DB path persisted as
-  `cbManifestDbPath` setting on first import.
+  `source_files`+`archives`; preview pane shows Lokal / VPS / **Cloud (Internxt)**
+  availability when a `crisp+cb-archive://` row is opened. Reads
+  `archives.upload_verified` + `remote_path` + `local_deleted` so the chip
+  distinguishes "VPS verified" from "VPS pruned, cloud-only". Manifest DB
+  path persisted as `cbManifestDbPath` setting on first import.
 - [x] **VPS-trigger indexing** — `vps_worker.py` gains `_notify_crisp_index()`:
   after PROCESSED, POSTs L1 file metadata (from manifest `files[]`) to
   `CRISP_INDEX_URL/v1/ingest/batch` (batches of 64) via `urllib.request`.

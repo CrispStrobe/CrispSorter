@@ -62,6 +62,29 @@ pub async fn sync_enqueue(
     mgr.enqueue(&op, &payload).map_err(|e| e.to_string())
 }
 
+/// Pull rows from the remote server that have changed since `last_pull_ts`.
+/// First-cut: just refreshes `last_pull_ts` so the chip shows progress;
+/// applying remote rows to the local LanceDB is a follow-up task.
+#[tauri::command]
+pub async fn sync_pull(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (data_dir, remote_url, api_key) = {
+        let dd = state.data_dir.lock().await.clone();
+        let idx = state.index.lock().await;
+        let url = idx.config.remote_url.clone()
+            .ok_or_else(|| "remote_url not configured".to_string())?;
+        let key = idx.config.remote_api_key.clone().unwrap_or_default();
+        (dd, url, key)
+    };
+    let data_dir = data_dir.ok_or("data_dir not initialised")?;
+    let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
+    let (pulled, max_ts) = mgr.pull_pending(&remote_url, &api_key, 200)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "pulled": pulled, "max_indexed_at": max_ts }))
+}
+
 /// Clear all permanently-failed outbox entries (retries ≥ 10).
 #[tauri::command]
 pub async fn sync_clear_failed(

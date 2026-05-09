@@ -2180,17 +2180,29 @@ pub async fn index_lookup_cb_file(
         // Check local availability.
         let local_available = std::path::Path::new(&original_path).exists();
 
-        // If archived, get the archive filename for VPS availability hint.
-        let archive_filename: Option<String> = if let Some(aid) = archived_in {
-            conn.query_row(
-                "SELECT archive_filename FROM archives WHERE archive_id = ?1 LIMIT 1",
-                [aid],
-                |r| r.get(0),
-            ).optional().map_err(|e| format!("archives query: {e}"))?
-            .flatten()
-        } else {
-            None
-        };
+        // If archived, fetch full archive row: filename, cloud-upload status, remote path.
+        // The `archives` table records:
+        //   archive_filename — the .7z name on the VPS
+        //   upload_verified  — 1 once the cloud round-trip checksum verified
+        //   remote_path      — the Internxt blob path (when uploaded)
+        //   local_deleted    — 1 once the original VPS-side file was pruned
+        let archive_meta: Option<(Option<String>, i64, Option<String>, i64)> =
+            if let Some(aid) = archived_in {
+                conn.query_row(
+                    "SELECT archive_filename, upload_verified, remote_path, local_deleted
+                     FROM archives WHERE archive_id = ?1 LIMIT 1",
+                    [aid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                ).optional().map_err(|e| format!("archives query: {e}"))?
+            } else {
+                None
+            };
+
+        let (archive_filename, cloud_uploaded, remote_path, vps_local_deleted) =
+            match archive_meta {
+                Some((f, v, r, d)) => (f, v != 0, r, d != 0),
+                None               => (None, false, None, false),
+            };
 
         Ok(serde_json::json!({
             "found": true,
@@ -2202,6 +2214,10 @@ pub async fn index_lookup_cb_file(
             "local_available": local_available,
             "archived_in": archived_in,
             "archive_filename": archive_filename,
+            // P12 — Internxt cloud tier:
+            "cloud_uploaded": cloud_uploaded,        // file's archive is verified in Internxt
+            "remote_path": remote_path,              // Internxt path of the archive
+            "vps_local_deleted": vps_local_deleted,  // VPS-side .7z was pruned (cloud-only)
         }))
     })
     .await

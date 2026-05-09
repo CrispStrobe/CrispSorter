@@ -2444,11 +2444,17 @@
                         <div class="cb-tier-bar"><Loader2 size={12} class="spin" /> Standort prüfen…</div>
                     {:else if cbLookupResult?.found}
                         <div class="cb-tier-bar">
-                            <span class="cb-tier" class:tier-ok={cbLookupResult.local_available} title="Lokale Originaldatei">
+                            <span class="cb-tier" class:tier-ok={cbLookupResult.local_available}
+                                  title="Originaldatei auf dem lokalen Dateisystem">
                                 Lokal: {cbLookupResult.local_available ? '✓' : '✗'}
                             </span>
-                            <span class="cb-tier" class:tier-ok={cbLookupResult.archived_in != null} title="Im cloud-backup Archiv gesichert">
-                                VPS: {cbLookupResult.archived_in != null ? `✓ (Archiv #${cbLookupResult.archived_in})` : '✗'}
+                            <span class="cb-tier" class:tier-ok={cbLookupResult.archived_in != null}
+                                  title="In cloud-backup-Archiv auf VPS gesichert (vor Cloud-Upload eventuell schon gelöscht)">
+                                VPS: {cbLookupResult.archived_in != null ? (cbLookupResult.vps_local_deleted ? '✗ (gelöscht)' : `✓ (#${cbLookupResult.archived_in})`) : '✗'}
+                            </span>
+                            <span class="cb-tier" class:tier-ok={cbLookupResult.cloud_uploaded}
+                                  title="Internxt-Cloud-Replik (verifiziert)">
+                                Cloud: {cbLookupResult.cloud_uploaded ? '✓' : '✗'}
                             </span>
                             {#if cbLookupResult.archive_filename}
                                 <span class="cb-archive-name" title={cbLookupResult.archive_filename}>{cbLookupResult.archive_filename.slice(-32)}</span>

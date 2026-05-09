@@ -189,6 +189,22 @@ impl VectorStore {
         Ok(batches)
     }
 
+    /// SyncManager pull-delta: fetch all chunk_index=0 rows whose `indexed_at`
+    /// is ≥ `since_ms`, ordered ascending by `indexed_at`, capped at `limit`.
+    /// Returns the raw RecordBatches; callers translate to the wire format.
+    pub async fn rows_since(&self, since_ms: i64, limit: usize) -> Result<Vec<RecordBatch>> {
+        let filter = format!(
+            "chunk_index = 0 AND indexed_at >= timestamp '{}'",
+            // LanceDB SQL accepts ISO-8601; build a UTC timestamp string.
+            iso_from_ms(since_ms)
+        );
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(filter)
+            .limit(limit)
+            .execute().await?.try_collect().await?;
+        Ok(batches)
+    }
+
     /// Delete all chunks for a document.
     pub async fn delete_doc(&self, doc_id: &str) -> Result<()> {
         let filter = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
@@ -680,4 +696,58 @@ fn batches_to_results(
 
 fn is_table_not_found(e: &lancedb::Error) -> bool {
     matches!(e, lancedb::Error::TableNotFound { .. })
+}
+
+/// Convert a unix-millis timestamp to a LanceDB-friendly ISO-8601 string
+/// (UTC, "YYYY-MM-DD HH:MM:SS.sss" — DataFusion's preferred format for
+/// timestamp literals). Stdlib-only — avoids pulling chrono into the server.
+fn iso_from_ms(ms: i64) -> String {
+    // Howard Hinnant's days-from-civil algorithm, adapted from
+    // https://howardhinnant.github.io/date_algorithms.html. We use it to
+    // turn the "days since 1970-01-01" portion into Y-M-D without chrono.
+    let total_secs = ms.div_euclid(1000);
+    let sub_ms     = ms.rem_euclid(1000) as u32;
+    let days       = total_secs.div_euclid(86_400);
+    let secs_of_day = total_secs.rem_euclid(86_400);
+
+    // days-from-civil → (y, m, d)
+    let z   = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y0  = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp  = (5 * doy + 2) / 153;
+    let d   = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m   = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y   = if m <= 2 { y0 + 1 } else { y0 };
+
+    let h   = (secs_of_day / 3600) as u32;
+    let mi  = ((secs_of_day % 3600) / 60) as u32;
+    let s   = (secs_of_day % 60) as u32;
+
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}.{sub_ms:03}")
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn iso_from_ms_unix_epoch() {
+        assert_eq!(iso_from_ms(0), "1970-01-01 00:00:00.000");
+    }
+
+    #[test]
+    fn iso_from_ms_known_date() {
+        // 2024-01-01T00:00:00.000Z = 1_704_067_200_000 ms
+        assert_eq!(iso_from_ms(1_704_067_200_000), "2024-01-01 00:00:00.000");
+    }
+
+    #[test]
+    fn iso_from_ms_with_subsecond() {
+        // 2024-01-01T12:34:56.789 UTC
+        let ms = 1_704_067_200_000_i64 + 12 * 3_600_000 + 34 * 60_000 + 56_000 + 789;
+        assert_eq!(iso_from_ms(ms), "2024-01-01 12:34:56.789");
+    }
 }
