@@ -110,6 +110,7 @@
     let llmContextLimit = $state(4096);
     let llmPrompt = $state(''); 
     let ocrEnabled = $state(false);
+    let ocrTier = $state<'auto' | 'tier1' | 'tier2' | 'tier3'>('auto');
     let authorSortEnabled = $state(false);
     let noThinking = $state(true);
     let pdfBackend = $state<'js' | 'rust'>('js');
@@ -628,6 +629,8 @@
         llmMaxChars = await getSetting('llmMaxChars', 5000);
         llmContextLimit = await getSetting('llmContextLimit', 4096);
         ocrEnabled = await getSetting('ocrEnabled', false);
+        ocrTier = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
+        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
@@ -922,6 +925,9 @@
         await saveSetting('llmContextLimit', llmContextLimit);
         await saveSetting('llmPrompt', llmPrompt);
         await saveSetting('ocrEnabled', ocrEnabled);
+        await saveSetting('ocrTier', ocrTier);
+        // Sync OCR options to the background ingest worker.
+        invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier }).catch(() => {});
         await saveSetting('authorSortEnabled', authorSortEnabled);
         await saveSetting('noThinking', noThinking);
         await saveSetting('autoSpeakReplies', autoSpeakReplies);
@@ -1763,6 +1769,22 @@
                     <input id="ocr-enabled-check" type="checkbox" bind:checked={ocrEnabled} />
                     <label for="ocr-enabled-check">{i18n.t.settings.ocr_enabled}</label>
                 </div>
+                {#if ocrEnabled}
+                    <div class="field-row" style="margin-top: 8px;">
+                        <label for="ocr-tier-select" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">OCR-Tier:</label>
+                        <select id="ocr-tier-select" bind:value={ocrTier} style="flex:1; max-width:220px;">
+                            <option value="auto">Auto (bester verfügbarer Tier)</option>
+                            <option value="tier3">Tier 3 — PaddleOCR (multilingal, ort)</option>
+                            <option value="tier2">Tier 2 — ocrs (Rust, nur Latein)</option>
+                            <option value="tier1">Tier 1 — Tesseract (System-Install)</option>
+                        </select>
+                    </div>
+                    <p class="hint" style="margin-bottom:8px;">
+                        Tier 3 (PaddleOCR) benötigt <code>--features paddle-ocr</code> beim Build.
+                        Tier 2 (ocrs) ist in der Standard-Binary enthalten.
+                        Tier 1 braucht Tesseract als System-Programm.
+                    </p>
+                {/if}
                 <p class="hint" style="margin-bottom: 16px;">{i18n.t.settings.ocr_tesseract_hint}</p>
 
                 <div class="models-grid">

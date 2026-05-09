@@ -387,6 +387,20 @@ async fn bg_ingest_clear(state: tauri::State<'_, AppState>) -> Result<(), String
     Ok(())
 }
 
+/// Update the OCR options used by the background ingest worker.
+/// Called from Settings.svelte when ocrEnabled or ocrTier changes.
+#[tauri::command]
+async fn bg_ingest_set_ocr(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+    tier: String,
+) -> Result<(), String> {
+    let mut bg = state.bg_ingest.lock().await;
+    bg.ocr_enabled = enabled;
+    bg.ocr_tier = tier;
+    Ok(())
+}
+
 /// Export the LanceDB documents table to a .caf file (PLAN P6 4d).
 ///
 /// Walks the documents table once (whole-doc rows only, `chunk_index =
@@ -2252,6 +2266,7 @@ pub fn run() {
             bg_ingest_resume,
             bg_ingest_cancel,
             bg_ingest_clear,
+            bg_ingest_set_ocr,
             jobs::tauri_commands::jobs_create,
             jobs::tauri_commands::jobs_list,
             jobs::tauri_commands::jobs_get,
