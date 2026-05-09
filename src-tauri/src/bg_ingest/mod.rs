@@ -124,11 +124,13 @@ pub struct BackgroundIngest {
     /// runtime responsive.
     pub sleep_between_ms: u64,
     /// Whether to attempt OCR on scanned images / empty-text PDFs.
-    /// Mirrors the Settings `ocrEnabled` toggle.
     pub ocr_enabled: bool,
     /// Which OCR tier to use when `ocr_enabled` is true.
     /// "auto" | "tier1" | "tier2" | "tier3"
     pub ocr_tier: String,
+    /// PaddleOCR recognition language model.
+    /// "auto" | "latin" | "cjk"
+    pub ocr_rec_lang: String,
 }
 
 impl Default for BackgroundIngest {
@@ -145,6 +147,7 @@ impl Default for BackgroundIngest {
             sleep_between_ms: 50,
             ocr_enabled: false,
             ocr_tier: "auto".to_owned(),
+            ocr_rec_lang: "auto".to_owned(),
         }
     }
 }
@@ -328,7 +331,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
-    let (pipeline, local, ocr_enabled, ocr_tier_str) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -342,13 +345,19 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let bg = app_state.bg_ingest.lock().await;
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str)
+        let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
         "tier2" => crate::extractors::OcrTier::Tier2,
         "tier3" => crate::extractors::OcrTier::Tier3,
         _       => crate::extractors::OcrTier::Auto,
+    };
+    let ocr_rec_lang = match ocr_rec_lang_str.as_str() {
+        "latin" => crate::extractors::OcrRecLang::Latin,
+        "cjk"   => crate::extractors::OcrRecLang::Cjk,
+        _       => crate::extractors::OcrRecLang::Auto,
     };
 
     let p = item.path.clone();
@@ -437,6 +446,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         try_ocr: ocr_enabled,
         ocr_pdf_min_chars: 50,
         ocr_tier,
+        ocr_rec_lang,
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

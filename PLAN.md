@@ -53,13 +53,16 @@
 
 - [x] LanceDB export (`export_cidx`) + Tantivy FTS companion (`--include-fts`)
 - [x] Mount in Übersicht "Archiv" tab, FTS companion auto-loaded
-- [ ] **Background-ingest on `.cidx` import** — when browsing an archive, trigger
-  L3 promotion for selected rows (spawns bg_ingest worker with the cidx path).
+- [x] **Background-ingest on `.cidx` import** — Archiv tab: checkboxes on rows,
+  selection bar with "Auf L3 hochstufen" button (calls `index_promote_cb_archive`
+  per selected cb-archive row), "archiv" badge on L1 cb-archive rows.
 
 ### P7.8 — OCR Tiers 3 + 4
 
 - [x] Tier 3 — PaddleOCR via `usls` (`--features paddle-ocr`). DB detection + SVTR recognition.
-  Remaining: per-document CJK/Latin model selection; SLANet table extraction.
+  CJK/Latin model selection: `OcrRecLang` enum (Auto/Latin/Cjk), path heuristic for Auto,
+  Settings dropdown, bg_ingest `ocr_rec_lang` field + Tauri command.
+  Remaining: SLANet table extraction.
 - [ ] **Tier 4 — VLM OCR** (~1 wk) — `deepseek-ocr.rs`-style via Candle (not ort).
   DeepSeek-OCR / PaddleOCR-VL, Q4_K–Q8_0. 4.7-9 GB models. macOS Metal ✅.
 

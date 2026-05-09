@@ -103,6 +103,18 @@ pub enum OcrTier {
     Tier3,
 }
 
+/// Which recognition language model to use for PaddleOCR Tier 3.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OcrRecLang {
+    /// Automatically detect from filename heuristics.
+    #[default]
+    Auto,
+    /// Latin-script languages (EN, DE, FR, …) — `ppocr_rec_v4_en`.
+    Latin,
+    /// CJK (Chinese, Japanese, Korean) — `ppocr_rec_v4_ch`.
+    Cjk,
+}
+
 /// PLAN P7.8 options for the extractor dispatcher.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExtractOptions {
@@ -115,6 +127,9 @@ pub struct ExtractOptions {
     pub ocr_pdf_min_chars: usize,
     /// Which OCR tier to use. Default `Auto` picks the best available.
     pub ocr_tier: OcrTier,
+    /// Which recognition language model to use for PaddleOCR.
+    /// `Auto` uses the filename path to guess CJK vs. Latin.
+    pub ocr_rec_lang: OcrRecLang,
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -127,6 +142,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             try_ocr: false,
             ocr_pdf_min_chars: 50,
             ocr_tier: OcrTier::Auto,
+            ocr_rec_lang: OcrRecLang::Auto,
         },
     )
 }
@@ -174,7 +190,7 @@ pub fn extract_text_from_path_with_opts(
             let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
 
             if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-                if let Ok(mut doc) = ocr_paddle::ocr_via_paddle(path) {
+                if let Ok(mut doc) = ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
                     doc.ext = ext.clone();
                     return Ok(doc);
                 }
