@@ -2199,6 +2199,8 @@ pub fn run() {
             index::tauri_commands::index_promote_l2,
             index::tauri_commands::index_import_caf,
             index::tauri_commands::index_export_caf,
+            index::tauri_commands::index_export_cidx,
+            index::tauri_commands::index_open_cidx,
             index::tauri_commands::index_ingest_path,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
