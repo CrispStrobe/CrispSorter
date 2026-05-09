@@ -1060,6 +1060,12 @@
                     <RefreshCw size={14} /> {i18n.t.batch.reset_stuck}
                 </button>
             {/if}
+            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'review' || i.status === 'ready')}
+                <button class="action-btn small" title="Alle bereits verarbeiteten Dateien zurücksetzen und neu analysieren"
+                        onclick={async () => { await batchManager.resetToQueued(); await batchManager.processAll(); }}>
+                    <RefreshCw size={14} /> Neu analysieren
+                </button>
+            {/if}
 
             <div class="btn-group">
                 <button class="action-btn small" onclick={() => toggleSelectionAccepted(true)}>
@@ -1325,11 +1331,11 @@
                                                 </span>
                                             {/if}
                                         {:else if col.id === 'title'}
-                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
+                                            <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
-                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
+                                            <input type="text" bind:value={item.suggestedAuthor} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} class:fallback={isUnknown(item.suggestedAuthor)} aria-label="Suggested Author" />
                                         {:else if col.id === 'year'}
-                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
+                                            <input type="text" bind:value={item.suggestedYear} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} style="text-align: center;" class:fallback={isUnknown(item.suggestedYear)} aria-label="Suggested Year" />
                                         {:else if col.id === 'size'}
                                             <span class="mono">{formatSize(item.size)}</span>
                                         {:else if col.id === 'date'}

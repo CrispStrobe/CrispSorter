@@ -123,6 +123,12 @@ pub struct BackgroundIngest {
     /// ms to sleep between ingest iterations — keeps the foreground
     /// runtime responsive.
     pub sleep_between_ms: u64,
+    /// Whether to attempt OCR on scanned images / empty-text PDFs.
+    /// Mirrors the Settings `ocrEnabled` toggle.
+    pub ocr_enabled: bool,
+    /// Which OCR tier to use when `ocr_enabled` is true.
+    /// "auto" | "tier1" | "tier2" | "tier3"
+    pub ocr_tier: String,
 }
 
 impl Default for BackgroundIngest {
@@ -137,6 +143,8 @@ impl Default for BackgroundIngest {
             concurrency: 1,
             active_workers: Arc::new(AtomicUsize::new(0)),
             sleep_between_ms: 50,
+            ocr_enabled: false,
+            ocr_tier: "auto".to_owned(),
         }
     }
 }
@@ -320,7 +328,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
-    let (pipeline, local) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -330,7 +338,17 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .clone()
             .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
         let local = g.local.clone();
-        (pipe, local)
+        drop(g);
+        let bg = app_state.bg_ingest.lock().await;
+        let ocr_enabled = bg.ocr_enabled;
+        let ocr_tier_str = bg.ocr_tier.clone();
+        (pipe, local, ocr_enabled, ocr_tier_str)
+    };
+    let ocr_tier = match ocr_tier_str.as_str() {
+        "tier1" => crate::extractors::OcrTier::Tier1,
+        "tier2" => crate::extractors::OcrTier::Tier2,
+        "tier3" => crate::extractors::OcrTier::Tier3,
+        _       => crate::extractors::OcrTier::Auto,
     };
 
     let p = item.path.clone();
@@ -415,9 +433,14 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let doc_id = uuid::Uuid::new_v4().to_string();
 
     // ── Extract with timeout (P10) ──────────────────────────────────────
+    let extract_opts = crate::extractors::ExtractOptions {
+        try_ocr: ocr_enabled,
+        ocr_pdf_min_chars: 50,
+        ocr_tier,
+    };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();
-        move || crate::extractors::extract_text_from_path(&p)
+        move || crate::extractors::extract_text_from_path_with_opts(&p, extract_opts)
     });
     let extract_result = tokio::time::timeout(
         Duration::from_secs(EXTRACTION_TIMEOUT_SECS),

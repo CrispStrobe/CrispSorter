@@ -132,6 +132,24 @@ export class BatchManager {
         flog('info', 'Stop requested by user — aborting extraction and LLM');
     }
 
+    /** Reset all items in 'review' (or any given statuses) back to 'queued'
+     *  so processAll() will re-extract + re-analyse them.
+     *  Useful when the user wants to re-run with a different model / prompt
+     *  or after manually editing metadata on some items. */
+    async resetToQueued(ids?: string[]) {
+        const targets = ids
+            ? this.items.filter(i => ids.includes(i.id))
+            : this.items;
+        for (const item of targets) {
+            if (['review', 'error', 'unfinished', 'ready'].includes(item.status)) {
+                item.status = 'queued';
+                item.errorMessage = undefined;
+                item.statusDetail = undefined;
+            }
+        }
+        await this.saveCurrentSession();
+    }
+
     resetStuckItems() {
         for (const item of this.items) {
             if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
