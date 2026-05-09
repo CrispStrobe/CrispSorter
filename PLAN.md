@@ -68,7 +68,8 @@
 - [x] `catalog` / `index stats|list|search|delete|export-cidx|inspect-cidx|list-failed|retry-failed|ingest-cb-manifest` / `batch add|list|apply` / `completion` / `manpage`
 - [x] **`index init --model M --device D`** — downloads embedder model to data-dir/models/;
   supports bge-m3, multilingual-e5-*, bge-*-en-v1.5, nomic, minilm
-- [ ] **`index ingest <path>`** — full extraction+embedding pipeline headless
+- [x] **`index ingest <paths>... [--model M] [--device D]`** — full extraction+embedding
+  pipeline headless; walks directories; SHA-256 + extract + embed + LanceDB+Tantivy write
 - [ ] **`batch process`** — headless LLM extraction pass (needs llm_client without GUI)
 - [ ] **`chat`** — `query "<prompt>"` / `transcribe` / `tts` headless
 - [ ] **Polish** — `cargo install crispsorter` story (needs crispcat extraction first)
@@ -98,8 +99,11 @@
   `source_files`+`archives`; preview pane shows Lokal/VPS availability when
   a `crisp+cb-archive://` row is opened. Manifest DB path persisted as
   `cbManifestDbPath` setting on first import.
-- [ ] **VPS-trigger indexing** — cloud-backup `vps_worker.py` hook posts to
-  `crisp-index-server` after decrypting each archive. ~100 lines of Python.
+- [x] **VPS-trigger indexing** — `vps_worker.py` gains `_notify_crisp_index()`:
+  after PROCESSED, POSTs L1 file metadata (from manifest `files[]`) to
+  `CRISP_INDEX_URL/v1/ingest/batch` (batches of 64) via `urllib.request`.
+  Opt-in via env vars: `CRISP_INDEX_URL`, `CRISP_INDEX_API_KEY`,
+  `CRISP_INDEX_OWNER_ID`. Fully non-blocking on failure. Docs in readme.md.
 
 ### P13 — Image-vertical convergence with CrispLens (future)
 
