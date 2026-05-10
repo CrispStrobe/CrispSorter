@@ -87,6 +87,22 @@
     let folders     = $state<ManagedFolder[]>([]);
     let scanningFolder = $state<string | null>(null);
 
+    // ── P11: registered cloud drives (manifest-only ingest) ────────────────
+    interface RegisteredDrive {
+        id:    string;
+        label: string;
+        kind:  string;
+        path:  string;
+    }
+    let driveDialogOpen   = $state(false);
+    let availableDrives   = $state<RegisteredDrive[]>([]);
+    let driveDialogId     = $state<string>('');     // selected drive id
+    let driveDialogPath   = $state<string>('/');    // remote subtree
+    let driveDialogExts   = $state<string>('');     // comma-sep exts; '' = all
+    let driveDialogDepth  = $state<number | null>(null);
+    let driveScanning     = $state(false);
+    let driveScanResult   = $state<string>('');
+
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
 
@@ -383,6 +399,65 @@
         if (folders.some(f => f.path === path)) return;
         folders = [...folders, { path, addedAt: Date.now(), lastScanned: null, fileCount: 0 }];
         await saveFolders();
+    }
+
+    // ── P11: drive-folder ingest (Filen / Internxt / WebDAV / Local) ──────
+
+    /** Open the "Cloud-Ordner hinzufügen" dialog, prefilling the drive list. */
+    async function openDriveDialog() {
+        try {
+            availableDrives = await invoke<RegisteredDrive[]>('drive_list');
+        } catch (e: any) {
+            logError(`Drive-Liste laden fehlgeschlagen: ${e?.message ?? e}`);
+            availableDrives = [];
+        }
+        if (availableDrives.length === 0) {
+            logWarn('Keine Cloud-Laufwerke registriert. Lege zuerst eines in den Einstellungen an.');
+        } else if (!driveDialogId || !availableDrives.some(d => d.id === driveDialogId)) {
+            driveDialogId = availableDrives[0].id;
+        }
+        driveScanResult = '';
+        driveDialogOpen = true;
+    }
+
+    /** Trigger the manifest-only ingest on the selected drive + remote path. */
+    async function runDriveIngest() {
+        if (!driveDialogId) return;
+        driveScanning   = true;
+        driveScanResult = '';
+        try {
+            const exts = driveDialogExts
+                .split(',')
+                .map(s => s.trim().toLowerCase().replace(/^\./, ''))
+                .filter(Boolean);
+            logInfo(`P11: drive ingest — ${driveDialogId} ${driveDialogPath} (exts=${exts.join(',') || 'any'})`);
+            const result = await invoke<{
+                ingested: number;
+                walked:   number;
+                errors:   number;
+                walk_errors: string[];
+            }>('index_ingest_drive_manifest', {
+                driveId:     driveDialogId,
+                rootPath:    driveDialogPath || '/',
+                allowedExts: exts.length > 0 ? exts : null,
+                maxDepth:    driveDialogDepth ?? null,
+                ownerId:     null,
+            });
+            driveScanResult =
+                `${result.ingested} indexiert · ${result.walked} durchsucht · ${result.errors} Fehler`;
+            logInfo(`P11: drive ingest done — ${driveScanResult}`);
+            if (result.walk_errors?.length) {
+                for (const we of result.walk_errors.slice(0, 5)) {
+                    logWarn(`P11 walk error: ${we}`);
+                }
+            }
+            await loadContents();
+        } catch (e: any) {
+            driveScanResult = `Fehler: ${e?.message ?? e}`;
+            logError(`P11 drive ingest failed: ${e?.message ?? e}`);
+        } finally {
+            driveScanning = false;
+        }
     }
 
     async function removeFolder(path: string) {
@@ -1250,6 +1325,43 @@
         return hashIdx >= 0 ? decodeURIComponent(uri.slice(hashIdx + 1)) : null;
     }
 
+    /** Parse `crisp+drive://{drive_id}/{remote-path}` → { driveId, remotePath } */
+    function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
+        if (!uri.startsWith('crisp+drive://')) return null;
+        const rest = uri.slice('crisp+drive://'.length);
+        const slash = rest.indexOf('/');
+        if (slash < 0) return null;
+        return {
+            driveId:    rest.slice(0, slash),
+            remotePath: decodeURIComponent(rest.slice(slash)),
+        };
+    }
+
+    /** Promote a registered-drive row to L3: fetch via the CloudDrive,
+     *  stage to a temp dir, route through the existing extract+embed
+     *  pipeline (mirrors promoteCbArchive). */
+    async function promoteDriveArchive(doc: any) {
+        const parts = driveUriParts(doc.location_uri ?? '');
+        if (!parts) return;
+        promotingIds = new Set([...promotingIds, doc.doc_id]);
+        try {
+            logInfo(`P11: promoting ${parts.remotePath} from drive ${parts.driveId}`);
+            const result = await invoke<{ doc_id: string; chunks: number }>('index_promote_drive_archive', {
+                docId:      doc.doc_id,
+                driveId:    parts.driveId,
+                remotePath: parts.remotePath,
+                ownerId:    null,
+            });
+            logInfo(`P11: promoted to L3: ${result.chunks} chunks`);
+            await loadContents();
+        } catch (e: any) {
+            logError(`P11 drive-promote failed: ${e?.message ?? e}`);
+        } finally {
+            promotingIds.delete(doc.doc_id);
+            promotingIds = new Set(promotingIds);
+        }
+    }
+
     /** Promote a cb-archive row to L3 by calling retrieve.py */
     async function promoteCbArchive(doc: any) {
         const originalPath = cbArchiveOriginalPath(doc.location_uri ?? '');
@@ -1995,6 +2107,10 @@
     {#if activeTab === 'sources'}
         <div class="folders-toolbar">
             <button class="tb-btn" onclick={addFolder}><FolderOpen size={14} /> Ordner hinzufügen</button>
+            <button class="tb-btn" onclick={openDriveDialog}
+                    title="Registriertes Cloud-Laufwerk (WebDAV / Filen / Internxt) als L1-Manifest indexieren — keine Dateien werden geladen">
+                <CloudDownload size={14} /> Cloud-Ordner
+            </button>
             {#if folders.length > 0}
                 <button class="tb-btn" onclick={scanAllFolders} disabled={!!scanningFolder}>
                     <RefreshCw size={14} class={scanningFolder ? 'spin' : ''} /> Alle neu scannen
@@ -2030,6 +2146,61 @@
         {#if cafLastResult}
             <div class="caf-result-bar">
                 {cafLastResult}
+            </div>
+        {/if}
+
+        {#if driveDialogOpen}
+            <div class="drive-dialog">
+                <label class="drive-dialog-row">
+                    <span class="drive-dialog-label">Laufwerk</span>
+                    {#if availableDrives.length === 0}
+                        <span class="drive-dialog-hint">
+                            Keine Laufwerke registriert — lege eines unter Einstellungen → Cloud-Laufwerke an.
+                        </span>
+                    {:else}
+                        <select bind:value={driveDialogId} class="drive-dialog-input">
+                            {#each availableDrives as d (d.id)}
+                                <option value={d.id}>{d.label} ({d.kind})</option>
+                            {/each}
+                        </select>
+                    {/if}
+                </label>
+                <label class="drive-dialog-row">
+                    <span class="drive-dialog-label">Pfad</span>
+                    <input type="text" bind:value={driveDialogPath} placeholder="/"
+                           class="drive-dialog-input" disabled={driveScanning} />
+                </label>
+                <label class="drive-dialog-row">
+                    <span class="drive-dialog-label">Endungen</span>
+                    <input type="text" bind:value={driveDialogExts}
+                           placeholder="pdf, epub, docx (leer = alle)"
+                           class="drive-dialog-input" disabled={driveScanning} />
+                </label>
+                <label class="drive-dialog-row">
+                    <span class="drive-dialog-label">Tiefe</span>
+                    <input type="number" min="0" placeholder="unbegrenzt"
+                           class="drive-dialog-input" style="max-width:160px"
+                           value={driveDialogDepth ?? ''}
+                           oninput={(e) => {
+                               const v = (e.target as HTMLInputElement).value;
+                               driveDialogDepth = v === '' ? null : Number(v);
+                           }}
+                           disabled={driveScanning} />
+                </label>
+                <div class="drive-dialog-row">
+                    <button class="tb-btn" onclick={runDriveIngest}
+                            disabled={driveScanning || availableDrives.length === 0 || !driveDialogId}>
+                        {#if driveScanning}<Loader2 size={13} class="spin" />{:else}<CloudDownload size={13} />{/if}
+                        Indexieren (L1)
+                    </button>
+                    <button class="tb-btn" onclick={() => { driveDialogOpen = false; }}
+                            disabled={driveScanning}>
+                        Schließen
+                    </button>
+                    {#if driveScanResult}
+                        <span class="drive-dialog-hint">{driveScanResult}</span>
+                    {/if}
+                </div>
             </div>
         {/if}
 
@@ -2400,6 +2571,13 @@
                                         title="Datei von cloud-backup abrufen und auf L3 hochstufen (retrieve.py)">
                                         {#if isPromoting}<Loader2 size={13} class="spin" />{:else}<CloudDownload size={13} />{/if}
                                     </button>
+                                {:else if doc.location_uri?.startsWith('crisp+drive://')}
+                                    {@const isPromoting = promotingIds.has(doc.doc_id)}
+                                    <button class="icon-btn" onclick={() => promoteDriveArchive(doc)}
+                                        disabled={isPromoting}
+                                        title="Datei vom registrierten Cloud-Laufwerk abrufen und auf L3 hochstufen">
+                                        {#if isPromoting}<Loader2 size={13} class="spin" />{:else}<CloudDownload size={13} />{/if}
+                                    </button>
                                 {/if}
                                 {#if failure && (failure.reason === 'timeout' || failure.reason === 'other')}
                                     {@const isRetrying = retryingIds.has(doc.doc_id)}
@@ -2698,6 +2876,12 @@
 
     .folder-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; flex: 1; overflow-y: auto; }
     .caf-result-bar { padding: 6px 16px; background: #18181b; border-bottom: 1px solid #27272a; color: #a1a1aa; font-size: 0.8rem; }
+    .drive-dialog { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; background: #18181b; border-bottom: 1px solid #27272a; }
+    .drive-dialog-row { display: flex; align-items: center; gap: 8px; }
+    .drive-dialog-label { color: #a1a1aa; font-size: 0.8rem; min-width: 80px; }
+    .drive-dialog-input { flex: 1; padding: 4px 8px; background: #0a0a0a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 4px; font-size: 0.85rem; }
+    .drive-dialog-input:disabled { opacity: 0.5; }
+    .drive-dialog-hint { color: #71717a; font-size: 0.75rem; }
     .folder-row {
         display: flex; align-items: flex-start; gap: 10px; background: #18181b;
         border: 1px solid #27272a; border-radius: 6px; padding: 10px 12px;
