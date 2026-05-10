@@ -2238,6 +2238,7 @@ pub fn run() {
             sync::tauri_commands::sync_clear_failed,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
+            drives::tauri_commands::drive_update,
             drives::tauri_commands::drive_delete,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,

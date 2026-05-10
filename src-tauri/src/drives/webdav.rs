@@ -61,13 +61,17 @@ impl WebDavDrive {
         base_url: impl Into<String>,
         username: Option<String>,
         password: Option<String>,
+        insecure_tls: bool,
     ) -> Self {
         let mut url = base_url.into();
         if !url.ends_with('/') { url.push('/'); }
-        let client = reqwest::blocking::Client::builder()
+        let mut builder = reqwest::blocking::Client::builder()
             // Generous default — WebDAV servers can be slow on cold dirs.
-            .timeout(Duration::from_secs(60))
-            .build()
+            .timeout(Duration::from_secs(60));
+        if insecure_tls {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        let client = builder.build()
             .expect("reqwest blocking client must build");
         Self {
             label: label.into(),
@@ -416,14 +420,14 @@ mod tests {
 
     #[test]
     fn drive_metadata_correct() {
-        let d = WebDavDrive::new("dav", "https://example.com/dav/", None, None);
+        let d = WebDavDrive::new("dav", "https://example.com/dav/", None, None, false);
         assert_eq!(d.label(), "dav");
         assert_eq!(d.drive_type(), DriveType::WebDav);
     }
 
     #[test]
     fn url_for_normalises_leading_slash_and_encodes() {
-        let d = WebDavDrive::new("d", "https://h/dav/", None, None);
+        let d = WebDavDrive::new("d", "https://h/dav/", None, None, false);
         assert_eq!(d.url_for(Path::new("/a/b.txt")),    "https://h/dav/a/b.txt");
         assert_eq!(d.url_for(Path::new("a/b.txt")),     "https://h/dav/a/b.txt");
         assert_eq!(d.url_for(Path::new("hi there")),    "https://h/dav/hi%20there");
@@ -433,7 +437,7 @@ mod tests {
 
     #[test]
     fn url_for_handles_unicode() {
-        let d = WebDavDrive::new("d", "https://h/dav/", None, None);
+        let d = WebDavDrive::new("d", "https://h/dav/", None, None, false);
         // ü = U+00FC = UTF-8 bytes 0xC3 0xBC
         assert_eq!(d.url_for(Path::new("\u{00FC}.txt")), "https://h/dav/%C3%BC.txt");
     }
@@ -560,5 +564,107 @@ mod tests {
             lastmodified: None,
         };
         assert_eq!(name_from_response(&r), "file.pdf");
+    }
+
+    // ── Live integration tests ─────────────────────────────────────────────
+    //
+    // Gated by `#[ignore]` so the normal `cargo test` run stays offline.
+    // Run with:
+    //   WEBDAV_TEST_URL=http://localhost:8088/ \
+    //   WEBDAV_TEST_USER=filen \
+    //   WEBDAV_TEST_PASS=filen-webdav \
+    //   cargo test -p tauri-app --lib -- --ignored webdav_live --nocapture
+    //
+    // For Internxt's HTTPS server with self-signed cert:
+    //   WEBDAV_TEST_URL=https://127.0.0.1:9999/ \
+    //   WEBDAV_TEST_USER=internxt \
+    //   WEBDAV_TEST_PASS=<from `internxt webdav-config`> \
+    //   WEBDAV_TEST_INSECURE=1 \
+    //   cargo test -p tauri-app --lib -- --ignored webdav_live --nocapture
+    //
+    // Spin up the server first with the matching CLI's `webdav-start -b`.
+
+    fn live_drive() -> Option<WebDavDrive> {
+        let url = std::env::var("WEBDAV_TEST_URL").ok()?;
+        let user = std::env::var("WEBDAV_TEST_USER").ok();
+        let pass = std::env::var("WEBDAV_TEST_PASS").ok();
+        let insecure = std::env::var("WEBDAV_TEST_INSECURE")
+            .map(|v| !v.is_empty() && v != "0").unwrap_or(false);
+        Some(WebDavDrive::new("live-test", url, user, pass, insecure))
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_list_root() {
+        let Some(drive) = live_drive() else {
+            eprintln!("skip: WEBDAV_TEST_URL not set");
+            return;
+        };
+        let entries = drive.list_dir(Path::new("/"))
+            .expect("PROPFIND root failed");
+        eprintln!("--- root listing ({} entries) ---", entries.len());
+        for e in entries.iter().take(20) {
+            eprintln!("  {} {} {}",
+                if e.is_dir { "DIR " } else { "FILE" },
+                e.size.map(|s| format!("{:>10}", s)).unwrap_or_else(|| " ".repeat(10)),
+                e.name);
+        }
+        // We don't assert anything about contents (varies by account); we
+        // just want to know PROPFIND parses without panicking.
+        assert!(!entries.is_empty() || true, "tolerate empty drive");
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_write_read_delete_roundtrip() {
+        let Some(drive) = live_drive() else {
+            eprintln!("skip: WEBDAV_TEST_URL not set");
+            return;
+        };
+
+        // Use a fresh path each time so reruns don't collide.
+        let nonce: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let test_path = format!("/_crispsorter_webdav_test_{nonce}.txt");
+        let content = format!("hello from CrispSorter test at {nonce}").into_bytes();
+
+        eprintln!("PUT  {test_path}");
+        drive.write_file(Path::new(&test_path), &content)
+            .expect("write_file failed");
+
+        eprintln!("STAT {test_path}");
+        let stat = drive.stat(Path::new(&test_path))
+            .expect("stat failed");
+        assert!(!stat.is_dir, "test file must not be reported as a dir");
+        assert_eq!(stat.size, content.len() as u64,
+            "stat size mismatch (got {}, want {})", stat.size, content.len());
+
+        eprintln!("GET  {test_path}");
+        let bytes = drive.read_file(Path::new(&test_path))
+            .expect("read_file failed");
+        assert_eq!(bytes, content, "round-trip content mismatch");
+
+        eprintln!("DEL  {test_path}");
+        match drive.delete(Path::new(&test_path)) {
+            Ok(_) => {
+                // Standards-compliant server: stat after delete must 404.
+                let post = drive.stat(Path::new(&test_path));
+                assert!(post.is_err(),
+                    "stat should fail after DELETE; got {:?}", post);
+                eprintln!("OK: full write→stat→read→delete round-trip succeeded");
+            }
+            Err(e) => {
+                // Filen's wsgidav-backed server (4.3.3) returns
+                // 500 "Resource could not be deleted" on DELETE even via
+                // curl, despite PUT/PROPFIND/GET working perfectly.  Treat
+                // as a known server-side limitation: warn but don't fail.
+                // The user can clean up via `filen rm` if needed.
+                eprintln!(
+                    "warning: DELETE failed (server quirk?) — leaving {} on the server: {:#}",
+                    test_path, e
+                );
+                eprintln!("OK: write→stat→read succeeded; delete is server-dependent");
+            }
+        }
     }
 }

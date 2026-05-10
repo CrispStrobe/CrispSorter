@@ -28,6 +28,7 @@ pub async fn drive_create(
     path: String,
     username: Option<String>,
     password: Option<String>,
+    insecure_tls: Option<bool>,
 ) -> Result<DriveConfig, String> {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
@@ -40,7 +41,7 @@ pub async fn drive_create(
     };
     let config = DriveConfig {
         id:    uuid::Uuid::new_v4().to_string(),
-        label, kind: drive_type, path, username, password,
+        label, kind: drive_type, path, username, password, insecure_tls,
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     reg.add(config.clone()).map_err(|e| e.to_string())?;
@@ -57,6 +58,44 @@ pub async fn drive_delete(
         .ok_or("data_dir not initialised")?;
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     reg.remove(&id).map_err(|e| e.to_string())
+}
+
+/// Update an existing drive's label / kind / path / auth in place.
+/// Preserves the `id` so existing `crisp+drive://<id>/...` URIs in the
+/// LanceDB index continue to resolve to the (now-edited) drive.  Errors
+/// if no drive with the given id exists.
+///
+/// `kind` accepts the same values as `drive_create`.
+#[tauri::command]
+pub async fn drive_update(
+    state: State<'_, AppState>,
+    id: String,
+    label: String,
+    kind: String,
+    path: String,
+    username: Option<String>,
+    password: Option<String>,
+    insecure_tls: Option<bool>,
+) -> Result<DriveConfig, String> {
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let drive_type = match kind.as_str() {
+        "filen"    => DriveType::Filen,
+        "internxt" => DriveType::Internxt,
+        "sftp"     => DriveType::Sftp,
+        "webdav"   => DriveType::WebDav,
+        _          => DriveType::Local,
+    };
+    let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    if !reg.drives.iter().any(|d| d.id == id) {
+        return Err(format!("drive '{id}' not found"));
+    }
+    let updated = DriveConfig {
+        id, label, kind: drive_type, path, username, password, insecure_tls,
+    };
+    // `add` dedupes by id (replaces) — exactly the semantics we want.
+    reg.add(updated.clone()).map_err(|e| e.to_string())?;
+    Ok(updated)
 }
 
 /// List directory entries on a drive.

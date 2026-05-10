@@ -244,6 +244,12 @@ pub struct DriveConfig {
     /// Optional WebDAV basic-auth password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    /// WebDAV-only: skip TLS certificate verification.  Off by default;
+    /// flip on for self-signed servers like the local one started by
+    /// `internxt-cli webdav-start` (HTTPS to 127.0.0.1 with a generated
+    /// cert).  Has no effect on non-WebDAV drives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insecure_tls: Option<bool>,
 }
 
 /// Loads and saves the list of configured drives.
@@ -306,6 +312,7 @@ impl DriveRegistry {
                     config.path.clone(),
                     config.username.clone(),
                     config.password.clone(),
+                    config.insecure_tls.unwrap_or(false),
                 ))
             }
         }
@@ -399,6 +406,7 @@ mod tests {
             path: "/Volumes/Backup".to_owned(),
             username: None,
             password: None,
+            insecure_tls: None,
         };
         {
             let mut reg = DriveRegistry::open(tmp.path()).unwrap();
@@ -420,13 +428,13 @@ mod tests {
         reg.add(DriveConfig {
             id: "x".into(), label: "v1".into(),
             kind: DriveType::Local, path: "/a".into(),
-            username: None, password: None,
+            username: None, password: None, insecure_tls: None,
         }).unwrap();
         // Same id, different label → must replace not duplicate.
         reg.add(DriveConfig {
             id: "x".into(), label: "v2".into(),
             kind: DriveType::Local, path: "/b".into(),
-            username: None, password: None,
+            username: None, password: None, insecure_tls: None,
         }).unwrap();
         assert_eq!(reg.drives.len(), 1);
         assert_eq!(reg.drives[0].label, "v2");
@@ -440,7 +448,7 @@ mod tests {
         reg.add(DriveConfig {
             id: "abc".into(), label: "a".into(),
             kind: DriveType::Local, path: "/a".into(),
-            username: None, password: None,
+            username: None, password: None, insecure_tls: None,
         }).unwrap();
         assert!( reg.remove("abc").unwrap());
         assert!(!reg.remove("abc").unwrap()); // already gone
@@ -479,7 +487,7 @@ mod tests {
             } else { "/tmp".to_owned() };
             let cfg = DriveConfig {
                 id: "x".into(), label: "lbl".into(), kind: kind.clone(), path,
-                username: None, password: None,
+                username: None, password: None, insecure_tls: None,
             };
             let drive = DriveRegistry::instantiate(&cfg);
             assert_eq!(drive.drive_type(), expected,
