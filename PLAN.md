@@ -31,9 +31,11 @@
 
 *(nothing actively in-flight — see Open TODOs below)*
 
-**Test coverage:** 215 unit tests pass (195 tauri-app + 20 crispcat).
-Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
-— 2026-05-09" for a per-module breakdown.
+**Test coverage:** 232 unit tests pass in tauri-app (+2 `#[ignore]`'d
+WebDAV-live integration tests gated by `WEBDAV_TEST_URL`/`USER`/`PASS`)
+plus 20 in crispcat.  Run with `cargo test --workspace`.  See
+[HISTORY.md](HISTORY.md) → "P11 cloud drives end-to-end" for the
+breakdown of the new drives + `crisp+drive://` tests added this session.
 
 ---
 
