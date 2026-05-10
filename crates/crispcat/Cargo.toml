@@ -42,3 +42,10 @@ lance = ["dep:arrow-array", "dep:arrow-schema", "dep:futures-util", "dep:lancedb
 [dev-dependencies]
 tempfile   = "3"
 serde_json = "1"
+# `lance.rs`'s integration tests are `#[tokio::test]` async fns. They
+# only compile when the `lance` feature is on (the file is `#[cfg]`-gated
+# on it via `mod` in `lib.rs`), but workspace consumers like `tauri-app`
+# enable the feature -- so `cargo test --workspace --lib` builds them
+# and needs the runtime. `macros` for the attribute, `rt-multi-thread`
+# for the runtime it spawns.
+tokio      = { version = "1", features = ["macros", "rt-multi-thread"] }
