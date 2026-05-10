@@ -340,6 +340,131 @@ After cleanup:
 
 ---
 
+## Phase ship index — moved-from-PLAN items as of 2026-05-10
+
+This section consolidates everything that was marked `[x]` in
+PLAN.md's "Open TODOs" up through the 2026-05-09/10 session.  They
+are preserved here so the active plan stays focused on `[ ]` work
+only.  Where a session log above this point goes into deep detail
+(e.g., the cloud-drives session log), the entry below is a one-liner
+that points at it.
+
+### P3.5 — CrispEmbed / CrispASR bundling (Phase 1)
+
+- **macOS arm64** — `scripts/bundle_macos_native_libs.sh` processes both
+  `libcrispasr.dylib` and `libcrispembed.dylib` (+ ggml backend libs +
+  recursive homebrew transitives) into `.app/Contents/Frameworks/`
+  with `install_name_tool` rewriting absolute LC_RPATH entries to
+  `@loader_path/.`.  Each wrapper is independently feature-gated, so
+  builds with only `--features crispasr-metal` skip CrispEmbed cleanly.
+  Phase 2 (Linux + Windows) and Phase 3 (mobile) remain open.
+
+### P6 — Catalog (Phase 5)
+
+- **`crispcat` workspace crate** — `crates/crispcat/` ships `caf` /
+  `dedup` / `index` / `scan` modules; `lance` module is feature-gated
+  (default off) so `cargo install crispcat-cli` doesn't pull in
+  lancedb.  Tauri app uses `crispcat = { features = ["lance"] }` and
+  re-exports as `crate::catalog`.  Standalone
+  `crispcat scan|info|browse|find-dupes` binary in
+  `crates/crispcat-cli/` — no Tauri, no LanceDB, no embedder.
+
+### P7.7 — Mountable archive index
+
+- **LanceDB export (`export_cidx`)** + Tantivy FTS companion
+  (`--include-fts`); Übersicht "Archiv" tab mounts the export and
+  auto-loads the FTS companion.
+- **Background-ingest on `.cidx` import** — Archiv tab checkboxes,
+  selection bar with "Auf L3 hochstufen" calling
+  `index_promote_cb_archive` per selected cb-archive row, "archiv"
+  badge on L1 cb-archive rows.
+
+### P7.8 — OCR Tier 3
+
+- **PaddleOCR via `usls`** (`--features paddle-ocr`).  DB detection +
+  SVTR recognition, CJK/Latin model selection via `OcrRecLang` enum
+  (Auto/Latin/Cjk), Auto-tier path heuristic, Settings dropdown,
+  `bg_ingest.ocr_rec_lang` field + matching Tauri command.
+- **SLANet table extraction** still open.
+
+### P8.2 — CLI (continuation, partial)
+
+- Existing surface: `version / doctor / catalog / index stats|list|
+  search|delete|export-cidx|inspect-cidx|list-failed|retry-failed|
+  ingest-cb-manifest / batch add|list|apply / completion / manpage`.
+- **`index init --model M --device D`** — downloads embedder model to
+  `data-dir/models/`; supports bge-m3, multilingual-e5-*, bge-*-en-v1.5,
+  nomic, minilm.
+- **`index ingest <paths>... [--model M] [--device D]`** — full
+  extraction+embedding pipeline headless; walks directories,
+  SHA-256 + extract + embed + LanceDB+Tantivy write.
+- **`batch process [--job-id J] [--limit N] [--llm-url URL]
+  [--llm-model M] [--export-path DIR] [--path-template T]
+  [--out-plan FILE] [--dry-run]`** — headless LLM extraction pass,
+  emits sort plan JSON.
+- **`chat query "<prompt>" [--context-files] [--system]`** — POSTs to
+  OpenAI-compatible `/chat/completions`.
+- **Polish (partial)** — `cargo install --path crates/crispcat-cli`
+  works for the standalone catalog CLI.  Full
+  `cargo install crispsorter` story for the Tauri-app binary still
+  pending a binstall recipe + signing.
+
+### P10 — Robust ingest remaining
+
+- **DRM help-popover** — clicking `fail-badge.fail-drm` opens an
+  inline popover explaining the encryption, with a close button.  No
+  third-party tool recommendations.
+- **CLI `skip-failed`** —
+  `crispsorter index skip-failed [--dry-run]` permanently marks
+  timeout/other rows as "unsupported".
+
+### P11 — Remote server (everything shipped)
+
+- **Server queue blob fix** — `embeddings_blob BLOB` + `embed_dims`
+  columns; `payload_json` stores compact batch with empty vectors;
+  blob repacked on claim.
+- **IVF-PQ at 100 M+ vectors** — `num_partitions` auto-scales to
+  `sqrt(row_count)`, `sample_rate` exposed on `index_build_ivf_pq`
+  Tauri command + `build_vector_index()`.
+- **Runtime modes** — `BackendType` gains `Hybrid` variant
+  (serialises as `"hybrid"`).  Hybrid init path = Local for now
+  (SyncManager placeholder).  Settings dropdown shows
+  Standalone/Server/Hybrid with i18n; data-dir + remote fields
+  visible in Hybrid.
+- **Cloud drives + `crisp+drive://` + UI + live e2e + upstream
+  server fixes** — covered in detail in the "2026-05-09/10 — P11
+  cloud drives end-to-end" session log above.
+- **SyncManager** — SQLite outbox at `src-tauri/src/sync/`,
+  `enqueue/claim_batch/mark_done/mark_error/clear_failed`,
+  `push_pending` (POST per op type),
+  `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),
+  `is_remote_online` (GET /health), `sync_state` kv table.  Server
+  side: `routes/sync.rs` + `VectorStore::rows_since(since_ms, limit)`
+  + stdlib `iso_from_ms` formatter.  5 Tauri commands;
+  nav sync chip (⇅ N) polls every 30 s.
+
+### P12 — cloud-backup (everything shipped)
+
+- **L1 manifest import** via `index_ingest_cb_manifest`.
+- **L3 promotion** via `retrieve.py` (`index_promote_cb_archive` +
+  CloudDownload button in Übersicht).
+- **Reverse lookup UI** — `index_lookup_cb_file` Tauri command
+  queries `source_files`+`archives`; preview pane shows
+  Lokal / VPS / Cloud (Internxt) availability when a
+  `crisp+cb-archive://` row is opened.  Reads
+  `archives.upload_verified` + `remote_path` + `local_deleted` so the
+  chip distinguishes "VPS verified" from "VPS pruned, cloud-only".
+  Manifest DB path persisted as `cbManifestDbPath` setting on first
+  import.
+- **VPS-trigger indexing** — `vps_worker.py` gains
+  `_notify_crisp_index()`: after PROCESSED, POSTs L1 file metadata
+  (from manifest `files[]`) to `CRISP_INDEX_URL/v1/ingest/batch`
+  (batches of 64) via `urllib.request`.  Opt-in via env vars
+  `CRISP_INDEX_URL` / `CRISP_INDEX_API_KEY` / `CRISP_INDEX_OWNER_ID`.
+  Fully non-blocking on failure.
+
+---
+
 ## Session log — May 2026 — index-test → main reconciliation + P9 step 1+2
 
 ### Branch reunification (commits `400df29`, `33479da`)
