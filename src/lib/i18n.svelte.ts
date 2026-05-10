@@ -495,7 +495,12 @@ export const translations = {
             tab_add: 'Add',
             tab_sources: 'Sources',
             tab_caf_catalog: 'Volumes (.caf)',
-            tab_duplicates: 'Duplicates'
+            tab_duplicates: 'Duplicates',
+            tab_bilder: 'Photos',
+            bilder_refresh: 'Refresh',
+            bilder_count_suffix: 'photos',
+            bilder_empty: 'No photos in the index yet — add image files via Sources or Add.',
+            bilder_load_more: 'Load more'
         },
         duplicates: {
             title: 'Find Duplicates',
@@ -1084,7 +1089,12 @@ export const translations = {
             tab_add: 'Hinzufügen',
             tab_sources: 'Quellen',
             tab_caf_catalog: 'Volumes (.caf)',
-            tab_duplicates: 'Duplikate'
+            tab_duplicates: 'Duplikate',
+            tab_bilder: 'Bilder',
+            bilder_refresh: 'Aktualisieren',
+            bilder_count_suffix: 'Bilder',
+            bilder_empty: 'Noch keine Bilder im Index — füge Bilddateien über Quellen oder Hinzufügen hinzu.',
+            bilder_load_more: 'Mehr laden'
         },
         duplicates: {
             title: 'Duplikate finden',

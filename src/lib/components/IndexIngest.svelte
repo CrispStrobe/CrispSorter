@@ -12,7 +12,7 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2, Eye, RotateCcw, CloudDownload
+        Columns2, Eye, RotateCcw, CloudDownload, Images
     } from 'lucide-svelte';
     import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -69,7 +69,7 @@
         fileCount:   number;
     }
 
-    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates' | 'cidxArchive';
+    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates' | 'bilder' | 'cidxArchive';
 
     // ── State ──────────────────────────────────────────────────────────────────
 
@@ -162,6 +162,24 @@
     /** Last clicked row index for shift-click range selection on the
      *  Übersicht table. Reset whenever the result set changes. */
     let lastClickedDocIdx = $state<number | null>(null);
+
+    // ── P13 slice A1 — Bilder tab state ────────────────────────────────────
+    // Tier 1 only: we filter the existing index to image rows and render
+    // a placeholder grid. Thumbnails land in slice A2; EXIF surfacing in
+    // A2/A4. The page shape mirrors `index_query_documents` so when the
+    // pHash near-dup view (A4) joins this view we keep one cursor model.
+    interface BilderImage {
+        docId:       string;
+        locationUri: string;
+        filename?:   string | null;
+        ext?:        string | null;
+        size?:       number | null;
+        indexedAt:   number;
+    }
+    let bilderRows       = $state<BilderImage[]>([]);
+    let bilderTotal      = $state(0);
+    let bilderLoading    = $state(false);
+    let bilderNextCursor = $state<string | null>(null);
 
     // PLAN P9 step 6 — column registry + persistence.
     interface ColumnDef {
@@ -1203,6 +1221,49 @@
     }
     let _lastQueryError = '';
 
+    /** P13 slice A1 — fetch one page of image rows from the local index.
+     *  Pagination matches `loadContents`: `append=true` concatenates the
+     *  new rows onto the existing list and reuses the cursor; `false`
+     *  resets and starts over. The Tauri command (`bilder_list`) applies
+     *  the canonical IMAGE_EXTS filter server-side via LanceDB's
+     *  scalar-indexed `ext IN (...)` predicate, so this runs in the same
+     *  envelope as the Übersicht query and degrades cleanly to an empty
+     *  page when the index isn't ready yet. */
+    let _lastBilderError = '';
+    async function loadBilder(append = false) {
+        if (bilderLoading) return;
+        bilderLoading = true;
+        try {
+            const page = await invoke<{
+                items: BilderImage[];
+                total: number;
+                nextCursor: string | null;
+                pageSize: number;
+            }>('bilder_list', {
+                pageSize: 200,
+                cursor: append ? bilderNextCursor : null,
+                filters: null,
+            });
+            const newItems = page?.items ?? [];
+            bilderRows       = append ? [...bilderRows, ...newItems] : newItems;
+            bilderTotal      = page?.total ?? 0;
+            bilderNextCursor = page?.nextCursor ?? null;
+        } catch (e: any) {
+            const msg = String(e?.message ?? e ?? '');
+            if (msg !== _lastBilderError) {
+                logError(`Bilder: list failed -- ${msg}`);
+                _lastBilderError = msg;
+            }
+            if (!append) {
+                bilderRows       = [];
+                bilderTotal      = 0;
+                bilderNextCursor = null;
+            }
+        } finally {
+            bilderLoading = false;
+        }
+    }
+
     /** Client-side residual filter after the server narrowed the page.
      *  Today: only completeness; once we promote `has_*` flags to scalar
      *  columns (P9 step 3) this collapses to identity. */
@@ -1974,6 +2035,10 @@
         <button class="tab" class:active={activeTab === 'duplicates'} onclick={() => activeTab = 'duplicates'}>
             <CopyCheck size={14} /> {i18n.t.indexIngest.tab_duplicates}
         </button>
+        <button class="tab" class:active={activeTab === 'bilder'}
+                onclick={() => { activeTab = 'bilder'; loadBilder(false); }}>
+            <Images size={14} /> {i18n.t.indexIngest.tab_bilder}{#if bilderTotal > 0} ({bilderTotal}){/if}
+        </button>
         {#if mountedCidx}
             <button class="tab cidx-tab" class:active={activeTab === 'cidxArchive'}
                     onclick={() => { activeTab = 'cidxArchive'; loadCidxContents(); }}>
@@ -1990,6 +2055,50 @@
         <CafCatalog />
     {:else if activeTab === 'duplicates'}
         <Duplicates />
+    {:else if activeTab === 'bilder'}
+        <!-- ══════════════════ BILDER (P13 slice A1 — placeholder grid) ══════════════════ -->
+        <div class="bilder-panel">
+            <div class="toolbar">
+                <div class="toolbar-actions">
+                    <button class="tb-btn" onclick={() => loadBilder(false)} disabled={bilderLoading}>
+                        <RefreshCw size={14} /> {i18n.t.indexIngest.bilder_refresh}
+                    </button>
+                    <span class="muted bilder-count">
+                        {#if bilderLoading && bilderRows.length === 0}
+                            <Loader2 size={12} class="spin" />
+                        {:else}
+                            {bilderRows.length} / {bilderTotal} {i18n.t.indexIngest.bilder_count_suffix}
+                        {/if}
+                    </span>
+                </div>
+            </div>
+            {#if bilderLoading && bilderRows.length === 0}
+                <div class="empty-state"><Loader2 size={20} class="spin" /></div>
+            {:else if bilderRows.length === 0}
+                <div class="empty-state">{i18n.t.indexIngest.bilder_empty}</div>
+            {:else}
+                <div class="bilder-grid">
+                    {#each bilderRows as img (img.docId)}
+                        <div class="bilder-tile" title={img.locationUri}>
+                            <div class="bilder-tile-placeholder">
+                                <Images size={28} />
+                                <span class="bilder-ext-badge">{(img.ext ?? '?').toUpperCase()}</span>
+                            </div>
+                            <div class="bilder-tile-name" title={img.filename ?? ''}>
+                                {img.filename ?? img.docId}
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+                {#if bilderNextCursor}
+                    <div class="load-more-bar">
+                        <button class="action-btn small" onclick={() => loadBilder(true)} disabled={bilderLoading}>
+                            {bilderLoading ? '…' : i18n.t.indexIngest.bilder_load_more}
+                        </button>
+                    </div>
+                {/if}
+            {/if}
+        </div>
     {:else if activeTab === 'cidxArchive' && mountedCidx}
         <div class="cidx-archive-panel">
             <div class="cidx-header">
@@ -3363,4 +3472,48 @@
 
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    /* ── P13 slice A1 — Bilder grid ─────────────────────────────────────────
+       CSS grid only; virtual scrolling lands in A2 once thumbnails make
+       large grids expensive. Tile is intentionally minimal (icon + ext
+       badge + filename) so the placeholder reads as "future image" rather
+       than "broken row". */
+    .bilder-panel { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+    .bilder-count { font-size: 0.78rem; }
+    .bilder-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 8px;
+        padding: 8px 12px;
+        overflow-y: auto;
+    }
+    .bilder-tile {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 6px;
+        border: 1px solid #2a2a3a;
+        border-radius: 6px;
+        background: #14141e;
+        cursor: default;
+    }
+    .bilder-tile:hover { background: #1a1a28; border-color: #3a3a4a; }
+    .bilder-tile-placeholder {
+        position: relative;
+        aspect-ratio: 1 / 1;
+        display: flex; align-items: center; justify-content: center;
+        background: #0a0a14;
+        border-radius: 4px;
+        color: #4b5563;
+    }
+    .bilder-ext-badge {
+        position: absolute; bottom: 4px; right: 4px;
+        font-size: 0.62rem; font-weight: 600;
+        padding: 1px 5px;
+        background: #1e1b4b; color: #a5b4fc;
+        border-radius: 3px;
+        letter-spacing: 0.04em;
+    }
+    .bilder-tile-name {
+        font-size: 0.72rem; color: #cbd5e1;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 </style>
