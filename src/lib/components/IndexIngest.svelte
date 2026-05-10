@@ -93,6 +93,9 @@
         label: string;
         kind:  string;
         path:  string;
+        username?:    string | null;
+        password?:    string | null;
+        insecure_tls?: boolean | null;
     }
     let driveDialogOpen   = $state(false);
     let availableDrives   = $state<RegisteredDrive[]>([]);
@@ -103,16 +106,20 @@
     let driveScanning     = $state(false);
     let driveScanResult   = $state<string>('');
 
-    // Inline "create new drive" form (visible when no drives exist or via the +
-    // button).  Persists nothing locally — `drive_create` writes to drives.json.
+    // Inline "create / edit drive" form.  When `driveEditId` is set we're
+    // editing the existing drive with that id (calls drive_update); when
+    // null/empty we're creating a new one (calls drive_create).
     let driveCreateOpen   = $state(false);
+    let driveEditId       = $state<string | null>(null);
     let driveCreateLabel  = $state<string>('');
     let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav'>('webdav');
     let driveCreatePath   = $state<string>('');
     let driveCreateUser   = $state<string>('');
     let driveCreatePass   = $state<string>('');
+    let driveCreateInsecure = $state(false);
     let driveCreateBusy   = $state(false);
     let driveCreateError  = $state<string>('');
+    let driveDeletingId   = $state<string | null>(null);
 
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
@@ -431,7 +438,30 @@
         driveDialogOpen = true;
     }
 
-    /** Create a new drive entry via `drive_create`. */
+    /** Begin editing an existing drive — prefills the form. */
+    function startDriveEdit(d: RegisteredDrive & { username?: string | null; password?: string | null; insecure_tls?: boolean | null }) {
+        driveEditId       = d.id;
+        driveCreateLabel  = d.label;
+        driveCreateKind   = d.kind as any;
+        driveCreatePath   = d.path;
+        driveCreateUser   = d.username ?? '';
+        driveCreatePass   = d.password ?? '';
+        driveCreateInsecure = !!d.insecure_tls;
+        driveCreateError  = '';
+        driveCreateOpen   = true;
+    }
+
+    function resetDriveForm() {
+        driveEditId       = null;
+        driveCreateLabel  = '';
+        driveCreatePath   = '';
+        driveCreateUser   = '';
+        driveCreatePass   = '';
+        driveCreateInsecure = false;
+        driveCreateError  = '';
+    }
+
+    /** Create or update a drive entry. */
     async function submitDriveCreate() {
         if (!driveCreateLabel.trim() || !driveCreatePath.trim()) {
             driveCreateError = 'Label und Pfad/URL sind erforderlich';
@@ -440,26 +470,53 @@
         driveCreateBusy = true;
         driveCreateError = '';
         try {
-            const cfg = await invoke<RegisteredDrive>('drive_create', {
+            const args: Record<string, unknown> = {
                 label:    driveCreateLabel.trim(),
                 kind:     driveCreateKind,
                 path:     driveCreatePath.trim(),
                 username: driveCreateKind === 'webdav' && driveCreateUser ? driveCreateUser : null,
                 password: driveCreateKind === 'webdav' && driveCreatePass ? driveCreatePass : null,
-            });
-            logInfo(`Laufwerk angelegt: ${cfg.label} (${cfg.kind})`);
+                insecureTls: driveCreateKind === 'webdav' && driveCreateInsecure ? true : null,
+            };
+            let cfg: RegisteredDrive;
+            if (driveEditId) {
+                cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, ...args });
+                logInfo(`Laufwerk aktualisiert: ${cfg.label} (${cfg.kind})`);
+            } else {
+                cfg = await invoke<RegisteredDrive>('drive_create', args);
+                logInfo(`Laufwerk angelegt: ${cfg.label} (${cfg.kind})`);
+            }
             availableDrives = await invoke<RegisteredDrive[]>('drive_list');
             driveDialogId   = cfg.id;
-            // Reset the form, close it.
-            driveCreateLabel = '';
-            driveCreatePath  = '';
-            driveCreateUser  = '';
-            driveCreatePass  = '';
-            driveCreateOpen  = false;
+            resetDriveForm();
+            driveCreateOpen = false;
         } catch (e: any) {
             driveCreateError = `Fehler: ${e?.message ?? e}`;
         } finally {
             driveCreateBusy = false;
+        }
+    }
+
+    /** Remove a drive entry (drives.json only — does not touch indexed rows). */
+    async function deleteDrive(d: RegisteredDrive) {
+        const ok = confirm(`Laufwerk "${d.label}" entfernen?\n\nIndexzeilen mit crisp+drive://${d.id}/... bleiben erhalten, lassen sich aber nicht mehr promoten.`);
+        if (!ok) return;
+        driveDeletingId = d.id;
+        try {
+            const removed = await invoke<boolean>('drive_delete', { id: d.id });
+            if (removed) logInfo(`Laufwerk entfernt: ${d.label}`);
+            availableDrives = await invoke<RegisteredDrive[]>('drive_list');
+            if (driveDialogId === d.id) {
+                driveDialogId = availableDrives[0]?.id ?? '';
+            }
+            if (driveEditId === d.id) {
+                resetDriveForm();
+                driveCreateOpen = false;
+            }
+        } catch (e: any) {
+            logError(`Drive-Löschen fehlgeschlagen: ${e?.message ?? e}`);
+        } finally {
+            driveDeletingId = null;
         }
     }
 
@@ -2194,6 +2251,34 @@
 
         {#if driveDialogOpen}
             <div class="drive-dialog">
+                {#if availableDrives.length > 0}
+                    <div class="drive-list">
+                        {#each availableDrives as d (d.id)}
+                            <div class="drive-list-row">
+                                <span class="drive-list-label">{d.label}</span>
+                                <span class="drive-list-kind">{d.kind}</span>
+                                <span class="drive-list-path" title={d.path}>{d.path}</span>
+                                <button class="icon-btn" type="button"
+                                        title="Bearbeiten"
+                                        disabled={driveCreateBusy || driveDeletingId === d.id}
+                                        onclick={() => startDriveEdit(d)}>
+                                    <RotateCcw size={13} />
+                                </button>
+                                <button class="icon-btn danger-icon" type="button"
+                                        title="Entfernen"
+                                        disabled={driveCreateBusy || driveDeletingId === d.id}
+                                        onclick={() => deleteDrive(d)}>
+                                    {#if driveDeletingId === d.id}
+                                        <Loader2 size={13} class="spin" />
+                                    {:else}
+                                        <Trash2 size={13} />
+                                    {/if}
+                                </button>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+
                 <label class="drive-dialog-row">
                     <span class="drive-dialog-label">Laufwerk</span>
                     {#if availableDrives.length === 0}
@@ -2208,7 +2293,16 @@
                         </select>
                         <button class="tb-btn" type="button"
                                 style="padding: 2px 8px;"
-                                onclick={() => { driveCreateOpen = !driveCreateOpen; driveCreateError = ''; }}
+                                onclick={() => {
+                                    if (driveCreateOpen) {
+                                        // Toggle off: also reset edit state.
+                                        driveCreateOpen = false;
+                                        resetDriveForm();
+                                    } else {
+                                        resetDriveForm();
+                                        driveCreateOpen = true;
+                                    }
+                                }}
                                 title="Neues Laufwerk anlegen">
                             +
                         </button>
@@ -2218,7 +2312,13 @@
                 {#if driveCreateOpen || availableDrives.length === 0}
                     <div class="drive-create-form">
                         <div class="drive-dialog-hint">
-                            Neues Laufwerk anlegen — wird in <code>drives.json</code> gespeichert.
+                            {#if driveEditId}
+                                Laufwerk bearbeiten — Änderungen schreiben sich in <code>drives.json</code>.
+                                Die ID bleibt erhalten, sodass bestehende <code>crisp+drive://</code>-Indexzeilen
+                                weiterhin auflösen.
+                            {:else}
+                                Neues Laufwerk anlegen — wird in <code>drives.json</code> gespeichert.
+                            {/if}
                         </div>
                         <label class="drive-dialog-row">
                             <span class="drive-dialog-label">Label</span>
@@ -2264,6 +2364,14 @@
                                        class="drive-dialog-input" disabled={driveCreateBusy}
                                        autocomplete="new-password" />
                             </label>
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">Selbstsigniertes Zertifikat akzeptieren</span>
+                                <input type="checkbox" bind:checked={driveCreateInsecure}
+                                       disabled={driveCreateBusy} />
+                                <span class="drive-dialog-hint">
+                                    Für lokale WebDAV-Server (z.B. internxt-cli) mit selbstsigniertem TLS.
+                                </span>
+                            </label>
                             <div class="drive-dialog-hint">
                                 Auth wird im Klartext in <code>drives.json</code> gespeichert.
                                 Für höhere Sicherheit lokal mounten und stattdessen "Lokal" wählen.
@@ -2274,11 +2382,11 @@
                                     onclick={submitDriveCreate}
                                     disabled={driveCreateBusy || !driveCreateLabel.trim() || !driveCreatePath.trim()}>
                                 {#if driveCreateBusy}<Loader2 size={13} class="spin" />{:else}<HardDrive size={13} />{/if}
-                                Anlegen
+                                {driveEditId ? 'Speichern' : 'Anlegen'}
                             </button>
                             {#if availableDrives.length > 0}
                                 <button class="tb-btn" type="button"
-                                        onclick={() => { driveCreateOpen = false; driveCreateError = ''; }}
+                                        onclick={() => { resetDriveForm(); driveCreateOpen = false; }}
                                         disabled={driveCreateBusy}>
                                     Abbrechen
                                 </button>
@@ -3008,6 +3116,11 @@
     .drive-dialog-hint { color: #71717a; font-size: 0.75rem; }
     .drive-create-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; background: #0a0a0a; border: 1px solid #27272a; border-radius: 4px; }
     .drive-create-form code { background: #18181b; padding: 1px 4px; border-radius: 3px; font-size: 0.7rem; }
+    .drive-list { display: flex; flex-direction: column; gap: 4px; }
+    .drive-list-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #0a0a0a; border: 1px solid #27272a; border-radius: 4px; font-size: 0.8rem; }
+    .drive-list-label { color: #f4f4f5; min-width: 140px; flex-shrink: 0; font-weight: 500; }
+    .drive-list-kind { color: #71717a; min-width: 60px; flex-shrink: 0; font-family: monospace; }
+    .drive-list-path { color: #a1a1aa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 0.75rem; }
     .folder-row {
         display: flex; align-items: flex-start; gap: 10px; background: #18181b;
         border: 1px solid #27272a; border-radius: 6px; padding: 10px 12px;
