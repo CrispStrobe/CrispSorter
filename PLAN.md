@@ -16,11 +16,14 @@
 - P9 Übersicht scale: DB-side ORDER BY (lance::Scanner), scalar indexes, volume filter
 - P10 Robust ingest: TaskFailureReason, 300 s timeout, L2 fallback, DRM detection
 - P11 Remote server: `crisp-index-server` (Axum + LanceDB + Tantivy), durable job queue, server-side embedding
+- P11 Cloud drives: `LocalDrive` + `InternxtDrive` + `FilenDrive` + `WebDavDrive` (live-verified against both Filen + Internxt local WebDAV servers); registry with create/edit/delete UI; `crisp+drive://` URIs; manifest-only L1 ingest + on-demand L3 promote
+- P11 SyncManager: pull-apply loop closed (writes pulled rows as L1 metadata in local LanceDB)
 - P12 cloud-backup: L1 manifest import (`source_files` → LanceDB), L3 via `retrieve.py`
 - P15 Batch pre-processing: content-dedup (SHA-256), book-chapter grouping (ISBN-13)
 - OCR: Tier 1 Tesseract, Tier 2 ocrs, Tier 3 PaddleOCR (`--features paddle-ocr`)
 - `.cidx` offline archives: LanceDB + Tantivy FTS export/mount, Archiv tab in Übersicht
 - `crisp+cb-archive://` URI scheme for cloud-backup archived files
+- `crisp+drive://` URI scheme for any registered CloudDrive (Local / Filen / Internxt / WebDAV)
 
 ---
 
@@ -117,21 +120,34 @@ Run with `cargo test --workspace`. See [HISTORY.md](HISTORY.md) → "Test sweep
   `resolve`/`trash`, plus a missing `handle_trash` impl) + `WebDavDrive`
   (generic HTTP — Nextcloud/ownCloud/mailbox.org/Synology + the local
   WebDAV servers that filen-cli and internxt-cli expose; PROPFIND parser
-  handles both `D:`-prefixed and default-namespace wire shapes).
-  `DriveRegistry` (drives.json persistence; new optional `username` /
-  `password` fields for WebDAV basic-auth) routes each `DriveType` to its
-  real backend.  5 Tauri commands. SFTP path still piggybacks on OS-mount
-  via `LocalDrive`.
+  handles both `D:`-prefixed and default-namespace wire shapes; optional
+  `insecure_tls` for self-signed servers).  `DriveRegistry` (drives.json
+  persistence with optional `username` / `password` / `insecure_tls`
+  fields) routes each `DriveType` to its real backend.  6 Tauri commands
+  (`drive_list / drive_create / drive_update / drive_delete /
+  drive_list_dir / drive_stat`).  SFTP still piggybacks on OS-mount.
 - [x] **Generic remote ingest + promote (`crisp+drive://`)** —
   `FileLocation::Drive { drive_id, remote_path }` URI scheme;
   `crate::drives::walk()` recursive walker over any registered drive;
   `index_ingest_drive_manifest` Tauri command (manifest-only L1 ingest,
   no bandwidth cost beyond directory listings); `index_promote_drive_archive`
-  Tauri command (fetch a single file via `read_file`, stage, route
-  through the existing cb-archive `promote_path` pipeline → L3).
-  53/53 tests pass (drives:: + index::location::).  UI wiring (drive
-  picker + per-row "Promote to L3" button on `crisp+drive://` rows) still
-  pending — Tauri commands work today via direct invoke from the console.
+  Tauri command (fetch via `read_file`, stage, route through the existing
+  cb-archive `promote_path` pipeline → L3).
+- [x] **UI wiring** — Quellen tab → "Cloud-Ordner" toolbar button →
+  inline dialog with: drive picker, create/edit/delete drive form
+  (Label, Typ, URL/Pfad, optional WebDAV Benutzer/Passwort + selbst-
+  signiertes Zertifikat akzeptieren), remote path, ext filter, depth.
+  Per-row CloudDownload icon-button on `crisp+drive://` index rows
+  (Promote to L3, sibling to the existing cb-archive button).
+- [x] **Live e2e tests + server-side bug fixes** — 2 `#[ignore]`'d
+  integration tests (`webdav_live_list_root`, `webdav_live_write_read_delete_roundtrip`)
+  surfaced two real upstream bugs that were patched in their respective
+  repos: filen-python missed cache invalidation on `trash_item` /
+  `delete_permanent` (DELETE always 500'd via wsgidav's post-check);
+  internxt-cli's `Folder.get_etag()` crashed with `int(None)` on root
+  PROPFIND.  Verified live against both filen-python webdav-start :8088
+  and internxt-cli webdav-start :9999 — full PUT→STAT→GET→DELETE round-
+  trip succeeds on each.
 - [x] **SyncManager** — `src-tauri/src/sync/`: SQLite outbox (`sync_outbox.db`),
   `enqueue/claim_batch/mark_done/mark_error/clear_failed`, `push_pending`
   (POST per op type), `pull_pending` (GET `/v1/sync/since?ts=…&limit=…`),

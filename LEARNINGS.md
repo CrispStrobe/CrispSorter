@@ -618,3 +618,71 @@ Catfish does — older Cathy.exe versions wrote 0 for indeterminate sizes
 on Win9x. The downside: a genuine zero-byte file in a v ≤ 6 catalog
 will report as 1024 bytes here. Real zero-byte files in v ≥ 7 catalogs
 report as 1 byte instead of 0. Both are documented quirks, not bugs.
+
+---
+
+## Cloud drives (P11 Pillar 5)
+
+### WebDAV servers post-check `exists()` after DELETE — your provider must invalidate caches
+
+wsgidav's `do_DELETE` calls `child_res.delete()`, then immediately
+re-asks `provider.exists(path, environ)`.  If the answer is still
+`True`, wsgidav raises `DAVError(HTTP_INTERNAL_ERROR,
+"Resource could not be deleted.")` — even though your underlying
+storage call succeeded.  This bit filen-python (10-minute folder/file
+listing cache wasn't cleared on `trash_item`/`delete_permanent`) and
+will bite any provider whose `exists()` reads through a TTL cache that
+mutations don't invalidate.  Whenever you write a custom WebDAV
+provider on top of an API with cached listings: invalidate the parent
+folder's cache (or the path-resolution cache) on every mutation, not
+just the entry being deleted.
+
+Symptom to watch for during e2e: `curl -X DELETE` returns 500 with the
+exact string "Resource could not be deleted" and the file remains
+visible in `PROPFIND` immediately after.  The fix is always at the
+provider's `exists()`/`get_resource_inst()` cache, not the `delete()`
+implementation.
+
+### Internxt `cli.py` and Filen `cli.py` need `--json` patches to be useful from Rust
+
+Both Python CLIs default to emoji-decorated text output.  Scraping that
+from Rust is brittle (kaomojis, table widths, decorations vary across
+versions).  The right move is to upstream a `--json` flag on the
+read-side commands (`whoami`, `ls`/`list-path`, `resolve`, `trash`)
+and parse with `serde_json`.  Patches live in:
+
+* `internxt-python/995a543` — `whoami` / `list-path` / `resolve`
+* `filen-python/1162aa0`    — `whoami` / `ls` / `resolve` / `trash`
+                              (also added the missing `handle_trash`)
+
+Both CLIs use argparse-style flag-before-subcommand vs flag-after-
+subcommand semantics; the patches expose `--json` *both* on the parent
+parser and on the patched subparsers so either invocation form works.
+
+### `unittest.mock.patch` is not thread-safe
+
+If two threads each enter their own `with patch(...)` block,
+`__enter__` saves and `__exit__` restores the original attribute with
+no locking.  Races between t1's `__exit__` and t2's `__enter__` (or
+vice versa) leave the real attribute callable for a brief window —
+which on CI without credentials triggers exceptions in unrelated
+threads, leaving asserted dict slots empty and the failure message
+surfacing as a generic `KeyError` instead of the real cause.
+
+When testing thread-locality of state, hoist all `patch()` calls
+*outside* the threaded function so a single mock surface wraps the
+whole join window.  The threads never see an unpatched value.  Pattern
+in `tests/test_webdav_misc.py:test_isolated_session_separate_threads…`
+(internxt-python/`9128c3d`).
+
+### `# type: ignore[<code>, unused-ignore]` for cross-platform mypy ignores
+
+Linux's `os.stat_result` stub doesn't expose `st_birthtime` (macOS-only).
+Bare `# type: ignore[attr-defined]` is needed on Linux but flagged
+"Unused" on macOS.  Mypy's own `unused-ignore` code handles the
+meta-warning: `# type: ignore[attr-defined, unused-ignore]` works on
+both platforms.  Same trick for libraries with conditional stub
+availability (e.g. `waitress`, `cheroot`):
+`# type: ignore[import-untyped, unused-ignore]`.  Avoids platform-
+specific `if sys.platform == ...:` guards in source code and avoids a
+Linux-only mypy CI lane.
