@@ -103,6 +103,17 @@
     let driveScanning     = $state(false);
     let driveScanResult   = $state<string>('');
 
+    // Inline "create new drive" form (visible when no drives exist or via the +
+    // button).  Persists nothing locally — `drive_create` writes to drives.json.
+    let driveCreateOpen   = $state(false);
+    let driveCreateLabel  = $state<string>('');
+    let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav'>('webdav');
+    let driveCreatePath   = $state<string>('');
+    let driveCreateUser   = $state<string>('');
+    let driveCreatePass   = $state<string>('');
+    let driveCreateBusy   = $state(false);
+    let driveCreateError  = $state<string>('');
+
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
 
@@ -418,6 +429,38 @@
         }
         driveScanResult = '';
         driveDialogOpen = true;
+    }
+
+    /** Create a new drive entry via `drive_create`. */
+    async function submitDriveCreate() {
+        if (!driveCreateLabel.trim() || !driveCreatePath.trim()) {
+            driveCreateError = 'Label und Pfad/URL sind erforderlich';
+            return;
+        }
+        driveCreateBusy = true;
+        driveCreateError = '';
+        try {
+            const cfg = await invoke<RegisteredDrive>('drive_create', {
+                label:    driveCreateLabel.trim(),
+                kind:     driveCreateKind,
+                path:     driveCreatePath.trim(),
+                username: driveCreateKind === 'webdav' && driveCreateUser ? driveCreateUser : null,
+                password: driveCreateKind === 'webdav' && driveCreatePass ? driveCreatePass : null,
+            });
+            logInfo(`Laufwerk angelegt: ${cfg.label} (${cfg.kind})`);
+            availableDrives = await invoke<RegisteredDrive[]>('drive_list');
+            driveDialogId   = cfg.id;
+            // Reset the form, close it.
+            driveCreateLabel = '';
+            driveCreatePath  = '';
+            driveCreateUser  = '';
+            driveCreatePass  = '';
+            driveCreateOpen  = false;
+        } catch (e: any) {
+            driveCreateError = `Fehler: ${e?.message ?? e}`;
+        } finally {
+            driveCreateBusy = false;
+        }
     }
 
     /** Trigger the manifest-only ingest on the selected drive + remote path. */
@@ -2155,7 +2198,7 @@
                     <span class="drive-dialog-label">Laufwerk</span>
                     {#if availableDrives.length === 0}
                         <span class="drive-dialog-hint">
-                            Keine Laufwerke registriert — lege eines unter Einstellungen → Cloud-Laufwerke an.
+                            Keine Laufwerke registriert — lege unten eines an.
                         </span>
                     {:else}
                         <select bind:value={driveDialogId} class="drive-dialog-input">
@@ -2163,8 +2206,89 @@
                                 <option value={d.id}>{d.label} ({d.kind})</option>
                             {/each}
                         </select>
+                        <button class="tb-btn" type="button"
+                                style="padding: 2px 8px;"
+                                onclick={() => { driveCreateOpen = !driveCreateOpen; driveCreateError = ''; }}
+                                title="Neues Laufwerk anlegen">
+                            +
+                        </button>
                     {/if}
                 </label>
+
+                {#if driveCreateOpen || availableDrives.length === 0}
+                    <div class="drive-create-form">
+                        <div class="drive-dialog-hint">
+                            Neues Laufwerk anlegen — wird in <code>drives.json</code> gespeichert.
+                        </div>
+                        <label class="drive-dialog-row">
+                            <span class="drive-dialog-label">Label</span>
+                            <input type="text" bind:value={driveCreateLabel}
+                                   class="drive-dialog-input" disabled={driveCreateBusy}
+                                   placeholder="Mein Nextcloud" />
+                        </label>
+                        <label class="drive-dialog-row">
+                            <span class="drive-dialog-label">Typ</span>
+                            <select bind:value={driveCreateKind} class="drive-dialog-input"
+                                    disabled={driveCreateBusy}>
+                                <option value="webdav">WebDAV (Nextcloud / ownCloud / mailbox.org / Synology)</option>
+                                <option value="filen">Filen (Python cli.py)</option>
+                                <option value="internxt">Internxt (Python cli.py)</option>
+                                <option value="local">Lokal / OS-Mount (SMB / NFS / SFTP via FUSE)</option>
+                                <option value="sftp">SFTP (über OS-Mount)</option>
+                            </select>
+                        </label>
+                        <label class="drive-dialog-row">
+                            <span class="drive-dialog-label">
+                                {driveCreateKind === 'webdav' ? 'URL' :
+                                 driveCreateKind === 'filen' || driveCreateKind === 'internxt' ? 'cli.py' :
+                                 'Pfad'}
+                            </span>
+                            <input type="text" bind:value={driveCreatePath}
+                                   class="drive-dialog-input" disabled={driveCreateBusy}
+                                   placeholder={driveCreateKind === 'webdav'
+                                       ? 'https://host/remote.php/dav/files/<user>/'
+                                       : driveCreateKind === 'filen' || driveCreateKind === 'internxt'
+                                           ? '/Users/.../code/filen-python/cli.py'
+                                           : '/Volumes/...'} />
+                        </label>
+                        {#if driveCreateKind === 'webdav'}
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">Benutzer</span>
+                                <input type="text" bind:value={driveCreateUser}
+                                       class="drive-dialog-input" disabled={driveCreateBusy}
+                                       autocomplete="off" />
+                            </label>
+                            <label class="drive-dialog-row">
+                                <span class="drive-dialog-label">Passwort</span>
+                                <input type="password" bind:value={driveCreatePass}
+                                       class="drive-dialog-input" disabled={driveCreateBusy}
+                                       autocomplete="new-password" />
+                            </label>
+                            <div class="drive-dialog-hint">
+                                Auth wird im Klartext in <code>drives.json</code> gespeichert.
+                                Für höhere Sicherheit lokal mounten und stattdessen "Lokal" wählen.
+                            </div>
+                        {/if}
+                        <div class="drive-dialog-row">
+                            <button class="tb-btn" type="button"
+                                    onclick={submitDriveCreate}
+                                    disabled={driveCreateBusy || !driveCreateLabel.trim() || !driveCreatePath.trim()}>
+                                {#if driveCreateBusy}<Loader2 size={13} class="spin" />{:else}<HardDrive size={13} />{/if}
+                                Anlegen
+                            </button>
+                            {#if availableDrives.length > 0}
+                                <button class="tb-btn" type="button"
+                                        onclick={() => { driveCreateOpen = false; driveCreateError = ''; }}
+                                        disabled={driveCreateBusy}>
+                                    Abbrechen
+                                </button>
+                            {/if}
+                            {#if driveCreateError}
+                                <span class="drive-dialog-hint" style="color:#ef4444">{driveCreateError}</span>
+                            {/if}
+                        </div>
+                    </div>
+                {/if}
                 <label class="drive-dialog-row">
                     <span class="drive-dialog-label">Pfad</span>
                     <input type="text" bind:value={driveDialogPath} placeholder="/"
@@ -2882,6 +3006,8 @@
     .drive-dialog-input { flex: 1; padding: 4px 8px; background: #0a0a0a; color: #f4f4f5; border: 1px solid #3f3f46; border-radius: 4px; font-size: 0.85rem; }
     .drive-dialog-input:disabled { opacity: 0.5; }
     .drive-dialog-hint { color: #71717a; font-size: 0.75rem; }
+    .drive-create-form { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; background: #0a0a0a; border: 1px solid #27272a; border-radius: 4px; }
+    .drive-create-form code { background: #18181b; padding: 1px 4px; border-radius: 3px; font-size: 0.7rem; }
     .folder-row {
         display: flex; align-items: flex-start; gap: 10px; background: #18181b;
         border: 1px solid #27272a; border-radius: 6px; padding: 10px 12px;
