@@ -327,6 +327,42 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### Build artifacts location (optional, recommended for low-disk macOS / Linux)
+
+A full Tauri build of this workspace can grow `target/` to **20–25 GB**.
+On a 460 GB MacBook Pro that fills the boot disk fast, especially with
+sibling repos (`fastembed-rs`, `CrispEmbed`, …) all building locally.
+
+The recommended setup keeps every Rust project's build artifacts on an
+external volume, isolated per-repo, via a tiny zsh wrapper around
+`cargo`.  Add to `~/.zshenv` (so it's picked up by both interactive
+shells and scripts):
+
+```sh
+cargo() {
+  local root
+  root="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [[ -n "$root" && -z "$CARGO_TARGET_DIR" && -d <external-volume> ]]; then
+    CARGO_TARGET_DIR="<external-volume>/code/cargo-target/$(basename "$root")" \
+      command cargo "$@"
+  else
+    command cargo "$@"
+  fi
+}
+```
+
+Each repo's compiled artifacts land at
+`<external-volume>/code/cargo-target/<reponame>/`.  The wrapper falls back
+to the default `./target/` when not in a git repo, when
+`CARGO_TARGET_DIR` is already set (one-off overrides win), or when the
+external volume isn't mounted — so it's safe to leave on for any machine.
+
+Per-repo subdirs (instead of one shared `target-dir`) keep `cargo clean`
+scoped to the current repo and avoid feature-flag thrash between projects.
+
+Adapt the path to your own external volume, or drop the `-d <external-volume>`
+guard if you'd rather always redirect.
+
 ### Windows — optimised scripts
 
 ```powershell
