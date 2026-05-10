@@ -67,6 +67,7 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 - **Search index** — optional semantic + full-text search over all sorted documents (local, remote, or hybrid), with optional cross-encoder reranking, sparse retrieval (BGE-M3/SPLADE), and Matryoshka dim truncation
 - **Mountable archive index (`.cidx`)** — export a per-volume slice of the search index as a portable directory (LanceDB + optional Tantivy FTS companion). Ship the archive drive + `.cidx` in the same backup snapshot; CrispSorter mounts it as a read-only "Archiv" tab and full-text search works offline.
 - **cloud-backup integration** ([`../cloud-backup`](https://github.com/CrispStrobe/cloud-backup)): import 482k+ files as L1 metadata in seconds (`index_ingest_cb_manifest`), promote individual files to L3 on demand via `retrieve.py`, reverse-lookup tier availability (Lokal/VPS) in the preview pane, opt-in VPS-side indexing trigger
+- **Cloud drives** — register **WebDAV** (Nextcloud / ownCloud / mailbox.org / Synology / `filen webdav-start` / `internxt webdav-enable`), **Filen**, **Internxt**, or any local/OS-mounted path as a drive (Quellen → Cloud-Ordner → Anlegen). Manifest-only L1 ingest of any subtree (no bandwidth cost beyond directory listings); per-row "Promote to L3" downloads + indexes a file's contents on demand via the existing extract+embed pipeline. `crisp+drive://<id>/<remote-path>` URI scheme keeps the same row resolvable across drive renames/edits.
 
 ---
 
