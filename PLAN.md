@@ -55,7 +55,8 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 - [x] Phase 1 — macOS arm64 (see HISTORY.md)
 - [ ] **Phase 2 — Linux + Windows** (~8-12 h, separate session)
       RPATH / DLL colocation; each platform needs 1-2 release iterations.
-      Opening prompt: [docs/session-prompt-crispembed-ci-matrix.md](docs/session-prompt-crispembed-ci-matrix.md).
+      Opening prompt: `handover-prompts/session-prompt-crispembed-ci-matrix.md`
+      (local-only — see .gitignore).
 - [ ] **Phase 3 — mobile** (deferred)
 
 ### P5 — Future / planned
