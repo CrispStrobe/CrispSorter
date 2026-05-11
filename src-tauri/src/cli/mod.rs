@@ -255,6 +255,12 @@ enum CrispLensCmd {
     /// POST `/api/auth/logout` (best-effort) and wipe the keychain
     /// entry.  Idempotent.
     Logout,
+    /// Live status probe — hits `/api/health` (unauthenticated) and
+    /// `/api/auth/me` (with the stored cookie when present).  One
+    /// payload covers all four states the UI banner cares about:
+    /// not-configured / online-authenticated / online-unauth /
+    /// offline.  Useful for headless health checks (cron + jq).
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1709,6 +1715,45 @@ async fn cmd_images_crisplens(
                 }
                 OutFormat::Text => {
                     println!("logged in as {} ({})", outcome.username, outcome.role);
+                }
+            }
+        }
+
+        CrispLensCmd::Status => {
+            use crate::images::crisplens::tauri_commands::status_blocking;
+            let dd = data_dir.to_path_buf();
+            let status = tokio::task::spawn_blocking(move || status_blocking(&dd))
+                .await
+                .map_err(|e| format!("status join: {e}"))?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&status).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    if !status.tier2_configured {
+                        println!("tier 2 not configured (run `crisplens set-url <URL> --enable`)");
+                        return Ok(());
+                    }
+                    let health = match status.health_ok {
+                        Some(true) => "ok",
+                        Some(false) => "FAILED",
+                        None => "(unknown)",
+                    };
+                    println!("health         : {health}");
+                    if let Some(v) = &status.health_version {
+                        let backend = status.health_backend.as_deref().unwrap_or("(unknown)");
+                        println!("server         : {v} ({backend})");
+                    }
+                    if let Some(ready) = status.health_model_ready {
+                        println!("model_ready    : {ready}");
+                    }
+                    println!("authenticated  : {}", status.authenticated);
+                    if let Some(u) = &status.username {
+                        println!("user           : {u} ({})", status.role.as_deref().unwrap_or(""));
+                    }
+                    if !status.error.is_empty() {
+                        println!("note           : {}", status.error);
+                    }
                 }
             }
         }

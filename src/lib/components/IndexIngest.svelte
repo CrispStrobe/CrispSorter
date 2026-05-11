@@ -255,6 +255,71 @@
     let crispLensSettings        = $state<ImagesCrispLensSettings | null>(null);
     let crispLensSettingsOpen    = $state(false);
     let crispLensAuthenticated   = $state(false);
+
+    // P13/B4 — health monitor state.  The Tauri-side
+    // `images_crisplens_status` rolls health + auth into one
+    // payload so the banner state machine sees one shape per poll.
+    interface CrispLensStatus {
+        tier2Configured:   boolean;
+        healthOk:          boolean | null;
+        healthVersion?:    string | null;
+        healthBackend?:    string | null;
+        healthModelReady?: boolean | null;
+        authenticated:     boolean;
+        username?:         string | null;
+        role?:             string | null;
+        error?:            string;
+    }
+    let crispLensStatus     = $state<CrispLensStatus | null>(null);
+    let crispLensPollHandle = $state<ReturnType<typeof setInterval> | null>(null);
+
+    /** Banner status enum derived from the polled payload.  Keeps
+     *  the template easy to read. */
+    const crispLensBannerState = $derived.by<
+        'hidden' | 'offline' | 'session_expired' | 'warming_up' | 'ok'
+    >(() => {
+        const s = crispLensStatus;
+        if (!s || !s.tier2Configured) return 'hidden';
+        if (s.healthOk === false) return 'offline';
+        if (s.healthOk && !s.authenticated && s.error?.includes('session expired'))
+            return 'session_expired';
+        if (s.healthOk && s.healthModelReady === false) return 'warming_up';
+        return 'ok';
+    });
+
+    /** One-shot status fetch — also used by `loadCrispLensSettings`
+     *  so the settings pane is always in sync with the banner. */
+    async function fetchCrispLensStatus() {
+        try {
+            crispLensStatus = await invoke<CrispLensStatus>('images_crisplens_status');
+            // Keep the cheaper boolean in sync — the rest of the
+            // settings UI still reads `crispLensAuthenticated`.
+            crispLensAuthenticated = crispLensStatus.authenticated;
+        } catch (e: any) {
+            // Network errors etc.  Failure mode is "leave the last
+            // known state in place"; an alarmist banner that wipes
+            // mid-poll would be worse UX than stale data.
+            logWarn(`crisplens status: ${e?.message ?? e}`);
+        }
+    }
+
+    /** Manage the polling lifecycle.  The poll only runs when Tier 2
+     *  is configured AND the user is on the Images tab — no point
+     *  burning bandwidth on health checks while they're in the
+     *  Übersicht tab.  Cadence: 30 s, matching the spec. */
+    $effect(() => {
+        const shouldPoll = activeTab === 'images'
+            && crispLensSettings?.backend === 'crisplens'
+            && (crispLensSettings?.url ?? '').trim() !== '';
+        if (shouldPoll && crispLensPollHandle === null) {
+            void fetchCrispLensStatus();
+            crispLensPollHandle = setInterval(fetchCrispLensStatus, 30_000);
+        }
+        if (!shouldPoll && crispLensPollHandle !== null) {
+            clearInterval(crispLensPollHandle);
+            crispLensPollHandle = null;
+        }
+    });
     let crispLensUrlDraft        = $state('');
     let crispLensBackendDraft    = $state<'local' | 'crisplens'>('local');
     let crispLensLoginUser       = $state('');
@@ -2362,6 +2427,31 @@
         <!-- ══════════════════ IMAGES (P13 slice A2 — thumbnails + EXIF preview) ══════════════════ -->
         <div class="images-split" class:with-preview={imagesPreview !== null}>
             <div class="images-panel">
+                {#if crispLensBannerState === 'offline'}
+                    <div class="crisplens-banner crisplens-banner-offline" role="status">
+                        <AlertCircle size={14} />
+                        <span>{i18n.t.indexIngest.crisplens_banner_offline}</span>
+                        {#if crispLensStatus?.error}
+                            <code class="crisplens-banner-detail">{crispLensStatus.error}</code>
+                        {/if}
+                        <button class="action-btn small" onclick={fetchCrispLensStatus}>
+                            <RefreshCw size={12} /> {i18n.t.indexIngest.crisplens_banner_retry}
+                        </button>
+                    </div>
+                {:else if crispLensBannerState === 'session_expired'}
+                    <div class="crisplens-banner crisplens-banner-warn" role="status">
+                        <AlertCircle size={14} />
+                        <span>{i18n.t.indexIngest.crisplens_banner_session_expired}</span>
+                        <button class="action-btn small" onclick={() => { crispLensSettingsOpen = true; }}>
+                            {i18n.t.indexIngest.crisplens_banner_login_cta}
+                        </button>
+                    </div>
+                {:else if crispLensBannerState === 'warming_up'}
+                    <div class="crisplens-banner crisplens-banner-info" role="status">
+                        <Loader2 size={14} class="spin" />
+                        <span>{i18n.t.indexIngest.crisplens_banner_warming_up}</span>
+                    </div>
+                {/if}
                 <div class="toolbar">
                     <div class="toolbar-actions">
                         <button class="tb-btn" onclick={() => loadImages(false)} disabled={imagesLoading || imagesDupMode}>
@@ -4233,4 +4323,23 @@
     }
     .crisplens-sep { border: 0; border-top: 1px solid #27272a; margin: 4px 0; width: 100%; }
     .crisplens-msg { margin-top: 4px; }
+
+    /* P13/B4 — degradation banner.  Three colour variants so the
+       Offline (red), Session-expired (amber), and Warming-up (blue)
+       cases distinguish themselves at a glance.  Each carries an
+       inline icon + message + optional action button. */
+    .crisplens-banner {
+        display: flex; align-items: center; gap: 8px;
+        margin: 6px 12px; padding: 6px 10px;
+        border-radius: 4px; font-size: 0.78rem;
+    }
+    .crisplens-banner-offline { background: #4a1d1d; color: #fecaca; border: 1px solid #7f1d1d; }
+    .crisplens-banner-warn    { background: #4a3a1d; color: #fcd34d; border: 1px solid #92400e; }
+    .crisplens-banner-info    { background: #1e3a5f; color: #93c5fd; border: 1px solid #1e40af; }
+    .crisplens-banner-detail  {
+        margin-left: 4px; padding: 1px 6px;
+        background: #00000044; color: inherit;
+        border-radius: 3px;
+        font-family: ui-monospace, monospace; font-size: 0.66rem;
+    }
 </style>
