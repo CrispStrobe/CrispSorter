@@ -213,6 +213,22 @@
     let imagesPreviewExifLoading = $state(false);
     let imagesPreviewExifError = $state<string>('');
 
+    // P13 follow-up — CrispLens face overlays.  When the preview
+    // opens for a local image AND Tier 2 is authenticated, we
+    // sha256 the file → resolve to a CrispLens image_id → fetch
+    // face crops → render bbox rectangles as absolute-positioned
+    // divs on the displayed image.  All four fields default to the
+    // "nothing to overlay" state so the no-CrispLens / no-match
+    // path is silent.
+    interface CrispLensFaceOverlay {
+        faceId:     number;
+        bbox:       { top: number; right: number; bottom: number; left: number };
+        personName: string | null;
+    }
+    let imagesPreviewFaces        = $state<CrispLensFaceOverlay[]>([]);
+    let imagesPreviewFacesLoading = $state(false);
+    let imagesPreviewFacesError   = $state<string>('');
+
     // A3: SHA-256 dup-view state.  When `imagesDupMode` is true the
     // grid switches to grouped rendering and the linear list is
     // hidden.  Toggle is independent of the preview pane so the user
@@ -1690,7 +1706,10 @@
     /** A2: open the side preview pane for a clicked image tile.
      *  Loads the full image via convertFileSrc (no IPC payload —
      *  Tauri serves the file directly through tauri:// protocol)
-     *  and kicks off an EXIF fetch in parallel. */
+     *  and kicks off an EXIF fetch in parallel.  When Tier 2 is
+     *  authenticated, also kicks off the CrispLens face-overlay
+     *  resolution (slice "P13 follow-up": by-hash → faces → render
+     *  bbox rectangles). */
     async function openImagesPreview(img: ImageRow) {
         // Toggle: clicking the same tile closes the pane.
         if (imagesPreview?.docId === img.docId) {
@@ -1701,17 +1720,70 @@
         imagesPreviewExif     = null;
         imagesPreviewExifError = '';
         imagesPreviewExifLoading = true;
+        imagesPreviewFaces        = [];
+        imagesPreviewFacesError   = '';
+        imagesPreviewFacesLoading = false;
 
         const path = uriToPath(img.locationUri);
         imagesPreviewSrc = path ? convertFileSrc(path) : '';
 
-        try {
-            imagesPreviewExif = await invoke<ImagesExifSummary>('images_exif', { docId: img.docId });
-        } catch (e: any) {
-            imagesPreviewExifError = String(e?.message ?? e ?? 'EXIF read failed');
-        } finally {
-            imagesPreviewExifLoading = false;
+        // EXIF fetch (always runs — Tier 1 feature)
+        const exifP = (async () => {
+            try {
+                imagesPreviewExif = await invoke<ImagesExifSummary>('images_exif', { docId: img.docId });
+            } catch (e: any) {
+                imagesPreviewExifError = String(e?.message ?? e ?? 'EXIF read failed');
+            } finally {
+                imagesPreviewExifLoading = false;
+            }
+        })();
+
+        // CrispLens face-overlay fetch (only when Tier 2 + local path)
+        let facesP: Promise<void> = Promise.resolve();
+        if (crispLensStatus?.authenticated && path) {
+            imagesPreviewFacesLoading = true;
+            facesP = (async () => {
+                try {
+                    const resolved = await invoke<{ id: number } | null>(
+                        'images_crisplens_image_by_local_path',
+                        { localPath: path }
+                    );
+                    if (!resolved) {
+                        // No CrispLens row for this hash — silent;
+                        // image just isn't on the server.
+                        return;
+                    }
+                    interface FaceRow {
+                        faceId:    number;
+                        bbox:      { top: number; right: number; bottom: number; left: number };
+                        personName: string | null;
+                    }
+                    const faces = await invoke<FaceRow[]>(
+                        'images_crisplens_image_faces',
+                        { imageId: resolved.id }
+                    );
+                    // Guard against race: the user may have clicked
+                    // a different tile while we were waiting on
+                    // these two network calls.  Don't overwrite a
+                    // newer preview's state.
+                    if (imagesPreview?.docId !== img.docId) return;
+                    imagesPreviewFaces = faces.map(f => ({
+                        faceId:     f.faceId,
+                        bbox:       f.bbox,
+                        personName: f.personName,
+                    }));
+                } catch (e: any) {
+                    if (imagesPreview?.docId !== img.docId) return;
+                    imagesPreviewFacesError = String(e?.message ?? e ?? 'face fetch failed');
+                } finally {
+                    if (imagesPreview?.docId === img.docId) {
+                        imagesPreviewFacesLoading = false;
+                    }
+                }
+            })();
         }
+
+        await Promise.all([exifP, facesP]);
     }
 
     function closeImagesPreview() {
@@ -1719,6 +1791,9 @@
         imagesPreviewSrc      = '';
         imagesPreviewExif     = null;
         imagesPreviewExifError = '';
+        imagesPreviewFaces        = [];
+        imagesPreviewFacesError   = '';
+        imagesPreviewFacesLoading = false;
     }
 
     /** A3: fetch SHA-256 duplicate clusters for the current image set.
@@ -2962,7 +3037,33 @@
                     {/if}
                     <div class="images-preview-body">
                         {#if imagesPreviewSrc}
-                            <img src={imagesPreviewSrc} alt={imagesPreview.filename ?? ''} class="images-preview-image" />
+                            <div class="images-preview-image-wrap">
+                                <img src={imagesPreviewSrc} alt={imagesPreview.filename ?? ''} class="images-preview-image" />
+                                {#each imagesPreviewFaces as face (face.faceId)}
+                                    <!-- bbox values are normalised 0..1 of the source image; CSS % directly. -->
+                                    <div class="images-face-bbox"
+                                         style:left={`${face.bbox.left * 100}%`}
+                                         style:top={`${face.bbox.top * 100}%`}
+                                         style:width={`${(face.bbox.right  - face.bbox.left) * 100}%`}
+                                         style:height={`${(face.bbox.bottom - face.bbox.top)  * 100}%`}
+                                         title={face.personName ?? '(unidentified)'}>
+                                        {#if face.personName}
+                                            <span class="images-face-label">{face.personName}</span>
+                                        {/if}
+                                    </div>
+                                {/each}
+                            </div>
+                            {#if imagesPreviewFacesLoading}
+                                <div class="muted-small images-face-loading">
+                                    <Loader2 size={12} class="spin" /> {i18n.t.indexIngest.crisplens_faces_loading}
+                                </div>
+                            {:else if imagesPreviewFacesError}
+                                <div class="muted-small images-face-loading">{imagesPreviewFacesError}</div>
+                            {:else if imagesPreviewFaces.length > 0}
+                                <div class="muted-small images-face-loading">
+                                    {imagesPreviewFaces.length} {i18n.t.indexIngest.crisplens_faces_count_suffix}
+                                </div>
+                            {/if}
                         {:else}
                             <div class="preview-msg preview-error">{i18n.t.indexIngest.images_preview_no_local_path}</div>
                         {/if}
@@ -4685,5 +4786,32 @@
         margin-left: auto;
         max-width: 50%;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* P13 follow-up — CrispLens face-overlay rectangles on the
+       preview image.  The wrapping div is `position: relative` so
+       the absolute-positioned bbox children land in image-local
+       coordinates; bbox top/left/width/height are emitted in % so
+       they scale with the rendered image (which has max-height +
+       object-fit: contain on .images-preview-image). */
+    .images-preview-image-wrap { position: relative; display: inline-block; max-width: 100%; }
+    .images-face-bbox {
+        position: absolute;
+        border: 2px solid #fde68a;
+        background: rgba(253, 224, 134, 0.08);
+        border-radius: 2px;
+        pointer-events: none;
+    }
+    .images-face-label {
+        position: absolute; top: -18px; left: -2px;
+        padding: 1px 5px;
+        background: #fde68a; color: #1c1917;
+        font-size: 0.66rem; font-weight: 600;
+        border-radius: 2px;
+        white-space: nowrap;
+    }
+    .images-face-loading {
+        margin-top: 4px;
+        display: flex; align-items: center; gap: 6px;
     }
 </style>

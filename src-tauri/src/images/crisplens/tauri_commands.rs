@@ -31,8 +31,8 @@ use super::{
 };
 use crate::AppState;
 use crisplens_protocol::{
-    ErrorResponse, Face, HealthResponse, LoginRequest, LoginResponse, MeResponse, Person,
-    SearchHit, WatchFolder,
+    ErrorResponse, Face, HealthResponse, Image as CrispLensImage, LoginRequest, LoginResponse,
+    MeResponse, Person, SearchHit, WatchFolder,
 };
 
 /// Resolve the writable data directory.  Mirrors `cli::resolve_data_dir`
@@ -470,14 +470,33 @@ pub(crate) fn get_json<T>(data_dir: &std::path::Path, path: &str) -> Result<T, S
 where
     T: Default + serde::de::DeserializeOwned,
 {
+    match get_json_inner::<T>(data_dir, path)? {
+        Some(v) => Ok(v),
+        None => Ok(T::default()),
+    }
+}
+
+/// Internal core: returns `Ok(None)` for the not-authenticated case
+/// instead of leaning on `T::default()`.  Used by `get_json` for the
+/// list endpoints (where `Vec::default() == vec![]` is the right
+/// empty-state) AND directly by the by-hash command (where `Image`
+/// has no sane default — Tier 2 unconfigured should surface as a
+/// distinct `None`, not a synthetic id=0 row).
+pub(crate) fn get_json_inner<T>(
+    data_dir: &std::path::Path,
+    path: &str,
+) -> Result<Option<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+{
     let s = settings::load(data_dir);
     if !s.tier2_enabled() {
-        return Ok(T::default());
+        return Ok(None);
     }
     let url = s.normalised_url().to_owned();
     let cookie = match secret::get_session_for_url(&url) {
         Ok(Some(v)) => v,
-        Ok(None) => return Ok(T::default()),
+        Ok(None) => return Ok(None),
         Err(e) => return Err(format!("keychain: {e}")),
     };
 
@@ -501,13 +520,112 @@ where
         return Err(detail);
     }
     resp.json::<T>()
+        .map(Some)
         .map_err(|e| format!("{path} body not JSON: {e}"))
 }
 
-/// `GET /api/search?q=…&limit=…` — text search on CrispLens.
-/// **Not semantic** — see `crisplens_protocol::SearchHit` doc-comment.
-/// Returns an empty list when Tier 2 isn't authenticated or `q` is
-/// empty.
+/// `GET /api/images/by-hash/{sha256}` — resolve a SHA-256 to one
+/// CrispLens `Image` row.  Returns `None` (Ok) when the server has
+/// no row with that hash (HTTP 404 on the server, surfaced as
+/// `Ok(None)` here so the caller doesn't need to inspect an
+/// error-string).  Other failures (auth, network, unsupported
+/// older server) propagate as `Err`.
+///
+/// Used by the GUI face-overlay path: SHA-256 a local image →
+/// resolve to CrispLens image_id → fetch face crops → render
+/// bbox rectangles on the previewed image.
+#[tauri::command]
+pub async fn images_crisplens_image_by_hash(
+    state: State<'_, AppState>,
+    sha256: String,
+) -> Result<Option<CrispLensImage>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    if !is_lowercase_sha256_hex(&sha256) {
+        return Err("not a 64-char lowercase hex SHA-256".into());
+    }
+    let path = format!("/api/images/by-hash/{sha256}");
+    tauri::async_runtime::spawn_blocking(move || {
+        match get_json_inner::<CrispLensImage>(&data_dir, &path) {
+            // get_json_inner already maps "Tier 2 not configured"
+            // and "no stored cookie" to None.  We additionally
+            // collapse the HTTP-404 / "Not Found" error string into
+            // None so the UI's "image not on CrispLens" branch is
+            // a clean match rather than a string-suffix check.
+            Ok(opt) => Ok(opt),
+            Err(e) if e.contains("HTTP 404") || e.to_lowercase().contains("not found") => Ok(None),
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(|e| format!("by-hash join: {e}"))?
+}
+
+/// Convenience wrapper: SHA-256 a file at `local_path`, then look
+/// it up.  Hashes off the Tokio blocking pool because file I/O +
+/// SHA-256 of large photos is mildly CPU-bound and would block the
+/// runtime otherwise.  Returns `Ok(None)` when the file's hash
+/// doesn't match any CrispLens row.
+#[tauri::command]
+pub async fn images_crisplens_image_by_local_path(
+    state: State<'_, AppState>,
+    local_path: String,
+) -> Result<Option<CrispLensImage>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    let sha = tauri::async_runtime::spawn_blocking(move || sha256_file(&local_path))
+        .await
+        .map_err(|e| format!("sha join: {e}"))??;
+    let path = format!("/api/images/by-hash/{sha}");
+    tauri::async_runtime::spawn_blocking(move || {
+        match get_json_inner::<CrispLensImage>(&data_dir, &path) {
+            Ok(opt) => Ok(opt),
+            Err(e) if e.contains("HTTP 404") || e.to_lowercase().contains("not found") => Ok(None),
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(|e| format!("by-hash join: {e}"))?
+}
+
+/// True iff `s` is exactly 64 lowercase hexadecimal characters.
+/// Pinned here so the Tauri command rejects malformed input before
+/// hitting the network rather than letting CrispLens's 400 round-
+/// trip back.
+pub(crate) fn is_lowercase_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// SHA-256 of the file at `path`, hex-encoded lowercase.
+/// Streaming read with a 1 MiB buffer so a multi-GB photo doesn't
+/// pin memory.
+pub(crate) fn sha256_file(path: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("open {path}: {e}"))?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("read {path}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", h.finalize()))
+}
+
+/// `GET /api/search/semantic?q=…&limit=…` — embedding-based search
+/// on CrispLens (over the `ai_description` text column, per the
+/// upstream `routers/search.py:34` route).  Result rows carry a
+/// `score: Option<f32>` (cosine similarity, higher = better) which
+/// the UI surfaces inline.
+///
+/// **Compatibility note**: pre-`e121eba`+`4884e0d` CrispLens
+/// servers don't have this endpoint and return 404.  The previous
+/// version of this command targeted `/api/search` (substring text
+/// search), which is still available on the server but no longer
+/// the default — semantic matching is a strict superset for most
+/// queries.  Operators running an older CrispLens build can hit
+/// `/api/search` manually via curl or downgrade the URL here.
 #[tauri::command]
 pub async fn images_crisplens_search(
     state: State<'_, AppState>,
@@ -531,7 +649,7 @@ pub async fn images_crisplens_search(
             }
         })
         .collect::<String>();
-    let path = format!("/api/search?q={encoded_q}&limit={limit}");
+    let path = format!("/api/search/semantic?q={encoded_q}&limit={limit}");
 
     tauri::async_runtime::spawn_blocking(move || get_json::<Vec<SearchHit>>(&data_dir, &path))
         .await

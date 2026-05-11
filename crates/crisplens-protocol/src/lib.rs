@@ -279,6 +279,13 @@ pub struct SearchHit {
     /// would emit null here).
     #[serde(default)]
     pub recognition_confidence: Option<f32>,
+    /// Cosine-similarity score from `/api/search/semantic`
+    /// (0..=1, higher = better).  `None` for hits from
+    /// `/api/search` (the substring text-search route), which
+    /// doesn't compute scores.  UI surfaces it as a badge next to
+    /// matched files when present.
+    #[serde(default)]
+    pub score: Option<f32>,
 }
 
 // ── People + Faces (B3) ──────────────────────────────────────────────────
