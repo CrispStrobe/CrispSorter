@@ -1,7 +1,7 @@
-//! P13 — Bilder vertical (Photos / images).
+//! P13 — Images vertical (Photos / images).
 //!
-//! Mirrors `crate::drives` in shape: a trait (`BilderBackend`) +
-//! a Tier-1 impl (`LocalBilder`) + Tauri command thin wrappers.
+//! Mirrors `crate::drives` in shape: a trait (`ImagesBackend`) +
+//! a Tier-1 impl (`LocalImages`) + Tauri command thin wrappers.
 //!
 //! ## Tiering
 //!
@@ -9,16 +9,16 @@
 //!
 //! * **Tier 0** — feature disabled / hidden.  Not modelled in code; the
 //!   tab simply isn't shown when there's nothing indexed.
-//! * **Tier 1** — `LocalBilder`, the default for every fresh install.
+//! * **Tier 1** — `LocalImages`, the default for every fresh install.
 //!   Filters the existing LanceDB index down to image rows.  Zero
 //!   external deps.  Implemented in [`local`].
-//! * **Tier 2** — `CrispLensBilder`, an HTTP client against a sibling
+//! * **Tier 2** — `CrispLensImages`, an HTTP client against a sibling
 //!   CrispLens server.  Lands in slice **B1**; the module isn't in this
 //!   tree yet but the trait method set is already locked so we don't
 //!   churn the UI when it shows up.
 //!
-//! For slice A1 only `LocalBilder::list` is wired all the way through.
-//! Every other trait method on `LocalBilder` returns an error so the UI
+//! For slice A1 only `LocalImages::list` is wired all the way through.
+//! Every other trait method on `LocalImages` returns an error so the UI
 //! gets a clean failure rather than a Tauri panic if it accidentally
 //! reaches for a future-slice capability.
 
@@ -31,7 +31,7 @@ use async_trait::async_trait;
 
 pub use types::{HealthStatus, Image, ImageRef, ImagesPage, ListFilters};
 
-/// Canonical lower-cased list of extensions the Bilder grid considers
+/// Canonical lower-cased list of extensions the Images grid considers
 /// "image rows".  Matches the spec in
 /// `docs/P13_Bilder_integration.md` — keep this list and the spec in
 /// sync.  GIF/AVIF/SVG/ICO are deliberately excluded: they're either
@@ -43,7 +43,7 @@ pub const IMAGE_EXTS: &[&str] = &[
 ];
 
 /// Returns `true` if `ext` (lower-cased internally) is one of the
-/// extensions surfaced in the Bilder tab.  Case-insensitive on
+/// extensions surfaced in the Images tab.  Case-insensitive on
 /// purpose — LanceDB stores `ext` already lower-cased but callers in
 /// the UI sometimes upper-case for display.
 pub fn is_image_ext(ext: &str) -> bool {
@@ -52,14 +52,14 @@ pub fn is_image_ext(ext: &str) -> bool {
 }
 
 /// Source of image data + face data + semantic search.  Tier 1
-/// (`LocalBilder`) and Tier 2 (`CrispLensBilder`, future) implement
+/// (`LocalImages`) and Tier 2 (`CrispLensImages`, future) implement
 /// this so the UI can swap backends transparently.
 ///
 /// Methods are `async` because the Tier-2 impl will be a thin HTTP
 /// client; `async-trait` is already a workspace dep used by the
 /// extractor pipeline.
 #[async_trait]
-pub trait BilderBackend: Send + Sync {
+pub trait ImagesBackend: Send + Sync {
     /// One-shot health probe.  Used by the auto-degradation monitor
     /// in slice B4 to decide whether to fall back to Tier 1.
     async fn health(&self) -> Result<HealthStatus>;

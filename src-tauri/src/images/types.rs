@@ -1,4 +1,4 @@
-//! P13 — wire types for the Bilder vertical (Tier 1, local only).
+//! P13 — wire types for the Images vertical (Tier 1, local only).
 //!
 //! These types live in this module for slice A1; per
 //! `docs/P13_Bilder_integration.md` they migrate to a workspace
@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One image row, pulled from LanceDB and shaped for the Bilder grid.
+/// One image row, pulled from LanceDB and shaped for the Images grid.
 ///
 /// `doc_id` is the same UUID-ish identifier the rest of the app uses
 /// (`SearchResult::doc_id`).  `location_uri` keeps its scheme prefix
@@ -56,7 +56,7 @@ pub struct ImagesPage {
 }
 
 /// Filter knob set passed by the UI.  `parent_dir_prefix` mirrors the
-/// existing Übersicht folder filter so the Bilder tab can scope to the
+/// existing Übersicht folder filter so the Images tab can scope to the
 /// same subtree.  `ext` overrides the default IMAGE_EXTS list — the
 /// Tauri command falls back to the defaults when this is `None` so the
 /// frontend doesn't have to know the canonical list.
@@ -69,7 +69,7 @@ pub struct ListFilters {
     pub volume_ids: Option<Vec<String>>,
 }
 
-/// Forward-looking — `BilderBackend::health` returns this.  Tier 1
+/// Forward-looking — `ImagesBackend::health` returns this.  Tier 1
 /// always reports `Ok` since the local index is the source of truth;
 /// Tier 2 will surface CrispLens's `/api/health` here.
 #[derive(Debug, Clone, Serialize, Deserialize)]

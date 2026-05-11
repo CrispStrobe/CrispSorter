@@ -1,6 +1,6 @@
 pub mod asr;
 pub mod bg_ingest;
-pub mod bilder;
+pub mod images;
 /// Re-export the extracted crispcat workspace crate as `catalog` so existing
 /// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
 pub use crispcat as catalog;
@@ -2243,8 +2243,8 @@ pub fn run() {
             drives::tauri_commands::drive_delete,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,
-            bilder::tauri_commands::bilder_list,
-            bilder::tauri_commands::bilder_default_extensions,
+            images::tauri_commands::images_list,
+            images::tauri_commands::images_default_extensions,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,

@@ -43,8 +43,8 @@ use std::process::ExitCode;
 /// argv[1] sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "index", "batch", "chat", "manpage",
-    "completion", "help", "--help", "-h",
+    "version", "doctor", "catalog", "index", "batch", "chat", "images",
+    "manpage", "completion", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -115,6 +115,49 @@ enum Command {
     Chat {
         #[command(subcommand)]
         cmd: ChatCmd,
+    },
+    /// P13 images vertical — image-row views over the local index.
+    /// Tier 1 (local-only) for slice A1; Tier 2 (CrispLens) lands in B1+.
+    Images {
+        /// Override the app data directory. Default: OS-standard location.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: ImagesCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ImagesCmd {
+    /// Print the canonical image-extension list (jpg, jpeg, png, webp,
+    /// heic, heif, tiff, bmp).  Same list `images list` filters on by
+    /// default; mirrors the `images_default_extensions` Tauri command.
+    Extensions,
+    /// Print the count of image rows in the local index, plus a
+    /// per-extension breakdown.  Cheap (server-side `count_rows`).
+    Count {
+        /// Override the canonical IMAGE_EXTS list (comma-separated,
+        /// lower-case, no leading dot).  Empty = use the default.
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Optional parent-folder prefix to scope the count.
+        /// Matches `LocalImages::list`'s `parent_dir_prefix` filter.
+        #[arg(long)]
+        folder: Option<PathBuf>,
+    },
+    /// List image rows from the local index.  Output respects the
+    /// global `--format` flag (`json` default, `text` for humans).
+    List {
+        /// Maximum rows to print.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Override the canonical IMAGE_EXTS list (comma-separated,
+        /// lower-case, no leading dot).  Empty = use the default.
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Optional parent-folder prefix to scope the listing.
+        #[arg(long)]
+        folder: Option<PathBuf>,
     },
 }
 
@@ -220,6 +263,7 @@ pub fn run() -> ExitCode {
         Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
         Command::Batch { data_dir, cmd } => cmd_batch(cli.format, data_dir, cmd),
         Command::Chat { cmd } => cmd_chat(cli.format, cmd),
+        Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             use clap_complete::generate;
@@ -1150,6 +1194,154 @@ async fn cmd_index_async(
     Ok(())
 }
 
+// ── images (P13) ──────────────────────────────────────────────────────────
+
+fn cmd_images(
+    out: OutFormat,
+    data_dir: Option<PathBuf>,
+    cmd: ImagesCmd,
+) -> Result<(), String> {
+    // The simplest of the three subcommands needs no index handle.
+    if matches!(cmd, ImagesCmd::Extensions) {
+        let exts = crate::images::IMAGE_EXTS;
+        match out {
+            OutFormat::Json => {
+                println!("{}", serde_json::json!({ "extensions": exts }));
+            }
+            OutFormat::Text => {
+                for e in exts {
+                    println!("{e}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let data_dir = resolve_data_dir(data_dir)?;
+    if !data_dir.exists() {
+        return Err(format!(
+            "data dir not found: {} — run the GUI once to initialise the index",
+            data_dir.display()
+        ));
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    rt.block_on(cmd_images_async(out, data_dir, cmd))
+}
+
+async fn cmd_images_async(
+    out: OutFormat,
+    data_dir: PathBuf,
+    cmd: ImagesCmd,
+) -> Result<(), String> {
+    use std::sync::Arc;
+    let local = Arc::new(
+        crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    let backend = crate::images::local::LocalImages::new(local);
+    use crate::images::{types::ListFilters, ImagesBackend};
+
+    let folder_to_prefix = |p: Option<PathBuf>| p.map(|f| f.to_string_lossy().into_owned());
+
+    match cmd {
+        ImagesCmd::Extensions => unreachable!("handled in cmd_images before runtime"),
+
+        ImagesCmd::Count { ext, folder } => {
+            // Pull a tiny page just to read `total`; LanceDB's
+            // count_rows backs `total` so the per-row cost is zero
+            // regardless of `page_size`.  We still set page_size = 1
+            // to avoid materialising rows we throw away.
+            let filters = ListFilters {
+                parent_dir_prefix: folder_to_prefix(folder),
+                ext: if ext.is_empty() { None } else { Some(ext) },
+                ..Default::default()
+            };
+            let page = backend
+                .list(1, None, filters)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "total": page.total,
+                            "extensions": crate::images::IMAGE_EXTS,
+                        })
+                    );
+                }
+                OutFormat::Text => {
+                    println!("{} image rows", page.total);
+                }
+            }
+        }
+
+        ImagesCmd::List { limit, ext, folder } => {
+            // Walk pages until we've printed `limit` rows or hit the
+            // end of the result set.  Each page is bounded at 200 rows
+            // server-side; this lets the user ask for `--limit 5` or
+            // `--limit 50000` with the same code path.
+            let page_size = limit.min(200).max(1) as i32;
+            let filters = ListFilters {
+                parent_dir_prefix: folder_to_prefix(folder),
+                ext: if ext.is_empty() { None } else { Some(ext) },
+                ..Default::default()
+            };
+
+            let mut printed = 0usize;
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = backend
+                    .list(page_size, cursor.clone(), filters.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if page.items.is_empty() {
+                    break;
+                }
+                for img in &page.items {
+                    if printed >= limit {
+                        break;
+                    }
+                    match out {
+                        OutFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "doc_id":      img.doc_id,
+                                    "filename":    img.filename,
+                                    "ext":         img.ext,
+                                    "size":        img.size,
+                                    "indexed_at":  img.indexed_at,
+                                    "location_uri": img.location_uri,
+                                })
+                            );
+                        }
+                        OutFormat::Text => {
+                            let name = img.filename.as_deref().unwrap_or(&img.doc_id);
+                            let ext = img.ext.as_deref().unwrap_or("?");
+                            let size = img
+                                .size
+                                .map(|s| format!("{} B", s))
+                                .unwrap_or_else(|| "?".to_owned());
+                            println!("{name}\t.{ext}\t{size}\t{}", img.location_uri);
+                        }
+                    }
+                    printed += 1;
+                }
+                if printed >= limit || page.next_cursor.is_none() {
+                    break;
+                }
+                cursor = page.next_cursor;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── chat ──────────────────────────────────────────────────────────────────
 
 fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
@@ -1705,8 +1897,72 @@ mod tests {
         // Sanity that every value clap routes is in our argv[1] sniff
         // list. If a new subcommand lands in `Command` without an
         // entry here, main.rs would silently fall through to the GUI.
-        for s in ["version", "doctor", "catalog", "index"] {
+        for s in ["version", "doctor", "catalog", "index", "images"] {
             assert!(SUBCOMMANDS.contains(&s), "SUBCOMMANDS missing {s}");
+        }
+    }
+
+    /// P13 — `images extensions` is the cheapest reachable subcommand
+    /// (no data dir touched), so it's the canary for "the Images
+    /// surface parses at all".  Failure here means a clap derive macro
+    /// rejected a field rename or a missing trait derive.
+    #[test]
+    fn images_extensions_parses() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "extensions"]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Extensions, .. } => (),
+            other => panic!("expected Images Extensions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_list_accepts_limit_and_ext() {
+        // value_delimiter = ',' should split jpg,png into two strings.
+        let cli = Cli::try_parse_from([
+            "crispsorter", "images", "list", "--limit", "5", "--ext", "jpg,png",
+        ]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::List { limit, ext, folder }, .. } => {
+                assert_eq!(limit, 5);
+                assert_eq!(ext, vec!["jpg".to_owned(), "png".to_owned()]);
+                assert!(folder.is_none());
+            }
+            other => panic!("expected Images List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_count_accepts_folder_and_ext_overrides() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "images", "count",
+            "--folder", "/tmp/photos",
+            "--ext", "heic",
+        ]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Count { ext, folder }, .. } => {
+                assert_eq!(ext, vec!["heic".to_owned()]);
+                assert_eq!(folder.as_deref(), Some(std::path::Path::new("/tmp/photos")));
+            }
+            other => panic!("expected Images Count, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_data_dir_is_global_under_subcommand() {
+        // --data-dir is `global = true` on the Images variant, so it
+        // can be supplied either before or after the subcommand name.
+        for argv in [
+            vec!["crispsorter", "images", "--data-dir", "/tmp/x", "extensions"],
+            vec!["crispsorter", "images", "extensions", "--data-dir", "/tmp/x"],
+        ] {
+            let cli = Cli::try_parse_from(argv.clone())
+                .unwrap_or_else(|e| panic!("failed parsing {argv:?}: {e}"));
+            match cli.command {
+                Command::Images { data_dir, cmd: ImagesCmd::Extensions } => {
+                    assert_eq!(data_dir.as_deref(), Some(std::path::Path::new("/tmp/x")));
+                }
+                other => panic!("expected Images Extensions, got {other:?}"),
+            }
         }
     }
 }
