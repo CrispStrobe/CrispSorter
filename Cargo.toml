@@ -33,6 +33,7 @@ members  = [
     "crisp-index-protocol",
     "crates/crispcat",
     "crates/crispcat-cli",
+    "crates/crisplens-protocol",
 ]
 
 # Lockfile lives at the workspace root (`Cargo.lock`). The previous

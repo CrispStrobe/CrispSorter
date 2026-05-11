@@ -210,6 +210,51 @@ enum ImagesCmd {
         #[arg(long)]
         folder: Option<PathBuf>,
     },
+    /// P13/B1 — CrispLens (Tier 2) settings + auth.  Nested
+    /// subcommands so future B2-B5 routes stack here cleanly.
+    Crisplens {
+        #[command(subcommand)]
+        cmd: CrispLensCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CrispLensCmd {
+    /// Print current non-secret CrispLens settings (backend + URL +
+    /// UI tunables).  Does NOT touch the keychain.
+    Settings,
+    /// Update non-secret CrispLens settings.  Persists to the
+    /// `crisplens.settings.json` file under the app data dir.
+    SetUrl {
+        /// CrispLens base URL (no trailing slash needed).
+        url: String,
+        /// Also switch the active backend to `crisplens`.
+        /// When omitted the backend stays on whatever it was.
+        #[arg(long)]
+        enable: bool,
+    },
+    /// Disable Tier 2; keeps the URL on file but switches the
+    /// active backend back to `local`.
+    Disable,
+    /// Report whether a session cookie is stored for the configured
+    /// URL.  Boolean only — never leaks the cookie value.
+    SessionStatus,
+    /// POST `/api/auth/login` to the configured URL and store the
+    /// returned session cookie in the OS keychain.  Reads the
+    /// password from `--password` or, if absent, from the
+    /// `CRISPLENS_PASSWORD` env var.  Never read from positional
+    /// args (would leak in shell history).
+    Login {
+        /// Username to authenticate as.
+        #[arg(long)]
+        user: String,
+        /// Password.  If omitted, falls back to `CRISPLENS_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// POST `/api/auth/logout` (best-effort) and wipe the keychain
+    /// entry.  Idempotent.
+    Logout,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1314,6 +1359,10 @@ async fn cmd_images_async(
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
         }
 
+        ImagesCmd::Crisplens { cmd } => {
+            return cmd_images_crisplens(out, &data_dir, cmd).await;
+        }
+
         ImagesCmd::NearDuplicates { threshold, ext, folder } => {
             let filters = ListFilters {
                 parent_dir_prefix: folder_to_prefix(folder),
@@ -1536,6 +1585,153 @@ fn cmd_images_exif_file(out: OutFormat, path: &std::path::Path) -> Result<(), St
             row!("GPS lat:",      summary.gps_lat.map(|v| format!("{v:.6}")).as_ref());
             row!("GPS lon:",      summary.gps_lon.map(|v| format!("{v:.6}")).as_ref());
             row!("Orientation:",  summary.orientation.map(|v| v.to_string()).as_ref());
+        }
+    }
+    Ok(())
+}
+
+// ── images crisplens (P13/B1) ─────────────────────────────────────────────
+
+async fn cmd_images_crisplens(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: CrispLensCmd,
+) -> Result<(), String> {
+    use crate::images::crisplens::{
+        secret,
+        settings::{self, ImagesBackend, ImagesSettings},
+        tauri_commands::{login_blocking, logout_blocking},
+    };
+
+    match cmd {
+        CrispLensCmd::Settings => {
+            let s = settings::load(data_dir);
+            // Augment the displayed payload with the session-status
+            // boolean so the user gets the whole picture in one
+            // command.  Cookie value itself never leaks.
+            let url = s.normalised_url().to_owned();
+            let authenticated = if url.is_empty() {
+                false
+            } else {
+                matches!(secret::get_session_for_url(&url), Ok(Some(_)))
+            };
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::json!({
+                        "settings":      s,
+                        "authenticated": authenticated,
+                    }));
+                }
+                OutFormat::Text => {
+                    println!("backend            : {:?}", s.backend);
+                    println!("url                : {}", s.url);
+                    println!("thumbnail_size_px  : {}", s.thumbnail_size_px);
+                    println!("phash_threshold    : {}", s.phash_threshold);
+                    println!("authenticated      : {}", authenticated);
+                }
+            }
+        }
+
+        CrispLensCmd::SetUrl { url, enable } => {
+            let mut s = settings::load(data_dir);
+            s.url = url;
+            if enable {
+                s.backend = ImagesBackend::CrispLens;
+            }
+            settings::save(data_dir, &s).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&s).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    println!("ok — URL set; backend = {:?}", s.backend);
+                }
+            }
+        }
+
+        CrispLensCmd::Disable => {
+            let mut s = settings::load(data_dir);
+            s.backend = ImagesBackend::Local;
+            settings::save(data_dir, &s).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"backend": "local"})),
+                OutFormat::Text => println!("ok — backend switched to local"),
+            }
+        }
+
+        CrispLensCmd::SessionStatus => {
+            let s = settings::load(data_dir);
+            let url = s.normalised_url().to_owned();
+            let authenticated = !url.is_empty()
+                && matches!(secret::get_session_for_url(&url), Ok(Some(_)));
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "url":           url,
+                    "authenticated": authenticated,
+                })),
+                OutFormat::Text => {
+                    if url.is_empty() {
+                        println!("(no CrispLens URL configured)");
+                    } else {
+                        println!("{url}: {}", if authenticated { "authenticated" } else { "no stored session" });
+                    }
+                }
+            }
+        }
+
+        CrispLensCmd::Login { user, password } => {
+            let s = settings::load(data_dir);
+            let url = s.normalised_url().to_owned();
+            if url.is_empty() {
+                return Err(
+                    "no CrispLens URL configured — run \
+                     `crispsorter images crisplens set-url <URL> --enable` first".to_string(),
+                );
+            }
+            // Password resolution order: --password flag, then
+            // CRISPLENS_PASSWORD env var.  Never read from a
+            // positional arg (would leak in `ps`/shell history).
+            let pw = password
+                .or_else(|| std::env::var("CRISPLENS_PASSWORD").ok())
+                .ok_or_else(|| {
+                    "no password provided (use --password or set $CRISPLENS_PASSWORD)".to_string()
+                })?;
+            let url_for_blocking = url.clone();
+            let user_for_blocking = user.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                login_blocking(&url_for_blocking, &user_for_blocking, &pw)
+            })
+            .await
+            .map_err(|e| format!("login join: {e}"))??;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&outcome).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    println!("logged in as {} ({})", outcome.username, outcome.role);
+                }
+            }
+        }
+
+        CrispLensCmd::Logout => {
+            let s = settings::load(data_dir);
+            let url = s.normalised_url().to_owned();
+            if url.is_empty() {
+                // Same convention as the Tauri command — empty URL
+                // is no-op success.
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "noop": "no URL configured"})),
+                    OutFormat::Text => println!("ok (no URL configured — nothing to log out from)"),
+                }
+                return Ok(());
+            }
+            tokio::task::spawn_blocking(move || logout_blocking(&url))
+                .await
+                .map_err(|e| format!("logout join: {e}"))??;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"ok": true})),
+                OutFormat::Text => println!("ok — session cleared"),
+            }
         }
     }
     Ok(())

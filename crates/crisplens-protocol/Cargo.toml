@@ -1,0 +1,21 @@
+[package]
+name        = "crisplens-protocol"
+version     = "0.1.0"
+edition     = "2021"
+description = "Wire-format types shared between CrispSorter and CrispLens (Tier 2 image vertical: photos / faces / semantic search)."
+license     = "AGPL-3.0-or-later"
+authors     = ["CrispSorter contributors"]
+repository  = "https://github.com/CrispStrobe/CrispSorter"
+
+# Mirrors the role + shape of `crisp-index-protocol` but for the
+# CrispLens side (P13 slice B1).  Keeping it pure-Rust + serde-only
+# means CrispSorter and a future Rust port of CrispLens can share
+# this exact crate without churning their dep graphs; for now
+# CrispLens speaks via FastAPI (v2) / Express (v4) and these types
+# are CrispSorter's hand-maintained mirror.
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
