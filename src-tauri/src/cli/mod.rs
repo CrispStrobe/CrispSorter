@@ -159,6 +159,28 @@ enum ImagesCmd {
         #[arg(long)]
         folder: Option<PathBuf>,
     },
+    /// Generate a PNG thumbnail of `path` and write the bytes to
+    /// stdout (or `--out`).  No data dir / no index lookup — operates
+    /// directly on a file, so it doubles as a smoke test of the
+    /// thumbnail pipeline.
+    Thumbnail {
+        /// Input image path.
+        path: PathBuf,
+        /// Longest-edge size in pixels.  Default 256, max 4096.
+        #[arg(long, default_value_t = 256)]
+        size: u32,
+        /// Write to this path instead of stdout (recommended in
+        /// terminal sessions — raw PNG bytes corrupt scroll-back).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Read EXIF metadata from `path` and print the curated subset.
+    /// Same caveat as `thumbnail`: takes a path, not a doc-id, so it
+    /// works on any image file regardless of index state.
+    Exif {
+        /// Input image path.
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1201,7 +1223,10 @@ fn cmd_images(
     data_dir: Option<PathBuf>,
     cmd: ImagesCmd,
 ) -> Result<(), String> {
-    // The simplest of the three subcommands needs no index handle.
+    // Subcommands that don't need the index: extensions / thumbnail / exif.
+    // They get short-circuited here so a missing data dir is never an
+    // obstacle for the file-mode operations.  Borrow patterns so `cmd`
+    // stays available for the index-backed path below.
     if matches!(cmd, ImagesCmd::Extensions) {
         let exts = crate::images::IMAGE_EXTS;
         match out {
@@ -1215,6 +1240,12 @@ fn cmd_images(
             }
         }
         return Ok(());
+    }
+    if let ImagesCmd::Thumbnail { path, size, out: out_path } = &cmd {
+        return cmd_images_thumbnail_file(path, *size, out_path.as_deref());
+    }
+    if let ImagesCmd::Exif { path } = &cmd {
+        return cmd_images_exif_file(out, path);
     }
 
     let data_dir = resolve_data_dir(data_dir)?;
@@ -1248,7 +1279,11 @@ async fn cmd_images_async(
     let folder_to_prefix = |p: Option<PathBuf>| p.map(|f| f.to_string_lossy().into_owned());
 
     match cmd {
-        ImagesCmd::Extensions => unreachable!("handled in cmd_images before runtime"),
+        ImagesCmd::Extensions
+        | ImagesCmd::Thumbnail { .. }
+        | ImagesCmd::Exif { .. } => {
+            unreachable!("file-mode subcommand handled in cmd_images before runtime")
+        }
 
         ImagesCmd::Count { ext, folder } => {
             // Pull a tiny page just to read `total`; LanceDB's
@@ -1337,6 +1372,64 @@ async fn cmd_images_async(
                 }
                 cursor = page.next_cursor;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Synchronously run the thumbnail pipeline on a single file.  Writes
+/// raw PNG bytes to `out_path` if supplied, else to stdout (the user's
+/// terminal will redraw badly — see the doc-comment on the subcommand).
+fn cmd_images_thumbnail_file(
+    path: &std::path::Path,
+    size: u32,
+    out_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = crate::images::thumbnail::generate_thumbnail(path, size)
+        .map_err(|e| e.to_string())?;
+    match out_path {
+        Some(p) => std::fs::write(p, &bytes).map_err(|e| format!("write {}: {e}", p.display())),
+        None => std::io::stdout()
+            .write_all(&bytes)
+            .map_err(|e| format!("stdout write: {e}")),
+    }
+}
+
+/// Synchronously read EXIF from a file and print the curated subset.
+fn cmd_images_exif_file(out: OutFormat, path: &std::path::Path) -> Result<(), String> {
+    let summary = crate::images::exif::read_exif(path).map_err(|e| e.to_string())?;
+    match out {
+        OutFormat::Json => {
+            let json = serde_json::to_string(&summary)
+                .map_err(|e| format!("serialize exif: {e}"))?;
+            println!("{json}");
+        }
+        OutFormat::Text => {
+            if summary.is_empty() {
+                println!("(no EXIF block)");
+                return Ok(());
+            }
+            macro_rules! row {
+                ($label:expr, $val:expr) => {
+                    if let Some(v) = $val {
+                        println!("{:<18} {}", $label, v);
+                    }
+                };
+            }
+            row!("Camera make:",  summary.camera_make.as_ref());
+            row!("Camera model:", summary.camera_model.as_ref());
+            row!("Lens:",         summary.lens_model.as_ref());
+            row!("Taken at:",     summary.taken_at.as_ref());
+            row!("Taken (unix):", summary.taken_at_unix.map(|v| v.to_string()).as_ref());
+            row!("Dimensions:",   summary.width.zip(summary.height).map(|(w, h)| format!("{w} × {h}")).as_ref());
+            row!("Aperture:",     summary.f_number.map(|v| format!("f/{v:.1}")).as_ref());
+            row!("Exposure:",     summary.exposure_time.as_ref());
+            row!("ISO:",          summary.iso.map(|v| v.to_string()).as_ref());
+            row!("Focal length:", summary.focal_length_mm.map(|v| format!("{v:.1} mm")).as_ref());
+            row!("GPS lat:",      summary.gps_lat.map(|v| format!("{v:.6}")).as_ref());
+            row!("GPS lon:",      summary.gps_lon.map(|v| format!("{v:.6}")).as_ref());
+            row!("Orientation:",  summary.orientation.map(|v| v.to_string()).as_ref());
         }
     }
     Ok(())
@@ -1944,6 +2037,45 @@ mod tests {
                 assert_eq!(folder.as_deref(), Some(std::path::Path::new("/tmp/photos")));
             }
             other => panic!("expected Images Count, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_thumbnail_accepts_size_and_out() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "images", "thumbnail", "/tmp/x.jpg",
+            "--size", "512", "--out", "/tmp/x.png",
+        ]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Thumbnail { path, size, out }, .. } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/x.jpg"));
+                assert_eq!(size, 512);
+                assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/x.png")));
+            }
+            other => panic!("expected Images Thumbnail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_thumbnail_defaults_size_to_256_and_out_to_stdout() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "thumbnail", "/tmp/x.jpg"]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Thumbnail { size, out, .. }, .. } => {
+                assert_eq!(size, 256);
+                assert!(out.is_none(), "default --out should be None (= stdout)");
+            }
+            other => panic!("expected Images Thumbnail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_exif_parses_with_path_only() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "exif", "/tmp/x.jpg"]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Exif { path }, .. } => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/x.jpg"));
+            }
+            other => panic!("expected Images Exif, got {other:?}"),
         }
     }
 
