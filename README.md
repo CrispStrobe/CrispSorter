@@ -68,6 +68,7 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 - **Mountable archive index (`.cidx`)** — export a per-volume slice of the search index as a portable directory (LanceDB + optional Tantivy FTS companion). Ship the archive drive + `.cidx` in the same backup snapshot; CrispSorter mounts it as a read-only "Archiv" tab and full-text search works offline.
 - **cloud-backup integration** ([`../cloud-backup`](https://github.com/CrispStrobe/cloud-backup)): import 482k+ files as L1 metadata in seconds (`index_ingest_cb_manifest`), promote individual files to L3 on demand via `retrieve.py`, reverse-lookup tier availability (Lokal/VPS) in the preview pane, opt-in VPS-side indexing trigger
 - **Cloud drives** — register **WebDAV** (Nextcloud / ownCloud / mailbox.org / Synology / `filen webdav-start` / `internxt webdav-enable`), **Filen**, **Internxt**, or any local/OS-mounted path as a drive (Quellen → Cloud-Ordner → Anlegen). Manifest-only L1 ingest of any subtree (no bandwidth cost beyond directory listings); per-row "Promote to L3" downloads + indexes a file's contents on demand via the existing extract+embed pipeline. `crisp+drive://<id>/<remote-path>` URI scheme keeps the same row resolvable across drive renames/edits.
+- **Photos / Bilder vertical** (P13 Tier 1 + B1 foundation) — dedicated "Bilder" tab in Übersicht with image-row filtering (jpg/jpeg/png/webp/heic/heif/tiff/bmp), lazy-loaded thumbnails via IntersectionObserver, click-to-open preview pane with a curated EXIF metadata table (camera, lens, aperture/ISO/exposure, GPS, taken-at), SHA-256 byte-identical dup grouping, and perceptual-hash near-duplicate grouping for resize / re-encode catches. Optional **CrispLens Tier 2** connector (`Settings → CrispLens`) — backend dropdown + URL + login, with the session cookie stored in the OS-native keychain (Keychain on macOS, secret-service on Linux, Credential Manager on Windows; never in the JSON settings file). Full CLI parity: `crispsorter images {extensions,count,list,thumbnail,exif,duplicates,near-duplicates,crisplens}`. Tier 2 unlocks semantic search / faces / health monitoring in upcoming slices (B2–B5).
 
 ---
 
@@ -99,6 +100,21 @@ crispsorter chat query "Was ist die Hauptthese?" --context-files paper.pdf
 
 crispsorter catalog scan ~/Volumes/Backup --hash sha256 --out backup.caf
 crispsorter catalog find-dupes Backup1.caf Backup2.caf --strategy hash:sha256
+
+# Photos / Bilder vertical (P13)
+crispsorter images extensions                          # print canonical IMAGE_EXTS
+crispsorter images count                               # image-row count in the local index
+crispsorter images list --limit 20                     # newest-first photo rows
+crispsorter images thumbnail /tmp/x.jpg --size 256 --out /tmp/x.png
+crispsorter images exif /tmp/x.jpg                     # curated EXIF (json/text)
+crispsorter images duplicates                          # SHA-256 dup clusters
+crispsorter images near-duplicates --threshold 8       # pHash near-dup clusters
+
+# Tier 2 — CrispLens connector
+crispsorter images crisplens set-url https://crisplens.example.com --enable
+CRISPLENS_PASSWORD=… crispsorter images crisplens login --user alice
+crispsorter images crisplens session-status            # boolean — never leaks the cookie
+crispsorter images crisplens logout                    # POSTs /api/auth/logout + wipes keychain
 
 crispsorter completion zsh > ~/.zsh/completions/_crispsorter
 crispsorter manpage --out /usr/share/man/man1/
