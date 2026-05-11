@@ -33,16 +33,15 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-**P13 Bilder vertical** — Tier 1 complete (slices A1–A4) + Tier 2
-foundation landed (slice B1: protocol crate + keychain + auth).
-Remaining: B2–B5 (semantic search, faces, health monitor, cross-link).
-See P13 section below for the slice-by-slice status; details and
-"spec vs reality" findings in [docs/P13_Bilder_integration.md](docs/P13_Bilder_integration.md).
+**P13 Bilder vertical** — both tiers complete (A1–A4 + B1–B5).
+Open follow-ups: image-overlay face boxes (needs sha256 cross-
+reference at the CrispLens list endpoint), true semantic search
+(needs CrispLens upstream to add an embedding-based route).
 
 **Test coverage:** 311 unit tests pass in `tauri-app` (+2 `#[ignore]`'d
 WebDAV-live integration tests gated by
-`WEBDAV_TEST_URL`/`USER`/`PASS`), 20 in `crispcat`, 16 in
-`crisplens-protocol`, 5 in `crisp-index-protocol` = **352 passing**.
+`WEBDAV_TEST_URL`/`USER`/`PASS`), 20 in `crispcat`, 29 in
+`crisplens-protocol`, 5 in `crisp-index-protocol` = **365 passing**.
 Run with `cargo test --workspace --lib`.
 
 ---
@@ -96,24 +95,36 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
       at 64-bit).  Zero external server deps.  Full CLI parity:
       `crispsorter images {extensions, count, list, thumbnail, exif,
       duplicates, near-duplicates}`.
-- [x] **B1 — Tier 2 foundation** (`crisplens-protocol` crate +
-      Keychain + Settings UI, ~6 h, shipped)
-      New workspace member `crates/crisplens-protocol/` modelling
-      both v2 (FastAPI) and v4 (Express) wire shapes, `keyring`-backed
-      session-cookie storage (per-URL, never written to JSON),
-      Tauri commands + CLI parity for settings + login/logout +
-      session-status.  Live-verified end-to-end against
-      `https://<crisplens-host>` (cookie lands in macOS Keychain;
-      settings JSON file confirmed cookie-free).
-- [ ] **Tier 2 — remaining slices** (`B2–B5`, ~21 h on paper, see
-      [docs/P13_Bilder_integration.md](docs/P13_Bilder_integration.md)
-      for the live-server-aware feasibility notes)
-      B2 remote search (CrispLens has only person-name/full-text
-      search, not semantic — reduce scope or wait for upstream),
-      B3 Faces subtab (endpoints `/api/people` + `/api/images/{id}/faces`
-      verified live), B4 health monitor + degradation banner
-      (`/api/health` verified live), B5 open-in-CrispLens deep-link +
-      watchfolder cross-reference (`/api/watchfolders` verified live).
+- [x] **Tier 2 — complete** (`B1–B5`, ~21 h spec, shipped)
+      All five Tier-2 slices on `main`:
+      - **B1** (`0aa3a51`) — `crisplens-protocol` crate, Keychain
+        session storage, Settings UI, Tauri + CLI parity.
+      - **B4** (`250f137`) — `/api/health` + `/api/auth/me` polling
+        with banner state machine (offline / session-expired /
+        warming-up / ok).  Plus `enable-crispembed.sh` cargo
+        target-dir fix.
+      - **B5** (`8a4a2e0`) — Open-in-CrispLens deep-link from the
+        Bilder preview pane; watchfolder cross-reference via
+        `/api/watchfolders` with prefix-match hint when the
+        previewed image lives under a CrispLens-watched folder.
+      - **B3** (`01e6203`) — People view (Faces subtab equivalent)
+        listing person clusters from `/api/people`; per-image
+        faces endpoint `/api/images/{id}/faces` plumbed end-to-end
+        with the live-verified `Face { bbox: Bbox }` nested-object
+        shape.  Image-overlay face boxes deferred (need sha256
+        cross-reference at the list endpoint).
+      - **B2 reduced** (`814efe8`) — Remote text search via
+        `/api/search` (filename / person-name substring — the live
+        API doesn't expose semantic search; spec's "semantic search
+        bar" wording is aspirational and tracked as a future
+        CrispLens-upstream item).  Inline UI search box visible
+        only when Tier 2 is authenticated.
+
+      All five live-verified end-to-end against
+      `https://<crisplens-host>`.  29/29 `crisplens-protocol`
+      tests + 18/18 `images::crisplens` tests + 64/64 `images::*`
+      tests pin both v2 and v4 wire shapes captured from live
+      payloads.
 
 Full design + slice breakdown + risk register + spec-vs-reality
 notes: [**docs/P13_Bilder_integration.md**](docs/P13_Bilder_integration.md).

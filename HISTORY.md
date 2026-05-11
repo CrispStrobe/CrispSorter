@@ -9,6 +9,104 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-11 — P13 Bilder Tier 2 completion (B2–B5)
+
+Continuation of the same working session as the entry below.
+Closes Tier 2 of P13 against the user's live CrispLens server at
+`https://<crisplens-host>` (FastAPI v2 production instance).
+
+| Commit | Slice | Headline |
+|--------|-------|----------|
+| `250f137` | **B4** | Health monitor + 4-state degradation banner (hidden / offline / session_expired / warming_up / ok); 30 s poll lifecycle gated on (active tab == images + Tier 2 configured); idle network traffic = zero.  Plus a side fix for `enable-crispembed.sh` after `cargo clean` (script copied libs into `$PROJECT_ROOT/target/` but the `~/.zshenv` cargo wrapper redirects to `<external-volume>/code/cargo-target/<reponame>` — script now mirrors the wrapper's resolution). |
+| `8a4a2e0` | **B5** | Open-in-CrispLens deep-link button in the preview pane + watchfolders cross-reference hint.  Live verified: `WatchFolder` permissive `serde_json::Value` shape handles SQLite int booleans (`recursive: 1`) + REAL-typed `scan_interval_hours: 24.0` from the live v2 server. |
+| `01e6203` | **B3** | People view + `/api/images/{id}/faces` end-to-end.  Two material deviations from the spec sketch surfaced during the live demo: `bbox` is a NESTED OBJECT `{top, right, bottom, left}` (not flat columns); `image_id` is ABSENT from v2 face rows (caller knows it from the URL).  Type reshaped to match reality; pinned with a `face_v2_live_payload_parses` regression test using verbatim captured JSON. |
+| `814efe8` | **B2 reduced** | Scope check: live `/api/search` is filename / person-name substring only on both v2 and v4 — no semantic backend exists in CrispLens today.  Slice shipped as "remote text search" with the UI labelled honestly; true semantic remains an upstream-CrispLens TODO. |
+
+Net delta: +13 unit tests in `crisplens-protocol` (29/29 now; +6 for
+B3 Person/Face, +5 for B5 WatchFolder, +2 for B2 SearchHit) and +3
+in `tauri-app::images::crisplens` (18/18, all from B4).
+
+### Live verification recipe (for posterity)
+
+Once per CrispSorter rebuild, macOS Keychain prompts for ACL on the
+existing entry because the binary signature changed.  Headless
+demo workaround:
+
+```
+security delete-generic-password -s "CrispSorter.CrispLens" -a <URL>
+CRISPLENS_PASSWORD=… crispsorter images crisplens login --user <U>
+```
+
+Then the rest of the demo runs without dialog interruptions.
+Doesn't affect production users (they don't rebuild the binary).
+
+### Live demo against https://<crisplens-host>
+
+* B4 status (offline simulation):
+  ```
+  $ crispsorter images crisplens status -f text     (after bogus URL)
+    health: FAILED / authenticated: false
+    note: "health probe failed: error sending request for url …"
+  ```
+* B5 watchfolders:
+  ```
+  $ crispsorter images crisplens watchfolders -f json
+    [{"id":2,"path":"/opt/crisp-lens/uploads",
+      "recursive":1,"auto_scan":0,"scan_interval":24.0,"enabled":null}]
+  ```
+* B3 people + faces:
+  ```
+  $ crispsorter images crisplens people -f text
+    9 person cluster(s):
+      [ 33]    0×  Alexander Kenneth-Nagel
+      [  1]   12×  Christian Ströbele
+      …
+
+  $ crispsorter images crisplens image-faces 201
+    3 face(s) in image 201:
+      [238] ✓ det=0.88  bbox=t0.43,r0.33,b0.58,l0.26  Hussein Hamdan
+      [240] ✓ det=0.85  bbox=t0.46,r0.54,b0.59,l0.48  Karin Schieszl-Rathgeb
+      [239] ✓ det=0.88  bbox=t0.35,r0.79,b0.52,l0.71  Christian Ströbele
+  ```
+* B2 text search:
+  ```
+  $ crispsorter images crisplens search 'Christian' --limit 5
+    5 match(es) for "Christian" (text search, NOT semantic):
+      [ 134] 2f      3f2e3cfddbc849e6ac1d257d63f5539d.jpg
+      … (4 more)
+  ```
+
+### Process side-fix surfaced: cargo clean during build (commit `250f137`)
+
+The user ran `cargo clean` mid-build to recover disk space, which
+yanked files cargo was actively reading.  The original build
+failed with `error: could not compile tauri-app (lib) due to 1
+previous error` — that error being IO/file-not-found rather than
+a real code issue.  Confirmed by `cargo check -p tauri-app --lib`
+passing cleanly after the clean.  Fresh-from-scratch build took
+~38 min (vs ~24 min when starting from a warm incremental cache).
+
+Folded the bonus `enable-crispembed.sh` fix into the B4 commit
+because (a) the user requested it during the B4 wait, and (b) the
+script's broken path-resolution would have stalled future demos
+the same way.
+
+### What's deferred
+
+Two items, neither blocking Tier 2 declared complete:
+
+1. **Image-overlay face boxes** — drawing `Face.bbox` rectangles on
+   the previewed image.  Blocked on image_id ↔ doc_id cross-
+   reference: CrispLens's `/api/images` doesn't emit sha256 at the
+   list level.  Workable interim: filename + filesize probabilistic
+   match.  Better fix: CrispLens upstream gains
+   `GET /api/images/by-hash/{sha}`.
+2. **True semantic search** — Wire `/api/search/semantic` once
+   CrispLens grows it.  One-line URL swap on CrispSorter's side
+   plus a UI label update.
+
+---
+
 ## Session log — 2026-05-10/11 — P13 Bilder Tier 1 (A1–A4) + Tier 2 foundation (B1)
 
 Implemented [`docs/P13_Bilder_integration.md`](docs/P13_Bilder_integration.md)
