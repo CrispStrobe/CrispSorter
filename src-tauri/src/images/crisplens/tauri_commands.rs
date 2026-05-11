@@ -32,7 +32,7 @@ use super::{
 use crate::AppState;
 use crisplens_protocol::{
     ErrorResponse, Face, HealthResponse, LoginRequest, LoginResponse, MeResponse, Person,
-    WatchFolder,
+    SearchHit, WatchFolder,
 };
 
 /// Resolve the writable data directory.  Mirrors `cli::resolve_data_dir`
@@ -502,6 +502,40 @@ where
     }
     resp.json::<T>()
         .map_err(|e| format!("{path} body not JSON: {e}"))
+}
+
+/// `GET /api/search?q=…&limit=…` — text search on CrispLens.
+/// **Not semantic** — see `crisplens_protocol::SearchHit` doc-comment.
+/// Returns an empty list when Tier 2 isn't authenticated or `q` is
+/// empty.
+#[tauri::command]
+pub async fn images_crisplens_search(
+    state: State<'_, AppState>,
+    q: String,
+    limit: Option<i64>,
+) -> Result<Vec<SearchHit>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    if q.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    // URL-encode the query.  Hand-rolled because we don't have a
+    // dep on `urlencoding` and only need a single field.
+    let encoded_q = q
+        .chars()
+        .flat_map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                vec![c]
+            } else {
+                format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
+            }
+        })
+        .collect::<String>();
+    let path = format!("/api/search?q={encoded_q}&limit={limit}");
+
+    tauri::async_runtime::spawn_blocking(move || get_json::<Vec<SearchHit>>(&data_dir, &path))
+        .await
+        .map_err(|e| format!("search join: {e}"))?
 }
 
 #[tauri::command]

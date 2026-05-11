@@ -240,6 +240,47 @@ pub struct ImagesListResponse {
     pub total:  Option<i64>,
 }
 
+// ── Search (B2 reduced — text search, not semantic) ─────────────────────
+
+/// One result row from `GET /api/search?q=...&limit=...`.
+///
+/// **Important: this is NOT semantic search.** Both v2 and v4
+/// implement `/api/search` as substring matching against the
+/// person-name (v2: `search_images_by_person`) or filename/person
+/// names (v4: SQL LIKE).  The spec sketch's `SearchHit` with a
+/// `score: f32` and a `matched_field` discriminator is aspirational
+/// — neither backend computes a relevance score and the result rows
+/// are returned in DB order, not ranked.
+///
+/// Wire shape captured live from
+/// `GET /api/search?q=Christian` on https://<crisplens-host>:
+/// a slim Image-ish row with `id`, `filepath`, `filename`,
+/// `taken_at`, `face_count`, `description`, `tags`.  Notably the
+/// AI fields use the bare `description` / `tags` names here
+/// (vs `ai_description` / `ai_tags_list` on `/api/images`) —
+/// inconsistent server-side renaming we accept verbatim with a
+/// dedicated type rather than try to alias onto `Image`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchHit {
+    pub id:       i64,
+    pub filename: String,
+    pub filepath: String,
+    #[serde(default)]
+    pub taken_at: Option<String>,
+    #[serde(default)]
+    pub face_count: Option<i64>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// v2 includes `recognition_confidence` from the SELECT — kept
+    /// as a soft "how confident is the match" hint even though it's
+    /// face-recognition specific (a substring-on-filename match
+    /// would emit null here).
+    #[serde(default)]
+    pub recognition_confidence: Option<f32>,
+}
+
 // ── People + Faces (B3) ──────────────────────────────────────────────────
 
 /// One row from `GET /api/people`.  Both backends emit a strict
@@ -770,6 +811,42 @@ mod tests {
         assert!(w.id.is_none());
         assert_eq!(w.recursive_bool(), None);
         assert_eq!(w.enabled_bool(), None);
+    }
+
+    // ── B2 — SearchHit (text-only, NOT semantic) ───────────────────────
+
+    #[test]
+    fn search_hit_live_payload_parses() {
+        // Captured verbatim from
+        // `GET /api/search?q=Christian` against the live v2 server.
+        let json = r#"{
+            "id": 134,
+            "filepath": "/opt/crisp-lens/uploads/3f2e3cfddbc849e6ac1d257d63f5539d.jpg",
+            "filename": "3f2e3cfddbc849e6ac1d257d63f5539d.jpg",
+            "taken_at": "2025-11-17 15:17:43",
+            "face_count": 2,
+            "description": "Zwei Männer sitzen…",
+            "tags": ["Seminar", "Konferenz"],
+            "recognition_confidence": 0.91
+        }"#;
+        let h: SearchHit = serde_json::from_str(json).unwrap();
+        assert_eq!(h.id, 134);
+        assert_eq!(h.face_count, Some(2));
+        assert_eq!(h.tags.len(), 2);
+        assert_eq!(h.recognition_confidence, Some(0.91));
+    }
+
+    #[test]
+    fn search_hit_with_null_optionals_parses() {
+        let json = r#"{
+            "id": 1, "filepath": "/p", "filename": "f",
+            "taken_at": null, "face_count": 0,
+            "description": null, "tags": [], "recognition_confidence": null
+        }"#;
+        let h: SearchHit = serde_json::from_str(json).unwrap();
+        assert_eq!(h.id, 1);
+        assert!(h.taken_at.is_none());
+        assert!(h.tags.is_empty());
     }
 
     // ── B3 — Person / Face ─────────────────────────────────────────────
