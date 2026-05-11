@@ -19,7 +19,7 @@ use crate::index::schema::{
 };
 
 use super::{
-    types::{HealthStatus, Image, ImagesPage, ListFilters},
+    types::{DuplicateGroup, HealthStatus, Image, ImagesPage, ListFilters},
     ImagesBackend, IMAGE_EXTS,
 };
 
@@ -105,14 +105,7 @@ impl ImagesBackend for LocalImages {
         let items: Vec<Image> = result
             .rows
             .into_iter()
-            .map(|r| Image {
-                doc_id: r.doc_id,
-                location_uri: r.location_uri,
-                filename: r.filename,
-                ext: r.ext,
-                size: extract_fs_size(r.metadata_json.as_deref()),
-                indexed_at: r.indexed_at,
-            })
+            .map(search_result_to_image)
             .collect();
 
         Ok(ImagesPage {
@@ -121,6 +114,81 @@ impl ImagesBackend for LocalImages {
             next_cursor: result.next_cursor.map(|c| c.0),
             page_size: limit as i32,
         })
+    }
+
+    async fn duplicates(
+        &self,
+        filters: ListFilters,
+    ) -> Result<Vec<DuplicateGroup>> {
+        // Walk all pages of `list(filters)` (1 000 rows per page —
+        // the cap we apply server-side) and bucket by source_hash.
+        // For Tier-1 fixtures (low-tens-of-k images) this is fine
+        // memory-wise; if the user grows past that we push GROUP BY
+        // into LanceDB SQL.  See the trait doc for the upgrade plan.
+        const PAGE: i32 = 1000;
+
+        let mut by_hash: std::collections::HashMap<String, Vec<Image>> =
+            std::collections::HashMap::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let page = self
+                .list(PAGE, cursor.clone(), filters.clone())
+                .await
+                .context("LocalImages::duplicates -> list(page)")?;
+
+            for img in page.items {
+                // Skip rows with empty source_hash defensively — they
+                // can appear in pre-source_hash rows during a schema
+                // migration window.  Treat them as un-grouped rather
+                // than as a single big "" cluster.
+                if img.source_hash.is_empty() {
+                    continue;
+                }
+                by_hash
+                    .entry(img.source_hash.clone())
+                    .or_default()
+                    .push(img);
+            }
+
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        let mut groups: Vec<DuplicateGroup> = by_hash
+            .into_iter()
+            .filter_map(|(hash, items)| {
+                if items.len() >= 2 {
+                    Some(DuplicateGroup { source_hash: hash, items })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Largest groups first — the UI shows the "9 copies of this
+        // file" cluster before the "2 copies" ones.  Tie-break by
+        // hash for deterministic ordering across runs.
+        groups.sort_by(|a, b| {
+            b.items
+                .len()
+                .cmp(&a.items.len())
+                .then_with(|| a.source_hash.cmp(&b.source_hash))
+        });
+        Ok(groups)
+    }
+}
+
+fn search_result_to_image(r: crate::index::schema::SearchResult) -> Image {
+    Image {
+        doc_id: r.doc_id,
+        location_uri: r.location_uri,
+        filename: r.filename,
+        ext: r.ext,
+        size: extract_fs_size(r.metadata_json.as_deref()),
+        indexed_at: r.indexed_at,
+        source_hash: r.source_hash,
     }
 }
 
@@ -405,5 +473,130 @@ mod tests {
         // first row out should be the bmp (indexed_at = 5).
         assert_eq!(page.items.first().unwrap().doc_id, "img-bmp-1");
         assert_eq!(page.items.last().unwrap().doc_id,  "img-jpg-1");
+    }
+
+    #[tokio::test]
+    async fn list_surfaces_source_hash_on_each_image() {
+        // Regression: A1 dropped source_hash on the floor; A3 needs it
+        // for the dup-grouping view, so every Image returned by `list`
+        // must carry the SHA-256.
+        let (backend, _tmp) = fixture().await;
+        let page = backend.list(50, None, ListFilters::default()).await.unwrap();
+        for img in &page.items {
+            assert_eq!(img.source_hash, format!("hash-{}", img.doc_id),
+                "source_hash missing or mangled on {}", img.doc_id);
+        }
+    }
+
+    // ── A3: duplicate-grouping tests ─────────────────────────────────────
+
+    /// Build a fixture LocalIndex that deliberately seeds duplicate
+    /// `source_hash` values across image rows so we can exercise the
+    /// grouping path:
+    ///   - "shared-hash-A" appears 3 times (sunset.jpg, sunset_copy.jpg, sunset_again.jpg)
+    ///   - "shared-hash-B" appears 2 times (lake.jpeg, lake_copy.jpeg)
+    ///   - "uniq-1" / "uniq-2" each appear once (singletons → not a dup)
+    ///   - one PDF with "shared-hash-A" too — must NOT pollute image dups
+    ///   - one row with empty source_hash to exercise the skip-empty path
+    async fn dup_fixture() -> (LocalImages, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let local = std::sync::Arc::new(
+            LocalIndex::open_or_create(tmp.path(), 1024).await.unwrap(),
+        );
+        let mut chunk = |doc: &str, name: &str, ext: &str, hash: &str, ts: i64| {
+            let mut c = l1_chunk(doc, "/photos", name, ext, 1234, ts);
+            c.source_hash = hash.to_owned();
+            c
+        };
+        let mut chunks = vec![
+            chunk("img-1", "sunset.jpg",        "jpg", "shared-hash-A", 1_000_000_001_000),
+            chunk("img-2", "sunset_copy.jpg",   "jpg", "shared-hash-A", 1_000_000_002_000),
+            chunk("img-3", "sunset_again.jpg",  "jpg", "shared-hash-A", 1_000_000_003_000),
+            chunk("img-4", "lake.jpeg",         "jpeg","shared-hash-B", 1_000_000_004_000),
+            chunk("img-5", "lake_copy.jpeg",    "jpeg","shared-hash-B", 1_000_000_005_000),
+            chunk("img-6", "alone.png",         "png", "uniq-1",        1_000_000_006_000),
+            chunk("img-7", "lonely.bmp",        "bmp", "uniq-2",        1_000_000_007_000),
+            // Different ext, same hash as the image dup-A — proves that
+            // the IMAGE_EXTS filter narrows BEFORE we group.  If the
+            // PDF leaked into the dup view we'd see 4 in group A.
+            chunk("doc-1", "sunset_print.pdf",  "pdf", "shared-hash-A", 1_000_000_008_000),
+        ];
+        // One row with an empty source_hash — the production code may
+        // see these during a schema migration window.  We skip them
+        // rather than bucketing the world into one big "" cluster.
+        let mut empty_hash_row = l1_chunk("img-empty", "/photos", "no_hash.jpg", "jpg", 4321, 1_000_000_009_000);
+        empty_hash_row.source_hash = String::new();
+        chunks.push(empty_hash_row);
+        local.ingest_batch(&chunks).await.unwrap();
+        (LocalImages::new(local), tmp)
+    }
+
+    #[tokio::test]
+    async fn duplicates_groups_image_rows_by_source_hash() {
+        let (backend, _tmp) = dup_fixture().await;
+        let groups = backend.duplicates(ListFilters::default()).await.unwrap();
+        // 2 dup groups: A (3 images) and B (2 images).  The PDF row
+        // sharing hash-A must NOT bump the group to 4.
+        assert_eq!(groups.len(), 2, "got groups: {groups:#?}");
+        let by_hash: std::collections::HashMap<&str, &Vec<Image>> =
+            groups.iter().map(|g| (g.source_hash.as_str(), &g.items)).collect();
+        assert_eq!(by_hash.get("shared-hash-A").unwrap().len(), 3);
+        assert_eq!(by_hash.get("shared-hash-B").unwrap().len(), 2);
+        // Every clustered row is an image extension.
+        for items in by_hash.values() {
+            for img in *items {
+                let ext = img.ext.as_deref().unwrap_or("");
+                assert!(IMAGE_EXTS.contains(&ext), "non-image leaked: {ext}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicates_excludes_singletons() {
+        let (backend, _tmp) = dup_fixture().await;
+        let groups = backend.duplicates(ListFilters::default()).await.unwrap();
+        // The two singleton hashes (uniq-1, uniq-2) must not appear.
+        assert!(groups.iter().all(|g| g.source_hash != "uniq-1"));
+        assert!(groups.iter().all(|g| g.source_hash != "uniq-2"));
+    }
+
+    #[tokio::test]
+    async fn duplicates_orders_by_group_size_descending() {
+        let (backend, _tmp) = dup_fixture().await;
+        let groups = backend.duplicates(ListFilters::default()).await.unwrap();
+        // Largest group first: hash-A (3) before hash-B (2).
+        assert_eq!(groups.first().unwrap().source_hash, "shared-hash-A");
+        assert!(groups.first().unwrap().items.len() >= groups.last().unwrap().items.len());
+    }
+
+    #[tokio::test]
+    async fn duplicates_skips_rows_with_empty_source_hash() {
+        // The fixture seeds one row with source_hash = "" — it must
+        // not appear in any group, in particular not in a stray
+        // single-element "" group.
+        let (backend, _tmp) = dup_fixture().await;
+        let groups = backend.duplicates(ListFilters::default()).await.unwrap();
+        for g in &groups {
+            assert!(!g.source_hash.is_empty(), "empty-hash group leaked: {g:?}");
+            for img in &g.items {
+                assert!(!img.source_hash.is_empty(), "empty-hash row leaked: {img:?}");
+                assert_ne!(img.doc_id, "img-empty");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicates_respects_caller_filters() {
+        // Ext override = png → no PNG duplicates in fixture, so
+        // expect zero groups.  Proves filters apply *before* grouping.
+        let (backend, _tmp) = dup_fixture().await;
+        let groups = backend
+            .duplicates(ListFilters {
+                ext: Some(vec!["png".to_owned()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(groups.is_empty(), "got unexpected png dup groups: {groups:?}");
     }
 }

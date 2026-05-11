@@ -167,6 +167,15 @@ pub struct SearchResult {
     /// as 0 rather than failing.
     #[serde(default)]
     pub indexed_at: i64,
+    /// SHA-256 of the original file bytes. Promoted onto SearchResult
+    /// in the P13/A3 image-duplicate work so the dup-grouping view in
+    /// `crate::images::local::LocalImages::duplicates` can bucket by
+    /// hash without a second roundtrip. Empty string for synthesised
+    /// results that didn't come from the LanceDB row scanner (catalog
+    /// channel, FTS-only candidates, the test mk_result helper).
+    /// `#[serde(default)]` keeps existing JSON payloads valid.
+    #[serde(default)]
+    pub source_hash: String,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

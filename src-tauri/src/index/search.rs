@@ -480,6 +480,7 @@ mod tests {
                 catalog_source: None,
                 volume_id: None,
                 indexed_at: 0,
+                source_hash: String::new(),
             })
             .collect()
     }
@@ -508,6 +509,7 @@ mod tests {
                 catalog_source: None,
                 volume_id: None,
                 indexed_at: 0,
+                source_hash: String::new(),
             });
         }
         vec.push(SearchResult {
@@ -527,6 +529,7 @@ mod tests {
             catalog_source: None,
             volume_id: None,
             indexed_at: 0,
+            source_hash: String::new(),
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);

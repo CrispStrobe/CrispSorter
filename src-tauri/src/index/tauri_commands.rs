@@ -199,6 +199,10 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // archive drive isn't mounted.
         volume_id: None,
         indexed_at: 0,
+        // Catalog hits are synthetic (built from .caf entries); the
+        // .caf format pre-dates the source_hash promotion, so leave
+        // it empty. The images dup view filters empty hashes anyway.
+        source_hash: String::new(),
     }
 }
 

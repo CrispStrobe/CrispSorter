@@ -26,7 +26,7 @@ use super::{
     exif::{read_exif, ExifSummary},
     local::LocalImages,
     thumbnail::{generate_thumbnail, ThumbnailError, DEFAULT_THUMBNAIL_SIZE},
-    types::{ImagesPage, ListFilters},
+    types::{DuplicateGroup, ImagesPage, ListFilters},
     ImagesBackend, IMAGE_EXTS,
 };
 use crate::index::local_index::LocalIndex;
@@ -74,6 +74,31 @@ pub async fn images_list(
 #[tauri::command]
 pub fn images_default_extensions() -> Vec<String> {
     IMAGE_EXTS.iter().map(|e| (*e).to_string()).collect()
+}
+
+// ── A3: duplicate-group surface ─────────────────────────────────────────
+
+#[tauri::command]
+pub async fn images_duplicates(
+    state: State<'_, AppState>,
+    filters: Option<ListFilters>,
+) -> Result<Vec<DuplicateGroup>, String> {
+    // Same convention as `images_list`: empty payload (here, an empty
+    // group list) when the index isn't ready yet, not an error.  The
+    // UI polls this when the user toggles "duplicates only" — erroring
+    // during cold-start would surface as a flash of "list failed"
+    // before init_index catches up.
+    let lock = state.index.lock().await;
+    let local_index = match (lock.config.enabled, lock.local.as_ref()) {
+        (false, _) | (true, None) => return Ok(vec![]),
+        (true, Some(l)) => l.clone(),
+    };
+    drop(lock);
+    let backend = LocalImages::new(local_index);
+    backend
+        .duplicates(filters.unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── A2: thumbnail + EXIF surface ─────────────────────────────────────────
