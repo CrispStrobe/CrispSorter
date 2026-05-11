@@ -1,27 +1,27 @@
-//! Tauri command surface for the Bilder vertical.  Slice A1 ships a
-//! single command (`bilder_list`) plus a metadata helper
-//! (`bilder_default_extensions`) so the UI doesn't have to hard-code
+//! Tauri command surface for the Images vertical.  Slice A1 ships a
+//! single command (`images_list`) plus a metadata helper
+//! (`images_default_extensions`) so the UI doesn't have to hard-code
 //! the IMAGE_EXTS list.
 //!
 //! The command intentionally returns an empty page — never an error —
 //! when the index isn't ready yet.  That mirrors the convention
 //! `index_query_documents` set in P9 (see comment around its `(false,
-//! _) | (true, None)` branch): the Bilder tab polls on mount, before
+//! _) | (true, None)` branch): the Images tab polls on mount, before
 //! `init_index` finishes during a cold start, and erroring there would
-//! surface as a wave of "Bilder list failed" log lines for what is
+//! surface as a wave of "Images list failed" log lines for what is
 //! actually a clean empty state.
 
 use tauri::State;
 
 use super::{
-    local::LocalBilder,
+    local::LocalImages,
     types::{ImagesPage, ListFilters},
-    BilderBackend, IMAGE_EXTS,
+    ImagesBackend, IMAGE_EXTS,
 };
 use crate::AppState;
 
 #[tauri::command]
-pub async fn bilder_list(
+pub async fn images_list(
     state: State<'_, AppState>,
     page_size: Option<i32>,
     cursor: Option<String>,
@@ -45,7 +45,7 @@ pub async fn bilder_list(
     };
     drop(lock);
 
-    let backend = LocalBilder::new(local_index);
+    let backend = LocalImages::new(local_index);
     backend
         .list(
             page_size.unwrap_or(200),
@@ -60,6 +60,6 @@ pub async fn bilder_list(
 /// can render filter chips (and add `?` badges for unfamiliar
 /// extensions) without duplicating the spec list in TypeScript.
 #[tauri::command]
-pub fn bilder_default_extensions() -> Vec<String> {
+pub fn images_default_extensions() -> Vec<String> {
     IMAGE_EXTS.iter().map(|e| (*e).to_string()).collect()
 }
