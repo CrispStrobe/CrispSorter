@@ -273,6 +273,14 @@ enum CrispLensCmd {
     ImageFaces {
         image_id: i64,
     },
+    /// Run a text search on CrispLens (filename / person-name
+    /// substring — **not semantic**; see protocol-crate doc).
+    Search {
+        /// Query string.
+        q: String,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1850,6 +1858,44 @@ async fn cmd_images_crisplens(
                             let verif  = f.verified_bool().map(|b| if b { "✓" } else { "·" }).unwrap_or("·");
                             println!("  [{:>3}] {verif} det={conf}  bbox=t{:.2},r{:.2},b{:.2},l{:.2}  {}",
                                 f.face_id, f.bbox.top, f.bbox.right, f.bbox.bottom, f.bbox.left, person);
+                        }
+                    }
+                }
+            }
+        }
+
+        CrispLensCmd::Search { q, limit } => {
+            use crate::images::crisplens::tauri_commands::get_json;
+            use crisplens_protocol::SearchHit;
+            let dd = data_dir.to_path_buf();
+            let encoded_q: String = q
+                .chars()
+                .flat_map(|c| {
+                    if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                        vec![c]
+                    } else {
+                        format!("%{:02X}", c as u32).chars().collect()
+                    }
+                })
+                .collect();
+            let path = format!("/api/search?q={encoded_q}&limit={limit}");
+            let hits: Vec<SearchHit> = tokio::task::spawn_blocking(move || {
+                get_json::<Vec<SearchHit>>(&dd, &path)
+            })
+            .await
+            .map_err(|e| format!("search join: {e}"))??;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&hits).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    if hits.is_empty() {
+                        println!("(no matches for {q:?})");
+                    } else {
+                        println!("{} match(es) for {q:?} (text search, NOT semantic):", hits.len());
+                        for h in &hits {
+                            let faces = h.face_count.map(|n| format!("{n}f")).unwrap_or_default();
+                            println!("  [{:>4}] {:6}  {}", h.id, faces, h.filename);
                         }
                     }
                 }

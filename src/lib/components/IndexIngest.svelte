@@ -315,6 +315,45 @@
         }
     }
 
+    // ── P13/B2 — CrispLens text-search state (filename/person-name only) ───
+    interface CrispLensSearchHit {
+        id:           number;
+        filename:     string;
+        filepath:     string;
+        takenAt?:     string | null;
+        faceCount?:   number | null;
+        description?: string | null;
+        tags?:        string[];
+        recognitionConfidence?: number | null;
+    }
+    let crispLensSearchQuery   = $state('');
+    let crispLensSearchHits    = $state<CrispLensSearchHit[]>([]);
+    let crispLensSearchLoading = $state(false);
+    let crispLensSearchError   = $state<string>('');
+
+    async function runCrispLensSearch() {
+        const q = crispLensSearchQuery.trim();
+        if (!q) {
+            crispLensSearchHits = [];
+            crispLensSearchError = '';
+            return;
+        }
+        if (crispLensSearchLoading) return;
+        crispLensSearchLoading = true;
+        crispLensSearchError = '';
+        try {
+            crispLensSearchHits = await invoke<CrispLensSearchHit[]>(
+                'images_crisplens_search',
+                { q, limit: 50 }
+            );
+        } catch (e: any) {
+            crispLensSearchError = String(e?.message ?? e ?? 'search failed');
+            crispLensSearchHits = [];
+        } finally {
+            crispLensSearchLoading = false;
+        }
+    }
+
     // ── P13/B5 — CrispLens watchfolders cross-reference state ──────────────
     interface CrispLensWatchFolder {
         id?:        number | null;
@@ -2607,6 +2646,15 @@
                                     <span class="muted-small">({crispLensPeople.length})</span>
                                 {/if}
                             </button>
+                            <input type="search" class="crisplens-search-input"
+                                   bind:value={crispLensSearchQuery}
+                                   placeholder={i18n.t.indexIngest.crisplens_search_placeholder}
+                                   title={i18n.t.indexIngest.crisplens_search_hint}
+                                   onkeydown={(e) => { if (e.key === 'Enter') void runCrispLensSearch(); }} />
+                            <button class="tb-btn" onclick={runCrispLensSearch}
+                                    disabled={crispLensSearchLoading || !crispLensSearchQuery.trim()}>
+                                <Search size={14} /> {i18n.t.indexIngest.crisplens_search_button}
+                            </button>
                         {/if}
                         <button class="tb-btn" class:active={crispLensSettingsOpen}
                                 onclick={toggleCrispLensSettings}
@@ -2641,6 +2689,39 @@
                         </span>
                     </div>
                 </div>
+                {#if crispLensSearchHits.length > 0 || crispLensSearchError || crispLensSearchLoading}
+                    <div class="crisplens-search-results">
+                        <header class="crisplens-search-header">
+                            <span class="muted-small">
+                                {#if crispLensSearchLoading}
+                                    <Loader2 size={12} class="spin" /> {i18n.t.indexIngest.crisplens_search_loading}
+                                {:else if crispLensSearchError}
+                                    {crispLensSearchError}
+                                {:else}
+                                    {crispLensSearchHits.length} {i18n.t.indexIngest.crisplens_search_count_suffix}
+                                {/if}
+                            </span>
+                            <button class="action-btn small" onclick={() => { crispLensSearchHits = []; crispLensSearchQuery = ''; }}>
+                                <X size={12} />
+                            </button>
+                        </header>
+                        {#if crispLensSearchHits.length > 0}
+                            <ul class="crisplens-search-list">
+                                {#each crispLensSearchHits as h (h.id)}
+                                    <li class="crisplens-search-hit" title={h.filepath}>
+                                        <span class="crisplens-search-name">{h.filename}</span>
+                                        {#if h.faceCount && h.faceCount > 0}
+                                            <span class="muted-small">{h.faceCount}f</span>
+                                        {/if}
+                                        {#if h.tags && h.tags.length > 0}
+                                            <span class="muted-small crisplens-search-tags">{h.tags.slice(0, 4).join(' · ')}</span>
+                                        {/if}
+                                    </li>
+                                {/each}
+                            </ul>
+                        {/if}
+                    </div>
+                {/if}
                 {#if crispLensSettingsOpen}
                     <div class="crisplens-settings-pane">
                         <h4 class="crisplens-heading">{i18n.t.indexIngest.crisplens_pane_heading}</h4>
@@ -4559,6 +4640,50 @@
     }
     .crisplens-person-name {
         font-size: 0.82rem; color: #cbd5e1; font-weight: 500;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* P13/B2 — CrispLens text-search input + result panel.
+       Sits in the toolbar (input) + just below the toolbar (results
+       list).  Results panel is collapsible via the X button. */
+    .crisplens-search-input {
+        padding: 4px 8px;
+        background: #0a0a14; color: #e2e8f0;
+        border: 1px solid #3f3f46; border-radius: 4px;
+        font-size: 0.78rem;
+        min-width: 200px;
+    }
+    .crisplens-search-input:focus { outline: 1px solid #6366f1; }
+    .crisplens-search-results {
+        margin: 6px 12px;
+        border: 1px solid #2a2a3a;
+        border-radius: 6px;
+        background: #14141e;
+        max-height: 200px;
+        overflow-y: auto;
+        display: flex; flex-direction: column;
+    }
+    .crisplens-search-header {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 4px 10px;
+        background: #1a1a28;
+        border-bottom: 1px solid #27272a;
+    }
+    .crisplens-search-list { list-style: none; margin: 0; padding: 4px 0; }
+    .crisplens-search-hit {
+        display: flex; align-items: center; gap: 8px;
+        padding: 4px 12px;
+        font-size: 0.78rem;
+    }
+    .crisplens-search-hit:hover { background: #1a1a28; }
+    .crisplens-search-name {
+        color: #cbd5e1;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        flex: 1;
+    }
+    .crisplens-search-tags {
+        margin-left: auto;
+        max-width: 50%;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 </style>

@@ -2258,6 +2258,7 @@ pub fn run() {
             images::crisplens::tauri_commands::images_crisplens_watchfolders,
             images::crisplens::tauri_commands::images_crisplens_people,
             images::crisplens::tauri_commands::images_crisplens_image_faces,
+            images::crisplens::tauri_commands::images_crisplens_search,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,
