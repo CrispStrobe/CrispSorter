@@ -181,6 +181,18 @@ enum ImagesCmd {
         /// Input image path.
         path: PathBuf,
     },
+    /// Group image rows by SHA-256 `source_hash` and print clusters
+    /// of byte-identical files (size >= 2).  Largest groups first.
+    /// Output respects the global `--format` flag.
+    Duplicates {
+        /// Override the canonical IMAGE_EXTS list (comma-separated,
+        /// lower-case, no leading dot).
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Optional parent-folder prefix to scope the dup-detection.
+        #[arg(long)]
+        folder: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1285,6 +1297,43 @@ async fn cmd_images_async(
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
         }
 
+        ImagesCmd::Duplicates { ext, folder } => {
+            let filters = ListFilters {
+                parent_dir_prefix: folder_to_prefix(folder),
+                ext: if ext.is_empty() { None } else { Some(ext) },
+                ..Default::default()
+            };
+            let groups = backend
+                .duplicates(filters)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let payload = serde_json::json!({
+                        "group_count": groups.len(),
+                        "groups":       groups,
+                    });
+                    println!("{payload}");
+                }
+                OutFormat::Text => {
+                    if groups.is_empty() {
+                        println!("no duplicate image rows found");
+                    } else {
+                        println!("{} duplicate groups:", groups.len());
+                        for g in &groups {
+                            println!();
+                            println!("  hash: {}  ({} copies)", g.source_hash, g.items.len());
+                            for img in &g.items {
+                                let name = img.filename.as_deref().unwrap_or(&img.doc_id);
+                                let ext = img.ext.as_deref().unwrap_or("?");
+                                println!("    .{ext:<6} {name}\t{}", img.location_uri);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         ImagesCmd::Count { ext, folder } => {
             // Pull a tiny page just to read `total`; LanceDB's
             // count_rows backs `total` so the per-row cost is zero
@@ -2076,6 +2125,34 @@ mod tests {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/x.jpg"));
             }
             other => panic!("expected Images Exif, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_duplicates_accepts_ext_and_folder_overrides() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "images", "duplicates",
+            "--ext", "jpg,heic",
+            "--folder", "/Users/me/Photos",
+        ]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Duplicates { ext, folder }, .. } => {
+                assert_eq!(ext, vec!["jpg".to_owned(), "heic".to_owned()]);
+                assert_eq!(folder.as_deref(), Some(std::path::Path::new("/Users/me/Photos")));
+            }
+            other => panic!("expected Images Duplicates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_duplicates_parses_with_defaults() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "duplicates"]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::Duplicates { ext, folder }, .. } => {
+                assert!(ext.is_empty());
+                assert!(folder.is_none());
+            }
+            other => panic!("expected Images Duplicates, got {other:?}"),
         }
     }
 

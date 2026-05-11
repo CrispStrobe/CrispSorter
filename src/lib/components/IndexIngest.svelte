@@ -213,6 +213,19 @@
     let imagesPreviewExifLoading = $state(false);
     let imagesPreviewExifError = $state<string>('');
 
+    // A3: SHA-256 dup-view state.  When `imagesDupMode` is true the
+    // grid switches to grouped rendering and the linear list is
+    // hidden.  Toggle is independent of the preview pane so the user
+    // can drill into any duplicate without losing dup mode.
+    interface ImageDuplicateGroup {
+        sourceHash: string;
+        items:      ImageRow[];
+    }
+    let imagesDupMode    = $state(false);
+    let imagesDupGroups  = $state<ImageDuplicateGroup[]>([]);
+    let imagesDupLoading = $state(false);
+    let imagesDupError   = $state<string>('');
+
     // PLAN P9 step 6 — column registry + persistence.
     interface ColumnDef {
         id:        string;
@@ -1375,6 +1388,36 @@
         imagesPreviewExifError = '';
     }
 
+    /** A3: fetch SHA-256 duplicate clusters for the current image set.
+     *  Cheap on small indexes (server-side groups are computed in
+     *  one walk through the image-extension subset of LanceDB).
+     *  Refreshes every time the user toggles the mode on; the
+     *  loaded groups stay in state until the user toggles off so
+     *  scrolling / clicking inside dup mode doesn't re-fetch. */
+    async function loadImagesDuplicates() {
+        if (imagesDupLoading) return;
+        imagesDupLoading = true;
+        imagesDupError = '';
+        try {
+            imagesDupGroups = await invoke<ImageDuplicateGroup[]>('images_duplicates', { filters: null });
+        } catch (e: any) {
+            imagesDupError  = String(e?.message ?? e ?? 'duplicates fetch failed');
+            imagesDupGroups = [];
+        } finally {
+            imagesDupLoading = false;
+        }
+    }
+
+    function toggleImagesDupMode() {
+        imagesDupMode = !imagesDupMode;
+        if (imagesDupMode) {
+            void loadImagesDuplicates();
+        } else {
+            imagesDupGroups = [];
+            imagesDupError  = '';
+        }
+    }
+
     /** Client-side residual filter after the server narrowed the page.
      *  Today: only completeness; once we promote `has_*` flags to scalar
      *  columns (P9 step 3) this collapses to identity. */
@@ -2172,11 +2215,26 @@
             <div class="images-panel">
                 <div class="toolbar">
                     <div class="toolbar-actions">
-                        <button class="tb-btn" onclick={() => loadImages(false)} disabled={imagesLoading}>
+                        <button class="tb-btn" onclick={() => loadImages(false)} disabled={imagesLoading || imagesDupMode}>
                             <RefreshCw size={14} /> {i18n.t.indexIngest.images_refresh}
                         </button>
+                        <button class="tb-btn" class:active={imagesDupMode} onclick={toggleImagesDupMode}
+                                title={i18n.t.indexIngest.images_duplicates_toggle_hint}>
+                            <CopyCheck size={14} /> {i18n.t.indexIngest.images_duplicates_toggle}
+                            {#if imagesDupMode && imagesDupGroups.length > 0}
+                                <span class="muted-small">({imagesDupGroups.length})</span>
+                            {/if}
+                        </button>
                         <span class="muted images-count">
-                            {#if imagesLoading && imagesRows.length === 0}
+                            {#if imagesDupMode}
+                                {#if imagesDupLoading}
+                                    <Loader2 size={12} class="spin" />
+                                {:else if imagesDupError}
+                                    {imagesDupError}
+                                {:else}
+                                    {imagesDupGroups.reduce((s, g) => s + g.items.length, 0)} {i18n.t.indexIngest.images_duplicates_count_suffix}
+                                {/if}
+                            {:else if imagesLoading && imagesRows.length === 0}
                                 <Loader2 size={12} class="spin" />
                             {:else}
                                 {imagesRows.length} / {imagesTotal} {i18n.t.indexIngest.images_count_suffix}
@@ -2184,7 +2242,49 @@
                         </span>
                     </div>
                 </div>
-                {#if imagesLoading && imagesRows.length === 0}
+                {#if imagesDupMode}
+                    {#if imagesDupLoading && imagesDupGroups.length === 0}
+                        <div class="empty-state"><Loader2 size={20} class="spin" /></div>
+                    {:else if imagesDupGroups.length === 0}
+                        <div class="empty-state">{i18n.t.indexIngest.images_duplicates_empty}</div>
+                    {:else}
+                        <div class="images-dup-list">
+                            {#each imagesDupGroups as group (group.sourceHash)}
+                                <section class="images-dup-group">
+                                    <header class="images-dup-header">
+                                        <span class="images-dup-count">{group.items.length}×</span>
+                                        <code class="images-dup-hash" title={group.sourceHash}>{group.sourceHash.slice(0, 12)}…</code>
+                                    </header>
+                                    <div class="images-grid">
+                                        {#each group.items as img (img.docId)}
+                                            <button class="images-tile" type="button"
+                                                    class:images-tile-active={imagesPreview?.docId === img.docId}
+                                                    title={img.locationUri}
+                                                    onclick={() => openImagesPreview(img)}
+                                                    use:lazyThumbnail={img.docId}>
+                                                {#if imagesThumbs[img.docId] && imagesThumbs[img.docId] !== 'loading' && imagesThumbs[img.docId] !== 'error'}
+                                                    <img src={imagesThumbs[img.docId]} alt={img.filename ?? ''} class="images-thumb" loading="lazy" />
+                                                {:else}
+                                                    <div class="images-tile-placeholder">
+                                                        {#if imagesThumbs[img.docId] === 'loading'}
+                                                            <Loader2 size={20} class="spin" />
+                                                        {:else}
+                                                            <Images size={28} />
+                                                        {/if}
+                                                        <span class="images-ext-badge">{(img.ext ?? '?').toUpperCase()}</span>
+                                                    </div>
+                                                {/if}
+                                                <div class="images-tile-name" title={img.filename ?? ''}>
+                                                    {img.filename ?? img.docId}
+                                                </div>
+                                            </button>
+                                        {/each}
+                                    </div>
+                                </section>
+                            {/each}
+                        </div>
+                    {/if}
+                {:else if imagesLoading && imagesRows.length === 0}
                     <div class="empty-state"><Loader2 size={20} class="spin" /></div>
                 {:else if imagesRows.length === 0}
                     <div class="empty-state">{i18n.t.indexIngest.images_empty}</div>
@@ -3237,6 +3337,10 @@
     .tb-btn.ghost { background: transparent; }
     .tb-btn.danger:hover { border-color: #ef4444; color: #ef4444; }
     .tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Toggle-style toolbar button: P13/A3 added it for "Duplicates only".
+       Future toggles in this region can re-use the same hook. */
+    .tb-btn.active { background: #1e1b4b; color: #a5b4fc; border-color: #6366f1; }
+    .tb-btn.active:hover { background: #312e81; color: white; }
 
     .stats-bar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .sb-chip { padding: 2px 10px; border-radius: 99px; font-size: 0.75rem; font-weight: 600; }
@@ -3762,4 +3866,36 @@
         padding: 3px 0;
         word-break: break-word;
     }
+
+    /* ── P13 slice A3 — duplicate-cluster grouping ─────────────────────── */
+    .images-dup-list {
+        display: flex; flex-direction: column;
+        gap: 12px;
+        padding: 8px 12px;
+        overflow-y: auto;
+    }
+    .images-dup-group {
+        display: flex; flex-direction: column;
+        border: 1px solid #2a2a3a;
+        border-radius: 8px;
+        background: #14141e;
+        padding: 8px;
+    }
+    .images-dup-header {
+        display: flex; align-items: baseline; gap: 8px;
+        padding: 4px 6px 8px;
+        font-size: 0.78rem;
+        color: #94a3b8;
+    }
+    .images-dup-count {
+        background: #1e1b4b; color: #a5b4fc;
+        padding: 1px 8px; border-radius: 10px;
+        font-weight: 600; font-size: 0.72rem;
+    }
+    .images-dup-hash {
+        font-family: ui-monospace, monospace;
+        color: #71717a;
+        font-size: 0.72rem;
+    }
+    .muted-small { color: #71717a; font-size: 0.72rem; margin-left: 4px; }
 </style>

@@ -31,7 +31,7 @@ pub mod types;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub use types::{HealthStatus, Image, ImageRef, ImagesPage, ListFilters};
+pub use types::{DuplicateGroup, HealthStatus, Image, ImageRef, ImagesPage, ListFilters};
 
 /// Canonical lower-cased list of extensions the Images grid considers
 /// "image rows".  Matches the spec in
@@ -74,6 +74,19 @@ pub trait ImagesBackend: Send + Sync {
         cursor: Option<String>,
         filters: ListFilters,
     ) -> Result<ImagesPage>;
+
+    /// Group image rows by SHA-256 `source_hash` and return only
+    /// groups with two or more members — the byte-identical-file
+    /// duplicate view (slice A3).  Order is by group size descending
+    /// so the UI surfaces the most-duplicated files first.
+    ///
+    /// Caller-supplied `filters` apply *before* grouping (e.g. scope
+    /// to one folder, override IMAGE_EXTS).  No pagination on the
+    /// outer wire shape — at the table sizes we expect (Tier 1 single
+    /// user, mostly), the response fits comfortably in one Tauri RPC;
+    /// if that ever changes we can switch to GROUP-BY pushdown
+    /// without revving the API.
+    async fn duplicates(&self, filters: ListFilters) -> Result<Vec<DuplicateGroup>>;
 }
 
 #[cfg(test)]

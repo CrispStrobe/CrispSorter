@@ -2247,6 +2247,7 @@ pub fn run() {
             images::tauri_commands::images_default_extensions,
             images::tauri_commands::images_thumbnail,
             images::tauri_commands::images_exif,
+            images::tauri_commands::images_duplicates,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,

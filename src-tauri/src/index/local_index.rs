@@ -281,6 +281,7 @@ impl LocalIndex {
             let metadata_col = str_col_opt(batch, "metadata_json");
             let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
             let volume_id_col = str_col_opt(batch, "volume_id");
+            let source_hash_col = str_col_opt(batch, "source_hash");
 
             for i in 0..n {
                 if sparse_col.is_null(i) {
@@ -336,6 +337,7 @@ impl LocalIndex {
                     catalog_source: None,
                     volume_id,
                     indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
+                    source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -1296,6 +1298,7 @@ pub fn batches_to_search_results_with_scores(
         let metadata_col = str_col_opt(batch, "metadata_json");
         let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
         let volume_id_col = str_col_opt(batch, "volume_id");
+        let source_hash_col = str_col_opt(batch, "source_hash");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -1337,6 +1340,7 @@ pub fn batches_to_search_results_with_scores(
                 catalog_source: None,
                 volume_id,
                 indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
+                source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
             });
         }
     }
@@ -1500,6 +1504,11 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         let metadata_col = str_col_opt(batch, "metadata_json");
         let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
         let volume_id_col = str_col_opt(batch, "volume_id");
+        // P13/A3: surface source_hash so the images dup view can
+        // group by SHA-256 without a second batch fetch.  Optional
+        // column lookup so older Lance datasets without the column
+        // still load.
+        let source_hash_col = str_col_opt(batch, "source_hash");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -1548,6 +1557,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 catalog_source: None,
                 volume_id,
                 indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
+                source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
             });
         }
     }
@@ -1955,6 +1965,7 @@ mod query_documents_tests {
             catalog_source: None,
             volume_id: None,
             indexed_at: 0,
+            source_hash: String::new(),
         }
     }
 

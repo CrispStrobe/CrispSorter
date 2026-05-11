@@ -37,6 +37,28 @@ pub struct Image {
     /// `SearchResult::indexed_at`.  Used for the default newest-first
     /// sort in the grid.
     pub indexed_at: i64,
+    /// SHA-256 of the original file bytes — same value as
+    /// `SearchResult::source_hash`.  A1 didn't surface this; A3's
+    /// duplicate-grouping view needs it client-side too so the UI
+    /// can label each group.  `#[serde(default)]` lets older JSON
+    /// payloads (pre-A3) still deserialise.
+    #[serde(default)]
+    pub source_hash: String,
+}
+
+/// One cluster of image rows that share the same SHA-256
+/// `source_hash` — i.e. byte-identical files in the index.  Returned
+/// by `ImagesBackend::duplicates` for the A3 dup-view.
+///
+/// Groups always have `items.len() >= 2` (a singleton isn't a
+/// duplicate); the backend filters smaller groups out before
+/// returning.  Order is by `items.len()` descending so the UI
+/// surfaces the most-duplicated files first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroup {
+    pub source_hash: String,
+    pub items: Vec<Image>,
 }
 
 /// One page of `Image` rows.  Pagination is opaque-cursor based so we
