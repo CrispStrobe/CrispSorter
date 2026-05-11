@@ -273,6 +273,72 @@
     let crispLensStatus     = $state<CrispLensStatus | null>(null);
     let crispLensPollHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
+    // ── P13/B5 — CrispLens watchfolders cross-reference state ──────────────
+    interface CrispLensWatchFolder {
+        id?:        number | null;
+        path:       string;
+        // Wire shape allows int/bool/float; we use the typed helpers
+        // through `recursive_bool()` on the Rust side, but on the
+        // Svelte side we just need `path` for the cross-reference.
+        // Other fields are passed through verbatim and ignored.
+        [key: string]: any;
+    }
+    let crispLensWatchFolders = $state<CrispLensWatchFolder[]>([]);
+    let crispLensWatchFoldersLoading = $state(false);
+
+    async function loadCrispLensWatchFolders() {
+        if (crispLensWatchFoldersLoading) return;
+        crispLensWatchFoldersLoading = true;
+        try {
+            crispLensWatchFolders = await invoke<CrispLensWatchFolder[]>(
+                'images_crisplens_watchfolders'
+            );
+        } catch {
+            crispLensWatchFolders = [];
+        } finally {
+            crispLensWatchFoldersLoading = false;
+        }
+    }
+
+    /** Returns the CrispLens watch_folder.path that contains the
+     *  currently-previewed image's local path, or null when nothing
+     *  overlaps.  Used by the preview pane to show the
+     *  "this folder is also watched by CrispLens — both indexes will
+     *  see new files" badge.  Path comparison is purely prefix-based
+     *  (no symlink resolution / no normalisation past the existing
+     *  `uriToPath` step) — false positives are far better UX than
+     *  false negatives for this informational hint. */
+    function watchfolderForCurrentPreview(): string | null {
+        if (!imagesPreview) return null;
+        const localPath = uriToPath(imagesPreview.locationUri);
+        if (!localPath) return null;
+        for (const wf of crispLensWatchFolders) {
+            if (!wf.path) continue;
+            // Treat both as directory prefixes — add trailing slash so
+            // /a/b/c doesn't match /a/bc.
+            const wfNorm = wf.path.endsWith('/') ? wf.path : wf.path + '/';
+            if ((localPath + '/').startsWith(wfNorm)) {
+                return wf.path;
+            }
+        }
+        return null;
+    }
+
+    /** B5 deep-link: open the configured CrispLens URL in the user's
+     *  default browser.  CrispLens's v4 frontend has no URL-based
+     *  image routing (verified — there's no `#/images/{id}` handler
+     *  in the SPA), so we land on the root page and the user
+     *  navigates from there.  Future CrispLens UI work can add a
+     *  hash route and we'd add the `#…` suffix here without churn. */
+    async function openInCrispLens() {
+        if (!crispLensSettings?.url) return;
+        try {
+            await openPath(crispLensSettings.url);
+        } catch (e: any) {
+            logWarn(`open-in-crisplens: ${e?.message ?? e}`);
+        }
+    }
+
     /** Banner status enum derived from the polled payload.  Keeps
      *  the template easy to read. */
     const crispLensBannerState = $derived.by<
@@ -288,18 +354,28 @@
     });
 
     /** One-shot status fetch — also used by `loadCrispLensSettings`
-     *  so the settings pane is always in sync with the banner. */
+     *  so the settings pane is always in sync with the banner.
+     *  Refreshes the watchfolders list piggy-back when the auth
+     *  state went from unauth → auth, so the B5 cross-reference
+     *  hint shows up as soon as a session lands. */
     async function fetchCrispLensStatus() {
+        const wasAuthed = crispLensStatus?.authenticated ?? false;
         try {
             crispLensStatus = await invoke<CrispLensStatus>('images_crisplens_status');
-            // Keep the cheaper boolean in sync — the rest of the
-            // settings UI still reads `crispLensAuthenticated`.
             crispLensAuthenticated = crispLensStatus.authenticated;
         } catch (e: any) {
             // Network errors etc.  Failure mode is "leave the last
             // known state in place"; an alarmist banner that wipes
             // mid-poll would be worse UX than stale data.
             logWarn(`crisplens status: ${e?.message ?? e}`);
+        }
+        // Pull watchfolders once per transition into authenticated.
+        // Avoids one HTTP call per 30 s poll when nothing's changed.
+        if (crispLensStatus?.authenticated && !wasAuthed) {
+            void loadCrispLensWatchFolders();
+        }
+        if (!crispLensStatus?.authenticated && wasAuthed) {
+            crispLensWatchFolders = [];
         }
     }
 
@@ -2708,10 +2784,24 @@
                         <span class="images-preview-title" title={imagesPreview.locationUri}>
                             {imagesPreview.filename ?? imagesPreview.docId}
                         </span>
+                        {#if crispLensStatus?.authenticated && crispLensSettings?.url}
+                            <button class="preview-action"
+                                    onclick={openInCrispLens}
+                                    title={i18n.t.indexIngest.crisplens_open_hint}>
+                                <ExternalLink size={12} /> {i18n.t.indexIngest.crisplens_open}
+                            </button>
+                        {/if}
                         <button class="preview-close" onclick={closeImagesPreview} title={i18n.t.indexIngest.images_preview_close}>
                             <X size={14} />
                         </button>
                     </header>
+                    {#if watchfolderForCurrentPreview()}
+                        <div class="crisplens-watchfolder-hint" role="status">
+                            <Eye size={12} />
+                            <span>{i18n.t.indexIngest.crisplens_watchfolder_hint}</span>
+                            <code title={watchfolderForCurrentPreview() ?? ''}>{watchfolderForCurrentPreview()}</code>
+                        </div>
+                    {/if}
                     <div class="images-preview-body">
                         {#if imagesPreviewSrc}
                             <img src={imagesPreviewSrc} alt={imagesPreview.filename ?? ''} class="images-preview-image" />
@@ -4341,5 +4431,29 @@
         background: #00000044; color: inherit;
         border-radius: 3px;
         font-family: ui-monospace, monospace; font-size: 0.66rem;
+    }
+
+    /* P13/B5 — preview-pane "Open in CrispLens" action button
+       (sits next to the close button in the header) + the
+       watchfolder cross-reference hint row underneath the header. */
+    .preview-action {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 3px 8px; border-radius: 4px;
+        border: 1px solid #3f3f46; background: transparent;
+        color: #a5b4fc; cursor: pointer;
+        font-size: 0.72rem;
+    }
+    .preview-action:hover { background: #1e1b4b; }
+    .crisplens-watchfolder-hint {
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 10px;
+        background: #1e1b4b22; color: #94a3b8;
+        font-size: 0.72rem;
+        border-bottom: 1px solid #27272a;
+    }
+    .crisplens-watchfolder-hint code {
+        font-family: ui-monospace, monospace;
+        color: #cbd5e1;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 </style>
