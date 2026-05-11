@@ -2245,6 +2245,8 @@ pub fn run() {
             drives::tauri_commands::drive_stat,
             images::tauri_commands::images_list,
             images::tauri_commands::images_default_extensions,
+            images::tauri_commands::images_thumbnail,
+            images::tauri_commands::images_exif,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,

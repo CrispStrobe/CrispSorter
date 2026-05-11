@@ -181,6 +181,38 @@
     let imagesLoading    = $state(false);
     let imagesNextCursor = $state<string | null>(null);
 
+    // A2: lazy-loaded thumbnail bytes per docId.  Value is either an
+    // object-URL (data ready), the literal 'loading', or 'error'.
+    // Reactive map so the tile re-renders on transition; we never
+    // mutate in place to keep Svelte's $state proxy invalidating
+    // properly.
+    let imagesThumbs = $state<Record<string, string>>({});
+
+    // A2: click-to-preview pane state.  Mirrors the Übersicht
+    // preview-pane shape but lives in its own variables so the two
+    // panes don't share state across tabs.
+    interface ImagesExifSummary {
+        cameraMake?:    string | null;
+        cameraModel?:   string | null;
+        lensModel?:     string | null;
+        takenAt?:       string | null;
+        takenAtUnix?:   number | null;
+        width?:         number | null;
+        height?:        number | null;
+        fNumber?:       number | null;
+        exposureTime?:  string | null;
+        iso?:           number | null;
+        focalLengthMm?: number | null;
+        gpsLat?:        number | null;
+        gpsLon?:        number | null;
+        orientation?:   number | null;
+    }
+    let imagesPreview         = $state<ImageRow | null>(null);
+    let imagesPreviewSrc      = $state<string>('');
+    let imagesPreviewExif     = $state<ImagesExifSummary | null>(null);
+    let imagesPreviewExifLoading = $state(false);
+    let imagesPreviewExifError = $state<string>('');
+
     // PLAN P9 step 6 — column registry + persistence.
     interface ColumnDef {
         id:        string;
@@ -1264,6 +1296,85 @@
         }
     }
 
+    // ── A2: lazy thumbnail loader ──────────────────────────────────────────
+    //
+    // Use:lazyThumbnail attaches an IntersectionObserver to a tile
+    // node.  When the tile scrolls into view the action invokes
+    // `images_thumbnail` and stores the resulting object-URL in
+    // `imagesThumbs`.  IO is disconnected after a single hit so
+    // re-scrolling doesn't re-fetch.  rootMargin pre-loads tiles
+    // ~200 px before they enter the viewport so the user rarely sees
+    // a blank tile during fast scrolls.
+    //
+    // Object-URLs leak until manually revoked.  We revoke on tab
+    // change (closeImagesPreview clears the cache when appropriate)
+    // and on row reload (loadImages resets imagesRows -> tiles
+    // unmount -> the action's destroy() runs).  An LRU-bounded cache
+    // is overkill for the spec's "no cache" intent — the spec means
+    // no *server-side* cache; the per-session in-memory map is fine
+    // and keeps repeat scrolls snappy.
+    function lazyThumbnail(node: HTMLElement, docId: string) {
+        // Already loaded / failed earlier in this session — skip IO.
+        if (imagesThumbs[docId]) return { destroy() {} };
+
+        const io = new IntersectionObserver(
+            async (entries) => {
+                if (!entries.some(e => e.isIntersecting)) return;
+                io.disconnect();
+                imagesThumbs = { ...imagesThumbs, [docId]: 'loading' };
+                try {
+                    const bytes = await invoke<number[]>('images_thumbnail', { docId, size: 256 });
+                    const blob = new Blob([Uint8Array.from(bytes)], { type: 'image/png' });
+                    imagesThumbs = { ...imagesThumbs, [docId]: URL.createObjectURL(blob) };
+                } catch {
+                    // Common case: HEIC (the image crate doesn't decode it
+                    // by default — A2 deferred libheif binding) or remote
+                    // crisp+drive:// row.  Tile keeps the placeholder.
+                    imagesThumbs = { ...imagesThumbs, [docId]: 'error' };
+                }
+            },
+            { threshold: 0.01, rootMargin: '200px' }
+        );
+        io.observe(node);
+        return {
+            destroy() { io.disconnect(); }
+        };
+    }
+
+    /** A2: open the side preview pane for a clicked image tile.
+     *  Loads the full image via convertFileSrc (no IPC payload —
+     *  Tauri serves the file directly through tauri:// protocol)
+     *  and kicks off an EXIF fetch in parallel. */
+    async function openImagesPreview(img: ImageRow) {
+        // Toggle: clicking the same tile closes the pane.
+        if (imagesPreview?.docId === img.docId) {
+            closeImagesPreview();
+            return;
+        }
+        imagesPreview         = img;
+        imagesPreviewExif     = null;
+        imagesPreviewExifError = '';
+        imagesPreviewExifLoading = true;
+
+        const path = uriToPath(img.locationUri);
+        imagesPreviewSrc = path ? convertFileSrc(path) : '';
+
+        try {
+            imagesPreviewExif = await invoke<ImagesExifSummary>('images_exif', { docId: img.docId });
+        } catch (e: any) {
+            imagesPreviewExifError = String(e?.message ?? e ?? 'EXIF read failed');
+        } finally {
+            imagesPreviewExifLoading = false;
+        }
+    }
+
+    function closeImagesPreview() {
+        imagesPreview         = null;
+        imagesPreviewSrc      = '';
+        imagesPreviewExif     = null;
+        imagesPreviewExifError = '';
+    }
+
     /** Client-side residual filter after the server narrowed the page.
      *  Today: only completeness; once we promote `has_*` flags to scalar
      *  columns (P9 step 3) this collapses to identity. */
@@ -2056,47 +2167,108 @@
     {:else if activeTab === 'duplicates'}
         <Duplicates />
     {:else if activeTab === 'images'}
-        <!-- ══════════════════ IMAGES (P13 slice A1 — placeholder grid) ══════════════════ -->
-        <div class="images-panel">
-            <div class="toolbar">
-                <div class="toolbar-actions">
-                    <button class="tb-btn" onclick={() => loadImages(false)} disabled={imagesLoading}>
-                        <RefreshCw size={14} /> {i18n.t.indexIngest.images_refresh}
-                    </button>
-                    <span class="muted images-count">
-                        {#if imagesLoading && imagesRows.length === 0}
-                            <Loader2 size={12} class="spin" />
-                        {:else}
-                            {imagesRows.length} / {imagesTotal} {i18n.t.indexIngest.images_count_suffix}
-                        {/if}
-                    </span>
-                </div>
-            </div>
-            {#if imagesLoading && imagesRows.length === 0}
-                <div class="empty-state"><Loader2 size={20} class="spin" /></div>
-            {:else if imagesRows.length === 0}
-                <div class="empty-state">{i18n.t.indexIngest.images_empty}</div>
-            {:else}
-                <div class="images-grid">
-                    {#each imagesRows as img (img.docId)}
-                        <div class="images-tile" title={img.locationUri}>
-                            <div class="images-tile-placeholder">
-                                <Images size={28} />
-                                <span class="images-ext-badge">{(img.ext ?? '?').toUpperCase()}</span>
-                            </div>
-                            <div class="images-tile-name" title={img.filename ?? ''}>
-                                {img.filename ?? img.docId}
-                            </div>
-                        </div>
-                    {/each}
-                </div>
-                {#if imagesNextCursor}
-                    <div class="load-more-bar">
-                        <button class="action-btn small" onclick={() => loadImages(true)} disabled={imagesLoading}>
-                            {imagesLoading ? '…' : i18n.t.indexIngest.images_load_more}
+        <!-- ══════════════════ IMAGES (P13 slice A2 — thumbnails + EXIF preview) ══════════════════ -->
+        <div class="images-split" class:with-preview={imagesPreview !== null}>
+            <div class="images-panel">
+                <div class="toolbar">
+                    <div class="toolbar-actions">
+                        <button class="tb-btn" onclick={() => loadImages(false)} disabled={imagesLoading}>
+                            <RefreshCw size={14} /> {i18n.t.indexIngest.images_refresh}
                         </button>
+                        <span class="muted images-count">
+                            {#if imagesLoading && imagesRows.length === 0}
+                                <Loader2 size={12} class="spin" />
+                            {:else}
+                                {imagesRows.length} / {imagesTotal} {i18n.t.indexIngest.images_count_suffix}
+                            {/if}
+                        </span>
                     </div>
+                </div>
+                {#if imagesLoading && imagesRows.length === 0}
+                    <div class="empty-state"><Loader2 size={20} class="spin" /></div>
+                {:else if imagesRows.length === 0}
+                    <div class="empty-state">{i18n.t.indexIngest.images_empty}</div>
+                {:else}
+                    <div class="images-grid">
+                        {#each imagesRows as img (img.docId)}
+                            <button class="images-tile" type="button"
+                                    class:images-tile-active={imagesPreview?.docId === img.docId}
+                                    title={img.locationUri}
+                                    onclick={() => openImagesPreview(img)}
+                                    use:lazyThumbnail={img.docId}>
+                                {#if imagesThumbs[img.docId] && imagesThumbs[img.docId] !== 'loading' && imagesThumbs[img.docId] !== 'error'}
+                                    <img src={imagesThumbs[img.docId]} alt={img.filename ?? ''} class="images-thumb" loading="lazy" />
+                                {:else}
+                                    <div class="images-tile-placeholder">
+                                        {#if imagesThumbs[img.docId] === 'loading'}
+                                            <Loader2 size={20} class="spin" />
+                                        {:else}
+                                            <Images size={28} />
+                                        {/if}
+                                        <span class="images-ext-badge">{(img.ext ?? '?').toUpperCase()}</span>
+                                    </div>
+                                {/if}
+                                <div class="images-tile-name" title={img.filename ?? ''}>
+                                    {img.filename ?? img.docId}
+                                </div>
+                            </button>
+                        {/each}
+                    </div>
+                    {#if imagesNextCursor}
+                        <div class="load-more-bar">
+                            <button class="action-btn small" onclick={() => loadImages(true)} disabled={imagesLoading}>
+                                {imagesLoading ? '…' : i18n.t.indexIngest.images_load_more}
+                            </button>
+                        </div>
+                    {/if}
                 {/if}
+            </div><!-- /images-panel -->
+
+            {#if imagesPreview !== null}
+                <aside class="images-preview-pane">
+                    <header class="images-preview-header">
+                        <span class="images-preview-title" title={imagesPreview.locationUri}>
+                            {imagesPreview.filename ?? imagesPreview.docId}
+                        </span>
+                        <button class="preview-close" onclick={closeImagesPreview} title={i18n.t.indexIngest.images_preview_close}>
+                            <X size={14} />
+                        </button>
+                    </header>
+                    <div class="images-preview-body">
+                        {#if imagesPreviewSrc}
+                            <img src={imagesPreviewSrc} alt={imagesPreview.filename ?? ''} class="images-preview-image" />
+                        {:else}
+                            <div class="preview-msg preview-error">{i18n.t.indexIngest.images_preview_no_local_path}</div>
+                        {/if}
+                        <div class="images-exif-block">
+                            <h3 class="images-exif-heading">{i18n.t.indexIngest.images_exif_heading}</h3>
+                            {#if imagesPreviewExifLoading}
+                                <div class="images-exif-loading"><Loader2 size={14} class="spin" /> {i18n.t.indexIngest.images_exif_loading}</div>
+                            {:else if imagesPreviewExifError}
+                                <div class="preview-msg preview-error">{imagesPreviewExifError}</div>
+                            {:else if imagesPreviewExif}
+                                <table class="images-exif-table">
+                                    <tbody>
+                                        {#if imagesPreviewExif.cameraMake}<tr><th>{i18n.t.indexIngest.exif_camera_make}</th><td>{imagesPreviewExif.cameraMake}</td></tr>{/if}
+                                        {#if imagesPreviewExif.cameraModel}<tr><th>{i18n.t.indexIngest.exif_camera_model}</th><td>{imagesPreviewExif.cameraModel}</td></tr>{/if}
+                                        {#if imagesPreviewExif.lensModel}<tr><th>{i18n.t.indexIngest.exif_lens}</th><td>{imagesPreviewExif.lensModel}</td></tr>{/if}
+                                        {#if imagesPreviewExif.takenAt}<tr><th>{i18n.t.indexIngest.exif_taken_at}</th><td>{imagesPreviewExif.takenAt.replace('T', ' ')}</td></tr>{/if}
+                                        {#if imagesPreviewExif.width != null && imagesPreviewExif.height != null}<tr><th>{i18n.t.indexIngest.exif_dimensions}</th><td>{imagesPreviewExif.width} × {imagesPreviewExif.height}</td></tr>{/if}
+                                        {#if imagesPreviewExif.fNumber != null}<tr><th>{i18n.t.indexIngest.exif_aperture}</th><td>f/{imagesPreviewExif.fNumber.toFixed(1)}</td></tr>{/if}
+                                        {#if imagesPreviewExif.exposureTime}<tr><th>{i18n.t.indexIngest.exif_exposure}</th><td>{imagesPreviewExif.exposureTime}</td></tr>{/if}
+                                        {#if imagesPreviewExif.iso != null}<tr><th>{i18n.t.indexIngest.exif_iso}</th><td>{imagesPreviewExif.iso}</td></tr>{/if}
+                                        {#if imagesPreviewExif.focalLengthMm != null}<tr><th>{i18n.t.indexIngest.exif_focal_length}</th><td>{imagesPreviewExif.focalLengthMm.toFixed(1)} mm</td></tr>{/if}
+                                        {#if imagesPreviewExif.gpsLat != null && imagesPreviewExif.gpsLon != null}<tr><th>{i18n.t.indexIngest.exif_gps}</th><td>{imagesPreviewExif.gpsLat.toFixed(6)}, {imagesPreviewExif.gpsLon.toFixed(6)}</td></tr>{/if}
+                                        {#if imagesPreviewExif.orientation != null}<tr><th>{i18n.t.indexIngest.exif_orientation}</th><td>{imagesPreviewExif.orientation}</td></tr>{/if}
+                                    </tbody>
+                                </table>
+                                {#if !imagesPreviewExif.cameraMake && !imagesPreviewExif.cameraModel && !imagesPreviewExif.takenAt && imagesPreviewExif.width == null}
+                                    <div class="images-exif-empty">{i18n.t.indexIngest.images_exif_empty}</div>
+                                {/if}
+                            {/if}
+                        </div>
+                    </div>
+                </aside>
             {/if}
         </div>
     {:else if activeTab === 'cidxArchive' && mountedCidx}
@@ -3473,12 +3645,17 @@
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-    /* ── P13 slice A1 — images grid ─────────────────────────────────────────
-       CSS grid only; virtual scrolling lands in A2 once thumbnails make
-       large grids expensive. Tile is intentionally minimal (icon + ext
-       badge + filename) so the placeholder reads as "future image" rather
-       than "broken row". */
-    .images-panel { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+    /* ── P13 slice A1/A2 — images grid + preview pane ───────────────────────
+       Grid renders lazy-loaded thumbnails (slice A2 — IntersectionObserver
+       in lazyThumbnail action) with a placeholder fallback for unloaded /
+       errored / unsupported tiles. Click toggles a side preview pane that
+       shows the full image plus an EXIF metadata table. Virtual scrolling
+       still deferred to a later slice once the grid grows past the
+       comfortable scroll envelope. */
+    .images-split { display: grid; grid-template-columns: 1fr; min-height: 0; height: 100%; gap: 0; }
+    .images-split.with-preview { grid-template-columns: minmax(0, 1fr) 380px; }
+
+    .images-panel { display: flex; flex-direction: column; gap: 6px; min-height: 0; min-width: 0; }
     .images-count { font-size: 0.78rem; }
     .images-grid {
         display: grid;
@@ -3493,9 +3670,12 @@
         border: 1px solid #2a2a3a;
         border-radius: 6px;
         background: #14141e;
-        cursor: default;
+        cursor: pointer;
+        text-align: left;
+        font: inherit; color: inherit;
     }
     .images-tile:hover { background: #1a1a28; border-color: #3a3a4a; }
+    .images-tile-active { border-color: #6366f1; background: #1a1a32; }
     .images-tile-placeholder {
         position: relative;
         aspect-ratio: 1 / 1;
@@ -3503,6 +3683,14 @@
         background: #0a0a14;
         border-radius: 4px;
         color: #4b5563;
+    }
+    .images-thumb {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: cover;
+        background: #0a0a14;
+        border-radius: 4px;
+        display: block;
     }
     .images-ext-badge {
         position: absolute; bottom: 4px; right: 4px;
@@ -3515,5 +3703,63 @@
     .images-tile-name {
         font-size: 0.72rem; color: #cbd5e1;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    .images-preview-pane {
+        display: flex; flex-direction: column;
+        border-left: 1px solid #27272a;
+        background: #0a0a14;
+        min-height: 0;
+        overflow: hidden;
+    }
+    .images-preview-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 10px;
+        border-bottom: 1px solid #27272a;
+        gap: 8px;
+    }
+    .images-preview-title {
+        font-size: 0.78rem; color: #cbd5e1;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        flex: 1;
+    }
+    .images-preview-body {
+        display: flex; flex-direction: column;
+        flex: 1;
+        overflow-y: auto;
+        padding: 10px;
+        gap: 10px;
+    }
+    .images-preview-image {
+        width: 100%;
+        max-height: 50vh;
+        object-fit: contain;
+        background: #000;
+        border-radius: 4px;
+    }
+    .images-exif-block { display: flex; flex-direction: column; gap: 6px; }
+    .images-exif-heading {
+        margin: 0; font-size: 0.78rem; font-weight: 600; color: #94a3b8;
+        text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .images-exif-loading { font-size: 0.78rem; color: #71717a; display: flex; gap: 6px; align-items: center; }
+    .images-exif-empty   { font-size: 0.78rem; color: #71717a; font-style: italic; }
+    .images-exif-table {
+        width: 100%;
+        font-size: 0.78rem;
+        border-collapse: collapse;
+    }
+    .images-exif-table th {
+        text-align: left; font-weight: 500;
+        color: #94a3b8;
+        padding: 3px 8px 3px 0;
+        white-space: nowrap;
+        vertical-align: top;
+        width: 30%;
+    }
+    .images-exif-table td {
+        color: #e2e8f0;
+        padding: 3px 0;
+        word-break: break-word;
     }
 </style>
