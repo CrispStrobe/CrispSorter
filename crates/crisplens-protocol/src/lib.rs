@@ -240,6 +240,74 @@ pub struct ImagesListResponse {
     pub total:  Option<i64>,
 }
 
+// ── Watchfolders (B5) ────────────────────────────────────────────────────
+
+/// One row from CrispLens's `watch_folders` SQLite table.  Both v2
+/// and v4 return objects from `SELECT * FROM watch_folders` directly,
+/// and that bypasses the usual serialisation contract: booleans come
+/// through as SQLite ints (`recursive: 1`, `auto_scan: 0`), and
+/// `scan_interval_hours` ends up as a float (`24.0`) because v2's
+/// migration column is `REAL`.  Verified live against
+/// `https://<crisplens-host>`.
+///
+/// Rather than push the int-vs-bool / int-vs-float / unit
+/// (`scan_interval` seconds vs `scan_interval_hours` hours) noise
+/// into the HTTP-client adapter, we use `serde_json::Value` for the
+/// version-skewed fields.  CrispSorter only branches on `path` for
+/// the slice-B5 cross-reference feature; the rest is informational.
+/// If a future slice needs typed access to `recursive` etc., promote
+/// them then — the adapter will know which backend it's talking to
+/// by then.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WatchFolder {
+    #[serde(default)]
+    pub id:   Option<i64>,
+    pub path: String,
+    #[serde(default)]
+    pub recursive: Option<serde_json::Value>,
+    #[serde(default)]
+    pub auto_scan: Option<serde_json::Value>,
+    /// v4 emits `scan_interval` (seconds); v2 emits
+    /// `scan_interval_hours` (hours, often as a float).  Aliased so
+    /// either backend's raw row drops into the same field; type is
+    /// `Value` because v2 uses REAL and v4 uses INTEGER.
+    #[serde(default, alias = "scan_interval_hours")]
+    pub scan_interval: Option<serde_json::Value>,
+    #[serde(default)]
+    pub enabled: Option<serde_json::Value>,
+}
+
+impl WatchFolder {
+    /// `recursive` flag normalised to a `bool` regardless of wire
+    /// shape (v2/v4 emit SQLite ints; future Rust port might emit
+    /// proper booleans).  Returns `None` when the field is absent.
+    pub fn recursive_bool(&self) -> Option<bool> {
+        coerce_bool(self.recursive.as_ref())
+    }
+
+    pub fn auto_scan_bool(&self) -> Option<bool> {
+        coerce_bool(self.auto_scan.as_ref())
+    }
+
+    pub fn enabled_bool(&self) -> Option<bool> {
+        coerce_bool(self.enabled.as_ref())
+    }
+}
+
+fn coerce_bool(v: Option<&serde_json::Value>) -> Option<bool> {
+    let v = v?;
+    if let Some(b) = v.as_bool() {
+        return Some(b);
+    }
+    if let Some(i) = v.as_i64() {
+        return Some(i != 0);
+    }
+    if let Some(f) = v.as_f64() {
+        return Some(f != 0.0);
+    }
+    None
+}
+
 // ── Errors ───────────────────────────────────────────────────────────────
 
 /// FastAPI / Express error body.  Both versions return `{ detail }`
@@ -508,5 +576,113 @@ mod tests {
         let json = r#"{"detail": "Not authenticated"}"#;
         let r: ErrorResponse = serde_json::from_str(json).unwrap();
         assert_eq!(r.detail, "Not authenticated");
+    }
+
+    // ── B5 — Watchfolder cross-reference ────────────────────────────────
+
+    #[test]
+    fn watchfolder_v4_raw_row_parses_with_int_booleans() {
+        // From electron-app-v4/server/routes/misc.js:335 — `SELECT *`
+        // returns SQLite booleans as 0/1 ints.  Permissive
+        // serde_json::Value typing makes this parse cleanly; the
+        // `recursive_bool()` helper coerces.
+        let json = r#"{
+            "id": 1,
+            "path": "/var/lib/crisplens/photos",
+            "recursive": 1,
+            "auto_scan": 0,
+            "scan_interval": 3600,
+            "enabled": 1
+        }"#;
+        let w: WatchFolder = serde_json::from_str(json).unwrap();
+        assert_eq!(w.path, "/var/lib/crisplens/photos");
+        assert_eq!(w.recursive_bool(), Some(true));
+        assert_eq!(w.auto_scan_bool(), Some(false));
+        assert_eq!(w.enabled_bool(), Some(true));
+    }
+
+    #[test]
+    fn watchfolder_v2_live_payload_parses() {
+        // Captured verbatim from POST /api/watchfolders against the
+        // live <crisplens-host> server (FastAPI v2): scan_interval
+        // is `24.0` (float, because the migration column is REAL),
+        // and there are several extra columns (last_scanned_at,
+        // files_found, files_added, created_at) the spec didn't
+        // anticipate.  All ignored silently except `path`.
+        let json = r#"{
+            "id": 1,
+            "path": "/tmp",
+            "recursive": 1,
+            "auto_scan": 0,
+            "scan_interval_hours": 24.0,
+            "last_scanned_at": null,
+            "files_found": 0,
+            "files_added": 0,
+            "created_at": "2026-05-11 16:33:01"
+        }"#;
+        let w: WatchFolder = serde_json::from_str(json).unwrap();
+        assert_eq!(w.path, "/tmp");
+        assert_eq!(w.recursive_bool(), Some(true));
+        assert_eq!(w.auto_scan_bool(), Some(false));
+        // scan_interval_hours alias landed in scan_interval, value
+        // preserved as the original 24.0 float.
+        assert_eq!(
+            w.scan_interval.as_ref().and_then(|v| v.as_f64()),
+            Some(24.0)
+        );
+    }
+
+    #[test]
+    fn watchfolder_with_proper_booleans_also_parses() {
+        // A future CrispLens Rust port (or a v5 frontend) might emit
+        // canonical JSON booleans.  Same Rust type accepts that
+        // shape too.
+        let json = r#"{
+            "id": 1, "path": "/p",
+            "recursive": true, "auto_scan": false, "enabled": true
+        }"#;
+        let w: WatchFolder = serde_json::from_str(json).unwrap();
+        assert_eq!(w.recursive_bool(), Some(true));
+        assert_eq!(w.auto_scan_bool(), Some(false));
+        assert_eq!(w.enabled_bool(), Some(true));
+    }
+
+    #[test]
+    fn watchfolder_minimal_payload_only_path() {
+        let json = r#"{"path": "/p"}"#;
+        let w: WatchFolder = serde_json::from_str(json).unwrap();
+        assert_eq!(w.path, "/p");
+        assert!(w.id.is_none());
+        assert_eq!(w.recursive_bool(), None);
+        assert_eq!(w.enabled_bool(), None);
+    }
+
+    #[test]
+    fn coerce_bool_handles_all_realistic_wire_shapes() {
+        // Pin the helper against every shape the live + future
+        // backends might emit, so a regression here would surface
+        // before reaching the UI cross-reference logic.
+        use serde_json::{json, Value};
+        let cases: &[(Value, Option<bool>)] = &[
+            (json!(true),   Some(true)),
+            (json!(false),  Some(false)),
+            (json!(1),      Some(true)),
+            (json!(0),      Some(false)),
+            (json!(2),      Some(true)),        // any nonzero int → true
+            (json!(-1),     Some(true)),
+            (json!(0.0),    Some(false)),
+            (json!(0.5),    Some(true)),
+            (json!(null),   None),
+            (json!("yes"),  None),              // strings ignored on purpose
+            (json!("1"),    None),              // (no implicit string-int magic)
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                coerce_bool(Some(input)),
+                *expected,
+                "coerce_bool({input:?}) — expected {expected:?}"
+            );
+        }
+        assert_eq!(coerce_bool(None), None);
     }
 }

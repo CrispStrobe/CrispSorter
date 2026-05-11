@@ -261,6 +261,10 @@ enum CrispLensCmd {
     /// not-configured / online-authenticated / online-unauth /
     /// offline.  Useful for headless health checks (cron + jq).
     Status,
+    /// List CrispLens's watchfolders.  Used in the GUI for the
+    /// "this folder is also watched by CrispLens" hint in the
+    /// Bilder preview pane (slice B5).
+    Watchfolders,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1753,6 +1757,34 @@ async fn cmd_images_crisplens(
                     }
                     if !status.error.is_empty() {
                         println!("note           : {}", status.error);
+                    }
+                }
+            }
+        }
+
+        CrispLensCmd::Watchfolders => {
+            use crate::images::crisplens::tauri_commands::watchfolders_blocking;
+            let dd = data_dir.to_path_buf();
+            let folders = tokio::task::spawn_blocking(move || watchfolders_blocking(&dd))
+                .await
+                .map_err(|e| format!("watchfolders join: {e}"))??;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&folders).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    if folders.is_empty() {
+                        println!("(no watchfolders configured on the CrispLens server)");
+                    } else {
+                        println!("{} watchfolder(s):", folders.len());
+                        for f in &folders {
+                            let rec  = f.recursive_bool().map(|b| if b { "rec" } else { "flat" }).unwrap_or("?");
+                            let auto = f.auto_scan_bool().map(|b| if b { "auto" } else { "manual" }).unwrap_or("?");
+                            let en   = f.enabled_bool().map(|b| if b { "on" } else { "off" }).unwrap_or("?");
+                            println!("  [{:>3}] {:4} {:6} {:3}  {}",
+                                f.id.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
+                                rec, auto, en, f.path);
+                        }
                     }
                 }
             }

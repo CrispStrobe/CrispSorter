@@ -30,7 +30,9 @@ use super::{
     settings::{self, ImagesSettings},
 };
 use crate::AppState;
-use crisplens_protocol::{ErrorResponse, HealthResponse, LoginRequest, LoginResponse, MeResponse};
+use crisplens_protocol::{
+    ErrorResponse, HealthResponse, LoginRequest, LoginResponse, MeResponse, WatchFolder,
+};
 
 /// Resolve the writable data directory.  Mirrors `cli::resolve_data_dir`
 /// for the GUI path — we use Tauri's app-handle to be platform-correct
@@ -374,6 +376,58 @@ pub(crate) fn status_blocking(data_dir: &std::path::Path) -> CrispLensStatus {
     }
 
     out
+}
+
+/// `GET /api/watchfolders` — list the folders CrispLens is watching.
+/// Used by slice B5's "this folder is also watched by CrispLens" hint
+/// in the Bilder preview pane.  Returns an empty list when Tier 2
+/// isn't configured / isn't authenticated; the UI treats that the
+/// same as "no overlap" so the hint never shows.
+#[tauri::command]
+pub async fn images_crisplens_watchfolders(
+    state: State<'_, AppState>,
+) -> Result<Vec<WatchFolder>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    tauri::async_runtime::spawn_blocking(move || watchfolders_blocking(&data_dir))
+        .await
+        .map_err(|e| format!("watchfolders join: {e}"))?
+}
+
+pub(crate) fn watchfolders_blocking(
+    data_dir: &std::path::Path,
+) -> Result<Vec<WatchFolder>, String> {
+    let s = settings::load(data_dir);
+    if !s.tier2_enabled() {
+        return Ok(Vec::new());
+    }
+    let url = s.normalised_url().to_owned();
+    let cookie = match secret::get_session_for_url(&url) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(Vec::new()), // unauth → empty, not an error
+        Err(e) => return Err(format!("keychain: {e}")),
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .cookie_store(true)
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("http client init: {e}"))?;
+
+    let resp = client
+        .get(format!("{url}/api/watchfolders"))
+        .header("Cookie", format!("session={cookie}"))
+        .send()
+        .map_err(|e| format!("GET /api/watchfolders: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        let detail = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|e| e.detail)
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        return Err(detail);
+    }
+    resp.json::<Vec<WatchFolder>>()
+        .map_err(|e| format!("watchfolders body not JSON: {e}"))
 }
 
 #[tauri::command]
