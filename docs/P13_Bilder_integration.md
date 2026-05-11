@@ -4,12 +4,15 @@
 > [PLAN.md](../PLAN.md) because it spans two repos (CrispSorter +
 > sibling [CrispLens](https://github.com/CrispStrobe/CrispLens)).
 >
-> **Status (2026-05-11):** Tier 1 (A1–A4) + Tier 2 foundation (B1)
-> shipped.  Remaining: B2–B5.  See the
-> [slice breakdown table](#slice-breakdown-with-hours) for per-slice
-> status and the [Spec vs reality appendix](#spec-vs-reality-appendix-2026-05-11)
-> for the wire-shape findings that came out of the B1 live cross-check
-> against the real CrispLens server.
+> **Status (2026-05-11):** All slices shipped (A1–A4 + B1–B5).
+> Two open follow-ups: image-overlay face boxes in the preview
+> pane (needs sha256 cross-reference at the CrispLens list
+> endpoint, which the live API doesn't expose) and true
+> semantic search (needs CrispLens upstream to add an
+> embedding-based route — currently `/api/search` is filename /
+> person-name substring only).  See the
+> [slice breakdown table](#slice-breakdown-with-hours) and the
+> [Spec vs reality appendix](#spec-vs-reality-appendix-2026-05-11).
 
 ---
 
@@ -331,16 +334,36 @@ the UI degrades to Tier 1 silently — the setting doesn't auto-revert
 | **A3** | 1 | 3  | shipped `abf7266` | SHA-256 dup view (data already in index) |
 | **A4** | 1 | 6  | shipped `ce0bfbd` | `image_hasher` crate integration + near-dup grouping — chose `HashAlg::Gradient` over the spec's "DCT-pHash" wording (see [A4 deviation appendix](#a4-deviation-dct-phash--gradient-hash)) |
 | **B1** | 2 | 6  | shipped `0aa3a51` | `crisplens-protocol` crate + Settings UI + Keychain session-cookie storage |
-| **B2** | 2 | 5  | **scope check** | `/api/search` is **filename/person-name substring search** only (verified live + in source); spec's "semantic" wording is aspirational.  Either ship as "remote text search" or wait for upstream CrispLens to grow an embedding-based route. |
-| **B3** | 2 | 8  | ready | Faces subtab + `/api/people` + `/api/images/{id}/faces` + face-crop modal.  Endpoints verified live; payload shapes captured. |
-| **B4** | 2 | 4  | ready | Health monitor + degradation banner + auth refresh.  `/api/health` shape pinned in B1's `HealthResponse`. |
-| **B5** | 2 | 4  | ready | Cross-link: open-in-CrispLens deep-link, watchfolder dedup signalling.  `/api/watchfolders` verified live. |
-| Tests + docs | both | 6 | rolling | A1–B1 already include unit tests inline; live tests against the real server are scripted in HISTORY.md. |
+| **B4** | 2 | 4  | shipped `250f137` | Health monitor + degradation banner (4-state machine: hidden / offline / session_expired / warming_up / ok) + auth refresh.  Plus the `enable-crispembed.sh` cargo target-dir fix. |
+| **B5** | 2 | 4  | shipped `8a4a2e0` | Open-in-CrispLens deep-link button + watchfolder cross-reference hint in the Bilder preview pane. `WatchFolder` permissive type (SQLite int booleans + `scan_interval_hours` float). |
+| **B3** | 2 | 8  | shipped `01e6203` | People view + `/api/people` + `/api/images/{id}/faces` end-to-end.  Live-verified `Face { bbox: Bbox }` nested-object shape (the spec's `[x,y,w,h]` array was wrong; the spec's `Person { face_count, cover_face_id }` was also wrong — actual fields are `appearances`, `first_seen`, `last_seen`). Image-overlay face boxes deferred — see "Open follow-ups" below. |
+| **B2** | 2 | 5 → 3 | shipped `814efe8` (reduced) | Wired as **remote text search**: live `/api/search` is filename / person-name substring only on both v2 and v4. The spec's "semantic" wording was aspirational and is now an upstream-CrispLens TODO. UI labelled honestly. |
+| Tests + docs | both | 6 | rolling | A1–B5 carry inline unit tests; live tests against the real server are scripted in HISTORY.md.  Total: 311 tauri-app + 29 protocol + 16 crispcat + 5 index-protocol = 361 passing. |
 
-**Total: ~58 h on paper.  Shipped to date (A1–A4 + B1): ~31 h.**
+**Total: ~58 h on paper.  Shipped: ~50 h** (the 8 h delta is B2 going
+from "semantic" to "text" — the rest matched the spec budget).
 Tier 1 (A1–A4) is self-contained — works on a fresh install with no
-external deps.  Tier 2 (B2–B5) layers on top when a CrispLens server
+external deps.  Tier 2 (B1–B5) layers on top when a CrispLens server
 is configured + reachable.
+
+## Open follow-ups (not in the original spec, surfaced during the
+implementation rounds)
+
+1. **Image-overlay face boxes** — Draw the `Face.bbox` rectangles
+   on top of the previewed image in the Bilder tab.  Blocked on
+   the image_id ↔ doc_id cross-reference: CrispLens's
+   `/api/images` doesn't emit sha256 at the list level, so a
+   CrispSorter-local image needs to be matched to a CrispLens
+   image_id via a separate hit (probably `GET /api/images/by-hash/{sha}`
+   if CrispLens grows that route).  Workable interim: query by
+   filename + filesize as a probabilistic match.
+2. **True semantic search** — Wire `images_crisplens_search` to
+   a future `/api/search/semantic?q=…` route once CrispLens
+   upstream adds one.  Code-side change is a one-line URL swap
+   plus a UI-label update.
+3. **Refactor `watchfolders_blocking` to use `get_json::<T>`** —
+   the B3 helper landed after B5; that one endpoint still has
+   the bespoke HTTP code.  ~10-line cleanup.
 
 ---
 
