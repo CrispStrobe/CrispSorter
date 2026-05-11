@@ -76,18 +76,36 @@ shopt -s nullglob
 SHARED_LIBS+=("$PREBUILT_DIR"/*.dylib "$PREBUILT_DIR"/*.so "$PREBUILT_DIR"/*.so.* "$PREBUILT_DIR"/*.dll)
 shopt -u nullglob
 if [[ ${#SHARED_LIBS[@]} -gt 0 ]]; then
-    # target/ moved from src-tauri/target/ to the workspace root once
-    # crisp-index-server / crisp-index-protocol joined the Cargo
-    # workspace (commit 7326771).
-    for d in "$PROJECT_ROOT/target/debug" \
-             "$PROJECT_ROOT/target/release" \
+    # Resolve cargo's effective target dir.  Mirrors the ~/.zshenv
+    # cargo() wrapper documented in the README under "Shared cargo
+    # target-dir on an external volume":
+    #   1. honour $CARGO_TARGET_DIR if the caller already set it,
+    #   2. otherwise route to <external-volume>/code/cargo-target/<reponame>
+    #      when the external volume is mounted (saves boot-disk space),
+    #   3. otherwise fall back to $PROJECT_ROOT/target/ (cargo default).
+    #
+    # Without this, the script would copy libs into a
+    # $PROJECT_ROOT/target/ that cargo never writes into (because the
+    # wrapper redirected it), and the dev binary would
+    # FailedToLoad-libcrispembed at launch.
+    if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+        TARGET_DIR="$CARGO_TARGET_DIR"
+    elif [[ -d <external-volume> ]]; then
+        TARGET_DIR="<external-volume>/code/cargo-target/$(basename "$PROJECT_ROOT")"
+    else
+        TARGET_DIR="$PROJECT_ROOT/target"
+    fi
+    echo "Cargo target dir: $TARGET_DIR"
+
+    for d in "$TARGET_DIR/debug" \
+             "$TARGET_DIR/release" \
              "$PROJECT_ROOT/src-tauri/bin"; do
         mkdir -p "$d"
         for lib in "${SHARED_LIBS[@]}"; do
             cp -f "$lib" "$d/"
         done
     done
-    echo "Copied ${#SHARED_LIBS[@]} runtime lib(s) to target/{debug,release}/ and src-tauri/bin/"
+    echo "Copied ${#SHARED_LIBS[@]} runtime lib(s) to $TARGET_DIR/{debug,release}/ and src-tauri/bin/"
 fi
 
 # 3b. Warn when GPU backend was requested but the staged tarball is CPU-only.

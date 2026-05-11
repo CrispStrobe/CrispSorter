@@ -2254,6 +2254,7 @@ pub fn run() {
             images::crisplens::tauri_commands::images_crisplens_session_status,
             images::crisplens::tauri_commands::images_crisplens_login,
             images::crisplens::tauri_commands::images_crisplens_logout,
+            images::crisplens::tauri_commands::images_crisplens_status,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
             index::tauri_commands::index_lookup_cb_file,
