@@ -22,6 +22,7 @@
 //! gets a clean failure rather than a Tauri panic if it accidentally
 //! reaches for a future-slice capability.
 
+pub mod crisplens;
 pub mod exif;
 pub mod local;
 pub mod phash;

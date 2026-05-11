@@ -245,6 +245,98 @@
     let imagesNearDupError     = $state<string>('');
     let imagesNearDupThreshold = $state(8);
 
+    // ── P13/B1 — CrispLens (Tier 2) settings + auth state ──────────────────
+    interface ImagesCrispLensSettings {
+        backend:          'local' | 'crisplens';
+        url:              string;
+        thumbnailSizePx:  number;
+        phashThreshold:   number;
+    }
+    let crispLensSettings        = $state<ImagesCrispLensSettings | null>(null);
+    let crispLensSettingsOpen    = $state(false);
+    let crispLensAuthenticated   = $state(false);
+    let crispLensUrlDraft        = $state('');
+    let crispLensBackendDraft    = $state<'local' | 'crisplens'>('local');
+    let crispLensLoginUser       = $state('');
+    let crispLensLoginPassword   = $state('');
+    let crispLensBusy            = $state(false);
+    let crispLensError           = $state('');
+    let crispLensInfo            = $state('');
+
+    async function loadCrispLensSettings() {
+        try {
+            crispLensSettings   = await invoke<ImagesCrispLensSettings>('images_crisplens_settings_get');
+            crispLensUrlDraft   = crispLensSettings.url;
+            crispLensBackendDraft = crispLensSettings.backend;
+            const status = await invoke<{ authenticated: boolean; url: string }>(
+                'images_crisplens_session_status'
+            );
+            crispLensAuthenticated = status.authenticated;
+        } catch (e: any) {
+            crispLensError = String(e?.message ?? e ?? 'failed to load settings');
+        }
+    }
+
+    async function saveCrispLensSettings() {
+        if (crispLensBusy) return;
+        crispLensBusy = true; crispLensError = ''; crispLensInfo = '';
+        try {
+            const next: ImagesCrispLensSettings = {
+                backend:         crispLensBackendDraft,
+                url:             crispLensUrlDraft.trim(),
+                thumbnailSizePx: crispLensSettings?.thumbnailSizePx ?? 256,
+                phashThreshold:  crispLensSettings?.phashThreshold  ?? 8,
+            };
+            await invoke('images_crisplens_settings_set', { settingsPayload: next });
+            crispLensSettings = next;
+            crispLensInfo = i18n.t.indexIngest.crisplens_saved;
+            await loadCrispLensSettings(); // refresh auth status
+        } catch (e: any) {
+            crispLensError = String(e?.message ?? e ?? 'save failed');
+        } finally {
+            crispLensBusy = false;
+        }
+    }
+
+    async function crispLensLoginNow() {
+        if (crispLensBusy) return;
+        crispLensBusy = true; crispLensError = ''; crispLensInfo = '';
+        try {
+            const out = await invoke<{ ok: boolean; username: string; role: string }>(
+                'images_crisplens_login',
+                { username: crispLensLoginUser, password: crispLensLoginPassword }
+            );
+            crispLensInfo = `${i18n.t.indexIngest.crisplens_login_ok}: ${out.username} (${out.role})`;
+            crispLensLoginPassword = ''; // wipe in-memory copy now that the cookie's in Keychain
+            await loadCrispLensSettings();
+        } catch (e: any) {
+            crispLensError = String(e?.message ?? e ?? 'login failed');
+        } finally {
+            crispLensBusy = false;
+        }
+    }
+
+    async function crispLensLogoutNow() {
+        if (crispLensBusy) return;
+        crispLensBusy = true; crispLensError = ''; crispLensInfo = '';
+        try {
+            await invoke('images_crisplens_logout');
+            crispLensInfo = i18n.t.indexIngest.crisplens_logout_ok;
+            await loadCrispLensSettings();
+        } catch (e: any) {
+            crispLensError = String(e?.message ?? e ?? 'logout failed');
+        } finally {
+            crispLensBusy = false;
+        }
+    }
+
+    function toggleCrispLensSettings() {
+        crispLensSettingsOpen = !crispLensSettingsOpen;
+        if (crispLensSettingsOpen && crispLensSettings === null) {
+            void loadCrispLensSettings();
+        }
+    }
+
     // PLAN P9 step 6 — column registry + persistence.
     interface ColumnDef {
         id:        string;
@@ -2298,6 +2390,14 @@
                                        disabled={imagesNearDupLoading} />
                             </label>
                         {/if}
+                        <button class="tb-btn" class:active={crispLensSettingsOpen}
+                                onclick={toggleCrispLensSettings}
+                                title={i18n.t.indexIngest.crisplens_settings_toggle_hint}>
+                            <ExternalLink size={14} /> {i18n.t.indexIngest.crisplens_settings_toggle}
+                            {#if crispLensAuthenticated}
+                                <span class="muted-small">●</span>
+                            {/if}
+                        </button>
                         <span class="muted images-count">
                             {#if imagesNearDupMode}
                                 {#if imagesNearDupLoading}
@@ -2323,6 +2423,70 @@
                         </span>
                     </div>
                 </div>
+                {#if crispLensSettingsOpen}
+                    <div class="crisplens-settings-pane">
+                        <h4 class="crisplens-heading">{i18n.t.indexIngest.crisplens_pane_heading}</h4>
+                        <p class="muted-small crisplens-helper">{i18n.t.indexIngest.crisplens_pane_help}</p>
+                        <label class="crisplens-row">
+                            <span>{i18n.t.indexIngest.crisplens_backend}:</span>
+                            <select bind:value={crispLensBackendDraft} disabled={crispLensBusy}>
+                                <option value="local">{i18n.t.indexIngest.crisplens_backend_local}</option>
+                                <option value="crisplens">{i18n.t.indexIngest.crisplens_backend_remote}</option>
+                            </select>
+                        </label>
+                        <label class="crisplens-row">
+                            <span>{i18n.t.indexIngest.crisplens_url}:</span>
+                            <input type="url" bind:value={crispLensUrlDraft}
+                                   placeholder="https://crisplens.example.com"
+                                   disabled={crispLensBusy} />
+                        </label>
+                        <div class="crisplens-row">
+                            <button class="action-btn small primary"
+                                    onclick={saveCrispLensSettings} disabled={crispLensBusy}>
+                                {crispLensBusy ? '…' : i18n.t.indexIngest.crisplens_save}
+                            </button>
+                        </div>
+                        {#if crispLensBackendDraft === 'crisplens' && crispLensUrlDraft.trim() !== ''}
+                            <hr class="crisplens-sep" />
+                            <h5 class="crisplens-heading">{i18n.t.indexIngest.crisplens_login_heading}</h5>
+                            <p class="muted-small crisplens-helper">
+                                {crispLensAuthenticated ? i18n.t.indexIngest.crisplens_login_authed : i18n.t.indexIngest.crisplens_login_unauthed}
+                            </p>
+                            {#if !crispLensAuthenticated}
+                                <label class="crisplens-row">
+                                    <span>{i18n.t.indexIngest.crisplens_user}:</span>
+                                    <input type="text" autocomplete="username"
+                                           bind:value={crispLensLoginUser} disabled={crispLensBusy} />
+                                </label>
+                                <label class="crisplens-row">
+                                    <span>{i18n.t.indexIngest.crisplens_password}:</span>
+                                    <input type="password" autocomplete="current-password"
+                                           bind:value={crispLensLoginPassword} disabled={crispLensBusy} />
+                                </label>
+                                <div class="crisplens-row">
+                                    <button class="action-btn small primary"
+                                            onclick={crispLensLoginNow}
+                                            disabled={crispLensBusy || !crispLensLoginUser || !crispLensLoginPassword}>
+                                        {crispLensBusy ? '…' : i18n.t.indexIngest.crisplens_login_button}
+                                    </button>
+                                </div>
+                            {:else}
+                                <div class="crisplens-row">
+                                    <button class="action-btn small"
+                                            onclick={crispLensLogoutNow} disabled={crispLensBusy}>
+                                        {crispLensBusy ? '…' : i18n.t.indexIngest.crisplens_logout_button}
+                                    </button>
+                                </div>
+                            {/if}
+                        {/if}
+                        {#if crispLensError}
+                            <div class="preview-msg preview-error crisplens-msg">{crispLensError}</div>
+                        {/if}
+                        {#if crispLensInfo}
+                            <div class="muted-small crisplens-msg">{crispLensInfo}</div>
+                        {/if}
+                    </div>
+                {/if}
                 {#if imagesNearDupMode}
                     {#if imagesNearDupLoading && imagesNearDupGroups.length === 0}
                         <div class="empty-state"><Loader2 size={20} class="spin" /> {i18n.t.indexIngest.images_near_duplicates_loading}</div>
@@ -4042,4 +4206,31 @@
         font-family: ui-monospace, monospace;
         font-size: 0.66rem;
     }
+
+    /* P13/B1 — CrispLens settings panel */
+    .crisplens-settings-pane {
+        margin: 6px 12px;
+        padding: 10px 14px;
+        border: 1px solid #2a2a3a;
+        border-radius: 6px;
+        background: #14141e;
+        font-size: 0.78rem;
+        display: flex; flex-direction: column; gap: 8px;
+    }
+    .crisplens-heading { margin: 0; color: #cbd5e1; font-size: 0.82rem; font-weight: 600; }
+    .crisplens-helper  { color: #71717a; font-size: 0.72rem; margin: 0; }
+    .crisplens-row     { display: flex; align-items: center; gap: 8px; }
+    .crisplens-row > span { color: #94a3b8; min-width: 80px; }
+    .crisplens-row input[type="url"],
+    .crisplens-row input[type="text"],
+    .crisplens-row input[type="password"],
+    .crisplens-row select {
+        flex: 1;
+        padding: 4px 6px;
+        background: #0a0a14; color: #e2e8f0;
+        border: 1px solid #3f3f46; border-radius: 4px;
+        font-size: 0.78rem;
+    }
+    .crisplens-sep { border: 0; border-top: 1px solid #27272a; margin: 4px 0; width: 100%; }
+    .crisplens-msg { margin-top: 4px; }
 </style>

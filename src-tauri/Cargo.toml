@@ -27,6 +27,7 @@ protoc-bin-vendored = "3"
 # `SearchRequest`, etc. Path dep stays inside the workspace; both crates
 # rebuild together when the protocol changes.
 crisp-index-protocol = { path = "../crisp-index-protocol" }
+crisplens-protocol   = { path = "../crates/crisplens-protocol" }
 crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 
 tauri = { version = "2", features = [] }
@@ -37,7 +38,7 @@ tauri-plugin-http = "2.5.7"
 tauri-plugin-store = "2.0.0-rc.0"
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
-reqwest = { version = "0.13.2", features = ["json", "stream", "blocking"] }
+reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies"] }
 # Used by drives/{filen,internxt,webdav}.rs to stage downloads / uploads
 # through a temp dir.  Was previously dev-only; promoted to a runtime dep
 # when InternxtDrive started using it for `read_file` / `write_file`.
@@ -110,6 +111,13 @@ image = "0.25.10"
 # Default features only — `fast_image_resize` is a 2-3x speedup but
 # pulls a system SIMD shim we don't need yet at this slice's scale.
 image_hasher = "3"
+# P13/B1 — cross-platform secret storage for the CrispLens session
+# cookie.  Per the spec's risk register: NEVER write the credential
+# to tauri-plugin-store JSON (leaks via backup / cloud-sync).  This
+# crate uses Keychain on macOS, secret-service / kwallet on Linux,
+# DPAPI / Windows Credential Vault on Windows.  Sync API — fine to
+# call from blocking pool; never holds an open OS handle past return.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6"
 clap_mangen = "0.2"
