@@ -240,6 +240,121 @@ pub struct ImagesListResponse {
     pub total:  Option<i64>,
 }
 
+// ── People + Faces (B3) ──────────────────────────────────────────────────
+
+/// One row from `GET /api/people`.  Both backends emit a strict
+/// subset / superset of the same columns:
+///
+/// * v2 (FastAPI, captured live against <crisplens-host>):
+///   `{id, name, appearances, first_seen, last_seen, created_at}`
+/// * v4 (Express): `SELECT p.*, face_count, sample_image_path,
+///   sample_image_id` — adds `face_count` and the v4-only sample
+///   image fields the UI uses for the cover thumbnail.
+///
+/// The shared key is `(id, name)`.  Everything else is permissive
+/// — `#[serde(default)]` per field, plus aliases for the bits that
+/// got named differently across versions.  Booleans (`verified` on
+/// the face side, none on Person) use `serde_json::Value` so SQLite
+/// int booleans survive the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Person {
+    pub id:   i64,
+    pub name: String,
+    /// v2: `appearances`; v4: `total_appearances` (SELECT p.*
+    /// ships whatever the people table column is — different).
+    /// We accept both via alias.
+    #[serde(default, alias = "total_appearances")]
+    pub appearances: Option<i64>,
+    /// v4 only — count of face rows pointing at this person.
+    /// Different from `appearances` (which counts distinct images).
+    #[serde(default)]
+    pub face_count: Option<i64>,
+    /// v4 only — first image's filepath, surfaced by the UI as the
+    /// cover thumbnail.  v2 doesn't compute this server-side.
+    #[serde(default)]
+    pub sample_image_path: Option<String>,
+    #[serde(default)]
+    pub sample_image_id: Option<i64>,
+    /// v2-only: timestamps of the oldest and newest image this
+    /// person appears in.  UI surfaces them for orientation.
+    #[serde(default)]
+    pub first_seen: Option<String>,
+    #[serde(default)]
+    pub last_seen: Option<String>,
+    pub created_at: String,
+}
+
+/// Normalised face bounding box in `[0, 1]` units of the source
+/// image.  Live v2 wire shape — captured verbatim from
+/// `GET /api/images/{id}/faces` on `https://<crisplens-host>`.
+/// v4's mapper at `electron-app-v4/server/routes/images.js:233`
+/// emits the same `{top, right, bottom, left}` object plus flat
+/// `bbox_top`/`right`/`bottom`/`left` aliases we ignore here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Bbox {
+    pub top:    f32,
+    pub right:  f32,
+    pub bottom: f32,
+    pub left:   f32,
+}
+
+/// One face crop detected in an image.  From
+/// `GET /api/images/{id}/faces` on both v2 and v4.  Wire shape
+/// verified against the live v2 server — important deviations from
+/// the spec sketch:
+///
+/// * `image_id` is **not** returned by v2 (the caller knows it from
+///   the URL); we mark it optional so v4's payload still populates
+///   it but a missing field deserialises cleanly.
+/// * `bbox` is a NESTED OBJECT (`{top, right, bottom, left}`), not
+///   flat columns.  v4 emits both the nested object AND flat
+///   `bbox_top/right/bottom/left` siblings — we bind to the nested
+///   shape (which both backends emit) and let serde drop the flat
+///   v4-compat aliases as unknown fields.
+/// * `face_quality` is v2-only (set equal to `detection_confidence`
+///   in current builds); v4 omits it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Face {
+    /// v2: `face_id`; v4: both `id` and `face_id`.  We bind to
+    /// `face_id` only; v4's redundant `id` gets dropped as unknown.
+    pub face_id: i64,
+    /// Optional because v2's `/api/images/{id}/faces` doesn't echo
+    /// the image_id in each row (the caller already knows it from
+    /// the URL).  v4 includes it explicitly.
+    #[serde(default)]
+    pub image_id: Option<i64>,
+    pub bbox: Bbox,
+    #[serde(default)]
+    pub detection_confidence: Option<f32>,
+    /// v2-only.  v4's mapper drops this column.
+    #[serde(default)]
+    pub face_quality: Option<f32>,
+    #[serde(default)]
+    pub embedding_id: Option<i64>,
+    #[serde(default)]
+    pub person_id: Option<i64>,
+    #[serde(default)]
+    pub person_name: Option<String>,
+    #[serde(default)]
+    pub recognition_confidence: Option<f32>,
+    /// SQLite int OR canonical bool depending on backend.  Coerce
+    /// via `verified_bool()`.
+    #[serde(default)]
+    pub verified: Option<serde_json::Value>,
+    /// v2-only — InsightFace age/gender estimators.  Sometimes
+    /// populated, often null (model dependent).
+    #[serde(default)]
+    pub estimated_age: Option<f32>,
+    #[serde(default)]
+    pub estimated_gender: Option<String>,
+}
+
+impl Face {
+    pub fn verified_bool(&self) -> Option<bool> {
+        coerce_bool(self.verified.as_ref())
+    }
+}
+
 // ── Watchfolders (B5) ────────────────────────────────────────────────────
 
 /// One row from CrispLens's `watch_folders` SQLite table.  Both v2
@@ -655,6 +770,144 @@ mod tests {
         assert!(w.id.is_none());
         assert_eq!(w.recursive_bool(), None);
         assert_eq!(w.enabled_bool(), None);
+    }
+
+    // ── B3 — Person / Face ─────────────────────────────────────────────
+
+    #[test]
+    fn person_v2_live_payload_parses() {
+        // Captured verbatim from `GET /api/people` against the live
+        // <crisplens-host> server (FastAPI v2).
+        let json = r#"{
+            "id": 1,
+            "name": "Christian Ströbele",
+            "appearances": 12,
+            "first_seen": "2026-02-24 16:39:12",
+            "last_seen":  "2026-03-05 11:36:06",
+            "created_at": "2026-02-24 16:39:12"
+        }"#;
+        let p: Person = serde_json::from_str(json).unwrap();
+        assert_eq!(p.id, 1);
+        assert_eq!(p.name, "Christian Ströbele");
+        assert_eq!(p.appearances, Some(12));
+        assert!(p.face_count.is_none());
+        assert!(p.sample_image_path.is_none());
+        assert_eq!(p.first_seen.as_deref(), Some("2026-02-24 16:39:12"));
+    }
+
+    #[test]
+    fn person_v4_payload_parses_with_sample_image() {
+        // v4's SELECT p.*, face_count, sample_image_path, sample_image_id
+        // — superset of v2.  The `total_appearances` column shows
+        // up because v4's people table renames it.
+        let json = r#"{
+            "id": 1,
+            "name": "Alice",
+            "total_appearances": 12,
+            "face_count": 47,
+            "sample_image_path": "/var/lib/crisplens/uploads/abc.jpg",
+            "sample_image_id": 42,
+            "created_at": "2024-01-01T00:00:00Z"
+        }"#;
+        let p: Person = serde_json::from_str(json).unwrap();
+        assert_eq!(p.appearances, Some(12), "total_appearances alias should populate");
+        assert_eq!(p.face_count, Some(47));
+        assert_eq!(p.sample_image_id, Some(42));
+        assert_eq!(p.sample_image_path.as_deref(), Some("/var/lib/crisplens/uploads/abc.jpg"));
+    }
+
+    #[test]
+    fn person_with_null_optionals_parses() {
+        // The first row from the live people list had every
+        // optional field as null — must still deserialise.
+        let json = r#"{
+            "id": 33,
+            "name": "Alexander Kenneth-Nagel",
+            "appearances": 0,
+            "first_seen": null,
+            "last_seen":  null,
+            "created_at": "2026-02-25 14:08:16"
+        }"#;
+        let p: Person = serde_json::from_str(json).unwrap();
+        assert_eq!(p.appearances, Some(0));
+        assert!(p.first_seen.is_none());
+    }
+
+    #[test]
+    fn face_v2_live_payload_parses() {
+        // CAPTURED VERBATIM from
+        // `GET /api/images/201/faces` against the live v2 server at
+        // https://<crisplens-host>.  Key facts the type encodes:
+        //   * `bbox` is a NESTED OBJECT, not flat columns
+        //   * `image_id` is ABSENT (caller knows it from the URL)
+        //   * `face_quality` is present (set equal to detection_confidence)
+        //   * `verified` is a SQLite int (1, not true)
+        //   * `estimated_age` / `estimated_gender` are null
+        let json = r#"{
+            "face_id": 238,
+            "detection_confidence": 0.8808497190475464,
+            "face_quality": 0.8808497190475464,
+            "estimated_age": null,
+            "estimated_gender": null,
+            "embedding_id": 238,
+            "person_id": 39,
+            "person_name": "Hussein Hamdan",
+            "recognition_confidence": 1.0,
+            "verified": 1,
+            "bbox": {
+                "top": 0.425,
+                "right": 0.3329627570872707,
+                "bottom": 0.5766666666666667,
+                "left": 0.2573652028904947
+            }
+        }"#;
+        let f: Face = serde_json::from_str(json).unwrap();
+        assert_eq!(f.face_id, 238);
+        assert!(f.image_id.is_none(), "v2 omits image_id; type must tolerate that");
+        assert!((f.bbox.top - 0.425).abs() < 1e-6);
+        assert!((f.bbox.right - 0.3329627570872707).abs() < 1e-6);
+        assert_eq!(f.verified_bool(), Some(true));
+        assert_eq!(f.person_name.as_deref(), Some("Hussein Hamdan"));
+        assert_eq!(f.face_quality, Some(0.8808497190475464));
+        assert!(f.estimated_age.is_none());
+    }
+
+    #[test]
+    fn face_v4_payload_parses_with_flat_aliases_dropped() {
+        // v4 emits the nested bbox AND flat bbox_top/right/bottom/left
+        // as siblings.  Both contain the same values.  We bind to
+        // the nested shape; the flat siblings are silently dropped
+        // as unknown fields.  Also v4 emits both `id` and `face_id`
+        // — we bind to `face_id`, drop `id`.
+        let json = r#"{
+            "face_id": 11, "id": 11,
+            "image_id": 42,
+            "bbox": { "top": 0.10, "right": 0.30, "bottom": 0.20, "left": 0.40 },
+            "bbox_top": 0.10, "bbox_right": 0.30, "bbox_bottom": 0.20, "bbox_left": 0.40,
+            "detection_confidence": 0.95,
+            "embedding_id": 5,
+            "person_id": 1, "person_name": "Alice",
+            "recognition_confidence": 0.87,
+            "verified": true
+        }"#;
+        let f: Face = serde_json::from_str(json).unwrap();
+        assert_eq!(f.face_id, 11);
+        assert_eq!(f.image_id, Some(42));
+        assert!((f.bbox.top - 0.10).abs() < 1e-6);
+        assert_eq!(f.verified_bool(), Some(true));
+    }
+
+    #[test]
+    fn face_unverified_with_no_person_parses() {
+        let json = r#"{
+            "face_id": 99,
+            "bbox": { "top": 0.0, "right": 1.0, "bottom": 1.0, "left": 0.0 }
+        }"#;
+        let f: Face = serde_json::from_str(json).unwrap();
+        assert_eq!(f.face_id, 99);
+        assert!(f.image_id.is_none());
+        assert!(f.person_id.is_none());
+        assert_eq!(f.verified_bool(), None);
     }
 
     #[test]

@@ -265,6 +265,14 @@ enum CrispLensCmd {
     /// "this folder is also watched by CrispLens" hint in the
     /// Bilder preview pane (slice B5).
     Watchfolders,
+    /// List person clusters from `GET /api/people` — the Faces
+    /// subtab feed (slice B3).
+    People,
+    /// List face crops detected in a single image
+    /// (`GET /api/images/{image_id}/faces`).
+    ImageFaces {
+        image_id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1784,6 +1792,64 @@ async fn cmd_images_crisplens(
                             println!("  [{:>3}] {:4} {:6} {:3}  {}",
                                 f.id.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
                                 rec, auto, en, f.path);
+                        }
+                    }
+                }
+            }
+        }
+
+        CrispLensCmd::People => {
+            use crate::images::crisplens::tauri_commands::get_json;
+            use crisplens_protocol::Person;
+            let dd = data_dir.to_path_buf();
+            let people: Vec<Person> = tokio::task::spawn_blocking(move || {
+                get_json::<Vec<Person>>(&dd, "/api/people")
+            })
+            .await
+            .map_err(|e| format!("people join: {e}"))??;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&people).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    if people.is_empty() {
+                        println!("(no people on the CrispLens server, or not authenticated)");
+                    } else {
+                        println!("{} person cluster(s):", people.len());
+                        for p in &people {
+                            let app = p.appearances.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
+                            println!("  [{:>3}] {:>4}×  {}", p.id, app, p.name);
+                        }
+                    }
+                }
+            }
+        }
+
+        CrispLensCmd::ImageFaces { image_id } => {
+            use crate::images::crisplens::tauri_commands::get_json;
+            use crisplens_protocol::Face;
+            let dd = data_dir.to_path_buf();
+            let path = format!("/api/images/{image_id}/faces");
+            let faces: Vec<Face> = tokio::task::spawn_blocking(move || {
+                get_json::<Vec<Face>>(&dd, &path)
+            })
+            .await
+            .map_err(|e| format!("faces join: {e}"))??;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string(&faces).map_err(|e| e.to_string())?);
+                }
+                OutFormat::Text => {
+                    if faces.is_empty() {
+                        println!("(no faces detected in image {image_id})");
+                    } else {
+                        println!("{} face(s) in image {image_id}:", faces.len());
+                        for f in &faces {
+                            let person = f.person_name.as_deref().unwrap_or("(unknown)");
+                            let conf   = f.detection_confidence.map(|c| format!("{c:.2}")).unwrap_or_else(|| "?".into());
+                            let verif  = f.verified_bool().map(|b| if b { "✓" } else { "·" }).unwrap_or("·");
+                            println!("  [{:>3}] {verif} det={conf}  bbox=t{:.2},r{:.2},b{:.2},l{:.2}  {}",
+                                f.face_id, f.bbox.top, f.bbox.right, f.bbox.bottom, f.bbox.left, person);
                         }
                     }
                 }
