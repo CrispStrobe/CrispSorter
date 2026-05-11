@@ -32,3 +32,11 @@ Thumbs.db
 
 # Samples (to keep the repo lean)
 samples/
+
+# Session-handover prompts.  Local-only by convention — they reference
+# absolute paths (~/.claude memory dirs, sibling repos at
+# ../CrispLens, etc.) that don't make sense to ship in the repo, and
+# often quote credentials by env-var name in test recipes.
+# Tracked references in PLAN.md / HISTORY.md cite the local path
+# (handover-prompts/...) but the content lives outside git.
+handover-prompts/
