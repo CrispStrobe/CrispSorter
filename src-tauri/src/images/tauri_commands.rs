@@ -25,8 +25,9 @@ use tauri::State;
 use super::{
     exif::{read_exif, ExifSummary},
     local::LocalImages,
+    phash::DEFAULT_NEAR_DUP_THRESHOLD,
     thumbnail::{generate_thumbnail, ThumbnailError, DEFAULT_THUMBNAIL_SIZE},
-    types::{DuplicateGroup, ImagesPage, ListFilters},
+    types::{DuplicateGroup, ImagesPage, ListFilters, NearDuplicateGroup},
     ImagesBackend, IMAGE_EXTS,
 };
 use crate::index::local_index::LocalIndex;
@@ -97,6 +98,28 @@ pub async fn images_duplicates(
     let backend = LocalImages::new(local_index);
     backend
         .duplicates(filters.unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn images_near_duplicates(
+    state: State<'_, AppState>,
+    threshold: Option<u32>,
+    filters: Option<ListFilters>,
+) -> Result<Vec<NearDuplicateGroup>, String> {
+    let lock = state.index.lock().await;
+    let local_index = match (lock.config.enabled, lock.local.as_ref()) {
+        (false, _) | (true, None) => return Ok(vec![]),
+        (true, Some(l)) => l.clone(),
+    };
+    drop(lock);
+    let backend = LocalImages::new(local_index);
+    backend
+        .near_duplicates(
+            threshold.unwrap_or(DEFAULT_NEAR_DUP_THRESHOLD),
+            filters.unwrap_or_default(),
+        )
         .await
         .map_err(|e| e.to_string())
 }

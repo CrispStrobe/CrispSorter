@@ -193,6 +193,23 @@ enum ImagesCmd {
         #[arg(long)]
         folder: Option<PathBuf>,
     },
+    /// Group image rows by perceptual-hash similarity (Hamming
+    /// distance ≤ threshold).  Catches visually-identical files that
+    /// the SHA-256 view misses (resizes, recompressions).  Slow on
+    /// big indexes — every row decoded + hashed on demand.
+    NearDuplicates {
+        /// Hamming-distance threshold (0..=64).  Default 8 — proven
+        /// safe for JPEG resizes per the spec.
+        #[arg(long, default_value_t = 8)]
+        threshold: u32,
+        /// Override the canonical IMAGE_EXTS list (comma-separated,
+        /// lower-case, no leading dot).
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Optional parent-folder prefix to scope the near-dup pass.
+        #[arg(long)]
+        folder: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1297,6 +1314,46 @@ async fn cmd_images_async(
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
         }
 
+        ImagesCmd::NearDuplicates { threshold, ext, folder } => {
+            let filters = ListFilters {
+                parent_dir_prefix: folder_to_prefix(folder),
+                ext: if ext.is_empty() { None } else { Some(ext) },
+                ..Default::default()
+            };
+            let groups = backend
+                .near_duplicates(threshold, filters)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let payload = serde_json::json!({
+                        "group_count": groups.len(),
+                        "threshold":   threshold,
+                        "groups":      groups,
+                    });
+                    println!("{payload}");
+                }
+                OutFormat::Text => {
+                    if groups.is_empty() {
+                        println!("no near-duplicate clusters at threshold {threshold}");
+                    } else {
+                        println!("{} near-dup clusters (threshold {threshold}):", groups.len());
+                        for g in &groups {
+                            println!();
+                            println!("  rep phash: 0x{}  ({} members)",
+                                g.representative_phash_hex, g.items.len());
+                            for it in &g.items {
+                                let name = it.image.filename.as_deref().unwrap_or(&it.image.doc_id);
+                                let ext = it.image.ext.as_deref().unwrap_or("?");
+                                println!("    .{ext:<6} d={:<3} {name}\t{}",
+                                    it.distance_from_rep, it.image.location_uri);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         ImagesCmd::Duplicates { ext, folder } => {
             let filters = ListFilters {
                 parent_dir_prefix: folder_to_prefix(folder),
@@ -2153,6 +2210,33 @@ mod tests {
                 assert!(folder.is_none());
             }
             other => panic!("expected Images Duplicates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_near_duplicates_uses_default_threshold() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "near-duplicates"]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::NearDuplicates { threshold, ext, folder }, .. } => {
+                // Spec calls for default = 8.
+                assert_eq!(threshold, 8);
+                assert!(ext.is_empty());
+                assert!(folder.is_none());
+            }
+            other => panic!("expected Images NearDuplicates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_near_duplicates_accepts_threshold_override() {
+        let cli = Cli::try_parse_from([
+            "crispsorter", "images", "near-duplicates", "--threshold", "12",
+        ]).unwrap();
+        match cli.command {
+            Command::Images { cmd: ImagesCmd::NearDuplicates { threshold, .. }, .. } => {
+                assert_eq!(threshold, 12);
+            }
+            other => panic!("expected Images NearDuplicates, got {other:?}"),
         }
     }
 

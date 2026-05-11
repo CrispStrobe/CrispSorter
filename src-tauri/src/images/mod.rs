@@ -24,6 +24,7 @@
 
 pub mod exif;
 pub mod local;
+pub mod phash;
 pub mod tauri_commands;
 pub mod thumbnail;
 pub mod types;
@@ -31,7 +32,10 @@ pub mod types;
 use anyhow::Result;
 use async_trait::async_trait;
 
-pub use types::{DuplicateGroup, HealthStatus, Image, ImageRef, ImagesPage, ListFilters};
+pub use types::{
+    DuplicateGroup, HealthStatus, Image, ImageRef, ImagesPage, ListFilters,
+    NearDuplicateGroup, NearDuplicateItem,
+};
 
 /// Canonical lower-cased list of extensions the Images grid considers
 /// "image rows".  Matches the spec in
@@ -87,6 +91,23 @@ pub trait ImagesBackend: Send + Sync {
     /// if that ever changes we can switch to GROUP-BY pushdown
     /// without revving the API.
     async fn duplicates(&self, filters: ListFilters) -> Result<Vec<DuplicateGroup>>;
+
+    /// Group image rows whose perceptual hashes are within
+    /// `threshold` Hamming distance (slice A4).  Catches visual
+    /// duplicates that the SHA-256 view misses: a JPEG and its
+    /// resized copy share a pHash within the default threshold of 8
+    /// but have different bytes (and thus different `source_hash`).
+    ///
+    /// Implementation in Tier 1 is on-demand: the local backend
+    /// resolves each row's local path and decodes + hashes the file,
+    /// then runs an O(N²) clustering pass.  Skips rows whose
+    /// `location_uri` doesn't resolve to a local path (Tier 2 / drive
+    /// rows) and rows whose hash compute fails (HEIC, missing files).
+    async fn near_duplicates(
+        &self,
+        threshold: u32,
+        filters: ListFilters,
+    ) -> Result<Vec<NearDuplicateGroup>>;
 }
 
 #[cfg(test)]

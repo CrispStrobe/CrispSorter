@@ -5018,6 +5018,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "image_hasher"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd266c66b0a0e2d4c6db8e710663fc163a2d33595ce997b6fbda407c8759d344"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "rustdct",
+ "serde",
+ "transpose",
+]
+
+[[package]]
 name = "imgref"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9296,6 +9309,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustdct"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b61555105d6a9bf98797c063c362a1d24ed8ab0431655e38f1cf51e52089551"
+dependencies = [
+ "rustfft",
+]
+
+[[package]]
 name = "rustfft"
 version = "6.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11045,6 +11067,7 @@ dependencies = [
  "hex",
  "hf-hub",
  "image",
+ "image_hasher",
  "jwalk",
  "kamadak-exif",
  "lance",

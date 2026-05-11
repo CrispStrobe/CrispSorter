@@ -19,7 +19,12 @@ use crate::index::schema::{
 };
 
 use super::{
-    types::{DuplicateGroup, HealthStatus, Image, ImagesPage, ListFilters},
+    phash::{hamming_distance, phash_file},
+    tauri_commands::location_uri_to_local_path,
+    types::{
+        phash_to_hex, DuplicateGroup, HealthStatus, Image, ImagesPage, ListFilters,
+        NearDuplicateGroup, NearDuplicateItem,
+    },
     ImagesBackend, IMAGE_EXTS,
 };
 
@@ -178,6 +183,56 @@ impl ImagesBackend for LocalImages {
         });
         Ok(groups)
     }
+
+    async fn near_duplicates(
+        &self,
+        threshold: u32,
+        filters: ListFilters,
+    ) -> Result<Vec<NearDuplicateGroup>> {
+        // Walk all pages of the filtered image set, then hash each row
+        // off the runtime via spawn_blocking — image decode + DCT are
+        // CPU-bound and we don't want to stall the async executor.
+        const PAGE: i32 = 1000;
+        let mut images: Vec<Image> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .list(PAGE, cursor.clone(), filters.clone())
+                .await
+                .context("LocalImages::near_duplicates -> list(page)")?;
+            images.extend(page.items);
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        // One blocking task per image — Tokio caps the blocking pool
+        // at 512 by default; 99% of users won't have that many image
+        // rows.  For larger indexes, a future slice can introduce a
+        // proper FuturesUnordered with a manual concurrency cap.
+        let join_set: Vec<_> = images
+            .into_iter()
+            .map(|img| {
+                tokio::task::spawn_blocking(move || {
+                    let phash = try_hash_row(&img);
+                    (img, phash)
+                })
+            })
+            .collect();
+
+        let mut hashed: Vec<(Image, i64)> = Vec::new();
+        for handle in join_set {
+            let (img, phash) = handle
+                .await
+                .context("LocalImages::near_duplicates -> spawn_blocking join")?;
+            if let Some(h) = phash {
+                hashed.push((img, h));
+            }
+        }
+
+        Ok(cluster_by_phash(hashed, threshold))
+    }
 }
 
 fn search_result_to_image(r: crate::index::schema::SearchResult) -> Image {
@@ -190,6 +245,117 @@ fn search_result_to_image(r: crate::index::schema::SearchResult) -> Image {
         indexed_at: r.indexed_at,
         source_hash: r.source_hash,
     }
+}
+
+/// Hash one image row.  Returns `None` for rows whose `location_uri`
+/// doesn't resolve to a local path (Tier 2 / drive sources) and for
+/// rows whose hash compute fails (HEIC, missing files, decode errors)
+/// — we drop them silently rather than failing the whole near-dup
+/// pass.  Lives at module scope because both `near_duplicates` and
+/// the test fixture exercise the same code path.
+fn try_hash_row(img: &Image) -> Option<i64> {
+    let path = location_uri_to_local_path(&img.location_uri)?;
+    phash_file(&path).ok()
+}
+
+/// Cluster `(image, phash)` rows by Hamming distance ≤ `threshold`
+/// using a single-link union-find style sweep.  O(N²) which is fine
+/// at Tier-1 scale; an LSH index is the obvious upgrade if we ever
+/// need to handle millions of images.
+fn cluster_by_phash(
+    rows: Vec<(Image, i64)>,
+    threshold: u32,
+) -> Vec<NearDuplicateGroup> {
+    let n = rows.len();
+    if n < 2 {
+        return Vec::new();
+    }
+
+    // parent[i] = index of the row representing the cluster i belongs to.
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        let mut root = i;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        // Path compression.
+        let mut cur = i;
+        while parent[cur] != root {
+            let next = parent[cur];
+            parent[cur] = root;
+            cur = next;
+        }
+        root
+    }
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if hamming_distance(rows[i].1, rows[j].1) <= threshold {
+                let ri = find(&mut parent, i);
+                let rj = find(&mut parent, j);
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+
+    // Bucket rows by their cluster representative.
+    let mut buckets: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        buckets.entry(root).or_default().push(i);
+    }
+
+    let mut groups: Vec<NearDuplicateGroup> = buckets
+        .into_iter()
+        .filter_map(|(_, idxs)| {
+            if idxs.len() < 2 {
+                return None;
+            }
+            // Representative = the row with the numerically smallest
+            // hash (stable, hash-only, no time-of-arrival dependency).
+            let rep_phash = idxs
+                .iter()
+                .map(|&i| rows[i].1)
+                .min()
+                .expect("non-empty");
+            let mut items: Vec<NearDuplicateItem> = idxs
+                .into_iter()
+                .map(|i| {
+                    let (img, phash) = &rows[i];
+                    NearDuplicateItem {
+                        image: img.clone(),
+                        phash_hex: phash_to_hex(*phash),
+                        distance_from_rep: hamming_distance(rep_phash, *phash),
+                    }
+                })
+                .collect();
+            // Closest-to-representative first inside each group.
+            // Tie-break on the hex hash for stable ordering even when
+            // multiple members are equidistant from the representative.
+            items.sort_by(|a, b| {
+                a.distance_from_rep
+                    .cmp(&b.distance_from_rep)
+                    .then_with(|| a.phash_hex.cmp(&b.phash_hex))
+            });
+            Some(NearDuplicateGroup {
+                representative_phash_hex: phash_to_hex(rep_phash),
+                items,
+            })
+        })
+        .collect();
+
+    // Largest groups first; tie-break by representative phash hex
+    // for determinism across runs.
+    groups.sort_by(|a, b| {
+        b.items
+            .len()
+            .cmp(&a.items.len())
+            .then_with(|| a.representative_phash_hex.cmp(&b.representative_phash_hex))
+    });
+    groups
 }
 
 #[cfg(test)]
@@ -598,5 +764,169 @@ mod tests {
             .await
             .unwrap();
         assert!(groups.is_empty(), "got unexpected png dup groups: {groups:?}");
+    }
+
+    // ── A4: pHash near-duplicate clustering tests ────────────────────────
+
+    /// `cluster_by_phash` is the union-find core; tests it directly
+    /// with synthetic (image, phash) pairs so we can pin the
+    /// algorithm's behaviour without running the image decoder.
+    #[test]
+    fn cluster_by_phash_returns_empty_below_two_inputs() {
+        let img = |id: &str| Image {
+            doc_id: id.to_owned(),
+            location_uri: format!("file:///{id}"),
+            filename: None,
+            ext: None,
+            size: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+        };
+        assert!(cluster_by_phash(vec![], 8).is_empty());
+        assert!(cluster_by_phash(vec![(img("a"), 0)], 8).is_empty());
+    }
+
+    #[test]
+    fn cluster_by_phash_groups_within_threshold() {
+        let img = |id: &str| Image {
+            doc_id: id.to_owned(),
+            location_uri: format!("file:///{id}"),
+            filename: None,
+            ext: None,
+            size: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+        };
+        // Pairwise distances:
+        //   distance(0, 1) = 1, distance(0, 3) = 2, distance(1, 3) = 1
+        //   distance(0, 0xFFFF_FFFF) = 32 — far enough at threshold 2.
+        let groups = cluster_by_phash(
+            vec![
+                (img("a"), 0),
+                (img("b"), 1),
+                (img("c"), 3),
+                (img("d"), 0xFFFF_FFFF),
+            ],
+            2,
+        );
+        // One cluster of 3 (a/b/c), the far one is a singleton (excluded).
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(g.items.len(), 3);
+        let ids: std::collections::BTreeSet<&str> =
+            g.items.iter().map(|i| i.image.doc_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"].into_iter().collect());
+        // Representative pHash = numerically smallest in the cluster (0).
+        assert_eq!(g.representative_phash_hex, "0000000000000000");
+        // distance_from_rep = popcount(rep ^ phash).  Recover phash
+        // from the hex form to verify.
+        let rep = super::super::types::phash_from_hex(&g.representative_phash_hex).unwrap();
+        for it in &g.items {
+            let h = super::super::types::phash_from_hex(&it.phash_hex).unwrap();
+            assert_eq!(it.distance_from_rep, (rep ^ h).count_ones());
+        }
+    }
+
+    #[test]
+    fn cluster_by_phash_orders_groups_by_size_descending() {
+        let img = |id: &str| Image {
+            doc_id: id.to_owned(),
+            location_uri: format!("file:///{id}"),
+            filename: None,
+            ext: None,
+            size: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+        };
+        // Two clusters: small (2) at hash 0 and big (3) at far hash.
+        let groups = cluster_by_phash(
+            vec![
+                (img("s1"), 0),
+                (img("s2"), 1),
+                (img("b1"), 0xFFFF),
+                (img("b2"), 0xFFFE),
+                (img("b3"), 0xFFFD),
+            ],
+            2,
+        );
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].items.len(), 3, "biggest cluster first");
+        assert_eq!(groups[1].items.len(), 2);
+    }
+
+    /// End-to-end near-duplicate test: synthesise actual image files
+    /// on disk, ingest the L1 chunks pointing at those paths, then
+    /// run `near_duplicates`.  Verifies the full pipeline (URI →
+    /// path → decode → hash → cluster → wire shape).
+    ///
+    /// **Fixture choice matters here.**  pHash is degenerate on
+    /// uniform images and on patterns whose period is much smaller
+    /// than the 8×8 downsample grid (both end up "all-uniform" in
+    /// hash space).  Use a content-rich gradient for the cluster
+    /// fixture and a diagonal-split for the outlier — both have real
+    /// intra-image variation so the DCT-pHash can discriminate.
+    #[tokio::test]
+    async fn near_duplicates_clusters_real_image_files() {
+        use image::{ImageBuffer, Rgb};
+
+        let tmp = TempDir::new().unwrap();
+        // Three resizes of the same gradient — DCT-pHash should agree
+        // within the default threshold across the size variants.
+        let gradient = |side: u32, name: &str| -> std::path::PathBuf {
+            let img = ImageBuffer::from_fn(side, side, |x, y| {
+                let r = (x as f32 / side as f32 * 255.0) as u8;
+                let g = (y as f32 / side as f32 * 255.0) as u8;
+                Rgb([r, g, 64u8])
+            });
+            let p = tmp.path().join(name);
+            img.save(&p).unwrap();
+            p
+        };
+        let a = gradient(256, "grad_a.png");
+        let b = gradient(128, "grad_b.png");
+        let c = gradient(96,  "grad_c.png");
+        // Diagonal-split outlier — top-left dark, bottom-right bright.
+        // Genuinely different visual signature (the "very_different_"
+        // unit test pins that this distinguishes from uniform).
+        let split_path = tmp.path().join("split.png");
+        let split = ImageBuffer::from_fn(128u32, 128u32, |x, y| {
+            if x + y < 128 { Rgb([5u8, 5u8, 5u8]) } else { Rgb([250u8, 250u8, 250u8]) }
+        });
+        split.save(&split_path).unwrap();
+
+        // Ingest L1 chunks pointing at those real files.  Use the
+        // bare-absolute-path scheme (no `crisp+local://` prefix) since
+        // location_uri_to_local_path handles both.
+        let local = std::sync::Arc::new(
+            LocalIndex::open_or_create(tmp.path(), 1024).await.unwrap(),
+        );
+        let row = |doc: &str, p: &std::path::Path, ts: i64| {
+            let mut c = l1_chunk(doc, "/synth", p.file_name().unwrap().to_str().unwrap(), "png", 0, ts);
+            c.location_uri = p.to_string_lossy().into_owned();
+            c
+        };
+        local.ingest_batch(&[
+            row("near-a", &a, 1),
+            row("near-b", &b, 2),
+            row("near-c", &c, 3),
+            row("far",    &split_path, 4),
+        ]).await.unwrap();
+
+        let backend = LocalImages::new(local);
+        let groups = backend
+            .near_duplicates(8, ListFilters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(groups.len(), 1, "expected one near-dup cluster, got: {groups:#?}");
+        let g = &groups[0];
+        assert_eq!(g.items.len(), 3, "expected the 3 gradient rows clustered, got: {g:#?}");
+        let ids: std::collections::BTreeSet<&str> =
+            g.items.iter().map(|i| i.image.doc_id.as_str()).collect();
+        assert_eq!(ids, ["near-a", "near-b", "near-c"].into_iter().collect());
+        // Diagonal-split row must NOT be in the cluster.
+        for it in &g.items {
+            assert_ne!(it.image.doc_id, "far");
+        }
     }
 }
