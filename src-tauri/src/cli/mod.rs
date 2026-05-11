@@ -273,13 +273,32 @@ enum CrispLensCmd {
     ImageFaces {
         image_id: i64,
     },
-    /// Run a text search on CrispLens (filename / person-name
-    /// substring — **not semantic**; see protocol-crate doc).
+    /// Run a semantic search on CrispLens via
+    /// `/api/search/semantic` (embedding-based over the
+    /// `ai_description` text column).  Falls back to a 404 against
+    /// older CrispLens builds that pre-date the endpoint —
+    /// upgrade the server or query `/api/search` directly with
+    /// curl as a workaround.
     Search {
         /// Query string.
         q: String,
         #[arg(long, default_value_t = 50)]
         limit: i64,
+    },
+    /// Resolve a SHA-256 file hash to a CrispLens `Image` row via
+    /// `/api/images/by-hash/{sha256}`.  Used by the GUI to bridge
+    /// a CrispSorter-local image to its server-side image_id so
+    /// the preview pane can overlay face bounding boxes from
+    /// CrispLens's face-recognition data.
+    ImageByHash {
+        /// 64-char lowercase hex SHA-256.  Pass `--from-file PATH`
+        /// to hash a local file instead.
+        #[arg(required_unless_present = "from_file")]
+        sha256: Option<String>,
+        /// Path to a local file — its SHA-256 is computed and used
+        /// as the lookup key.
+        #[arg(long, conflicts_with = "sha256")]
+        from_file: Option<PathBuf>,
     },
 }
 
@@ -1864,6 +1883,63 @@ async fn cmd_images_crisplens(
             }
         }
 
+        CrispLensCmd::ImageByHash { sha256, from_file } => {
+            use crate::images::crisplens::tauri_commands::{
+                get_json_inner, is_lowercase_sha256_hex, sha256_file,
+            };
+            use crisplens_protocol::Image as CrispLensImage;
+
+            // Resolve which hash we're actually looking up:
+            // explicit arg wins; otherwise hash --from-file.
+            let dd = data_dir.to_path_buf();
+            let sha = match (sha256, from_file) {
+                (Some(s), _) => {
+                    if !is_lowercase_sha256_hex(&s) {
+                        return Err("not a 64-char lowercase hex SHA-256".into());
+                    }
+                    s
+                }
+                (None, Some(path)) => {
+                    let p = path.to_string_lossy().into_owned();
+                    tokio::task::spawn_blocking(move || sha256_file(&p))
+                        .await
+                        .map_err(|e| format!("sha join: {e}"))??
+                }
+                (None, None) => unreachable!("clap rejects when both are absent"),
+            };
+            let url_path = format!("/api/images/by-hash/{sha}");
+
+            let resolved = tokio::task::spawn_blocking(move || {
+                match get_json_inner::<CrispLensImage>(&dd, &url_path) {
+                    Ok(opt) => Ok::<_, String>(opt),
+                    Err(e) if e.contains("HTTP 404") || e.to_lowercase().contains("not found")
+                        => Ok::<_, String>(None),
+                    Err(e) => Err(e),
+                }
+            })
+            .await
+            .map_err(|e| format!("by-hash join: {e}"))??;
+
+            match (out, &resolved) {
+                (OutFormat::Json, _) => {
+                    println!("{}", serde_json::to_string(&resolved).map_err(|e| e.to_string())?);
+                }
+                (OutFormat::Text, None) => {
+                    println!("(no CrispLens image with that hash)");
+                }
+                (OutFormat::Text, Some(img)) => {
+                    println!("CrispLens image #{} — {}", img.id, img.filename);
+                    println!("  path     : {}", img.filepath);
+                    if let Some(s) = img.file_size { println!("  size     : {s} B"); }
+                    if let (Some(w), Some(h)) = (img.width, img.height) {
+                        println!("  dims     : {w} × {h}");
+                    }
+                    if let Some(t) = &img.taken_at { println!("  taken_at : {t}"); }
+                    if let Some(fc) = img.face_count { println!("  faces    : {fc}"); }
+                }
+            }
+        }
+
         CrispLensCmd::Search { q, limit } => {
             use crate::images::crisplens::tauri_commands::get_json;
             use crisplens_protocol::SearchHit;
@@ -1892,10 +1968,11 @@ async fn cmd_images_crisplens(
                     if hits.is_empty() {
                         println!("(no matches for {q:?})");
                     } else {
-                        println!("{} match(es) for {q:?} (text search, NOT semantic):", hits.len());
+                        println!("{} semantic match(es) for {q:?}:", hits.len());
                         for h in &hits {
                             let faces = h.face_count.map(|n| format!("{n}f")).unwrap_or_default();
-                            println!("  [{:>4}] {:6}  {}", h.id, faces, h.filename);
+                            let score = h.score.map(|s| format!("s={s:.3}")).unwrap_or_else(|| "      ".into());
+                            println!("  [{:>4}] {score} {:6}  {}", h.id, faces, h.filename);
                         }
                     }
                 }
