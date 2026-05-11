@@ -273,6 +273,48 @@
     let crispLensStatus     = $state<CrispLensStatus | null>(null);
     let crispLensPollHandle = $state<ReturnType<typeof setInterval> | null>(null);
 
+    // ── P13/B3 — CrispLens People view state ──────────────────────────────
+    interface CrispLensPerson {
+        id:              number;
+        name:            string;
+        appearances?:    number | null;
+        faceCount?:      number | null;
+        sampleImagePath?: string | null;
+        sampleImageId?:   number | null;
+        firstSeen?:      string | null;
+        lastSeen?:       string | null;
+        createdAt?:      string;
+    }
+    let crispLensPeople        = $state<CrispLensPerson[]>([]);
+    let crispLensPeopleLoading = $state(false);
+    let crispLensPeopleError   = $state<string>('');
+    let imagesPeopleMode       = $state(false);
+
+    async function loadCrispLensPeople() {
+        if (crispLensPeopleLoading) return;
+        crispLensPeopleLoading = true;
+        crispLensPeopleError = '';
+        try {
+            crispLensPeople = await invoke<CrispLensPerson[]>('images_crisplens_people');
+        } catch (e: any) {
+            crispLensPeopleError = String(e?.message ?? e ?? 'failed to load people');
+            crispLensPeople = [];
+        } finally {
+            crispLensPeopleLoading = false;
+        }
+    }
+
+    function toggleImagesPeopleMode() {
+        imagesPeopleMode = !imagesPeopleMode;
+        if (imagesPeopleMode) {
+            // Mutual exclusion with the dup-view modes — only one
+            // alternative grid layout active at a time.
+            imagesDupMode = false; imagesDupGroups = [];
+            imagesNearDupMode = false; imagesNearDupGroups = [];
+            void loadCrispLensPeople();
+        }
+    }
+
     // ── P13/B5 — CrispLens watchfolders cross-reference state ──────────────
     interface CrispLensWatchFolder {
         id?:        number | null;
@@ -2556,6 +2598,16 @@
                                        disabled={imagesNearDupLoading} />
                             </label>
                         {/if}
+                        {#if crispLensStatus?.authenticated}
+                            <button class="tb-btn" class:active={imagesPeopleMode}
+                                    onclick={toggleImagesPeopleMode}
+                                    title={i18n.t.indexIngest.crisplens_people_toggle_hint}>
+                                <Eye size={14} /> {i18n.t.indexIngest.crisplens_people_toggle}
+                                {#if imagesPeopleMode && crispLensPeople.length > 0}
+                                    <span class="muted-small">({crispLensPeople.length})</span>
+                                {/if}
+                            </button>
+                        {/if}
                         <button class="tb-btn" class:active={crispLensSettingsOpen}
                                 onclick={toggleCrispLensSettings}
                                 title={i18n.t.indexIngest.crisplens_settings_toggle_hint}>
@@ -2653,7 +2705,32 @@
                         {/if}
                     </div>
                 {/if}
-                {#if imagesNearDupMode}
+                {#if imagesPeopleMode}
+                    {#if crispLensPeopleLoading && crispLensPeople.length === 0}
+                        <div class="empty-state"><Loader2 size={20} class="spin" /></div>
+                    {:else if crispLensPeopleError}
+                        <div class="preview-msg preview-error" style="margin: 12px;">
+                            {crispLensPeopleError}
+                        </div>
+                    {:else if crispLensPeople.length === 0}
+                        <div class="empty-state">{i18n.t.indexIngest.crisplens_people_empty}</div>
+                    {:else}
+                        <div class="crisplens-people-grid">
+                            {#each crispLensPeople as person (person.id)}
+                                <div class="crisplens-person-card"
+                                     title={`${person.name} — ${person.appearances ?? 0} appearances`}>
+                                    <div class="crisplens-person-cover">
+                                        <Eye size={28} />
+                                    </div>
+                                    <div class="crisplens-person-name" title={person.name}>{person.name}</div>
+                                    <div class="muted-small">
+                                        {person.appearances ?? 0}× · #{person.id}
+                                    </div>
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                {:else if imagesNearDupMode}
                     {#if imagesNearDupLoading && imagesNearDupGroups.length === 0}
                         <div class="empty-state"><Loader2 size={20} class="spin" /> {i18n.t.indexIngest.images_near_duplicates_loading}</div>
                     {:else if imagesNearDupGroups.length === 0}
@@ -4454,6 +4531,34 @@
     .crisplens-watchfolder-hint code {
         font-family: ui-monospace, monospace;
         color: #cbd5e1;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* P13/B3 — People grid (face-recognition clusters from CrispLens) */
+    .crisplens-people-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 12px;
+        padding: 12px;
+        overflow-y: auto;
+    }
+    .crisplens-person-card {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 8px;
+        border: 1px solid #2a2a3a;
+        border-radius: 6px;
+        background: #14141e;
+    }
+    .crisplens-person-card:hover { background: #1a1a28; }
+    .crisplens-person-cover {
+        aspect-ratio: 1 / 1;
+        display: flex; align-items: center; justify-content: center;
+        background: #1e1b4b22;
+        border-radius: 4px;
+        color: #6366f1;
+    }
+    .crisplens-person-name {
+        font-size: 0.82rem; color: #cbd5e1; font-weight: 500;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 </style>

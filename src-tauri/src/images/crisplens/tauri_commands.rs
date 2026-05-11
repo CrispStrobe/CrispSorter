@@ -31,7 +31,8 @@ use super::{
 };
 use crate::AppState;
 use crisplens_protocol::{
-    ErrorResponse, HealthResponse, LoginRequest, LoginResponse, MeResponse, WatchFolder,
+    ErrorResponse, Face, HealthResponse, LoginRequest, LoginResponse, MeResponse, Person,
+    WatchFolder,
 };
 
 /// Resolve the writable data directory.  Mirrors `cli::resolve_data_dir`
@@ -428,6 +429,79 @@ pub(crate) fn watchfolders_blocking(
     }
     resp.json::<Vec<WatchFolder>>()
         .map_err(|e| format!("watchfolders body not JSON: {e}"))
+}
+
+/// `GET /api/people` — full list of person clusters from CrispLens.
+/// Returns empty list when Tier 2 isn't configured/authenticated
+/// (same convention as `images_crisplens_watchfolders`).
+#[tauri::command]
+pub async fn images_crisplens_people(
+    state: State<'_, AppState>,
+) -> Result<Vec<Person>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        get_json::<Vec<Person>>(&data_dir, "/api/people")
+    })
+    .await
+    .map_err(|e| format!("people join: {e}"))?
+}
+
+/// `GET /api/images/{id}/faces` — face crops detected in one image.
+/// Returns empty list when Tier 2 isn't configured.
+#[tauri::command]
+pub async fn images_crisplens_image_faces(
+    state: State<'_, AppState>,
+    image_id: i64,
+) -> Result<Vec<Face>, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        get_json::<Vec<Face>>(&data_dir, &format!("/api/images/{image_id}/faces"))
+    })
+    .await
+    .map_err(|e| format!("faces join: {e}"))?
+}
+
+/// Shared authenticated-GET helper for the B3 endpoints.  Reads the
+/// session cookie from keychain, hits `<URL><path>`, deserialises
+/// the JSON body into `T`.  Returns `Ok(T::default())` for the
+/// not-authenticated case so the UI handles "Tier 2 not configured"
+/// the same way across all B-slice surfaces.
+pub(crate) fn get_json<T>(data_dir: &std::path::Path, path: &str) -> Result<T, String>
+where
+    T: Default + serde::de::DeserializeOwned,
+{
+    let s = settings::load(data_dir);
+    if !s.tier2_enabled() {
+        return Ok(T::default());
+    }
+    let url = s.normalised_url().to_owned();
+    let cookie = match secret::get_session_for_url(&url) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(T::default()),
+        Err(e) => return Err(format!("keychain: {e}")),
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .cookie_store(true)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("http client init: {e}"))?;
+
+    let resp = client
+        .get(format!("{url}{path}"))
+        .header("Cookie", format!("session={cookie}"))
+        .send()
+        .map_err(|e| format!("GET {path}: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        let detail = serde_json::from_str::<ErrorResponse>(&body)
+            .map(|e| e.detail)
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        return Err(detail);
+    }
+    resp.json::<T>()
+        .map_err(|e| format!("{path} body not JSON: {e}"))
 }
 
 #[tauri::command]
