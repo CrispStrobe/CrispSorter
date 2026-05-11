@@ -2,11 +2,14 @@
 
 > Companion plan for CrispSorter's image-vertical feature.  Lives outside
 > [PLAN.md](../PLAN.md) because it spans two repos (CrispSorter +
-> sibling [CrispLens](https://github.com/CrispStrobe/CrispLens)) and is
-> still pre-flight.
+> sibling [CrispLens](https://github.com/CrispStrobe/CrispLens)).
 >
-> Use this as the opening prompt for a fresh session to implement
-> Slice A1–A4 (Tier 1) and then B1–B5 (Tier 2).
+> **Status (2026-05-11):** Tier 1 (A1–A4) + Tier 2 foundation (B1)
+> shipped.  Remaining: B2–B5.  See the
+> [slice breakdown table](#slice-breakdown-with-hours) for per-slice
+> status and the [Spec vs reality appendix](#spec-vs-reality-appendix-2026-05-11)
+> for the wire-shape findings that came out of the B1 live cross-check
+> against the real CrispLens server.
 
 ---
 
@@ -321,21 +324,23 @@ the UI degrades to Tier 1 silently — the setting doesn't auto-revert
 
 ## Slice breakdown with hours
 
-| Slice | Tier | Hours | Deliverable |
-|-------|------|-------|-------------|
-| **A1** | 1 | 10 | Bilder tab UI scaffold + image-row filter on existing index |
-| **A2** | 1 | 6  | Thumbnail generator (on-demand, no cache) + EXIF surfacing in preview |
-| **A3** | 1 | 3  | SHA-256 dup view (data already in index) |
-| **A4** | 1 | 6  | `img_hash` crate integration + pHash backfill + near-dup grouping |
-| **B1** | 2 | 6  | `crisplens-protocol` crate + Settings UI + Keychain token storage |
-| **B2** | 2 | 5  | Semantic search bar wires `/api/search` + result enrichment |
-| **B3** | 2 | 8  | Faces subtab + `/api/people` + `/api/faces` + face-crop modal |
-| **B4** | 2 | 4  | Health monitor + degradation banner + auth refresh |
-| **B5** | 2 | 4  | Cross-link: open-in-CrispLens, watchfolder dedup signalling |
-| Tests + docs | both | 6 | Unit tests, live tests gated by `CRISPLENS_TEST_URL` |
+| Slice | Tier | Hours | Status | Deliverable |
+|-------|------|-------|--------|-------------|
+| **A1** | 1 | 10 | shipped `b2853d8` | Bilder tab UI scaffold + image-row filter on existing index |
+| **A2** | 1 | 6  | shipped `6795548` | Thumbnail generator (on-demand, no cache) + EXIF surfacing in preview |
+| **A3** | 1 | 3  | shipped `abf7266` | SHA-256 dup view (data already in index) |
+| **A4** | 1 | 6  | shipped `ce0bfbd` | `image_hasher` crate integration + near-dup grouping — chose `HashAlg::Gradient` over the spec's "DCT-pHash" wording (see [A4 deviation appendix](#a4-deviation-dct-phash--gradient-hash)) |
+| **B1** | 2 | 6  | shipped `0aa3a51` | `crisplens-protocol` crate + Settings UI + Keychain session-cookie storage |
+| **B2** | 2 | 5  | **scope check** | `/api/search` is **filename/person-name substring search** only (verified live + in source); spec's "semantic" wording is aspirational.  Either ship as "remote text search" or wait for upstream CrispLens to grow an embedding-based route. |
+| **B3** | 2 | 8  | ready | Faces subtab + `/api/people` + `/api/images/{id}/faces` + face-crop modal.  Endpoints verified live; payload shapes captured. |
+| **B4** | 2 | 4  | ready | Health monitor + degradation banner + auth refresh.  `/api/health` shape pinned in B1's `HealthResponse`. |
+| **B5** | 2 | 4  | ready | Cross-link: open-in-CrispLens deep-link, watchfolder dedup signalling.  `/api/watchfolders` verified live. |
+| Tests + docs | both | 6 | rolling | A1–B1 already include unit tests inline; live tests against the real server are scripted in HISTORY.md. |
 
-**Total: ~58 h.**  Tier 1 alone (A1–A4) is **~25 h** — ships as a
-self-contained feature without ever touching CrispLens.
+**Total: ~58 h on paper.  Shipped to date (A1–A4 + B1): ~31 h.**
+Tier 1 (A1–A4) is self-contained — works on a fresh install with no
+external deps.  Tier 2 (B2–B5) layers on top when a CrispLens server
+is configured + reachable.
 
 ---
 
@@ -455,8 +460,86 @@ The CrispLens project that Tier 2 talks to is cloned at
 electron-app-v4/server/routes/*.js as the authoritative endpoint
 reference.
 
-Start with Slice A1: scaffold the Bilder tab.  No tier 2 work yet.
-Acceptance: tab renders, populated grid, no new external dep.
-
-After A1 lands, ask before starting A2.
+Tier 1 (A1–A4) and Tier 2 foundation (B1) are already shipped on
+main.  Pick up at B2 (semantic search — but read the spec-vs-reality
+appendix first; the "semantic" wording is aspirational) or B3
+(Faces subtab; endpoints verified live).
 ```
+
+---
+
+## Spec vs reality appendix (2026-05-11)
+
+The protocol-types sketch in [the `crisplens-protocol` section
+above](#crisplens-protocol-crate-workspace) was written before the
+live CrispLens routes were inspected.  When B1 work started against
+the real source (`/Users/<user>/code/CrispLens`,
+`routers/*.py` for v2 + `electron-app-v4/server/routes/*.js` for
+v4) and the live production server at `https://<crisplens-host>`,
+the sketch turned out to be **uniformly aspirational** — divergent
+from BOTH v2 and v4 in the same direction.
+
+| Spec claim | Reality (verified in source + live) |
+|------------|--------------------------------------|
+| OAuth2 bearer JWT in `Authorization` header | **httpOnly session cookie** (`session=<value>`); v2 echoes value in body, v4 cookie-only |
+| `LoginResponse {access_token, token_type, expires_in}` | `{ok, username, role, token?}` |
+| `Image {path, size, sha256, phash, gps_lat/lon, exif}` | `{filepath, file_size, …}`; no sha256/phash/gps/exif at list level |
+| `rating: i32` | v4 emits BOTH `rating` + `star_rating`, v2 only `star_rating` (HTTP adapter renames v2→v4 before serde sees the payload) |
+| `ImagesPage {items, total, page, page_size}` | v4: `{images, total}`; v2: bare array `[…]` (adapter wraps before deserialise) |
+| `HealthResponse {status: "ok"\|"degraded", face_engine}` | v4: `{ok, version, backend}`; v2: `{ok, model_ready, …}` |
+| `/api/search` is "semantic search" | Both v2 and v4: substring-on-filename / person-name only.  No embedding backend. |
+| `Face.bbox: [x, y, w, h]` normalised | v4: `{top, right, bottom, left}` object.  v2's shape TBD at B3 time. |
+| `Person {face_count, cover_face_id}` | v4: `{appearances, first_seen, last_seen, created_at}` (different fields entirely) |
+
+**Implications baked into the codebase by B1:**
+
+1. `crates/crisplens-protocol/` models v4-canonical names with
+   permissive defaults.  16 unit tests pin both v2- and v4-shaped
+   JSON payloads from the live route source.
+2. The HTTP-client adapter (slice B2+) is responsible for v2→v4
+   normalisation: wrap bare array in `{images, total}`, rename
+   `star_rating`→`rating` and `color_flag`→`flag` before passing
+   to serde.  This split keeps the protocol crate free of branchy
+   version logic.
+3. Auth is cookie-jar based (`reqwest`'s `cookie_store(true)`).
+   Login captures the cookie from BOTH the response body (v2) and
+   the `Set-Cookie` header (v4).
+4. Per the spec's risk register, the cookie value lives in the OS
+   keychain (`keyring` crate: Keychain on macOS, secret-service on
+   Linux, Credential Manager on Windows).  The settings JSON file
+   stores ONLY the URL + non-secret tunables — verified live by
+   inspecting the file after a successful login.
+
+**Future protocol-crate additions** (slices B3–B5) should be
+verified against the live routes the same way — the risk-register
+"wire format drift" entry is exactly this.
+
+---
+
+## A4 deviation: DCT-pHash → gradient hash
+
+Spec said: "use 64-bit DCT-pHash for stability".
+`image_hasher`'s `.preproc_dct()` runs the DCT on a `hash_size`-
+shaped buffer rather than Krawetz's canonical "32×32 DCT →
+low-frequency 8×8 block" flow.  At our wire-mandated 64-bit hash
+size that means an 8×8 DCT input where the DC coefficient
+dominates so heavily the per-coefficient mean threshold leaves
+the hash with a single bit set.  Surfaced live during the A4 demo:
+a colour gradient, an inverted gradient, AND a coarse checkerboard
+fixture all hashed to identical `0x0…01`.
+
+Workable options were:
+
+1. Promote the wire format to 256 / 1024 bits and run DCT at
+   `hash_size(16, 16)` / `(32, 32)`.  Invasive; breaks the spec's
+   `phash INT64` LanceDB column promise.
+2. Stay at 64 bits and switch to `HashAlg::Gradient` (compares
+   adjacent pixel luminance pairs — every output bit encodes a
+   directional edge).  Genuinely informative at 64 bits.
+
+Picked option 2.  Strictly speaking that's "gHash", not pHash, but
+the spec's INTENT (64-bit, robust to resize, threshold-tunable
+around 8) is satisfied.  The public identifier `phash` is preserved
+so the future LanceDB INT64 column lands without churn.  Top of
+`src-tauri/src/images/phash.rs` carries the full rationale + the
+degenerate-on-uniform-images pinning test.

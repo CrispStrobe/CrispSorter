@@ -33,12 +33,17 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-*(nothing actively in-flight — see Open TODOs below)*
+**P13 Bilder vertical** — Tier 1 complete (slices A1–A4) + Tier 2
+foundation landed (slice B1: protocol crate + keychain + auth).
+Remaining: B2–B5 (semantic search, faces, health monitor, cross-link).
+See P13 section below for the slice-by-slice status; details and
+"spec vs reality" findings in [docs/P13_Bilder_integration.md](docs/P13_Bilder_integration.md).
 
-**Test coverage:** 232 unit tests pass in `tauri-app` (+2 `#[ignore]`'d
+**Test coverage:** 311 unit tests pass in `tauri-app` (+2 `#[ignore]`'d
 WebDAV-live integration tests gated by
-`WEBDAV_TEST_URL`/`USER`/`PASS`) plus 20 in `crispcat`.
-Run with `cargo test --workspace`.
+`WEBDAV_TEST_URL`/`USER`/`PASS`), 20 in `crispcat`, 16 in
+`crisplens-protocol`, 5 in `crisp-index-protocol` = **352 passing**.
+Run with `cargo test --workspace --lib`.
 
 ---
 
@@ -81,18 +86,37 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 
 ### P13 — Bilder vertical (Photos / images)
 
-- [ ] **Tier 1 — local-only Bilder tab** (the fallback; ~25 h)
-      Image-row filtered view of CrispSorter's existing index,
-      thumbnails, EXIF surfacing, SHA-256 dup view, pHash near-dup.
-      No external deps.
-- [ ] **Tier 2 — CrispLens integration** (~33 h)
-      Stacks on Tier 1 when a CrispLens server is configured and
-      reachable.  Adds semantic search, Faces subtab, person clusters,
-      watchfolder cross-reference.  Graceful degradation back to
-      Tier 1 when the server goes offline.
+- [x] **Tier 1 — local-only Bilder tab** (`A1–A4`, ~25 h, shipped)
+      Image-row filtered view (`Übersicht → Bilder`), lazy-loaded
+      thumbnails (PNG via `image` crate), EXIF preview pane
+      (`kamadak-exif` with permissive `continue_on_error` for
+      piexif-shaped IFD chains), SHA-256 dup view, perceptual-hash
+      near-dup view (`image_hasher`'s `HashAlg::Gradient` at 8×8 —
+      see the slice-doc deviation note for why DCT-pHash didn't fly
+      at 64-bit).  Zero external server deps.  Full CLI parity:
+      `crispsorter images {extensions, count, list, thumbnail, exif,
+      duplicates, near-duplicates}`.
+- [x] **B1 — Tier 2 foundation** (`crisplens-protocol` crate +
+      Keychain + Settings UI, ~6 h, shipped)
+      New workspace member `crates/crisplens-protocol/` modelling
+      both v2 (FastAPI) and v4 (Express) wire shapes, `keyring`-backed
+      session-cookie storage (per-URL, never written to JSON),
+      Tauri commands + CLI parity for settings + login/logout +
+      session-status.  Live-verified end-to-end against
+      `https://<crisplens-host>` (cookie lands in macOS Keychain;
+      settings JSON file confirmed cookie-free).
+- [ ] **Tier 2 — remaining slices** (`B2–B5`, ~21 h on paper, see
+      [docs/P13_Bilder_integration.md](docs/P13_Bilder_integration.md)
+      for the live-server-aware feasibility notes)
+      B2 remote search (CrispLens has only person-name/full-text
+      search, not semantic — reduce scope or wait for upstream),
+      B3 Faces subtab (endpoints `/api/people` + `/api/images/{id}/faces`
+      verified live), B4 health monitor + degradation banner
+      (`/api/health` verified live), B5 open-in-CrispLens deep-link +
+      watchfolder cross-reference (`/api/watchfolders` verified live).
 
-Full design + slice breakdown + risk register:
-[**docs/P13_Bilder_integration.md**](docs/P13_Bilder_integration.md).
+Full design + slice breakdown + risk register + spec-vs-reality
+notes: [**docs/P13_Bilder_integration.md**](docs/P13_Bilder_integration.md).
 
 ---
 

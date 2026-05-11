@@ -9,6 +9,98 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-10/11 — P13 Bilder Tier 1 (A1–A4) + Tier 2 foundation (B1)
+
+Implemented [`docs/P13_Bilder_integration.md`](docs/P13_Bilder_integration.md)
+through slice B1.  Six commits on `main`:
+
+| Commit | Slice | Headline |
+|--------|-------|----------|
+| `76e8a79` | (pre) | `fix(crispcat)`: tokio dev-dep so `cargo test --workspace` builds the lance-feature tests |
+| `b2853d8` | **A1** | Bilder tab + image-row filter on the existing LanceDB index |
+| `deb920a` | (rename) | bilder→images: drop Denglish from Rust + CLI + Svelte + i18n keys (DE values stay) |
+| `6795548` | **A2** | thumbnail generator + EXIF preview pane (incl. kamadak `continue_on_error` fix for piexif-shaped IFD chains) |
+| `abf7266` | **A3** | SHA-256 dup view (image rows grouped by `source_hash`) |
+| `ce0bfbd` | **A4** | pHash near-dup view (chose `HashAlg::Gradient` over Mean+DCT after live demo surfaced image_hasher's small-buffer DCT collapse) |
+| `0aa3a51` | **B1** | `crisplens-protocol` crate + keyring-backed session storage + Settings UI |
+
+Net delta: +351 unit tests across the new modules + the workspace
+fix.  Total now 311 in `tauri-app` lib (was 232 baseline).
+
+### Spec vs reality (B1 live-server cross-check)
+
+`docs/P13_Bilder_integration.md` was written before the CrispLens
+HTTP routes were inspected.  When B1 work started against the
+real server (`/Users/<user>/code/CrispLens` source +
+`https://<crisplens-host>` live instance) the protocol-types
+sketch turned out to be **aspirational across the board**.  The
+deviations were uniform between v2 (FastAPI) and v4 (Express):
+
+| Spec said | Reality (v2 + v4) |
+|-----------|-------------------|
+| `Authorization: Bearer <jwt>` | **httpOnly session cookie** (`session=<value>`) |
+| `LoginResponse {access_token, token_type, expires_in}` | `{ok, username, role, token?}`; v2 echoes `token` in body, v4 cookie-only |
+| `Image {path, size, sha256, phash, gps_lat/lon, exif}` | `{filepath, file_size, …}` — no sha256/phash/gps/exif at the list endpoint |
+| Single `rating: i32` | v4 emits both `rating` + `star_rating`, v2 only `star_rating` (HTTP adapter renames v2→v4 before serde) |
+| `ImagesPage {items, total, page, page_size}` | v4: `{images, total}`; v2: bare array `[…]` (adapter wraps) |
+| `HealthResponse {status: "ok"\|"degraded", face_engine}` | v4: `{ok, version, backend}`; v2: `{ok, model_ready, …}` |
+
+The protocol crate now models v4-canonical names with permissive
+defaults; 16 unit tests pin both v2- and v4-shaped JSON payloads
+extracted from the live route source so any future drift surfaces
+as a failed deserialise rather than a silent UI bug.  See
+`crates/crisplens-protocol/src/lib.rs` top doc-comment for the
+full delta.
+
+### Live verification of credential containment (B1)
+
+The spec's risk register required: "Token storage — JSON config
+leaks credentials on backup / cloud-sync.  Use Keychain / DPAPI /
+secret-service; never write token to `tauri-plugin-store` JSON".
+
+Verified end-to-end against `https://<crisplens-host>` with the
+`<admin-user>` credentials in `/Users/<user>/code/.env`:
+
+```
+$ crispsorter images crisplens set-url 'https://<crisplens-host>' --enable
+$ CRISPLENS_PASSWORD=… crispsorter images crisplens login --user <admin-user>
+  → "logged in as <admin-user> (admin)"
+$ security find-generic-password -s "CrispSorter.CrispLens" -a "https://<crisplens-host>"
+  → entry exists in macOS Keychain
+$ cat <data_dir>/crisplens.settings.json
+  → { "backend":"crisplens", "url":"https://<crisplens-host>", … }
+    (no token / no cookie / no password — credential-free)
+$ crispsorter images crisplens logout
+  → server-side cookie invalidated + Keychain entry wiped
+```
+
+### A4 implementation deviation (DCT-pHash → gradient hash)
+
+The spec called for "64-bit DCT-pHash for stability".
+`image_hasher`'s `.preproc_dct()` runs the DCT on a `hash_size`-
+shaped buffer, not Krawetz's canonical "32×32 DCT → low-frequency
+8×8 block".  At our wire-mandated 64-bit hash size that means an
+8×8 DCT input where the DC coefficient dominates so heavily the
+resulting hash collapses to a single bit.  Surfaced live: gradient,
+inverted gradient, AND a coarse checkerboard fixture all hashed to
+`0x0…01`.  Switched to `HashAlg::Gradient` (8×8, no DCT
+preprocessing) — still 64 bits, still threshold-tunable around 8,
+genuinely informative on real images.  Public identifier `phash`
+is preserved so the future LanceDB `phash INT64` column lands
+without churn.  Full rationale in
+`src-tauri/src/images/phash.rs` top doc-comment.
+
+### What's left of P13 (B2–B5)
+
+| Slice | Spec hours | Doable? | Notes |
+|-------|-----------|---------|-------|
+| **B2** semantic search | 5 | partial | `/api/search` endpoint exists but does **filename / person-name substring** only (v2 + v4 both).  No embedding-based search backend.  Either ship "remote text search" with a labelled scope, or wait for a CrispLens upstream change. |
+| **B3** Faces subtab | 8 | yes | `/api/people` + `/api/images/{id}/faces` endpoints verified live; payload shapes captured for future protocol-crate addition. |
+| **B4** health monitor + degradation banner | 4 | yes | `/api/health` already verified live; the polling loop + banner are pure UI work. |
+| **B5** open-in-CrispLens + watchfolder cross-reference | 4 | yes | `/api/watchfolders` returns `[]` on the live server (no folders configured) but route is reachable; deep-link is just a URL build. |
+
+---
+
 ## Session log — 2026-05-09/10 — P11 cloud drives end-to-end + live e2e + upstream bug fixes
 
 PLAN.md P11 had named four pillars (server, runtime modes, IVF-PQ scale,
