@@ -226,6 +226,25 @@
     let imagesDupLoading = $state(false);
     let imagesDupError   = $state<string>('');
 
+    // A4: pHash near-duplicate state.  Mutually exclusive with the
+    // SHA-256 dup mode above — the toolbar enforces "only one
+    // alternative view active at a time" to keep the grid layout
+    // simple.  Threshold is tunable; default 8 per the spec.
+    interface NearDupItem {
+        image:           ImageRow;
+        phashHex:        string;     // 16-char zero-padded lower-case hex
+        distanceFromRep: number;
+    }
+    interface NearDupGroup {
+        representativePhashHex: string;
+        items:                  NearDupItem[];
+    }
+    let imagesNearDupMode      = $state(false);
+    let imagesNearDupGroups    = $state<NearDupGroup[]>([]);
+    let imagesNearDupLoading   = $state(false);
+    let imagesNearDupError     = $state<string>('');
+    let imagesNearDupThreshold = $state(8);
+
     // PLAN P9 step 6 — column registry + persistence.
     interface ColumnDef {
         id:        string;
@@ -1411,10 +1430,48 @@
     function toggleImagesDupMode() {
         imagesDupMode = !imagesDupMode;
         if (imagesDupMode) {
+            // Mutual exclusion with the pHash near-dup mode — only
+            // one alternative grid layout is active at a time.
+            imagesNearDupMode = false;
+            imagesNearDupGroups = [];
             void loadImagesDuplicates();
         } else {
             imagesDupGroups = [];
             imagesDupError  = '';
+        }
+    }
+
+    /** A4: fetch perceptual-hash near-duplicate clusters for the
+     *  current image set.  Slower than `loadImagesDuplicates` because
+     *  every row gets decoded + hashed on demand; UI surfaces a
+     *  spinner while it runs.  Threshold is whatever the user set
+     *  (default 8 per the spec). */
+    async function loadImagesNearDuplicates() {
+        if (imagesNearDupLoading) return;
+        imagesNearDupLoading = true;
+        imagesNearDupError = '';
+        try {
+            imagesNearDupGroups = await invoke<NearDupGroup[]>(
+                'images_near_duplicates',
+                { threshold: imagesNearDupThreshold, filters: null }
+            );
+        } catch (e: any) {
+            imagesNearDupError  = String(e?.message ?? e ?? 'near-duplicates fetch failed');
+            imagesNearDupGroups = [];
+        } finally {
+            imagesNearDupLoading = false;
+        }
+    }
+
+    function toggleImagesNearDupMode() {
+        imagesNearDupMode = !imagesNearDupMode;
+        if (imagesNearDupMode) {
+            imagesDupMode = false;
+            imagesDupGroups = [];
+            void loadImagesNearDuplicates();
+        } else {
+            imagesNearDupGroups = [];
+            imagesNearDupError  = '';
         }
     }
 
@@ -2225,8 +2282,32 @@
                                 <span class="muted-small">({imagesDupGroups.length})</span>
                             {/if}
                         </button>
+                        <button class="tb-btn" class:active={imagesNearDupMode} onclick={toggleImagesNearDupMode}
+                                title={i18n.t.indexIngest.images_near_duplicates_toggle_hint}>
+                            <Eye size={14} /> {i18n.t.indexIngest.images_near_duplicates_toggle}
+                            {#if imagesNearDupMode && imagesNearDupGroups.length > 0}
+                                <span class="muted-small">({imagesNearDupGroups.length})</span>
+                            {/if}
+                        </button>
+                        {#if imagesNearDupMode}
+                            <label class="muted-small images-threshold-label">
+                                {i18n.t.indexIngest.images_near_duplicates_threshold}
+                                <input type="number" class="images-threshold-input"
+                                       min="0" max="64" bind:value={imagesNearDupThreshold}
+                                       onchange={() => loadImagesNearDuplicates()}
+                                       disabled={imagesNearDupLoading} />
+                            </label>
+                        {/if}
                         <span class="muted images-count">
-                            {#if imagesDupMode}
+                            {#if imagesNearDupMode}
+                                {#if imagesNearDupLoading}
+                                    <Loader2 size={12} class="spin" />
+                                {:else if imagesNearDupError}
+                                    {imagesNearDupError}
+                                {:else}
+                                    {imagesNearDupGroups.reduce((s, g) => s + g.items.length, 0)} {i18n.t.indexIngest.images_near_duplicates_count_suffix}
+                                {/if}
+                            {:else if imagesDupMode}
                                 {#if imagesDupLoading}
                                     <Loader2 size={12} class="spin" />
                                 {:else if imagesDupError}
@@ -2242,7 +2323,50 @@
                         </span>
                     </div>
                 </div>
-                {#if imagesDupMode}
+                {#if imagesNearDupMode}
+                    {#if imagesNearDupLoading && imagesNearDupGroups.length === 0}
+                        <div class="empty-state"><Loader2 size={20} class="spin" /> {i18n.t.indexIngest.images_near_duplicates_loading}</div>
+                    {:else if imagesNearDupGroups.length === 0}
+                        <div class="empty-state">{i18n.t.indexIngest.images_near_duplicates_empty}</div>
+                    {:else}
+                        <div class="images-dup-list">
+                            {#each imagesNearDupGroups as group (group.representativePhashHex)}
+                                <section class="images-dup-group">
+                                    <header class="images-dup-header">
+                                        <span class="images-dup-count">{group.items.length}×</span>
+                                        <code class="images-dup-hash" title={'pHash 0x' + group.representativePhashHex}>pHash 0x{group.representativePhashHex}</code>
+                                    </header>
+                                    <div class="images-grid">
+                                        {#each group.items as it (it.image.docId)}
+                                            <button class="images-tile" type="button"
+                                                    class:images-tile-active={imagesPreview?.docId === it.image.docId}
+                                                    title={`${it.image.locationUri}\nHamming distance from cluster rep: ${it.distanceFromRep}`}
+                                                    onclick={() => openImagesPreview(it.image)}
+                                                    use:lazyThumbnail={it.image.docId}>
+                                                {#if imagesThumbs[it.image.docId] && imagesThumbs[it.image.docId] !== 'loading' && imagesThumbs[it.image.docId] !== 'error'}
+                                                    <img src={imagesThumbs[it.image.docId]} alt={it.image.filename ?? ''} class="images-thumb" loading="lazy" />
+                                                {:else}
+                                                    <div class="images-tile-placeholder">
+                                                        {#if imagesThumbs[it.image.docId] === 'loading'}
+                                                            <Loader2 size={20} class="spin" />
+                                                        {:else}
+                                                            <Images size={28} />
+                                                        {/if}
+                                                        <span class="images-ext-badge">{(it.image.ext ?? '?').toUpperCase()}</span>
+                                                    </div>
+                                                {/if}
+                                                <div class="images-tile-name" title={it.image.filename ?? ''}>
+                                                    {it.image.filename ?? it.image.docId}
+                                                    <span class="images-ndup-distance">d={it.distanceFromRep}</span>
+                                                </div>
+                                            </button>
+                                        {/each}
+                                    </div>
+                                </section>
+                            {/each}
+                        </div>
+                    {/if}
+                {:else if imagesDupMode}
                     {#if imagesDupLoading && imagesDupGroups.length === 0}
                         <div class="empty-state"><Loader2 size={20} class="spin" /></div>
                     {:else if imagesDupGroups.length === 0}
@@ -3898,4 +4022,24 @@
         font-size: 0.72rem;
     }
     .muted-small { color: #71717a; font-size: 0.72rem; margin-left: 4px; }
+
+    /* P13/A4 — pHash threshold input + per-tile distance badge.
+       Threshold input piggy-backs on .muted-small for the label
+       weight; the input itself is just narrow enough for a 0..64
+       value without scroll arrows visually crowding the toolbar. */
+    .images-threshold-label { display: inline-flex; align-items: center; gap: 4px; }
+    .images-threshold-input {
+        width: 48px;
+        padding: 2px 4px;
+        background: #18181b; color: #d4d4d8;
+        border: 1px solid #3f3f46; border-radius: 4px;
+        font-size: 0.72rem;
+    }
+    .images-threshold-input:focus { outline: 1px solid #6366f1; }
+    .images-ndup-distance {
+        margin-left: 6px;
+        color: #71717a;
+        font-family: ui-monospace, monospace;
+        font-size: 0.66rem;
+    }
 </style>

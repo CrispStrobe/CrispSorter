@@ -105,6 +105,11 @@ ndarray      = "0.17"
 ocrs = "0.12.2"
 rten = "0.24.0"
 image = "0.25.10"
+# P13/A4 — perceptual hashing for the near-duplicate image view.
+# Active fork (qarmin/img_hash) of the original abonander/img_hash.
+# Default features only — `fast_image_resize` is a 2-3x speedup but
+# pulls a system SIMD shim we don't need yet at this slice's scale.
+image_hasher = "3"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6"
 clap_mangen = "0.2"
