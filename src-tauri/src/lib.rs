@@ -2187,6 +2187,29 @@ pub fn run() {
                         app_log!("error", "Failed to open job queue: {e}");
                     }
                 }
+
+                // P13.5 follow-up — load persisted IndexConfig from
+                // <data_dir>/index_config.json so `index_get_config`
+                // returns the user's saved settings on first call,
+                // not the in-memory defaults from IndexState::disabled().
+                // Falls back to default silently when the file is missing
+                // (fresh install) — see config_persist::load doc.
+                //
+                // tokio::sync::Mutex::blocking_lock is fine in the
+                // synchronous setup hook — the runtime isn't driving
+                // any tasks against state.index at this moment.
+                // try_lock's `MutexGuard<'_, _>` was hitting an
+                // E0597 because the temporary held a borrow longer
+                // than `state` lived; blocking_lock returns a guard
+                // with the same lifetime but the borrow checker
+                // accepts it because it's not a Result<…> temporary
+                // ladder.
+                let persisted = index::config_persist::load(&data_dir);
+                {
+                    let mut idx_lock = state.index.blocking_lock();
+                    idx_lock.config = persisted;
+                }
+                app_log!("info", "Loaded persisted IndexConfig from {}", data_dir.display());
             }
             Ok(())
         })

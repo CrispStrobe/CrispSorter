@@ -1964,9 +1964,37 @@ pub async fn index_set_config(
     state: State<'_, AppState>,
     config: IndexConfig,
 ) -> Result<(), String> {
+    // Snapshot the value we're persisting BEFORE the in-memory move
+    // so the disk write reflects exactly what the UI submitted —
+    // not some stale clone we forgot to update.
+    let to_persist = config.clone();
     let mut lock = state.index.lock().await;
     lock.config = config;
     lock.remote_queue_depth = 0;
+    drop(lock);
+
+    // P13.5 follow-up — persist to disk so the user's settings
+    // survive an app restart.  Best-effort: failure here is
+    // surfaced as a console warning, NOT a Tauri command failure,
+    // because the in-memory state already reflects the update and
+    // a transient I/O hiccup shouldn't bounce the user back to
+    // the old settings panel.  Next call will retry.
+    if let Some(dd) = state.data_dir.lock().await.as_ref() {
+        if let Err(e) = crate::index::config_persist::save(dd, &to_persist) {
+            eprintln!(
+                "[index_set_config] persist failed (non-fatal): {e:#} — settings will \
+                 reset to defaults on next restart unless saved again"
+            );
+        }
+    } else {
+        // Setup hook hasn't run yet — shouldn't happen since
+        // index_set_config is called from the UI long after setup
+        // completes.  Log so we notice if the ordering ever breaks.
+        eprintln!(
+            "[index_set_config] data_dir not yet set — settings stored in RAM only \
+             until the next index_set_config call"
+        );
+    }
     Ok(())
 }
 

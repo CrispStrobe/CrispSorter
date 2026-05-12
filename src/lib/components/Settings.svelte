@@ -235,6 +235,14 @@
     // Honored only on GGUF backend; ignored otherwise. Quality only holds
     // for MRL-trained models.
     let indexMatryoshkaDim  = $state<number>(0);
+    // P13.5 follow-up — index-time translation target ISO 639-1 code.
+    // Empty / 'none' = translation skipped; 'en' / 'de' / 'fr' etc. =
+    // every extracted doc gets translated at ingest via m2m100, with
+    // CLD3 text-LID auto-resolving as the source-language detector.
+    // Result lands in the LanceDB text_translated + text_translated_lang
+    // columns, then search-side `SearchFilters.prefer_translated_lang`
+    // surfaces them.
+    let indexTranslateTo    = $state<string>('none');
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -700,6 +708,7 @@
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
         indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
+        indexTranslateTo   = await getSetting('indexTranslateTo', 'none') as string;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -966,6 +975,7 @@
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
         await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
+        await saveSetting('indexTranslateTo',   indexTranslateTo);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1088,6 +1098,15 @@
                     model_cache_dir:  indexModelCacheDir.trim() || null,
                     matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
                         ? Number(indexMatryoshkaDim)
+                        : null,
+                    // P13.5 follow-up — index-time translation target.
+                    // Empty / 'none' string = no translation; 'en' /
+                    // 'de' / etc. = translate every extracted doc to
+                    // that ISO 639-1 language at ingest time.  CLD3
+                    // text-LID auto-resolves on first use to provide
+                    // the source language.
+                    translate_to:     (indexTranslateTo && indexTranslateTo.trim() && indexTranslateTo !== 'none')
+                        ? indexTranslateTo.trim()
                         : null,
                 }
             });
@@ -2400,6 +2419,34 @@
                     </select>
                     <p class="hint">{i18n.t.settings.index.matryoshka_hint}</p>
                 {/if}
+
+                <!-- P13.5 follow-up: index-time translation target.
+                     When set, every extracted document goes through
+                     CLD3 text-LID + m2m100 MT at ingest, with the
+                     result stored in the LanceDB text_translated
+                     column.  Search-side query rewrite (set
+                     SearchFilters.prefer_translated_lang) surfaces
+                     these translations as the snippet for matching
+                     hits.  Disabled by default — translation is
+                     CPU-intensive and the LanceDB column stays NULL
+                     for users not opting in. -->
+                <label for="index-translate-to" style="margin-top:10px;">
+                    {i18n.t.settings.index.translate_to ?? 'Index-time translation'}
+                </label>
+                <select id="index-translate-to" bind:value={indexTranslateTo} class="styled-select">
+                    <option value="none">{i18n.t.settings.index.translate_to_none ?? 'Off (no translation at index time)'}</option>
+                    <option value="en">English (en) — m2m100</option>
+                    <option value="de">Deutsch (de) — m2m100</option>
+                    <option value="fr">Français (fr) — m2m100</option>
+                    <option value="es">Español (es) — m2m100</option>
+                    <option value="it">Italiano (it) — m2m100</option>
+                    <option value="ja">日本語 (ja) — m2m100</option>
+                    <option value="zh">中文 (zh) — m2m100</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.translate_to_hint ??
+                     'Each extracted document is translated to the chosen language at ingest time via m2m100 (100-language any-to-any model). Source language is auto-detected via CLD3. The translated text lands in the text_translated LanceDB column; search hits surface it when the prefer_translated_lang filter is set.'}
+                </p>
             </div>
 
             <!-- Compute device — options depend on the selected engine.

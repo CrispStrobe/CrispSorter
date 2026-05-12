@@ -331,7 +331,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -341,12 +341,19 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             .clone()
             .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
         let local = g.local.clone();
+        // P13.5 follow-up — pick up the user's index-time translation
+        // target.  When None, the extractor's MT pass is skipped
+        // (existing behaviour, zero overhead).  When Some("en") etc.
+        // every ExtractedDocument gets the translation hook applied
+        // and the translated text lands in the LanceDB
+        // text_translated column.
+        let translate_to = g.config.translate_to.clone();
         drop(g);
         let bg = app_state.bg_ingest.lock().await;
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str)
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -358,6 +365,48 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         "latin" => crate::extractors::OcrRecLang::Latin,
         "cjk"   => crate::extractors::OcrRecLang::Cjk,
         _       => crate::extractors::OcrRecLang::Auto,
+    };
+
+    // P13.5 follow-up — when index-time translation is on, auto-resolve
+    // a text-LID model (CLD3, the smallest preset) so the extractor's
+    // post-dispatch LID hook can populate `doc.language` BEFORE the
+    // translation hook fires.  Without a source language, MT would
+    // be silently skipped (the dispatcher requires both source and
+    // target to be known).
+    //
+    // CrispASR's `cache_ensure_file` is content-addressed (filename
+    // + URL), so per-call resolution is cheap after the first download.
+    // Optimising this to once-per-process is queued but not urgent.
+    //
+    // The cfg!() gate avoids calling the feature-stubbed resolver in
+    // builds without crispasr, where it would just return an error.
+    let text_lid_model = if translate_to.is_some() && cfg!(feature = "crispasr") {
+        let cache_dir = {
+            let dd = app_state.data_dir.lock().await;
+            dd.as_ref().map(|d| d.join("models"))
+        };
+        match cache_dir {
+            Some(cache_dir) => {
+                match crate::extractors::text_lid::resolve_lid_model(
+                    crate::extractors::text_lid::LidPreset::Cld3,
+                    &cache_dir,
+                )
+                .await
+                {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        eprintln!(
+                            "[bg_ingest] couldn't auto-resolve CLD3 LID model (translate_to \
+                             is set but source-lang detection will be skipped): {e:#}"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
     };
 
     let p = item.path.clone();
@@ -447,17 +496,26 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         ocr_pdf_min_chars: 50,
         ocr_tier,
         ocr_rec_lang,
-        // P13.5 Phase 7: text-LID is off by default — opt in by
-        // populating this from a future IndexConfig field once the
-        // settings UI exposes it.  Until then the per-document
-        // `language` column is fed only by the catalog/item-metadata
-        // path below.
-        text_lid_model: None,
-        // P13.5 Phase 8 batch: translation is off by default.  The
-        // index-time translate-to wiring lands when bg_ingest can
-        // read it from IndexConfig + the LanceDB schema has the
-        // `text_translated` columns (Phase 8b).
-        translate_to: None,
+        // P13.5 Phase 7 + follow-up: text-LID auto-fires when
+        // IndexConfig.translate_to is set (translation needs to know
+        // the source language).  Resolved to CLD3 above; None
+        // otherwise so users not using translation pay no LID cost.
+        // A standalone "tag every doc with language" setting (LID
+        // without translation) is queued — exposes its own
+        // IndexConfig field once there's UI for it.
+        text_lid_model: text_lid_model.clone(),
+        // P13.5 follow-up — index-time translation now reads its
+        // target language from IndexConfig.translate_to.  When
+        // unset, the extractor's MT pass is skipped (zero
+        // overhead, existing behaviour).  When set, the extractor
+        // runs MT after LID and stashes the result into
+        // ExtractedDocument.translated_text, which bg_ingest then
+        // passes through to RawDocument → LanceDB text_translated
+        // column (added by the v100 migration).  Backend is
+        // hard-coded to the m2m100 default for now; exposing
+        // translate_backend / translate_model in IndexConfig is a
+        // follow-up.
+        translate_to,
         translate_backend: None,
         translate_model: None,
     };
