@@ -84,9 +84,93 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
       binstall recipe + signing (macOS Developer ID, Windows
       Authenticode).  `cargo install --path crates/crispcat-cli` already
       ships.  ~2-4 h once a signing identity is in hand.
-- [ ] **CLI `transcribe`** — deferred, needs an ASR/TTS headless
-      bootstrap path (would lean on CrispASR's CLI binary).
-- [ ] **CLI `tts`** — same, needs CrispTTS or a sibling backend.
+
+### P13.5 — Audio vertical (transcribe + synthesise, in flight)
+
+Three distinct surfaces, only #1 ships today.
+
+1. **GUI chat push-to-talk** (shipped — Whisper-only, `src-tauri/src/
+   asr/mod.rs` + `asr_transcribe` Tauri command in `lib.rs:581`).
+
+- [ ] **2. CLI `chat transcribe` + `chat tts`** (~6 h, slice A) — direct
+      in-process integration via the existing `crispasr` Rust crate
+      (path-dep at `../CrispASR/crispasr`; safe wrapper over the C-ABI,
+      no shell-out).  Extends `src-tauri/src/asr/mod.rs`'s `Session`
+      wrapper to all 24 ASR + 5 TTS backends and adds output-format
+      glue (txt / SRT / VTT / JSON for ASR; WAV for TTS).  Single
+      `Session` object handles both — `Session::synthesize(&str) ->
+      Vec<f32>` is the TTS half.
+
+      ```text
+      crispsorter chat transcribe <input.wav>
+                       [--backend whisper|parakeet|canary|qwen3|…]
+                       [--model auto|<path>]   # auto = registry_lookup
+                                               #        + cache_ensure_file
+                       [--language auto|en|de|…]
+                       [--format txt|json|srt|vtt]
+                       [--output -|<path>]
+
+      crispsorter chat tts "Hello world"
+                       [--backend kokoro|qwen3-tts|orpheus|chatterbox|…]
+                       [--model auto|<path>]
+                       [--voice af_heart|…]    # backend-specific name
+                       [--output out.wav]
+      ```
+
+      For shell scripting, batch jobs, headless servers — power-user
+      surface, not the end-user win.  Slice A only handles WAV input
+      (via `hound`) to keep the dep surface minimal; multi-codec
+      decoding lives in slice B's symphonia integration.
+
+- [ ] **3. Index-time audio transcription** (~8-12 h, slice B) — the
+      end-user win.  Audio files in scanned folders become first-class
+      searchable documents in the LanceDB + Tantivy index, exactly
+      like PDFs and OCR'd images today.  Adds `extractors/audio.rs`
+      to the existing dispatch:
+
+      - **Decoder layer:** `symphonia` (pure-Rust, ~250 KB, covers
+        MP3 / M4A / FLAC / OGG / OPUS / WAV — basically every codec
+        an end-user has on disk).  Shares the WAV-read path with
+        slice A so `hound` stays the simple-case fast path.
+      - **Resampler:** `rubato` (pure-Rust SRC).  Source files are
+        typically 44.1 / 48 kHz stereo; CrispASR wants 16 kHz mono.
+      - **Extractor entry point:** `extract_audio_text(path) ->
+        Result<ExtractedDocument>`, mirroring `ocr.rs`'s shape.
+        Registered in `extractors/mod.rs`'s dispatch behind
+        `AUDIO_EXTS` + `ExtractOptions::transcribe_audio` (default
+        OFF — transcription is expensive, opt-in like OCR).
+      - **Output:** `ExtractedDocument { full_text: <transcript>,
+        headings: <none>, ext: "<mp3|wav|…>" }`.  Indexer treats
+        long transcripts the same as long PDFs (chunk + embed).
+      - **CLI parity:** the existing `crispsorter index ingest`
+        passes `--transcribe-audio` through to `ExtractOptions`,
+        and `crispsorter chat transcribe` (slice A) reuses the
+        same decoder + resampler so a one-off file transcription
+        from the shell matches index-time behaviour byte-for-byte.
+
+      Long-form transcript caching (sidecar `.cidx` keyed on
+      content-hash so re-indexing is free) deferred to a follow-up
+      once the v1 path ships.
+
+**Cross-platform target — covered by `crispasr-sys` cmake auto-build:**
+
+- macOS arm64 + x86_64: works today (`libcrispasr.dylib` already
+  ships in the .app bundle via `scripts/bundle_macos_native_libs.sh`)
+- Linux x86_64 + arm64: cmake builds without extra setup
+- Windows x86_64: needs MSVC + cmake (same toolchain the GUI build
+  already requires); covered by P3.5 Phase 2 distribution work as a
+  single unit
+
+GPU feature flags inherited from the GUI:
+`crispasr-metal` / `crispasr-cuda` / `crispasr-vulkan`.
+
+**Out of scope for these slices (deferred until basic shape ships):**
+streaming / mic capture (`crispasr::Stream` + `crispasr::Mic`),
+diarization (`crispasr::diarize_segments`), word-level alignment
+(`crispasr::align_words`), punctuation restoration
+(`crispasr::PuncModel`), source/target translation pairs, transcript
+sidecar caching.  All exposed by the Rust crate — adding them is
+incremental flag-plumbing, not a new integration.
 
 ### P13 — Bilder vertical (Photos / images)
 

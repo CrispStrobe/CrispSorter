@@ -149,7 +149,7 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
-crispasr          = ["dep:crispasr", "dep:crispasr-sys"]
+crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:hound"]
 crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
 crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
 crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
@@ -211,5 +211,13 @@ optional = true
 # need.
 [dependencies.crispasr-sys]
 path     = "../../CrispASR/crispasr-sys"
+optional = true
+
+# WAV I/O for the CLI `chat transcribe` (read) + `chat tts` (write)
+# subcommands.  Gated behind the `crispasr` feature so we don't pull
+# it into builds that skip ASR/TTS entirely.  hound is pure-Rust, no
+# transitive deps, ships on every platform CrispASR builds on.
+[dependencies.hound]
+version  = "3.5"
 optional = true
 
