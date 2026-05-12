@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod audio;
 pub mod bg_ingest;
 pub mod images;
 /// Re-export the extracted crispcat workspace crate as `catalog` so existing
