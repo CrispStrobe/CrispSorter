@@ -41,7 +41,7 @@ members  = [
 # this file; Cargo regenerates it the first time anything is built.
 
 [workspace.package]
-version    = "0.1.38"
+version    = "0.1.39"
 edition    = "2021"
 license    = "AGPL-3.0-or-later"
 authors    = ["CrispSorter contributors"]
@@ -49,6 +49,6 @@ repository = "https://github.com/CrispStrobe/CrispSorter"
 
 # Note: members do NOT inherit version/etc from `[workspace.package]`
 # automatically — they need explicit `version.workspace = true`. The
-# desktop app is at 0.1.38 (matches its current release tag); the
+# desktop app is at 0.1.39 (matches its current release tag); the
 # server and protocol crates are at 0.1.0 (separate cadence). They will
 # diverge intentionally.
