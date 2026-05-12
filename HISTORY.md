@@ -9,6 +9,72 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-13 — P13.5 follow-ups batch 2 (4 more shipped + CrispEmbed routing unification)
+
+Continuation of the same-day P13.5 follow-ups session.  Picks
+off the last four user-quoted follow-ups: Audio-LID auto-
+resolution, routing `index/reranker.rs` through the
+`CrispEmbedBackend` wrapper, surfacing `crispembed::list_models()`
+in the Settings panel, and FTS-over-translated body.
+
+| Commit | Headline |
+|---|---|
+| `2b80345` | Audio-LID auto-resolution for whisper-family backends — `--lid-method whisper` no longer demands `--lid-model PATH`.  `is_multilingual_whisper_backend` heuristic + `resolve_whisper_lid_model_path` async helper: Path 1 reuses the user's explicit `--model PATH` when whisper-family (whisper / -base / -small / -medium / -large-v3); Path 2 falls back to `registry_lookup("whisper")` + `cache_ensure_file` for whisper-base download.  Silero / Ecapa / Firered still need explicit paths (no CrispASR registry entries).  3-way `lid_options` match in `cmd_chat_transcribe`; tokio runtime construction moved up so `block_on` is available before lid_options is built.  +1 test pinning the allow-list (excludes distil-whisper / parakeet / qwen3). |
+| `ebd511f` | `index/reranker.rs` routed through `CrispEmbedBackend` — promoted `load`/`is_reranker`/`rerank` on the wrapper from private+`#[allow(dead_code)]` to `pub(crate)`; reranker's struct field `crispembed::CrispEmbed → CrispEmbedBackend`; `crispembed::CrispEmbed::new` direct import gone from outside `index::embedder`.  Removes a duplicated FFI entry point and inherits the wrapper's UTF-8-path check + future `set_prefix` / `set_dim` knobs.  No public-API or behaviour change; existing reranker tests stay green. |
+| `b0ebc23` | `crispembed::list_models()` registry helper — new `embedder_registry_list` Tauri command returns 43-entry registry (name / desc / filename / size); Settings has a `<details>` disclosure beneath the engine toggle listing the bundled registry with max-height scroll.  Informational only: existing dropdown still keys off the `EmbedderModel` enum.  +EN/DE i18n keys.  Wiring registry-driven selection (so non-enum entries are pickable) is tracked separately. |
+| `be73321` | FTS-over-translated body — Tantivy schema gains `body_translated` field (same tokenizer as `body`, no STORED).  `IndexFields.body_translated: Option<Field>` plus `bind_fields_from_disk` makes legacy on-disk indexes open as `None` (graceful degrade — old indexes keep working without the new field).  `build_term_query` OR's a boost-0.7 disjunct on `body_translated` when present, so English query against a Bosnian doc with English translation now hits BM25 too (closes the cross-language FTS black hole; multilingual embeddings were carrying the whole load).  Ingest plumbs `RawDocument.translated_text → TantivyInputOwned.body_translated → TantivyInput.body_translated`.  `.cidx` mount path picks up `text_translated` from LanceDB when re-deriving the FTS.  +2 tests: cross-language hit + legacy-schema graceful degrade. |
+
+### Architectural pieces in place after this batch
+
+- **CrispEmbed wrapper is the sole FFI entry point** for the
+  GGUF backend — both `index::embedder` and `index::reranker`
+  go through `CrispEmbedBackend`.  Adding a new knob (cache_dir,
+  Matryoshka, prefix) lifts both consumers in one move.
+- **Cross-language FTS** works end-to-end on freshly-created
+  indexes: a Bosnian doc with English MT-pass output is
+  reachable by both an English `"hello"` query (translated-body
+  channel) and a Bosnian original query (body channel).
+  Multilingual embeddings still cover the vector channel.
+- **Registry transparency** in Settings: users see the full
+  CrispEmbed registry beneath the engine toggle, so a new
+  upstream model becoming available is at least visible without
+  a CrispSorter release.
+
+### Net delta
+
++4 unit tests across `tauri-app`:
+  cli (`is_multilingual_whisper_backend_covers_known_variants`),
+  index::fts_index (`body_translated_makes_translated_text_searchable`,
+  `bind_fields_from_disk_handles_legacy_schema`).
+The +1 in `cli` is from `2b80345`; the +2 in `index::fts_index`
+are from `be73321`; `ebd511f` and `b0ebc23` are zero-new-test
+refactors covered by existing reranker / capabilities tests.
+
+Build verification: `cargo check --no-default-features` and
+`cargo check --features crispembed` clean throughout; full lib
+test suite (426 tests, 2 ignored = WebDAV-live integration)
+green after the FTS slice.
+
+### What's deferred (queued in PLAN.md)
+
+- ColBERT multi-vector retrieval — needs a per-token vector
+  column / separate `chunk_multivec` table + a MaxSim scorer.
+- Omnimodal BidirLM-Omni cross-modal search — new model class +
+  image-patch preprocessing + per-index dim selection.
+- Registry-driven embedder selection — the Tauri command +
+  Settings panel are now in place; wiring the dropdown to pick
+  registry entries (parallel String-keyed config path or
+  EmbedderModel → String refactor) is the next step.
+- FTS body_translated migration on legacy indexes — graceful
+  degrade is in place; a proper "rebuild FTS from LanceDB"
+  migration is needed for shipped indexes to opt in without
+  re-ingesting from disk.
+- Non-whisper audio-LID auto-resolution — whisper-method case is
+  resolved; Silero / Ecapa / Firered need upstream registry
+  entries.
+
+---
+
 ## Session log — 2026-05-13 — P13.5 follow-ups (5-of-8 shipped)
 
 Continuation of the 2026-05-12 P13.5 vertical.  Picks off five

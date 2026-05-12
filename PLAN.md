@@ -101,14 +101,18 @@ jina-reranker, gte-base/large-en-v1.5).
   `IndexConfig.use_embedder_as_reranker = true` and no dedicated
   cross-encoder is configured.  Settings UI checkbox lands in
   the same commit.
+- `index/reranker.rs` routed through `CrispEmbedBackend`
+  (ebd511f) — no more direct `crispembed::CrispEmbed::new`
+  import outside `index::embedder`; opens the door to future
+  shared knobs (Matryoshka / prefix / cache_dir).
+- `crispembed::list_models()` registry helper surfaced via the
+  `embedder_registry_list` Tauri command + a disclosure panel in
+  Settings (b0ebc23).  Informational only for now: selecting a
+  non-`EmbedderModel`-enum entry still needs the String-keyed
+  selection refactor below.
 
 **Still unused**:
 
-- [ ] **Route `index/reranker.rs` through CrispEmbedBackend**
-      (~1 h) — today it constructs `crispembed::CrispEmbed::new`
-      directly, bypassing the wrapper.  Unifying the import gives
-      reranker.rs Matryoshka / prefix / cache_dir parity for free
-      and kills a feature-gated direct import.
 - [ ] **ColBERT multi-vector retrieval** (`encode_multivec`)
       (~1 session) — per-token L2-normalised embeddings (BGE-M3
       ColBERT head).  Needs a new LanceDB column for the
@@ -127,24 +131,27 @@ jina-reranker, gte-base/large-en-v1.5).
       grid_thw), and a decision about how the 2048-d cross-modal
       vector coexists with the existing per-backend dense column
       (separate column? per-index dim selection at init?).
-- [ ] **`crispembed::list_models()` registry helper** for the
-      Settings dropdown (~1 h) — today the embedder dropdown is a
-      hardcoded Rust enum + hardcoded Svelte string list.  Using
-      list_models gives users access to the full registry
-      (43 entries as of 0.3.2) including the new reranker
-      additions, without each new model needing a CrispSorter
-      release.  Tricky: existing code paths key off the
-      `EmbedderModel` enum, so this needs a parallel "registry-
-      driven" path or a refactor of the enum to be String-based.
+- [ ] **Registry-driven embedder selection** — the
+      `embedder_registry_list` Tauri command surfaces the full
+      CrispEmbed registry, but the dropdown still keys off the
+      `EmbedderModel` enum.  Wiring a parallel String-keyed
+      selection path (or refactoring `EmbedderModel` to String)
+      would let new upstream registry models be picked without a
+      CrispSorter release.  ~1 session.
 
 ### P13.5 follow-ups (remaining after the 2026-05-13 batch)
 
-Six P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
+Ten P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
 `--stream` flag, LID/MT model auto-resolution,
 `SearchFilters::prefer_translated_lang` + snippet swap,
 `IndexConfig.translate_to` persistence + Settings UI, frontend
-`translate_text` integration in the search-results panel, and
-SRT / VTT output formats for `chat transcribe` (`63ec866`).
+`translate_text` integration in the search-results panel, SRT /
+VTT output formats for `chat transcribe` (`63ec866`),
+Audio-LID auto-resolution for whisper-family backends
+(`2b80345`), `index/reranker.rs` routed through
+CrispEmbedBackend (`ebd511f`), `crispembed::list_models()`
+registry helper + Settings disclosure (`b0ebc23`), and the
+FTS-over-translated-body Tantivy schema slice (`be73321`).
 
 Still open:
 
@@ -162,21 +169,20 @@ Still open:
       `chunk_index = 0` and JOIN at search time — needs a careful
       migration on shipped data + decisions around the
       `record_batches_to_search_results` snippet path.
-- [ ] **Audio-LID auto-resolution** — the text-LID side is
-      resolved; audio LID still requires explicit `--lid-model`
-      paths because Silero / Ecapa / Firered models aren't in
-      CrispASR's registry.  Either add registry entries upstream
-      (`lid-silero`, `lid-ecapa`, `lid-firered`) or wire the
-      Whisper-method LID path to reuse the loaded ASR ggml file.
-- [ ] **FTS-over-translated body** — Tantivy schema currently
-      only indexes the original `full_text`.  An English query
-      `"hello"` against a Bosnian doc with English translation
-      `"hello, how are you?"` doesn't hit BM25.  Fix: add a
-      `body_translated` Tantivy field + a per-index schema
-      migration on the Tantivy side, then wire
-      `SearchFilters::prefer_translated_lang` into the FTS query.
-      Multilingual embeddings already handle the vector channel
-      reasonably; this would close the FTS gap.
+- [ ] **FTS body_translated migration on legacy indexes** —
+      `be73321` adds the field for fresh indexes and gracefully
+      degrades for legacy ones (`IndexFields.body_translated =
+      None`).  A proper "rebuild Tantivy from LanceDB to upgrade
+      the schema" migration is needed for users with shipped
+      indexes to get the FTS-over-translated-body benefit
+      without re-ingesting from disk.  Should go through the
+      migration framework with a fresh version > v100.
+- [ ] **Non-whisper audio-LID auto-resolution** — `2b80345`
+      handles the whisper-method case by registry-resolving
+      `whisper`.  Silero / Ecapa / Firered still require explicit
+      `--lid-model` paths because they aren't in CrispASR's
+      registry.  Add upstream registry entries
+      (`lid-silero`, `lid-ecapa`, `lid-firered`) to close this.
 
 ---
 
