@@ -204,6 +204,20 @@ pub struct IndexConfig {
     /// `translate_model` too.
     #[serde(default)]
     pub translate_to: Option<String>,
+    /// Bi-encoder reranking via the loaded dense embedder.  When
+    /// `true` AND no dedicated [`Self::reranker_model`] is set, the
+    /// search pipeline reranks top-N RRF candidates by cosine
+    /// similarity against the query — using the already-loaded
+    /// dense backend's `rerank_biencoder` path (zero extra disk /
+    /// memory).
+    ///
+    /// Falls back to no-rerank when neither this flag NOR a
+    /// dedicated reranker is configured (preserves the historical
+    /// default).  When BOTH are set, the dedicated cross-encoder
+    /// reranker wins — it's more accurate per pair, this flag is
+    /// for users who haven't / won't download a separate model.
+    #[serde(default)]
+    pub use_embedder_as_reranker: bool,
 }
 
 fn default_use_vector() -> bool {
@@ -266,6 +280,7 @@ impl Default for IndexConfig {
             model_cache_dir: None,
             matryoshka_dim: None,
             translate_to: None,
+            use_embedder_as_reranker: false,
         }
     }
 }

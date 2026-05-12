@@ -227,6 +227,14 @@
     // Other values are UI keys; mapped to Rust kebab-case via rerankerToRust.
     let indexRerankerModel  = $state<string>('');
     let indexRerankerTopN   = $state<number>(50);
+    // Bi-encoder fallback (P13.5 follow-up).  Activates only when
+    // `indexRerankerModel` is empty / 'none' AND this is true —
+    // reuses the loaded dense embedder for cosine-similarity
+    // reranking with zero extra disk / RAM.  Less accurate per
+    // pair than the cross-encoder path, but a real lift over
+    // no-rerank for users who haven't installed a separate
+    // reranker model.
+    let indexUseEmbedderAsReranker = $state<boolean>(false);
     // Empty = use default ({data_dir}/models). Override is shared by
     // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
     // downloads, so one setting controls every model weight on disk.
@@ -706,6 +714,7 @@
         indexEmbedderLocation   = await getSetting('indexEmbedderLocation', 'client') as any;
         indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
+        indexUseEmbedderAsReranker = await getSetting('indexUseEmbedderAsReranker', false) as boolean;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
         indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
         indexTranslateTo   = await getSetting('indexTranslateTo', 'none') as string;
@@ -973,6 +982,7 @@
         await saveSetting('indexEmbedderLocation',  indexEmbedderLocation);
         await saveSetting('indexRerankerModel', indexRerankerModel);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
+        await saveSetting('indexUseEmbedderAsReranker', indexUseEmbedderAsReranker);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
         await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
         await saveSetting('indexTranslateTo',   indexTranslateTo);
@@ -1095,6 +1105,7 @@
                     embedder_location:    indexEmbedderLocation,
                     reranker_model:       rerankerToRust(indexRerankerModel),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
+                    use_embedder_as_reranker: indexUseEmbedderAsReranker,
                     model_cache_dir:  indexModelCacheDir.trim() || null,
                     matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
                         ? Number(indexMatryoshkaDim)
@@ -2504,6 +2515,27 @@
                     <input id="index-reranker-topn" type="number" min="5" max="200" step="5"
                         bind:value={indexRerankerTopN} />
                     <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
+                {:else}
+                    <!-- Bi-encoder fallback (P13.5 follow-up): only visible
+                         when no dedicated cross-encoder is selected.  Reuses
+                         the loaded dense embedder for cosine-similarity
+                         reranking — zero extra disk / RAM. -->
+                    <label for="index-bi-encoder-rerank" style="margin-top:10px; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input id="index-bi-encoder-rerank" type="checkbox"
+                            bind:checked={indexUseEmbedderAsReranker} />
+                        <span>{i18n.t.settings.index.use_embedder_as_reranker ?? 'Use loaded embedder as bi-encoder reranker'}</span>
+                    </label>
+                    {#if indexUseEmbedderAsReranker}
+                        <label for="index-bi-encoder-topn" style="margin-top:6px;">
+                            {i18n.t.settings.index.reranker_top_n}
+                        </label>
+                        <input id="index-bi-encoder-topn" type="number" min="5" max="200" step="5"
+                            bind:value={indexRerankerTopN} />
+                    {/if}
+                    <p class="hint">
+                        {i18n.t.settings.index.use_embedder_as_reranker_hint ??
+                         'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.'}
+                    </p>
                 {/if}
             </div>
 
