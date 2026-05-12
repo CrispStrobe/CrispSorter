@@ -481,6 +481,8 @@ mod tests {
                 volume_id: None,
                 indexed_at: 0,
                 source_hash: String::new(),
+                text_translated: None,
+                text_translated_lang: None,
             })
             .collect()
     }
@@ -510,6 +512,8 @@ mod tests {
                 volume_id: None,
                 indexed_at: 0,
                 source_hash: String::new(),
+                text_translated: None,
+                text_translated_lang: None,
             });
         }
         vec.push(SearchResult {
@@ -530,6 +534,8 @@ mod tests {
             volume_id: None,
             indexed_at: 0,
             source_hash: String::new(),
+            text_translated: None,
+            text_translated_lang: None,
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);

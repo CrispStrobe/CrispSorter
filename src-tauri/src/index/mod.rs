@@ -21,6 +21,7 @@ pub mod task_failure;
 ///   search      — unified search with RRF reranking
 pub mod location;
 pub mod remote_client;
+pub mod migrations;
 pub mod schema;
 pub mod search;
 pub mod tauri_commands;

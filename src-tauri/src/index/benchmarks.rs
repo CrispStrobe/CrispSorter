@@ -101,6 +101,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             file_size: None,
             volume_id: None,
             parent_dir: None,
+            translated_text: None,
+            translated_to_lang: None,
         },
         RawDocument {
             full_text: "Während Angriffe auf den Rechtsstaat in Europa zunehmen...".to_owned(),
@@ -120,6 +122,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             file_size: None,
             volume_id: None,
             parent_dir: None,
+            translated_text: None,
+            translated_to_lang: None,
         },
         RawDocument {
             full_text: "Integrationsdialog? Zeithistorisch akzentuierte Perspektiven auf sozialintegrative Potentiale des christlich-islamischen Dialogs. Wilhelm Heitmeyer.".to_owned(),
@@ -139,6 +143,8 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
             file_size: None,
             volume_id: None,
             parent_dir: None,
+            translated_text: None,
+            translated_to_lang: None,
         }
     ];
 

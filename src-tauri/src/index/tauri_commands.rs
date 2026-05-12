@@ -203,6 +203,10 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // .caf format pre-dates the source_hash promotion, so leave
         // it empty. The images dup view filters empty hashes anyway.
         source_hash: String::new(),
+        // Catalog channel hits never carry translations — they're
+        // metadata-only references.
+        text_translated: None,
+        text_translated_lang: None,
     }
 }
 
@@ -452,6 +456,8 @@ pub async fn index_ingest_path(
         file_size: p_meta.map(|m| m.len() as i64),
         volume_id: crate::volume::volume_id_for_path(&p),
         parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+        translated_text: extracted.translated_text,
+        translated_to_lang: extracted.translated_to_lang,
     };
 
     let lock = state.index.lock().await;
@@ -506,6 +512,12 @@ pub async fn index_ingest_document(
         // already-extracted text), so we don't have a volume to tag.
         volume_id: None,
         parent_dir: None,
+        // Frontend-driven ingest doesn't run the extractor's MT pass —
+        // the caller's already-extracted text is what we get.  Phase 8
+        // on-demand surface (index::translate_commands::translate_text)
+        // is the path for translating these post-ingest.
+        translated_text: None,
+        translated_to_lang: None,
     };
 
     use tauri::Emitter;
@@ -629,6 +641,10 @@ pub async fn index_ingest_document(
             metadata_json: None,
             parent_dir: raw.parent_dir.clone(),
             volume_id: raw.volume_id.clone(),
+            // Pass per-doc translation through to every chunk row —
+            // same replication pattern the main make_chunk path uses.
+            text_translated: raw.translated_text.clone(),
+            text_translated_lang: raw.translated_to_lang.clone(),
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -726,6 +742,10 @@ pub async fn index_ingest_batch(
                 file_size: None,
                 volume_id: None,
                 parent_dir: None,
+                // Frontend-driven batch ingest doesn't run the extractor's
+                // MT pass — Phase 8 on-demand handles per-result translation.
+                translated_text: None,
+                translated_to_lang: None,
             })
             .collect();
 
@@ -799,6 +819,9 @@ pub async fn index_ingest_batch(
             file_size: None,
             volume_id: None,
             parent_dir: None,
+            // Remote-batch ingest doesn't run the extractor's MT pass.
+            translated_text: None,
+            translated_to_lang: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
@@ -2101,6 +2124,42 @@ pub async fn init_index(
             let local = Arc::new(LocalIndex::open_or_create(data_dir, dims).await?);
             emit!("lance_done", "Vektor-Datenbank bereit", 90);
 
+            // ── Schema migrations (P13.5 Phase 8b — first real consumer
+            //    of crate::migrations) ──────────────────────────────────
+            //
+            // Runs AFTER LocalIndex::open_or_create (which already
+            // applied the two legacy ad-hoc migrations for parent_dir
+            // + volume_id) and BEFORE SearchEngine / IngestPipeline so
+            // any new columns introduced by a migration are visible
+            // to the first ingest.  Ledger lives in
+            // `<data_dir>/.crispsorter_migrations.db` (separate from
+            // the job-queue SQLite to keep admin metadata isolated
+            // from runtime data — the framework supports either
+            // location; this is the cleaner choice when init_index
+            // doesn't have a reachable AppState::job_queue).
+            {
+                use std::sync::Mutex as StdMutex;
+                let ledger_path = data_dir.join(".crispsorter_migrations.db");
+                let ledger_conn = rusqlite::Connection::open(&ledger_path)
+                    .map_err(|e| anyhow::anyhow!("opening migration ledger {}: {e}", ledger_path.display()))?;
+                let ledger = Arc::new(StdMutex::new(ledger_conn));
+                let mut runner = crate::migrations::MigrationRunner::new();
+                runner.register_all(crate::index::migrations::all())?;
+                let ctx = crate::migrations::MigrationContext {
+                    lance: Some(local.clone()),
+                    sqlite: None,
+                    data_dir: data_dir.to_path_buf(),
+                };
+                let summary = runner.run(&ctx, &ledger).await?;
+                if !summary.applied.is_empty() {
+                    eprintln!(
+                        "[index] applied {} schema migration(s): {:?}",
+                        summary.applied.len(),
+                        summary.applied
+                    );
+                }
+            }
+
             let mut engine_inner = SearchEngine::new(
                 fts.clone(),
                 local.clone(),
@@ -2473,6 +2532,8 @@ async fn promote_path(
             .parent()
             .and_then(|p| p.to_str())
             .map(|s| s.to_owned()),
+        translated_text: extracted.translated_text,
+        translated_to_lang: extracted.translated_to_lang,
     };
 
     // Delete the existing L1 row before re-ingesting.

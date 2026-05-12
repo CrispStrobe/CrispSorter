@@ -133,6 +133,9 @@ pub async fn sync_pull(
                 metadata_json:      Some(r#"{"level":1,"source":"sync_pull"}"#.to_owned()),
                 parent_dir:         None,
                 volume_id:          None,
+                // Sync-pull L1 metadata rows don't carry translations.
+                text_translated:    None,
+                text_translated_lang: None,
             }
         })
         .collect();

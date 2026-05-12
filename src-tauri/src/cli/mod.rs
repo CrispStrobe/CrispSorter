@@ -1219,6 +1219,8 @@ async fn cmd_index_async(
                     file_size: meta.map(|m| m.len() as i64),
                     volume_id: crate::volume::volume_id_for_path(p),
                     parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+                    translated_text: extracted.translated_text,
+                    translated_to_lang: extracted.translated_to_lang,
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {

@@ -500,6 +500,14 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 file_size,
                 volume_id,
                 parent_dir,
+                // P13.5 Phase 8b — pass the extractor's MT output
+                // through to the LanceDB row.  bg_ingest hard-codes
+                // ExtractOptions.translate_to = None today, so these
+                // are always None at this call site — the wire is
+                // ready when IndexConfig grows a translate_to field
+                // and bg_ingest reads it (follow-up).
+                translated_text: extracted.translated_text,
+                translated_to_lang: extracted.translated_to_lang,
             };
             pipeline
                 .ingest_document(raw)
