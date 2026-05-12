@@ -349,6 +349,45 @@ impl Asr {
     ) -> Result<String> {
         anyhow::bail!("crispasr feature disabled")
     }
+
+    // ── Streaming transcribe (P13.5 follow-up) ────────────────────────
+    //
+    // Wraps `crispasr::Session::stream_open` so callers can drive
+    // partials manually.  Used by `AsrHandle::transcribe_streaming`
+    // to feed PCM in 1-second chunks and call back on each new
+    // counter increment.  Whisper-only at the C-ABI level per the
+    // upstream docstring; other backends return an error here.
+
+    /// Open a rolling-window streaming decoder.  See the upstream
+    /// [`crispasr::Session::stream_open`] for parameter meaning.
+    /// Reasonable defaults for live captioning: `step_ms=3000,
+    /// length_ms=10000, keep_ms=200, language=""` (auto-detect for
+    /// multilingual whisper).
+    #[cfg(feature = "crispasr")]
+    pub fn stream_open(
+        &self,
+        step_ms: i32,
+        length_ms: i32,
+        keep_ms: i32,
+        language: &str,
+        translate: bool,
+    ) -> Result<crispasr::Stream> {
+        self.session
+            .stream_open(step_ms, length_ms, keep_ms, language, translate)
+            .map_err(|e| anyhow::anyhow!("stream_open failed: {e}"))
+    }
+
+    #[cfg(not(feature = "crispasr"))]
+    pub fn stream_open(
+        &self,
+        _step_ms: i32,
+        _length_ms: i32,
+        _keep_ms: i32,
+        _language: &str,
+        _translate: bool,
+    ) -> Result<()> {
+        anyhow::bail!("crispasr feature disabled")
+    }
 }
 
 // ── Lazy-load handle ─────────────────────────────────────────────────────
@@ -420,6 +459,102 @@ impl AsrHandle {
     /// [`Self::synthesize_with_options`] with both option args `None`.
     pub async fn synthesize(&self, text: String) -> Result<Vec<f32>> {
         self.synthesize_with_options(text, None, None).await
+    }
+
+    /// Streaming transcribe with per-partial callback (P13.5
+    /// follow-up).  Holds the session mutex for the duration and
+    /// feeds `pcm` to a rolling-window stream in 1-second chunks
+    /// (16 000 samples), invoking `on_partial` with each new text
+    /// delta as the model commits it.  Returns the full final
+    /// transcript after `flush()`.
+    ///
+    /// Whisper-only at the C-ABI level today (per upstream's
+    /// `Session::stream_open` docstring) — other backends return
+    /// an error.  Default stream parameters match the Whisper
+    /// reference: step=3000 ms, length=10000 ms, keep=200 ms.
+    ///
+    /// `translate = true` enables Whisper's audio-side
+    /// EN-target translation (separate from the text-translate
+    /// post-processing pass — this is the sticky `--translate`
+    /// flag).
+    #[cfg(feature = "crispasr")]
+    pub async fn transcribe_streaming<F>(
+        &self,
+        pcm: Vec<f32>,
+        language: Option<String>,
+        translate: bool,
+        mut on_partial: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) + Send,
+    {
+        const STEP_MS: i32 = 3000;
+        const LENGTH_MS: i32 = 10000;
+        const KEEP_MS: i32 = 200;
+        const FEED_CHUNK_SAMPLES: usize = 16_000; // 1 s at 16 kHz
+
+        let mut guard = self.slot.lock().await;
+        if guard.is_none() {
+            let asr = Asr::load(self.config.clone(), self.cache_dir.clone()).await?;
+            *guard = Some(asr);
+        }
+        let asr = guard.as_ref().unwrap();
+        let lang_str = language.as_deref().unwrap_or("");
+        let stream = asr.stream_open(STEP_MS, LENGTH_MS, KEEP_MS, lang_str, translate)?;
+
+        let mut last_counter: i64 = -1;
+        let mut last_len: usize = 0;
+
+        for chunk in pcm.chunks(FEED_CHUNK_SAMPLES) {
+            let rc = stream
+                .feed(chunk)
+                .map_err(|e| anyhow::anyhow!("stream feed: {e}"))?;
+            // rc > 0 = a new partial transcript is ready to read.
+            // rc == 0 = still buffering; skip the get_text call to
+            // avoid hammering the C-ABI for no reason.
+            if rc > 0 {
+                let update = stream
+                    .get_text()
+                    .map_err(|e| anyhow::anyhow!("stream get_text: {e}"))?;
+                if update.counter != last_counter && update.text.len() > last_len {
+                    // Emit only the delta — text is the accumulated
+                    // transcript; the caller's callback shouldn't
+                    // see the same prefix repeated.
+                    on_partial(&update.text[last_len..]);
+                    last_len = update.text.len();
+                    last_counter = update.counter;
+                }
+            }
+        }
+
+        // Finalise any buffered tail.
+        stream
+            .flush()
+            .map_err(|e| anyhow::anyhow!("stream flush: {e}"))?;
+        let final_update = stream
+            .get_text()
+            .map_err(|e| anyhow::anyhow!("stream final get_text: {e}"))?;
+        if final_update.counter != last_counter && final_update.text.len() > last_len {
+            on_partial(&final_update.text[last_len..]);
+        }
+        Ok(final_update.text)
+    }
+
+    #[cfg(not(feature = "crispasr"))]
+    pub async fn transcribe_streaming<F>(
+        &self,
+        _pcm: Vec<f32>,
+        _language: Option<String>,
+        _translate: bool,
+        _on_partial: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) + Send,
+    {
+        anyhow::bail!(
+            "streaming transcribe requires the `crispasr` cargo feature \
+             (build with --features crispasr-metal / -cuda / -vulkan)"
+        )
     }
 
     /// Translate `text` from `src_lang` to `tgt_lang` via the

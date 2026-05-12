@@ -401,6 +401,16 @@ enum ChatCmd {
         /// subprocess spawning.
         #[arg(long)]
         pure_rust: bool,
+        /// Stream partial transcripts to stderr as the model
+        /// commits them, instead of buffering the whole transcript
+        /// and printing at the end (P13.5 follow-up).  Final result
+        /// still goes to `--output` (or stdout when output is `-`).
+        /// Whisper-only at the C-ABI level today; other backends
+        /// will return a clear error.  Stream parameters use the
+        /// Whisper-reference defaults (step=3000 ms / length=10000 ms
+        /// / keep=200 ms); tune in code if you need tighter latency.
+        #[arg(long)]
+        stream: bool,
         /// LID-driven routing policy (P13.5 Phase 6).
         ///   * `as-configured` (default) — no LID, use --backend as-is.
         ///   * `strict` — fail if --backend doesn't speak the detected
@@ -2237,12 +2247,12 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
             }
         }
         ChatCmd::Transcribe {
-            path, backend, model, language, output, data_dir, pure_rust,
+            path, backend, model, language, output, data_dir, pure_rust, stream,
             policy, fallback_backend, lid_model, lid_method,
             translate_to, translate_backend, translate_model, translate_max_tokens,
         } => {
             cmd_chat_transcribe(
-                out, path, backend, model, language, output, data_dir, pure_rust,
+                out, path, backend, model, language, output, data_dir, pure_rust, stream,
                 policy, fallback_backend, lid_model, lid_method,
                 translate_to, translate_backend, translate_model, translate_max_tokens,
             )?;
@@ -2280,6 +2290,7 @@ fn cmd_chat_transcribe(
     output: String,
     data_dir: Option<PathBuf>,
     pure_rust: bool,
+    stream: bool,
     policy: LidPolicy,
     fallback_backend: String,
     lid_model: Option<PathBuf>,
@@ -2344,6 +2355,120 @@ fn cmd_chat_transcribe(
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
+
+    // P13.5 follow-up — when --stream is set, skip the LID-routing
+    // orchestrator and feed PCM directly to AsrHandle::transcribe_streaming.
+    // Reasons:
+    //   * Routing needs LID over the first ~10 s before deciding which
+    //     backend to load, which defeats the "partials as soon as
+    //     possible" UX --stream is for.
+    //   * Streaming is whisper-only at the C-ABI level today; the
+    //     auto-routing's Switch decision would have nothing to switch
+    //     TO that also supports streaming, so the orchestrator's
+    //     value-add is moot.
+    //   * Translate post-processing happens AFTER the full transcript
+    //     is in hand, which is incompatible with streaming-as-it-arrives.
+    // If the user asks for both --stream and --policy != as-configured,
+    // we emit a warning and ignore the policy (rather than refusing
+    // both — streaming wins, since it's the more visible intent).
+    if stream {
+        if !matches!(policy, LidPolicy::AsConfigured) {
+            eprintln!(
+                "[chat transcribe] --stream and --policy {policy:?} both set; \
+                 --stream wins (LID routing requires the full PCM before \
+                 deciding).  Ignoring policy."
+            );
+        }
+        if translate_to.is_some() {
+            eprintln!(
+                "[chat transcribe] --stream and --translate-to both set; \
+                 translation happens AFTER the stream finishes, so partials \
+                 will be in the source language."
+            );
+        }
+        eprintln!(
+            "transcribing (streaming) via {} …",
+            primary_config.display_name()
+        );
+        let final_text = rt
+            .block_on(primary_handle.transcribe_streaming(
+                decoded.pcm,
+                language.clone(),
+                false, // translate-to-EN on whisper is opt-in via the
+                       // --policy translate path; not exposed on --stream
+                       // for the same reason translate_to is deferred above.
+                |partial| {
+                    eprint!("{partial}");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                },
+            ))
+            .map_err(|e| format!("ASR streaming: {e:#}"))?;
+        eprintln!(); // newline after the last partial
+
+        // Optional translate post-processing on the final text.  Same
+        // shape as the non-streaming branch below, just collapsed since
+        // we don't have a TranscribeResult to thread through.
+        let (final_emit, translation_meta) = if let Some(tgt) = translate_to.as_deref() {
+            let src = language.clone().ok_or_else(|| {
+                "--translate-to with --stream needs --language <ISO> (LID \
+                 routing is bypassed when streaming)"
+                    .to_string()
+            })?;
+            let translate_config = match &translate_model {
+                Some(p) => crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy()),
+                None => crate::asr::AsrConfig::new(&translate_backend),
+            };
+            let translate_cache_dir = asr_cache_dir(data_dir.clone())?;
+            let translate_handle =
+                crate::asr::AsrHandle::new(translate_config.clone(), translate_cache_dir);
+            eprintln!(
+                "translating {} → {} via {}…",
+                src,
+                tgt,
+                translate_config.display_name()
+            );
+            let translated = rt
+                .block_on(translate_handle.translate_text(
+                    final_text.clone(),
+                    src.clone(),
+                    tgt.to_string(),
+                    translate_max_tokens,
+                ))
+                .map_err(|e| format!("translate: {e:#}"))?;
+            (
+                translated,
+                Some(serde_json::json!({
+                    "from": src,
+                    "to": tgt,
+                    "backend": translate_backend,
+                    "max_tokens": translate_max_tokens,
+                    "original_text": final_text,
+                })),
+            )
+        } else {
+            (final_text.clone(), None)
+        };
+
+        let payload = match out {
+            OutFormat::Json => serde_json::json!({
+                "text": final_emit,
+                "backend": backend,
+                "streaming": true,
+                "language_hint": language,
+                "translation": translation_meta,
+                "source_path": path.display().to_string(),
+                "source_sample_rate": decoded.source_sample_rate,
+                "source_channels": decoded.source_channels,
+                "duration_seconds": decoded.duration_seconds,
+                "decode_tier": decoded.tier.as_str(),
+            })
+            .to_string(),
+            OutFormat::Text => final_emit.clone(),
+        };
+        write_chat_output(&output, &payload)?;
+        return Ok(());
+    }
+
     eprintln!("transcribing via {} (policy={:?})…", primary_config.display_name(), policy);
     let result = rt
         .block_on(crate::asr::transcribe_with_lid_routing(
@@ -3203,7 +3328,7 @@ mod tests {
         .expect("transcribe with just a path should parse");
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
-                path, backend, model, language, output, pure_rust,
+                path, backend, model, language, output, pure_rust, stream,
                 policy, fallback_backend, lid_model, lid_method,
                 translate_to, translate_backend, translate_model, translate_max_tokens, ..
             } } => {
@@ -3213,6 +3338,7 @@ mod tests {
                 assert!(language.is_none());
                 assert_eq!(output, "-", "default output is stdout");
                 assert!(!pure_rust);
+                assert!(!stream, "--stream is off by default");
                 // Phase 6 defaults: AsConfigured (no LID), whisper fallback,
                 // whisper LID method, no LID model.
                 assert_eq!(policy, LidPolicy::AsConfigured);
@@ -3226,6 +3352,24 @@ mod tests {
                 assert_eq!(translate_backend, "m2m100");
                 assert!(translate_model.is_none());
                 assert_eq!(translate_max_tokens, 0);
+            }
+            other => panic!("expected Chat Transcribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_transcribe_stream_flag_parses() {
+        // --stream is the P13.5 follow-up that opts into a rolling-
+        // window Whisper streaming decode instead of the buffered
+        // transcribe path.  Pin that the flag flips a bool field
+        // through clap correctly.
+        let cli = Cli::try_parse_from([
+            "crispsorter", "chat", "transcribe", "/tmp/foo.wav", "--stream",
+        ])
+        .expect("--stream should parse");
+        match cli.command {
+            Command::Chat { cmd: ChatCmd::Transcribe { stream, .. } } => {
+                assert!(stream);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
         }
@@ -3257,10 +3401,11 @@ mod tests {
         .expect("full-flag transcribe should parse");
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
-                path, backend, model, language, output, data_dir, pure_rust,
+                path, backend, model, language, output, data_dir, pure_rust, stream,
                 policy, fallback_backend, lid_model, lid_method,
                 translate_to, translate_backend, translate_model, translate_max_tokens,
             } } => {
+                assert!(!stream, "--stream not set in full-args test (covered separately)");
                 assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
                 assert_eq!(backend, "parakeet");
                 assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
