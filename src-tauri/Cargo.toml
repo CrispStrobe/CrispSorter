@@ -149,7 +149,11 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
-crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:hound", "dep:symphonia"]
+# `hound` is intentionally NOT in this list: the WAV writer is always-compile
+# so the CLI's `chat tts` path and future GUI "save recording" call sites can
+# use `audio::writer::write_wav_mono` without dragging the whole crispasr
+# feature into the build.  hound is pure-Rust, no system deps, ~30 KB compiled.
+crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:symphonia"]
 crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
 crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
 crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
@@ -213,12 +217,13 @@ optional = true
 path     = "../../CrispASR/crispasr-sys"
 optional = true
 
-# WAV write path for the CLI `chat tts` subcommand (read side uses
-# symphonia, see below).  Gated behind the `crispasr` feature.
-# hound is pure-Rust, no transitive deps, ships everywhere.
+# WAV writer for the CLI `chat tts` subcommand AND for any other
+# call site that wants to emit a WAV (the GUI's future "save
+# recording" button, the audio module's symphonia round-trip tests).
+# Always-compile — pure-Rust, no transitive deps, ~30 KB compiled,
+# so the feature-gating overhead isn't worth the build-time savings.
 [dependencies.hound]
-version  = "3.5"
-optional = true
+version = "3.5"
 
 # Multi-codec audio + video demuxing for P13.5 audio vertical.
 # Tier 1 of `src-tauri/src/audio/decoder.rs`: WAV / MP3 / M4A / FLAC

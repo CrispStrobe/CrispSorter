@@ -27,7 +27,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -232,6 +232,75 @@ impl Asr {
     pub fn transcribe_with_language(&self, _pcm: &[f32], _language: Option<&str>) -> Result<String> {
         anyhow::bail!("crispasr feature disabled")
     }
+
+    // ── TTS half (slice A) ────────────────────────────────────────────
+    //
+    // Same `Session` handle does both ASR and TTS — see CrispASR's
+    // `Session::synthesize` docstring.  TTS-capable backends today:
+    // kokoro, qwen3-tts, vibevoice-tts, orpheus, chatterbox.  All
+    // return 24 kHz mono Float32 PCM (NOT the 16 kHz canonical ASR
+    // rate); writers should preserve that rate via
+    // `audio::writer::write_wav_mono(path, pcm, 24_000)`.
+
+    /// Synthesise `text` to 24 kHz mono Float32 PCM via the loaded
+    /// TTS-capable session.  Errors if the backend isn't TTS-capable
+    /// (the upstream message names the loaded backend, which is
+    /// usually enough for the user to fix).
+    #[cfg(feature = "crispasr")]
+    pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
+        self.session
+            .synthesize(text)
+            .map_err(|e| anyhow::anyhow!("ASR/TTS synthesize failed: {e}"))
+    }
+
+    /// Set a voice prompt for the session — either a baked GGUF voice
+    /// pack (most backends) or a `.wav` reference (qwen3-tts only,
+    /// requires `ref_text` describing the reference clip).
+    ///
+    /// For orpheus, voice is picked by **name** via
+    /// [`Self::set_speaker_name`] instead.
+    #[cfg(feature = "crispasr")]
+    pub fn set_voice(&self, path: &Path, ref_text: Option<&str>) -> Result<()> {
+        let path_str = path.to_string_lossy();
+        self.session
+            .set_voice(&path_str, ref_text)
+            .map_err(|e| anyhow::anyhow!("set_voice failed: {e}"))
+    }
+
+    /// Select a preset speaker by name (orpheus + a few others bake
+    /// names into the GGUF).  See [`Self::speakers`] to enumerate
+    /// the valid names for the loaded backend.
+    #[cfg(feature = "crispasr")]
+    pub fn set_speaker_name(&self, name: &str) -> Result<()> {
+        self.session
+            .set_speaker_name(name)
+            .map_err(|e| anyhow::anyhow!("set_speaker_name failed: {e}"))
+    }
+
+    /// List preset speaker names for the loaded backend.  Empty when
+    /// the backend has no preset-speaker contract (use
+    /// [`Self::set_voice`] for those).
+    #[cfg(feature = "crispasr")]
+    pub fn speakers(&self) -> Vec<String> {
+        self.session.speakers()
+    }
+
+    #[cfg(not(feature = "crispasr"))]
+    pub fn synthesize(&self, _text: &str) -> Result<Vec<f32>> {
+        anyhow::bail!("crispasr feature disabled")
+    }
+    #[cfg(not(feature = "crispasr"))]
+    pub fn set_voice(&self, _path: &Path, _ref_text: Option<&str>) -> Result<()> {
+        anyhow::bail!("crispasr feature disabled")
+    }
+    #[cfg(not(feature = "crispasr"))]
+    pub fn set_speaker_name(&self, _name: &str) -> Result<()> {
+        anyhow::bail!("crispasr feature disabled")
+    }
+    #[cfg(not(feature = "crispasr"))]
+    pub fn speakers(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ── Lazy-load handle ─────────────────────────────────────────────────────
@@ -287,6 +356,40 @@ impl AsrHandle {
         }
         let asr = guard.as_ref().unwrap();
         asr.transcribe_with_language(&pcm, language.as_deref())
+    }
+
+    /// Synthesise `text` via the loaded session with default voice /
+    /// speaker settings.  Equivalent to
+    /// [`Self::synthesize_with_options`] with both option args `None`.
+    pub async fn synthesize(&self, text: String) -> Result<Vec<f32>> {
+        self.synthesize_with_options(text, None, None).await
+    }
+
+    /// Synthesise `text` after optionally applying voice + speaker
+    /// settings — atomic under the session mutex so a concurrent
+    /// caller can't slot in their own voice mid-synth.  Mirrors
+    /// `crispasr::Session`'s sticky-state contract: setters survive
+    /// the call (so a long-running daemon loads its voice once and
+    /// reuses it across many synth calls).
+    pub async fn synthesize_with_options(
+        &self,
+        text: String,
+        voice: Option<(PathBuf, Option<String>)>,
+        speaker_name: Option<String>,
+    ) -> Result<Vec<f32>> {
+        let mut guard = self.slot.lock().await;
+        if guard.is_none() {
+            let asr = Asr::load(self.config.clone(), self.cache_dir.clone()).await?;
+            *guard = Some(asr);
+        }
+        let asr = guard.as_ref().unwrap();
+        if let Some((path, ref_text)) = voice.as_ref() {
+            asr.set_voice(path, ref_text.as_deref())?;
+        }
+        if let Some(name) = speaker_name.as_deref() {
+            asr.set_speaker_name(name)?;
+        }
+        asr.synthesize(&text)
     }
 }
 

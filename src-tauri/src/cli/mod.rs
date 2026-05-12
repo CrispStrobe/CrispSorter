@@ -324,6 +324,88 @@ enum ChatCmd {
         #[arg(long)]
         context_files: Vec<PathBuf>,
     },
+    /// Transcribe an audio / video file to text via CrispASR (P13.5 slice A).
+    ///
+    /// Decodes the input through the shared `audio` module (symphonia
+    /// tier 1, ffmpeg fallback tier 2) to 16 kHz mono Float32 PCM, then
+    /// runs the configured CrispASR backend.  Output goes to stdout
+    /// (or `--output PATH`) as plain text (`-f text`, default) or as a
+    /// JSON envelope with decode metadata (`-f json`).
+    Transcribe {
+        /// Input audio / video path (.wav / .mp3 / .m4a / .flac /
+        /// .ogg / .opus / .aac / .mp4 / .mov / .mkv / .webm / .m4v
+        /// natively; .avi / .wmv / .flv / .ts / .amr via ffmpeg).
+        path: PathBuf,
+        /// CrispASR backend name. Default `whisper` (99 languages,
+        /// auto-download). Run `crispasr --list-backends` for the
+        /// full set — also `parakeet` (25 EU, fast), `distil-whisper`
+        /// (English-only, ~6× faster), `omniasr` (1600+ langs), etc.
+        #[arg(long, default_value = "whisper")]
+        backend: String,
+        /// Explicit model file path. Skips the registry auto-download
+        /// (no `cache_ensure_file` round-trip).  Useful for testing
+        /// custom checkpoints or running offline against a known file.
+        #[arg(long)]
+        model: Option<PathBuf>,
+        /// ISO 639-1 source-language hint (`en`, `de`, `ja`, …).
+        /// Optional — backends with native LID auto-detect; others
+        /// fall back to their internal default.  Phase 6 will add
+        /// `--language auto` for LID-driven detection.
+        #[arg(long)]
+        language: Option<String>,
+        /// Output path; `-` (default) writes to stdout.
+        #[arg(long, short = 'o', default_value = "-")]
+        output: String,
+        /// Override the app data dir (default: OS app-data dir; the
+        /// model cache lives under `<data-dir>/models/`).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Refuse the ffmpeg shell-out fallback for unsupported
+        /// containers.  Errors on `.avi` / `.wmv` / … instead of
+        /// shelling out — useful in sandboxes that disallow
+        /// subprocess spawning.
+        #[arg(long)]
+        pure_rust: bool,
+    },
+    /// Synthesise text to a WAV via a CrispASR TTS backend (P13.5 slice A).
+    ///
+    /// Backends today: kokoro (default, English + multi-lingual presets),
+    /// qwen3-tts (zero-shot voice cloning from .wav references),
+    /// vibevoice-tts (50+ languages), orpheus (preset-speaker), chatterbox.
+    /// Output is always 24 kHz mono Float32 WAV (the native rate of
+    /// every supported backend).
+    Tts {
+        /// Text to speak. Wrap in quotes.
+        text: String,
+        /// TTS backend name. Default `kokoro`.
+        #[arg(long, default_value = "kokoro")]
+        backend: String,
+        /// Explicit model file path. Skips the registry auto-download.
+        #[arg(long)]
+        model: Option<PathBuf>,
+        /// Voice prompt path — a baked GGUF voice pack for most
+        /// backends, or a .wav reference clip for qwen3-tts (the
+        /// latter also needs `--voice-ref-text`).  Cannot be combined
+        /// with `--speaker`.
+        #[arg(long, conflicts_with = "speaker")]
+        voice: Option<PathBuf>,
+        /// Reference text for `.wav` voice prompts (qwen3-tts only —
+        /// CrispASR needs to know what the reference says to
+        /// disentangle voice from content).
+        #[arg(long, requires = "voice")]
+        voice_ref_text: Option<String>,
+        /// Preset speaker name for backends that bake names into the
+        /// GGUF (orpheus: `tara` / `leo` / `Anton` / `Sophie` / …).
+        /// Mutually exclusive with `--voice`.
+        #[arg(long, conflicts_with = "voice")]
+        speaker: Option<String>,
+        /// Output WAV path. Required.
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+        /// Override the app data dir (default: OS app-data dir).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2065,8 +2147,196 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
                 OutFormat::Text => println!("{reply}"),
             }
         }
+        ChatCmd::Transcribe {
+            path, backend, model, language, output, data_dir, pure_rust,
+        } => {
+            cmd_chat_transcribe(out, path, backend, model, language, output, data_dir, pure_rust)?;
+        }
+        ChatCmd::Tts {
+            text, backend, model, voice, voice_ref_text, speaker, output, data_dir,
+        } => {
+            cmd_chat_tts(out, text, backend, model, voice, voice_ref_text, speaker, output, data_dir)?;
+        }
     }
     Ok(())
+}
+
+// ── chat transcribe / tts (P13.5 slice A) ──────────────────────────────────
+
+/// Resolve the model cache dir for the CLI's CrispASR session.  We
+/// mirror the GUI's path (`<app-data>/models/`) so the same downloaded
+/// GGUFs are shared between the two invocations — running the GUI
+/// once seeds `whisper-base` for the CLI's first transcribe, etc.
+fn asr_cache_dir(data_dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    let dd = resolve_data_dir(data_dir)?;
+    let cache = dd.join("models");
+    std::fs::create_dir_all(&cache)
+        .map_err(|e| format!("creating cache dir {}: {e}", cache.display()))?;
+    Ok(cache)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_chat_transcribe(
+    out: OutFormat,
+    path: PathBuf,
+    backend: String,
+    model: Option<PathBuf>,
+    language: Option<String>,
+    output: String,
+    data_dir: Option<PathBuf>,
+    pure_rust: bool,
+) -> Result<(), String> {
+    // ── Step 1: decode to 16 kHz mono Float32 ────────────────────────
+    let policy = if pure_rust {
+        crate::audio::FallbackPolicy::PureRust
+    } else {
+        crate::audio::FallbackPolicy::AllowFfmpeg
+    };
+    eprintln!("decoding {}…", path.display());
+    let decoded = crate::audio::decode_to_16khz_mono(&path, policy)
+        .map_err(|e| format!("audio decode: {e:#}"))?;
+    eprintln!(
+        "  → {} samples ({:.2} s) via {}",
+        decoded.pcm.len(),
+        decoded.duration_seconds,
+        decoded.tier.as_str()
+    );
+
+    // ── Step 2: configure the ASR session ────────────────────────────
+    let config = match &model {
+        Some(p) => crate::asr::AsrConfig::with_model_path(&backend, p.to_string_lossy()),
+        None => crate::asr::AsrConfig::new(&backend),
+    };
+    let cache_dir = asr_cache_dir(data_dir)?;
+    let handle = crate::asr::AsrHandle::new(config.clone(), cache_dir);
+
+    // ── Step 3: transcribe (async, single-thread runtime) ────────────
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    eprintln!("transcribing via {}…", config.display_name());
+    let text = rt
+        .block_on(handle.transcribe_with_language(decoded.pcm, language.clone()))
+        .map_err(|e| format!("ASR: {e:#}"))?;
+
+    // ── Step 4: write out ────────────────────────────────────────────
+    let payload = match out {
+        OutFormat::Json => serde_json::json!({
+            "text": text,
+            "backend": backend,
+            "language_hint": language,
+            "source_path": path.display().to_string(),
+            "source_sample_rate": decoded.source_sample_rate,
+            "source_channels": decoded.source_channels,
+            "duration_seconds": decoded.duration_seconds,
+            "decode_tier": decoded.tier.as_str(),
+        })
+        .to_string(),
+        OutFormat::Text => text.clone(),
+    };
+    write_chat_output(&output, &payload)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_chat_tts(
+    out: OutFormat,
+    text: String,
+    backend: String,
+    model: Option<PathBuf>,
+    voice: Option<PathBuf>,
+    voice_ref_text: Option<String>,
+    speaker: Option<String>,
+    output: PathBuf,
+    data_dir: Option<PathBuf>,
+) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("TTS input text is empty".to_string());
+    }
+
+    // ── Step 1: configure the session ────────────────────────────────
+    let config = match &model {
+        Some(p) => crate::asr::AsrConfig::with_model_path(&backend, p.to_string_lossy()),
+        None => crate::asr::AsrConfig::new(&backend),
+    };
+    let cache_dir = asr_cache_dir(data_dir)?;
+    let handle = crate::asr::AsrHandle::new(config.clone(), cache_dir);
+
+    // ── Step 2: synthesise (async + atomic voice/speaker apply) ──────
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    let voice_opt = voice.clone().map(|p| (p, voice_ref_text.clone()));
+    eprintln!("synthesising via {}…", config.display_name());
+    let pcm = rt
+        .block_on(handle.synthesize_with_options(text.clone(), voice_opt, speaker.clone()))
+        .map_err(|e| format!("TTS: {e:#}"))?;
+
+    // ── Step 3: write WAV ────────────────────────────────────────────
+    // CrispASR TTS emits 24 kHz mono Float32 across every supported
+    // backend (per Session::synthesize docstring).  Preserve that —
+    // resampling to 16 kHz here would degrade the audio for no gain.
+    const TTS_SAMPLE_RATE: u32 = 24_000;
+    crate::audio::writer::write_wav_mono(&output, &pcm, TTS_SAMPLE_RATE)
+        .map_err(|e| format!("WAV write: {e:#}"))?;
+    eprintln!(
+        "wrote {} samples ({:.2} s @ {} Hz) → {}",
+        pcm.len(),
+        pcm.len() as f64 / TTS_SAMPLE_RATE as f64,
+        TTS_SAMPLE_RATE,
+        output.display()
+    );
+
+    // ── Step 4: report metadata on stdout ────────────────────────────
+    match out {
+        OutFormat::Json => println!(
+            "{}",
+            serde_json::json!({
+                "backend": backend,
+                "text": text,
+                "output": output.display().to_string(),
+                "samples": pcm.len(),
+                "sample_rate": TTS_SAMPLE_RATE,
+                "duration_seconds": pcm.len() as f64 / TTS_SAMPLE_RATE as f64,
+            })
+        ),
+        OutFormat::Text => println!(
+            "synthesised {} samples ({:.2}s) → {}",
+            pcm.len(),
+            pcm.len() as f64 / TTS_SAMPLE_RATE as f64,
+            output.display()
+        ),
+    }
+    Ok(())
+}
+
+/// Write `payload` to `output`, with `-` routing to stdout.  Used by
+/// `chat transcribe` only (TTS writes binary WAV via the audio writer,
+/// not text via this helper).  Adds a single trailing newline to
+/// match the convention of every other CLI subcommand (so output is
+/// safe to pipe into `read`, `xargs -I`, etc.).
+fn write_chat_output(output: &str, payload: &str) -> Result<(), String> {
+    if output == "-" {
+        println!("{payload}");
+        Ok(())
+    } else {
+        let path = PathBuf::from(output);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("creating parent {}: {e}", parent.display()))?;
+            }
+        }
+        let mut content = payload.to_string();
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+        eprintln!("wrote → {}", path.display());
+        Ok(())
+    }
 }
 
 // ── manpage ────────────────────────────────────────────────────────────────
@@ -2719,5 +2989,156 @@ mod tests {
                 other => panic!("expected Images Extensions, got {other:?}"),
             }
         }
+    }
+
+    // ── P13.5 slice A — chat transcribe / tts clap parsing + helpers ──
+
+    #[test]
+    fn chat_transcribe_minimal_args_parse() {
+        // The cheapest positive case: just a path. Backend defaults to
+        // whisper, output to stdout, everything else None.
+        let cli = Cli::try_parse_from([
+            "crispsorter", "chat", "transcribe", "/tmp/foo.wav",
+        ])
+        .expect("transcribe with just a path should parse");
+        match cli.command {
+            Command::Chat { cmd: ChatCmd::Transcribe { path, backend, model, language, output, pure_rust, .. } } => {
+                assert_eq!(path, PathBuf::from("/tmp/foo.wav"));
+                assert_eq!(backend, "whisper", "default backend must be whisper");
+                assert!(model.is_none());
+                assert!(language.is_none());
+                assert_eq!(output, "-", "default output is stdout");
+                assert!(!pure_rust);
+            }
+            other => panic!("expected Chat Transcribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_transcribe_full_args_parse() {
+        // All optional flags set — language hint, explicit model
+        // path, output redirect, pure-rust policy, custom data dir.
+        let cli = Cli::try_parse_from([
+            "crispsorter", "chat", "transcribe",
+            "/tmp/de.mp3",
+            "--backend", "parakeet",
+            "--model", "/models/parakeet.gguf",
+            "--language", "de",
+            "--output", "/tmp/out.txt",
+            "--data-dir", "/tmp/xdg",
+            "--pure-rust",
+        ])
+        .expect("full-flag transcribe should parse");
+        match cli.command {
+            Command::Chat { cmd: ChatCmd::Transcribe {
+                path, backend, model, language, output, data_dir, pure_rust,
+            } } => {
+                assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
+                assert_eq!(backend, "parakeet");
+                assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
+                assert_eq!(language.as_deref(), Some("de"));
+                assert_eq!(output, "/tmp/out.txt");
+                assert_eq!(data_dir, Some(PathBuf::from("/tmp/xdg")));
+                assert!(pure_rust);
+            }
+            other => panic!("expected Chat Transcribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_tts_requires_output_path() {
+        // `--output` is the only mandatory flag beyond the text
+        // positional — clap should reject if it's missing.
+        let err = Cli::try_parse_from([
+            "crispsorter", "chat", "tts", "Hello world",
+        ])
+        .expect_err("tts without --output must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--output") || msg.contains("output"),
+            "error must name the missing arg: {msg}"
+        );
+    }
+
+    #[test]
+    fn chat_tts_voice_and_speaker_are_mutually_exclusive() {
+        // CrispASR's TTS picks voice EITHER by path (set_voice) OR by
+        // name (set_speaker_name) — never both.  clap's
+        // `conflicts_with` catches misuse at parse time, before any
+        // session load.  Drift here would let the runtime panic on
+        // surprising upstream state.
+        let err = Cli::try_parse_from([
+            "crispsorter", "chat", "tts", "hi",
+            "--output", "/tmp/out.wav",
+            "--voice", "/voices/sophia.gguf",
+            "--speaker", "tara",
+        ])
+        .expect_err("voice + speaker should conflict");
+        assert!(
+            err.to_string().contains("cannot be used with"),
+            "expected conflict error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn chat_tts_voice_ref_text_requires_voice() {
+        // `--voice-ref-text` is meaningless without `--voice` (it
+        // describes what the voice reference clip says).  clap's
+        // `requires` should error if `--voice-ref-text` is used
+        // standalone.  clap's phrasing is "the following required
+        // arguments were not provided: --voice <VOICE>" — anchor
+        // on the missing-arg name, not the literal verb.
+        let err = Cli::try_parse_from([
+            "crispsorter", "chat", "tts", "hi",
+            "--output", "/tmp/out.wav",
+            "--voice-ref-text", "reading test",
+        ])
+        .expect_err("voice-ref-text without voice should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--voice"),
+            "expected error to name the missing --voice arg, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn write_chat_output_writes_file_and_adds_newline() {
+        // Round-trip: write a payload, read it back, confirm it ends
+        // in a newline (so downstream `read $(...)` etc. behave) and
+        // the parent dir was created.
+        let mut base = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        base.push(format!("crispsorter_chat_out_{nanos}"));
+        let path = base.join("sub").join("transcript.txt");
+
+        write_chat_output(&path.to_string_lossy(), "hello world")
+            .expect("write_chat_output");
+        assert!(path.exists(), "output file must exist");
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "hello world\n", "must add a trailing newline");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn write_chat_output_preserves_existing_newline() {
+        // Don't double-append: payloads that already terminate in '\n'
+        // round-trip byte-exact.
+        let mut base = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        base.push(format!("crispsorter_chat_out_{nanos}.txt"));
+
+        write_chat_output(&base.to_string_lossy(), "hi\n").unwrap();
+        let body = std::fs::read_to_string(&base).unwrap();
+        assert_eq!(body, "hi\n");
+
+        let _ = std::fs::remove_file(&base);
     }
 }
