@@ -34,6 +34,18 @@ use tokio::sync::Mutex;
 #[cfg(feature = "crispasr")]
 use anyhow::Context;
 
+// Phase 2 — language ID + per-backend capability table + routing
+// policy.  Module is always-compile (the LID wrapper inside it is the
+// only feature-gated bit).  `pub use` flattens the API so callers
+// import from `crate::asr::` directly, matching how `AsrConfig` /
+// `AsrHandle` are addressed today.
+pub mod lang;
+pub use lang::{
+    backend_capabilities, detect_language_from_pcm, route, supports_language,
+    BackendCapabilities, BackendFallback, BackendLanguages, Language, LidMethod, LidResult,
+    RoutingDecision, SpeedTier, TranslationSupport,
+};
+
 /// ASR session configuration — backend name + optional explicit model
 /// path.  All 24 backends from the CrispASR registry are supported;
 /// see [the module docs](self) for the curated list.
