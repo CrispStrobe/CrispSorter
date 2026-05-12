@@ -140,6 +140,17 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 >   a safe `Session::translate_text(text, src, tgt, max_tokens)`
 >   wrapper.  Tracked as **Phase 8** (after text-LID lands so
 >   detection feeds translation).
+>
+>   **Upstream status (2026-05-12)** — the Rust wrap landed in
+>   CrispASR `cfe6770a` (`feat(translate): expose text-to-text
+>   translation through Rust`): `crispasr_session_translate_text` +
+>   `crispasr_session_translate_text_free` are exposed in
+>   `crispasr-sys`, and `Session::translate_text(text, src, tgt,
+>   max_tokens) -> Result<String, String>` is in the safe wrapper.
+>   C-ABI version bumped to 0.5.1.  CrispSorter Phase 8 is unblocked
+>   on the FFI side — the remaining work is the CrispSorter-side
+>   `text_translate.rs` module + LanceDB column + Tauri command (see
+>   Phase 8 below).
 > - **Text-LID for all extracted documents** (PDF / DOCX / TXT /
 >   transcript): tag every document with its detected language at
 >   index time so the UI can filter / facet by language and so we
@@ -147,10 +158,20 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 >   `text_lid_dispatch` (CLD3 ~1.5 MB, GlotLID-V3 ~2102 langs,
 >   LID-176 ~176 langs) — but **none are exposed through the Rust
 >   crate or `crispasr-sys` FFI today** (only the C++ CLI uses
->   them via `--lid-on-transcript`).  Bringing them to CrispSorter
->   needs an upstream CrispASR change first: add `crispasr_text_lid_*`
->   C-ABI exports, mirror in `crispasr-sys`, surface in the safe
->   wrapper.  Tracked as **Phase 7** (after the audio + translation
+>   them via `--lid-on-transcript`).
+>
+>   **Upstream status (2026-05-12)** — the recon for the Phase 8
+>   wrap found that the text-LID side is *bigger* than originally
+>   tracked: there's **no `CA_EXPORT crispasr_text_*` symbol in
+>   `src/crispasr_c_api.cpp` at all** (only the audio-side
+>   `crispasr_detect_language_pcm` + `crispasr_session_detect_language`
+>   exist).  Phase 7 upstream therefore needs C++ implementation
+>   work first — design a stable `crispasr_session_text_detect_language(
+>   session, text, model_path, out_buf, out_buf_size, out_conf*) -> int`
+>   surface mirroring the audio LID shape, route through the existing
+>   internal `text_lid_dispatch`, then add the `extern "C"` to
+>   `crispasr-sys`, then the safe wrapper.  Bumps the FFI version
+>   one minor.  Tracked as **Phase 7** (after the audio + translation
 >   foundation lands).
 
 **Speed-tier defaults** (called out so we don't default to slow models
