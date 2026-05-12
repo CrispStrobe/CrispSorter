@@ -118,9 +118,28 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 >   default), `Ignore` (proceed anyway, last resort).
 > - **Translation post-processing** for ASR output and stored
 >   extractions: optional `--translate-to <code>` runs m2m100 /
->   madlad after transcription.  Available both in `chat transcribe`
->   and in the extractor (extracted documents can be translated for
->   indexing — useful for searching across language boundaries).
+>   m2m100-wmt21 / madlad / gemma4-e2b after transcription.
+>   Available in `chat transcribe`, in the extractor (extracted
+>   documents from any source — PDF / DOCX / EPUB / TXT / audio
+>   transcript — can be translated for indexing, useful for an
+>   English-only corpus that wants foreign-language documents to be
+>   searchable), and on-demand from the search-results UI (user
+>   finds a hit in a Bosnian PDF via vector search, clicks "translate
+>   to en", we render the translated chunk inline alongside the
+>   original — no LanceDB rewrite needed).  WMT21-dense is direction-
+>   specific (EN ↔ {zh, de, fr, ja, ru, is, ha}); long-tail
+>   languages like Bosnian go through m2m100 (100 langs, any-to-any)
+>   or madlad-400 (419 langs).  CrispASR has the C++
+>   `crispasr_session_translate_text` dispatcher (M2M-100, WMT21,
+>   MADLAD, Gemma4-E2B) — but **the C-ABI symbol isn't wrapped in
+>   `crispasr-sys` or the safe `crispasr` Rust crate today** (the
+>   Rust `set_translate(true)` method is the audio-side Whisper
+>   sticky flag, not the text-to-text dispatcher).  Bringing it to
+>   CrispSorter needs an upstream change, exactly analogous to the
+>   text-LID one: add the `extern "C"` decl to crispasr-sys, expose
+>   a safe `Session::translate_text(text, src, tgt, max_tokens)`
+>   wrapper.  Tracked as **Phase 8** (after text-LID lands so
+>   detection feeds translation).
 > - **Text-LID for all extracted documents** (PDF / DOCX / TXT /
 >   transcript): tag every document with its detected language at
 >   index time so the UI can filter / facet by language and so we
@@ -176,6 +195,42 @@ visible and reversible):**
    `extractors/mod.rs` runs LID on every `ExtractedDocument`,
    stores the language code as a new LanceDB column, exposes a
    language-filter facet in the search UI.
+9. **Phase 8** *(blocked on CrispASR upstream)* — Cross-document
+   text translation, both index-time-batch and on-demand-per-hit.
+   Builds on Phase 7's text-LID (need to know the source language
+   before translating).  Upstream work: add `extern "C" fn
+   crispasr_session_translate_text(*mut CrispasrSession,
+   *const c_char, *const c_char, *const c_char, c_int) -> *mut
+   c_char` to `crispasr-sys` (mirroring how text-LID's exports get
+   added in Phase 7), then expose a safe `Session::translate_text(
+   text: &str, src: &str, tgt: &str, max_tokens: i32) -> Result<
+   String>` in the high-level crate that handles the malloc'd
+   UTF-8 return + free.  CrispSorter side: new
+   `src-tauri/src/asr/text_translate.rs` module (sibling of
+   `lang.rs`) that picks the right backend per language pair
+   (m2m100 default, wmt21 for EN-paired-with-the-7 supported
+   langs, madlad for the 400-language long tail), with a per-pair
+   capability check.  Two consumer surfaces:
+   - **Index-time batch:** new extractor config flag
+     `translate_to: Option<String>` on every extractor; when set,
+     run text-LID → translation → write the translated text into a
+     dedicated LanceDB column (`text_translated_<tgt>`) alongside
+     the original.  Search defaults to querying the translated
+     column when set, falling back to the original.
+   - **On-demand:** new Tauri command `translate_document_text(
+     chunk_id: String, target_lang: String) -> Result<String>` that
+     looks up the chunk's original text, calls the translation
+     wrapper inline, and returns the result.  Search-results UI
+     adds a per-result "Translate to …" affordance; the SvelteKit
+     side caches translations in component state so repeated
+     clicks on the same chunk don't re-run the model.  Optional
+     persistent cache: a side SQLite table keyed by
+     `(chunk_id, target_lang)` for cross-session reuse.
+
+   Tests + life example: a Bosnian PDF gets ingested into an
+   English-only corpus, the user queries "kako se zoveš" through
+   the vector index, the hit's UI surface offers "Translate to
+   en" and renders the M2M-100 output inline.
 
 Three distinct surfaces, only #1 ships today.
 
