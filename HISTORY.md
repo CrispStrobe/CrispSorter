@@ -9,6 +9,138 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-12 — P13.5 Audio + Translation vertical (Phases 0–8, all shipped)
+
+End-to-end audio + cross-language search vertical across two repos.
+Three architectural deliverables in one session:
+
+1. **Audio + video transcription pipeline.**  Pure-Rust symphonia
+   decode + ffmpeg shell-out fallback → 16 kHz mono Float32 PCM →
+   CrispASR `Session::transcribe_with_language`.  Handles 22
+   extensions: WAV / MP3 / M4A / FLAC / OGG / OPUS / AAC for audio;
+   MP4 / MOV / MKV / WebM / M4V for video (audio-stream demux only,
+   no video decode); AVI / WMV / FLV / TS / AMR / RA / 3GP / ASF via
+   ffmpeg on PATH.  Two consumer surfaces: a new CLI (`chat
+   transcribe`, `chat tts`) and an index-time `extractors/audio.rs`
+   so audio files become first-class searchable documents alongside
+   PDFs and OCR'd images.
+
+2. **Language-aware backend routing.**  `asr/lang.rs` carries a
+   curated capability table mirroring CrispASR's README feature
+   matrix — 24 ASR backends each tagged with their supported language
+   set, native-LID flag, translation pathway, and speed tier.
+   `BackendFallback` policy enum (`AsConfigured` / `Strict` / `Auto` /
+   `Translate`) feeds a pure `route(policy, current, detected)`
+   decision function.  `asr/orchestrator.rs` runs LID over the first
+   10 s of PCM, routes per policy, applies the decision against the
+   primary or a freshly-constructed sibling `AsrHandle`.  PLAN's life
+   example ("DE audio with English-only parakeet → switch to whisper")
+   is a one-line CLI invocation.
+
+3. **Cross-document translation, both surfaces.**  On-demand:
+   `translate_text` Tauri command, SQLite-backed `translation_cache`
+   table keyed by `(SHA-256(text), source_lang, target_lang, backend)`
+   so repeated UI clicks on the same chunk are free.  Index-time
+   batch: new `text_translated` + `text_translated_lang` LanceDB
+   columns populated by an extractor-side MT pass when
+   `ExtractOptions::translate_to` is set; columns added to existing
+   tables by the **first real consumer of the schema-migration
+   framework** (`AddTextTranslatedColumns` at v100).
+
+### Commits — CrispSorter (chronological, all on `main`)
+
+| Commit | Phase / Layer | Headline |
+|---|---|---|
+| `b9c9153` | Phase 0 | `AsrModel` enum → `AsrConfig { backend, model_path }`; PLAN consolidation of axes 1–3 (backends / media / language handling) |
+| `a8821f9` | Phase 1 | `src-tauri/src/audio/` — symphonia decoder + ffmpeg fallback + linear resample + hound writer; 22 tests; `audio_decode_demo` smoke example (verified against `/System/Library/Sounds/Glass.aiff` at 83× realtime) |
+| `a800606` | chore | `.gitignore .cargo/` for the per-repo `target-dir` redirect to `<external-volume>/code/cargo-target/CrispSorter` — tauri-cli spawns cargo as a child process which bypasses the interactive `~/.zshenv cargo()` function wrapper, but `.cargo/config.toml` survives that boundary |
+| `d202f23` | Phase 2 | `asr/lang.rs` — `Language` newtype, `LidMethod`, `BackendCapabilities` table for all 24 ASR backends, `BackendFallback` policy + pure `route()` decision; 26 tests covering routing decisions × policies + parakeet EU-25 / distil-whisper EN-only / `Many` / `PerModel` shapes |
+| `52ca2fa` | Phase 3 (slice A) | `chat transcribe` + `chat tts` CLI subcommands; `Asr::synthesize` / `set_voice` / `set_speaker_name` / `speakers` + `AsrHandle::synthesize_with_options` (atomic apply-then-synth); `hound` promoted to non-optional so `audio::writer` always-compiles; 7 clap-parse + helper tests |
+| `1d83476` | Phase 4 (slice B) | `extractors/audio.rs` index-time transcription, `AUDIO_EXTS` dispatch arm slotted before the text catch-all, process-level `OnceLock<AsrHandle>` so batch ingest of many audio files loads the model once; 7 tests |
+| `87b631e` | Phase 5 | Transcript translation post-processing: `Asr::translate_text` + `AsrHandle::translate_text` consuming the upstream `Session::translate_text` (CrispASR `cfe6770a`); `--translate-to` / `--translate-backend` / `--translate-model` / `--translate-max-tokens` CLI flags |
+| `18ff3b2` | Phase 6 | Audio-LID routing applied: `asr/orchestrator.rs` with `transcribe_with_lid_routing(pcm, primary, policy, lid, hint)`; `--policy as-configured\|strict\|auto`, `--fallback BACKEND`, `--lid-model PATH`, `--lid-method whisper\|silero` CLI flags |
+| `3adb326` | docs | PLAN.md Phase 8 — cross-document translation entry |
+| `70de0df` | docs | PLAN.md — mark Phase 8 upstream FFI as landed |
+| `9db27e1` | docs | PLAN.md — mark Phase 7 upstream text-LID FFI as landed |
+| `ff2a8cb` | infra | Versioned schema-migration framework (`crate::migrations`): `Migration` async trait, `MigrationContext { lance, sqlite, data_dir }`, `MigrationRunner` with gap/duplicate detection + downgrade guard + idempotent reruns; 8 tests against in-memory SQLite ledger |
+| `ceca1eb` | Phase 7 (consumer a) | Text-LID safe wrapper consumer: `extractors::text_lid::detect_language` over the upstream `crispasr::text_detect_language` + ISO 639-3→1 normaliser (37-entry curated table covering parakeet EU-25 + granite-6 + commonly-encountered others); 10 tests |
+| `cb3150d` | Phase 8 (on-demand) | `translate_text` Tauri command + SQLite cache (`translation_cache` table in `crisp_jobs.db` via the new `JobQueue::conn_arc()` accessor); 7 cache tests |
+| `c4eb28f` | Phase 7 (consumer b) | Extractor language plumbing: `ExtractedDocument.language: Option<String>` + `ExtractOptions.text_lid_model: Option<PathBuf>` + post-dispatch LID hook (2 KB-capped, 20-char floor, non-fatal); 8 extractor initialisers + bg_ingest fallback chain `item.language.or(extracted.language)` |
+| `3a25024` | Phase 8 (batch a) | Extractor translation plumbing: `ExtractedDocument.translated_text` + `translated_to_lang` + `ExtractOptions.translate_to` / `translate_backend` / `translate_model` + post-LID translation hook with process-level `OnceLock<AsrHandle>` for the MT backend |
+| `2734199` | Phase 8 (batch b) | LanceDB schema + migration + pipeline: `text_translated` + `text_translated_lang` columns in `build_schema`; `RawDocument` + `DocumentChunk` + `SearchResult` field plumbing across 12 initialiser sites; `chunks_to_record_batch` writes 2 new StringArrays; `record_batches_to_search_results` + `search_sparse_in_pool` read with null-tolerance for pre-v100 rows; `index/migrations.rs` with `AddTextTranslatedColumns` (v100), 2 tests including end-to-end against a real LanceDB tempdir; `MigrationRunner` wired into `init_index` between `LocalIndex::open_or_create` and `IngestPipeline::new`, ledger at `<data_dir>/.crispsorter_migrations.db` |
+
+### Commits — CrispASR sibling repo
+
+| Commit | Headline |
+|---|---|
+| `cfe6770a` | `feat(translate): expose text-to-text translation through Rust` — adds `crispasr_session_translate_text` + `crispasr_session_translate_text_free` C-ABI exports (free-fn mirrors the punc-side pattern so safe-Rust doesn't drag in libc), `extern "C"` in `crispasr-sys`, safe `Session::translate_text(text, src, tgt, max_tokens) -> Result<String, String>` in the high-level crate.  C-ABI bumped to **0.5.1**. |
+| `ee5e7cd8` | `feat(text-lid): expose text-language-detection through Rust` — adds module-level `crispasr_text_detect_language(text, model_path, n_threads, out_label_buf, out_label_cap, out_conf*) -> int` wrapping the internal `text_lid_dispatch` façade (CLD3 + GlotLID-V3 fastText + LID-176 fastText, routed by GGUF `general.architecture`).  Return-code contract mirrors the audio-side `crispasr_detect_language_pcm` (0 / -1 / 1 / 2).  Safe wrapper exposes `crispasr::text_detect_language(text, model_path, n_threads) -> Result<TextLidResult, String>`; label format is preserved as-is (CLD3's `zh-Latn`, fastText's `eng_Latn`) — normalisation is the consumer's choice.  C-ABI bumped to **0.5.2**. |
+
+### Architectural deliverables in place
+
+- **24 ASR backends** addressable by string: `whisper` (99 langs, default for GUI back-compat), `parakeet` (25 EU langs, FastConformer-TDT, fast batch), `distil-whisper` (EN-only, 6.3× faster than whisper), `canary` (25 EU explicit `-sl/-tl`), `cohere`, `granite{,-4.1,-4.1-plus,-4.1-nar}`, `voxtral{,4b}` (13 langs, realtime), `qwen3` (30 + 22 Chinese dialects, native LID), `wav2vec2` (per-model), `glm-asr` (17 langs, native LID), `kyutai-stt` (EN/FR), `firered-asr` (Mandarin + 20+ dialects), `moonshine{,-streaming}` (realtime), `gemma4-e2b` (140+ langs, native LID, dual ASR+MT), `omniasr{,-llm,-llm-unlimited}` (1600+ langs), `vibevoice` (50+), `mimo-asr`, `fastconformer-ctc`.
+- **5 TTS backends**: `kokoro`, `qwen3-tts`, `vibevoice-tts`, `orpheus` (preset speakers via `set_speaker_name`), `chatterbox`.  All emit 24 kHz mono Float32 PCM; CLI writes via `audio::writer::write_wav_mono`.
+- **4 translation backends**: `m2m100` (100 langs any-to-any, default), `m2m100-wmt21` (EN↔{zh,de,fr,ja,ru,is,ha} direction-specific), `madlad` (419 langs via target-language prefix tag), `gemma4-e2b` (dual ASR+MT, 140+ langs).
+- **4 LID model options**: Whisper encoder (99 langs, reuses any ggml-*.bin), Silero (95 langs, 16 MB GGUF), Ecapa (107 VoxLingua or 45 CommonLanguage, 40 MB), Firered (120 langs incl. Chinese dialects, 544 MB).  Whisper + Silero work via the module-level `detect_language_pcm`; Ecapa + Firered are session-level.
+- **Schema-migration framework**: `Migration` trait + `MigrationRunner` with gap detection (no v3 in ledger if v2 isn't), duplicate-version rejection at register time, downgrade guard (ledger says vN applied but no migration registered → refuse to proceed), failure isolation (mid-run failure leaves ledger consistent for resume).  Ledger DB intentionally separate from `crisp_jobs.db` — admin metadata stays isolated from runtime data.
+
+### Bosnian-PDF demo (the user's motivating example)
+
+Two surfaces, both work end-to-end:
+
+```ts
+// On-demand: search hit, user clicks "Translate to en"
+invoke('translate_text', {
+    text: chunk.full_text,
+    source_lang: chunk.language,        // populated by Phase 7 (b) at index time
+    target_lang: 'en',
+    mt_backend: 'm2m100',               // any-to-any 100 langs
+    lid_model: '/models/cld3-f16.gguf', // used when source_lang is null
+})
+// → { translated_text: 'Hello, how are you?', source_lang: 'bs',
+//     cached: false (first call) / true (repeated clicks) }
+```
+
+```rust
+// Index-time batch: bg_ingest with translate_to = Some("en")
+//   1. extractor decodes + transcribes (audio) or reads text (PDF/DOCX)
+//   2. text_lid hook detects 'bs' (Bosnian) and writes it to extracted.language
+//   3. translation hook runs m2m100 bs→en, writes to extracted.translated_text
+//   4. bg_ingest packs into RawDocument and the IngestPipeline writes:
+//        - language = 'bs'              (existing column)
+//        - text_translated = 'Hello...' (NEW column, added by v100 migration)
+//        - text_translated_lang = 'en'  (NEW column, added by v100 migration)
+//   5. search hits return the English translation immediately, no per-query
+//      MT cost.
+```
+
+### Disk-pressure side-fix
+
+Boot disk hit 100% mid-session.  Recovered ~7 GB by `rm -rf`-ing the in-tree
+`target/`, then pinned all future CrispSorter builds to `<external-volume>` via
+a per-repo `.cargo/config.toml` (gitignored — paths are workstation-specific).
+The existing `~/.zshenv` `cargo()` function wrapper only catches interactive
+shell invocations; tauri-cli spawns cargo as a child process which bypasses it.
+A per-repo `config.toml` survives any spawning context.  Captured in PLAN.md +
+[`LEARNINGS.md`](LEARNINGS.md) so the next workstation rebuild doesn't waste
+time rediscovering this.
+
+### What's deferred (queued explicitly in commit messages + PLAN.md)
+
+See PLAN.md "P13.5 follow-ups" for the full list.  Highlights:
+
+- IndexConfig.translate_to settings UI so batch translation can be turned on
+  without code edits (bg_ingest currently hard-codes `None`).
+- Search-side query rewrite: hit `text_translated` column when target_lang
+  filter is set (today always hits `full_text`).
+- Frontend integration of `translate_text` into the Übersicht search-results
+  panel (per-result "Translate to …" affordance).
+- SRT / VTT output formats for `chat transcribe` (needs `transcribe_segments`
+  on the safe wrapper since the current method concatenates).
+- Streaming `--stream` flag for live captions when reading from stdin.
+
+---
+
 ## Session log — 2026-05-11 — P13 Bilder Tier 2 completion (B2–B5)
 
 Continuation of the same working session as the entry below.

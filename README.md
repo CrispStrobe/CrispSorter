@@ -57,6 +57,15 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
 - **Session persistence** — auto-save and resume; full session history; durable SQLite job queue
 - **Built-in AI chat** — query across the documents in your current batch using any configured provider
 - **Voice chat (push-to-talk + auto-speak)** — mic button transcribes speech via on-device CrispASR; replies are read back through the platform's native synth (macOS `say`, Windows SAPI, Linux espeak/spd-say). All offline; opt-in.
+- **Audio + video transcription** (P13.5, complete) — drop audio or video files into a watched folder and they're indexed as first-class searchable documents, exactly like PDFs.  Supports 22 extensions: WAV / MP3 / M4A / FLAC / OGG / OPUS / AAC for pure audio, MP4 / MOV / MKV / WebM / M4V for video (audio-stream demux only — no video decode), and AVI / WMV / FLV / TS / AMR / RA via an automatic ffmpeg shell-out fallback for the long tail.  Decoder is pure-Rust [`symphonia`](https://github.com/pdeljanov/Symphonia) for tier 1; resampling to the canonical 16 kHz mono Float32 happens via linear interpolation (same approach `whisper.cpp` uses internally) before handoff to CrispASR.
+- **CLI ASR + TTS** — `crispsorter chat transcribe <file>` runs any of **24 ASR backends** (`whisper`, `parakeet`, `distil-whisper`, `omniasr`, `qwen3`, `granite`, `voxtral`, …) over any input the audio module can decode.  `crispsorter chat tts "Hello world" --output out.wav` synthesises via **5 TTS backends** (`kokoro`, `qwen3-tts`, `vibevoice-tts`, `orpheus`, `chatterbox`).  All backends are addressable by string + opt-in via `--features crispasr-metal / -cuda / -vulkan`.
+- **Audio language identification + backend routing** — `--language auto` detects the input's language via LID (Whisper encoder / Silero / Ecapa / Firered) and routes per `--policy as-configured | strict | auto`.  Example: `--backend parakeet --policy auto --fallback whisper --language ja` transcribes Japanese audio via `whisper` instead of parakeet (which is 25 EU languages only).  Curated per-backend capability table in `asr/lang.rs` mirrors the CrispASR README feature matrix so the routing decision is informed.
+- **Index-time text-LID** — every extracted document (PDF, DOCX, EPUB, TXT, audio transcript) optionally goes through a text-LID pass via CrispASR's CLD3 / GlotLID-V3 / LID-176 fastText backends.  Detected ISO 639-1 code lands in the LanceDB `language` column for search-time filtering, faceting, and per-language reranker routing.  Opt-in via `ExtractOptions::text_lid_model`.
+- **Cross-document translation** — two surfaces:
+  - **On-demand**: search-results UI calls the `translate_text` Tauri command per chunk, returning translated text inline with a SHA-256-keyed SQLite cache so repeated clicks on the same result are free.  Bosnian PDF found via vector search → click "Translate to en" → m2m100 inline.
+  - **Index-time batch**: extractor configuration `translate_to: "en"` runs MT after LID and writes into dedicated `text_translated` + `text_translated_lang` LanceDB columns alongside the original `full_text`.  Useful for an English-only corpus that wants foreign-language documents pre-translated and searchable by English keywords.
+  - **4 MT backends**: `m2m100` (default, 100 langs any-to-any), `m2m100-wmt21` (EN↔{zh,de,fr,ja,ru,is,ha} direction-specific), `madlad` (419 langs via target-language prefix), `gemma4-e2b` (dual ASR+MT).
+- **Schema-migration framework** — versioned `Migration` async trait with SQLite ledger at `<data-dir>/.crispsorter_migrations.db`.  Gap detection, duplicate-version rejection, downgrade guard (ledger says vN applied but no matching migration registered → refuse to proceed), failure isolation (mid-run failure leaves the ledger consistent for resume).  First real consumer is `AddTextTranslatedColumns` (v100), which added the translation columns to existing LanceDB tables on the 2026-05-12 ship.
 - **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
 - **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs
 - **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
@@ -97,6 +106,26 @@ crispsorter batch process --llm-url http://localhost:11434/v1 --llm-model llama3
 crispsorter batch apply plan.json                      # execute the plan
 
 crispsorter chat query "Was ist die Hauptthese?" --context-files paper.pdf
+
+# Audio + video transcription (P13.5 — needs --features crispasr-metal / -cuda / -vulkan)
+crispsorter chat transcribe interview.mp3                         # whisper, plain-text to stdout
+crispsorter chat transcribe interview.mp3 -f json -o out.json     # JSON envelope with decode metadata
+crispsorter chat transcribe ja-podcast.m4a \
+    --backend parakeet --policy auto --fallback whisper \
+    --language auto --lid-model ~/models/cld3-f16.gguf
+# → LID detects ja, parakeet doesn't speak Japanese, routes to whisper automatically.
+# JSON output carries: detected_language, confidence, decision, used_backend.
+
+crispsorter chat transcribe bosnian-interview.wav \
+    --language bs --translate-to en --translate-backend m2m100
+# → transcribe via whisper (Bosnian is in whisper's 99 langs), then translate
+#   transcript bs → en via m2m100.  JSON output carries the original + translation.
+
+# TTS — synthesise to WAV via CrispASR TTS backends
+crispsorter chat tts "Hello, world." --output /tmp/hello.wav
+crispsorter chat tts "Hallo Welt." --backend orpheus --speaker Anton --output /tmp/de.wav
+crispsorter chat tts "..." --backend qwen3-tts --voice ~/voices/sample.wav \
+    --voice-ref-text "..." --output /tmp/cloned.wav
 
 crispsorter catalog scan ~/Volumes/Backup --hash sha256 --out backup.caf
 crispsorter catalog find-dupes Backup1.caf Backup2.caf --strategy hash:sha256
@@ -545,8 +574,13 @@ If EPUB extraction fails with a reference to the Node.js `process` global, ensur
 | Persistence | tauri-plugin-store |
 | Embedding (local) | fastembed-rs (ONNX) — fork at `CrispStrobe/fastembed-rs` `feat/new-model-entries` |
 | Embedding (GGUF) | [CrispEmbed](https://github.com/CrispStrobe/CrispEmbed) — optional sibling crate; Metal/Vulkan/CUDA via llama.cpp |
-| Speech-to-text | [CrispASR](https://github.com/CrispStrobe/CrispASR) — optional sibling crate (Whisper/Qwen3-ASR/FastConformer) |
-| Text-to-speech | Native platform synth — `say` (macOS), SAPI (Windows), `spd-say`/`espeak` (Linux) |
+| Speech-to-text | [CrispASR](https://github.com/CrispStrobe/CrispASR) — optional sibling crate; 24 ASR backends (Whisper/Parakeet/Qwen3/Granite/Voxtral/Canary/Cohere/OmniASR/…) addressable by string |
+| Text-to-speech (CLI / index) | [CrispASR](https://github.com/CrispStrobe/CrispASR) — 5 TTS backends (Kokoro/Qwen3-TTS/VibeVoice-TTS/Orpheus/Chatterbox), 24 kHz mono Float32 output via the `audio::writer` |
+| Text-to-speech (GUI auto-speak) | Native platform synth — `say` (macOS), SAPI (Windows), `spd-say`/`espeak` (Linux) |
+| Audio + video decode | [`symphonia`](https://github.com/pdeljanov/Symphonia) tier 1 (WAV/MP3/M4A/FLAC/OGG/OPUS/AAC, MP4/MOV/MKV/WebM/M4V demux), `ffmpeg` shell-out tier 2 for the AVI/WMV/FLV/TS/AMR long tail |
+| Language ID | [CrispASR](https://github.com/CrispStrobe/CrispASR) — audio LID (Whisper encoder / Silero / Ecapa / Firered) and text LID (CLD3 / GlotLID-V3 / LID-176 fastText, routed by GGUF `general.architecture`) |
+| Translation | [CrispASR](https://github.com/CrispStrobe/CrispASR) — 4 MT backends (M2M-100 / WMT21-dense / MADLAD-400 / Gemma4-E2B); on-demand Tauri command + index-time batch column |
+| Schema migrations | In-tree `crate::migrations` framework — async `Migration` trait, SQLite version ledger at `<data-dir>/.crispsorter_migrations.db` |
 | Vector store (local) | LanceDB (embedded) |
 | Full-text (local) | Tantivy (with ASCII-folding for German umlaut search) |
 | Folder watcher | `notify` (FSEvents/inotify/ReadDirectoryChangesW) |
