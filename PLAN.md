@@ -33,10 +33,14 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-**P13 Bilder vertical** — both tiers complete (A1–A4 + B1–B5).
-Open follow-ups: image-overlay face boxes (needs sha256 cross-
-reference at the CrispLens list endpoint), true semantic search
-(needs CrispLens upstream to add an embedding-based route).
+**P13 Bilder vertical** — both tiers complete (A1–A4 + B1–B5) +
+all follow-ups landed: by-hash resolver (`/api/images/by-hash/...`),
+semantic search wired through to `/api/search/semantic` (cross-
+lingual DE↔EN via `paraphrase-multilingual-MiniLM-L12-v2`, live-
+verified against `https://<crisplens-host>` on 2026-05-12), and
+image-overlay face boxes plumbed through the CrispSorter preview
+pane.  The CrispLens-side deploy uses `CRISPEMBED_REINSTALL=1`
+on `fix_db.sh` when CrispEmbed cuts a registry-changing release.
 
 **Test coverage:** 311 unit tests pass in `tauri-app` (+2 `#[ignore]`'d
 WebDAV-live integration tests gated by
