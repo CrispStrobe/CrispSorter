@@ -1179,6 +1179,11 @@ impl LocalIndex {
                     .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
                 let text_col    = batch.schema().index_of("full_text").ok()
                     .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                // text_translated is post-v100-migration only — older
+                // archives don't have the column, hence the optional Some
+                // and the per-row null-guard below.
+                let text_trans_col = batch.schema().index_of("text_translated").ok()
+                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
                 let cidx_col    = batch.schema().index_of("chunk_index").ok()
                     .and_then(|i| batch.column(i).as_any().downcast_ref::<arrow_array::Int32Array>());
 
@@ -1197,6 +1202,10 @@ impl LocalIndex {
                     let title   = title_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
                     let heads   = heads_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
                     let body    = text_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
+                    let body_translated = text_trans_col
+                        .as_ref()
+                        .filter(|c| !c.is_null(i))
+                        .map(|c| c.value(i));
 
                     fts.add_document(&mut writer, super::fts_index::TantivyInput {
                         doc_id: &doc_id,
@@ -1205,6 +1214,7 @@ impl LocalIndex {
                         title: &title,
                         headings: &heads,
                         body: &body,
+                        body_translated,
                     })?;
                     fts_docs += 1;
                 }

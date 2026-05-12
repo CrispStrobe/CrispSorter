@@ -32,6 +32,13 @@ pub struct SearchFields {
     pub title: Field,
     pub body: Field,
     pub headings: Field,
+    /// `Some` iff the on-disk Tantivy schema has the `body_translated`
+    /// field — added in the FTS-over-translated-body P13.5 follow-up.
+    /// When `Some`, every bare-term query OR's a low-boost match against
+    /// the translated body so an English query against a Bosnian doc
+    /// with an English translation still scores via BM25.  When `None`
+    /// (legacy index), the translator silently skips it.
+    pub body_translated: Option<Field>,
 }
 
 /// Translate a query string into a Tantivy `Box<dyn Query>`.
@@ -254,11 +261,15 @@ fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>>
                 // Wildcards / fuzzy still apply inside a field-scoped term —
                 // recurse through the regular term-query dispatch but with
                 // a single-field SearchFields so the boosted union becomes
-                // a single boosted Term on `f`.
+                // a single boosted Term on `f`.  body_translated is dropped
+                // here on purpose: a field-prefixed query like `title:hello`
+                // shouldn't also fan out into the translated body — that
+                // would surprise the user.
                 let scoped = SearchFields {
                     title: f,
                     headings: f,
                     body: f,
+                    body_translated: None,
                 };
                 return build_term_query(&folded, &scoped);
             }
@@ -287,11 +298,25 @@ fn build_term_query(word: &str, fields: &SearchFields) -> Result<Box<dyn Query>>
     let head_q = build_boosted_term(fields.headings, &folded, 2.0);
     let body_q = build_boosted_term(fields.body, &folded, 1.0);
 
-    Ok(Box::new(BooleanQuery::new(vec![
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![
         (Occur::Should, title_q),
         (Occur::Should, head_q),
         (Occur::Should, body_q),
-    ])))
+    ];
+
+    // FTS-over-translated body: when the schema has body_translated,
+    // OR-merge a slightly lower-boost match against it.  0.7 < 1.0 so
+    // original-language hits outrank translated-only hits when both
+    // fire, but translated-only hits still score above zero and so
+    // appear in the BM25 channel of the hybrid search.  Wildcards /
+    // fuzzy queries above already returned before reaching this point,
+    // so body_translated only joins the exact-term path — matches the
+    // user expectation for a translated-text channel (whole words).
+    if let Some(bt) = fields.body_translated {
+        clauses.push((Occur::Should, build_boosted_term(bt, &folded, 0.7)));
+    }
+
+    Ok(Box::new(BooleanQuery::new(clauses)))
 }
 
 fn build_boosted_term(field: Field, text: &str, boost: f32) -> Box<dyn Query> {
@@ -585,6 +610,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "Karl Barth schrieb über Gnade",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -597,6 +623,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "Karl Marx schrieb über Kapital",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -617,6 +644,7 @@ mod tests {
             title: tantivy::schema::Field::from_field_id(0),
             headings: tantivy::schema::Field::from_field_id(1),
             body: tantivy::schema::Field::from_field_id(2),
+            body_translated: None,
         };
         let res = build_wildcard("*foo", &fields);
         assert!(res.is_ok(), "Leading wildcard * should now be allowed");
@@ -638,6 +666,7 @@ mod tests {
             title: title_f,
             headings: head_f,
             body: body_f,
+            body_translated: None,
         };
 
         // `title:karl` should produce a TermQuery on the title field only,
@@ -675,6 +704,7 @@ mod tests {
             title: tantivy::schema::Field::from_field_id(0),
             headings: tantivy::schema::Field::from_field_id(1),
             body: tantivy::schema::Field::from_field_id(2),
+            body_translated: None,
         };
         let q = build_term_query("notafield:karl", &fields);
         assert!(q.is_ok(), "unknown prefix should still produce a query");

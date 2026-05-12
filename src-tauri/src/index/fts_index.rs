@@ -5,11 +5,19 @@ use serde::{Deserialize, Serialize};
 /// Lives at `{data_dir}/fts/` alongside the LanceDB directory at `{data_dir}/lance/`.
 ///
 /// Fields:
-///   doc_id   — STRING STORED (links back to LanceDB row, used for delete/lookup)
-///   owner_id — STRING STORED (multi-user filter)
-///   headings — TEXT positional (boosted via should in query translator)
-///   body     — TEXT positional (full document text)
-///   language — STRING STORED (filter)
+///   doc_id          — STRING STORED (links back to LanceDB row, used for delete/lookup)
+///   owner_id        — STRING STORED (multi-user filter)
+///   headings        — TEXT positional (boosted via should in query translator)
+///   body            — TEXT positional (full document text)
+///   body_translated — TEXT positional, indexed-only (RawDocument.translated_text
+///                     when the extractor ran a translation pass; closes the
+///                     "English query against a Bosnian doc with English
+///                     translation doesn't hit BM25" gap from PLAN.md).
+///                     Indexes lazily — legacy on-disk schemas without this
+///                     field still open fine; `IndexFields.body_translated`
+///                     becomes `None` and the field is skipped for both
+///                     ingest and search until the user rebuilds.
+///   language        — STRING STORED (filter)
 use std::path::Path;
 use tantivy::{
     collector::TopDocs,
@@ -59,6 +67,10 @@ pub struct IndexFields {
     pub title: Field,
     pub headings: Field,
     pub body: Field,
+    /// `Some` for indexes created on or after the body_translated schema
+    /// rev; `None` for legacy on-disk indexes whose schema predates it
+    /// (open path detects this and skips the field for read+write).
+    pub body_translated: Option<Field>,
     pub language: Field,
 }
 
@@ -69,20 +81,34 @@ pub struct TantivyInput<'a> {
     pub title: &'a str,
     pub headings: &'a str,
     pub body: &'a str,
+    /// MT-pass output (`RawDocument.translated_text`) — only written
+    /// when both this value is `Some(_)` *and* `IndexFields.body_translated`
+    /// is `Some(_)` (i.e. the on-disk schema has the field).  Pass `None`
+    /// for legacy ingest paths and L1 manifest ingest where no
+    /// translation runs.
+    pub body_translated: Option<&'a str>,
 }
 
 impl FtsIndex {
     /// Open an existing Tantivy index at `dir`, or create it if absent.
+    /// Fresh indexes get the full schema including `body_translated`;
+    /// existing indexes are opened as-is, and `IndexFields.body_translated`
+    /// is `None` if the on-disk schema predates that field (the field
+    /// can't be retroactively added to existing Tantivy segments without
+    /// a full rebuild — a future migration will handle that).
     pub fn open_or_create(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
 
-        let (schema, fields) = build_schema();
+        let (schema, fresh_fields) = build_schema();
 
         let mmap_dir = tantivy::directory::MmapDirectory::open(dir)?;
-        let index = if Index::exists(&mmap_dir)? {
-            Index::open_in_dir(dir)?
+        let (index, fields) = if Index::exists(&mmap_dir)? {
+            let index = Index::open_in_dir(dir)?;
+            let fields = bind_fields_from_disk(&index)?;
+            (index, fields)
         } else {
-            Index::create_in_dir(dir, schema)?
+            let index = Index::create_in_dir(dir, schema)?;
+            (index, fresh_fields)
         };
 
         register_tokenizers(&index);
@@ -100,11 +126,15 @@ impl FtsIndex {
     }
 
     /// Return `SearchFields` for the dtSearch query translator.
+    /// `body_translated` is only populated when the on-disk schema has
+    /// the field; legacy indexes return `None` and the translator
+    /// silently skips the disjunction.
     pub fn search_fields(&self) -> SearchFields {
         SearchFields {
             title: self.fields.title,
             headings: self.fields.headings,
             body: self.fields.body,
+            body_translated: self.fields.body_translated,
         }
     }
 
@@ -127,6 +157,15 @@ impl FtsIndex {
         doc.add_text(self.fields.title, input.title);
         doc.add_text(self.fields.headings, input.headings);
         doc.add_text(self.fields.body, input.body);
+
+        // body_translated is only written when both the on-disk schema
+        // exposes the field AND the caller supplied a translation.  Legacy
+        // schemas: silently skip.  No translation: ditto.
+        if let (Some(field), Some(text)) = (self.fields.body_translated, input.body_translated) {
+            if !text.is_empty() {
+                doc.add_text(field, text);
+            }
+        }
 
         writer.add_document(doc)?;
         Ok(())
@@ -215,7 +254,12 @@ fn build_schema() -> (Schema, IndexFields) {
 
     let title = sb.add_text_field("title", text_positional.clone());
     let headings = sb.add_text_field("headings", text_positional.clone());
-    let body = sb.add_text_field("body", text_positional);
+    let body = sb.add_text_field("body", text_positional.clone());
+    // Same tokenizer as `body` so a query "hello" matches the translated
+    // column the same way it would the original.  STORED is intentionally
+    // omitted — we never need the translated text back from Tantivy
+    // (snippets come from LanceDB's `text_translated` column).
+    let body_translated = sb.add_text_field("body_translated", text_positional);
 
     (
         sb.build(),
@@ -225,9 +269,36 @@ fn build_schema() -> (Schema, IndexFields) {
             title,
             headings,
             body,
+            body_translated: Some(body_translated),
             language,
         },
     )
+}
+
+/// Bind `IndexFields` from an already-opened Tantivy index.  `body_translated`
+/// becomes `None` if the on-disk schema predates that field — legacy
+/// indexes opened by older CrispSorter builds.  All other fields are
+/// required and an error is returned if any is missing (which would
+/// mean an index from a different application).
+fn bind_fields_from_disk(index: &Index) -> Result<IndexFields> {
+    let schema = index.schema();
+    let required = |name: &str| -> Result<Field> {
+        schema
+            .get_field(name)
+            .map_err(|_| anyhow::anyhow!("FTS schema on disk is missing required field `{name}` — was the directory created by a different application?"))
+    };
+    Ok(IndexFields {
+        doc_id: required("doc_id")?,
+        owner_id: required("owner_id")?,
+        title: required("title")?,
+        headings: required("headings")?,
+        body: required("body")?,
+        // Optional: legacy indexes don't have it.  `Schema::get_field`
+        // returns `Err(FieldNotFound)` rather than a typed Option, so
+        // collapse that into None for the read-only check.
+        body_translated: schema.get_field("body_translated").ok(),
+        language: required("language")?,
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -263,6 +334,7 @@ mod tests {
                 title: "Introduction",
                 headings: "",
                 body: "The theology of Karl Rahner explores grace.",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -275,6 +347,7 @@ mod tests {
                 title: "Einleitung",
                 headings: "",
                 body: "Karl Barth und die Gnadenlehre der Kirche.",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -298,6 +371,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "grace theology rahner",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -310,6 +384,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "grace theology barth",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -338,6 +413,7 @@ mod tests {
                     title: "",
                     headings: "",
                     body: "rahner anonymous theology",
+                    body_translated: None,
                 },
             )
             .unwrap();
@@ -365,6 +441,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "anonymity anonymous anonymously",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -387,6 +464,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "rahner writes about the anonymous christian concept",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -400,6 +478,7 @@ mod tests {
                 title: "",
                 headings: "",
                 body: "rahner wrote about grace",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -426,6 +505,7 @@ mod tests {
                 title: "Recht unter Druck",
                 headings: "",
                 body: "Abstract text...",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -439,6 +519,7 @@ mod tests {
                 title: "Other Title",
                 headings: "",
                 body: "This document mentions Recht once.",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -467,6 +548,7 @@ mod tests {
                 title: "Constitutional AI: Harmlessness from AI Feedback",
                 headings: "Intro",
                 body: "Recht and safety. The framework of Recht is based on AI feedback. The Recht principles are key. Recht, Recht, Recht, Recht, Recht.",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -481,6 +563,7 @@ mod tests {
                 title: "Recht unter Druck_Abstract.docx",
                 headings: "Workshop",
                 body: "Während Angriffe auf den Rechtsstaat in Europa...",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -495,6 +578,7 @@ mod tests {
                 title: "2503329_BistumEssen_Akzente63_01-2026.pdf",
                 headings: "Dialog",
                 body: "Die Rolle Deutschlands in einer Weltordnung. Es geht um Recht und Macht.",
+                body_translated: None,
             },
         )
         .unwrap();
@@ -547,6 +631,7 @@ mod tests {
                     title,
                     headings: "Begriffsarbeit Innendimension Außendimension Resümee",
                     body: full_text,
+                    body_translated: None,
                 },
             )
             .unwrap();
@@ -606,6 +691,7 @@ mod tests {
                     title: "Erika Mustermann: Integration",
                     headings: "",
                     body: "text",
+                    body_translated: None,
                 },
             )
             .unwrap();
@@ -632,6 +718,7 @@ mod tests {
                     title: "München",
                     headings: "",
                     body: "text content",
+                    body_translated: None,
                 },
             )
             .unwrap();
@@ -662,6 +749,7 @@ mod tests {
                     title: "Integration und Dialog",
                     headings: "",
                     body: "text content",
+                    body_translated: None,
                 },
             )
             .unwrap();
@@ -681,5 +769,123 @@ mod tests {
         // Leading wildcard
         let hits3 = idx.search("*tegration", &f, 10).unwrap();
         assert_eq!(hits3.len(), 1, "Leading wildcard *tegration should work");
+    }
+
+    /// Fresh schemas have body_translated; the FTS picks up an English
+    /// query against a Bosnian original whose English MT-pass output
+    /// is in the body_translated field.  Pins the FTS-over-translated-
+    /// body P13.5 follow-up: without it, the Bosnian doc would lose
+    /// BM25 scoring entirely on an English query.
+    #[test]
+    fn body_translated_makes_translated_text_searchable() {
+        let (idx, _dir) = make_index();
+        assert!(
+            idx.fields.body_translated.is_some(),
+            "fresh schema must include body_translated"
+        );
+
+        let mut w = idx.writer().unwrap();
+        // Bosnian original + English translation — the canonical
+        // cross-language case from the P13.5 follow-up motivation.
+        idx.add_document(
+            &mut w,
+            TantivyInput {
+                doc_id: "bs1",
+                owner_id: "u1",
+                language: "bs",
+                title: "Pozdrav",
+                headings: "",
+                body: "Zdravo, kako si danas?",
+                body_translated: Some("Hello, how are you today?"),
+            },
+        )
+        .unwrap();
+        // Pure-Bosnian doc with no translation: the query word "hello"
+        // shouldn't reach it.
+        idx.add_document(
+            &mut w,
+            TantivyInput {
+                doc_id: "bs2",
+                owner_id: "u1",
+                language: "bs",
+                title: "Drugi tekst",
+                headings: "",
+                body: "Tekst koji ne sadrži ništa korisno.",
+                body_translated: None,
+            },
+        )
+        .unwrap();
+        w.commit().unwrap();
+
+        let f = SearchFilters::default();
+        let hits = idx.search("hello", &f, 10).unwrap();
+        assert_eq!(hits.len(), 1, "English query should hit only the translated doc");
+        assert_eq!(hits[0].doc_id, "bs1");
+    }
+
+    /// `bind_fields_from_disk` makes body_translated `None` when the
+    /// on-disk schema predates the field.  Simulating an "old schema"
+    /// in-process is awkward (Tantivy create+open both come from
+    /// `build_schema`); instead exercise the open path with a
+    /// purpose-built schema that intentionally omits body_translated
+    /// and confirm we fail loudly when a *required* field is missing
+    /// but succeed-with-None when only the optional one is.
+    #[test]
+    fn bind_fields_from_disk_handles_legacy_schema() {
+        use tantivy::schema::{SchemaBuilder, STORED, STRING};
+        let dir = TempDir::new().unwrap();
+        // Build a schema with all the legacy required fields but
+        // intentionally without body_translated.
+        let mut sb = SchemaBuilder::new();
+        sb.add_text_field("doc_id", STRING | STORED);
+        sb.add_text_field("owner_id", STRING | STORED);
+        sb.add_text_field("language", STRING | STORED);
+        let text_positional = TextOptions::default().set_indexing_options(
+            TextFieldIndexing::default()
+                .set_tokenizer(ASCII_FOLD_TOKENIZER)
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+        );
+        sb.add_text_field("title", text_positional.clone());
+        sb.add_text_field("headings", text_positional.clone());
+        sb.add_text_field("body", text_positional);
+        let legacy_schema = sb.build();
+        let legacy_idx = Index::create_in_dir(dir.path(), legacy_schema).unwrap();
+        drop(legacy_idx);
+
+        // Re-open through the normal path — bind_fields_from_disk
+        // should find all required fields and leave body_translated
+        // as None.
+        let fts = FtsIndex::open_or_create(dir.path()).unwrap();
+        assert!(
+            fts.fields.body_translated.is_none(),
+            "legacy schema must surface body_translated as None"
+        );
+
+        // Adding a doc with body_translated: Some(_) must still
+        // succeed (the write silently skips the field when fields
+        // hasn't got it) — pins the graceful-degrade write path.
+        let mut w = fts.writer().unwrap();
+        fts.add_document(
+            &mut w,
+            TantivyInput {
+                doc_id: "legacy1",
+                owner_id: "u1",
+                language: "bs",
+                title: "",
+                headings: "",
+                body: "Tekst",
+                body_translated: Some("Text"),
+            },
+        )
+        .expect("add_document on legacy schema must succeed");
+        w.commit().unwrap();
+
+        // And the query path: "text" shouldn't find anything on the
+        // legacy schema (no body_translated field).
+        let hits = fts.search("text", &SearchFilters::default(), 10).unwrap();
+        assert!(
+            hits.is_empty(),
+            "legacy schema must skip body_translated in search, not panic"
+        );
     }
 }

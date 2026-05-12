@@ -141,6 +141,11 @@ struct TantivyInputOwned {
     title: String,
     headings: String,
     body: String,
+    /// MT-pass output replicated for the FTS write — `None` when the
+    /// extractor didn't translate (no `--translate-to`, source lang
+    /// unknown, or MT failed).  Wired into the `body_translated`
+    /// Tantivy field when the on-disk schema has it.
+    body_translated: Option<String>,
 }
 
 /// One unit of work for the background writer task.
@@ -215,6 +220,7 @@ impl IngestPipeline {
                                     title: &input.title,
                                     headings: &input.headings,
                                     body: &input.body,
+                                    body_translated: input.body_translated.as_deref(),
                                 },
                             )?;
                         }
@@ -363,6 +369,7 @@ impl IngestPipeline {
                 title: raw.title.clone().unwrap_or_default(),
                 headings: raw.headings.join(" "),
                 body: raw.full_text.clone(),
+                body_translated: raw.translated_text.clone(),
             });
         }
         let embed_time_ms = embed_start.elapsed().as_millis() as u64;
