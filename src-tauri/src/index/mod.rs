@@ -21,6 +21,7 @@ pub mod task_failure;
 ///   search      — unified search with RRF reranking
 pub mod location;
 pub mod remote_client;
+pub mod config_persist;
 pub mod migrations;
 pub mod schema;
 pub mod search;
@@ -187,6 +188,22 @@ pub struct IndexConfig {
     /// this on an existing index requires re-ingestion.
     #[serde(default)]
     pub matryoshka_dim: Option<u32>,
+    /// P13.5 follow-up — index-time translation target language
+    /// (ISO 639-1, e.g. `"en"`).  When set, `bg_ingest` passes it
+    /// to `ExtractOptions::translate_to`, the extractor's MT pass
+    /// runs after text-LID, and the resulting translation is
+    /// stored in the LanceDB `text_translated` + `text_translated_lang`
+    /// columns (added by the `AddTextTranslatedColumns` migration).
+    /// `None` (default) skips the translation pass entirely —
+    /// existing behaviour, no overhead for users not opting in.
+    ///
+    /// Only the canonical pure-language codes are meaningful here
+    /// (`en` / `de` / `ja` etc.); the MT backend is fixed at
+    /// `m2m100` for the index-time path today — switching it
+    /// out is a follow-up that exposes `translate_backend` /
+    /// `translate_model` too.
+    #[serde(default)]
+    pub translate_to: Option<String>,
 }
 
 fn default_use_vector() -> bool {
@@ -248,6 +265,7 @@ impl Default for IndexConfig {
             rerank_top_n: default_rerank_top_n(),
             model_cache_dir: None,
             matryoshka_dim: None,
+            translate_to: None,
         }
     }
 }
