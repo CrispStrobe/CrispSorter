@@ -16,7 +16,9 @@
 //!             target_lang: 'en',
 //!             mt_backend: 'm2m100',        // optional, default m2m100
 //!             mt_model: null,              // optional explicit model path
-//!             lid_model: '~/models/cld3-f16.gguf',  // required when source_lang is null
+//!             lid_model: null,             // optional — auto-resolves CLD3
+//!                                          //   from the CrispASR registry when
+//!                                          //   source_lang is also null
 //!             max_tokens: 0,               // 0 = upstream default (200 for m2m100)
 //!         },
 //!     }
@@ -165,19 +167,38 @@ async fn translate_text_impl(
             normalized
         }
         _ => {
-            // No hint — must run LID.
-            let lid_model = input.lid_model.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "source_lang not given and lid_model not provided — \
-                     pass one or the other"
-                )
-            })?;
+            // No hint — must run LID.  Two paths:
+            //   1. Caller supplied an explicit `lid_model` path.
+            //      Use that file directly (matches the original
+            //      contract of the command).
+            //   2. No path — fall back to auto-resolving the CLD3
+            //      preset via the CrispASR registry.  CLD3 is the
+            //      smallest viable LID (440 KB) and emits ISO 639-1
+            //      directly so the downstream normalise_to_iso_639_1
+            //      call is a no-op.  Bigger / more-accurate presets
+            //      (GlotLID, LID-176) are explicit opt-ins via
+            //      `lid_model` pointing at the cached path.
+            let model_path = match input.lid_model.as_deref() {
+                Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+                _ => {
+                    // Auto-resolve CLD3 via the registry.  Needs the
+                    // app data dir for the cache; falls back to the
+                    // same per-OS helper the audio extractor uses.
+                    let cache_dir = mt_cache_dir(&state).await?;
+                    crate::extractors::text_lid::resolve_lid_model(
+                        crate::extractors::text_lid::LidPreset::Cld3,
+                        &cache_dir,
+                    )
+                    .await
+                    .context("auto-resolving CLD3 LID model")?
+                }
+            };
             let result = crate::extractors::text_lid::detect_language(
                 &input.text,
-                Path::new(lid_model),
+                &model_path,
                 2,
             )
-            .with_context(|| format!("running text-LID with model {lid_model}"))?;
+            .with_context(|| format!("running text-LID with model {}", model_path.display()))?;
             // Normalise CLD3 / fastText label space to ISO 639-1.
             // When normalisation fails (long-tail language without
             // an ISO 639-1 assignment), error rather than silently
