@@ -38,6 +38,7 @@ pub mod ocr_ocrs;
 pub mod ocr_paddle;
 pub mod pdf;
 pub mod text;
+pub mod text_lid;
 
 /// One file's extracted text + structural breadcrumbs.
 #[derive(Debug, Clone, Default)]
