@@ -314,7 +314,25 @@ jobs:
           CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
         run: |
           set -euo pipefail
-          APP_DIR=src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos
+          # Workspace migration (commit 7326771, P11) moved target/ from
+          # under src-tauri/ to the workspace root. The current canonical
+          # location is `target/<rust_target>/...`; the legacy
+          # `src-tauri/target/<rust_target>/...` is kept as a fallback so
+          # this step still works if a future tweak re-pins target.
+          # Walking a non-existent dir with `find` would exit non-zero
+          # under set -e + pipefail (the v0.1.39 macOS + Linux failure
+          # mode), so guard each candidate first.
+          APP_DIR=""
+          for dir in \
+            "target/${{ matrix.rust_target }}/release/bundle/macos" \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos"; do
+            if [ -d "$dir" ]; then APP_DIR="$dir"; break; fi
+          done
+          if [ -z "$APP_DIR" ]; then
+            echo "ERROR: no bundle/macos dir under target/ or src-tauri/target/"
+            find target src-tauri/target -maxdepth 5 -name 'bundle' -type d 2>/dev/null | head
+            exit 1
+          fi
           APP=$(find "$APP_DIR" -maxdepth 1 -name '*.app' -type d | head -1)
           if [ -z "$APP" ]; then echo "ERROR: no .app under $APP_DIR"; exit 1; fi
           REPACK_DMG=1 ./scripts/bundle_macos_native_libs.sh "$APP"
@@ -325,7 +343,8 @@ jobs:
           # would otherwise re-evaluate the relative `$TAR_GZ` against
           # the new cwd and fail to find a parent dir for tar to write
           # into (the v0.1.38 macOS arm64 failure mode).
-          TAR_GZ=$(find src-tauri/target/${{ matrix.rust_target }}/release/bundle -name 'CrispSorter*.app.tar.gz' -type f | head -1)
+          BUNDLE_ROOT="$(dirname "$APP_DIR")"
+          TAR_GZ=$(find "$BUNDLE_ROOT" -name 'CrispSorter*.app.tar.gz' -type f | head -1)
           if [ -n "$TAR_GZ" ]; then
             ABS_TAR_GZ="$(cd "$(dirname "$TAR_GZ")" && pwd)/$(basename "$TAR_GZ")"
             echo "Repacking $ABS_TAR_GZ"
@@ -343,21 +362,29 @@ jobs:
           # Linux's tauri_args doesn't pass `--target` (cargo defaults to
           # the host arch on Linux), so the .deb lands at
           # `target/release/bundle/deb/` — NOT under
-          # `target/<rust_target>/release/...` like macOS. Walk only the
-          # dirs that actually exist; passing a non-existent path to
-          # `find` makes it exit non-zero even if it found matches
-          # elsewhere, and pipefail+set-e then silently kills the step
-          # (the v0.1.38 second-run failure mode).
+          # `target/<rust_target>/release/...` like macOS.  Since the
+          # P11 workspace migration (commit 7326771), target/ is at the
+          # workspace root; `src-tauri/target/...` paths are kept as
+          # fallback. Walk only the dirs that actually exist; passing a
+          # non-existent path to `find` makes it exit non-zero even if
+          # it found matches elsewhere, and pipefail+set-e then silently
+          # kills the step (the v0.1.38 second-run failure mode).
           DEB=""
           for dir in \
-            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
-            "src-tauri/target/release/bundle/deb"; do
+            "target/release/bundle/deb" \
+            "target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb" \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb"; do
             if [ -d "$dir" ]; then
               candidate=$(find "$dir" -name '*.deb' -type f | head -1)
               if [ -n "$candidate" ]; then DEB="$candidate"; break; fi
             fi
           done
-          if [ -z "$DEB" ]; then echo "ERROR: no .deb produced"; exit 1; fi
+          if [ -z "$DEB" ]; then
+            echo "ERROR: no .deb produced; bundle dirs:"
+            find target src-tauri/target -maxdepth 5 -name 'bundle' -type d 2>/dev/null | head
+            exit 1
+          fi
           ./scripts/bundle_linux_native_libs.sh "$DEB"
 
       - name: Re-upload patched assets over tauri-action's drafts
@@ -384,14 +411,21 @@ jobs:
               fi
             done
           }
+          # Workspace-root target/ first (post-7326771), src-tauri/target/
+          # as fallback.
           DMG=$(find_first '*.dmg' \
+            "target/${{ matrix.rust_target }}/release/bundle/dmg" \
             "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg")
           TAR_GZ=$(find_first 'CrispSorter*.app.tar.gz' \
+            "target/${{ matrix.rust_target }}/release/bundle/macos" \
+            "target/${{ matrix.rust_target }}/release/bundle" \
             "src-tauri/target/${{ matrix.rust_target }}/release/bundle/macos" \
             "src-tauri/target/${{ matrix.rust_target }}/release/bundle")
           DEB=$(find_first '*.deb' \
-            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb" \
-            "src-tauri/target/release/bundle/deb")
+            "target/release/bundle/deb" \
+            "target/${{ matrix.rust_target }}/release/bundle/deb" \
+            "src-tauri/target/release/bundle/deb" \
+            "src-tauri/target/${{ matrix.rust_target }}/release/bundle/deb")
           for asset in "$DMG" "$TAR_GZ" "$DEB"; do
             if [ -n "$asset" ] && [ -f "$asset" ]; then
               echo "Uploading patched $asset → $TAG"
