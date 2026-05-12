@@ -1935,6 +1935,51 @@ pub fn index_model_download_mb(model: String, backend: Option<String>) -> u32 {
     }
 }
 
+// ── CrispEmbed registry browse ────────────────────────────────────────────────
+
+/// Single entry in CrispEmbed's bundled model registry.  Mirrors
+/// `crispembed::ModelInfo` (which is itself the safe-wrapper view of
+/// the C-side `crispembed_model_*` arrays).  Surfacing this through a
+/// Tauri command lets the Settings panel display the upstream registry
+/// without each new model needing a CrispSorter release.
+///
+/// Note: today the existing embedder dropdown still keys off
+/// `EmbedderModel` (enum, hardcoded in Rust + Svelte).  Entries listed
+/// here that don't have a matching `EmbedderModel` variant are
+/// informational only — selecting one in the UI is a follow-up task
+/// (PLAN: "crispembed::list_models() registry helper" → registry-
+/// driven model selection refactor).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbedderRegistryEntry {
+    pub name: String,
+    pub desc: String,
+    pub filename: String,
+    pub size: String,
+}
+
+/// Return CrispEmbed's bundled model registry (43 entries as of
+/// crispembed 0.3.2).  Empty Vec when the `crispembed` cargo feature is
+/// off — keeps the frontend code path unconditional.
+#[tauri::command]
+pub fn embedder_registry_list() -> Vec<EmbedderRegistryEntry> {
+    #[cfg(feature = "crispembed")]
+    {
+        crispembed::CrispEmbed::list_models()
+            .into_iter()
+            .map(|m| EmbedderRegistryEntry {
+                name: m.name,
+                desc: m.desc,
+                filename: m.filename,
+                size: m.size,
+            })
+            .collect()
+    }
+    #[cfg(not(feature = "crispembed"))]
+    {
+        Vec::new()
+    }
+}
+
 // ── Queue depth ───────────────────────────────────────────────────────────────
 
 /// Number of write jobs currently queued or in-flight.

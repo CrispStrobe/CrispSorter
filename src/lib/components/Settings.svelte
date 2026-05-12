@@ -321,6 +321,16 @@
      *  binary actually contains the CrispEmbed backend code. */
     let ggufAvailable = $derived(ggufModelSupported && crispEmbedCompiledIn);
 
+    /** Upstream CrispEmbed model registry (43 entries as of crispembed 0.3.2).
+     *  Empty Vec when the `crispembed` feature is off.  Surfaced as an
+     *  informational expandable panel beneath the engine toggle so users
+     *  can see what GGUF models the linked CrispEmbed ships with — the
+     *  existing embedder dropdown still keys off `EmbedderModel` enum
+     *  variants today, so non-enum entries are read-only.  Wiring full
+     *  registry-driven selection is tracked separately. */
+    type EmbedderRegistryEntry = { name: string; desc: string; filename: string; size: string };
+    let embedderRegistry = $state<EmbedderRegistryEntry[]>([]);
+
     /** Approximate download size (MB) for the selected embedder, returned by
      *  `index_model_download_mb`. 0 means unknown. Drives the "first run
      *  downloads ~X MB" hint. */
@@ -732,6 +742,10 @@
             const caps = await invoke<{ crispembed: boolean; crispembed_gpu: string | null }>('index_capabilities');
             crispEmbedCompiledIn = !!caps.crispembed;
             crispEmbedGpu = caps.crispembed_gpu ?? null;
+        } catch { /* command not available */ }
+        // CrispEmbed bundled-registry browse (empty when feature is off).
+        try {
+            embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
         } catch { /* command not available */ }
         await refreshModelDownloadSize();
         // Check if index is already initialized (e.g. after navigating back to Settings)
@@ -2364,6 +2378,29 @@
                         {i18n.t.settings.index.engine_hint_gguf}
                     {/if}
                 </div>
+                {#if crispEmbedCompiledIn && embedderRegistry.length > 0}
+                    <details style="margin-top: 10px; font-size: 12px;">
+                        <summary style="cursor: pointer; color: #71717a;">
+                            {i18n.t.settings.index.crispembed_registry_summary.replace('{count}', String(embedderRegistry.length))}
+                        </summary>
+                        <div style="font-size: 11px; color: #71717a; margin: 6px 0 8px; line-height:1.45;">
+                            {i18n.t.settings.index.crispembed_registry_hint}
+                        </div>
+                        <ul style="margin: 0; padding: 0; list-style: none; max-height: 240px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px;">
+                            {#each embedderRegistry as entry}
+                                <li style="padding: 6px 10px; border-bottom: 1px solid #f1f5f9;">
+                                    <div style="font-weight: 600; font-family: ui-monospace, monospace; color: #1f2937;">{entry.name}</div>
+                                    {#if entry.desc}
+                                        <div style="color: #4b5563; margin-top: 2px;">{entry.desc}</div>
+                                    {/if}
+                                    <div style="color: #9ca3af; margin-top: 2px; font-family: ui-monospace, monospace; font-size: 10px;">
+                                        {entry.filename}{entry.size ? ` — ${entry.size}` : ''}
+                                    </div>
+                                </li>
+                            {/each}
+                        </ul>
+                    </details>
+                {/if}
             </div>
 
             <!-- Embedder model: filtered by chosen engine + NC-license-aware -->
