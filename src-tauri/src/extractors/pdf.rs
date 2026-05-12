@@ -26,5 +26,9 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         // Filled in by the dispatcher's post-LID hook when an
         // `ExtractOptions.text_lid_model` was supplied.
         language: None,
+        // Filled in by the dispatcher's post-translate hook when
+        // an `ExtractOptions.translate_to` was supplied.
+        translated_text: None,
+        translated_to_lang: None,
     })
 }

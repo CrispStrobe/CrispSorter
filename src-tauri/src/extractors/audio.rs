@@ -108,6 +108,8 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         headings: Vec::new(),
         ext: String::new(),
         language: None,
+        translated_text: None,
+        translated_to_lang: None,
     })
 }
 
