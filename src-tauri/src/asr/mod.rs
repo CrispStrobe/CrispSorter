@@ -307,6 +307,48 @@ impl Asr {
     pub fn speakers(&self) -> Vec<String> {
         Vec::new()
     }
+
+    // ── Translation half (slice A + Phase 5) ──────────────────────────
+    //
+    // Same `Session` handle serves text-to-text translation via the
+    // upstream `crispasr_session_translate_text` we wrapped in
+    // CrispASR commit cfe6770a.  Only meaningful when the loaded
+    // backend is MT-capable (m2m100, m2m100-wmt21, madlad,
+    // gemma4-e2b); other backends error with a clear "not
+    // MT-capable" message from the upstream wrapper.
+
+    /// Translate `text` from `src_lang` to `tgt_lang` via the loaded
+    /// MT-capable session.  `max_tokens` caps the decoder output —
+    /// pass `0` to fall back to the upstream default (200 tokens for
+    /// m2m100, etc.).
+    ///
+    /// Errors when the loaded backend isn't MT-capable, when the
+    /// language pair is unsupported by the loaded backend (WMT21 only
+    /// speaks EN↔{zh,de,fr,ja,ru,is,ha}), or when any input contains
+    /// an interior NUL.
+    #[cfg(feature = "crispasr")]
+    pub fn translate_text(
+        &self,
+        text: &str,
+        src_lang: &str,
+        tgt_lang: &str,
+        max_tokens: i32,
+    ) -> Result<String> {
+        self.session
+            .translate_text(text, src_lang, tgt_lang, max_tokens)
+            .map_err(|e| anyhow::anyhow!("translate_text failed: {e}"))
+    }
+
+    #[cfg(not(feature = "crispasr"))]
+    pub fn translate_text(
+        &self,
+        _text: &str,
+        _src_lang: &str,
+        _tgt_lang: &str,
+        _max_tokens: i32,
+    ) -> Result<String> {
+        anyhow::bail!("crispasr feature disabled")
+    }
 }
 
 // ── Lazy-load handle ─────────────────────────────────────────────────────
@@ -378,6 +420,36 @@ impl AsrHandle {
     /// [`Self::synthesize_with_options`] with both option args `None`.
     pub async fn synthesize(&self, text: String) -> Result<Vec<f32>> {
         self.synthesize_with_options(text, None, None).await
+    }
+
+    /// Translate `text` from `src_lang` to `tgt_lang` via the
+    /// loaded MT-capable session (m2m100 / m2m100-wmt21 / madlad /
+    /// gemma4-e2b — the four backends CrispASR's
+    /// `crispasr_session_translate_text` dispatcher routes to).
+    /// `max_tokens` caps decoder output; pass `0` for the upstream
+    /// default (200 for m2m100).
+    ///
+    /// Single mutex hold for the full lazy-load + translate cycle —
+    /// concurrent translate calls on the same handle serialise (same
+    /// contract as [`Self::transcribe_with_language`] /
+    /// [`Self::synthesize_with_options`]).  The backend the handle
+    /// was constructed with must be MT-capable; this method doesn't
+    /// rewrite the config to swap backends — make a separate handle
+    /// for that.
+    pub async fn translate_text(
+        &self,
+        text: String,
+        src_lang: String,
+        tgt_lang: String,
+        max_tokens: i32,
+    ) -> Result<String> {
+        let mut guard = self.slot.lock().await;
+        if guard.is_none() {
+            let asr = Asr::load(self.config.clone(), self.cache_dir.clone()).await?;
+            *guard = Some(asr);
+        }
+        let asr = guard.as_ref().unwrap();
+        asr.translate_text(&text, &src_lang, &tgt_lang, max_tokens)
     }
 
     /// Synthesise `text` after optionally applying voice + speaker

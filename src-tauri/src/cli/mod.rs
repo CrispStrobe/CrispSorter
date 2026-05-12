@@ -428,6 +428,31 @@ enum ChatCmd {
         /// would need session pre-load here.
         #[arg(long = "lid-method", value_enum, default_value_t = LidMethodChoice::Whisper)]
         lid_method: LidMethodChoice,
+        /// Target ISO 639-1 language for transcript translation
+        /// (P13.5 Phase 5).  When set, the transcribed text gets a
+        /// follow-up translation pass via `--translate-backend`
+        /// (default m2m100, any-to-any 100 langs) and the output
+        /// carries the translated text in place of the original.
+        /// Source language must be known — either explicit via
+        /// `--language ISO`, or detected via `--language auto`
+        /// (which requires --policy != as-configured and --lid-model).
+        #[arg(long = "translate-to")]
+        translate_to: Option<String>,
+        /// MT backend used for the `--translate-to` post-processing
+        /// pass.  Default `m2m100` (100 langs, any-to-any).  Other
+        /// options: `m2m100-wmt21` (higher quality on EN↔{zh,de,
+        /// fr,ja,ru,is,ha}), `madlad` (419-lang long tail),
+        /// `gemma4-e2b` (dual ASR+MT).
+        #[arg(long = "translate-backend", default_value = "m2m100")]
+        translate_backend: String,
+        /// Explicit MT model path; skips the registry auto-download.
+        #[arg(long = "translate-model")]
+        translate_model: Option<PathBuf>,
+        /// Max decoder tokens for the translate pass.  0 = upstream
+        /// default (200 for m2m100).  Larger values cost more wall-
+        /// clock but matter for long transcripts.
+        #[arg(long = "translate-max-tokens", default_value_t = 0)]
+        translate_max_tokens: i32,
     },
     /// Synthesise text to a WAV via a CrispASR TTS backend (P13.5 slice A).
     ///
@@ -2212,10 +2237,12 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
         ChatCmd::Transcribe {
             path, backend, model, language, output, data_dir, pure_rust,
             policy, fallback_backend, lid_model, lid_method,
+            translate_to, translate_backend, translate_model, translate_max_tokens,
         } => {
             cmd_chat_transcribe(
                 out, path, backend, model, language, output, data_dir, pure_rust,
                 policy, fallback_backend, lid_model, lid_method,
+                translate_to, translate_backend, translate_model, translate_max_tokens,
             )?;
         }
         ChatCmd::Tts {
@@ -2255,6 +2282,10 @@ fn cmd_chat_transcribe(
     fallback_backend: String,
     lid_model: Option<PathBuf>,
     lid_method: LidMethodChoice,
+    translate_to: Option<String>,
+    translate_backend: String,
+    translate_model: Option<PathBuf>,
+    translate_max_tokens: i32,
 ) -> Result<(), String> {
     // ── Step 1: decode to 16 kHz mono Float32 ────────────────────────
     let decode_policy = if pure_rust {
@@ -2277,7 +2308,7 @@ fn cmd_chat_transcribe(
         Some(p) => crate::asr::AsrConfig::with_model_path(&backend, p.to_string_lossy()),
         None => crate::asr::AsrConfig::new(&backend),
     };
-    let cache_dir = asr_cache_dir(data_dir)?;
+    let cache_dir = asr_cache_dir(data_dir.clone())?;
     let primary_handle = crate::asr::AsrHandle::new(primary_config.clone(), cache_dir);
 
     // ── Step 3: map CLI flags → orchestrator inputs ──────────────────
@@ -2322,17 +2353,74 @@ fn cmd_chat_transcribe(
         ))
         .map_err(|e| format!("ASR: {e:#}"))?;
 
-    // ── Step 5: write out ────────────────────────────────────────────
+    // ── Step 5: optional translate post-processing (P13.5 Phase 5) ──
+    //
+    // When --translate-to is set, the transcribed text gets a follow-
+    // up MT pass via --translate-backend (default m2m100, any-to-any
+    // 100 langs).  Needs to know the source language: either the
+    // user passed --language ISO, or LID detected it (Phase 6) and
+    // stashed it in result.language.  AsConfigured + no --language
+    // hint means no source lang is known → hard error here so the
+    // user knows to pick one rather than getting silent wrong output.
+    let (final_text, translation_meta) = if let Some(tgt) = translate_to.as_deref() {
+        let src = result
+            .language
+            .as_ref()
+            .map(|l| l.as_str().to_owned())
+            .ok_or_else(|| {
+                "--translate-to needs a known source language: pass either \
+                 --language <ISO> or --language auto with --policy != as-configured \
+                 + --lid-model so LID can detect it"
+                    .to_string()
+            })?;
+
+        let translate_config = match &translate_model {
+            Some(p) => crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy()),
+            None => crate::asr::AsrConfig::new(&translate_backend),
+        };
+        let translate_cache_dir = asr_cache_dir(data_dir.clone())?;
+        let translate_handle =
+            crate::asr::AsrHandle::new(translate_config.clone(), translate_cache_dir);
+        eprintln!(
+            "translating {} → {} via {}…",
+            src,
+            tgt,
+            translate_config.display_name()
+        );
+        let translated = rt
+            .block_on(translate_handle.translate_text(
+                result.text.clone(),
+                src.clone(),
+                tgt.to_string(),
+                translate_max_tokens,
+            ))
+            .map_err(|e| format!("translate: {e:#}"))?;
+        (
+            translated,
+            Some(serde_json::json!({
+                "from": src,
+                "to": tgt,
+                "backend": translate_backend,
+                "max_tokens": translate_max_tokens,
+                "original_text": result.text,
+            })),
+        )
+    } else {
+        (result.text.clone(), None)
+    };
+
+    // ── Step 6: write out ────────────────────────────────────────────
     let decision_str = format!("{:?}", result.decision);
     let payload = match out {
         OutFormat::Json => serde_json::json!({
-            "text": result.text,
+            "text": final_text,
             "backend": backend,
             "used_backend": result.used_config.backend,
             "language_hint": language,
             "detected_language": result.language.as_ref().map(|l| l.as_str()),
             "confidence": result.confidence,
             "decision": decision_str,
+            "translation": translation_meta,
             "source_path": path.display().to_string(),
             "source_sample_rate": decoded.source_sample_rate,
             "source_channels": decoded.source_channels,
@@ -2340,7 +2428,7 @@ fn cmd_chat_transcribe(
             "decode_tier": decoded.tier.as_str(),
         })
         .to_string(),
-        OutFormat::Text => result.text.clone(),
+        OutFormat::Text => final_text.clone(),
     };
     write_chat_output(&output, &payload)?;
     Ok(())
@@ -3114,7 +3202,8 @@ mod tests {
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
                 path, backend, model, language, output, pure_rust,
-                policy, fallback_backend, lid_model, lid_method, ..
+                policy, fallback_backend, lid_model, lid_method,
+                translate_to, translate_backend, translate_model, translate_max_tokens, ..
             } } => {
                 assert_eq!(path, PathBuf::from("/tmp/foo.wav"));
                 assert_eq!(backend, "whisper", "default backend must be whisper");
@@ -3128,6 +3217,13 @@ mod tests {
                 assert_eq!(fallback_backend, "whisper");
                 assert!(lid_model.is_none());
                 assert_eq!(lid_method, LidMethodChoice::Whisper);
+                // Phase 5 defaults: no translate-to (translation skipped),
+                // m2m100 fallback for when --translate-to IS set, no
+                // explicit model, 0 = upstream default max_tokens.
+                assert!(translate_to.is_none());
+                assert_eq!(translate_backend, "m2m100");
+                assert!(translate_model.is_none());
+                assert_eq!(translate_max_tokens, 0);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
         }
@@ -3151,12 +3247,17 @@ mod tests {
             "--fallback", "whisper",
             "--lid-model", "/models/ggml-tiny.bin",
             "--lid-method", "silero",
+            "--translate-to", "en",
+            "--translate-backend", "m2m100-wmt21",
+            "--translate-model", "/models/wmt21-de-en.gguf",
+            "--translate-max-tokens", "512",
         ])
         .expect("full-flag transcribe should parse");
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
                 path, backend, model, language, output, data_dir, pure_rust,
                 policy, fallback_backend, lid_model, lid_method,
+                translate_to, translate_backend, translate_model, translate_max_tokens,
             } } => {
                 assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
                 assert_eq!(backend, "parakeet");
@@ -3169,6 +3270,10 @@ mod tests {
                 assert_eq!(fallback_backend, "whisper");
                 assert_eq!(lid_model, Some(PathBuf::from("/models/ggml-tiny.bin")));
                 assert_eq!(lid_method, LidMethodChoice::Silero);
+                assert_eq!(translate_to.as_deref(), Some("en"));
+                assert_eq!(translate_backend, "m2m100-wmt21");
+                assert_eq!(translate_model, Some(PathBuf::from("/models/wmt21-de-en.gguf")));
+                assert_eq!(translate_max_tokens, 512);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
         }
