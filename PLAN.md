@@ -85,12 +85,106 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
       Authenticode).  `cargo install --path crates/crispcat-cli` already
       ships.  ~2-4 h once a signing identity is in hand.
 
-### P13.5 — Audio vertical (transcribe + synthesise, in flight)
+### P13.5 — Audio + video vertical (in flight)
+
+> **Scope axis 1 — backends:** all **24 ASR + 5 TTS + 3 translation +
+> 3 LID-capable** backends from the CrispASR registry are first-class.
+> ASR: `whisper`, `parakeet`, `canary`, `qwen3`, `distil-whisper`,
+> `cohere`, `granite{,-4.1,-4.1-plus,-4.1-nar}`, `fastconformer-ctc`,
+> `voxtral{,4b}`, `wav2vec2`, `glm-asr`, `kyutai-stt`, `firered-asr`,
+> `moonshine{,-streaming}`, `omniasr{,-llm}`, `vibevoice`, `gemma4-e2b`,
+> `mimo-asr`.  TTS: `kokoro`, `qwen3-tts`, `vibevoice-tts`, `orpheus`,
+> `chatterbox`.  Translation: `m2m100`, `m2m100-wmt21`, `madlad`.
+> LID: whisper-encoder, Silero-95, GlotLID/CLD3/LID-176 (text).
+> No backend hard-coded as the only option anywhere — every surface
+> takes a backend string that resolves via `crispasr::registry_lookup`.
+
+> **Scope axis 2 — input media:** WAV / MP3 / M4A / FLAC / OGG / OPUS
+> / AAC for pure audio; MP4 / MOV / MKV / WebM / M4V for video (we
+> demux the audio stream — no video decode).  Long-tail containers
+> (.avi DivX, .wmv, .flv, .ts, .amr, .ra) via ffmpeg shell-out only
+> when symphonia can't read the file natively.
+
+> **Scope axis 3 — language handling:**
+> - **LID** before transcription: detect the audio's language via
+>   `crispasr::detect_language_pcm` (whisper-encoder or Silero) so
+>   we don't send German audio to an English-only model.
+> - **Backend capability table** in `asr/lang.rs` — per-backend
+>   supported-language list curated from the README feature matrix
+>   (RegistryEntry doesn't expose languages today; an upstream
+>   addition would let us drop the curation).
+> - **Routing policy** on language mismatch: `Strict` (error),
+>   `Auto` (switch to a backend that supports the detected language,
+>   default), `Ignore` (proceed anyway, last resort).
+> - **Translation post-processing** for ASR output and stored
+>   extractions: optional `--translate-to <code>` runs m2m100 /
+>   madlad after transcription.  Available both in `chat transcribe`
+>   and in the extractor (extracted documents can be translated for
+>   indexing — useful for searching across language boundaries).
+> - **Text-LID for all extracted documents** (PDF / DOCX / TXT /
+>   transcript): tag every document with its detected language at
+>   index time so the UI can filter / facet by language and so we
+>   can pick a per-language reranker.  CrispASR has the C++
+>   `text_lid_dispatch` (CLD3 ~1.5 MB, GlotLID-V3 ~2102 langs,
+>   LID-176 ~176 langs) — but **none are exposed through the Rust
+>   crate or `crispasr-sys` FFI today** (only the C++ CLI uses
+>   them via `--lid-on-transcript`).  Bringing them to CrispSorter
+>   needs an upstream CrispASR change first: add `crispasr_text_lid_*`
+>   C-ABI exports, mirror in `crispasr-sys`, surface in the safe
+>   wrapper.  Tracked as **Phase 7** (after the audio + translation
+>   foundation lands).
+
+**Speed-tier defaults** (called out so we don't default to slow models
+for batch jobs): `parakeet-tdt-0.6b-v3` (25 EU langs, FastConformer
++ TDT — much faster than whisper), `distil-whisper/distil-large-v3`
+(6.3× faster than whisper, EN only), `moonshine-{tiny,base}` (34–
+245 M, designed for streaming), `omniasr` (CTC, 1600+ langs).
+Slow-but-quality fallback: `whisper-base` (default for GUI push-
+to-talk for back-compat with shipped releases).
+
+**Streaming** is universal — every backend in the feature matrix
+carries the Streaming cap.  `crispasr::Session::stream_open()` →
+`Stream::feed(pcm)` + `Stream::get_text()` + `Stream::flush()` is
+the call shape.  Used by slice B for long-form files (bounds peak
+memory, emits per-chunk progress) and stays available for slice A's
+`--stream` flag (live captions when reading from stdin).
+
+**Phased delivery (each phase commits separately so progress is
+visible and reversible):**
+
+1. **Phase 0** — PLAN consolidation + Cargo.toml dep additions
+   (hound, symphonia, rubato) + AsrConfig refactor (enum-of-one → 
+   string-based, language-aware).
+2. **Phase 1** — `src-tauri/src/audio/` module: symphonia decoder
+   + ffmpeg fallback + rubato resampler.  Tests + smoke example.
+3. **Phase 2** — `src-tauri/src/asr/lang.rs`: LID wrapper + curated
+   backend-capability table + routing policy enum.  Tests.
+4. **Phase 3** — Slice A: CLI `chat transcribe` + `chat tts` end-to-
+   end with LID + translation flags.  Tests + life example.
+5. **Phase 4** — Slice B: `extractors/audio.rs` for index-time
+   transcription, wired into the existing extractor dispatch.
+   Tests + life example (audio file becomes searchable).
+6. **Phase 5** — Translation post-processing wrapper consumed by
+   both surfaces.  Tests + life example (DE transcript → EN search).
+7. **Phase 6** — Audio-LID routing applied: detect language before
+   transcription, switch backend on mismatch per `BackendFallback`
+   policy.  Tests + life example (DE audio with English-only
+   parakeet-EN config → auto-falls-back to whisper).
+8. **Phase 7** *(blocked on CrispASR upstream)* — Text-LID for all
+   extracted documents: requires `crispasr_text_lid_*` C-ABI
+   exports in CrispASR + crispasr-sys + safe wrapper.  Then
+   `extractors/mod.rs` runs LID on every `ExtractedDocument`,
+   stores the language code as a new LanceDB column, exposes a
+   language-filter facet in the search UI.
 
 Three distinct surfaces, only #1 ships today.
 
-1. **GUI chat push-to-talk** (shipped — Whisper-only, `src-tauri/src/
-   asr/mod.rs` + `asr_transcribe` Tauri command in `lib.rs:581`).
+1. **GUI chat push-to-talk** (shipped — currently Whisper-only via
+   `AsrModel::Whisper` enum-of-one in `src-tauri/src/asr/mod.rs`).
+   **Refactor in flight:** replace the enum with `AsrConfig { backend:
+   String, model_path: Option<String> }` so the same handle accepts any
+   backend.  Default stays whisper-base for back-compat.  GUI backend-
+   picker dropdown is a follow-up — the data layer just stops gating it.
 
 - [ ] **2. CLI `chat transcribe` + `chat tts`** (~6 h, slice A) — direct
       in-process integration via the existing `crispasr` Rust crate
@@ -118,35 +212,55 @@ Three distinct surfaces, only #1 ships today.
       ```
 
       For shell scripting, batch jobs, headless servers — power-user
-      surface, not the end-user win.  Slice A only handles WAV input
-      (via `hound`) to keep the dep surface minimal; multi-codec
-      decoding lives in slice B's symphonia integration.
+      surface, not the end-user win.  Reads any input the shared
+      `src-tauri/src/audio/` module can decode (axis-2 scope above):
+      WAV directly via hound, everything else via symphonia, ffmpeg
+      as last-resort fallback.
 
-- [ ] **3. Index-time audio transcription** (~8-12 h, slice B) — the
-      end-user win.  Audio files in scanned folders become first-class
-      searchable documents in the LanceDB + Tantivy index, exactly
-      like PDFs and OCR'd images today.  Adds `extractors/audio.rs`
-      to the existing dispatch:
+- [ ] **3. Index-time audio + video transcription** (~10-14 h, slice B)
+      — the end-user win.  Audio AND video files in scanned folders
+      become first-class searchable documents in the LanceDB +
+      Tantivy index, exactly like PDFs and OCR'd images today.
 
-      - **Decoder layer:** `symphonia` (pure-Rust, ~250 KB, covers
-        MP3 / M4A / FLAC / OGG / OPUS / WAV — basically every codec
-        an end-user has on disk).  Shares the WAV-read path with
-        slice A so `hound` stays the simple-case fast path.
+      **Shared `src-tauri/src/audio/` module** consumed by both
+      slice A and slice B (single decoder, no divergence):
+
+      - **Decoder Tier 1 (pure-Rust, no system deps):** `symphonia`
+        — covers WAV / MP3 / M4A / FLAC / OGG / OPUS / AAC for
+        audio AND MP4 / MOV / MKV / WebM / M4V for video (symphonia
+        demuxes containers and gives back just the audio stream;
+        no video decode needed).  Pure-Rust = ships everywhere
+        CrispSorter does, no extra install.
+      - **Decoder Tier 2 (last-resort, shell-out):** ffmpeg via
+        `crate::audio::ffmpeg_fallback`.  Triggered for the long
+        tail of containers symphonia can't read (.avi DivX, .wmv,
+        .flv, .ts, .amr, .ra).  Runtime-detects ffmpeg-on-PATH;
+        emits a clear "install ffmpeg for .avi" error if absent
+        rather than silent failure.  Cross-platform: `which ffmpeg`
+        works on macOS / Linux; `where.exe ffmpeg` on Windows.
       - **Resampler:** `rubato` (pure-Rust SRC).  Source files are
         typically 44.1 / 48 kHz stereo; CrispASR wants 16 kHz mono.
-      - **Extractor entry point:** `extract_audio_text(path) ->
-        Result<ExtractedDocument>`, mirroring `ocr.rs`'s shape.
-        Registered in `extractors/mod.rs`'s dispatch behind
-        `AUDIO_EXTS` + `ExtractOptions::transcribe_audio` (default
-        OFF — transcription is expensive, opt-in like OCR).
-      - **Output:** `ExtractedDocument { full_text: <transcript>,
-        headings: <none>, ext: "<mp3|wav|…>" }`.  Indexer treats
-        long transcripts the same as long PDFs (chunk + embed).
-      - **CLI parity:** the existing `crispsorter index ingest`
-        passes `--transcribe-audio` through to `ExtractOptions`,
-        and `crispsorter chat transcribe` (slice A) reuses the
-        same decoder + resampler so a one-off file transcription
-        from the shell matches index-time behaviour byte-for-byte.
+      - **Streaming path:** files longer than a configurable
+        threshold (default 5 min) use `crispasr::Session::stream_open`
+        + per-chunk `feed` + `get_text` instead of buffering the
+        whole decoded PCM.  Bounds peak memory and emits per-chunk
+        progress to the existing ingest UI.
+
+      **Extractor entry point:** `extract_audio_text(path,
+      &AsrConfig) -> Result<ExtractedDocument>`, mirroring
+      `ocr.rs`'s shape.  Registered in `extractors/mod.rs`'s
+      dispatch behind `AV_EXTS` + `ExtractOptions::transcribe_audio`
+      (default OFF — transcription is expensive, opt-in like OCR).
+
+      **Output:** `ExtractedDocument { full_text: <transcript>,
+      headings: <none>, ext: "<mp3|mp4|wav|…>" }`.  Indexer treats
+      long transcripts the same as long PDFs (chunk + embed).
+
+      **CLI parity:** `crispsorter index ingest --transcribe-audio
+      [--asr-backend NAME] [--asr-model PATH]` passes options
+      through to `ExtractOptions` + `AsrConfig`, and the slice-A
+      `crispsorter chat transcribe` accepts the same audio/video
+      inputs through the shared decoder.
 
       Long-form transcript caching (sidecar `.cidx` keyed on
       content-hash so re-indexing is free) deferred to a follow-up

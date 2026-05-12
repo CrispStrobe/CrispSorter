@@ -600,7 +600,7 @@ async fn asr_transcribe(
     let handle = {
         let mut slot = state.asr.lock().await;
         if slot.is_none() {
-            *slot = Some(asr::AsrHandle::new(asr::AsrModel::default(), cache_dir));
+            *slot = Some(asr::AsrHandle::new(asr::AsrConfig::default(), cache_dir));
         }
         slot.as_ref().unwrap().clone()
     };
