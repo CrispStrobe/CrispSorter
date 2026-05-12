@@ -49,6 +49,27 @@
         // catalogs) rather than the documents table. The path here is
         // the .caf this row was materialised from.
         catalog_source?: string;
+        // P13.5 batch translation — backend populates these when the
+        // doc was ingested with `IndexConfig.translate_to` set.
+        // Frontend uses them as the no-network-round-trip cache for
+        // the "Translate to …" button: if the target matches, just
+        // show the existing column without re-invoking m2m100.
+        text_translated?:      string;
+        text_translated_lang?: string;
+    }
+
+    // P13.5 on-demand translation surface — per-result state tracking
+    // the lifecycle of a "Translate to en" click.  Keyed by
+    // `${doc_id}:${chunk_index}` so each chunk in an expanded result
+    // group gets its own state.
+    interface TranslateState {
+        loading:         boolean;
+        error?:          string;
+        translated_text?: string;
+        source_lang?:    string;
+        target_lang?:    string;
+        backend?:        string;
+        cached?:         boolean;
     }
 
     // ── State ──────────────────────────────────────────────────────────────────
@@ -66,6 +87,96 @@
     // pinned to currently-unmounted volumes. Toggle off to show
     // everything regardless of mount state.
     let includeUnmounted = $state(false);
+
+    // P13.5 on-demand translation — per-result Map keyed by
+    // `${doc_id}:${chunk_index}`.  Kept in Map state rather than
+    // per-row signals so a search-state reset (new query) clears
+    // every translation in one assignment.
+    let translateTargetLang = $state<string>('en');
+    let translations        = $state<Map<string, TranslateState>>(new Map());
+
+    /** Stable key for the translations map. */
+    function translationKey(r: SearchResult): string {
+        return `${r.doc_id}:${r.chunk_index}`;
+    }
+
+    /** Has a translation finished + succeeded for this result + current target? */
+    function hasUsableTranslation(r: SearchResult): boolean {
+        const ts = translations.get(translationKey(r));
+        return !!(ts && !ts.loading && !ts.error
+                  && ts.translated_text
+                  && ts.target_lang === translateTargetLang);
+    }
+
+    async function handleTranslate(r: SearchResult): Promise<void> {
+        const key = translationKey(r);
+
+        // Fast path — row already carries a translation in the
+        // matching target language (populated at index time when
+        // IndexConfig.translate_to was set).  Skip the Tauri round
+        // trip; just surface the cached column.
+        if (r.text_translated && r.text_translated_lang === translateTargetLang) {
+            const next = new Map(translations);
+            next.set(key, {
+                loading: false,
+                translated_text: r.text_translated,
+                source_lang: r.language ?? 'unknown',
+                target_lang: translateTargetLang,
+                cached: true,
+            });
+            translations = next;
+            return;
+        }
+
+        // Optimistic loading state — clears on completion or error.
+        const next = new Map(translations);
+        next.set(key, { loading: true });
+        translations = next;
+
+        try {
+            const result = await invoke<{
+                translated_text: string;
+                source_lang:     string;
+                target_lang:     string;
+                backend:         string;
+                cached:          boolean;
+            }>('translate_text', {
+                input: {
+                    text: r.snippet,
+                    // Pass the row's known language as a hint when we have
+                    // it — saves an LID call on the backend.  Null = let
+                    // the backend run CLD3.
+                    source_lang: r.language && r.language.length === 2 ? r.language : null,
+                    target_lang: translateTargetLang,
+                    // mt_backend / mt_model / lid_model intentionally
+                    // omitted — backend defaults (m2m100 + auto-resolve
+                    // CLD3) match what the IndexConfig surface uses.
+                },
+            });
+            const after = new Map(translations);
+            after.set(key, {
+                loading: false,
+                translated_text: result.translated_text,
+                source_lang: result.source_lang,
+                target_lang: result.target_lang,
+                backend: result.backend,
+                cached: result.cached,
+            });
+            translations = after;
+        } catch (e) {
+            const after = new Map(translations);
+            after.set(key, {
+                loading: false,
+                error: String(e),
+            });
+            translations = after;
+        }
+    }
+
+    /** Clear all translation state — called when the user runs a new query. */
+    function clearTranslations(): void {
+        translations = new Map();
+    }
 
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
     // Right-side slide-in pane that shows the matched document in place
@@ -217,6 +328,12 @@
         loading  = true;
         error    = '';
         searched = true;
+        // P13.5 — wipe per-result translation state on every new
+        // query.  Otherwise the user types a different query and
+        // sees stale "Translated en" badges on rows that haven't
+        // been translated yet (the Map key is doc_id:chunk_index
+        // which can collide across queries).
+        clearTranslations();
         try {
             results = await invoke<SearchResult[]>('index_search', {
                 query: query.trim(),
@@ -389,6 +506,23 @@
                 <input type="checkbox" bind:checked={includeUnmounted} />
                 <span>Inkl. nicht eingehängter Laufwerke</span>
             </label>
+            <!-- P13.5 on-demand translation — target language for the
+                 per-result "Translate to …" button.  m2m100 covers
+                 100 langs any-to-any; this dropdown surfaces the
+                 commonly-used subset (matches the index-time options
+                 in Settings → Search Index → Index-time translation). -->
+            <label class="filter-field" title="Target language for the per-result Translate button (m2m100 via on-demand backend)">
+                <span>Translate to</span>
+                <select bind:value={translateTargetLang}>
+                    <option value="en">en — English</option>
+                    <option value="de">de — Deutsch</option>
+                    <option value="fr">fr — Français</option>
+                    <option value="es">es — Español</option>
+                    <option value="it">it — Italiano</option>
+                    <option value="ja">ja — 日本語</option>
+                    <option value="zh">zh — 中文</option>
+                </select>
+            </label>
         </div>
     {/if}
 
@@ -479,6 +613,57 @@
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
+                    {/if}
+
+                    <!-- P13.5 on-demand translation surface.  Renders three
+                         states in sequence: idle (button), loading
+                         (spinner-text), finished (inline translation +
+                         badge).  Skipped when the snippet itself is empty
+                         (no text to translate).  Hidden when the result
+                         is in the user's target language already (no
+                         translation needed). -->
+                    {#if r.snippet && r.language !== translateTargetLang}
+                        {@const tkey = translationKey(r)}
+                        {@const ts = translations.get(tkey)}
+                        <div class="translate-surface">
+                            {#if !ts}
+                                <button
+                                    type="button"
+                                    class="translate-btn"
+                                    onclick={() => handleTranslate(r)}
+                                    title="Translate this snippet to {translateTargetLang} via m2m100"
+                                >
+                                    Translate to {translateTargetLang}
+                                </button>
+                            {:else if ts.loading}
+                                <div class="translate-loading">
+                                    <span class="translate-spinner" aria-hidden="true"></span>
+                                    Translating to {translateTargetLang}…
+                                </div>
+                            {:else if ts.error}
+                                <div class="translate-error">
+                                    Translation failed: {ts.error}
+                                    <button
+                                        type="button"
+                                        class="translate-retry"
+                                        onclick={() => handleTranslate(r)}
+                                    >
+                                        Retry
+                                    </button>
+                                </div>
+                            {:else if ts.translated_text}
+                                <div class="translate-result">
+                                    <div class="translate-meta">
+                                        <span class="translate-arrow">
+                                            {ts.source_lang ?? '?'} → {ts.target_lang ?? translateTargetLang}
+                                        </span>
+                                        {#if ts.cached}<span class="translate-cached" title="From SQLite cache">cached</span>{/if}
+                                        {#if ts.backend}<span class="translate-backend">{ts.backend}</span>{/if}
+                                    </div>
+                                    <div class="translate-text">{ts.translated_text}</div>
+                                </div>
+                            {/if}
+                        </div>
                     {/if}
 
                     <!-- Expanded: all chunks -->
@@ -799,6 +984,68 @@
         border-top: 1px solid #1c1c1f;
     }
     .chunk-preview.no-snippet { color: #52525b; font-style: italic; }
+
+    /* P13.5 on-demand translation surface — sits below the chunk
+       preview, indented to align with the snippet text.  Three
+       states share the same container so the row doesn't shift
+       on state changes. */
+    .translate-surface {
+        padding: 4px 14px 10px 52px;
+        font-size: 0.78rem;
+    }
+    .translate-btn {
+        background: none;
+        border: 1px solid #27272a;
+        color: #6b7280;
+        font-size: 0.72rem;
+        padding: 3px 9px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s;
+    }
+    .translate-btn:hover {
+        color: #93c5fd;
+        border-color: #3b82f655;
+    }
+    .translate-loading {
+        color: #71717a; font-size: 0.72rem;
+        display: inline-flex; align-items: center; gap: 6px;
+    }
+    .translate-spinner {
+        display: inline-block; width: 8px; height: 8px;
+        border: 1.5px solid #27272a; border-top-color: #93c5fd;
+        border-radius: 50%; animation: spin 0.6s linear infinite;
+    }
+    .translate-error {
+        color: #f87171; font-size: 0.72rem;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .translate-retry {
+        background: none; border: 1px solid #f8717144; color: #f87171;
+        padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 0.7rem;
+    }
+    .translate-result {
+        border-left: 2px solid #3b82f655;
+        padding-left: 10px;
+        margin-top: 4px;
+    }
+    .translate-meta {
+        font-size: 0.65rem; color: #71717a;
+        display: flex; gap: 8px; align-items: center;
+        margin-bottom: 3px;
+    }
+    .translate-arrow { font-variant-numeric: tabular-nums; }
+    .translate-cached {
+        background: #3b82f622; color: #93c5fd;
+        padding: 0 5px; border-radius: 3px; font-size: 0.6rem;
+    }
+    .translate-backend {
+        color: #52525b; font-size: 0.6rem;
+        font-family: ui-monospace, Menlo, monospace;
+    }
+    .translate-text {
+        color: #d4d4d8; line-height: 1.5; font-size: 0.78rem;
+    }
 
     .chunk-list { border-top: 1px solid #27272a; }
     .chunk-item {
