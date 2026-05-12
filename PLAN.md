@@ -160,19 +160,29 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 >   crate or `crispasr-sys` FFI today** (only the C++ CLI uses
 >   them via `--lid-on-transcript`).
 >
->   **Upstream status (2026-05-12)** — the recon for the Phase 8
->   wrap found that the text-LID side is *bigger* than originally
->   tracked: there's **no `CA_EXPORT crispasr_text_*` symbol in
->   `src/crispasr_c_api.cpp` at all** (only the audio-side
->   `crispasr_detect_language_pcm` + `crispasr_session_detect_language`
->   exist).  Phase 7 upstream therefore needs C++ implementation
->   work first — design a stable `crispasr_session_text_detect_language(
->   session, text, model_path, out_buf, out_buf_size, out_conf*) -> int`
->   surface mirroring the audio LID shape, route through the existing
->   internal `text_lid_dispatch`, then add the `extern "C"` to
->   `crispasr-sys`, then the safe wrapper.  Bumps the FFI version
->   one minor.  Tracked as **Phase 7** (after the audio + translation
->   foundation lands).
+>   **Upstream status (2026-05-12)** — Phase 7 upstream FFI landed
+>   in CrispASR `ee5e7cd8` (`feat(text-lid): expose text-language-
+>   detection through Rust`).  Adds the module-level export
+>   `crispasr_text_detect_language(text, model_path, n_threads,
+>   out_label_buf, out_label_cap, out_conf*) -> int` wrapping the
+>   internal `text_lid_dispatch` façade (CLD3 + GlotLID-V3 + LID-176
+>   fastText, routed by the GGUF's `general.architecture` key).
+>   Return-code contract mirrors the audio-side
+>   `crispasr_detect_language_pcm` exactly (0 / -1 / 1 / 2).  The
+>   safe wrapper exposes `crispasr::text_detect_language(text,
+>   model_path, n_threads) -> Result<TextLidResult, String>`.  C-ABI
+>   bumped to 0.5.2.  CrispSorter Phase 7 is now unblocked on the
+>   FFI side — remaining work is the consumer-side text-LID at
+>   extractor-time + `language` column on LanceDB (and that's the
+>   moment the schema-migration framework needs to land).
+>
+>   **Label format note for consumers** — the dispatcher returns the
+>   model's native label space, NOT a normalised ISO 639-1.  CLD3
+>   emits 2-letter codes ('en', 'de') with optional script ('zh-Latn');
+>   fastText emits ISO 639-3 + script ('eng_Latn'). The script tag
+>   carries real information ('zh-Latn' ≠ 'zh-Hans') and the
+>   wrapper intentionally preserves it; CrispSorter's lang.rs
+>   normalisation logic will handle the mapping when it lands.
 
 **Speed-tier defaults** (called out so we don't default to slow models
 for batch jobs): `parakeet-tdt-0.6b-v3` (25 EU langs, FastConformer
