@@ -1857,15 +1857,22 @@ impl CrispEmbedBackend {
         self.model.set_dim(dim);
     }
 
-    /// Check if model supports sparse retrieval (BGE-M3, SPLADE)
-    #[allow(dead_code)]
-    fn has_sparse(&self) -> bool {
+    /// Check if model supports sparse retrieval (BGE-M3, SPLADE).
+    /// Promoted from `#[allow(dead_code)]` when Embedder::embed_sparse
+    /// learned to fall back to the dense GGUF backend's sparse head
+    /// (closing the gap for users on GGUF — fastembed's sparse path
+    /// was the only producer before this).
+    pub(crate) fn has_sparse(&self) -> bool {
         self.model.has_sparse()
     }
 
-    /// Sparse encode (BGE-M3 / SPLADE)
-    #[allow(dead_code)]
-    fn encode_sparse(&mut self, text: &str) -> Vec<(i32, f32)> {
+    /// Sparse encode (BGE-M3 / SPLADE) — returns SPLADE-style
+    /// `(vocab_id, weight)` pairs.  Per-text call: feeding N texts
+    /// runs the model N times.  Acceptable for chunked-ingest
+    /// volumes (the GGUF prompt-cache helps a lot on repeated
+    /// prefixes) but a future `encode_sparse_batch` upstream would
+    /// help on large batches.
+    pub(crate) fn encode_sparse(&mut self, text: &str) -> Vec<(i32, f32)> {
         self.model.encode_sparse(text)
     }
 
@@ -2157,19 +2164,69 @@ impl Embedder {
 
     pub fn embed_sparse(&mut self, texts: Vec<String>) -> Result<Vec<Option<SparseVector>>> {
         let n = texts.len();
-        let Some(ref mut sm) = self.sparse else {
-            return Ok(vec![None; n]);
-        };
-        let results = sm.embed(texts, Some(self.config.batch_size))?;
-        Ok(results
-            .into_iter()
-            .map(|sv| {
-                Some(SparseVector {
-                    indices: sv.indices.into_iter().map(|i| i as u32).collect(),
-                    values: sv.values,
+
+        // Path 1: dedicated fastembed sparse encoder (ONNX, the
+        // historical case).  Single batched call, returns
+        // `Vec<SparseEmbedding>` with i64 indices we narrow to u32.
+        if let Some(ref mut sm) = self.sparse {
+            let results = sm.embed(texts, Some(self.config.batch_size))?;
+            return Ok(results
+                .into_iter()
+                .map(|sv| {
+                    Some(SparseVector {
+                        indices: sv.indices.into_iter().map(|i| i as u32).collect(),
+                        values: sv.values,
+                    })
                 })
-            })
-            .collect())
+                .collect());
+        }
+
+        // Path 2: GGUF CrispEmbed dense backend with a sparse head
+        // (BGE-M3 GGUF, SPLADE GGUFs).  Reuses the already-loaded
+        // dense model so users on the GGUF backend get parity with
+        // fastembed's sparse channel.  Per-text invocation because
+        // upstream only exposes `encode_sparse(&str)`; on chunked
+        // ingest the GGUF prompt-cache absorbs most of the repeated-
+        // prefix cost.
+        //
+        // The shape returned matches the SparseVector contract:
+        // `indices: u32, values: f32` so downstream code can't tell
+        // which backend produced it.
+        #[cfg(feature = "crispembed")]
+        {
+            if let DenseBackend::CrispEmbed(ref mut backend) = self.dense {
+                if backend.has_sparse() {
+                    let out: Vec<Option<SparseVector>> = texts
+                        .iter()
+                        .map(|t| {
+                            let pairs = backend.encode_sparse(t);
+                            if pairs.is_empty() {
+                                None
+                            } else {
+                                let mut indices = Vec::with_capacity(pairs.len());
+                                let mut values = Vec::with_capacity(pairs.len());
+                                for (idx, val) in pairs {
+                                    // Negative ids shouldn't appear in
+                                    // practice (vocab ids are non-
+                                    // negative), but skip rather than
+                                    // panic if upstream ever emits one.
+                                    if idx >= 0 {
+                                        indices.push(idx as u32);
+                                        values.push(val);
+                                    }
+                                }
+                                Some(SparseVector { indices, values })
+                            }
+                        })
+                        .collect();
+                    return Ok(out);
+                }
+            }
+        }
+
+        // Neither sparse source is available — return Nones so
+        // downstream code falls back to dense-only retrieval.
+        Ok(vec![None; n])
     }
 
     pub fn embed_full(
@@ -2196,7 +2253,22 @@ impl Embedder {
         self.config.model
     }
     pub fn has_sparse(&self) -> bool {
-        self.sparse.is_some()
+        // Two producers of sparse vectors today: fastembed (ONNX
+        // path, populates self.sparse) and the GGUF dense backend's
+        // sparse head (BGE-M3 / SPLADE).  Report Yes on either —
+        // matches what `embed_sparse` actually fires.
+        if self.sparse.is_some() {
+            return true;
+        }
+        #[cfg(feature = "crispembed")]
+        {
+            if let DenseBackend::CrispEmbed(ref backend) = self.dense {
+                if backend.has_sparse() {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
