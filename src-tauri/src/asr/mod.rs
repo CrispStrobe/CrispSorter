@@ -46,6 +46,12 @@ pub use lang::{
     RoutingDecision, SpeedTier, TranslationSupport,
 };
 
+// Phase 6 — LID-driven backend routing applied to a transcribe call.
+// Thin orchestration over Phase 2's `route()` decision: runs LID (or
+// trusts the caller's hint), picks a backend, and runs the transcribe.
+pub mod orchestrator;
+pub use orchestrator::{transcribe_with_lid_routing, LidOptions, TranscribeResult};
+
 /// ASR session configuration — backend name + optional explicit model
 /// path.  All 24 backends from the CrispASR registry are supported;
 /// see [the module docs](self) for the curated list.
@@ -326,6 +332,15 @@ impl AsrHandle {
 
     pub fn config(&self) -> &AsrConfig {
         &self.config
+    }
+
+    /// Where this handle stores its CrispASR model cache.  Exposed so
+    /// orchestration code that needs to construct a sibling handle (a
+    /// different backend with the same cache, e.g. for [`crate::asr::
+    /// orchestrator::transcribe_with_lid_routing`]'s `Switch` decision)
+    /// can do it without re-resolving the per-OS app-data dir.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
     }
 
     /// Transcribe `pcm` (Float32, 16 kHz, mono). On load failure returns

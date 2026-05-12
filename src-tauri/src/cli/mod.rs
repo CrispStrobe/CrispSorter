@@ -71,6 +71,41 @@ enum OutFormat {
     Text,
 }
 
+/// LID-driven routing policy choice for `chat transcribe --policy`.
+/// Mirrors `crate::asr::lang::BackendFallback` variants minus the
+/// runtime data (fallback / target are supplied via separate flags
+/// so each variant stays a single clap word).
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+enum LidPolicy {
+    /// No LID, no routing — use `--backend` exactly as given.
+    AsConfigured,
+    /// Fail if `--backend` doesn't speak the detected language.
+    Strict,
+    /// Switch to `--fallback` when `--backend` doesn't speak the
+    /// detected language; otherwise stay on `--backend`.
+    Auto,
+}
+
+/// LID model method choice for `chat transcribe --lid-method`.
+/// Mirrors `crate::asr::lang::LidMethod`'s Whisper + Silero variants.
+/// `ecapa` / `firered` are reserved for a follow-up: they only work
+/// through the session-level C-ABI today and would need session
+/// pre-load wiring here.
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+enum LidMethodChoice {
+    Whisper,
+    Silero,
+}
+
+impl LidMethodChoice {
+    fn into_lib(self) -> crate::asr::LidMethod {
+        match self {
+            LidMethodChoice::Whisper => crate::asr::LidMethod::Whisper,
+            LidMethodChoice::Silero => crate::asr::LidMethod::Silero,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Print version + build info.
@@ -347,10 +382,10 @@ enum ChatCmd {
         /// custom checkpoints or running offline against a known file.
         #[arg(long)]
         model: Option<PathBuf>,
-        /// ISO 639-1 source-language hint (`en`, `de`, `ja`, …).
-        /// Optional — backends with native LID auto-detect; others
-        /// fall back to their internal default.  Phase 6 will add
-        /// `--language auto` for LID-driven detection.
+        /// ISO 639-1 source-language hint (`en`, `de`, `ja`, …) or
+        /// the literal `auto` to run audio LID (P13.5 Phase 6) and
+        /// route per `--policy`.  Optional — backends with native LID
+        /// auto-detect; others fall back to their internal default.
         #[arg(long)]
         language: Option<String>,
         /// Output path; `-` (default) writes to stdout.
@@ -366,6 +401,33 @@ enum ChatCmd {
         /// subprocess spawning.
         #[arg(long)]
         pure_rust: bool,
+        /// LID-driven routing policy (P13.5 Phase 6).
+        ///   * `as-configured` (default) — no LID, use --backend as-is.
+        ///   * `strict` — fail if --backend doesn't speak the detected
+        ///     language; never silently produce gibberish.
+        ///   * `auto` — switch to --fallback when --backend doesn't
+        ///     speak the detected language; transcribe with the
+        ///     fallback otherwise.
+        #[arg(long = "policy", value_enum, default_value_t = LidPolicy::AsConfigured)]
+        policy: LidPolicy,
+        /// Fallback backend for `--policy auto`.  Default `whisper`
+        /// (99 languages, the broadest-coverage option).  Ignored
+        /// when policy is `as-configured` or `strict`.
+        #[arg(long = "fallback", default_value = "whisper")]
+        fallback_backend: String,
+        /// LID model path (required when `--language auto` and the
+        /// policy is non-as-configured).  Whisper-method LID reuses
+        /// the regular `ggml-*.bin` you already downloaded for
+        /// transcription; Silero (16 MB) needs its own GGUF.
+        #[arg(long)]
+        lid_model: Option<PathBuf>,
+        /// LID method.  `whisper` (default, 99 langs, reuses ASR
+        /// model file) or `silero` (95 langs, smaller dedicated
+        /// model).  `ecapa` / `firered` are reserved for Phase 6.5
+        /// — they only work through the session-level surface and
+        /// would need session pre-load here.
+        #[arg(long = "lid-method", value_enum, default_value_t = LidMethodChoice::Whisper)]
+        lid_method: LidMethodChoice,
     },
     /// Synthesise text to a WAV via a CrispASR TTS backend (P13.5 slice A).
     ///
@@ -2149,8 +2211,12 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
         }
         ChatCmd::Transcribe {
             path, backend, model, language, output, data_dir, pure_rust,
+            policy, fallback_backend, lid_model, lid_method,
         } => {
-            cmd_chat_transcribe(out, path, backend, model, language, output, data_dir, pure_rust)?;
+            cmd_chat_transcribe(
+                out, path, backend, model, language, output, data_dir, pure_rust,
+                policy, fallback_backend, lid_model, lid_method,
+            )?;
         }
         ChatCmd::Tts {
             text, backend, model, voice, voice_ref_text, speaker, output, data_dir,
@@ -2185,15 +2251,19 @@ fn cmd_chat_transcribe(
     output: String,
     data_dir: Option<PathBuf>,
     pure_rust: bool,
+    policy: LidPolicy,
+    fallback_backend: String,
+    lid_model: Option<PathBuf>,
+    lid_method: LidMethodChoice,
 ) -> Result<(), String> {
     // ── Step 1: decode to 16 kHz mono Float32 ────────────────────────
-    let policy = if pure_rust {
+    let decode_policy = if pure_rust {
         crate::audio::FallbackPolicy::PureRust
     } else {
         crate::audio::FallbackPolicy::AllowFfmpeg
     };
     eprintln!("decoding {}…", path.display());
-    let decoded = crate::audio::decode_to_16khz_mono(&path, policy)
+    let decoded = crate::audio::decode_to_16khz_mono(&path, decode_policy)
         .map_err(|e| format!("audio decode: {e:#}"))?;
     eprintln!(
         "  → {} samples ({:.2} s) via {}",
@@ -2202,30 +2272,67 @@ fn cmd_chat_transcribe(
         decoded.tier.as_str()
     );
 
-    // ── Step 2: configure the ASR session ────────────────────────────
-    let config = match &model {
+    // ── Step 2: configure primary ASR handle ─────────────────────────
+    let primary_config = match &model {
         Some(p) => crate::asr::AsrConfig::with_model_path(&backend, p.to_string_lossy()),
         None => crate::asr::AsrConfig::new(&backend),
     };
     let cache_dir = asr_cache_dir(data_dir)?;
-    let handle = crate::asr::AsrHandle::new(config.clone(), cache_dir);
+    let primary_handle = crate::asr::AsrHandle::new(primary_config.clone(), cache_dir);
 
-    // ── Step 3: transcribe (async, single-thread runtime) ────────────
+    // ── Step 3: map CLI flags → orchestrator inputs ──────────────────
+    //
+    // `--language auto` is the magic word for "run LID"; any other
+    // string is passed through as an ISO hint.  The orchestrator's
+    // fast path handles `policy=AsConfigured` without LID either way,
+    // so `--language auto --policy as-configured` is a no-op (LID
+    // never runs); use `--policy auto|strict` to actually invoke it.
+    let language_for_orchestrator = match language.as_deref() {
+        Some("auto") => None,
+        other => other.map(|s| s.to_string()),
+    };
+
+    let backend_policy = match policy {
+        LidPolicy::AsConfigured => crate::asr::BackendFallback::AsConfigured,
+        LidPolicy::Strict => crate::asr::BackendFallback::Strict,
+        LidPolicy::Auto => crate::asr::BackendFallback::Auto {
+            fallback: crate::asr::AsrConfig::new(&fallback_backend),
+        },
+    };
+
+    let lid_options = lid_model.map(|p| crate::asr::LidOptions {
+        method: lid_method.into_lib(),
+        model_path: p,
+        n_threads: 2,
+    });
+
+    // ── Step 4: orchestrate (transcribe + optional LID + routing) ────
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
-    eprintln!("transcribing via {}…", config.display_name());
-    let text = rt
-        .block_on(handle.transcribe_with_language(decoded.pcm, language.clone()))
+    eprintln!("transcribing via {} (policy={:?})…", primary_config.display_name(), policy);
+    let result = rt
+        .block_on(crate::asr::transcribe_with_lid_routing(
+            decoded.pcm,
+            &primary_handle,
+            backend_policy,
+            lid_options,
+            language_for_orchestrator,
+        ))
         .map_err(|e| format!("ASR: {e:#}"))?;
 
-    // ── Step 4: write out ────────────────────────────────────────────
+    // ── Step 5: write out ────────────────────────────────────────────
+    let decision_str = format!("{:?}", result.decision);
     let payload = match out {
         OutFormat::Json => serde_json::json!({
-            "text": text,
+            "text": result.text,
             "backend": backend,
+            "used_backend": result.used_config.backend,
             "language_hint": language,
+            "detected_language": result.language.as_ref().map(|l| l.as_str()),
+            "confidence": result.confidence,
+            "decision": decision_str,
             "source_path": path.display().to_string(),
             "source_sample_rate": decoded.source_sample_rate,
             "source_channels": decoded.source_channels,
@@ -2233,7 +2340,7 @@ fn cmd_chat_transcribe(
             "decode_tier": decoded.tier.as_str(),
         })
         .to_string(),
-        OutFormat::Text => text.clone(),
+        OutFormat::Text => result.text.clone(),
     };
     write_chat_output(&output, &payload)?;
     Ok(())
@@ -2996,19 +3103,31 @@ mod tests {
     #[test]
     fn chat_transcribe_minimal_args_parse() {
         // The cheapest positive case: just a path. Backend defaults to
-        // whisper, output to stdout, everything else None.
+        // whisper, output to stdout, everything else None.  Phase 6
+        // adds --policy/--fallback/--lid-model/--lid-method to this
+        // variant — they all have defaults so the bare command still
+        // parses; this test pins those defaults.
         let cli = Cli::try_parse_from([
             "crispsorter", "chat", "transcribe", "/tmp/foo.wav",
         ])
         .expect("transcribe with just a path should parse");
         match cli.command {
-            Command::Chat { cmd: ChatCmd::Transcribe { path, backend, model, language, output, pure_rust, .. } } => {
+            Command::Chat { cmd: ChatCmd::Transcribe {
+                path, backend, model, language, output, pure_rust,
+                policy, fallback_backend, lid_model, lid_method, ..
+            } } => {
                 assert_eq!(path, PathBuf::from("/tmp/foo.wav"));
                 assert_eq!(backend, "whisper", "default backend must be whisper");
                 assert!(model.is_none());
                 assert!(language.is_none());
                 assert_eq!(output, "-", "default output is stdout");
                 assert!(!pure_rust);
+                // Phase 6 defaults: AsConfigured (no LID), whisper fallback,
+                // whisper LID method, no LID model.
+                assert_eq!(policy, LidPolicy::AsConfigured);
+                assert_eq!(fallback_backend, "whisper");
+                assert!(lid_model.is_none());
+                assert_eq!(lid_method, LidMethodChoice::Whisper);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
         }
@@ -3017,29 +3136,39 @@ mod tests {
     #[test]
     fn chat_transcribe_full_args_parse() {
         // All optional flags set — language hint, explicit model
-        // path, output redirect, pure-rust policy, custom data dir.
+        // path, output redirect, pure-rust policy, custom data dir,
+        // Phase 6 routing knobs (policy/fallback/lid-model/lid-method).
         let cli = Cli::try_parse_from([
             "crispsorter", "chat", "transcribe",
             "/tmp/de.mp3",
             "--backend", "parakeet",
             "--model", "/models/parakeet.gguf",
-            "--language", "de",
+            "--language", "auto",
             "--output", "/tmp/out.txt",
             "--data-dir", "/tmp/xdg",
             "--pure-rust",
+            "--policy", "auto",
+            "--fallback", "whisper",
+            "--lid-model", "/models/ggml-tiny.bin",
+            "--lid-method", "silero",
         ])
         .expect("full-flag transcribe should parse");
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
                 path, backend, model, language, output, data_dir, pure_rust,
+                policy, fallback_backend, lid_model, lid_method,
             } } => {
                 assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
                 assert_eq!(backend, "parakeet");
                 assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
-                assert_eq!(language.as_deref(), Some("de"));
+                assert_eq!(language.as_deref(), Some("auto"));
                 assert_eq!(output, "/tmp/out.txt");
                 assert_eq!(data_dir, Some(PathBuf::from("/tmp/xdg")));
                 assert!(pure_rust);
+                assert_eq!(policy, LidPolicy::Auto);
+                assert_eq!(fallback_backend, "whisper");
+                assert_eq!(lid_model, Some(PathBuf::from("/models/ggml-tiny.bin")));
+                assert_eq!(lid_method, LidMethodChoice::Silero);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
         }
