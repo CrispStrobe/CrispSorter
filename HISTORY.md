@@ -9,6 +9,87 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-13 — P13.5 follow-ups (5-of-8 shipped)
+
+Continuation of the 2026-05-12 P13.5 vertical.  Picks off five
+follow-ups that close the user-visible loop on cross-language
+search end-to-end, leaving the more involved schema / Tantivy
+work for a later slice.
+
+| Commit | Headline |
+|---|---|
+| `a60ac30` | `--stream` flag for `chat transcribe` — `AsrHandle::transcribe_streaming<F: FnMut(&str) + Send>` drives `crispasr::Session::stream_open` / `Stream::feed` / `get_text` / `flush`.  Whisper-only at the C-ABI level; partials emit to stderr (stdout stays clean for the final result), final transcript routes through the existing `--output` / `-f` path.  Coexists with `--translate-to` (runs MT after the stream finishes) and warns when combined with `--policy != as-configured` (LID routing needs the full PCM). |
+| `2f8400b` | LID model auto-resolution — `extractors::text_lid::LidPreset` enum (Cld3 / Glotlid / Fasttext176) + `resolve_lid_model(preset, cache_dir)` async helper wrapping `crispasr::registry_lookup` + `cache_ensure_file`.  `translate_text` Tauri command's `lid_model` field is now optional; when omitted AND `source_lang` is omitted, auto-resolves CLD3.  MT auto-resolution was already in place via the existing `Asr::load` registry path. |
+| `c4f7ffb` | Search-side query rewrite — `SearchFilters.prefer_translated_lang: Option<String>` adds `text_translated_lang = X AND text_translated IS NOT NULL` to the LanceDB scalar filter; `SearchEngine::apply_translation_snippet` swaps `snippet` from the original-text-derived preview to a `text_translated`-derived one (same 400-char cap) for matching rows.  Called BEFORE `maybe_rerank` in all three search paths so the reranker scores against the user-facing snippet.  FTS-over-translated-body deferred (needs Tantivy schema migration). |
+| `b13745f` | `IndexConfig.translate_to` + persistence + Settings UI — new `IndexConfig` field, `<data_dir>/index_config.json` JSON ledger mirroring `crisplens.settings`, loaded in the Tauri setup hook (`blocking_lock` on the tokio Mutex; runtime isn't driving any tasks at that point), persisted in `index_set_config` after the in-memory state update (best-effort, non-fatal on I/O failure).  `bg_ingest` reads `translate_to` and AUTO-RESOLVES CLD3 LID via task #2's helper when translate is on — because the extractor's MT hook is a no-op without a known source language.  Svelte Settings dropdown with 7 commonly-used targets (en / de / fr / es / it / ja / zh) — same set as the frontend filter. |
+| `9be60b8` | Frontend `translate_text` integration — `SearchResult` interface gains `text_translated` / `text_translated_lang` (frontend-side fast path skipping the Tauri round trip when the row already carries the matching translation from the index-time batch path); per-result `Map<key, TranslateState>` lifecycle (idle / loading / finished / error) tracked under `${doc_id}:${chunk_index}` keys; filter-row dropdown for target language (same 7-item set as the IndexConfig UI); inline rendering BELOW the snippet with cached / backend badges.  `clearTranslations()` hook in `runSearch` so stale "Translated en" badges don't outlive a query change.  Hidden when `r.language === translateTargetLang` (no point offering "Translate to en" on an English hit).  i18n keys (`translate_to`, `translate_to_none`, `translate_to_hint`) added to both EN and DE locales for `svelte-check` cleanliness. |
+
+### Architectural pieces in place after this batch
+
+- **One-click on-demand translation** from any search hit:
+  the SvelteKit UI calls `invoke('translate_text', ...)` per
+  click; the backend's SQLite `translation_cache` table
+  (cb3150d) makes repeated clicks on the same chunk free; the
+  m2m100 handle is process-cached via `OnceLock<AsrHandle>` so
+  only the first click pays the model load.
+- **Index-time batch translation** flipped on entirely from
+  Settings → Search Index → "Index-time translation: English"
+  — `index_set_config` persists the choice to
+  `<data_dir>/index_config.json`, the next `bg_ingest` pass
+  reads it + auto-resolves a CLD3 LID model, and every freshly
+  ingested document lands with a populated `text_translated`
+  column.
+- **Search-time view of translations**: result rows surface
+  `text_translated` as the snippet when the caller sets
+  `SearchFilters.prefer_translated_lang`; the frontend's
+  per-result `text_translated_lang` field gives the
+  "Translate to en" button a no-network-round-trip fast path
+  for index-time-translated rows.
+- **Streaming transcription** for long files: `--stream`
+  produces incremental partials on stderr as Whisper commits
+  each rolling window (step=3000ms / length=10000ms /
+  keep=200ms — the reference shape).
+
+### Net delta
+
++16 unit tests across `tauri-app`:
+  cli (`chat_transcribe_stream_flag_parses`),
+  extractors::text_lid (3 LidPreset round-trip / drift-guard /
+  canonical-string tests),
+  index::schema (3 SearchFilters SQL builder tests covering
+  the new `prefer_translated_lang` predicate + escape +
+  combined-with-source-language case),
+  index::search (5 `apply_translation_snippet` tests),
+  index::config_persist (4 round-trip / corrupt-file /
+  missing-file / create-dir tests).
+
+Build verification: `cargo check --no-default-features` and
+`cargo check --features crispasr` clean; `npx svelte-check`
+0 errors (down from 3 introduced by the new i18n key
+references, closed by the locale entries).
+
+### What's deferred (queued in PLAN.md)
+
+- SRT / VTT output formats for `chat transcribe` — needs a
+  segments-returning ASR API.  Current wrapper concatenates
+  to `String`.
+- Per-language reranker selection — `language` column is
+  populated; routing the reranker model by it is the next
+  slice.
+- Per-chunk vs per-doc translation storage optimisation —
+  today replicates per chunk (matching `full_text_md`
+  convention); a "L0-only" alternative would JOIN at search
+  time.  Needs migration on shipped data.
+- Audio-LID auto-resolution — text-LID side done; audio
+  needs upstream registry entries OR a "reuse the loaded ASR
+  ggml for Whisper-method LID" path.
+- FTS-over-translated body — Tantivy schema migration to
+  add a `body_translated` field, then wire
+  `SearchFilters::prefer_translated_lang` into the FTS query.
+  Multilingual embeddings already handle the vector channel.
+
+---
+
 ## Session log — 2026-05-12 — P13.5 Audio + Translation vertical (Phases 0–8, all shipped)
 
 End-to-end audio + cross-language search vertical across two repos.
