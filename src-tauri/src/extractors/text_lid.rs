@@ -84,6 +84,105 @@ pub fn detect_language(
     )
 }
 
+/// Known text-LID model presets exposed by CrispASR's registry.
+/// Each maps to a GGUF that [`resolve_lid_model`] can auto-download
+/// on first use — same path the ASR side uses for whisper-base etc.
+///
+/// CLD3 is the most pragmatic default for ISO 639-1 output (109
+/// labels, 440 KB).  GlotLID + LID-176 emit ISO 639-3 + script
+/// (`eng_Latn`-style) and are bigger but cover the long tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LidPreset {
+    /// `lid-cld3` — Google CLD3 GGUF, 109 ISO 639-1 labels, ~440 KB,
+    /// Apache-2.0.  Smallest viable LID; the default fallback when
+    /// the on-demand `translate_text` command isn't given an
+    /// explicit `lid_model` path.
+    Cld3,
+    /// `lid-glotlid` — GlotLID-V3 fastText GGUF, 2102 labels (ISO
+    /// 639-3 + script), ~250 MB, Apache-2.0.  Best coverage for
+    /// low-resource languages.
+    Glotlid,
+    /// `lid-fasttext176` — Facebook LID-176 fastText GGUF, 176
+    /// labels (ISO 639-1), ~63 MB, CC-BY-SA-3.0 (note the
+    /// share-alike obligation if you publish derived work).
+    Fasttext176,
+}
+
+impl LidPreset {
+    /// The CrispASR registry key for this preset.  Stable string
+    /// the user can also pass through CLI flags.
+    pub fn registry_name(self) -> &'static str {
+        match self {
+            LidPreset::Cld3 => "lid-cld3",
+            LidPreset::Glotlid => "lid-glotlid",
+            LidPreset::Fasttext176 => "lid-fasttext176",
+        }
+    }
+
+    /// Parse a registry name back into the enum.  Returns `None` for
+    /// unrecognised inputs.  Symmetric with [`Self::registry_name`].
+    pub fn from_registry_name(s: &str) -> Option<Self> {
+        match s {
+            "lid-cld3" => Some(LidPreset::Cld3),
+            "lid-glotlid" => Some(LidPreset::Glotlid),
+            "lid-fasttext176" => Some(LidPreset::Fasttext176),
+            _ => None,
+        }
+    }
+}
+
+/// Auto-resolve a text-LID model via CrispASR's registry, downloading
+/// to `cache_dir` on first use.  Subsequent calls return the cached
+/// path without re-fetching.  Mirrors `Asr::load`'s
+/// `registry_lookup → cache_ensure_file` chain.
+///
+/// `cache_dir` is the same per-app-data `models/` directory the ASR
+/// side uses — the on-demand caller resolves this from
+/// `AppState.data_dir`, the extractor uses its own helper.
+///
+/// The two registry calls are sync (CrispASR's contract), so this
+/// wraps them in `tokio::task::spawn_blocking` to avoid blocking the
+/// async caller's executor.
+#[cfg(feature = "crispasr")]
+pub async fn resolve_lid_model(
+    preset: LidPreset,
+    cache_dir: &Path,
+) -> Result<std::path::PathBuf> {
+    let name = preset.registry_name().to_string();
+    let cache = cache_dir.to_string_lossy().into_owned();
+    let path = tokio::task::spawn_blocking(move || -> Result<String> {
+        let entry = crispasr::registry_lookup(&name)
+            .map_err(|e| anyhow::anyhow!("registry_lookup {name}: {e}"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "text-LID preset {name} not in CrispASR registry — \
+                     this is a build-time bug if the preset enum claims it"
+                )
+            })?;
+        let p = crispasr::cache_ensure_file(&entry.filename, &entry.url, false, Some(&cache))
+            .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
+            .ok_or_else(|| {
+                anyhow::anyhow!("cache returned no path for {}", entry.filename)
+            })?;
+        Ok(p)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("spawn_blocking joined unexpectedly: {e}"))??;
+    Ok(std::path::PathBuf::from(path))
+}
+
+/// Stub for non-crispasr builds.  Same shape as the rest of the
+/// extractor's stubs — clear --features hint.
+#[cfg(not(feature = "crispasr"))]
+pub async fn resolve_lid_model(
+    _preset: LidPreset,
+    _cache_dir: &Path,
+) -> Result<std::path::PathBuf> {
+    anyhow::bail!(
+        "text-LID model auto-resolution requires the `crispasr` cargo feature"
+    )
+}
+
 /// Best-effort normalisation of a CrispASR text-LID label to an
 /// ISO 639-1 two-letter code.
 ///
@@ -296,6 +395,42 @@ mod tests {
         for (three, _) in ISO_639_3_TO_1 {
             assert!(seen.insert(*three), "duplicate 3-letter key: {three}");
         }
+    }
+
+    #[test]
+    fn lid_preset_registry_names_round_trip() {
+        // Drift guard: if a new preset lands, both directions must
+        // know it.  Asymmetric mapping would cause auto-resolution
+        // to silently miss a preset the enum claims.
+        for preset in [LidPreset::Cld3, LidPreset::Glotlid, LidPreset::Fasttext176] {
+            let name = preset.registry_name();
+            assert_eq!(
+                LidPreset::from_registry_name(name),
+                Some(preset),
+                "round-trip failed for {preset:?} → {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lid_preset_from_registry_name_rejects_unknown() {
+        for bogus in ["lid-cld4", "not-a-lid", "", "lid"] {
+            assert!(
+                LidPreset::from_registry_name(bogus).is_none(),
+                "from_registry_name({bogus:?}) should be None",
+            );
+        }
+    }
+
+    #[test]
+    fn lid_preset_registry_names_are_crispasr_canonical() {
+        // These strings are the exact registry keys the CrispASR
+        // README + crispasr_model_registry.cpp use.  Drift on either
+        // side breaks auto-resolution silently (registry_lookup
+        // returns None → "not in CrispASR registry" error).
+        assert_eq!(LidPreset::Cld3.registry_name(), "lid-cld3");
+        assert_eq!(LidPreset::Glotlid.registry_name(), "lid-glotlid");
+        assert_eq!(LidPreset::Fasttext176.registry_name(), "lid-fasttext176");
     }
 
     #[test]
