@@ -71,6 +71,18 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // ── P9 step 7 — promoted from metadata_json ───────────────────────
         // volume_id for offline-volume filtering; same migration strategy.
         Field::new("volume_id", DataType::Utf8, true),
+        // ── P13.5 Phase 8 batch — index-time translation ─────────────────
+        // `text_translated` carries the full-doc translation produced
+        // by the extractor's MT pass (when `ExtractOptions::translate_to`
+        // was supplied).  Replicated across every chunk row of the
+        // same doc, matching the existing `full_text_md` convention.
+        // Added on existing tables via the
+        // `AddTextTranslatedColumns` migration in `index/migrations.rs`.
+        Field::new("text_translated", DataType::Utf8, true),
+        // ISO 639-1 target language of `text_translated`.  Lets the
+        // search side filter / facet on the available translation
+        // language without scanning text.
+        Field::new("text_translated_lang", DataType::Utf8, true),
     ]))
 }
 
@@ -122,6 +134,13 @@ pub struct DocumentChunk {
     pub parent_dir: Option<String>,
     // P9 step 7 — promoted from metadata_json; scalar-indexed for volume-availability filter
     pub volume_id: Option<String>,
+
+    // P13.5 Phase 8 batch — translation of full_text produced by the
+    // extractor's post-dispatch MT pass.  Replicated across every
+    // chunk of a doc (same convention as full_text_md); `None` when
+    // no translation was attempted or MT failed.
+    pub text_translated: Option<String>,
+    pub text_translated_lang: Option<String>,
 }
 
 /// Lightweight search result returned to the frontend.
@@ -176,6 +195,19 @@ pub struct SearchResult {
     /// `#[serde(default)]` keeps existing JSON payloads valid.
     #[serde(default)]
     pub source_hash: String,
+
+    /// P13.5 Phase 8 batch — translation of `full_text` written by
+    /// the extractor's MT pass at index time.  `None` for rows
+    /// ingested without `ExtractOptions::translate_to`, or before
+    /// the `AddTextTranslatedColumns` migration ran (the migration
+    /// backfills nulls so old rows just look untranslated, which is
+    /// what they are).  `#[serde(default)]` keeps existing payloads
+    /// valid against the new field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated: Option<String>,
+    /// ISO 639-1 target language of `text_translated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated_lang: Option<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

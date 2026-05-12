@@ -56,6 +56,14 @@ pub struct LocalIndex {
 // ── Constructor ────────────────────────────────────────────────────────────
 
 impl LocalIndex {
+    /// Borrow the underlying LanceDB table handle.  Exposed so the
+    /// migration framework (`crate::migrations` / `index::migrations`)
+    /// can call `add_columns` etc. against the same handle this
+    /// index opened, without re-resolving the LanceDB URI.
+    pub fn table_ref(&self) -> &Table {
+        &self.table
+    }
+
     /// Open the LanceDB table, creating it (empty) if it does not yet exist.
     pub async fn open_or_create(data_dir: &Path, dims: usize) -> Result<Self> {
         let lance_dir = data_dir.join("lance");
@@ -282,6 +290,8 @@ impl LocalIndex {
             let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
             let volume_id_col = str_col_opt(batch, "volume_id");
             let source_hash_col = str_col_opt(batch, "source_hash");
+            let text_translated_col = str_col_opt(batch, "text_translated");
+            let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
 
             for i in 0..n {
                 if sparse_col.is_null(i) {
@@ -338,6 +348,8 @@ impl LocalIndex {
                     volume_id,
                     indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
                     source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
+                    text_translated: str_col_val_opt(&text_translated_col, i),
+                    text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -1299,6 +1311,11 @@ pub fn batches_to_search_results_with_scores(
         let indexed_at_col = ts_ms_col_opt(batch, "indexed_at");
         let volume_id_col = str_col_opt(batch, "volume_id");
         let source_hash_col = str_col_opt(batch, "source_hash");
+        // P13.5 Phase 8 batch — surface translation alongside the
+        // existing per-doc text columns.  See record_batches_to_search_results
+        // for the longer doc comment on null-tolerance for pre-v100 rows.
+        let text_translated_col = str_col_opt(batch, "text_translated");
+        let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -1341,6 +1358,8 @@ pub fn batches_to_search_results_with_scores(
                 volume_id,
                 indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
                 source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
+                text_translated: str_col_val_opt(&text_translated_col, i),
+                text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
             });
         }
     }
@@ -1444,6 +1463,9 @@ fn chunks_to_record_batch(
     let parent_dirs: StringArray = chunks.iter().map(|c| c.parent_dir.as_deref()).collect();
     // volume_id (P9 step 7 — scalar-indexed for volume-availability filter)
     let volume_ids: StringArray = chunks.iter().map(|c| c.volume_id.as_deref()).collect();
+    // P13.5 Phase 8 batch — translated text + its target language.
+    let text_translateds: StringArray = chunks.iter().map(|c| c.text_translated.as_deref()).collect();
+    let text_translated_langs: StringArray = chunks.iter().map(|c| c.text_translated_lang.as_deref()).collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1475,6 +1497,8 @@ fn chunks_to_record_batch(
             Arc::new(metadata_jsons),
             Arc::new(parent_dirs),
             Arc::new(volume_ids),
+            Arc::new(text_translateds),
+            Arc::new(text_translated_langs),
         ],
     )
     .context("building RecordBatch")?;
@@ -1509,6 +1533,14 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         // column lookup so older Lance datasets without the column
         // still load.
         let source_hash_col = str_col_opt(batch, "source_hash");
+        // P13.5 Phase 8 batch — surface the translated text + its
+        // target language so the search UI can render the
+        // alternate-language view inline.  Optional column lookup
+        // — Lance datasets predating the AddTextTranslatedColumns
+        // migration (v100) don't have these columns; str_col_opt
+        // returns None so existing rows just appear untranslated.
+        let text_translated_col = str_col_opt(batch, "text_translated");
+        let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -1558,6 +1590,8 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 volume_id,
                 indexed_at: indexed_at_col.map(|c| c.value(i)).unwrap_or(0),
                 source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
+                text_translated: str_col_val_opt(&text_translated_col, i),
+                text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
             });
         }
     }
@@ -1966,6 +2000,8 @@ mod query_documents_tests {
             volume_id: None,
             indexed_at: 0,
             source_hash: String::new(),
+            text_translated: None,
+            text_translated_lang: None,
         }
     }
 

@@ -103,6 +103,23 @@ pub struct RawDocument {
     /// filters in `query_documents` use a scalar index instead of a
     /// JSON LIKE scan.  `None` for non-file ingests (pasted text, etc.).
     pub parent_dir: Option<String>,
+
+    /// P13.5 Phase 8 batch — translation of `full_text` produced by
+    /// the extractor's post-dispatch MT pass (when
+    /// `ExtractOptions::translate_to` was supplied).  Written into
+    /// the `text_translated` LanceDB column (added by the
+    /// `AddTextTranslatedColumns` migration).  Replicated across
+    /// every chunk row, matching the existing `full_text_md`
+    /// convention — slightly wasteful for big translations but keeps
+    /// downstream queries from needing a JOIN.  `None` when no
+    /// translation was attempted, the source language was unknown,
+    /// or MT failed.
+    pub translated_text: Option<String>,
+    /// ISO 639-1 target language of [`Self::translated_text`].
+    /// Written into the `text_translated_lang` column.  Lets a
+    /// future search-side filter say "give me docs where the
+    /// translated column is English" without parsing every row.
+    pub translated_to_lang: Option<String>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -419,6 +436,10 @@ impl IngestPipeline {
                     metadata_json: Some(meta.to_string()),
                     parent_dir: Some(f.parent_dir.clone()),
                     volume_id: f.volume_id.clone(),
+                    // L1 catalog rows aren't extracted text; no
+                    // translation possible.
+                    text_translated: None,
+                    text_translated_lang: None,
                 }
             })
             .collect();
@@ -517,6 +538,10 @@ impl IngestPipeline {
             metadata_json: Some(meta.to_string()),
             parent_dir,
             volume_id,
+            // L2 metadata-only rows (failed extraction) have no text
+            // to translate.
+            text_translated: None,
+            text_translated_lang: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -624,6 +649,12 @@ fn build_doc_chunk(
         metadata_json: build_metadata_json(raw.mtime_unix, raw.file_size, raw.volume_id.as_deref()),
         parent_dir: raw.parent_dir.clone(),
         volume_id: raw.volume_id.clone(),
+        // P13.5 Phase 8 batch — replicate the per-doc translation
+        // across every chunk row (matches the existing full_text_md
+        // convention). Slightly wasteful for big translations but
+        // keeps downstream queries from needing a JOIN.
+        text_translated: raw.translated_text.clone(),
+        text_translated_lang: raw.translated_to_lang.clone(),
     }
 }
 
@@ -684,6 +715,8 @@ mod tests {
             file_size:  None,
             volume_id:  None,
             parent_dir: None,
+            translated_text: None,
+            translated_to_lang: None,
         }
     }
 

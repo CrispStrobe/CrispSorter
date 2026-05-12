@@ -437,6 +437,8 @@ mod tests {
             metadata_json:     Some(meta.to_string()),
             parent_dir:        Some(parent_dir.to_owned()),
             volume_id:         None,
+            text_translated:   None,
+            text_translated_lang: None,
         }
     }
 
