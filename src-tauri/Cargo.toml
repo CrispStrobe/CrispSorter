@@ -149,7 +149,7 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
-crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:hound"]
+crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:hound", "dep:symphonia"]
 crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
 crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
 crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
@@ -213,11 +213,32 @@ optional = true
 path     = "../../CrispASR/crispasr-sys"
 optional = true
 
-# WAV I/O for the CLI `chat transcribe` (read) + `chat tts` (write)
-# subcommands.  Gated behind the `crispasr` feature so we don't pull
-# it into builds that skip ASR/TTS entirely.  hound is pure-Rust, no
-# transitive deps, ships on every platform CrispASR builds on.
+# WAV write path for the CLI `chat tts` subcommand (read side uses
+# symphonia, see below).  Gated behind the `crispasr` feature.
+# hound is pure-Rust, no transitive deps, ships everywhere.
 [dependencies.hound]
 version  = "3.5"
 optional = true
+
+# Multi-codec audio + video demuxing for P13.5 audio vertical.
+# Tier 1 of `src-tauri/src/audio/decoder.rs`: WAV / MP3 / M4A / FLAC
+# / OGG / OPUS / AAC for audio AND MP4 / MOV / MKV / WebM / M4V for
+# video (we demux just the audio stream — no video decode).  Pure-
+# Rust, no system deps, ships on every platform CrispSorter does.
+# `features = ["all"]` enables every codec + container module the
+# umbrella crate offers; the long-tail (.avi DivX, .wmv) goes
+# through the ffmpeg shell-out fallback in
+# `src-tauri/src/audio/ffmpeg_fallback.rs`.
+[dependencies.symphonia]
+version  = "0.5"
+features = ["all"]
+optional = true
+
+# Sample-rate conversion to the canonical 16 kHz mono ASR input
+# format is currently done inline in `src-tauri/src/audio/resampler.rs`
+# via linear interpolation — same approach whisper.cpp uses internally.
+# Quality is fine for ASR (the model is robust to minor aliasing) and
+# avoids the dep-surface complexity of rubato 0.16's `SincFixedIn`
+# API.  TODO: swap in `rubato` for the few cases (extreme rate ratios)
+# where linear interpolation has audible artifacts.
 
