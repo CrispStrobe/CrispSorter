@@ -343,12 +343,35 @@ jobs:
           # would otherwise re-evaluate the relative `$TAR_GZ` against
           # the new cwd and fail to find a parent dir for tar to write
           # into (the v0.1.38 macOS arm64 failure mode).
+          #
+          # Rename the on-disk file to match the name tauri-action
+          # uploaded as. tauri-action's macOS upload renames `<name>.app.tar.gz`
+          # → `<name>_<arch>.app.tar.gz` where <arch> is aarch64 or x64.
+          # Without this rename, our Re-upload step would land the
+          # patched tarball next to the unpatched one (different names,
+          # so --clobber does nothing), leaving two .app.tar.gz on the
+          # release: the v0.1.39 first-success quality bug.
+          case "${{ matrix.rust_target }}" in
+            aarch64-apple-darwin) TAR_ARCH=aarch64 ;;
+            x86_64-apple-darwin)  TAR_ARCH=x64 ;;
+            *)                    TAR_ARCH="" ;;
+          esac
           BUNDLE_ROOT="$(dirname "$APP_DIR")"
           TAR_GZ=$(find "$BUNDLE_ROOT" -name 'CrispSorter*.app.tar.gz' -type f | head -1)
           if [ -n "$TAR_GZ" ]; then
-            ABS_TAR_GZ="$(cd "$(dirname "$TAR_GZ")" && pwd)/$(basename "$TAR_GZ")"
+            DIR="$(cd "$(dirname "$TAR_GZ")" && pwd)"
+            if [ -n "$TAR_ARCH" ]; then
+              ABS_TAR_GZ="$DIR/CrispSorter_${TAR_ARCH}.app.tar.gz"
+            else
+              ABS_TAR_GZ="$DIR/$(basename "$TAR_GZ")"
+            fi
             echo "Repacking $ABS_TAR_GZ"
             tar -czf "$ABS_TAR_GZ" -C "$APP_DIR" "$(basename "$APP")"
+            # If the rename changed the path, drop the now-stale original
+            # so Re-upload doesn't pick the wrong (unpatched) file.
+            if [ "$ABS_TAR_GZ" != "$DIR/$(basename "$TAR_GZ")" ]; then
+              rm -f "$TAR_GZ"
+            fi
           fi
 
       - name: Patch native libs into .deb + repack (Linux)
