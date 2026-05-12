@@ -71,6 +71,32 @@ enum OutFormat {
     Text,
 }
 
+/// Per-subcommand format selector for `chat transcribe`.  Independent
+/// from the global `-f json|text` because subtitle formats only make
+/// sense for transcribe; cluttering the global enum (96 match arms
+/// across the CLI surface) with `Srt`/`Vtt` variants would force
+/// fallback arms in unrelated commands.
+///
+/// `None` (default at the arg level) means "fall back to the global
+/// -f mapping": `OutFormat::Json` → `Json`, `OutFormat::Text` → `Txt`.
+/// SRT/VTT require this flag explicitly.
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
+enum TranscriptFormat {
+    /// Plain text — joined segments without timestamps.  Equivalent
+    /// to `-f text`.
+    Txt,
+    /// JSON envelope with the existing `-f json` shape plus a
+    /// `segments` array (each segment carries `text` + `start` +
+    /// `end` in seconds).
+    Json,
+    /// SubRip subtitle format (`HH:MM:SS,mmm --> HH:MM:SS,mmm`).
+    /// One block per ASR segment, numbered from 1.
+    Srt,
+    /// WebVTT format (`HH:MM:SS.mmm --> HH:MM:SS.mmm` with a `WEBVTT`
+    /// header).  Same one-block-per-segment shape as SRT.
+    Vtt,
+}
+
 /// LID-driven routing policy choice for `chat transcribe --policy`.
 /// Mirrors `crate::asr::lang::BackendFallback` variants minus the
 /// runtime data (fallback / target are supplied via separate flags
@@ -411,6 +437,19 @@ enum ChatCmd {
         /// / keep=200 ms); tune in code if you need tighter latency.
         #[arg(long)]
         stream: bool,
+        /// Output format for the transcript: `txt` (plain text,
+        /// joined segments), `json` (envelope with metadata + a
+        /// `segments` array), `srt` (SubRip subtitle file with
+        /// `HH:MM:SS,mmm` timestamps), `vtt` (WebVTT with `WEBVTT`
+        /// header + `HH:MM:SS.mmm` timestamps).  Default: falls
+        /// back to the global `-f` mapping (`json` / `text` →
+        /// `Json` / `Txt`).  SRT and VTT require this flag
+        /// explicitly + an `--output PATH.srt` / `.vtt` is the
+        /// usual idiom (stdout works too).  Mutually exclusive
+        /// with `--stream` for SRT/VTT (segments only arrive
+        /// at the end of the buffered transcribe path).
+        #[arg(long = "transcript-format", value_enum)]
+        transcript_format: Option<TranscriptFormat>,
         /// LID-driven routing policy (P13.5 Phase 6).
         ///   * `as-configured` (default) — no LID, use --backend as-is.
         ///   * `strict` — fail if --backend doesn't speak the detected
@@ -2248,11 +2287,13 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
         }
         ChatCmd::Transcribe {
             path, backend, model, language, output, data_dir, pure_rust, stream,
+            transcript_format,
             policy, fallback_backend, lid_model, lid_method,
             translate_to, translate_backend, translate_model, translate_max_tokens,
         } => {
             cmd_chat_transcribe(
                 out, path, backend, model, language, output, data_dir, pure_rust, stream,
+                transcript_format,
                 policy, fallback_backend, lid_model, lid_method,
                 translate_to, translate_backend, translate_model, translate_max_tokens,
             )?;
@@ -2291,6 +2332,7 @@ fn cmd_chat_transcribe(
     data_dir: Option<PathBuf>,
     pure_rust: bool,
     stream: bool,
+    transcript_format: Option<TranscriptFormat>,
     policy: LidPolicy,
     fallback_backend: String,
     lid_model: Option<PathBuf>,
@@ -2300,6 +2342,27 @@ fn cmd_chat_transcribe(
     translate_model: Option<PathBuf>,
     translate_max_tokens: i32,
 ) -> Result<(), String> {
+    // Resolve which transcript format the user actually wants.  Per-
+    // subcommand --transcript-format wins; falls back to the global
+    // -f mapping (json → Json, text → Txt).  SRT/VTT require the
+    // explicit flag — they're never the inferred default.
+    let effective_fmt = transcript_format.unwrap_or_else(|| match out {
+        OutFormat::Json => TranscriptFormat::Json,
+        OutFormat::Text => TranscriptFormat::Txt,
+    });
+    // Stream mode + SRT/VTT is incoherent: segments only arrive at
+    // the end of the buffered transcribe path.  Refuse early rather
+    // than producing a single-segment subtitle file with the whole
+    // transcript on one line.
+    if stream && matches!(effective_fmt, TranscriptFormat::Srt | TranscriptFormat::Vtt) {
+        return Err(
+            "--stream is incompatible with --transcript-format srt|vtt — \
+             SRT/VTT need per-segment timestamps that aren't available until \
+             the buffered transcribe path completes.  Drop --stream OR use \
+             --transcript-format txt|json."
+                .to_string(),
+        );
+    }
     // ── Step 1: decode to 16 kHz mono Float32 ────────────────────────
     let decode_policy = if pure_rust {
         crate::audio::FallbackPolicy::PureRust
@@ -2449,8 +2512,13 @@ fn cmd_chat_transcribe(
             (final_text.clone(), None)
         };
 
-        let payload = match out {
-            OutFormat::Json => serde_json::json!({
+        // Streaming path: effective_fmt is guaranteed to be Txt or
+        // Json (Srt/Vtt error'd above).  Match the same shape as the
+        // buffered path's JSON envelope minus the segments (the
+        // streaming wrapper concatenates partials without timing
+        // breakdown).
+        let payload = match effective_fmt {
+            TranscriptFormat::Json => serde_json::json!({
                 "text": final_emit,
                 "backend": backend,
                 "streaming": true,
@@ -2463,7 +2531,11 @@ fn cmd_chat_transcribe(
                 "decode_tier": decoded.tier.as_str(),
             })
             .to_string(),
-            OutFormat::Text => final_emit.clone(),
+            TranscriptFormat::Txt => final_emit.clone(),
+            // Unreachable: guarded above.
+            TranscriptFormat::Srt | TranscriptFormat::Vtt => unreachable!(
+                "--stream + srt/vtt was supposed to error before this point"
+            ),
         };
         write_chat_output(&output, &payload)?;
         return Ok(());
@@ -2538,8 +2610,8 @@ fn cmd_chat_transcribe(
 
     // ── Step 6: write out ────────────────────────────────────────────
     let decision_str = format!("{:?}", result.decision);
-    let payload = match out {
-        OutFormat::Json => serde_json::json!({
+    let payload = match effective_fmt {
+        TranscriptFormat::Json => serde_json::json!({
             "text": final_text,
             "backend": backend,
             "used_backend": result.used_config.backend,
@@ -2548,6 +2620,11 @@ fn cmd_chat_transcribe(
             "confidence": result.confidence,
             "decision": decision_str,
             "translation": translation_meta,
+            "segments": result.segments.iter().map(|s| serde_json::json!({
+                "text": s.text,
+                "start": s.start_seconds,
+                "end": s.end_seconds,
+            })).collect::<Vec<_>>(),
             "source_path": path.display().to_string(),
             "source_sample_rate": decoded.source_sample_rate,
             "source_channels": decoded.source_channels,
@@ -2555,10 +2632,102 @@ fn cmd_chat_transcribe(
             "decode_tier": decoded.tier.as_str(),
         })
         .to_string(),
-        OutFormat::Text => final_text.clone(),
+        TranscriptFormat::Txt => final_text.clone(),
+        TranscriptFormat::Srt => {
+            if result.segments.is_empty() {
+                return Err(
+                    "SRT requested but the backend returned no segments — \
+                     check that the model supports timestamped output \
+                     (Whisper does; some others don't)."
+                        .to_string(),
+                );
+            }
+            format_segments_srt(&result.segments)
+        }
+        TranscriptFormat::Vtt => {
+            if result.segments.is_empty() {
+                return Err(
+                    "VTT requested but the backend returned no segments — \
+                     check that the model supports timestamped output \
+                     (Whisper does; some others don't)."
+                        .to_string(),
+                );
+            }
+            format_segments_vtt(&result.segments)
+        }
     };
     write_chat_output(&output, &payload)?;
     Ok(())
+}
+
+// ── Subtitle formatters (P13.5 follow-up — SRT / VTT) ─────────────
+
+/// Render seconds as `HH:MM:SS,mmm` (SRT idiom — comma as decimal
+/// separator).  Caps the hour field at `99` because SRT players
+/// expect a 2-digit hour and an 8-hour audio file is well past
+/// anyone's tolerance for waiting on the model anyway.
+fn format_srt_time(seconds: f64) -> String {
+    let total_ms = (seconds * 1000.0).round().max(0.0) as i64;
+    let h = (total_ms / 3_600_000).min(99);
+    let m = (total_ms / 60_000) % 60;
+    let s = (total_ms / 1000) % 60;
+    let ms = total_ms % 1000;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
+}
+
+/// Render seconds as `HH:MM:SS.mmm` (WebVTT idiom — period as
+/// decimal separator).  Same time-range cap as SRT.
+fn format_vtt_time(seconds: f64) -> String {
+    let total_ms = (seconds * 1000.0).round().max(0.0) as i64;
+    let h = (total_ms / 3_600_000).min(99);
+    let m = (total_ms / 60_000) % 60;
+    let s = (total_ms / 1000) % 60;
+    let ms = total_ms % 1000;
+    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+}
+
+/// Render a [`crate::asr::AsrSegment`] slice as a SubRip (`.srt`)
+/// subtitle file.  Numbering starts at 1 (SRT convention); empty
+/// segments are skipped so the cue numbering stays contiguous.
+fn format_segments_srt(segments: &[crate::asr::AsrSegment]) -> String {
+    let mut out = String::new();
+    let mut cue_idx = 1;
+    for seg in segments {
+        if seg.text.trim().is_empty() {
+            continue;
+        }
+        out.push_str(&format!("{cue_idx}\n"));
+        out.push_str(&format!(
+            "{} --> {}\n",
+            format_srt_time(seg.start_seconds),
+            format_srt_time(seg.end_seconds)
+        ));
+        out.push_str(seg.text.trim());
+        out.push_str("\n\n");
+        cue_idx += 1;
+    }
+    out
+}
+
+/// Render a [`crate::asr::AsrSegment`] slice as a WebVTT (`.vtt`)
+/// subtitle file.  Starts with the required `WEBVTT` header.
+/// Cue identifiers are omitted (WebVTT allows it); empty segments
+/// are skipped.
+fn format_segments_vtt(segments: &[crate::asr::AsrSegment]) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for seg in segments {
+        if seg.text.trim().is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "{} --> {}\n",
+            format_vtt_time(seg.start_seconds),
+            format_vtt_time(seg.end_seconds)
+        ));
+        out.push_str(seg.text.trim());
+        out.push_str("\n\n");
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3358,6 +3527,120 @@ mod tests {
     }
 
     #[test]
+    fn chat_transcribe_transcript_format_parses() {
+        // --transcript-format flag accepts all four values + None
+        // default.  Pinning the round-trip catches a clap rename
+        // (e.g. `value_enum` → string list) silently breaking the
+        // SRT/VTT path.
+        for (cli_arg, expect) in [
+            ("txt",  Some(TranscriptFormat::Txt)),
+            ("json", Some(TranscriptFormat::Json)),
+            ("srt",  Some(TranscriptFormat::Srt)),
+            ("vtt",  Some(TranscriptFormat::Vtt)),
+        ] {
+            let cli = Cli::try_parse_from([
+                "crispsorter", "chat", "transcribe", "/tmp/foo.wav",
+                "--transcript-format", cli_arg,
+            ])
+            .unwrap_or_else(|e| panic!("--transcript-format {cli_arg} should parse: {e}"));
+            match cli.command {
+                Command::Chat { cmd: ChatCmd::Transcribe { transcript_format, .. } } => {
+                    assert_eq!(transcript_format, expect);
+                }
+                other => panic!("expected Chat Transcribe, got {other:?}"),
+            }
+        }
+    }
+
+    // ── SRT / VTT formatter unit tests ───────────────────────────────
+
+    fn sample_segments() -> Vec<crate::asr::AsrSegment> {
+        vec![
+            crate::asr::AsrSegment {
+                text: "Hello world.".to_string(),
+                start_seconds: 0.0,
+                end_seconds: 1.5,
+            },
+            crate::asr::AsrSegment {
+                text: "This is a test.".to_string(),
+                start_seconds: 1.5,
+                end_seconds: 3.25,
+            },
+            // Empty segment — must be skipped (cue numbering stays
+            // contiguous on the SRT side).
+            crate::asr::AsrSegment {
+                text: "   ".to_string(),
+                start_seconds: 3.25,
+                end_seconds: 3.5,
+            },
+        ]
+    }
+
+    #[test]
+    fn format_srt_time_round_trips_known_offsets() {
+        // Pin a handful of well-known timestamps so a future
+        // formatter regression (off-by-one ms, hour cap) shows up.
+        assert_eq!(format_srt_time(0.0), "00:00:00,000");
+        assert_eq!(format_srt_time(1.5), "00:00:01,500");
+        assert_eq!(format_srt_time(59.999), "00:00:59,999");
+        assert_eq!(format_srt_time(60.0), "00:01:00,000");
+        assert_eq!(format_srt_time(3600.0), "01:00:00,000");
+        // SRT uses a comma decimal separator (different from VTT's
+        // period); this is the spec, not a typo.
+        assert!(format_srt_time(1.5).contains(','));
+        assert!(!format_srt_time(1.5).contains('.'));
+    }
+
+    #[test]
+    fn format_vtt_time_uses_period_separator() {
+        // WebVTT spec uses period as the millisecond separator.
+        // Drift here would silently break any consumer that
+        // distinguishes the two formats (e.g. HTML5 <track>
+        // strict parsing).
+        assert_eq!(format_vtt_time(0.0), "00:00:00.000");
+        assert_eq!(format_vtt_time(1.5), "00:00:01.500");
+        assert_eq!(format_vtt_time(3600.5), "01:00:00.500");
+        assert!(format_vtt_time(1.5).contains('.'));
+        assert!(!format_vtt_time(1.5).contains(','));
+    }
+
+    #[test]
+    fn format_srt_renders_numbered_cues_skipping_empty() {
+        let out = format_segments_srt(&sample_segments());
+        assert!(out.contains("1\n00:00:00,000 --> 00:00:01,500\nHello world.\n"));
+        assert!(out.contains("2\n00:00:01,500 --> 00:00:03,250\nThis is a test.\n"));
+        // The whitespace-only segment must NOT produce a cue 3.
+        assert!(!out.contains("3\n"), "empty segments must be skipped");
+        // Cues separated by a blank line (SRT idiom).
+        assert!(out.ends_with("\n\n"), "SRT must end with a blank line: {out:?}");
+    }
+
+    #[test]
+    fn format_vtt_starts_with_required_header_and_no_cue_ids() {
+        let out = format_segments_vtt(&sample_segments());
+        // WebVTT requires the literal "WEBVTT" header followed by a
+        // blank line.  Players that don't see this will reject the
+        // file.
+        assert!(out.starts_with("WEBVTT\n\n"), "got: {out:?}");
+        // Period decimal separator
+        assert!(out.contains("00:00:00.000 --> 00:00:01.500\nHello world.\n"));
+        // No numbered cue identifiers in our output (WebVTT allows
+        // them but we don't emit them — the timestamp line is the
+        // first non-blank line of each cue).
+        assert!(!out.contains("\n1\n"), "should NOT emit numbered cue ids");
+    }
+
+    #[test]
+    fn format_segments_empty_input_returns_minimal_output() {
+        // Edge case: a backend that returns zero segments shouldn't
+        // produce a crash.  SRT gives empty string; VTT gives
+        // just the WEBVTT header.
+        let empty: Vec<crate::asr::AsrSegment> = vec![];
+        assert_eq!(format_segments_srt(&empty), "");
+        assert_eq!(format_segments_vtt(&empty), "WEBVTT\n\n");
+    }
+
+    #[test]
     fn chat_transcribe_stream_flag_parses() {
         // --stream is the P13.5 follow-up that opts into a rolling-
         // window Whisper streaming decode instead of the buffered
@@ -3402,10 +3685,12 @@ mod tests {
         match cli.command {
             Command::Chat { cmd: ChatCmd::Transcribe {
                 path, backend, model, language, output, data_dir, pure_rust, stream,
+                transcript_format,
                 policy, fallback_backend, lid_model, lid_method,
                 translate_to, translate_backend, translate_model, translate_max_tokens,
             } } => {
                 assert!(!stream, "--stream not set in full-args test (covered separately)");
+                assert!(transcript_format.is_none(), "--transcript-format not set in full-args test (covered separately)");
                 assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
                 assert_eq!(backend, "parakeet");
                 assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
