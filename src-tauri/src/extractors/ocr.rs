@@ -89,7 +89,9 @@ pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
         full_text: text,
         headings: Vec::new(),
         ext: String::new(), // dispatcher fills
-        language: None,     // post-LID hook fills (when configured)
+        language: None,     // post-LID hook fills
+        translated_text: None,
+        translated_to_lang: None,
     })
 }
 

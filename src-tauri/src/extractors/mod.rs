@@ -61,6 +61,18 @@ pub struct ExtractedDocument {
     /// bg_ingest uses this as a fallback when the caller's
     /// `RawDocument.language` is empty.
     pub language: Option<String>,
+    /// P13.5 Phase 8 batch — translated text produced by the
+    /// post-dispatch MT pass when [`ExtractOptions::translate_to`]
+    /// was set AND [`Self::language`] is known.  `None` when
+    /// translation wasn't run (no `translate_to`), when no source
+    /// language could be determined (no LID model), or when source
+    /// equals target (identity short-circuit).
+    pub translated_text: Option<String>,
+    /// ISO 639-1 target language of [`Self::translated_text`].
+    /// Echoes [`ExtractOptions::translate_to`] on success so
+    /// downstream consumers (the LanceDB write path in Phase 8b)
+    /// know which column the text belongs to.
+    pub translated_to_lang: Option<String>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -152,6 +164,23 @@ pub struct ExtractOptions {
     /// [`ExtractedDocument::language`].  `None` (default) skips LID
     /// — current behaviour, zero overhead.
     pub text_lid_model: Option<std::path::PathBuf>,
+    /// P13.5 Phase 8 batch: ISO 639-1 target language for an
+    /// index-time translation pass.  When set, the dispatcher runs
+    /// MT after LID (LID has to land first to know the source
+    /// language) and stashes the translation into
+    /// [`ExtractedDocument::translated_text`].  Requires
+    /// `text_lid_model` to be set too (otherwise no source lang is
+    /// available); skipped silently otherwise.  `None` (default)
+    /// skips translation — zero overhead on the no-translate path.
+    pub translate_to: Option<String>,
+    /// P13.5 Phase 8 batch: MT backend name.  Defaults to `m2m100`
+    /// (100 langs, any-to-any) when [`Self::translate_to`] is set
+    /// but this is `None`.  Ignored when `translate_to` is `None`.
+    pub translate_backend: Option<String>,
+    /// P13.5 Phase 8 batch: explicit MT model file path.  `None`
+    /// uses CrispASR's registry auto-download.  Ignored when
+    /// `translate_to` is `None`.
+    pub translate_model: Option<std::path::PathBuf>,
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -166,6 +195,9 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             ocr_tier: OcrTier::Auto,
             ocr_rec_lang: OcrRecLang::Auto,
             text_lid_model: None,
+            translate_to: None,
+            translate_backend: None,
+            translate_model: None,
         },
     )
 }
@@ -304,10 +336,134 @@ pub fn extract_text_from_path_with_opts(
                 }
             }
         }
+
+        // ── P13.5 Phase 8 batch: post-LID translation hook ─────────
+        //
+        // When the caller supplies `translate_to`, AND a source
+        // language is now known (either set explicitly by some
+        // future caller or produced by the LID hook above), AND it
+        // differs from the target, run the MT pass.  Same non-fatal
+        // policy: extraction-level success is what we report; a
+        // failed translation just leaves `translated_text = None`
+        // and downstream code falls back to the original.
+        if let Some(target) = opts.translate_to.as_deref() {
+            let target = target.trim().to_ascii_lowercase();
+            if let Some(source) = doc.language.as_deref() {
+                if !source.is_empty() && !target.is_empty() && source != target {
+                    let backend = opts
+                        .translate_backend
+                        .as_deref()
+                        .unwrap_or("m2m100")
+                        .to_string();
+                    let model_path = opts.translate_model.clone();
+                    match run_batch_translation(
+                        &doc.full_text,
+                        source,
+                        &target,
+                        &backend,
+                        model_path,
+                    ) {
+                        Ok(translated) => {
+                            doc.translated_text = Some(translated);
+                            doc.translated_to_lang = Some(target);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[extractor] batch translation failed for {} (non-fatal): {e:#}",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         doc
     });
 
     result.with_context(|| format!("extracting {}", path.display()))
+}
+
+/// Run an index-time translation pass over `text` via a process-
+/// level shared MT handle.  Bridges the sync extractor surface into
+/// the async [`crate::asr::AsrHandle`] surface by spinning up a
+/// current-thread tokio runtime (same shape `cmd_chat_transcribe`
+/// uses) — bg_ingest calls extractors via `tokio::task::spawn_blocking`
+/// so we're already on a dedicated blocking thread.
+fn run_batch_translation(
+    text: &str,
+    source: &str,
+    target: &str,
+    backend: &str,
+    model_path: Option<std::path::PathBuf>,
+) -> Result<String> {
+    use std::sync::OnceLock;
+    static MT_HANDLE: OnceLock<crate::asr::AsrHandle> = OnceLock::new();
+
+    let handle = MT_HANDLE.get_or_init(|| {
+        let config = match &model_path {
+            Some(p) => crate::asr::AsrConfig::with_model_path(backend, p.to_string_lossy()),
+            None => crate::asr::AsrConfig::new(backend),
+        };
+        // Cache dir mirrors the audio extractor's pattern — the
+        // same models dir under <data-dir>.  Errors creating the
+        // dir are swallowed; AsrHandle::load will surface them on
+        // first transcribe call.
+        let cache_dir = batch_translate_cache_dir();
+        crate::asr::AsrHandle::new(config, cache_dir)
+    });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .with_context(|| "constructing tokio runtime for batch translation")?;
+    let translated = rt
+        .block_on(handle.translate_text(
+            text.to_string(),
+            source.to_string(),
+            target.to_string(),
+            0, // upstream default (200 tokens for m2m100)
+        ))
+        .with_context(|| format!("translate {source}→{target} via {backend}"))?;
+    Ok(translated)
+}
+
+/// Default cache dir for the batch-translation MT model — mirrors
+/// `extractors::audio`'s resolution so the same downloaded GGUFs
+/// are shared across ASR + MT + text-LID surfaces.
+#[cfg(target_os = "macos")]
+fn batch_translate_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|h| h.join("Library/Application Support/com.<user>.crispsorter"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/crispsorter"));
+    let dir = base.join("models");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+#[cfg(target_os = "windows")]
+fn batch_translate_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|a| a.join("com.<user>.crispsorter"))
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\Temp\\crispsorter"));
+    let dir = base.join("models");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn batch_translate_cache_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|h| h.join(".local/share"))
+        })
+        .map(|d| d.join("com.<user>.crispsorter"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/crispsorter"));
+    let dir = base.join("models");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 #[cfg(test)]
@@ -374,6 +530,34 @@ mod tests {
             "text-LID hook must NOT fire without an opts.text_lid_model — got {:?}",
             doc.language,
         );
+    }
+
+    #[test]
+    fn extract_options_default_skips_translate() {
+        // Phase 8 batch contract: defaults preserve zero-overhead
+        // behaviour.  Same shape as the Phase 7 LID-default test —
+        // protects against a future "let's translate everything by
+        // default" PR slipping by without flagging the perf cost
+        // (MT models are large + slow).
+        let opts = ExtractOptions::default();
+        assert!(opts.translate_to.is_none());
+        assert!(opts.translate_backend.is_none());
+        assert!(opts.translate_model.is_none());
+    }
+
+    #[test]
+    fn extract_without_translate_to_leaves_translation_none() {
+        // The post-dispatch translate hook is the only writer of
+        // `ExtractedDocument.translated_text` + `translated_to_lang`.
+        // With no `translate_to` configured, both must stay None so
+        // downstream (Phase 8b's LanceDB write path) can use them as
+        // a "should we write the new column?" sentinel.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("hello.txt");
+        std::fs::write(&p, b"hello world").unwrap();
+        let doc = extract_text_from_path(&p).unwrap();
+        assert!(doc.translated_text.is_none());
+        assert!(doc.translated_to_lang.is_none());
     }
 
     #[test]

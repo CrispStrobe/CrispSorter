@@ -453,6 +453,13 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         // `language` column is fed only by the catalog/item-metadata
         // path below.
         text_lid_model: None,
+        // P13.5 Phase 8 batch: translation is off by default.  The
+        // index-time translate-to wiring lands when bg_ingest can
+        // read it from IndexConfig + the LanceDB schema has the
+        // `text_translated` columns (Phase 8b).
+        translate_to: None,
+        translate_backend: None,
+        translate_model: None,
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

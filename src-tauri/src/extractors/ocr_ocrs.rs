@@ -172,7 +172,9 @@ pub fn ocr_via_ocrs(path: &Path) -> Result<ExtractedDocument> {
         // extractor's behaviour for non-marked-up content.
         headings: Vec::new(),
         ext: String::new(), // dispatcher fills
-        language: None,     // post-LID hook fills (when configured)
+        language: None,     // post-LID hook fills
+        translated_text: None,
+        translated_to_lang: None,
     })
 }
 
