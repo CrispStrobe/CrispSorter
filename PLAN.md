@@ -85,6 +85,62 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
       Authenticode).  `cargo install --path crates/crispcat-cli` already
       ships.  ~2-4 h once a signing identity is in hand.
 
+### CrispEmbed — leverage unused capabilities (survey 2026-05-13)
+
+CrispEmbed (sibling repo, v0.3.2 as of 2026-05-13) exposes several
+features CrispSorter doesn't yet consume.  The on-disk model
+collection has gained reranker entries (bge-reranker-v2-m3,
+jina-reranker, gte-base/large-en-v1.5).
+
+**Already wired (this session)**:
+- CrispEmbed sparse encoding for GGUF backend (5e0eab1) — closes
+  the gap where GGUF users lost the RRF sparse channel.
+
+**Still unused**:
+
+- [ ] **Embedder-as-bi-encoder-reranker** (~1–2 h) — `crispembed::
+      CrispEmbed::rerank_biencoder` exists; using it via the
+      ALREADY-LOADED dense embedder means users get reranking
+      without a separate model download.  Faster than the
+      cross-encoder path; works at no extra memory cost.
+      Implementation: expose `Embedder::rerank_biencoder(query,
+      docs)` as a public method (manual cosine for fastembed, the
+      upstream helper for CrispEmbed), then wire into
+      `SearchEngine::maybe_rerank` as an alternative path when
+      `IndexConfig.reranker_model` is None.
+- [ ] **Route `index/reranker.rs` through CrispEmbedBackend**
+      (~1 h) — today it constructs `crispembed::CrispEmbed::new`
+      directly, bypassing the wrapper.  Unifying the import gives
+      reranker.rs Matryoshka / prefix / cache_dir parity for free
+      and kills a feature-gated direct import.
+- [ ] **ColBERT multi-vector retrieval** (`encode_multivec`)
+      (~1 session) — per-token L2-normalised embeddings (BGE-M3
+      ColBERT head).  Needs a new LanceDB column for the
+      per-token vectors (FixedSizeList of variable length is
+      awkward; might need a separate `chunk_multivec` table joined
+      by `id`) + a late-interaction MaxSim scorer in the search
+      pipeline.
+- [ ] **Omnimodal cross-modal search** (`encode_audio` /
+      `encode_image`) (~2 sessions) — BidirLM-Omni encodes text,
+      audio, and images into a shared 2048-d space.  Unlocks:
+      type "photo of a sunset" → image hits without OCR; type
+      "podcast about Bosnia" → audio file hits without
+      transcription required.  Needs a new model class
+      (BidirLM-Omni isn't in the existing `EmbedderModel` enum), an
+      image-patch preprocessing pipeline (pixel patches +
+      grid_thw), and a decision about how the 2048-d cross-modal
+      vector coexists with the existing per-backend dense column
+      (separate column? per-index dim selection at init?).
+- [ ] **`crispembed::list_models()` registry helper** for the
+      Settings dropdown (~1 h) — today the embedder dropdown is a
+      hardcoded Rust enum + hardcoded Svelte string list.  Using
+      list_models gives users access to the full registry
+      (43 entries as of 0.3.2) including the new reranker
+      additions, without each new model needing a CrispSorter
+      release.  Tricky: existing code paths key off the
+      `EmbedderModel` enum, so this needs a parallel "registry-
+      driven" path or a refactor of the enum to be String-based.
+
 ### P13.5 follow-ups (remaining after the 2026-05-13 batch)
 
 Five P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
