@@ -95,19 +95,15 @@ jina-reranker, gte-base/large-en-v1.5).
 **Already wired (this session)**:
 - CrispEmbed sparse encoding for GGUF backend (5e0eab1) — closes
   the gap where GGUF users lost the RRF sparse channel.
+- Embedder-as-bi-encoder reranker (6bfedbe) — re-scores top-N
+  hybrid candidates by cosine similarity against the query, using
+  the already-loaded dense embedder.  Activates when
+  `IndexConfig.use_embedder_as_reranker = true` and no dedicated
+  cross-encoder is configured.  Settings UI checkbox lands in
+  the same commit.
 
 **Still unused**:
 
-- [ ] **Embedder-as-bi-encoder-reranker** (~1–2 h) — `crispembed::
-      CrispEmbed::rerank_biencoder` exists; using it via the
-      ALREADY-LOADED dense embedder means users get reranking
-      without a separate model download.  Faster than the
-      cross-encoder path; works at no extra memory cost.
-      Implementation: expose `Embedder::rerank_biencoder(query,
-      docs)` as a public method (manual cosine for fastembed, the
-      upstream helper for CrispEmbed), then wire into
-      `SearchEngine::maybe_rerank` as an alternative path when
-      `IndexConfig.reranker_model` is None.
 - [ ] **Route `index/reranker.rs` through CrispEmbedBackend**
       (~1 h) — today it constructs `crispembed::CrispEmbed::new`
       directly, bypassing the wrapper.  Unifying the import gives
