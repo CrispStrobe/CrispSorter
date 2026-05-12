@@ -31,6 +31,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+pub mod audio;
 pub mod html;
 pub mod ocr;
 pub mod ocr_ocrs;
@@ -206,6 +207,29 @@ pub fn extract_text_from_path_with_opts(
                 doc
             })
         }
+        e if audio::AUDIO_EXTS.contains(&e) => {
+            // P13.5 slice B — audio / video → transcript.
+            // Probe the feature flag first so the bg_ingest classifier
+            // can downgrade to L2 metadata with a clear "feature off"
+            // message rather than letting `audio::extract`'s actionable
+            // stub error bubble through as a generic extraction
+            // failure.  When the feature IS on, `extract` does the
+            // decode-then-transcribe pipeline; first call also primes
+            // the process-wide singleton ASR session.
+            if !audio::is_audio_extraction_available() {
+                Err(anyhow::anyhow!(
+                    "audio extraction needs the `crispasr` cargo feature \
+                     (rebuild with --features crispasr-metal / -cuda / -vulkan); \
+                     skipped {}",
+                    path.display()
+                ))
+            } else {
+                audio::extract(path).map(|mut doc| {
+                    doc.ext = ext.clone();
+                    doc
+                })
+            }
+        }
         e if supported(e) => text::extract(path).map(|mut doc| {
             doc.ext = ext.clone();
             doc
@@ -251,6 +275,39 @@ mod tests {
         std::fs::write(&p, b"opaque").unwrap();
         let res = extract_text_from_path(&p);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn audio_extension_routes_to_audio_extractor() {
+        // P13.5 slice B — the dispatch arm for AUDIO_EXTS must be
+        // reachable from a plain `.wav` path.  This test verifies the
+        // routing without actually running the decoder + ASR (which
+        // needs a real audio file + the crispasr feature).
+        //
+        // Strategy: write an empty stub file with a known audio
+        // extension and call `extract_text_from_path`.  The expected
+        // result is NOT the "no extractor" error from the dispatch
+        // fall-through (which would mean the dispatch arm broke);
+        // it's either:
+        //   * (no-feature) the audio module's "needs --features
+        //     crispasr" stub error, OR
+        //   * (with-feature) the audio module's decode error (since
+        //     the stub file isn't a valid WAV).
+        // Either case proves the file reached audio::extract instead
+        // of falling through to the catch-all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("not-actually-audio.wav");
+        std::fs::write(&p, b"").unwrap();
+
+        let res = extract_text_from_path(&p);
+        let err = res.expect_err("must error — empty stub file isn't decodable");
+        let msg = format!("{err:#}");
+        // The catch-all error would say "no extractor for `.wav`" —
+        // anything else means we successfully routed to audio.rs.
+        assert!(
+            !msg.contains("no extractor for `.wav`"),
+            "dispatch fell through to the catch-all: {msg}"
+        );
     }
 
     #[test]
