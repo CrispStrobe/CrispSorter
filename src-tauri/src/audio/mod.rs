@@ -33,7 +33,11 @@ pub mod decoder;
 pub mod ffmpeg_fallback;
 #[cfg(feature = "crispasr")]
 pub mod resampler;
-#[cfg(feature = "crispasr")]
+// `writer` is always-compile: the WAV write path is useful outside
+// of the symphonia decode pipeline (e.g. `chat tts` synthesises via
+// CrispASR which lives behind the feature, but the resulting Vec<f32>
+// → WAV write doesn't depend on crispasr at all).  hound is non-
+// optional in Cargo.toml to keep this honest.
 pub mod writer;
 
 /// Canonical input sample rate for CrispASR (and effectively every
