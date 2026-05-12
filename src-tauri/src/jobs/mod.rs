@@ -134,6 +134,20 @@ impl JobQueue {
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
+    /// Borrow the underlying connection handle for callers that need
+    /// to host their own tables alongside the job queue.  Used by
+    /// the schema-migration ledger and the P13.5 translation cache —
+    /// both want to live in the same `crisp_jobs.db` (one file at
+    /// startup, no extra connections) rather than spinning up sibling
+    /// SQLite databases for tiny admin/cache tables.
+    ///
+    /// The returned `Arc<Mutex<Connection>>` shares the same WAL-mode
+    /// connection + 5 s busy-timeout the rest of `JobQueue` uses, so
+    /// concurrent writers serialise correctly.
+    pub fn conn_arc(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
+    }
+
     // ── Job lifecycle ──────────────────────────────────────────────────────────
 
     /// Create a new job and return its UUID.

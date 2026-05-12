@@ -24,6 +24,7 @@ pub mod remote_client;
 pub mod schema;
 pub mod search;
 pub mod tauri_commands;
+pub mod translate_commands;
 
 #[cfg(test)]
 pub mod benchmarks;

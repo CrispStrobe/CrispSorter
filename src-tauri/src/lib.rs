@@ -2226,6 +2226,7 @@ pub fn run() {
             extract_pdf_metadata,
             get_app_data_dir,
             index::tauri_commands::index_search,
+            index::translate_commands::translate_text,
             index::tauri_commands::index_ingest_document,
             index::tauri_commands::index_ingest_batch,
             index::tauri_commands::index_ingest_l1,
