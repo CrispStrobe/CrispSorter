@@ -42,7 +42,7 @@ the schema-migration framework that unblocks future column-adds.  See
 [HISTORY.md → "Session log — 2026-05-12"](HISTORY.md) for the commit
 trail.
 
-**Test coverage:** ~390 unit tests in `tauri-app` (+2 `#[ignore]`'d
+**Test coverage:** ~415 unit tests in `tauri-app` (+2 `#[ignore]`'d
 WebDAV-live integration tests gated by
 `WEBDAV_TEST_URL`/`USER`/`PASS`), 20 in `crispcat`, 29 in
 `crisplens-protocol`, 5 in `crisp-index-protocol`.  Run
@@ -85,46 +85,50 @@ Only `[ ]` items live here.  Shipped items are in HISTORY.md.
       Authenticode).  `cargo install --path crates/crispcat-cli` already
       ships.  ~2-4 h once a signing identity is in hand.
 
-### P13.5 follow-ups (deferred from the 2026-05-12 ship)
+### P13.5 follow-ups (remaining after the 2026-05-13 batch)
 
-- [ ] **IndexConfig.translate_to settings UI** — `bg_ingest` currently
-      hard-codes `ExtractOptions::translate_to = None` because there's
-      no persistence layer for it.  Adding a `Settings → Search Index
-      → Index-time translation` field + persisting `IndexConfig` to
-      disk via `tauri-plugin-store` flips the index-time-batch path
-      on.  Wire is already in place from extractor → RawDocument →
-      LanceDB column.
-- [ ] **Search-side query rewrite** — when the user filters by
-      `target_lang = en`, switch the FTS query to hit the
-      `text_translated` column (today it always hits `full_text`).
-      Cleanest with a new `SearchFilters::prefer_translated_lang`
-      flag consumed by `index/search.rs`.
-- [ ] **Per-language reranker selection** — `language` column is
-      populated; routing the reranker model by it is the next slice.
-- [ ] **Streaming `--stream` flag for `chat transcribe`** —
-      `crispasr::Session::stream_open` is already in the safe wrapper;
-      wiring it to a `--stream` flag that emits per-chunk text to
-      stdout would deliver the live-captioning the slice A docstring
-      promised.
+Five P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
+`--stream` flag, LID/MT model auto-resolution,
+`SearchFilters::prefer_translated_lang` + snippet swap,
+`IndexConfig.translate_to` persistence + Settings UI, frontend
+`translate_text` integration in the search-results panel.
+
+Still open:
+
 - [ ] **SRT / VTT output formats for `chat transcribe`** — current
       `AsrHandle::transcribe_with_language` concatenates segments
       into a `String`; SRT/VTT need timestamps.  Add
       `AsrHandle::transcribe_segments` returning
       `Vec<crispasr::Segment>` and format from there.
-- [ ] **Frontend integration of `translate_text` Tauri command** into
-      the Übersicht search-results UI: per-result "Translate to …"
-      affordance + side-by-side rendering.  Backend is ready; the
-      SvelteKit side is the work.
-- [ ] **Auto-resolution of LID + MT models** via CrispASR's registry
-      so users don't pass `--lid-model` paths explicitly.  Models
-      already exist (`lid-cld3` / `lid-glotlid` / `lid-fasttext176`,
-      `m2m100` / `m2m100-wmt21` / `madlad`); needs the wrapper helper.
+- [ ] **Per-language reranker selection** — `language` LanceDB
+      column is populated (Phase 7); routing the reranker model
+      by it is the next slice.  Likely shape: `IndexConfig` gets a
+      `Map<Language, RerankerModel>` (per-language pick) or a
+      simpler "use multilingual reranker when language differs
+      from the embedder's primary" toggle.
 - [ ] **Per-chunk vs per-doc translation storage** — today we
       replicate the full translation across every chunk row of a
       doc, matching the existing `full_text_md` convention.  For
       very long docs (100 KB translation × 100 chunks = 10 MB
       replicated) this is wasteful.  Alternative: store only on
-      `chunk_index = 0` and JOIN at search time.
+      `chunk_index = 0` and JOIN at search time — needs a careful
+      migration on shipped data + decisions around the
+      `record_batches_to_search_results` snippet path.
+- [ ] **Audio-LID auto-resolution** — the text-LID side is
+      resolved; audio LID still requires explicit `--lid-model`
+      paths because Silero / Ecapa / Firered models aren't in
+      CrispASR's registry.  Either add registry entries upstream
+      (`lid-silero`, `lid-ecapa`, `lid-firered`) or wire the
+      Whisper-method LID path to reuse the loaded ASR ggml file.
+- [ ] **FTS-over-translated body** — Tantivy schema currently
+      only indexes the original `full_text`.  An English query
+      `"hello"` against a Bosnian doc with English translation
+      `"hello, how are you?"` doesn't hit BM25.  Fix: add a
+      `body_translated` Tantivy field + a per-index schema
+      migration on the Tantivy side, then wire
+      `SearchFilters::prefer_translated_lang` into the FTS query.
+      Multilingual embeddings already handle the vector channel
+      reasonably; this would close the FTS gap.
 
 ---
 
