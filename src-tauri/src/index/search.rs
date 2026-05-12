@@ -122,6 +122,39 @@ impl SearchEngine {
         out
     }
 
+    /// P13.5 follow-up — when the caller asked for
+    /// `filters.prefer_translated_lang = X`, swap each result's
+    /// `snippet` from the original-text-derived preview to a
+    /// `text_translated`-derived one for rows whose
+    /// `text_translated_lang` matches.  No-op otherwise (every
+    /// `SearchResult.snippet` is already the original preview).
+    ///
+    /// Called BEFORE [`Self::maybe_rerank`] so the reranker scores
+    /// against the user-facing snippet, not the original-language
+    /// one that won't match an English query.  Coverage caveat:
+    /// the FTS / vector channels themselves still score against
+    /// the original `full_text` columns — true cross-lingual
+    /// retrieval-side query rewrite needs a Tantivy schema field
+    /// for translated text, which is a separate slice.
+    fn apply_translation_snippet(
+        results: &mut [SearchResult],
+        prefer_translated_lang: Option<&str>,
+    ) {
+        let Some(tgt) = prefer_translated_lang else {
+            return;
+        };
+        for r in results.iter_mut() {
+            // Match the target lang on a per-row basis — a result
+            // set with mixed translations is fine; rows whose
+            // target lang doesn't match keep their original snippet.
+            if r.text_translated_lang.as_deref() == Some(tgt) {
+                if let Some(ref translated) = r.text_translated {
+                    r.snippet = translated.chars().take(400).collect();
+                }
+            }
+        }
+    }
+
     // ── Text-only search ───────────────────────────────────────────────────
 
     /// BM25 full-text search via Tantivy, then hydrate metadata from LanceDB.
@@ -167,6 +200,7 @@ impl SearchEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
         Ok(self.maybe_rerank(query, results, limit).await)
     }
 
@@ -181,10 +215,11 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let embedding = self.embed_query(query_text).await?;
         let inner_limit = self.fetch_limit(limit);
-        let results = self
+        let mut results = self
             .vector
             .search_vector(&embedding, filters, inner_limit)
             .await?;
+        Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
         Ok(self.maybe_rerank(query_text, results, limit).await)
     }
 
@@ -313,6 +348,7 @@ impl SearchEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
         Ok(self.maybe_rerank(query_text, results, limit).await)
     }
 
@@ -617,5 +653,94 @@ mod tests {
         let merged = rrf_merge_n(&[bloated], 60, 5);
         let merged_single = rrf_merge_n(&[single], 60, 5);
         assert!((merged[0].1 - merged_single[0].1).abs() < 1e-6);
+    }
+
+    // ── P13.5 follow-up: apply_translation_snippet ────────────────────────
+
+    fn mk_result(snippet: &str, translated: Option<&str>, lang: Option<&str>) -> SearchResult {
+        SearchResult {
+            doc_id: "d".into(),
+            location_uri: String::new(),
+            owner_id: String::new(),
+            title: None,
+            author: None,
+            year: None,
+            filename: None,
+            ext: None,
+            language: None,
+            snippet: snippet.to_string(),
+            score: 0.5,
+            chunk_index: 0,
+            metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
+            indexed_at: 0,
+            source_hash: String::new(),
+            text_translated: translated.map(|s| s.to_string()),
+            text_translated_lang: lang.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn translation_snippet_swap_no_op_when_filter_unset() {
+        // prefer_translated_lang = None must leave every snippet
+        // untouched.  Critical: 99 % of search calls don't use this
+        // surface, and an unconditional swap would break them.
+        let mut rows = vec![
+            mk_result("bosnian original", Some("english translation"), Some("en")),
+            mk_result("german original", None, None),
+        ];
+        SearchEngine::apply_translation_snippet(&mut rows, None);
+        assert_eq!(rows[0].snippet, "bosnian original");
+        assert_eq!(rows[1].snippet, "german original");
+    }
+
+    #[test]
+    fn translation_snippet_swap_replaces_when_lang_matches() {
+        let mut rows = vec![mk_result(
+            "Bok, kako si?",
+            Some("Hello, how are you?"),
+            Some("en"),
+        )];
+        SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
+        assert_eq!(rows[0].snippet, "Hello, how are you?");
+    }
+
+    #[test]
+    fn translation_snippet_swap_skips_rows_with_wrong_target_lang() {
+        // Mixed result set: one row was translated to French, another
+        // to English.  Filter says "en" — only the EN row swaps; the
+        // FR row keeps its original snippet (downstream caller can
+        // decide whether to surface a "no English translation
+        // available" badge for it).
+        let mut rows = vec![
+            mk_result("le texte", Some("Le texte traduit"), Some("fr")),
+            mk_result("der text", Some("The translated text"), Some("en")),
+        ];
+        SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
+        assert_eq!(rows[0].snippet, "le texte", "fr row must NOT swap when filter is en");
+        assert_eq!(rows[1].snippet, "The translated text");
+    }
+
+    #[test]
+    fn translation_snippet_swap_skips_rows_without_translation() {
+        // Row matches the target lang on the column but
+        // text_translated is None (corrupt / partial backfill).
+        // Filter SQL guards against this with `IS NOT NULL` but the
+        // helper defends in depth too.
+        let mut rows = vec![mk_result("original", None, Some("en"))];
+        SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
+        assert_eq!(rows[0].snippet, "original");
+    }
+
+    #[test]
+    fn translation_snippet_swap_truncates_to_400_chars() {
+        // Big translations get the same 400-char preview window
+        // the original snippet uses.  Pinned so a future "store
+        // the full translation in snippet" mistake gets caught.
+        let long: String = "x".repeat(800);
+        let mut rows = vec![mk_result("short", Some(&long), Some("en"))];
+        SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
+        assert_eq!(rows[0].snippet.chars().count(), 400);
     }
 }
