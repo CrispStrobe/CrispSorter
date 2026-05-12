@@ -32,6 +32,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         full_text,
         headings,
         ext: String::new(),
+        language: None,
     })
 }
 

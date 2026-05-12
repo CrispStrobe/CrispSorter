@@ -447,6 +447,12 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         ocr_pdf_min_chars: 50,
         ocr_tier,
         ocr_rec_lang,
+        // P13.5 Phase 7: text-LID is off by default — opt in by
+        // populating this from a future IndexConfig field once the
+        // settings UI exposes it.  Until then the per-document
+        // `language` column is fed only by the catalog/item-metadata
+        // path below.
+        text_lid_model: None,
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();
@@ -470,7 +476,15 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 year: item.year,
                 filename,
                 ext: extracted.ext,
-                language: item.language.clone().unwrap_or_default(),
+                // Priority: explicit catalog/item metadata first, then
+                // the post-dispatch text-LID detection (Phase 7).  Empty
+                // string is the existing column-default for "unknown"
+                // — keeps Tantivy / LanceDB happy.
+                language: item
+                    .language
+                    .clone()
+                    .or_else(|| extracted.language.clone())
+                    .unwrap_or_default(),
                 source_hash,
                 location_uri,
                 owner_id: owner,

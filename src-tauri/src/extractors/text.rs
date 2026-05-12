@@ -39,7 +39,8 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
     Ok(ExtractedDocument {
         full_text,
         headings,
-        ext: String::new(), // dispatcher fills
+        ext: String::new(),    // dispatcher fills
+        language: None,        // post-LID hook fills (when configured)
     })
 }
 
