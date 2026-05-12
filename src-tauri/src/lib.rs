@@ -2317,6 +2317,7 @@ pub fn run() {
             index::tauri_commands::index_delete_document,
             index::tauri_commands::index_capabilities,
             index::tauri_commands::index_model_download_mb,
+            index::tauri_commands::embedder_registry_list,
             index::tauri_commands::index_benchmark_embedder,
             asr_transcribe,
             tts_speak,
