@@ -2321,6 +2321,102 @@ fn asr_cache_dir(data_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     Ok(cache)
 }
 
+/// True for the multilingual whisper variants whose ggml file is a
+/// valid Whisper-method LID model.  distil-whisper is intentionally
+/// EXCLUDED because its model is English-only (won't classify
+/// anything else, defeats the point of auto-resolve).
+///
+/// Tracks the upstream `crispasr` registry — entries that come back
+/// as multilingual ggmls live here; ones that don't get listed in
+/// `Self::is_whisper_family` are filed under "use --lid-model PATH".
+fn is_multilingual_whisper_backend(backend: &str) -> bool {
+    matches!(
+        backend,
+        "whisper" | "whisper-base" | "whisper-small" | "whisper-medium" | "whisper-large-v3"
+    )
+}
+
+/// Resolve a Whisper-method LID model path without the user supplying
+/// `--lid-model PATH`.  Two strategies, tried in order:
+///
+///   1. **Reuse the loaded ASR model** when the user passed an
+///      explicit `--model PATH` AND the configured ASR backend is a
+///      multilingual whisper variant.  Whisper's LID surface
+///      (`crispasr::detect_language_pcm` with `LidMethod::Whisper`)
+///      accepts the same `ggml-*.bin` file the ASR side uses, so we
+///      skip the redundant download.
+///   2. **Auto-download `whisper-base`** via the CrispASR registry.
+///      A small (≈150 MB) multilingual variant; cached after first
+///      use so subsequent transcribes don't redownload.
+///
+/// Returns the on-disk path.  Errors propagate through the standard
+/// anyhow chain so callers can wrap them with `format!("{e:#}")` to
+/// surface the underlying registry / cache failure.
+///
+/// Stub for non-`crispasr` builds errors with the standard --features
+/// hint — same pattern the other asr/extractor helpers use.
+#[cfg(feature = "crispasr")]
+async fn resolve_whisper_lid_model_path(
+    asr_backend: &str,
+    explicit_asr_model_path: &Option<PathBuf>,
+    cache_dir: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+
+    // Path 1 — reuse the user's explicit ASR model when whisper-family.
+    if let Some(p) = explicit_asr_model_path {
+        if is_multilingual_whisper_backend(asr_backend) {
+            // Trust-but-verify: the file should exist now, since
+            // `Asr::load` would have errored already if not.
+            if p.exists() {
+                return Ok(p.clone());
+            }
+        }
+    }
+
+    // Path 2 — registry-lookup + cache_ensure_file on `whisper`.
+    // The crispasr registry is sync; wrap in spawn_blocking so we
+    // don't stall the async runtime.
+    let cache_str = cache_dir.to_string_lossy().into_owned();
+    let path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let name = "whisper";
+        let entry = crispasr::registry_lookup(name)
+            .map_err(|e| anyhow::anyhow!("registry_lookup {name}: {e}"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "LID auto-resolve: `{name}` not in CrispASR registry — \
+                     this is a build-time bug if the upstream registry \
+                     doesn't list it"
+                )
+            })?;
+        let path = crispasr::cache_ensure_file(
+            &entry.filename,
+            &entry.url,
+            false,
+            Some(&cache_str),
+        )
+        .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
+        .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
+        Ok(path)
+    })
+    .await
+    .context("spawn_blocking joined unexpectedly")??;
+    Ok(PathBuf::from(path))
+}
+
+#[cfg(not(feature = "crispasr"))]
+#[allow(dead_code)]
+async fn resolve_whisper_lid_model_path(
+    _asr_backend: &str,
+    _explicit_asr_model_path: &Option<PathBuf>,
+    _cache_dir: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    anyhow::bail!(
+        "Whisper LID auto-resolve needs the `crispasr` cargo feature \
+         (build with --features crispasr-metal / -cuda / -vulkan)"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_chat_transcribe(
     out: OutFormat,
@@ -2407,17 +2503,56 @@ fn cmd_chat_transcribe(
         },
     };
 
-    let lid_options = lid_model.map(|p| crate::asr::LidOptions {
-        method: lid_method.into_lib(),
-        model_path: p,
-        n_threads: 2,
-    });
-
-    // ── Step 4: orchestrate (transcribe + optional LID + routing) ────
+    // Runtime constructed early — we need it for the optional async
+    // LID-model resolution below (text-LID auto-download via the
+    // CrispASR registry), AND for the orchestrator's block_on.  Cheap
+    // to construct, reuses across both calls so we don't pay the
+    // setup twice.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
+
+    // P13.5 follow-up — audio-LID auto-resolution for the Whisper
+    // method.  Three cases:
+    //   1. User passed `--lid-model PATH` → use it verbatim.
+    //   2. No --lid-model AND --lid-method whisper AND LID is
+    //      actually going to fire (language=auto AND policy !=
+    //      as-configured) → auto-resolve a Whisper ggml file.
+    //      Reuses the user's explicit `--model PATH` when the ASR
+    //      backend is whisper-family; otherwise downloads whisper-
+    //      base via the CrispASR registry.
+    //   3. No --lid-model AND --lid-method silero|ecapa|firered →
+    //      `None` — orchestrator errors with a clear "needs
+    //      --language or --lid-model" message because those LID
+    //      models aren't in the upstream registry yet.
+    let needs_lid =
+        language_for_orchestrator.is_none() && !matches!(policy, LidPolicy::AsConfigured);
+    let lid_options = match (lid_model, lid_method, needs_lid) {
+        (Some(p), method, _) => Some(crate::asr::LidOptions {
+            method: method.into_lib(),
+            model_path: p,
+            n_threads: 2,
+        }),
+        (None, LidMethodChoice::Whisper, true) => {
+            let lid_cache = asr_cache_dir(data_dir.clone())?;
+            let resolved = rt
+                .block_on(resolve_whisper_lid_model_path(&backend, &model, &lid_cache))
+                .map_err(|e| format!("Whisper LID auto-resolve: {e:#}"))?;
+            eprintln!(
+                "[lid] auto-resolved Whisper LID model → {}",
+                resolved.display()
+            );
+            Some(crate::asr::LidOptions {
+                method: crate::asr::LidMethod::Whisper,
+                model_path: resolved,
+                n_threads: 2,
+            })
+        }
+        _ => None,
+    };
+
+    // ── Step 4: orchestrate (transcribe + optional LID + routing) ────
 
     // P13.5 follow-up — when --stream is set, skip the LID-routing
     // orchestrator and feed PCM directly to AsrHandle::transcribe_streaming.
@@ -3628,6 +3763,44 @@ mod tests {
         // them but we don't emit them — the timestamp line is the
         // first non-blank line of each cue).
         assert!(!out.contains("\n1\n"), "should NOT emit numbered cue ids");
+    }
+
+    #[test]
+    #[test]
+    fn is_multilingual_whisper_backend_covers_known_variants() {
+        // Pin the membership list — distil-whisper deliberately EXCLUDED
+        // because its model is English-only (auto-resolving it as a
+        // Whisper-method LID model would always misclassify).  Drift
+        // here would either silently degrade LID quality (false-positive
+        // matches) OR force users back to passing --lid-model PATH
+        // (false-negative matches).
+        let multilingual = [
+            "whisper",
+            "whisper-base",
+            "whisper-small",
+            "whisper-medium",
+            "whisper-large-v3",
+        ];
+        for b in multilingual {
+            assert!(
+                is_multilingual_whisper_backend(b),
+                "{b:?} should be classified as multilingual whisper",
+            );
+        }
+        let non_multilingual = [
+            "distil-whisper",       // EN-only by training
+            "parakeet",             // FastConformer-TDT, not whisper
+            "qwen3",                // LLM-based, not whisper
+            "",                     // empty / unknown
+            "Whisper",              // case-sensitive — caller passes the
+                                    // registry-canonical name
+        ];
+        for b in non_multilingual {
+            assert!(
+                !is_multilingual_whisper_backend(b),
+                "{b:?} should NOT be classified as multilingual whisper",
+            );
+        }
     }
 
     #[test]
