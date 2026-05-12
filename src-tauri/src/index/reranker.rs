@@ -1,8 +1,13 @@
 //! Cross-encoder reranking via CrispEmbed.
 //!
 //! Sits alongside the dense `Embedder`: lazy-loaded on first query when
-//! `IndexConfig.reranker_model` is `Some(_)`. Holds its own
-//! `crispembed::CrispEmbed` instance — separate model file, separate memory.
+//! `IndexConfig.reranker_model` is `Some(_)`.  Holds its own
+//! `CrispEmbedBackend` instance — separate GGUF file, separate memory.
+//! Routing through `CrispEmbedBackend` (rather than constructing
+//! `crispembed::CrispEmbed::new` directly here) keeps the upstream
+//! import confined to `index::embedder` and gives us prefix /
+//! Matryoshka / cache_dir parity for free if reranker models ever
+//! need those knobs.
 //!
 //! Without the `crispembed` cargo feature this module compiles to stubs
 //! that error if the user toggles reranking on. The UI gates the
@@ -21,6 +26,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[cfg(feature = "crispembed")]
+use super::embedder::CrispEmbedBackend;
 #[cfg(feature = "crispembed")]
 use anyhow::Context;
 #[cfg(feature = "crispembed")]
@@ -92,32 +99,31 @@ pub struct RerankerGgufSpec {
 /// proliferation in `SearchEngine`.
 pub struct Reranker {
     #[cfg(feature = "crispembed")]
-    model: crispembed::CrispEmbed,
+    backend: CrispEmbedBackend,
     #[allow(dead_code)]
     spec: RerankerGgufSpec,
 }
 
 impl Reranker {
     /// Async constructor: ensures the GGUF is on disk (downloading via
-    /// hf-hub if needed), then opens it through CrispEmbed and verifies
-    /// `is_reranker() == true`.
+    /// hf-hub if needed), then opens it through `CrispEmbedBackend`
+    /// and verifies `is_reranker() == true`.  Routing through the
+    /// shared backend wrapper keeps the direct `crispembed::CrispEmbed`
+    /// import confined to `index::embedder`.
     #[cfg(feature = "crispembed")]
     pub async fn load(model: RerankerModel, cache_dir: &Path) -> Result<Self> {
         let spec = model.gguf_spec();
         let path = ensure_reranker_on_disk(&spec, cache_dir).await?;
-        let p = path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("non-UTF8 reranker GGUF path: {:?}", path))?;
-        println!("[reranker] Loading GGUF: {}", p);
-        let m = crispembed::CrispEmbed::new(p, 0)
-            .map_err(|e| anyhow::anyhow!("crispembed reranker load failed: {e}"))?;
-        if !m.is_reranker() {
+        println!("[reranker] Loading GGUF: {}", path.display());
+        let backend = CrispEmbedBackend::load(&path)
+            .map_err(|e| anyhow::anyhow!("crispembed reranker load failed: {e:#}"))?;
+        if !backend.is_reranker() {
             anyhow::bail!(
                 "model at {} is not a cross-encoder reranker (CrispEmbed reports is_reranker=false)",
-                p
+                path.display()
             );
         }
-        Ok(Self { model: m, spec })
+        Ok(Self { backend, spec })
     }
 
     #[cfg(not(feature = "crispembed"))]
@@ -133,7 +139,7 @@ impl Reranker {
     /// the original RRF score in that case.
     #[cfg(feature = "crispembed")]
     pub fn score(&mut self, query: &str, document: &str) -> f32 {
-        self.model.rerank(query, document)
+        self.backend.rerank(query, document)
     }
 
     #[cfg(not(feature = "crispembed"))]

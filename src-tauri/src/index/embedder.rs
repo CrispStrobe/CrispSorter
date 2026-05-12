@@ -1816,7 +1816,13 @@ pub(crate) struct CrispEmbedBackend {
                     // sparse encoding into search pipeline" and "CrispEmbed
                     // reranking in search").
 impl CrispEmbedBackend {
-    fn load(gguf_path: &Path) -> Result<Self> {
+    /// Open a GGUF file through the CrispEmbed wrapper.
+    ///
+    /// Public to the crate so `index::reranker` can route through this
+    /// same loader instead of importing `crispembed::CrispEmbed`
+    /// directly — keeps the feature-gated upstream import confined to
+    /// this module.
+    pub(crate) fn load(gguf_path: &Path) -> Result<Self> {
         let p = gguf_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("non-UTF8 GGUF path: {:?}", gguf_path))?;
@@ -1876,15 +1882,16 @@ impl CrispEmbedBackend {
         self.model.encode_sparse(text)
     }
 
-    /// Check if model is a cross-encoder reranker
-    #[allow(dead_code)]
-    fn is_reranker(&self) -> bool {
+    /// Check if model is a cross-encoder reranker.
+    /// Used by `index::reranker::Reranker::load` to verify a reranker
+    /// GGUF was actually loaded.
+    pub(crate) fn is_reranker(&self) -> bool {
         self.model.is_reranker()
     }
 
-    /// Cross-encoder reranking score
-    #[allow(dead_code)]
-    fn rerank(&mut self, query: &str, document: &str) -> f32 {
+    /// Cross-encoder reranking score.  Used by
+    /// `index::reranker::Reranker::score`.
+    pub(crate) fn rerank(&mut self, query: &str, document: &str) -> f32 {
         self.model.rerank(query, document)
     }
 
