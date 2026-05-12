@@ -53,6 +53,14 @@ pub struct ExtractedDocument {
     /// Useful for downstream code that wants to differentiate by
     /// origin without re-parsing the path.
     pub ext: String,
+    /// ISO 639-1 source language detected by the post-dispatch text-LID
+    /// pass (P13.5 Phase 7), normalised through
+    /// [`text_lid::normalise_to_iso_639_1`].  `None` when LID wasn't
+    /// run (no model supplied) or wasn't able to map the detected
+    /// label (long-tail language without an ISO 639-1 assignment).
+    /// bg_ingest uses this as a fallback when the caller's
+    /// `RawDocument.language` is empty.
+    pub language: Option<String>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -117,8 +125,13 @@ pub enum OcrRecLang {
     Cjk,
 }
 
-/// PLAN P7.8 options for the extractor dispatcher.
-#[derive(Debug, Clone, Copy, Default)]
+/// PLAN P7.8 + P13.5 Phase 7 options for the extractor dispatcher.
+///
+/// `Copy` was dropped when [`Self::text_lid_model`] (a `PathBuf`)
+/// landed; the existing call sites pass `ExtractOptions` by value
+/// into `spawn_blocking` (which moves anyway) or take it by reference
+/// in tests, so the loss of `Copy` is a no-op.
+#[derive(Debug, Clone, Default)]
 pub struct ExtractOptions {
     /// Run OCR on image extensions (png/jpg/tiff/…) and on PDFs whose
     /// text layer is empty after the regular `pdf::extract` pass.
@@ -132,6 +145,13 @@ pub struct ExtractOptions {
     /// Which recognition language model to use for PaddleOCR.
     /// `Auto` uses the filename path to guess CJK vs. Latin.
     pub ocr_rec_lang: OcrRecLang,
+    /// P13.5 Phase 7: path to a CrispASR text-LID GGUF
+    /// (`lid-cld3` / `lid-glotlid` / `lid-fasttext176`).  When set,
+    /// the dispatcher runs LID over the extracted `full_text` and
+    /// writes the detected ISO 639-1 code into
+    /// [`ExtractedDocument::language`].  `None` (default) skips LID
+    /// — current behaviour, zero overhead.
+    pub text_lid_model: Option<std::path::PathBuf>,
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -145,6 +165,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             ocr_pdf_min_chars: 50,
             ocr_tier: OcrTier::Auto,
             ocr_rec_lang: OcrRecLang::Auto,
+            text_lid_model: None,
         },
     )
 }
@@ -240,6 +261,52 @@ pub fn extract_text_from_path_with_opts(
             path.display()
         )),
     };
+
+    // ── P13.5 Phase 7: post-dispatch text-LID hook ──────────────────
+    //
+    // When the caller supplies a text-LID model path, run LID over
+    // the extracted text and stash the detected ISO 639-1 code on
+    // the document.  Errors here are non-fatal — extraction itself
+    // succeeded, and a downstream search-side LanceDB row with no
+    // `language` is fine; we just lose the language facet for this
+    // document.  Logged so an admin watching the logs sees the
+    // failure but it doesn't trip the bg_ingest failure classifier.
+    let result = result.map(|mut doc| {
+        if let Some(model_path) = opts.text_lid_model.as_deref() {
+            // LID over a few hundred chars is plenty — models train
+            // on 3–10 char-windows and the predictor is dominated by
+            // n-gram frequencies.  Cap at 2000 chars to keep the
+            // wall-clock bounded for huge inputs (50 MB transcripts,
+            // EPUBs with all chapters concatenated).  A min-length
+            // check skips tiny inputs where LID would be unreliable
+            // anyway.
+            let sample: String = doc.full_text.chars().take(2000).collect();
+            let trimmed = sample.trim();
+            if trimmed.len() >= 20 {
+                match text_lid::detect_language(trimmed, model_path, 2) {
+                    Ok(r) => {
+                        doc.language = text_lid::normalise_to_iso_639_1(&r.label)
+                            .or_else(|| {
+                                // Fall back to the raw label when our
+                                // 3-to-1 table doesn't cover it; a
+                                // downstream filter or facet can still
+                                // group by the raw string even though
+                                // it isn't ISO 639-1.
+                                Some(r.label)
+                            });
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[extractor] text-LID failed for {} (non-fatal): {e:#}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        doc
+    });
+
     result.with_context(|| format!("extracting {}", path.display()))
 }
 
@@ -276,6 +343,37 @@ mod tests {
         std::fs::write(&p, b"opaque").unwrap();
         let res = extract_text_from_path(&p);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn extract_options_default_skips_lid() {
+        // Phase 7 contract: an `ExtractOptions::default()` (or the
+        // existing `extract_text_from_path()` wrapper which doesn't
+        // expose the new field) must NOT touch text-LID — zero
+        // overhead on the no-LID path is the design goal.  Pin the
+        // default value so a future "let's auto-enable LID for
+        // convenience" PR can't slip in without flagging the
+        // performance change here.
+        let opts = ExtractOptions::default();
+        assert!(opts.text_lid_model.is_none());
+    }
+
+    #[test]
+    fn extract_without_lid_leaves_language_none() {
+        // The post-dispatch LID hook is the only writer of
+        // `ExtractedDocument.language`.  With no model configured,
+        // every extractor's output must carry `language = None` so
+        // bg_ingest's `item.language.or(extracted.language)` priority
+        // chain correctly falls through to the item metadata.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("hello.txt");
+        std::fs::write(&p, b"this is some english text").unwrap();
+        let doc = extract_text_from_path(&p).unwrap();
+        assert!(
+            doc.language.is_none(),
+            "text-LID hook must NOT fire without an opts.text_lid_model — got {:?}",
+            doc.language,
+        );
     }
 
     #[test]

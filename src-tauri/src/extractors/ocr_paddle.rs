@@ -109,7 +109,7 @@ pub fn ocr_via_paddle(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocu
     }
 
     if region_pairs.is_empty() {
-        return Ok(ExtractedDocument { full_text: String::new(), headings: vec![], ext: extension_of(path) });
+        return Ok(ExtractedDocument { full_text: String::new(), headings: vec![], ext: extension_of(path), language: None });
     }
 
     region_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -126,7 +126,7 @@ pub fn ocr_via_paddle(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocu
         }
     }
 
-    Ok(ExtractedDocument { full_text: lines.join("\n"), headings: vec![], ext: extension_of(path) })
+    Ok(ExtractedDocument { full_text: lines.join("\n"), headings: vec![], ext: extension_of(path), language: None })
 }
 
 #[cfg(feature = "paddle-ocr")]

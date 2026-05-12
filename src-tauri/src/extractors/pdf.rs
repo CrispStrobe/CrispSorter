@@ -23,5 +23,8 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         headings: Vec::new(),
         // Filled in by the dispatcher.
         ext: String::new(),
+        // Filled in by the dispatcher's post-LID hook when an
+        // `ExtractOptions.text_lid_model` was supplied.
+        language: None,
     })
 }

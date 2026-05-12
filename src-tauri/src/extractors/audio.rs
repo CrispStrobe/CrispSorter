@@ -107,6 +107,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         full_text: transcript,
         headings: Vec::new(),
         ext: String::new(),
+        language: None,
     })
 }
 
