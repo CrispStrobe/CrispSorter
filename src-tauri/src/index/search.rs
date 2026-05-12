@@ -28,6 +28,15 @@ pub struct SearchEngine {
     /// reranker, then truncates to the requested `limit`.
     reranker: Option<RerankerHandle>,
     rerank_top_n: usize,
+    /// Bi-encoder fallback reranker (P13.5 follow-up).  When `true`
+    /// AND `reranker` is `None`, `maybe_rerank` reranks top-N
+    /// candidates by cosine similarity against the query, computed
+    /// via the loaded `embedder`.  Reuses the already-paid-for
+    /// dense model — no extra download or memory cost.  Less
+    /// accurate per-pair than the dedicated cross-encoder but
+    /// closes the "no reranker model installed" gap with a real
+    /// recall lift over no-rerank.
+    use_embedder_as_reranker: bool,
 }
 
 impl SearchEngine {
@@ -42,6 +51,7 @@ impl SearchEngine {
             embedder,
             reranker: None,
             rerank_top_n: 50,
+            use_embedder_as_reranker: false,
         }
     }
 
@@ -53,8 +63,23 @@ impl SearchEngine {
         self
     }
 
+    /// Enable the bi-encoder fallback reranker.  Wins only when no
+    /// dedicated cross-encoder is configured (`with_reranker` not
+    /// called).  When both are configured the dedicated one runs —
+    /// it's more accurate per-pair, this flag is for users who
+    /// don't have a separate reranker model installed.
+    pub fn with_embedder_as_reranker(mut self, enabled: bool, top_n: usize) -> Self {
+        self.use_embedder_as_reranker = enabled;
+        // Only bump rerank_top_n when no dedicated reranker already
+        // claimed its value — that path's caller set it explicitly.
+        if enabled && self.reranker.is_none() {
+            self.rerank_top_n = top_n.max(1);
+        }
+        self
+    }
+
     fn fetch_limit(&self, requested: usize) -> usize {
-        if self.reranker.is_some() {
+        if self.reranker.is_some() || self.use_embedder_as_reranker {
             self.rerank_top_n.max(requested)
         } else {
             requested
@@ -65,16 +90,42 @@ impl SearchEngine {
     /// re-sort by reranker score descending. Items that the reranker scored
     /// as NaN (load failure / scoring error) keep their original RRF order
     /// at the back of the list.
+    ///
+    /// Two reranker sources are wired:
+    ///   * Dedicated cross-encoder (`self.reranker`) — set via
+    ///     [`Self::with_reranker`].  Highest quality per pair, one
+    ///     model invocation per candidate.
+    ///   * Embedder bi-encoder fallback
+    ///     (`self.use_embedder_as_reranker` + `self.embedder`) —
+    ///     reuses the loaded dense model; one batch embed +
+    ///     cosine.  Less accurate per pair but free in terms of
+    ///     extra disk / RAM, so it's the right default for users
+    ///     who haven't downloaded a dedicated reranker.
+    /// When both are configured the dedicated cross-encoder wins.
     async fn maybe_rerank(
         &self,
         query: &str,
         mut results: Vec<SearchResult>,
         limit: usize,
     ) -> Vec<SearchResult> {
-        let Some(ref handle) = self.reranker else {
+        // Pick the scoring path.  Returns NaN on failure → caller's
+        // NaN-fallback preserves the original RRF order for that doc.
+        enum RerankPath<'a> {
+            Dedicated(&'a RerankerHandle),
+            EmbedderBiEncoder, // uses self.embedder, gated on the flag
+            None,
+        }
+        let path = if let Some(ref h) = self.reranker {
+            RerankPath::Dedicated(h)
+        } else if self.use_embedder_as_reranker && self.embedder.is_some() {
+            RerankPath::EmbedderBiEncoder
+        } else {
+            RerankPath::None
+        };
+        if matches!(path, RerankPath::None) {
             results.truncate(limit);
             return results;
-        };
+        }
         if results.is_empty() {
             return results;
         }
@@ -85,7 +136,43 @@ impl SearchEngine {
         results.truncate(n);
 
         let docs: Vec<&str> = results.iter().map(|r| r.snippet.as_str()).collect();
-        let scores = handle.score_batch(query, &docs).await;
+        let scores: Vec<f32> = match path {
+            RerankPath::Dedicated(handle) => handle.score_batch(query, &docs).await,
+            RerankPath::EmbedderBiEncoder => {
+                // Embedder is in an Arc<Mutex<…>> shared with the
+                // ingest pipeline.  Hold the lock for the duration
+                // of the embed batch — bi-encoder reranking with
+                // ~50 candidates is a single batched forward pass,
+                // fast enough that other callers waiting briefly
+                // is fine.  On any error, NaN the whole row so
+                // the NaN-fallback path keeps RRF order intact
+                // instead of bouncing the entire query.
+                //
+                // The outer dispatch guarantees `self.embedder.is_some()`
+                // because RerankPath::EmbedderBiEncoder is only
+                // reached under that guard — but match defensively
+                // anyway to avoid panicking inside a search query.
+                match self.embedder.as_ref() {
+                    None => vec![f32::NAN; docs.len()],
+                    Some(embedder) => {
+                        let docs_owned: Vec<String> =
+                            docs.iter().map(|s| s.to_string()).collect();
+                        let mut emb = embedder.lock().await;
+                        match emb.rerank_biencoder(query, &docs_owned) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!(
+                                    "[search] embedder bi-encoder rerank failed, \
+                                     falling back to RRF order: {e:#}"
+                                );
+                                vec![f32::NAN; docs.len()]
+                            }
+                        }
+                    }
+                }
+            }
+            RerankPath::None => unreachable!(),
+        };
 
         // Annotate each result with its reranker score; preserve the RRF
         // score for the NaN fallback path so we keep stable ordering.

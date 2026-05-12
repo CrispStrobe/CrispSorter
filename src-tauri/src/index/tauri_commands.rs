@@ -2195,6 +2195,16 @@ pub async fn init_index(
             );
             if let Some(ref h) = reranker_handle {
                 engine_inner = engine_inner.with_reranker(h.clone(), config.rerank_top_n);
+            } else if config.use_embedder_as_reranker && embedder_arc.is_some() {
+                // P13.5 follow-up — bi-encoder fallback.  Only flips
+                // on when the user has NOT installed a dedicated
+                // cross-encoder reranker (the `else if` branch
+                // guarantees it).  Reuses the loaded dense embedder
+                // → no extra model download.  `rerank_top_n` comes
+                // from the same IndexConfig field the cross-encoder
+                // path uses, so users tune the candidate window
+                // once and both paths honour it.
+                engine_inner = engine_inner.with_embedder_as_reranker(true, config.rerank_top_n);
             }
             let engine = Arc::new(engine_inner);
             let pipeline = Arc::new(IngestPipeline::new(

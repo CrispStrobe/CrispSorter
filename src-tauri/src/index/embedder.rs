@@ -2242,6 +2242,65 @@ impl Embedder {
         Ok((dense, sparse))
     }
 
+    /// Bi-encoder reranking via the loaded dense backend.  Embeds
+    /// `query` (with the asymmetric `Query` prefix) and each
+    /// `docs[i]` (with the `Passage` prefix), returns the cosine
+    /// similarity of `query` against each doc as a `Vec<f32>` in
+    /// input order.
+    ///
+    /// Both fastembed and CrispEmbed return L2-normalised vectors
+    /// today, so cosine collapses to a single dot product — no
+    /// re-normalisation step needed.  When that invariant ever
+    /// flips, the dot product becomes inner-product similarity
+    /// which is what the search-side cares about anyway; the
+    /// downstream consumer just sorts by score, so the absolute
+    /// scale doesn't matter.
+    ///
+    /// Use case: search-time reranking when the user doesn't have a
+    /// dedicated cross-encoder reranker model loaded.  Reuses the
+    /// already-loaded dense embedder → zero extra disk / memory.
+    /// Faster than the cross-encoder path (one batch embed + N dot
+    /// products) but typically ~70% of the cross-encoder's quality
+    /// in published benchmarks.
+    pub fn rerank_biencoder(
+        &mut self,
+        query: &str,
+        docs: &[String],
+    ) -> Result<Vec<f32>> {
+        if docs.is_empty() {
+            return Ok(vec![]);
+        }
+        let dim = self.dims();
+        let q = self.embed_dense(vec![query.to_string()], EmbedRole::Query)?;
+        let q_vec = q
+            .vectors
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("query embedding came back empty"))?;
+        let d = self.embed_dense(docs.to_vec(), EmbedRole::Passage)?;
+        if d.vectors.len() != docs.len() {
+            anyhow::bail!(
+                "embedder returned {} doc vectors for {} inputs",
+                d.vectors.len(),
+                docs.len()
+            );
+        }
+        Ok(d.vectors
+            .iter()
+            .map(|dv| {
+                // Defensive: short-circuit dim mismatch.  Should
+                // never fire in practice (effective_dim is the
+                // single source of truth) but a length-mismatch
+                // dot product would panic — return NaN instead so
+                // the caller's NaN-fallback path keeps the original
+                // RRF order for this doc.
+                if q_vec.len() != dim || dv.len() != dim {
+                    return f32::NAN;
+                }
+                q_vec.iter().zip(dv.iter()).map(|(a, b)| a * b).sum::<f32>()
+            })
+            .collect())
+    }
+
     pub fn dims(&self) -> usize {
         // Matryoshka, when configured + supported by backend (GGUF only),
         // truncates the output. The LanceDB column must match this dim,
