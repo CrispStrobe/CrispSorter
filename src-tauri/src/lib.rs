@@ -11,6 +11,7 @@ pub mod extractors;
 pub mod sync;
 pub mod index;
 pub mod jobs;
+pub mod migrations;
 pub mod tts;
 pub mod volume;
 pub mod watcher;
