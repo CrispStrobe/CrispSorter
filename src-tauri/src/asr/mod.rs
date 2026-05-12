@@ -52,6 +52,21 @@ pub use lang::{
 pub mod orchestrator;
 pub use orchestrator::{transcribe_with_lid_routing, LidOptions, TranscribeResult};
 
+/// One timed segment of a transcription.  Mirrors
+/// `crispasr::SessionSegment` but lives in our own type so callers
+/// don't have to pull the upstream crate into their `use` lines,
+/// and so the shape stays stable if upstream evolves.
+///
+/// Times are in seconds, matching the upstream contract (the C-ABI
+/// uses doubles seconds; SRT / VTT formatters convert to
+/// `HH:MM:SS,mmm` / `HH:MM:SS.mmm` at render time).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AsrSegment {
+    pub text: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
 /// ASR session configuration — backend name + optional explicit model
 /// path.  All 24 backends from the CrispASR registry are supported;
 /// see [the module docs](self) for the curated list.
@@ -215,18 +230,43 @@ impl Asr {
         pcm: &[f32],
         language: Option<&str>,
     ) -> Result<String> {
+        let (_, text) = self.transcribe_segments_with_language(pcm, language)?;
+        Ok(text)
+    }
+
+    /// Same as [`Self::transcribe_with_language`] but also returns the
+    /// per-segment timing breakdown.  Used by the CLI's
+    /// `chat transcribe --transcript-format srt|vtt` to emit subtitle
+    /// formats; the text-only path discards the segments and just
+    /// returns the joined string.
+    #[cfg(feature = "crispasr")]
+    pub fn transcribe_segments_with_language(
+        &self,
+        pcm: &[f32],
+        language: Option<&str>,
+    ) -> Result<(Vec<AsrSegment>, String)> {
         let segments = self
             .session
             .transcribe_with_language(pcm, language)
             .map_err(|e| anyhow::anyhow!("ASR transcribe failed: {e}"))?;
         let mut out = String::new();
+        let mut typed_segments = Vec::with_capacity(segments.len());
         for seg in segments {
-            if !out.is_empty() && !seg.text.is_empty() {
+            let trimmed = seg.text.trim();
+            if !out.is_empty() && !trimmed.is_empty() {
                 out.push(' ');
             }
-            out.push_str(seg.text.trim());
+            out.push_str(trimmed);
+            // Preserve the trimmed text on the segment — subtitle
+            // renderers don't want the upstream's leading-space
+            // padding that whisper.cpp tends to emit.
+            typed_segments.push(AsrSegment {
+                text: trimmed.to_string(),
+                start_seconds: seg.start,
+                end_seconds: seg.end,
+            });
         }
-        Ok(out)
+        Ok((typed_segments, out))
     }
 
     #[cfg(not(feature = "crispasr"))]
@@ -236,6 +276,15 @@ impl Asr {
 
     #[cfg(not(feature = "crispasr"))]
     pub fn transcribe_with_language(&self, _pcm: &[f32], _language: Option<&str>) -> Result<String> {
+        anyhow::bail!("crispasr feature disabled")
+    }
+
+    #[cfg(not(feature = "crispasr"))]
+    pub fn transcribe_segments_with_language(
+        &self,
+        _pcm: &[f32],
+        _language: Option<&str>,
+    ) -> Result<(Vec<AsrSegment>, String)> {
         anyhow::bail!("crispasr feature disabled")
     }
 
@@ -445,13 +494,28 @@ impl AsrHandle {
         pcm: Vec<f32>,
         language: Option<String>,
     ) -> Result<String> {
+        let (_, text) = self.transcribe_full_with_language(pcm, language).await?;
+        Ok(text)
+    }
+
+    /// Same as [`Self::transcribe_with_language`] but also returns the
+    /// per-segment timing breakdown.  CLI's
+    /// `chat transcribe --transcript-format srt|vtt` consumes the
+    /// segments to render subtitle files; the text-only path discards
+    /// them.  Same single mutex-hold contract — one transcribe call,
+    /// either text-only or segments+text.
+    pub async fn transcribe_full_with_language(
+        &self,
+        pcm: Vec<f32>,
+        language: Option<String>,
+    ) -> Result<(Vec<AsrSegment>, String)> {
         let mut guard = self.slot.lock().await;
         if guard.is_none() {
             let asr = Asr::load(self.config.clone(), self.cache_dir.clone()).await?;
             *guard = Some(asr);
         }
         let asr = guard.as_ref().unwrap();
-        asr.transcribe_with_language(&pcm, language.as_deref())
+        asr.transcribe_segments_with_language(&pcm, language.as_deref())
     }
 
     /// Synthesise `text` via the loaded session with default voice /

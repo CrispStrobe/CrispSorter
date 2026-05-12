@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use super::lang::{
     route, BackendFallback, Language, LidMethod, RoutingDecision,
 };
-use super::{AsrConfig, AsrHandle};
+use super::{AsrConfig, AsrHandle, AsrSegment};
 
 #[cfg(feature = "crispasr")]
 use super::lang::detect_language_from_pcm;
@@ -65,6 +65,10 @@ pub struct LidOptions {
 pub struct TranscribeResult {
     /// The transcribed text.  Empty for silent / VAD-rejected audio.
     pub text: String,
+    /// Per-segment timing breakdown.  Empty when not requested (today
+    /// the orchestrator always fetches them — CLI subtitle formatters
+    /// need them, text-only callers discard cheaply).
+    pub segments: Vec<AsrSegment>,
     /// Source language — set when LID ran successfully OR the caller
     /// passed an explicit `--language ISO`.  `None` only on the
     /// `AsConfigured` fast path with no caller hint.
@@ -123,11 +127,12 @@ pub async fn transcribe_with_lid_routing(
             .map(Language::parse)
             .transpose()
             .map_err(|e| anyhow::anyhow!("language hint: {e}"))?;
-        let text = primary
-            .transcribe_with_language(pcm, language_hint)
+        let (segments, text) = primary
+            .transcribe_full_with_language(pcm, language_hint)
             .await?;
         return Ok(TranscribeResult {
             text,
+            segments,
             language: parsed_hint,
             confidence: None,
             used_config: primary.config().clone(),
@@ -169,11 +174,12 @@ pub async fn transcribe_with_lid_routing(
     // ── Step 4: dispatch on the decision ─────────────────────────────
     match decision.clone() {
         RoutingDecision::Keep => {
-            let text = primary
-                .transcribe_with_language(pcm, Some(detected.as_str().to_owned()))
+            let (segments, text) = primary
+                .transcribe_full_with_language(pcm, Some(detected.as_str().to_owned()))
                 .await?;
             Ok(TranscribeResult {
                 text,
+                segments,
                 language: Some(detected),
                 confidence,
                 used_config: primary.config().clone(),
@@ -185,11 +191,12 @@ pub async fn transcribe_with_lid_routing(
                 switched_config.clone(),
                 primary.cache_dir().to_path_buf(),
             );
-            let text = switched
-                .transcribe_with_language(pcm, Some(detected.as_str().to_owned()))
+            let (segments, text) = switched
+                .transcribe_full_with_language(pcm, Some(detected.as_str().to_owned()))
                 .await?;
             Ok(TranscribeResult {
                 text,
+                segments,
                 language: Some(detected),
                 confidence,
                 used_config: switched_config,
@@ -206,11 +213,12 @@ pub async fn transcribe_with_lid_routing(
                 config.clone(),
                 primary.cache_dir().to_path_buf(),
             );
-            let text = translate_handle
-                .transcribe_with_language(pcm, Some(detected.as_str().to_owned()))
+            let (segments, text) = translate_handle
+                .transcribe_full_with_language(pcm, Some(detected.as_str().to_owned()))
                 .await?;
             Ok(TranscribeResult {
                 text,
+                segments,
                 language: Some(detected),
                 confidence,
                 used_config: config,
