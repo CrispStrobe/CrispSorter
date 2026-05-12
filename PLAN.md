@@ -139,19 +139,15 @@ jina-reranker, gte-base/large-en-v1.5).
 
 ### P13.5 follow-ups (remaining after the 2026-05-13 batch)
 
-Five P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
+Six P13.5 follow-ups shipped on 2026-05-13 (see HISTORY.md):
 `--stream` flag, LID/MT model auto-resolution,
 `SearchFilters::prefer_translated_lang` + snippet swap,
 `IndexConfig.translate_to` persistence + Settings UI, frontend
-`translate_text` integration in the search-results panel.
+`translate_text` integration in the search-results panel, and
+SRT / VTT output formats for `chat transcribe` (`63ec866`).
 
 Still open:
 
-- [ ] **SRT / VTT output formats for `chat transcribe`** — current
-      `AsrHandle::transcribe_with_language` concatenates segments
-      into a `String`; SRT/VTT need timestamps.  Add
-      `AsrHandle::transcribe_segments` returning
-      `Vec<crispasr::Segment>` and format from there.
 - [ ] **Per-language reranker selection** — `language` LanceDB
       column is populated (Phase 7); routing the reranker model
       by it is the next slice.  Likely shape: `IndexConfig` gets a
