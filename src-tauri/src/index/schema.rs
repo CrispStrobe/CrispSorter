@@ -218,6 +218,24 @@ pub struct SearchFilters {
     pub year_min: Option<i32>,
     pub year_max: Option<i32>,
     pub tags: Vec<String>,
+    /// P13.5 follow-up — when set, restrict results to rows whose
+    /// `text_translated_lang` matches this ISO 639-1 code AND whose
+    /// `text_translated` column is non-null.  Lets a cross-language
+    /// search say "give me Bosnian / Korean / etc. documents that
+    /// have been pre-translated to English at index time" without
+    /// the caller having to construct the SQL by hand.
+    ///
+    /// Has no effect on rows ingested without
+    /// `ExtractOptions::translate_to` (their `text_translated` is
+    /// null → filtered out).  Mostly orthogonal to [`Self::language`],
+    /// which targets the SOURCE language column; this targets the
+    /// TARGET (post-translation) column.  A typical "English-only
+    /// search corpus" query would set `prefer_translated_lang =
+    /// Some("en")` without touching `language` so docs in any source
+    /// language land in the result set as long as they have an
+    /// English translation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_translated_lang: Option<String>,
 }
 
 impl SearchFilters {
@@ -236,6 +254,12 @@ impl SearchFilters {
         }
         if let Some(ymax) = self.year_max {
             parts.push(format!("year <= {}", ymax));
+        }
+        if let Some(ref tgt) = self.prefer_translated_lang {
+            parts.push(format!(
+                "text_translated_lang = '{}' AND text_translated IS NOT NULL",
+                tgt.replace('\'', "''")
+            ));
         }
         if !parts.is_empty() {
             Some(parts.join(" AND "))
@@ -443,6 +467,59 @@ mod tests {
         assert!(sql.contains("owner_id"));
         assert!(sql.contains("year >= 1950"));
         assert!(sql.contains("year <= 2000"));
+    }
+
+    #[test]
+    fn filters_sql_prefer_translated_lang_emits_correct_predicate() {
+        // P13.5 follow-up — the new field translates into a scalar
+        // filter that restricts rows to those whose target-language
+        // column matches AND whose translated-text column is
+        // populated.  Drift here would either bring in untranslated
+        // rows (text_translated NULL) or wrong-language rows.
+        let f = SearchFilters {
+            prefer_translated_lang: Some("en".to_owned()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().expect("filter must produce SQL");
+        assert!(
+            sql.contains("text_translated_lang = 'en'"),
+            "must include lang predicate: {sql}",
+        );
+        assert!(
+            sql.contains("text_translated IS NOT NULL"),
+            "must include non-null guard so rows without a translation drop out: {sql}",
+        );
+    }
+
+    #[test]
+    fn filters_sql_escapes_single_quotes_in_prefer_translated_lang() {
+        // Defensive — the lang code is an ISO 639-1 in practice but
+        // the same escaping path the other filters use should apply
+        // (Bobby-Tables style protection in case a misbehaving
+        // caller passes a quoted string).
+        let f = SearchFilters {
+            prefer_translated_lang: Some("e'n".to_owned()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("text_translated_lang = 'e''n'"), "got: {sql}");
+    }
+
+    #[test]
+    fn filters_sql_combines_translated_lang_with_source_lang() {
+        // The Bosnian-PDF example: `language = 'bs' AND
+        // text_translated_lang = 'en' AND text_translated IS NOT NULL`
+        // says "give me Bosnian sources that have been pre-translated
+        // to English".  Both columns coexist on the same row.
+        let f = SearchFilters {
+            language: Some("bs".to_owned()),
+            prefer_translated_lang: Some("en".to_owned()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("language = 'bs'"), "got: {sql}");
+        assert!(sql.contains("text_translated_lang = 'en'"), "got: {sql}");
+        assert!(sql.contains("text_translated IS NOT NULL"), "got: {sql}");
     }
 
     #[test]
