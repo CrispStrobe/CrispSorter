@@ -10,7 +10,7 @@ import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import type { BatchSession } from '../types';
-import { extractText } from '../extractors';
+import { extractText, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 
 export interface ProcessOverrides {
@@ -523,6 +523,42 @@ export class BatchManager {
                     // (DOCX / EPUB / image metadata are handled by the
                     //  separate L2-promote path; the M-pip stays
                     //  undefined until that runs.)
+
+                    // P13.6 Step 3b — audio L2 metadata pre-fill.  Cheap
+                    // symphonia probe (no decode) populating the row's
+                    // duration / codec / sample rate / channels / bitrate
+                    // fields.  Runs after the ASR transcription so it
+                    // doesn't add latency on the critical path; the
+                    // duration column / row tooltip just light up a beat
+                    // later.  Pure-decoration call — never errors out
+                    // the item; on failure we log and move on.
+                    const isAudio = AUDIO_EXTENSIONS.includes(ext as any);
+                    if (isAudio) {
+                        try {
+                            const m = await invoke<{
+                                duration_seconds?: number | null;
+                                codec?: string | null;
+                                sample_rate_hz?: number | null;
+                                channels?: number | null;
+                                bitrate_kbps?: number | null;
+                            }>('audio_metadata', { path: item.originalPath });
+                            if (typeof m?.duration_seconds === 'number') item.audioDurationSeconds = m.duration_seconds;
+                            if (typeof m?.codec === 'string')             item.audioCodec           = m.codec;
+                            if (typeof m?.sample_rate_hz === 'number')    item.audioSampleRateHz    = m.sample_rate_hz;
+                            if (typeof m?.channels === 'number')          item.audioChannels        = m.channels;
+                            if (typeof m?.bitrate_kbps === 'number')      item.audioBitrateKbps     = m.bitrate_kbps;
+                            // Metadata-read pip mirrors the PDF path: 'ok'
+                            // even when fields are sparse — the probe
+                            // succeeded.
+                            item.metadataReadStatus = 'ok';
+                        } catch (e: any) {
+                            // Don't fail the item; the transcript is what
+                            // matters.  Just log and leave the L2 fields
+                            // undefined so the UI renders dashes.
+                            item.metadataReadStatus = 'failed';
+                            flog('warn', `Audio metadata probe failed: ${item.originalName}: ${e}`);
+                        }
+                    }
 
                     // Park at 'queued' with text so the consumer picks it up (unless extraction-only)
                     item.status = overrides?.extractionOnly ? 'review' : 'queued';
