@@ -36,11 +36,18 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-No major vertical currently in flight.  The most recent ship (2026-05-12)
-closed out **P13.5 Audio + Translation** end-to-end — all 9 phases plus
-the schema-migration framework that unblocks future column-adds.  See
-[HISTORY.md → "Session log — 2026-05-12"](HISTORY.md) for the commit
-trail.
+**P13.6 Multimodal UX + L1/L2/L3 integration** — surfaces the
+P13.5 audio capability + the P13 image capability through the GUI
+end-to-end, fills the L1/L2/L3 gaps for media files, and adds the
+missing Settings panel.  See "P13.6 plan" below for the
+step-by-step execution order; we are working through this batch
+before the next release tag.
+
+Just shipped this session (`8206afb`): audio/video drag-drop +
+file-picker accepts the 22 audio/video extensions in both Stapel
+(BatchReview) and Kataloge (IndexIngest); JS-side `extractText`
+dispatches the audio/video extensions through the new
+`audio_extract_text` Tauri command, keeping PCM in Rust.
 
 **Test coverage:** ~415 unit tests in `tauri-app` (+2 `#[ignore]`'d
 WebDAV-live integration tests gated by
@@ -53,6 +60,189 @@ WebDAV-live integration tests gated by
 ## Open TODOs
 
 Only `[ ]` items live here.  Shipped items are in HISTORY.md.
+
+### P13.6 — Multimodal UX + L1/L2/L3 integration
+
+The 2026-05-12 P13.5 vertical landed full audio+video extraction
+end-to-end on the Rust side (symphonia tier-1 + ffmpeg tier-2 +
+CrispASR, 22 file extensions) and `8206afb` opened the drop-zone
+gates in both ingest panels.  But the UI still treats audio
+files as second-class citizens: the status badge says "Extracting"
+instead of "Transcribing", the detected source language doesn't
+surface in any column, and audio-specific L2 metadata
+(duration / codec / bitrate) is invisible because no extractor
+populates it.  Meanwhile the P13 Bilder vertical lives in its
+own tab and doesn't feed images into the search index at all,
+even though CrispEmbed has the encoder we'd need.
+
+There's also no Settings panel for any of this — no
+activate/deactivate toggle for audio extraction, no ASR backend
+selector, no LID method choice, no image-indexing toggle, no
+CrispLens-for-search bridge.
+
+Eleven steps planned, ordered so that the small UX wins ship
+first and the big architectural pieces (L2 schema + image
+indexing pipeline) only land after the foundations are in.
+Audio+video and images share Steps 1, 6, 10, 11 explicitly —
+parallel work is more efficient there than splitting into
+duplicate slices.
+
+#### Step 1 — Status label "Transcribing" for media files (audio + video)
+- [ ] **~30 min** — BatchReview + IndexIngest status badges.
+  When the entry's extension is in `AUDIO_EXTENSIONS`, render
+  `i18n.t.batch.status_transcribing` / `…_extracting` instead
+  of the generic `status_extracting`.  Per-row state machine
+  doesn't need to change; only the label switch.
+  EN: "Transcribing", DE: "Transkribiere".
+
+#### Step 2 — Detected-language column in Stapel
+- [ ] **~45-60 min** — `extractors::audio::extract` already
+  returns `language: Option<String>`; today it's discarded in
+  the JS-side return.  Pass it through `audio_extract_text` →
+  `extractText` → `ExtractionResult.metadata.language` →
+  BatchReview's per-item record.  Add a `language` column to
+  the BatchReview table (default-hidden via column visibility
+  toggle, defaults visible only when at least one audio item is
+  in the batch).  Shows as "EN" / "DE" / "BS" badge.
+
+#### Step 3 — Audio L2 metadata (duration / codec / bitrate)
+- [ ] **~1-1.5 h** — new `audio_metadata(path)` Tauri command
+  using `symphonia`'s codec params (no decode pass; the format
+  reader's `tracks()` exposes sample rate / channels / bitrate
+  in O(1)).  Pre-fill in BatchReview entry rows the same way
+  `extract_pdf_metadata` pre-fills title/author/year for PDFs.
+  Surfaces in two places: (a) hover-tooltip on the row, (b) a
+  derived `duration_seconds` column (default-hidden).  New
+  LanceDB columns `audio_duration_seconds`, `audio_codec`,
+  `audio_bitrate_kbps` via a schema migration (v101), populated
+  by the bg_ingest audio path so search results show them too.
+
+#### Step 4 — "Drop area" empty-state strings mention audio/video
+- [ ] **~20 min** — IndexIngest's `empty:` i18n string says
+  "Keine Dateien. Dateien hierher ziehen oder Hinzufügen." —
+  doesn't communicate that audio/video are now accepted.
+  Update strings in EN+DE.  Settings → "Supported formats"
+  panel (which lists the extension list to the user) is the
+  other place to mention the multimodal set.  Add an
+  "Audio & Video" sub-list there with the 22 extensions
+  grouped (audio / video-containers / ffmpeg-tier-2).
+
+#### Step 5 — Multimodal Processing Settings panel
+- [ ] **~3-4 h** — new Settings → "Multimodal" sub-panel
+  (sits beneath the existing "Index" sub-panel).  Persisted as
+  three new `IndexConfig` fields + the matching
+  `index_config.json` ledger entries:
+  - `audio_extraction_enabled: bool` (default `true` iff
+    `crispasr` feature is compiled in).
+  - `audio_asr_backend: AsrBackend` enum (`Whisper` /
+    `WhisperLargeV3` / `Parakeet` / `Qwen3Omni` etc.) — wired
+    into `extractors::audio::shared_asr_handle()` which today
+    hard-wires `AsrConfig::default()`.
+  - `audio_lid_method: AudioLidMethod` enum (`Whisper` /
+    `Silero` / `Ecapa` / `Firered`) + auto-resolution
+    (whisper-method already done in `2b80345`).
+  - Reuses the existing `translate_to` field for "translate
+    transcripts to target language at index time".
+  Settings UI: 4 selects (enable / backend / lid / translate)
+  + a description tooltip per dropdown.  i18n keys
+  `settings.multimodal.*` (EN+DE).
+
+#### Step 6 — Multimodal Processing Settings panel — image side
+- [ ] **~2-3 h, batched with Step 5** — same panel adds image
+  controls.  Persisted IndexConfig additions:
+  - `image_extraction_enabled: bool` (default `true` iff
+    `paddle-ocr` OR Tesseract is available).
+  - `image_ocr_tier: OcrTier` enum (`Tesseract` / `Ocrs` /
+    `PaddleOcr`) — already exists in the bg_ingest settings
+    but isn't surfaced in the IndexConfig Settings panel
+    (lives in a separate "OCR" subsection today).  Move it
+    here for consistency under the multimodal umbrella, or
+    cross-link.
+  - `image_indexing_enabled: bool` — separate from
+    `image_extraction_enabled`: extraction = OCR text;
+    indexing = also embed for semantic search.  Today
+    images aren't ingested into LanceDB; this flag gates
+    the new Step 9 pipeline.
+  Doing this in the same Settings panel as Step 5 means one
+  Svelte file edit + one i18n batch + one IndexConfig
+  migration.
+
+#### Step 7 — Audio L1: file-system-only "lightweight" ingest
+- [ ] **~1 h** — bg_ingest's audio path currently always runs
+  the full transcription (L3).  Add an L1-only mode that
+  records the file in LanceDB with just path/size/mtime/ext
+  and no transcript, so users can index a huge media folder
+  fast and have the option to L3-promote individual rows.
+  Mirror the P11 cloud-drive `manifest-only` flow:
+  `ingest_audio_level: L1 | L2 | L3` enum in IndexConfig,
+  default L3.  L2 = also runs Step 3's audio_metadata; L3 =
+  full transcription.
+
+#### Step 8 — Audio L3 promote command (search-side action)
+- [ ] **~1 h** — when a row is at L1/L2 and the user clicks
+  "Transcribe" in the search-results context menu (already
+  exists for cloud-drive L3 promote), run
+  `audio_extract_text` and patch the row's `full_text` +
+  `text_translated` (if `translate_to` is configured).
+  Re-embed via the existing on-demand promote pipeline.
+
+#### Step 9 — Image indexing pipeline
+- [ ] **~3-4 h** — close the gap where P13 Bilder lives in
+  its own tab but images don't feed the search index.
+  Steps:
+  - bg_ingest classifier: route image extensions to the
+    existing `extractors::ocr_*::extract` chain (Tesseract /
+    Ocrs / PaddleOcr by `image_ocr_tier`).
+  - The extracted OCR text becomes L3 `full_text` (same
+    pipeline as PDFs); EXIF goes into L2 (new schema columns
+    via a migration v102:
+    `image_camera_make` / `image_camera_model` /
+    `image_iso` / `image_lens` / `image_taken_at_seconds`).
+  - SHA-256 + perceptual-hash already computed by the P13
+    Bilder vertical — reuse those if the row is already in
+    that table; otherwise compute fresh in bg_ingest.
+  - Surface a "Bilder im Index" badge in the IndexIngest
+    panel.
+
+#### Step 10 — CrispLens-for-search bridge
+- [ ] **~2-3 h** — when CrispLens is configured (P13 already
+  wired the connector + UI), use it as a Tier-2 enrichment
+  during image indexing:
+  - For each image, query CrispLens `images/by-hash` first;
+    if the server already has it indexed, lift its
+    `people`, `tags`, `caption` fields into our L2.
+  - Otherwise upload the image + fetch the enrichment on
+    completion.  Gated by a new
+    `IndexConfig.crisplens_image_enrichment_enabled: bool`.
+  Sensible to batch with Step 9 since both pieces touch the
+  image-ingest path.
+
+#### Step 11 — Documentation pass + tests
+- [ ] **~1-2 h** — after Steps 1–10 land:
+  - README: capabilities table update (audio/video drop,
+    multimodal Settings, image search).
+  - HISTORY.md: session log entry per the usual format.
+  - At least 4 new unit tests:
+    1. `extractText` audio dispatch path
+    2. `audio_metadata` Tauri command roundtrip
+    3. IndexConfig multimodal-fields persistence
+    4. bg_ingest classifier L1/L2/L3 routing for audio.
+
+#### Suggested execution order
+
+1. **Steps 1, 2, 4** — small UX polish, can ship in one commit
+   per step (or one batch commit).
+2. **Step 3** — audio L2 metadata (new schema migration, new
+   command).  Lays groundwork that Steps 7 + 8 build on.
+3. **Steps 5, 6 (paired)** — Settings panel for both audio
+   and image processing.
+4. **Steps 7 + 8 (paired)** — audio L1/L2/L3 ingest level +
+   promote.
+5. **Steps 9 + 10 (paired)** — image indexing + CrispLens
+   enrichment.
+6. **Step 11** — docs + tests.
+
+After all 11 steps land, cut **v0.1.41** with HISTORY entry.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 
