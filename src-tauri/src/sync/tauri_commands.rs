@@ -11,7 +11,8 @@
 use tauri::State;
 use crate::AppState;
 use super::cloud_backup::{
-    CloudBackupClient, EmbeddingRow, HealthResponse, ManifestRow,
+    CloudBackupClient, EmbeddingRow, HealthResponse, HybridSearchFilters,
+    HybridSearchRequest, ManifestRow,
 };
 use super::secret;
 use super::{SyncManager, SyncStatus};
@@ -451,9 +452,9 @@ pub async fn sync_cb_manifest_pull(
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
-    let local = {
+    let (local, include_full_text) = {
         let idx = state.index.lock().await;
-        idx.local.clone()
+        (idx.local.clone(), idx.config.cloud_backup_pull_full_text_enabled)
     };
     let local = local.ok_or("Local index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
@@ -462,7 +463,12 @@ pub async fn sync_cb_manifest_pull(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let pulled = cli.manifest_pull(last_ts, limit).await
+    // Tiered-cache model: default metadata-only pull.  Users who
+    // want offline FTS over the full VPS catalog flip the
+    // `cloud_backup_pull_full_text_enabled` Settings flag to opt
+    // into body-text hydration on every pull.
+    let pulled = cli.manifest_pull_with_options(last_ts, limit, include_full_text)
+        .await
         .map_err(|e| e.to_string())?;
 
     if pulled.rows.is_empty() {
@@ -550,6 +556,51 @@ pub async fn sync_cb_manifest_pull(
         "applied": applied,
         "watermark": new_watermark,
         "has_more": pulled.has_more,
+    }))
+}
+
+/// `POST /api/v2/index/search` — hybrid LanceDB search across
+/// every shard on the VPS.  Combines metadata filters + FTS over
+/// `full_text` + vector k-NN (either client-supplied `vec` or
+/// server-side `embed_text` inference).  This is the GUI's
+/// "search remote" entry point when local cache misses warrant
+/// escalation to the full corpus.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct V2SearchParams {
+    #[serde(default)] pub q: Option<String>,
+    #[serde(default)] pub vec: Option<Vec<f32>>,
+    #[serde(default)] pub embed_text: Option<String>,
+    #[serde(default)] pub embed_model: Option<String>,
+    #[serde(default)] pub filters: HybridSearchFilters,
+    #[serde(default = "default_v2_limit")] pub limit: usize,
+    #[serde(default = "default_rrf_k")]    pub rrf_k: usize,
+}
+fn default_v2_limit() -> usize { 50 }
+fn default_rrf_k() -> usize { 60 }
+
+#[tauri::command]
+pub async fn sync_cb_v2_search(
+    state: State<'_, AppState>,
+    params: V2SearchParams,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let req = HybridSearchRequest {
+        q:           params.q.as_deref(),
+        vec:         params.vec.as_deref(),
+        embed_text:  params.embed_text.as_deref(),
+        embed_model: params.embed_model.as_deref(),
+        filters:     params.filters,
+        limit:       params.limit.clamp(1, 500),
+        rrf_k:       params.rrf_k,
+    };
+    let resp = cli.v2_search(&req).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "rows":           resp.rows,
+        "total":          resp.total,
+        "used_text":      resp.used_text,
+        "used_vector":    resp.used_vector,
+        "shards_queried": resp.shards_queried,
     }))
 }
 

@@ -324,6 +324,19 @@ pub struct IndexConfig {
     /// for crisp-index-server).  Default false.
     #[serde(default)]
     pub cloud_backup_pull_manifests_enabled: bool,
+    /// P13.7 Stage I — tiered-cache model.  When `false` (default),
+    /// `sync_cb_manifest_pull` pulls metadata only — file paths,
+    /// hashes, sizes, language, title, author, year — but omits
+    /// the `full_text` body and embeddings, keeping the local
+    /// LanceDB small enough to hold near-full metadata for a
+    /// massive remote corpus.  When `true`, the body text rides
+    /// along on every pull (heavier; OK on a low-row-count
+    /// catalog or for users who want offline FTS over the full
+    /// VPS catalog).  Search hits from `/api/v2/index/search`
+    /// always carry `full_text` regardless of this flag — they're
+    /// the on-demand promotion path into the local cache.
+    #[serde(default)]
+    pub cloud_backup_pull_full_text_enabled: bool,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -473,6 +486,7 @@ impl Default for IndexConfig {
             cloud_backup_push_manifests_enabled: false,
             cloud_backup_push_embeddings_enabled: false,
             cloud_backup_pull_manifests_enabled: false,
+            cloud_backup_pull_full_text_enabled: false,
         }
     }
 }
