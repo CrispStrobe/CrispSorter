@@ -69,7 +69,11 @@ jobs:
       # bundles that unblock P3.5 Phase 2 (Linux + Windows native
       # ASR + embedder). Bumping requires verifying the asset names
       # in the per-matrix `crispasr_lib_asset` entries still resolve.
-      CRISPASR_REF: v0.5.7
+      # v0.6.6 verified to ship libcrispasr-{linux-x86_64,
+      # macos-arm64, windows-x86_64-vulkan}.tar.gz and contains the
+      # text_detect_language + Session::translate_text FFI surfaces
+      # that the P13.5 audio + translation vertical depends on.
+      CRISPASR_REF: v0.6.6
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -488,7 +492,11 @@ jobs:
       # bundles that unblock P3.5 Phase 2 (Linux + Windows native
       # ASR + embedder). Bumping requires verifying the asset names
       # in the per-matrix `crispasr_lib_asset` entries still resolve.
-      CRISPASR_REF: v0.5.7
+      # v0.6.6 verified to ship libcrispasr-{linux-x86_64,
+      # macos-arm64, windows-x86_64-vulkan}.tar.gz and contains the
+      # text_detect_language + Session::translate_text FFI surfaces
+      # that the P13.5 audio + translation vertical depends on.
+      CRISPASR_REF: v0.6.6
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
