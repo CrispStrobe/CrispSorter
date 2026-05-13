@@ -622,6 +622,27 @@ async fn audio_extract_text(path: String) -> Result<AudioExtractResult, String> 
     .map_err(|e| format!("audio_extract_text join error: {e}"))?
 }
 
+/// Lightweight L2 audio metadata probe — symphonia format reader
+/// only, no decode pass.  Returns duration / codec / sample rate /
+/// channels / bitrate so the UI can pre-fill row tooltips and the
+/// (default-hidden) duration column.  Same data goes into the
+/// LanceDB `audio_*` columns at index-time via the bg_ingest path
+/// (added by schema-migration v101 in P13.6 Step 3c).
+///
+/// Cost: O(1) container header scan; sub-millisecond on a typical
+/// 200 MB mp3 vs the 30-60 s full ASR transcribe.  spawn_blocking
+/// because the long-tail of containers occasionally needs a deeper
+/// header read (truncated mp4 / streaming m4a).
+#[tauri::command]
+async fn audio_metadata(path: String) -> Result<audio::probe::AudioMetadata, String> {
+    let p = std::path::PathBuf::from(&path);
+    tokio::task::spawn_blocking(move || {
+        audio::probe::probe_metadata(&p).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("audio_metadata join error: {e}"))?
+}
+
 /// Transcribe Float32 PCM 16 kHz mono audio to text via CrispASR.
 ///
 /// Lazy-initializes the ASR handle on first call (the handle's first
@@ -2370,6 +2391,7 @@ pub fn run() {
             index::tauri_commands::index_benchmark_embedder,
             asr_transcribe,
             audio_extract_text,
+            audio_metadata,
             tts_speak,
             tts_stop,
             watch_start,

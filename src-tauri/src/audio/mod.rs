@@ -29,6 +29,7 @@ use std::path::Path;
 
 #[cfg(feature = "crispasr")]
 pub mod decoder;
+pub mod probe;
 #[cfg(feature = "crispasr")]
 pub mod ffmpeg_fallback;
 #[cfg(feature = "crispasr")]
