@@ -106,12 +106,18 @@ export async function extractText(
         }
         const pickedTool = `crispasr (.${extension})`;
         logInfo(`Extracting ${name} with ${pickedTool} (path-based)`);
-        const text = await invoke<string>('audio_extract_text', { path });
-        logDebug(`Audio extraction finished for ${name}: ${text.length.toLocaleString()} chars (via ${pickedTool})`);
-        // ASR transcripts are a single text stream — no markdown, no
-        // headings, no metadata.  A future pass could lift speaker
-        // labels or chapter timestamps into `headings`.
-        return { text, markdownText: undefined, headings: [] };
+        // Tauri command returns { text, language? } — the second
+        // field is the whisper-detected ISO 639-1 source language,
+        // surfaced into ExtractionResult.metadata so callers (Stapel
+        // language column, IndexIngest snippet routing) can use it.
+        const res = await invoke<{ text: string; language: string | null }>('audio_extract_text', { path });
+        logDebug(`Audio extraction finished for ${name}: ${res.text.length.toLocaleString()} chars (via ${pickedTool}, lang=${res.language ?? 'unknown'})`);
+        return {
+            text: res.text,
+            markdownText: undefined,
+            headings: [],
+            metadata: res.language ? { language: res.language } : undefined,
+        };
     }
 
     let text = '';

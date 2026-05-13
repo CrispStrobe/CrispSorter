@@ -11,6 +11,12 @@ export interface BatchItem {
     errorMessage?: string;
     statusDetail?: string;
     extractedText?: string;
+    /** ISO 639-1 source language detected during extraction —
+     *  populated for audio/video items by the whisper LID head
+     *  inside `audio_extract_text`.  `undefined` for documents
+     *  (their language detection happens elsewhere) and for
+     *  audio items where whisper couldn't classify confidently. */
+    detectedLanguage?: string;
     /** Per-stage outcome for the bottom-of-row 3-pip indicator
      *  (M | T | L = Metadata / Text / LLM).
      *

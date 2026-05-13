@@ -152,6 +152,11 @@
         { id: 'size', label: i18n.t.batch.size, width: 80, visible: false },
         { id: 'date', label: i18n.t.batch.date, width: 140, visible: false },
         { id: 'extension', label: i18n.t.batch.extension, width: 60, visible: false },
+        // P13.6 Step 2: whisper-detected source language for audio/video
+        // items.  Default-hidden (most batches are text-only); toggle via
+        // column visibility menu.  Future: auto-show when at least one
+        // audio item is in the batch.
+        { id: 'language', label: i18n.t.batch.language ?? 'Lang', width: 60, visible: false },
         { id: 'path', label: i18n.t.batch.path, width: 400, visible: false },
     ]);
 
@@ -225,6 +230,7 @@
                 case 'size': valA = a.size; valB = b.size; break;
                 case 'date': valA = a.modifiedAt; valB = b.modifiedAt; break;
                 case 'extension': valA = a.extension; valB = b.extension; break;
+                case 'language': valA = a.detectedLanguage ?? ''; valB = b.detectedLanguage ?? ''; break;
                 case 'path': valA = a.originalPath; valB = b.originalPath; break;
             }
 
@@ -1357,6 +1363,12 @@
                                             <span class="mono">{new Date(item.modifiedAt).toLocaleDateString()}</span>
                                         {:else if col.id === 'extension'}
                                             <span class="ext-badge">{item.extension}</span>
+                                        {:else if col.id === 'language'}
+                                            {#if item.detectedLanguage}
+                                                <span class="ext-badge" title="Detected source language ({item.detectedLanguage})">{item.detectedLanguage.toUpperCase()}</span>
+                                            {:else}
+                                                <span class="mono" style="color: #71717a">–</span>
+                                            {/if}
                                         {:else if col.id === 'path'}
                                             <span class="path-text" title={item.originalPath}>{item.originalPath}</span>
                                         {/if}
