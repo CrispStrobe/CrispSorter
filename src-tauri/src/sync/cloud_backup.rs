@@ -43,6 +43,7 @@ const SEARCH_PATH: &str = "/api/search";
 const FILES_PATH_PREFIX: &str = "/api/files/by-hash/";
 const EMBED_QUERY_PATH: &str = "/api/index/embed-query";
 const EMBED_MODELS_PATH: &str = "/api/index/embed-models";
+const V2_SEARCH_PATH: &str = "/api/v2/index/search";
 const HEALTH_PATH: &str = "/api/health";
 
 /// Single row of the manifest-push payload.  Field names match the
@@ -273,6 +274,99 @@ pub struct HealthResponse {
     pub backend: String,
     #[serde(default)]
     pub shared_catalog: bool,
+    /// Stage I — capability flags.  Clients use these to decide
+    /// whether to call v2 routes or fall back to v1 / local-only.
+    #[serde(default)]
+    pub lance_enabled: bool,
+    #[serde(default)]
+    pub fastembed_enabled: bool,
+}
+
+// ── Stage I — v2 hybrid search wire shapes ──────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct HybridSearchFilters {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owner_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir_prefix: Option<String>,
+    /// Substring match against the `author` column (case-
+    /// sensitive on LanceDB today; LIKE '%substr%').
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year_min: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year_max: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_after_ms: Option<i64>,
+    #[serde(default)]
+    pub require_bytes_local: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HybridSearchRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vec: Option<&'a [f32]>,
+    /// When set, the server computes the embedding via fastembed.
+    /// Saves the client a round-trip to /api/index/embed-query.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_model: Option<&'a str>,
+    pub filters: HybridSearchFilters,
+    pub limit: usize,
+    pub rrf_k: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HybridSearchHit {
+    pub doc_id:        String,
+    pub sha256:        String,
+    pub owner_id:      String,
+    #[serde(default)]
+    pub path:          Option<String>,
+    #[serde(default)]
+    pub filename:      Option<String>,
+    #[serde(default)]
+    pub ext:           Option<String>,
+    #[serde(default)]
+    pub parent_dir:    Option<String>,
+    #[serde(default)]
+    pub language:      Option<String>,
+    #[serde(default)]
+    pub title:         Option<String>,
+    #[serde(default)]
+    pub author:        Option<String>,
+    #[serde(default)]
+    pub year:          Option<i32>,
+    #[serde(default)]
+    pub size_bytes:    Option<i64>,
+    #[serde(default)]
+    pub mtime_unix:    Option<f64>,
+    pub indexed_at:    i64,
+    #[serde(default)]
+    pub full_text:     Option<String>,
+    pub score:         f32,
+    #[serde(default)]
+    pub score_text:    Option<f32>,
+    #[serde(default)]
+    pub score_vector:  Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HybridSearchResponse {
+    pub rows: Vec<HybridSearchHit>,
+    pub total: usize,
+    pub used_text: bool,
+    pub used_vector: bool,
+    pub shards_queried: usize,
 }
 
 /// Thin async wrapper over `reqwest::Client` that carries the
@@ -351,16 +445,41 @@ impl CloudBackupClient {
         Ok(resp.json::<ManifestPushResponse>().await.context("manifest_push: parse body")?)
     }
 
-    /// `GET /api/manifest/pull?since=…&limit=…`.  Returns rows with
-    /// `indexed_at > since`.  `since=0` for an initial pull.
-    pub async fn manifest_pull(&self, since: i64, limit: usize) -> Result<ManifestPullResponse> {
+    /// `GET /api/manifest/pull?since=…&limit=…&include_full_text=…`.
+    /// Returns rows with `indexed_at > since`.  `since=0` for an
+    /// initial pull.
+    ///
+    /// `include_full_text`: when `false` (default), the server
+    /// omits body text from each row — clients in the tiered-
+    /// cache model keep metadata near-full and pull bodies only
+    /// on demand.  When `true`, the body is included (matching
+    /// the pre-Stage-I behavior).
+    pub async fn manifest_pull(
+        &self,
+        since: i64,
+        limit: usize,
+    ) -> Result<ManifestPullResponse> {
+        self.manifest_pull_with_options(since, limit, false).await
+    }
+
+    /// Variant of [`Self::manifest_pull`] that exposes the
+    /// `include_full_text` knob.  Default route stays metadata-
+    /// only to match the tiered-cache model; callers that want to
+    /// hydrate the local body cache call this explicitly.
+    pub async fn manifest_pull_with_options(
+        &self,
+        since: i64,
+        limit: usize,
+        include_full_text: bool,
+    ) -> Result<ManifestPullResponse> {
         // Hand-roll the query string — `reqwest::RequestBuilder::query`
         // depends on `serde_urlencoded` which isn't on our reqwest
         // feature set; both params here are i64 / usize and need no
         // url-escaping, so plain `format!` is correct.
         let url = format!(
-            "{}{}?since={}&limit={}",
-            self.base_url, PULL_PATH, since, limit
+            "{}{}?since={}&limit={}&include_full_text={}",
+            self.base_url, PULL_PATH, since, limit,
+            if include_full_text { "true" } else { "false" }
         );
         let resp = self.client
             .get(url)
@@ -487,6 +606,39 @@ impl CloudBackupClient {
         }
         Ok(resp.json::<EmbedQueryResponse>().await
             .context("embed_query: parse body")?)
+    }
+
+    /// `POST /api/v2/index/search` — hybrid metadata + FTS + vector
+    /// search across every LanceDB shard on the VPS.  This is the
+    /// "search-remote" entry point — local clients hit it when the
+    /// local cache miss requires escalation to the full corpus.
+    ///
+    /// Set any combination of `q`, `vec` / `embed_text`, and
+    /// `filters` fields.  When both `q` and a vector arm are set,
+    /// the server fuses results via Reciprocal Rank Fusion (RRF).
+    pub async fn v2_search(
+        &self,
+        req: &HybridSearchRequest<'_>,
+    ) -> Result<HybridSearchResponse> {
+        let url = format!("{}{}", self.base_url, V2_SEARCH_PATH);
+        // Server-side embedding via `embed_text` can trigger a
+        // ~500MB first-call download → generous timeout, same as
+        // /api/index/embed-query.
+        let resp = self.client
+            .post(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .json(req)
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await
+            .context("v2_search: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("v2_search: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<HybridSearchResponse>().await
+            .context("v2_search: parse body")?)
     }
 
     /// `GET /api/index/embed-models` — list the model names this
@@ -982,6 +1134,70 @@ mod tests {
         assert_eq!(c.base_url(), "http://localhost:7869");
     }
 
+    // ── /api/v2/index/search (Stage I hybrid LanceDB query) ─────────
+
+    #[tokio::test]
+    async fn v2_search_200_parses_hybrid_response() {
+        let mut server = Server::new_async().await;
+        let body = r#"
+            {"rows":[
+                {"doc_id":"a","sha256":"a","owner_id":"o",
+                 "path":"/a.pdf","filename":"a.pdf","ext":"pdf",
+                 "indexed_at":100,"score":0.05,
+                 "score_text":4.5,"score_vector":-0.12,
+                 "full_text":"…"}
+            ],"total":1,"used_text":true,"used_vector":true,
+             "shards_queried":3}
+        "#;
+        let m = server.mock("POST", V2_SEARCH_PATH)
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let req = HybridSearchRequest {
+            q: Some("kant"),
+            vec: None,
+            embed_text: Some("kantian metaphysics"),
+            embed_model: Some("bge-m3"),
+            filters: HybridSearchFilters {
+                ext: vec!["pdf".into()],
+                year_min: Some(2020),
+                ..Default::default()
+            },
+            limit: 50,
+            rrf_k: 60,
+        };
+        let resp = cli.v2_search(&req).await.unwrap();
+        assert_eq!(resp.total, 1);
+        assert!(resp.used_text);
+        assert!(resp.used_vector);
+        assert_eq!(resp.shards_queried, 3);
+        assert_eq!(resp.rows[0].doc_id, "a");
+        // Score fields parse through.
+        assert!((resp.rows[0].score - 0.05).abs() < 1e-6);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn v2_search_503_when_lance_unavailable() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("POST", V2_SEARCH_PATH)
+            .with_status(503)
+            .with_body(r#"{"detail":"LanceDB not configured"}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let err = cli.v2_search(&HybridSearchRequest {
+            q: Some("x"),
+            vec: None, embed_text: None, embed_model: None,
+            filters: HybridSearchFilters::default(),
+            limit: 10, rrf_k: 60,
+        }).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 503"));
+        m.assert_async().await;
+    }
+
     // ── /api/index/embed-query (Stage H server-side inference) ──────
 
     #[tokio::test]
@@ -1457,8 +1673,12 @@ mod live_tests {
         assert!(hit.score.is_finite());
 
         // ── Phase 3: pull manifest (since=0) and assert the row
-        //              comes back, simulating a fresh client. ──────
-        let pulled = cli.manifest_pull(0, 500).await.expect("manifest_pull");
+        //              comes back, simulating a fresh client.
+        //              Use the with-options variant + include_full_text=true
+        //              because Stage I flipped the default to
+        //              metadata-only pulls (tiered-cache model). ──
+        let pulled = cli.manifest_pull_with_options(0, 500, true)
+            .await.expect("manifest_pull");
         let pulled_match = pulled.rows.iter().find(|r| r.sha256 == sha);
         assert!(
             pulled_match.is_some(),
@@ -1466,11 +1686,12 @@ mod live_tests {
         );
         let pm = pulled_match.unwrap();
         assert_eq!(pm.full_text.as_deref(), Some(body.as_str()),
-                   "pull didn't surface full_text");
+                   "pull didn't surface full_text (opted in)");
         // The pull watermark is past `indexed_at` so a follow-up
         // pull with since=max_indexed_at sees zero new rows.
         let watermark = pulled.max_indexed_at;
-        let pulled_again = cli.manifest_pull(watermark, 500).await.expect("pull again");
+        let pulled_again = cli.manifest_pull_with_options(watermark, 500, true)
+            .await.expect("pull again");
         assert!(
             !pulled_again.rows.iter().any(|r| r.sha256 == sha),
             "second pull with since=watermark should not re-return our row",
@@ -1545,6 +1766,119 @@ mod live_tests {
         assert_eq!(n as usize, body.len());
         let got = std::fs::read(&dest).unwrap();
         assert_eq!(got, body, "round-tripped bytes mismatch");
+    }
+
+    /// P13.7 Stage I — hybrid LanceDB search round-trip against the
+    /// live VPS.  Pushes two docs, then queries with body text +
+    /// metadata filter + server-side embedding (so we exercise
+    /// every arm of the route in one test).
+    ///
+    /// Skipped (with a clear note) when the server's
+    /// `/api/health` reports `lance_enabled=false`.
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_v2_search_round_trip() {
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_v2_search_round_trip");
+            return;
+        };
+        let cli = CloudBackupClient::new(&url, &key).unwrap();
+        let health = cli.health().await.expect("health");
+        if !health.lance_enabled {
+            eprintln!(
+                "cb_sync_live_v2_search_round_trip: server reports \
+                 lance_enabled=false; skipping (install lancedb + set \
+                 CB_API_LANCE_ROOT)"
+            );
+            return;
+        }
+
+        let unique = format!("v2{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_micros()
+        );
+        let token = format!("crispsorterV2{unique}");
+        let body = format!(
+            "research notes on {token} \
+             with discussion of methodology and results"
+        );
+        let sha = format!("{unique:0>64}");
+        let manifest_row = ManifestRow {
+            path: format!("/test/v2-{unique}.txt"),
+            size_bytes: body.len() as i64,
+            sha256: sha.clone(),
+            mtime_unix: 1.0,
+            owner_id: "live-test".into(),
+            filename: format!("v2-{unique}.txt"),
+            ext: "txt".into(),
+            parent_dir: "/test".into(),
+            language: Some("en".into()),
+            title: Some("V2 Hybrid Test".into()),
+            author: None,
+            year: Some(2024),
+            full_text: Some(body.clone()),
+        };
+        cli.manifest_push(std::slice::from_ref(&manifest_row))
+            .await.expect("manifest_push");
+
+        // Pure-FTS arm.
+        let resp = cli.v2_search(&HybridSearchRequest {
+            q: Some(&token),
+            vec: None, embed_text: None, embed_model: None,
+            filters: HybridSearchFilters::default(),
+            limit: 10, rrf_k: 60,
+        }).await.expect("v2_search FTS");
+        let found = resp.rows.iter().find(|r| r.sha256 == sha);
+        assert!(found.is_some(),
+                "FTS arm: {token:?} returned {} rows", resp.rows.len());
+        let f = found.unwrap();
+        assert!(resp.used_text);
+        assert_eq!(f.title.as_deref(), Some("V2 Hybrid Test"));
+        assert_eq!(f.year, Some(2024));
+
+        // Metadata-only arm (no q, just filter).
+        let resp2 = cli.v2_search(&HybridSearchRequest {
+            q: None,
+            vec: None, embed_text: None, embed_model: None,
+            filters: HybridSearchFilters {
+                ext: vec!["txt".into()],
+                year_min: Some(2023),
+                ..Default::default()
+            },
+            limit: 50, rrf_k: 60,
+        }).await.expect("v2_search metadata-only");
+        assert!(!resp2.used_text);
+        assert!(!resp2.used_vector);
+        assert!(
+            resp2.rows.iter().any(|r| r.sha256 == sha),
+            "metadata filter didn't include the just-pushed row"
+        );
+
+        // Hybrid arm: text + server-side embedding (only when
+        // fastembed available; otherwise skip).  Use e5-large
+        // (multilingual, 1024-d) to match the Lance shard's pinned
+        // embedding dim — smaller models (all-minilm 384d,
+        // bge-base 768d) would land in the dim-mismatch soft-
+        // fallback path which drops vec_hits to empty.  See
+        // `api/embed.py:_MODEL_ALIASES` for the available set;
+        // bge-m3 is aliased to e5-large because fastembed-py's
+        // TextEmbedding doesn't expose bge-m3 directly.
+        if health.fastembed_enabled {
+            let resp3 = cli.v2_search(&HybridSearchRequest {
+                q: Some(&token),
+                vec: None,
+                embed_text: Some(&format!("notes on {token}")),
+                embed_model: Some("e5-large"),
+                filters: HybridSearchFilters::default(),
+                limit: 10, rrf_k: 60,
+            }).await.expect("v2_search hybrid");
+            assert!(resp3.used_text);
+            assert!(resp3.used_vector);
+            let f3 = resp3.rows.iter().find(|r| r.sha256 == sha);
+            assert!(f3.is_some(), "hybrid arm: token row missing");
+        }
     }
 
     /// P13.7 Stage H — server-side embedding inference round-trip.

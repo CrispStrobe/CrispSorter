@@ -307,6 +307,48 @@ enum CloudBackupCmd {
     /// /api/index/embed-query route accepts + whether fastembed is
     /// installed at all.
     EmbedModels,
+    /// Stage I — hybrid LanceDB search.  Combines metadata filters
+    /// + FTS over `full_text` + vector k-NN (optionally server-
+    /// side inference).  Single-shot escalation when local search
+    /// missed.
+    HybridSearch {
+        /// Full-text query (LanceDB FTS over body + filename +
+        /// title + author).  Optional — pair with `--filter-*`
+        /// for a pure-metadata search.
+        #[arg(long)]
+        q: Option<String>,
+        /// Server-side embedding: server computes the vector via
+        /// fastembed (CPU) and uses it for the k-NN arm.  Saves
+        /// a round-trip to /api/index/embed-query.
+        #[arg(long = "embed-text")]
+        embed_text: Option<String>,
+        /// Embedder model name (default: bge-m3).  Run
+        /// `embed-models` for the catalog.
+        #[arg(long = "embed-model")]
+        embed_model: Option<String>,
+        /// Restrict to one or more file extensions.
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Restrict to one or more ISO 639-1 source languages.
+        #[arg(long, value_delimiter = ',')]
+        lang: Vec<String>,
+        /// Folder-prefix match against `parent_dir`.
+        #[arg(long = "folder-prefix")]
+        folder_prefix: Option<String>,
+        /// Substring match against the `author` column.
+        #[arg(long)]
+        author: Option<String>,
+        #[arg(long = "year-min")]
+        year_min: Option<i32>,
+        #[arg(long = "year-max")]
+        year_max: Option<i32>,
+        /// Show only rows whose bytes are downloadable from this
+        /// VPS via `download-file`.
+        #[arg(long = "bytes-local")]
+        bytes_local: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2548,6 +2590,67 @@ async fn cmd_sync_cloud_backup(
                         .collect();
                     println!("vec:   [{}, …] (showing first 8 of {})",
                              preview.join(", "), resp.embedding.len());
+                }
+            }
+        }
+
+        CloudBackupCmd::HybridSearch {
+            q, embed_text, embed_model, ext, lang, folder_prefix,
+            author, year_min, year_max, bytes_local, limit,
+        } => {
+            use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
+            let filters = HybridSearchFilters {
+                ext: ext.iter().map(|e| e.to_lowercase().trim_start_matches('.').to_string()).collect(),
+                owner_ids: vec![],
+                languages: lang.clone(),
+                parent_dir_prefix: folder_prefix.clone(),
+                author: author.clone(),
+                year_min,
+                year_max,
+                indexed_after_ms: None,
+                require_bytes_local: bytes_local,
+            };
+            let req = HybridSearchRequest {
+                q: q.as_deref(),
+                vec: None,
+                embed_text: embed_text.as_deref(),
+                embed_model: embed_model.as_deref(),
+                filters,
+                limit: limit.clamp(1, 500),
+                rrf_k: 60,
+            };
+            let resp = client.v2_search(&req).await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "rows":           resp.rows,
+                        "total":          resp.total,
+                        "used_text":      resp.used_text,
+                        "used_vector":    resp.used_vector,
+                        "shards_queried": resp.shards_queried,
+                    })).map_err(|e| e.to_string())?
+                ),
+                OutFormat::Text => {
+                    if resp.rows.is_empty() {
+                        println!("(no hits)");
+                    } else {
+                        println!(
+                            "{} hit(s) (text={} vector={} shards={}):",
+                            resp.total, resp.used_text, resp.used_vector,
+                            resp.shards_queried,
+                        );
+                        for h in &resp.rows {
+                            let title = h.title.as_deref().unwrap_or_else(
+                                || h.filename.as_deref().unwrap_or("(no title)")
+                            );
+                            println!(
+                                "  [{:>6.3}] {:<60.60}  {}",
+                                h.score, title,
+                                h.path.as_deref().unwrap_or(""),
+                            );
+                        }
+                    }
                 }
             }
         }

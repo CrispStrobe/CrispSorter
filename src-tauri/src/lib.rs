@@ -2358,6 +2358,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_drain,
             sync::tauri_commands::sync_cb_embed_query,
             sync::tauri_commands::sync_cb_embed_models,
+            sync::tauri_commands::sync_cb_v2_search,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,
