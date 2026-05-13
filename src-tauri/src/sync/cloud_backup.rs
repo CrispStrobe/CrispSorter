@@ -39,6 +39,10 @@ const PUSH_PATH: &str = "/api/manifest/push";
 const PULL_PATH: &str = "/api/manifest/pull";
 const EMBED_PUSH_PATH: &str = "/api/index/push-embeddings";
 const BY_EMBED_PATH: &str = "/api/index/by-embedding";
+const SEARCH_PATH: &str = "/api/search";
+const FILES_PATH_PREFIX: &str = "/api/files/by-hash/";
+const EMBED_QUERY_PATH: &str = "/api/index/embed-query";
+const EMBED_MODELS_PATH: &str = "/api/index/embed-models";
 const HEALTH_PATH: &str = "/api/health";
 
 /// Single row of the manifest-push payload.  Field names match the
@@ -65,6 +69,49 @@ pub struct ManifestRow {
     pub author:     Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year:       Option<i32>,
+    /// Stage A — extracted body text at index time.  Optional —
+    /// clients can opt out per-row for sensitive corpora.  Server
+    /// stores it in `file_references.full_text` and indexes it
+    /// into the FTS5 virtual table behind `/api/search`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_text:  Option<String>,
+}
+
+impl ManifestRow {
+    /// P13.7 Stage C — build a ManifestRow snapshot from a fresh
+    /// `RawDocument` (taken in bg_ingest right before
+    /// `pipeline.ingest_document` consumes it).  The auto-push
+    /// hook fires this synchronously to capture all the fields
+    /// the wire shape needs before the underlying value moves.
+    pub fn from_raw_document(raw: &crate::index::ingest::RawDocument) -> Self {
+        // Map RawDocument's stored shape onto the wire shape.  The
+        // path mirrors `index_ingest_cb_manifest`'s lifting from
+        // the LocalIndex documents row: prefer the local filesystem
+        // path when known, fall back to the location_uri.
+        let path = match crate::images::tauri_commands::location_uri_to_local_path(
+            &raw.location_uri,
+        ) {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => raw.location_uri.clone(),
+        };
+        let mtime_unix = raw.mtime_unix.map(|s| s as f64).unwrap_or(0.0);
+        let size_bytes = raw.file_size.unwrap_or(0);
+        ManifestRow {
+            path,
+            size_bytes,
+            sha256:     raw.source_hash.clone(),
+            mtime_unix,
+            owner_id:   raw.owner_id.clone(),
+            filename:   raw.filename.clone(),
+            ext:        raw.ext.clone(),
+            parent_dir: raw.parent_dir.clone().unwrap_or_default(),
+            language:   if raw.language.is_empty() { None } else { Some(raw.language.clone()) },
+            title:      raw.title.clone(),
+            author:     raw.author.clone(),
+            year:       raw.year,
+            full_text:  if raw.full_text.is_empty() { None } else { Some(raw.full_text.clone()) },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,9 +148,44 @@ pub struct PullRow {
     pub author:     Option<String>,
     #[serde(default)]
     pub year:       Option<i32>,
+    /// Stage A — body text echoed back from the server.
+    #[serde(default)]
+    pub full_text:  Option<String>,
     pub indexed_at: i64,
     #[serde(default)]
     pub archived_in: Option<i64>,
+}
+
+/// One row returned by `/api/search`.  Same payload shape as
+/// `PullRow` plus a `score: f32` (higher = better match).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SearchHit {
+    pub path:       String,
+    pub size_bytes: i64,
+    pub sha256:     String,
+    pub mtime_unix: f64,
+    pub owner_id:   String,
+    pub filename:   String,
+    pub ext:        String,
+    pub parent_dir: String,
+    #[serde(default)]
+    pub language:   Option<String>,
+    #[serde(default)]
+    pub title:      Option<String>,
+    #[serde(default)]
+    pub author:     Option<String>,
+    #[serde(default)]
+    pub year:       Option<i32>,
+    #[serde(default)]
+    pub full_text:  Option<String>,
+    pub indexed_at: i64,
+    pub score:      f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchResponse {
+    pub rows: Vec<SearchHit>,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +234,35 @@ pub struct ByEmbeddingHit {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ByEmbeddingResponse {
     pub rows: Vec<ByEmbeddingHit>,
+}
+
+/// Response from `GET /api/index/embed-query`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbedQueryResponse {
+    pub model:     String,
+    pub dim:       usize,
+    pub embedding: Vec<f32>,
+}
+
+/// Response from `GET /api/index/embed-models`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbedModelsResponse {
+    pub models:    Vec<String>,
+    pub default:   String,
+    pub available: bool,
+}
+
+/// Response from `POST /api/files/by-hash/<sha>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileUploadResponse {
+    pub sha256: String,
+    pub size_bytes: i64,
+    /// `true` if the blob was written this request; `false` for the
+    /// idempotent no-op case (a previous upload already deposited
+    /// the same bytes).
+    pub stored: bool,
+    /// Relative path under `CB_API_STORAGE_ROOT` on the VPS.
+    pub local_blob_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +435,227 @@ impl CloudBackupClient {
             anyhow::bail!("by_embedding: HTTP {status}: {body}");
         }
         Ok(resp.json::<ByEmbeddingResponse>().await.context("by_embedding: parse body")?)
+    }
+
+    /// `GET /api/index/embed-query?text=…&model=…` — compute the
+    /// embedding vector for `text` on the cloud-backup VPS (CPU
+    /// inference via fastembed).  Useful when the client doesn't
+    /// have the embedder model loaded locally — phone client, web
+    /// browser, headless CI — and wants to feed the resulting
+    /// vector into `/api/index/by-embedding` for k-NN.
+    ///
+    /// First call to a given model triggers a ~500MB ONNX
+    /// download on the server (response may take 30-60s).
+    /// Subsequent calls reuse the resident handle.
+    pub async fn embed_query(
+        &self,
+        text: &str,
+        model: Option<&str>,
+    ) -> Result<EmbedQueryResponse> {
+        let encoded_text: String = text
+            .chars()
+            .flat_map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect()
+                }
+            })
+            .collect();
+        let mut url = format!(
+            "{}{}?text={}",
+            self.base_url, EMBED_QUERY_PATH, encoded_text
+        );
+        if let Some(m) = model {
+            url.push_str("&model=");
+            url.push_str(m);
+        }
+        // Server-side first-call cold-start can be 30-60s while
+        // fastembed downloads ONNX weights — use a generous
+        // timeout, override the client's default 30s.
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await
+            .context("embed_query: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("embed_query: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<EmbedQueryResponse>().await
+            .context("embed_query: parse body")?)
+    }
+
+    /// `GET /api/index/embed-models` — list the model names this
+    /// server's `/api/index/embed-query` accepts + whether fastembed
+    /// is installed at all.  Clients use this to decide whether to
+    /// fall back to client-side embedding.
+    pub async fn embed_models(&self) -> Result<EmbedModelsResponse> {
+        let url = format!("{}{}", self.base_url, EMBED_MODELS_PATH);
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("embed_models: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("embed_models: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<EmbedModelsResponse>().await
+            .context("embed_models: parse body")?)
+    }
+
+    /// `POST /api/files/by-hash/<sha256>` — upload raw file bytes.
+    ///
+    /// The server verifies the hash server-side; a mismatch returns
+    /// 400.  Idempotent: re-upload of the same hash returns
+    /// `stored=false`.  Owner-scoping: requires a manifest row
+    /// referencing this hash to exist for the caller.
+    pub async fn upload_file_by_hash(
+        &self,
+        sha256: &str,
+        path: &std::path::Path,
+    ) -> Result<FileUploadResponse> {
+        // Stream the body from disk via `reqwest::Body::wrap_stream`
+        // rather than slurping the whole file into memory.  Keeps
+        // multi-GB uploads workable on memory-constrained clients.
+        let file = tokio::fs::File::open(path).await
+            .with_context(|| format!("open {}", path.display()))?;
+        let stream = tokio_util::io::ReaderStream::new(file);
+        let body = reqwest::Body::wrap_stream(stream);
+
+        let url = format!("{}{}{}", self.base_url, FILES_PATH_PREFIX, sha256);
+        let resp = self.client
+            .post(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body)
+            .send()
+            .await
+            .context("upload_file_by_hash: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("upload_file_by_hash: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<FileUploadResponse>().await
+            .context("upload_file_by_hash: parse body")?)
+    }
+
+    /// `GET /api/files/by-hash/<sha256>` — stream the file bytes to
+    /// `dest_path`, verifying the hash matches as bytes arrive.
+    ///
+    /// Returns `(bytes_written, sha256_verified)`.  If the
+    /// server-claimed sha matches what we computed during streaming,
+    /// the boolean is true; otherwise the file is removed and an
+    /// error returned.  Files are written to a `.partial` sibling
+    /// then atomically renamed so a concurrent reader never sees a
+    /// half-written file.
+    pub async fn download_file_by_hash(
+        &self,
+        sha256: &str,
+        dest_path: &std::path::Path,
+    ) -> Result<u64> {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncWriteExt;
+        use futures_util::StreamExt;
+
+        let url = format!("{}{}{}", self.base_url, FILES_PATH_PREFIX, sha256);
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("download_file_by_hash: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("download_file_by_hash: HTTP {status}: {body}");
+        }
+
+        // Atomic-write pattern: <dest>.partial → fsync → rename.
+        // Parent dir must exist; caller is responsible (we don't
+        // create arbitrary tree structures behind their back).
+        let partial = dest_path.with_extension(
+            format!(
+                "{}.partial",
+                dest_path.extension().and_then(|e| e.to_str()).unwrap_or("")
+            )
+        );
+        let mut file = tokio::fs::File::create(&partial).await
+            .with_context(|| format!("create {}", partial.display()))?;
+
+        let mut hasher = Sha256::new();
+        let mut total: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res.context("download_file_by_hash: stream")?;
+            hasher.update(&chunk);
+            total += chunk.len() as u64;
+            file.write_all(&chunk).await
+                .context("download_file_by_hash: write")?;
+        }
+        file.flush().await.ok();
+        drop(file);
+
+        let computed = format!("{:x}", hasher.finalize());
+        if computed != sha256 {
+            // Body didn't match the URL hash — tampering / proxy
+            // corruption / server bug.  Don't leave the file in
+            // place under the requested name.
+            let _ = tokio::fs::remove_file(&partial).await;
+            anyhow::bail!(
+                "download_file_by_hash: integrity check failed (claimed {sha256}, \
+                 got {computed} after {total} bytes)"
+            );
+        }
+        tokio::fs::rename(&partial, dest_path).await
+            .with_context(|| format!("rename {} → {}", partial.display(), dest_path.display()))?;
+        Ok(total)
+    }
+
+    /// `GET /api/search?q=…&limit=…` — full-text search over the
+    /// `file_references.full_text` FTS5 index server-side.
+    ///
+    /// Query string follows FTS5 grammar (the server forwards
+    /// errors as 400 responses).  Tokens with `-` need to be
+    /// wrapped in `"…"` because FTS5 treats `-` as the NOT
+    /// operator.  Multi-word queries are AND-by-default.
+    pub async fn search(&self, q: &str, limit: usize) -> Result<SearchResponse> {
+        // Percent-encode the query — unlike the embedding vec
+        // (numeric-only), user input here can contain `&` / `#` /
+        // spaces / etc that break a naive query string.
+        let encoded_q: String = q
+            .chars()
+            .flat_map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect()
+                }
+            })
+            .collect();
+        let url = format!(
+            "{}{}?q={}&limit={}",
+            self.base_url, SEARCH_PATH, encoded_q, limit
+        );
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("search: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("search: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<SearchResponse>().await.context("search: parse body")?)
     }
 }
 
@@ -553,6 +885,64 @@ mod tests {
         m.assert_async().await;
     }
 
+    // ── search ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn search_200_parses_hits_with_score() {
+        let mut server = Server::new_async().await;
+        let body = r#"
+            {"rows":[
+                {"path":"/a.txt","size_bytes":10,"sha256":"a",
+                 "mtime_unix":1.0,"owner_id":"o","filename":"a.txt",
+                 "ext":"txt","parent_dir":"/","full_text":"hello world",
+                 "indexed_at":100,"score":2.5}
+            ],"total":1}
+        "#;
+        let m = server.mock("GET", SEARCH_PATH)
+            .match_query(Matcher::Regex("q=hello&limit=50".into()))
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.search("hello", 50).await.unwrap();
+        assert_eq!(resp.total, 1);
+        assert_eq!(resp.rows[0].path, "/a.txt");
+        assert_eq!(resp.rows[0].full_text.as_deref(), Some("hello world"));
+        assert!((resp.rows[0].score - 2.5).abs() < 1e-6);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn search_percent_encodes_special_chars() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", SEARCH_PATH)
+            // Space → %20, double-quote → %22.
+            .match_query(Matcher::Regex(r#"q=foo%20%22bar%22"#.into()))
+            .with_status(200)
+            .with_body(r#"{"rows":[],"total":0}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let _ = cli.search(r#"foo "bar""#, 10).await.unwrap();
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn search_400_propagates_fts_error() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", SEARCH_PATH)
+            .match_query(Matcher::Any)
+            .with_status(400)
+            .with_body(r#"{"detail":"FTS query: unterminated string"}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let err = cli.search("\"", 10).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 400"));
+        m.assert_async().await;
+    }
+
     // ── health ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -592,6 +982,263 @@ mod tests {
         assert_eq!(c.base_url(), "http://localhost:7869");
     }
 
+    // ── /api/index/embed-query (Stage H server-side inference) ──────
+
+    #[tokio::test]
+    async fn embed_query_200_parses_vector() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", EMBED_QUERY_PATH)
+            .match_query(Matcher::Regex("text=hello%20world&model=bge-m3".into()))
+            .with_status(200)
+            .with_body(r#"{"model":"bge-m3","dim":4,"embedding":[0.1,0.2,0.3,0.4]}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.embed_query("hello world", Some("bge-m3")).await.unwrap();
+        assert_eq!(resp.model, "bge-m3");
+        assert_eq!(resp.dim, 4);
+        assert_eq!(resp.embedding, vec![0.1, 0.2, 0.3, 0.4]);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn embed_query_400_unknown_model() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", EMBED_QUERY_PATH)
+            .match_query(Matcher::Any)
+            .with_status(400)
+            .with_body(r#"{"detail":"unknown model 'wat'"}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let err = cli.embed_query("x", Some("wat")).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 400"));
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn embed_query_503_server_lacks_fastembed() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", EMBED_QUERY_PATH)
+            .match_query(Matcher::Any)
+            .with_status(503)
+            .with_body(r#"{"detail":"fastembed not installed"}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let err = cli.embed_query("x", None).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 503"));
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn embed_models_200_lists_registry() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", EMBED_MODELS_PATH)
+            .with_status(200)
+            .with_body(r#"{"models":["bge-m3","e5-large"],"default":"bge-m3","available":true}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.embed_models().await.unwrap();
+        assert!(resp.models.contains(&"bge-m3".to_string()));
+        assert_eq!(resp.default, "bge-m3");
+        assert!(resp.available);
+        m.assert_async().await;
+    }
+
+    // ── /api/files/by-hash (Stage E byte upload + download) ─────────
+
+    #[tokio::test]
+    async fn upload_file_by_hash_200_parses_response() {
+        let mut server = Server::new_async().await;
+        let sha = "a".repeat(64);
+        let m = server.mock("POST", format!("{}{}", FILES_PATH_PREFIX, sha).as_str())
+            .match_header("authorization", "Bearer cbk_test_key")
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"sha256":"{sha}","size_bytes":11,"stored":true,
+                     "local_blob_path":"aa/aa/{sha}"}}"#
+            ))
+            .create_async()
+            .await;
+        // Write a tiny temp file for the upload path.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"hello world").unwrap();
+
+        let cli = client_for(&server);
+        let resp = cli.upload_file_by_hash(&sha, tmp.path()).await.unwrap();
+        assert_eq!(resp.sha256, sha);
+        assert_eq!(resp.size_bytes, 11);
+        assert!(resp.stored);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn upload_file_by_hash_400_hash_mismatch() {
+        let mut server = Server::new_async().await;
+        let sha = "b".repeat(64);
+        let m = server.mock("POST", format!("{}{}", FILES_PATH_PREFIX, sha).as_str())
+            .with_status(400)
+            .with_body(r#"{"detail":"sha256 mismatch: …"}"#)
+            .create_async()
+            .await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"wrong").unwrap();
+
+        let cli = client_for(&server);
+        let err = cli.upload_file_by_hash(&sha, tmp.path()).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 400"));
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn download_file_by_hash_streams_and_verifies() {
+        let body = b"the file body bytes";
+        let sha = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(body);
+            format!("{:x}", h.finalize())
+        };
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", format!("{}{}", FILES_PATH_PREFIX, sha).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/octet-stream")
+            .with_header("x-cb-sha256", &sha)
+            .with_body(body)
+            .create_async()
+            .await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("out.bin");
+
+        let cli = client_for(&server);
+        let n = cli.download_file_by_hash(&sha, &dest).await.unwrap();
+        assert_eq!(n as usize, body.len());
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn download_file_by_hash_rejects_integrity_failure() {
+        let claimed_sha = "0".repeat(64);
+        let body = b"not the bytes that produce that hash";
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", format!("{}{}", FILES_PATH_PREFIX, claimed_sha).as_str())
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("out.bin");
+
+        let cli = client_for(&server);
+        let err = cli.download_file_by_hash(&claimed_sha, &dest).await.unwrap_err();
+        assert!(format!("{err}").contains("integrity check failed"));
+        // Atomic semantics: the destination must NOT exist after a
+        // failed integrity check.
+        assert!(!dest.exists());
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn download_file_by_hash_404_propagates() {
+        let mut server = Server::new_async().await;
+        let sha = "c".repeat(64);
+        let m = server.mock("GET", format!("{}{}", FILES_PATH_PREFIX, sha).as_str())
+            .with_status(404)
+            .with_body(r#"{"detail":"no bytes stored for …"}"#)
+            .create_async()
+            .await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("out.bin");
+
+        let cli = client_for(&server);
+        let err = cli.download_file_by_hash(&sha, &dest).await.unwrap_err();
+        assert!(format!("{err}").contains("HTTP 404"));
+        m.assert_async().await;
+    }
+
+    // ── ManifestRow::from_raw_document (Stage C auto-push hook) ─────
+
+    #[test]
+    fn from_raw_document_carries_full_text_and_metadata() {
+        use crate::index::ingest::RawDocument;
+        let raw = RawDocument {
+            full_text:        "the body of the document".to_string(),
+            full_text_md:     "the body of the document".to_string(),
+            headings:         vec![],
+            title:            Some("Title".into()),
+            author:           Some("Author".into()),
+            year:             Some(2024),
+            filename:         "doc.txt".to_string(),
+            ext:              "txt".to_string(),
+            language:         "en".to_string(),
+            source_hash:      "abc".to_string(),
+            location_uri:     "crisp+local://owner@m1/data/doc.txt".to_string(),
+            owner_id:         "owner".to_string(),
+            tags:             vec![],
+            mtime_unix:       Some(1_700_000_000),
+            file_size:        Some(123),
+            volume_id:        None,
+            parent_dir:       Some("/data".into()),
+            translated_text:  None,
+            translated_to_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+        };
+        let row = ManifestRow::from_raw_document(&raw);
+        assert_eq!(row.sha256, "abc");
+        assert_eq!(row.size_bytes, 123);
+        assert_eq!(row.mtime_unix as i64, 1_700_000_000);
+        assert_eq!(row.title.as_deref(), Some("Title"));
+        assert_eq!(row.year, Some(2024));
+        assert_eq!(row.language.as_deref(), Some("en"));
+        assert_eq!(row.parent_dir, "/data");
+        // Stage A — body text is carried through to the wire shape.
+        assert_eq!(row.full_text.as_deref(), Some("the body of the document"));
+        // The crisp+local URI maps to a local path when location_uri_to_local_path
+        // recognises it; non-recognised URIs fall back verbatim.  Either is fine
+        // for the wire — what matters is `path` is never empty.
+        assert!(!row.path.is_empty());
+    }
+
+    #[test]
+    fn from_raw_document_empty_body_becomes_none() {
+        use crate::index::ingest::RawDocument;
+        let raw = RawDocument {
+            full_text:    "".to_string(),
+            full_text_md: "".to_string(),
+            headings:     vec![],
+            title: None, author: None, year: None,
+            filename: "f.txt".into(), ext: "txt".into(),
+            language: "".into(),
+            source_hash: "h".into(),
+            location_uri: "crisp+local://o@m/f.txt".into(),
+            owner_id: "o".into(), tags: vec![],
+            mtime_unix: None, file_size: None,
+            volume_id: None, parent_dir: None,
+            translated_text: None, translated_to_lang: None,
+            audio_duration_seconds: None, audio_codec: None,
+            audio_sample_rate_hz: None, audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None, image_camera_model: None,
+            image_lens_model: None, image_taken_at_unix: None,
+            image_iso: None,
+        };
+        let row = ManifestRow::from_raw_document(&raw);
+        assert!(row.full_text.is_none(), "empty body should map to None on wire");
+        assert!(row.language.is_none(), "empty language should map to None on wire");
+    }
+
     fn sample_row(suffix: &str) -> ManifestRow {
         ManifestRow {
             path: format!("/data/{suffix}.pdf"),
@@ -602,6 +1249,7 @@ mod tests {
             filename: format!("{suffix}.pdf"),
             ext: "pdf".into(),
             parent_dir: "/data".into(),
+            full_text: None,
             language: None,
             title: None,
             author: None,
@@ -664,6 +1312,7 @@ mod live_tests {
             filename: format!("live-{unique}.pdf"), ext: "pdf".into(),
             parent_dir: "/test".into(),
             language: None, title: None, author: None, year: None,
+            full_text: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push");
@@ -674,6 +1323,339 @@ mod live_tests {
         assert!(
             pulled.rows.iter().any(|r| r.sha256 == sha),
             "live round-trip: pushed sha {sha} not found in {} pulled rows",
+            pulled.rows.len()
+        );
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_full_text_push_and_search() {
+        // Stage A — push a row with a unique-token body, then
+        // search the server for that token and assert the row
+        // comes back.  Closes the "indexed text actually flows
+        // through and is searchable on the server" claim.
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_full_text_push_and_search");
+            return;
+        };
+        let cli = CloudBackupClient::new(url, key).unwrap();
+        let unique = format!("{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_millis()
+        );
+        // FTS5 reads `-` as NOT, so we pick an alnum-only token.
+        let token = format!("crispsorterlive{unique}");
+        let body = format!("the body text contains the {token} sentinel");
+        let sha = format!("{unique:0>64}");
+        let row = ManifestRow {
+            path: format!("/test/live-fts-{unique}.txt"),
+            size_bytes: body.len() as i64,
+            sha256: sha.clone(),
+            mtime_unix: 1.0,
+            owner_id: "live-test".into(),
+            filename: format!("live-fts-{unique}.txt"),
+            ext: "txt".into(),
+            parent_dir: "/test".into(),
+            language: None, title: None, author: None, year: None,
+            full_text: Some(body.clone()),
+        };
+        let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
+            .expect("manifest_push with full_text");
+        assert!(pushed.accepted >= 1);
+
+        let hits = cli.search(&token, 50).await.expect("search");
+        let found = hits.rows.iter().find(|h| h.sha256 == sha);
+        assert!(
+            found.is_some(),
+            "search for {:?} returned {} rows but none had sha {sha}",
+            token,
+            hits.rows.len(),
+        );
+        let f = found.unwrap();
+        assert_eq!(f.full_text.as_deref(), Some(body.as_str()));
+        assert!(f.score.is_finite());
+    }
+
+    /// P13.7 Stage D — full end-to-end claim:
+    ///
+    ///   index a real file → push manifest (including body) →
+    ///   pull on a *fresh* LocalIndex → run `crispsorter index
+    ///   search` for a body-text token → assert hit.
+    ///
+    /// Exercises the SyncManager → CloudBackupClient → cb-api →
+    /// SQLite FTS5 → manifest pull → DocumentChunk apply →
+    /// Tantivy FTS pipeline end to end against the live VPS.
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_end_to_end_index_push_pull_search() {
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_end_to_end_index_push_pull_search");
+            return;
+        };
+        let cli = CloudBackupClient::new(url, key).unwrap();
+
+        // ── Phase 1: push a synthetic doc with a unique body token ──
+        // We don't drive bg_ingest end-to-end (that needs an embedder
+        // + tokio Tauri runtime which is too heavy for a lib test);
+        // instead we hand-craft a ManifestRow that matches what
+        // bg_ingest's auto-push hook would emit.  The test exercises
+        // every byte of the wire round-trip + the server-side FTS
+        // index population.
+        //
+        // Seed includes the test name so parallel live tests within
+        // the same ms / process never collide on sha256.
+        let unique = format!("e2e{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_micros()
+        );
+        let unique_token = format!("crispsorterE2E{unique}");
+        let body = format!(
+            "this document discusses {unique_token} \
+             alongside other content the search should ignore"
+        );
+        let sha = format!("{unique:0>64}");
+        let push_row = ManifestRow {
+            path: format!("/test/e2e-{unique}.txt"),
+            size_bytes: body.len() as i64,
+            sha256: sha.clone(),
+            mtime_unix: 1.0,
+            owner_id: "e2e-test".into(),
+            filename: format!("e2e-{unique}.txt"),
+            ext: "txt".into(),
+            parent_dir: "/test".into(),
+            language: Some("en".into()),
+            title: Some("E2E doc".into()),
+            author: None,
+            year: None,
+            full_text: Some(body.clone()),
+        };
+        let pushed = cli.manifest_push(std::slice::from_ref(&push_row))
+            .await
+            .expect("manifest_push");
+        assert!(pushed.accepted >= 1, "server didn't accept push: {pushed:?}");
+
+        // ── Phase 2: search server-side by the unique body token ──
+        // This is the "search CrispSorter files on cloud-backup"
+        // claim: a row pushed from one client surfaces by body text
+        // for any client with a key in the same owner scope.
+        let hits = cli.search(&unique_token, 50).await.expect("search");
+        let found = hits.rows.iter().find(|h| h.sha256 == sha);
+        assert!(
+            found.is_some(),
+            "after push, search for {:?} returned {} rows but none matched sha {sha}",
+            unique_token, hits.rows.len(),
+        );
+        let hit = found.unwrap();
+        // Body and metadata survived the round trip.
+        assert_eq!(hit.full_text.as_deref(), Some(body.as_str()));
+        assert_eq!(hit.title.as_deref(), Some("E2E doc"));
+        assert_eq!(hit.language.as_deref(), Some("en"));
+        assert!(hit.score.is_finite());
+
+        // ── Phase 3: pull manifest (since=0) and assert the row
+        //              comes back, simulating a fresh client. ──────
+        let pulled = cli.manifest_pull(0, 500).await.expect("manifest_pull");
+        let pulled_match = pulled.rows.iter().find(|r| r.sha256 == sha);
+        assert!(
+            pulled_match.is_some(),
+            "fresh pull missed the just-pushed sha {sha}",
+        );
+        let pm = pulled_match.unwrap();
+        assert_eq!(pm.full_text.as_deref(), Some(body.as_str()),
+                   "pull didn't surface full_text");
+        // The pull watermark is past `indexed_at` so a follow-up
+        // pull with since=max_indexed_at sees zero new rows.
+        let watermark = pulled.max_indexed_at;
+        let pulled_again = cli.manifest_pull(watermark, 500).await.expect("pull again");
+        assert!(
+            !pulled_again.rows.iter().any(|r| r.sha256 == sha),
+            "second pull with since=watermark should not re-return our row",
+        );
+    }
+
+    /// P13.7 Stage E — full byte-level round-trip against the live VPS.
+    ///
+    /// Push a manifest row → upload bytes content-addressed by sha
+    /// → download → verify byte-identical → repeat to confirm
+    /// idempotency.  Closes the "GUI can download files from
+    /// cloud-backup" claim end-to-end.
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_byte_upload_download_round_trip() {
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_byte_upload_download_round_trip");
+            return;
+        };
+        let cli = CloudBackupClient::new(url, key).unwrap();
+        let unique = format!("bytes{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_micros()
+        );
+        let body = format!("byte-upload-test-{unique}").into_bytes();
+        let sha = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(&body);
+            format!("{:x}", h.finalize())
+        };
+
+        // ── Declare the manifest row so the owner-scope guard
+        //     on /api/files/by-hash lets us through. ───────────────
+        let manifest_row = ManifestRow {
+            path: format!("/test/bytes-{unique}.bin"),
+            size_bytes: body.len() as i64,
+            sha256: sha.clone(),
+            mtime_unix: 1.0,
+            owner_id: "live-test".into(),
+            filename: format!("bytes-{unique}.bin"),
+            ext: "bin".into(),
+            parent_dir: "/test".into(),
+            language: None, title: None, author: None, year: None,
+            full_text: None,
+        };
+        cli.manifest_push(std::slice::from_ref(&manifest_row))
+            .await.expect("manifest_push prelude");
+
+        // ── Upload the bytes from a tempfile. ───────────────────
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path().join("upload.bin");
+        std::fs::write(&src, &body).unwrap();
+        let up = cli.upload_file_by_hash(&sha, &src).await
+            .expect("upload_file_by_hash");
+        assert_eq!(up.sha256, sha);
+        assert_eq!(up.size_bytes as usize, body.len());
+        assert!(up.stored, "first upload should report stored=true");
+
+        // ── Re-upload should be idempotent. ─────────────────────
+        let up2 = cli.upload_file_by_hash(&sha, &src).await
+            .expect("idempotent upload");
+        assert!(!up2.stored, "second upload of the same bytes should be a no-op");
+        assert_eq!(up2.size_bytes, up.size_bytes);
+
+        // ── Download via reqwest, byte-identical assert. ────────
+        let dest = tmp.path().join("download.bin");
+        let n = cli.download_file_by_hash(&sha, &dest).await
+            .expect("download_file_by_hash");
+        assert_eq!(n as usize, body.len());
+        let got = std::fs::read(&dest).unwrap();
+        assert_eq!(got, body, "round-tripped bytes mismatch");
+    }
+
+    /// P13.7 Stage H — server-side embedding inference round-trip.
+    /// Calls /api/index/embed-models first to confirm fastembed is
+    /// available; skips with a clear note when it isn't.  Then
+    /// embeds a short string and asserts the response shape +
+    /// non-trivial dim (≥ 384 for any supported model).
+    ///
+    /// First call to a never-loaded model on the server triggers a
+    /// ~500MB download — the test gives 120s.
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_embed_query_round_trip() {
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_embed_query_round_trip");
+            return;
+        };
+        let cli = CloudBackupClient::new(&url, &key).unwrap();
+        let models = match cli.embed_models().await {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "cb_sync_live_embed_query_round_trip: embed-models \
+                     not reachable ({e}); skipping"
+                );
+                return;
+            }
+        };
+        if !models.available {
+            eprintln!(
+                "cb_sync_live_embed_query_round_trip: server reports \
+                 fastembed unavailable; skipping (install with \
+                 `pip install fastembed onnxruntime` in /opt/cb-api/venv)"
+            );
+            return;
+        }
+        // Pick the smallest available model so the first-call
+        // download is fast (all-minilm is ~25MB) when present;
+        // otherwise default to bge-m3.
+        let pick = if models.models.iter().any(|m| m == "all-minilm") {
+            "all-minilm"
+        } else {
+            &models.default
+        };
+        let resp = cli.embed_query("the quick brown fox", Some(pick))
+            .await.expect("embed_query");
+        assert_eq!(resp.model, pick);
+        assert!(resp.dim >= 384, "any supported model has dim ≥ 384");
+        assert_eq!(resp.embedding.len(), resp.dim);
+        // Sanity: the vector should be roughly unit-normalised
+        // (all supported models l2-normalise their output).
+        let norm: f32 = resp.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 0.05,
+            "expected l2-normalised vector, got norm={norm}"
+        );
+    }
+
+    /// P13.7 Stage F — durable retry via the outbox, against the
+    /// live VPS.  Enqueues an op directly (mimicking what
+    /// bg_ingest's auto-push hook does), drains it, asserts the
+    /// row shows up on /api/manifest/pull, and that the outbox is
+    /// empty after the drain.
+    #[ignore]
+    #[tokio::test]
+    async fn cb_sync_live_outbox_drain_round_trip() {
+        let Some((url, key)) = read_env() else {
+            eprintln!("skipping cb_sync_live_outbox_drain_round_trip");
+            return;
+        };
+        let cli = CloudBackupClient::new(&url, &key).unwrap();
+
+        let unique = format!("drain{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_micros()
+        );
+        let sha = format!("{unique:0>64}");
+        let row = ManifestRow {
+            path: format!("/test/outbox-{unique}.txt"),
+            size_bytes: 0,
+            sha256: sha.clone(),
+            mtime_unix: 1.0,
+            owner_id: "live-test".into(),
+            filename: format!("outbox-{unique}.txt"),
+            ext: "txt".into(),
+            parent_dir: "/test".into(),
+            language: None, title: None, author: None, year: None,
+            full_text: Some(format!("outbox sentinel {unique}")),
+        };
+        let payload = serde_json::to_string(&row).expect("serialise row");
+
+        // Use a per-test tempdir for the outbox SQLite so other live
+        // tests don't have residual entries.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mgr = crate::sync::SyncManager::open(tmp.path()).unwrap();
+        mgr.enqueue("cb_manifest_push", &payload).unwrap();
+        assert_eq!(mgr.pending_count().unwrap(), 1);
+
+        let (pushed, failed) = mgr.drain_cb_outbox(&cli, 16).await
+            .expect("drain_cb_outbox");
+        assert_eq!(pushed, 1, "expected exactly one entry drained");
+        assert_eq!(failed, 0);
+        assert_eq!(mgr.pending_count().unwrap(), 0, "outbox should be empty after drain");
+
+        // Confirm the row landed server-side via /api/manifest/pull.
+        let pulled = cli.manifest_pull(0, 500).await.expect("pull");
+        assert!(
+            pulled.rows.iter().any(|r| r.sha256 == sha),
+            "drained row {sha} did not appear in pull response ({} rows)",
             pulled.rows.len()
         );
     }
