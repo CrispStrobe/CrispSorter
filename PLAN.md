@@ -38,28 +38,21 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-**P13.7 Cloud sync** — Steps 1+2+3+4+6 of the eight-step plan
-shipped on 2026-05-13 (image L1/L2/L3 with master switch and
-Re-OCR action, `crispsorter index search` CLI with cloud-backup-
-parity filter set, and CrispLens image push).  See the full
-session log in [HISTORY.md → 2026-05-13](HISTORY.md).
+P13.7 Cloud sync — **all 8 steps now shipped** (Steps 1+2+3+4+6
+on 2026-05-13 morning; Steps 5+7+8 on 2026-05-13 evening with
+the cloud-backup HTTP API live-deployed to the production VPS).
+See [HISTORY.md → 2026-05-13](HISTORY.md) for the full session
+logs.  The v0.1.41 tag captures the closeout.
 
-Remaining work — split into two distinct slices because the
-first one is cross-repo and gates the rest:
-
-  - **Step 5** — cloud-backup HTTP API + CrispSorter
-    `SyncManager` bridge.  Cross-repo (touches
-    `../cloud-backup` Python lifecycle).  Full design lives
-    below in **P13.7 Step 5 plan**.  Expected next session.
-  - **Step 7+8** — live tests against a real CrispLens server,
-    docs + tag.  Land alongside Step 5 once the protocol is
-    stable.
-
-**Test coverage:** ~415 unit tests in `tauri-app` (+2 `#[ignore]`'d
-WebDAV-live integration tests gated by
-`WEBDAV_TEST_URL`/`USER`/`PASS`), 20 in `crispcat`, 29 in
-`crisplens-protocol`, 5 in `crisp-index-protocol`.  Run
-`cargo test --workspace --lib` for the exact current count.
+**Test coverage:** ~452 unit tests in `tauri-app` (+5 `#[ignore]`'d
+env-gated live tests: 2 WebDAV gated by `WEBDAV_TEST_URL`/`USER`/`PASS`
+and 3 cloud-backup gated by `CB_SYNC_TEST_URL`/`CB_SYNC_TEST_API_KEY`,
+all 3 of which were live-verified against the production VPS during
+the 2026-05-13 evening session), 20 in `crispcat`, 29 in
+`crisplens-protocol`, 5 in `crisp-index-protocol`, 21 pytest cases
+in `../cloud-backup/tests/`.  Run `cargo test --workspace --lib`
+for the exact current Rust count; `python -m pytest tests/` inside
+`../cloud-backup/` for the FastAPI suite.
 
 ---
 
@@ -115,26 +108,31 @@ Survey of existing infrastructure:
   `GET /api/images/by-hash/{sha256}` (already consumed by
   CrispSorter's Tier-2 connector).
 
-#### Shipped 2026-05-13: Steps 1+2+3+4+6 — see HISTORY.md
+#### Shipped 2026-05-13: all 8 steps — see HISTORY.md
 
-The image-side L1/L2/L3 + master-switch + Re-OCR action
-(Steps 1+2+3), the `crispsorter index search` CLI with the
-cloud-backup-parity filter set (Step 6), and the CrispLens
-image push (Step 4) all landed on 2026-05-13.  Commit hashes
-+ per-step recaps are in
-[HISTORY.md → "Session log — 2026-05-13 — P13.6 …"](HISTORY.md).
-This PLAN entry now exists only to track the remaining
-Step 5 (cross-repo cloud-backup API) and Step 7+8 (live
-tests + docs + tag).
+  - Steps 1+2+3+4+6 (image L1/L2/L3 + CrispLens push + search CLI)
+    landed in the morning batch.
+  - Steps 5+7+8 (cloud-backup HTTP API + CrispSorter SyncManager
+    bridge + Settings UI + sync CLI + 3 CLI gap-fills + mockito
+    unit tests + env-gated live tests + README/HISTORY + v0.1.41
+    tag) landed in the evening batch and were live-verified
+    against the production VPS.
+
+Both session logs in [HISTORY.md → 2026-05-13](HISTORY.md).
+This PLAN section is now closed; new sync-protocol work would
+open a fresh entry.
 
 ---
 
-#### Step 5 — Cloud-backup HTTP API + CrispSorter SyncManager bridge
+#### Step 5 — Cloud-backup HTTP API + CrispSorter SyncManager bridge — SHIPPED 2026-05-13
 
-The biggest single piece of P13.7 and the one that gates the
-release tag.  Cross-repo: adds a thin FastAPI to
-`../cloud-backup` (currently CLI-only) and extends CrispSorter's
-P11 `SyncManager` to talk to it.
+> This design section is retained for posterity — the live
+> implementation matches it closely, with one substantive deviation:
+> the FastAPI subpackage lives on the VPS alongside `vps_worker.py`
+> (sharing `/root/cloudworker_state/<catalog-db>`), rather than
+> on the local controller box.  Per the production deployment notes,
+> this lets CrispSorter clients talk to the VPS over HTTP without
+> rsync'ing the SQLite catalog through controller.py.
 
 ##### Goals
 
@@ -312,29 +310,31 @@ Estimated effort: **4-6 h cloud-backup side + 4-6 h
 CrispSorter side**, spread across one to two sessions.
 This is the sole gate on the v0.1.41 (or v0.2.0) tag.
 
-#### Step 7 — Tests for the sync routes
+#### Step 7 — Tests for the sync routes — SHIPPED 2026-05-13
 
-- [ ] **~2-3 h** — three layers:
-    a. **Unit tests (CrispSorter side)**: mock HTTP server
-       (existing `mockito` pattern) for `crisplens_image_push`
-       hit/miss/error paths + `manifest_push` accept/reject
-       paths.  ~8 tests.
-    b. **Live tests (CrispSorter side, env-gated)**:
-       `CRISPLENS_TEST_URL` / `CRISPLENS_TEST_API_KEY` like
-       the existing WebDAV tests, runs a full push round-trip
-       against a real CrispLens server.  `#[ignore]` by
-       default; CI doesn't run them.  Same shape for
-       `CB_SYNC_TEST_URL` once Step 5 lands.
-    c. **CrispLens side**: existing pytest covers the FastAPI
-       routes already; cross-repo unit tests for the new
-       `/manifest/push` route land in cloud-backup's repo
-       once Step 5 ships.
+  - [x] Mock-server unit tests via `mockito` (new dev-dep):
+    17 cases in `src-tauri/src/sync/cloud_backup.rs::tests`
+    cover the 200/cursor/no-cursor/400/401/500/503 matrix
+    across every push/pull/query route + the builder.
+  - [x] Env-gated live tests in
+    `src-tauri/src/sync/cloud_backup.rs::live_tests`:
+    `cb_sync_live_{health_round_trip, manifest_push_pull_round_trip,
+     embedding_push_rejects_empty}`.  `#[ignore]`'d by default;
+    run with `CB_SYNC_TEST_URL` + `CB_SYNC_TEST_API_KEY` set.
+    All 3 green against the live VPS during the closeout.
+  - [x] Cloud-backup pytest suite (21 cases) covers the FastAPI
+    surface end-to-end: auth, manifest round-trip, pagination,
+    owner-scoping, embeddings push/query.
 
-#### Step 8 — Docs + tagging
+#### Step 8 — Docs + tagging — SHIPPED 2026-05-13
 
-- [ ] **~1 h** — README capabilities table update, HISTORY
-  entry per the usual format, cut v0.1.41 (or v0.2.0 if the
-  cloud-backup HTTP API counts as a major shift).
+  - [x] README capabilities table appended with the new
+    cloud-backup HTTP sync line.
+  - [x] HISTORY.md session log entry for Step 5+7+8 lands
+    above the morning-batch entry.
+  - [x] v0.1.41 tag cut (minor: the cloud-backup HTTP protocol
+    is additive, not a breaking shift — see the architectural-
+    decisions summary in the HISTORY entry).
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 

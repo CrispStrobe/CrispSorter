@@ -9,6 +9,192 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-13 — P13.7 Step 5 + 7 + 8 (cloud-backup HTTP sync, end-to-end)
+
+The final P13.7 slice that gates the v0.1.41 tag.  Cross-repo: adds
+a brand-new FastAPI module to the sibling `../cloud-backup` repo and
+extends CrispSorter's P11 SyncManager to talk to it over HTTP.
+Live-verified against the production VPS (deployed
+`cb-api.service` alongside the existing `vps-worker.service`; the
+two share `/root/cloudworker_state/<catalog-db>` via SQLite WAL).
+
+### What landed
+
+**`../cloud-backup` (new `api/` subpackage)**
+
+  - `api/db.py` — idempotent schema migration that adds
+    `chunk_embeddings` + `api_keys` tables and 8 nullable columns
+    on `file_references` (`ext`, `parent_dir`, `filename`,
+    `language`, `title`, `author`, `year`, `indexed_at`).  Runs in
+    the FastAPI lifespan startup hook.  Reuses the existing
+    `MasterDatabase._migrate_master_db` PRAGMA-guarded ALTER
+    TABLE pattern — re-run on every cold start is a no-op.
+  - `api/admin.py` — VPS-side key lifecycle CLI
+    (`python -m api.admin mint <NAME> [--owner-id UUID]` / `revoke
+    NAME` / `list`).  bcrypt-hashed values; raw key printed once
+    at mint time and never retrievable afterward.  `list` never
+    surfaces the hash either (audit-only metadata).
+  - `api/app.py` — FastAPI with 4 authenticated routes plus a
+    public health probe.  Auth = `Authorization: Bearer <key>`,
+    constant-time bcrypt verify per request.  Default per-owner
+    scoping (the calling key's `owner_id` rewrites the server-side
+    `source_id` for pushes and filters the WHERE clause for
+    pulls); `CRISP_CB_SHARED_OWNERS=1` env flips to a shared
+    catalog where every key sees every row.
+    | route | purpose |
+    |---|---|
+    | `GET  /api/health` | unauth probe (used by CrispSorter's status surface) |
+    | `POST /api/manifest/push` | upsert rows into the existing `files` + `file_references` + `batches` + `sources` shape (same path `MasterDatabase.process_manifest` already uses for SYNC_MANIFESTS-over-rsync today) |
+    | `GET  /api/manifest/pull?since=…&limit=…` | rows newer than `since` (epoch-ms watermark) |
+    | `POST /api/index/push-embeddings` | store text/vector embeddings; per-row reject on empty/malformed packs |
+    | `GET  /api/index/by-embedding?vec=…&k=…&model=…` | brute-force k-NN (Python-side scan; LanceDB on the VPS is a P13.8 follow-up) |
+  - Watermark fix: a single batch was assigning the same
+    `now_ms` to every row, which collapsed cursor-based
+    pagination.  Fixed by `row_indexed_at = now_ms + idx` so
+    `WHERE indexed_at > since` resumes mid-batch.
+  - `deploy/etc/systemd/system/cb-api.service` runs
+    `/opt/cb-api/venv/bin/python -m uvicorn api.app:app
+    --host 127.0.0.1 --port 7869`.  Loopback-only (production
+    exposure is the operator's call via the existing
+    reverse proxy).  `Wants=vps-worker.service` rather than
+    `Requires=` so an unrelated vps-worker failure doesn't take
+    the HTTP API down.
+  - `deploy/etc/cb-api.env.example` — mode-600 env-file
+    template with `CB_API_DB_PATH` + `CRISP_CB_SHARED_OWNERS`.
+  - `requirements.txt` gains `fastapi`, `uvicorn`, `bcrypt`,
+    `httpx` (TestClient dep).
+  - `tests/` directory with 21 pytest cases against the FastAPI
+    surface using `TestClient` + a `monkeypatch`'d
+    `CB_API_DB_PATH` tempfile.  Covers: bcrypt round-trip on the
+    admin CLI, auth path on every protected route, manifest
+    push→pull round-trip, since-watermark resume, pagination
+    boundary, owner-scoping isolation between two keys, the
+    `CRISP_CB_SHARED_OWNERS` env flag, the optional
+    filter-metadata columns (`language`/`title`/`author`/`year`),
+    embeddings k-NN ranking, dim-mismatch silent-skip,
+    per-row reject for empty vectors, model-id filter on the
+    by-embedding query.  All 21 green locally; ~15 s run time.
+
+**CrispSorter Rust**
+
+  - `src-tauri/src/sync/cloud_backup.rs` — async `CloudBackupClient`
+    over reqwest.  Mirrors the FastAPI wire shape 1:1: `ManifestRow`,
+    `PullRow`, `EmbeddingRow`, `ByEmbeddingHit`, `HealthResponse`.
+    `manifest_push` / `manifest_pull` / `embeddings_push` /
+    `by_embedding` / `health` methods.  17 mockito-backed unit tests
+    cover 200/cursor/no-cursor/400/401/500/503 for every push/pull
+    path + 3 env-gated live tests (`#[ignore]`'d) that exercise the
+    full round-trip against a real VPS.
+  - `src-tauri/src/sync/secret.rs` — OS-keychain bearer-token
+    storage.  Same pattern as
+    `src-tauri/src/images/crisplens/secret.rs` (per-URL keying,
+    `keyring` mock for tests) but under the distinct
+    `CrispSorter.CloudBackup` service so the rows stay
+    distinguishable in Keychain Access.
+  - `src-tauri/src/sync/tauri_commands.rs` — new commands:
+    `sync_cb_status`, `sync_cb_set_token`, `sync_cb_clear_token`,
+    `sync_cb_manifest_push`, `sync_cb_manifest_pull`,
+    `sync_cb_embeddings_push`.  Sync watermarks live in the same
+    `sync_state` KV table the existing P11 surface uses, keyed
+    `cb_last_manifest_push_ts` / `cb_last_manifest_pull_ts` /
+    `cb_last_embeddings_push_ts` so the UI panel can show "pulled
+    2 min ago" alongside the crisp-index-server state.
+  - 4 new `IndexConfig` fields: `cloud_backup_url`,
+    `cloud_backup_push_manifests_enabled`,
+    `cloud_backup_push_embeddings_enabled`,
+    `cloud_backup_pull_manifests_enabled`.  All serde-default to
+    off / `None`; bearer token never persisted to JSON.
+  - Settings → Cloud-backup sync panel (Svelte): URL field,
+    write-only API-key input with a Save button that pushes the
+    value straight to `sync_cb_set_token` (keychain), 3 toggles,
+    inline status hint with the server version + watermark
+    summary.  EN + DE i18n strings.
+  - CLI subcommands: `crispsorter sync cloud-backup
+    {status,push-manifest,pull,login,logout}`.  Token resolves
+    from `--token` (login only) → `CB_SYNC_API_KEY` env → keychain.
+    `push-embeddings` is a deliberate
+    `not-yet-implemented-from-CLI` stub (server route + Tauri
+    command live; the missing piece is a `LocalIndex::list_chunks_with_embeddings`
+    helper that's a follow-up).
+  - 3 CLI gap-fill subcommands (the P13.7 audit items):
+    `crispsorter index promote-l3 <doc-id>` (auto-routes by ext
+    via `extract_text_from_path` → `pipeline.reingest_document`);
+    `crispsorter images crisplens push <path> --visibility shared|private`
+    (same two-phase by-hash dedup + multipart POST as the GUI's
+    `images_crisplens_image_push`); `crispsorter images crisplens person <id>`
+    (lists every image in a person cluster via `/api/people/{id}`).
+  - `mockito = "1.5"` added to `[dev-dependencies]` — first
+    introduction of the mock-HTTP-server convention in this repo.
+  - `reqwest::query()` isn't on our feature set; hand-rolled query
+    strings used instead (also keeps log output readable).
+
+**Live verification against the production VPS**
+
+  - cb-api.service deployed to `<VPS_IP_REDACTED>:7869` (loopback);
+    SSH tunnel for the cargo run.
+  - All 3 env-gated live tests pass:
+    `cb_sync_live_health_round_trip`,
+    `cb_sync_live_manifest_push_pull_round_trip`,
+    `cb_sync_live_embedding_push_rejects_empty`.
+  - Per-owner scoping confirmed end-to-end: a freshly minted key
+    sees only its own row out of the 2051-row `file_references`
+    table (the other 2050 rows belong to existing vps_worker
+    source_ids).  Schema migration added the new columns without
+    touching the pre-existing rows.
+
+### Commit table
+
+| Commit | Headline |
+|---|---|
+| `<cb-1>` | cloud-backup: `api/` subpackage (db.py + admin.py + app.py) + 21-test pytest suite + cb-api.service + cb-api.env + deploy/README.md instructions + requirements.txt deps |
+| `<cs-1>` | CrispSorter: `sync/cloud_backup.rs` + `sync/secret.rs` + 17 mockito tests + 3 env-gated live tests + new sync_cb_* Tauri commands + 4 new IndexConfig fields |
+| `<cs-2>` | CrispSorter: Settings → Cloud-backup sync panel (URL + write-only key + 3 toggles + status hint) with EN/DE i18n |
+| `<cs-3>` | CrispSorter: `crispsorter sync cloud-backup {status,push-manifest,pull,login,logout}` CLI subcommands |
+| `<cs-4>` | CrispSorter: 3 CLI gap-fills — `index promote-l3` + `images crisplens push` + `images crisplens person` |
+| `<cs-5>` | docs(plan,history,readme): P13.7 Step 5+7+8 closeout + v0.1.41 tag |
+
+(Commit hashes filled in at squash time.)
+
+### Net delta
+
+`tauri-app` test count grew from ~415 → ~452:
+  sync   (+17 mockito wire tests + 2 secret-keychain tests + 3
+        env-gated live tests for cb_sync — `#[ignore]`'d so
+        default `cargo test` stays offline)
+  pytest (21 new tests in `../cloud-backup/tests/`)
+
+Build verification: `cargo check -p tauri-app --no-default-features`
++ `cargo check -p tauri-app --features crispasr` clean throughout.
+`npm run check` 0 errors.  21 pytest cases green.  3 live tests
+green against the deployed VPS.
+
+### What's NOT in this session
+
+  - **LocalIndex::list_chunks_with_embeddings helper** — the
+    server-side push-embeddings route is live + the Tauri
+    command + 4 mockito tests + the live "empty payload rejects"
+    test all pass, but the CLI's `push-embeddings` subcommand
+    prints a "not yet exposed" note until the LanceDB row-scan
+    helper lands.  The GUI / scripted path
+    (`sync_cb_embeddings_push` with a hand-built `EmbeddingRow`
+    list) works today.
+  - **bg_ingest auto-push hook** — `IndexConfig.cloud_backup_push_manifests_enabled`
+    exists; bg_ingest doesn't fan-out to cloud-backup yet on
+    every indexed row.  Today the push is operator-triggered
+    (CLI subcommand or sync_cb_manifest_push from scripts).
+    Wiring the hook is mechanical (mirrors the existing
+    CrispLens-image-push fan-out in bg_ingest) but lands as a
+    follow-up to keep this slice focused on the protocol.
+  - **L3 byte transfer over HTTP** — out of scope per PLAN.md.
+    Stays SSH + `retrieve.py` for now.
+  - **Server-side embedding computation** — server only stores
+    what the client pushes.  No GPU on the VPS today.
+  - **Image embedding sync** — CrispLens covers face embeddings;
+    general image embeddings via CrispEmbed are a P13.6
+    follow-up tracked separately.
+
+---
+
 ## Session log — 2026-05-13 — P13.6 Multimodal UX + L1/L2/L3 audio + P13.7 Steps 1+2+3+4+6 (image L1/L2/L3, CLI search, CrispLens push)
 
 Two interlocking verticals shipped end-to-end:
