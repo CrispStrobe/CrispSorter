@@ -435,7 +435,14 @@ export class BatchManager {
                         let extraction;
                         try {
                             extraction = await extractText(
-                                { name: item.originalName, arrayBuffer: fileData.buffer },
+                                {
+                                    name: item.originalName,
+                                    arrayBuffer: fileData.buffer,
+                                    // P13.5 audio dispatch: extractText hands the
+                                    // path to audio_extract_text when the extension
+                                    // is in AUDIO_EXTENSIONS, keeping PCM in Rust.
+                                    path: item.originalPath,
+                                },
                                 {
                                     forceOCR,
                                     signal: itemAbort.signal,

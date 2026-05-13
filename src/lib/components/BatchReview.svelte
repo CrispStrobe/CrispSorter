@@ -2,7 +2,7 @@
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
-    import { SUPPORTED_EXTENSIONS } from '../extractors';
+    import { MULTIMODAL_EXTENSIONS } from '../extractors';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { open, save, ask } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
@@ -268,7 +268,10 @@
                 paths.forEach(path => {
                     invoke<{ path: string; size: number }[]>('scan_folder', {
                         folderPath: path,
-                        extensions: [...SUPPORTED_EXTENSIONS]
+                        // Multimodal: scan_folder picks up audio/video too,
+                        // and extractText routes them through the Rust audio
+                        // dispatch when the batch item is processed.
+                        extensions: [...MULTIMODAL_EXTENSIONS]
                     }).then(entries => {
                         entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
                     }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
@@ -307,13 +310,16 @@
     async function handleAddFiles() {
         const selected = await open({
             multiple: true,
-            filters: [{ name: 'Documents', extensions: [...SUPPORTED_EXTENSIONS] }]
+            // Same multimodal whitelist as the drag-drop path so picker
+            // and drop accept the same files (documents + images +
+            // audio/video).
+            filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
         });
         if (Array.isArray(selected)) {
             for (const path of selected) {
                 const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                     folderPath: path,
-                    extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                    extensions: [...MULTIMODAL_EXTENSIONS]
                 }).catch(() => []);
                 entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
             }
@@ -325,7 +331,8 @@
         if (typeof selected === 'string') {
             const entries = await invoke<{ path: string; size: number }[]>('scan_folder', {
                 folderPath: selected,
-                extensions: ['pdf', 'docx', 'txt', 'md', 'epub']
+                // Multimodal: pick up audio/video alongside docs+images.
+                extensions: [...MULTIMODAL_EXTENSIONS]
             });
             entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
         }

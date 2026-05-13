@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { extractPdf } from './pdfExtractor';
 import { extractDocx } from './docxExtractor';
 import { extractEpub } from './epubExtractor';
@@ -22,6 +23,32 @@ export const SUPPORTED_EXTENSIONS = [
     'doc',
 ] as const;
 
+/** Audio + video file extensions handled by the Rust-side audio
+ *  extractor (symphonia tier-1 + ffmpeg tier-2 + CrispASR).  Keep in
+ *  lockstep with `src-tauri/src/extractors/audio.rs::AUDIO_EXTS` —
+ *  drift here means UI-accepts-but-backend-rejects (or vice versa). */
+export const AUDIO_EXTENSIONS = [
+    // Pure audio (symphonia tier-1)
+    'wav', 'mp3', 'm4a', 'flac', 'ogg', 'opus', 'aac',
+    'alac', 'caf', 'aiff',
+    // Video containers — audio stream demuxed by symphonia tier-1
+    'mp4', 'mov', 'mkv', 'webm', 'm4v',
+    // Long-tail (tier-2 ffmpeg shell-out)
+    'avi', 'wmv', 'flv', 'ts', 'amr', 'ra', '3gp', 'asf',
+] as const;
+
+/** Superset that drag-drop + file-picker zones use:
+ *  documents + images (handled JS-side via `extractText`) plus
+ *  audio/video (dispatched to the Rust `audio_extract_text`
+ *  Tauri command).  Use this for any drop filter that should
+ *  surface the full P13.5 multimodal capability — passing the
+ *  document-only `SUPPORTED_EXTENSIONS` would silently drop
+ *  audio files, which was the v0.1.40-era user complaint. */
+export const MULTIMODAL_EXTENSIONS = [
+    ...SUPPORTED_EXTENSIONS,
+    ...AUDIO_EXTENSIONS,
+] as const;
+
 export interface ExtractionOptions {
     forceOCR?: boolean;
     signal?: AbortSignal;
@@ -38,22 +65,55 @@ function headingsFromMarkdown(md: string): string[] {
         .filter(Boolean);
 }
 
+/** Set of audio/video extensions for fast dispatch lookup inside
+ *  `extractText`.  Mirrors `AUDIO_EXTENSIONS` but as a Set for
+ *  O(1) membership checks; kept module-local to avoid surfacing
+ *  the Set type in the public exports. */
+const AUDIO_EXTS_SET = new Set<string>(AUDIO_EXTENSIONS);
+
 export async function extractText(
-    file: File | { name: string, arrayBuffer: ArrayBuffer },
+    file: File | { name: string, arrayBuffer: ArrayBuffer, path?: string },
     options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
     let name: string;
     let arrayBuffer: ArrayBuffer;
+    let path: string | undefined;
 
     if (file instanceof File) {
         name = file.name;
         arrayBuffer = await file.arrayBuffer();
+        path = undefined; // Browser File has no host path
     } else {
         name = file.name;
         arrayBuffer = file.arrayBuffer;
+        path = file.path;
     }
 
     const extension = name.split('.').pop()?.toLowerCase();
+
+    // Audio / video: dispatch to the Rust-side audio extractor via
+    // the `audio_extract_text` Tauri command.  Keeps the large PCM
+    // buffer entirely in Rust.  Requires the caller to pass `path`
+    // alongside `arrayBuffer` (drag-drop / file-picker call sites
+    // have a host path; pasted/in-memory bytes don't, and would
+    // error with a clear message).
+    if (extension && AUDIO_EXTS_SET.has(extension)) {
+        if (!path) {
+            logWarn(`Audio extraction requires a host path: ${name}`);
+            throw new Error(
+                `Audio/video files need a file-system path. The dropped path was not forwarded; please re-open via "Add Files" instead of pasting.`
+            );
+        }
+        const pickedTool = `crispasr (.${extension})`;
+        logInfo(`Extracting ${name} with ${pickedTool} (path-based)`);
+        const text = await invoke<string>('audio_extract_text', { path });
+        logDebug(`Audio extraction finished for ${name}: ${text.length.toLocaleString()} chars (via ${pickedTool})`);
+        // ASR transcripts are a single text stream — no markdown, no
+        // headings, no metadata.  A future pass could lift speaker
+        // labels or chapter timestamps into `headings`.
+        return { text, markdownText: undefined, headings: [] };
+    }
+
     let text = '';
     let markdownText: string | undefined;
     let headings: string[] | undefined;
