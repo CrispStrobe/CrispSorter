@@ -331,6 +331,21 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
+    // P13.7 Stage F — cloud-backup auto-push hook.  Stage C shipped
+    // fire-and-forget tokio::spawn; this is the durable-retry
+    // upgrade: every successful ingest enqueues a `cb_manifest_push`
+    // outbox entry, drained by a background timer (see lib.rs
+    // setup).  On crash / network outage the outbox preserves the
+    // intent across restarts.
+    //
+    // The decision "should we enqueue" is read here once per
+    // worker_loop spawn so a Settings change mid-run picks up at
+    // the next worker_loop restart.
+    let cb_auto_push_enabled: bool = {
+        let g = app_state.index.lock().await;
+        g.config.cloud_backup_push_manifests_enabled
+            && g.config.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+    };
     let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
@@ -605,11 +620,53 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
                 image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
             };
-            pipeline
+            // P13.7 Stage F — capture the wire-shape snapshot BEFORE
+            // ingest_document consumes `raw`.  Enqueue to the outbox
+            // *after* the local write succeeds so a crash between
+            // the local write and the enqueue at worst means a
+            // missed push — which the user can recover by manually
+            // running `crispsorter sync cloud-backup push-manifest`
+            // to walk the LanceDB documents table.
+            let cb_row = if cb_auto_push_enabled {
+                Some(crate::sync::cloud_backup::ManifestRow::from_raw_document(&raw))
+            } else { None };
+            let result = pipeline
                 .ingest_document(raw)
                 .await
-                .map_err(|e| e.to_string())
-                .map(|_| ())
+                .map_err(|e| e.to_string());
+            if result.is_ok() {
+                if let Some(row) = cb_row {
+                    if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
+                        // Outbox enqueue: serialise the row JSON and
+                        // store under op="cb_manifest_push".  The
+                        // background drain task (lib.rs setup) picks
+                        // it up.  Errors here log only — local
+                        // write already succeeded.
+                        let payload = match serde_json::to_string(&row) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                eprintln!(
+                                    "[bg_ingest] cb outbox serialise failed for {}: {e}",
+                                    row.sha256
+                                );
+                                return result.map(|_| ());
+                            }
+                        };
+                        match crate::sync::SyncManager::open(&data_dir) {
+                            Ok(mgr) => {
+                                if let Err(e) = mgr.enqueue("cb_manifest_push", &payload) {
+                                    eprintln!(
+                                        "[bg_ingest] cb outbox enqueue failed for {}: {e}",
+                                        row.sha256
+                                    );
+                                }
+                            }
+                            Err(e) => eprintln!("[bg_ingest] SyncManager open failed: {e}"),
+                        }
+                    }
+                }
+            }
+            result.map(|_| ())
         }
 
         // ── Extraction error (anyhow) ────────────────────────────────────
