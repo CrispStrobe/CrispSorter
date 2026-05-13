@@ -801,13 +801,66 @@ mod tests {
     }
 
     #[test]
-    fn extract_text_with_opts_no_ocr_skips_image() {
+    fn extract_text_with_opts_no_ocr_returns_l2_exif_only() {
+        // P13.7 Step 1+3 — semantic change.  Pre-P13.7, `try_ocr=false`
+        // + an image extension returned an error ("no extractor").
+        // The new dispatcher treats this as the L2-EXIF-only path:
+        // returns Ok(doc) with full_text = "" so bg_ingest still
+        // writes the image_* LanceDB columns.  Skip-entirely now
+        // requires explicit opt-out via `image_extraction_enabled=
+        // false` or `ingest_image_level="l1"` — see the next test.
         let tmp = tempfile::TempDir::new().unwrap();
         let p = tmp.path().join("scan.png");
-        std::fs::write(&p, b"\x89PNG").unwrap(); // not really a PNG but extension is enough
+        std::fs::write(&p, b"\x89PNG").unwrap(); // fake bytes; ext drives dispatch
         let opts = ExtractOptions { try_ocr: false, ..Default::default() };
-        let res = extract_text_from_path_with_opts(&p, opts);
-        assert!(res.is_err(), "no-OCR + image must error (no extractor)");
+        let doc = extract_text_from_path_with_opts(&p, opts)
+            .expect("L2 EXIF-only path returns Ok with empty text");
+        assert!(doc.full_text.is_empty(), "no OCR → no text");
+        // image_exif will be None for these fake bytes (no real EXIF
+        // header), but the doc is still valid — the L2 contract only
+        // requires Ok(_), not necessarily populated EXIF.
+    }
+
+    #[test]
+    fn extract_text_with_opts_image_l1_skips_entirely() {
+        // P13.7 Step 1+3 — explicit opt-out path: ingest_image_level
+        // = "l1" short-circuits the dispatcher with an explicit
+        // "skipped at L1 by Settings" error.  bg_ingest reads this
+        // error and downgrades the row to L1 metadata-only.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("scan.png");
+        std::fs::write(&p, b"\x89PNG").unwrap();
+        let opts = ExtractOptions {
+            ingest_image_level: "l1".to_string(),
+            ..Default::default()
+        };
+        let err = extract_text_from_path_with_opts(&p, opts)
+            .expect_err("L1 must skip image extraction with an error");
+        assert!(
+            err.to_string().contains("skipped at L1"),
+            "error must reference L1: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_text_with_opts_image_master_switch_off_skips_entirely() {
+        // P13.7 Step 3 — master switch.  `image_extraction_enabled=
+        // false` is the user-facing toggle in Settings → Multimodal;
+        // it takes the same "skipped at L1 by Settings" exit as the
+        // L1 path above.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("scan.png");
+        std::fs::write(&p, b"\x89PNG").unwrap();
+        let opts = ExtractOptions {
+            image_extraction_enabled: false,
+            ..Default::default()
+        };
+        let err = extract_text_from_path_with_opts(&p, opts)
+            .expect_err("master switch off must skip image extraction");
+        assert!(
+            err.to_string().contains("skipped at L1"),
+            "error must reference L1: {err}"
+        );
     }
 
     #[test]

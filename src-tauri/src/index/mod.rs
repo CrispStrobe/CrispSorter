@@ -295,6 +295,35 @@ pub struct IndexConfig {
     /// upstream is a privacy-sensitive action.
     #[serde(default)]
     pub crisplens_image_enrichment_enabled: bool,
+    /// P13.7 Step 5 — cloud-backup HTTP API base URL (e.g.
+    /// `https://<crisplens-host>/cb`).  When set + the matching
+    /// API key is in the OS keychain (per the
+    /// [`crate::sync::secret`] module), the SyncManager can push
+    /// manifests / embeddings to the VPS and pull deltas from
+    /// other clients.  `None` (default) leaves the feature
+    /// disabled — no network round-trips.
+    #[serde(default)]
+    pub cloud_backup_url: Option<String>,
+    /// When true, the bg_ingest pipeline pushes each indexed
+    /// document's L1 metadata to the configured cloud-backup VPS
+    /// via [`crate::sync::cloud_backup::CloudBackupClient::manifest_push`].
+    /// Default false — opt-in because uploading file paths +
+    /// hashes to a remote server is a privacy-sensitive action.
+    #[serde(default)]
+    pub cloud_backup_push_manifests_enabled: bool,
+    /// When true, the SyncManager also pushes already-computed
+    /// embeddings (dense + sparse) to the VPS.  Default false:
+    /// 1024-d × f32 × 100k chunks ≈ 400 MB, which is bandwidth-
+    /// sensitive and only useful for the cross-device "phone
+    /// hits the VPS for vector search" workflow.
+    #[serde(default)]
+    pub cloud_backup_push_embeddings_enabled: bool,
+    /// When true, the SyncManager periodically pulls manifest
+    /// deltas from the VPS and writes them as L1 rows into the
+    /// local index (same shape as the existing P11 `sync_pull`
+    /// for crisp-index-server).  Default false.
+    #[serde(default)]
+    pub cloud_backup_pull_manifests_enabled: bool,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -440,6 +469,10 @@ impl Default for IndexConfig {
             ingest_audio_level: IngestAudioLevel::default(),
             ingest_image_level: IngestImageLevel::default(),
             crisplens_image_enrichment_enabled: false,
+            cloud_backup_url: None,
+            cloud_backup_push_manifests_enabled: false,
+            cloud_backup_push_embeddings_enabled: false,
+            cloud_backup_pull_manifests_enabled: false,
         }
     }
 }

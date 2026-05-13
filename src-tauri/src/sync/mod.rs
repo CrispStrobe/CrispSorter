@@ -19,6 +19,8 @@
 //! A single row in `sync_state` tracks `last_pull_ts` and `last_push_ts`
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
+pub mod cloud_backup;
+pub mod secret;
 pub mod tauri_commands;
 
 use anyhow::{Context, Result};

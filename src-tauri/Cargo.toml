@@ -129,6 +129,11 @@ usls = { version = "=0.2.0-alpha.3", default-features = false, features = ["visi
 
 [dev-dependencies]
 sysinfo = "0.33"
+# Mock HTTP server for unit tests covering the cloud-backup and
+# CrispLens wire commands.  Async API — `Server::new_async()` + the
+# `match_query` / `match_header` predicates fit the existing
+# `#[tokio::test]` shape.  Adds no runtime weight (dev-only).
+mockito = "1.5"
 
 # ── Feature flags ───────────────────────────────────────────────────────────
 # `crispembed*` features enable the GGUF-based CrispEmbed alternative backend.
