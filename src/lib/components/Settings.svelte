@@ -273,6 +273,14 @@
      *  registry entries — currently require an explicit lid-model
      *  path that the GUI doesn't surface. */
     let indexAudioLidMethod = $state<string>('whisper');
+    /** P13.6 Step 7c — how deeply bg_ingest processes audio/video.
+     *  'l1' = filesystem metadata only (fast, no probe, no ASR).
+     *  'l2' = also runs the cheap symphonia probe to populate the
+     *  audio_* columns (duration / codec / bitrate); no transcript.
+     *  'l3' (default) = full pipeline including ASR transcription.
+     *  Promote from L1/L2 to L3 via the "Transcribe" search-result
+     *  action (Step 8 follow-up). */
+    let indexIngestAudioLevel = $state<string>('l3');
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -753,6 +761,7 @@
         indexAudioExtractionEnabled = await getSetting('indexAudioExtractionEnabled', true) as boolean;
         indexAudioAsrBackend = await getSetting('indexAudioAsrBackend', 'whisper') as string;
         indexAudioLidMethod  = await getSetting('indexAudioLidMethod', 'whisper') as string;
+        indexIngestAudioLevel = await getSetting('indexIngestAudioLevel', 'l3') as string;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1028,6 +1037,7 @@
         await saveSetting('indexAudioExtractionEnabled', indexAudioExtractionEnabled);
         await saveSetting('indexAudioAsrBackend',        indexAudioAsrBackend);
         await saveSetting('indexAudioLidMethod',         indexAudioLidMethod);
+        await saveSetting('indexIngestAudioLevel',       indexIngestAudioLevel);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1165,6 +1175,7 @@
                     audio_extraction_enabled: indexAudioExtractionEnabled,
                     audio_asr_backend:        indexAudioAsrBackend || 'whisper',
                     audio_lid_method:         indexAudioLidMethod || 'whisper',
+                    ingest_audio_level:       indexIngestAudioLevel || 'l3',
                 }
             });
             if (indexEnabled) {
@@ -2582,6 +2593,19 @@
                 <p class="hint">
                     {i18n.t.settings.index.audio_lid_method_hint ??
                      'Which method detects the source language of an audio file. whisper reuses the loaded ASR model and auto-resolves a whisper-base ggml when the ASR backend is non-whisper-family. Silero / Ecapa / Firered are placeholders for future CrispASR registry entries.'}
+                </p>
+
+                <label for="index-audio-level" style="margin-top:10px;">
+                    {i18n.t.settings.index.ingest_audio_level ?? 'Ingest level'}
+                </label>
+                <select id="index-audio-level" bind:value={indexIngestAudioLevel} class="styled-select" disabled={!indexAudioExtractionEnabled}>
+                    <option value="l3">L3 — full pipeline (probe + transcribe, default)</option>
+                    <option value="l2">L2 — probe only (duration + codec, no transcript)</option>
+                    <option value="l1">L1 — filesystem only (path + size, no probe, no transcript)</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.ingest_audio_level_hint ??
+                     'How deeply bg_ingest processes audio/video files. L1 is fastest (just the filename in the index); L2 adds a sub-millisecond symphonia probe for duration / codec / bitrate; L3 (default) runs the full transcription too. Promote individual L1/L2 rows to L3 later via the "Transcribe" action in search results.'}
                 </p>
             </div>
 
