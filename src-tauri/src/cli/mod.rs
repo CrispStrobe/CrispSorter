@@ -248,6 +248,65 @@ enum CloudBackupCmd {
     },
     /// Wipe the stored token without touching the URL.  Idempotent.
     Logout,
+    /// `GET /api/search?q=…` — full-text search over the cloud-
+    /// backup VPS's index of pushed `full_text` bodies.  FTS5
+    /// grammar: `-` is NOT; quote tokens with hyphens as `"foo-bar"`.
+    /// Returns rows in the same payload shape as Pull.
+    Search {
+        /// Query string (FTS5 grammar).
+        query: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// `POST /api/files/by-hash/<sha>` — upload bytes for a previously-
+    /// pushed manifest row.  Server verifies the hash; idempotent on
+    /// re-upload.  Owner-scope: requires a manifest reference to the
+    /// hash to already exist (push-manifest first).
+    UploadFile {
+        /// Local file to upload.
+        path: PathBuf,
+        /// SHA-256 to upload under.  When omitted, computed from
+        /// `path` (so the typical case is `crispsorter sync
+        /// cloud-backup upload-file /path/to/file`).
+        #[arg(long)]
+        sha256: Option<String>,
+    },
+    /// `GET /api/files/by-hash/<sha>` — stream bytes from the VPS
+    /// to `--out`.  Verifies the sha as bytes arrive; if integrity
+    /// fails, the dest file is removed.
+    DownloadFile {
+        /// 64-char lowercase hex SHA-256.
+        sha256: String,
+        /// Output path on the local filesystem.
+        #[arg(long, short = 'o')]
+        out: PathBuf,
+    },
+    /// Stage F — drain the durable-retry outbox.  POSTs queued
+    /// `cb_manifest_push` entries to /api/manifest/push.  bg_ingest
+    /// enqueues automatically when `cloud_backup_push_manifests_enabled`
+    /// is true; this subcommand lets headless / CI flows trigger
+    /// the drain on demand.
+    Drain {
+        #[arg(long, default_value_t = 64)]
+        batch_size: usize,
+    },
+    /// Stage H — compute the embedding vector for `text` on the
+    /// cloud-backup VPS (CPU-only, fastembed-backed).  Useful for
+    /// headless / phone clients that don't have the embedder
+    /// model loaded locally.  The first call to a never-used
+    /// model triggers a ~500MB ONNX weight download (up to 60s).
+    EmbedQuery {
+        /// Text to embed.
+        text: String,
+        /// Model name (run `embed-models` for the catalog).
+        /// Default: bge-m3 (1024-d multilingual).
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Stage H — list the embedder model names this server's
+    /// /api/index/embed-query route accepts + whether fastembed is
+    /// installed at all.
+    EmbedModels,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2166,37 +2225,38 @@ async fn cmd_sync_cloud_backup(
 
             let last_ts: i64 = mgr.get_state("cb_last_manifest_push_ts").ok().flatten()
                 .and_then(|s| s.parse().ok()).unwrap_or(0);
-            let docs = local.list_documents(limit * 4).await.map_err(|e| e.to_string())?;
+            // Stage A — use the new push-candidate projection so
+            // full_text flows along with the metadata.
+            let candidates = local.list_documents_for_push(last_ts, limit)
+                .await.map_err(|e| e.to_string())?;
 
             let mut rows: Vec<ManifestRow> = Vec::new();
             let mut max_ts = last_ts;
-            for d in docs {
-                let meta = d.metadata_json.as_deref()
+            for c in &candidates {
+                let meta = c.metadata_json.as_deref()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                     .unwrap_or(serde_json::Value::Null);
-                let indexed_at = meta.get("indexed_at").and_then(|v| v.as_i64()).unwrap_or(0);
-                if indexed_at <= last_ts { continue; }
                 let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0);
                 let fs_mtime = meta.get("fs_mtime").and_then(|v| v.as_f64())
                     .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_i64()).map(|i| i as f64))
                     .unwrap_or(0.0);
-                let parent_dir = meta.get("parent_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let path = meta.get("fs_path").and_then(|v| v.as_str()).map(|s| s.to_string())
-                    .unwrap_or_else(|| d.location_uri.clone());
-                max_ts = max_ts.max(indexed_at);
+                    .unwrap_or_else(|| c.location_uri.clone());
+                max_ts = max_ts.max(c.indexed_at);
                 rows.push(ManifestRow {
                     path,
                     size_bytes: fs_size,
-                    sha256: meta.get("source_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    sha256: c.source_hash.clone(),
                     mtime_unix: fs_mtime,
-                    owner_id: d.owner_id.clone(),
-                    filename: d.filename.clone().unwrap_or_default(),
-                    ext: d.ext.clone().unwrap_or_default(),
-                    parent_dir,
-                    language: d.language.clone(),
-                    title: d.title.clone(),
-                    author: d.author.clone(),
-                    year: d.year,
+                    owner_id: c.owner_id.clone(),
+                    filename: c.filename.clone().unwrap_or_default(),
+                    ext: c.ext.clone().unwrap_or_default(),
+                    parent_dir: c.parent_dir.clone().unwrap_or_default(),
+                    language: c.language.clone(),
+                    title: c.title.clone(),
+                    author: c.author.clone(),
+                    year: c.year,
+                    full_text: c.full_text.clone(),
                 });
                 if rows.len() >= limit { break; }
             }
@@ -2229,32 +2289,65 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::PushEmbeddings { limit: _ } => {
-            // The embedding payload requires re-fetching the dense
-            // + sparse vectors from LanceDB.  The local_index has
-            // no `list_chunks_with_embeddings(limit)` helper yet —
-            // the GUI flow goes through bg_ingest which already has
-            // the vectors at write time.  We surface an explicit
-            // "not yet" message rather than a silent zero-push so
-            // the CLI user knows where to look next.  Wired into
-            // the same task (the protocol + Tauri command +
-            // mockito tests are all in place) once the helper lands.
+        CloudBackupCmd::PushEmbeddings { limit } => {
+            use crate::sync::cloud_backup::EmbeddingRow;
+            let limit = limit.clamp(1, 2000);
+            let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let last_ts: i64 = mgr.get_state("cb_last_embeddings_push_ts").ok().flatten()
+                .and_then(|s| s.parse().ok()).unwrap_or(0);
+            let candidates = local.list_chunks_with_embeddings(last_ts, limit)
+                .await.map_err(|e| e.to_string())?;
+            if candidates.is_empty() {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({
+                        "pushed": 0, "watermark": last_ts,
+                    })),
+                    OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
+                }
+                return Ok(());
+            }
+
+            let mut max_ts = last_ts;
+            let rows: Vec<EmbeddingRow> = candidates.iter().map(|c| {
+                max_ts = max_ts.max(c.indexed_at);
+                EmbeddingRow {
+                    doc_id:      c.doc_id.clone(),
+                    chunk_index: c.chunk_index,
+                    // model_id is required server-side; default to
+                    // a sentinel when LocalIndex didn't record one
+                    // (legacy rows from before embedding_model was
+                    // wired).
+                    model_id:    c.model_id.clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    embedding:   c.embedding.clone(),
+                    sparse_json: c.sparse_json.clone(),
+                }
+            }).collect();
+
+            let pushed = rows.len();
+            let resp = client.embeddings_push(&rows).await
+                .map_err(|e| e.to_string())?;
+            mgr.set_state("cb_last_embeddings_push_ts", &max_ts.to_string())
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
                     serde_json::json!({
-                        "pushed": 0,
-                        "note": "PushEmbeddings requires a LocalIndex::list_chunks_with_embeddings \
-                                 helper that doesn't exist yet — the protocol + Tauri command + \
-                                 mockito tests are in place; the LanceDB scan helper lands in a \
-                                 follow-up.  Use sync_cb_embeddings_push from the GUI / scripts \
-                                 with a hand-built EmbeddingRow list in the meantime."
+                        "pushed": pushed,
+                        "accepted": resp.accepted,
+                        "rejected": resp.rejected,
+                        "errors":   resp.errors,
+                        "watermark": max_ts,
+                        "more_available": pushed == limit,
                     })
                 ),
                 OutFormat::Text => println!(
-                    "PushEmbeddings: not yet exposed from the CLI (server route + Tauri command \
-                     are live; the LanceDB row→vector scan helper lands in a follow-up).  \
-                     Call sync_cb_embeddings_push from the GUI / scripts for now."
+                    "pushed {pushed} embedding(s) (accepted {}, rejected {}{} watermark={max_ts}){}",
+                    resp.accepted,
+                    resp.rejected,
+                    if resp.errors.is_empty() { "" } else { " — see --format json for per-row errors;" },
+                    if pushed == limit { " — more available, re-run to drain" } else { "" }
                 ),
             }
         }
@@ -2296,8 +2389,11 @@ async fn cmd_sync_cloud_backup(
                     language: r.language.clone(),
                     page_count: None,
                     headings_text: None,
-                    full_text: None,
-                    full_text_md: None,
+                    // Stage A — carry server-side full_text into the
+                    // local L1 row so subsequent `crispsorter index
+                    // search` finds remote rows by body text.
+                    full_text: r.full_text.clone(),
+                    full_text_md: r.full_text.clone(),
                     embedding: None,
                     embedding_sparse: None,
                     embedding_model: None,
@@ -2343,6 +2439,182 @@ async fn cmd_sync_cloud_backup(
                     "pulled {} row(s), applied {applied} (watermark={}){}",
                     resp.rows.len(), resp.max_indexed_at,
                     if resp.has_more { " — more available, re-run to drain" } else { "" }
+                ),
+            }
+        }
+
+        CloudBackupCmd::Search { query, limit } => {
+            let resp = client.search(&query, limit.clamp(1, 500))
+                .await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "rows":  resp.rows,
+                        "total": resp.total,
+                    })
+                ),
+                OutFormat::Text => {
+                    if resp.rows.is_empty() {
+                        println!("(no matches for {query:?})");
+                    } else {
+                        println!("{} match(es) for {query:?}:", resp.rows.len());
+                        for h in &resp.rows {
+                            let title = h.title.as_deref()
+                                .unwrap_or(h.filename.as_str());
+                            println!(
+                                "  [{:>6.3}] {:<60.60}  {}",
+                                h.score, title, h.path
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        CloudBackupCmd::UploadFile { path, sha256 } => {
+            if !path.exists() {
+                return Err(format!("file not found: {}", path.display()));
+            }
+            // Either use the user-supplied sha or compute it.  This
+            // mirrors what `images crisplens push` does: the file's
+            // SHA-256 is the natural key for content addressing, and
+            // pre-computing it lets the server reject mismatches.
+            let sha = if let Some(s) = sha256 {
+                let s = s.trim().to_ascii_lowercase();
+                if s.len() != 64 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err("--sha256 must be 64-char lowercase hex".into());
+                }
+                s
+            } else {
+                use sha2::{Digest, Sha256};
+                use std::io::Read;
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || -> Result<String, String> {
+                    let mut f = std::fs::File::open(&p)
+                        .map_err(|e| format!("open {}: {e}", p.display()))?;
+                    let mut h = Sha256::new();
+                    let mut buf = vec![0u8; 1 << 20];
+                    loop {
+                        let n = f.read(&mut buf).map_err(|e| format!("read: {e}"))?;
+                        if n == 0 { break; }
+                        h.update(&buf[..n]);
+                    }
+                    Ok(format!("{:x}", h.finalize()))
+                })
+                .await
+                .map_err(|e| format!("hash join: {e}"))??
+            };
+            let resp = client.upload_file_by_hash(&sha, &path)
+                .await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "sha256":          resp.sha256,
+                        "size_bytes":      resp.size_bytes,
+                        "stored":          resp.stored,
+                        "local_blob_path": resp.local_blob_path,
+                    })
+                ),
+                OutFormat::Text => println!(
+                    "{} {} ({} bytes) → {}",
+                    if resp.stored { "uploaded" } else { "already-present" },
+                    resp.sha256,
+                    resp.size_bytes,
+                    resp.local_blob_path,
+                ),
+            }
+        }
+
+        CloudBackupCmd::EmbedQuery { text, model } => {
+            let resp = client.embed_query(&text, model.as_deref())
+                .await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "model":     resp.model,
+                        "dim":       resp.dim,
+                        "embedding": resp.embedding,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("model: {}", resp.model);
+                    println!("dim:   {}", resp.dim);
+                    let preview: Vec<String> = resp.embedding.iter()
+                        .take(8)
+                        .map(|f| format!("{f:.4}"))
+                        .collect();
+                    println!("vec:   [{}, …] (showing first 8 of {})",
+                             preview.join(", "), resp.embedding.len());
+                }
+            }
+        }
+
+        CloudBackupCmd::EmbedModels => {
+            let resp = client.embed_models().await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "models":    resp.models,
+                        "default":   resp.default,
+                        "available": resp.available,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("fastembed available: {}", resp.available);
+                    println!("default model:       {}", resp.default);
+                    println!("models:");
+                    for m in &resp.models {
+                        println!("  - {m}");
+                    }
+                }
+            }
+        }
+
+        CloudBackupCmd::Drain { batch_size } => {
+            let n = batch_size.clamp(1, 1024);
+            let (pushed, failed) = mgr.drain_cb_outbox(&client, n)
+                .await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({ "pushed": pushed, "failed": failed })
+                ),
+                OutFormat::Text => println!(
+                    "drained outbox: pushed={pushed} failed={failed}"
+                ),
+            }
+        }
+
+        CloudBackupCmd::DownloadFile { sha256, out: dest } => {
+            // Pre-clamp shape to fail fast — server would 400 anyway.
+            let sha = sha256.trim().to_ascii_lowercase();
+            if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("sha256 must be 64-char lowercase hex".into());
+            }
+            if let Some(parent) = dest.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+            }
+            let bytes = client.download_file_by_hash(&sha, &dest)
+                .await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "sha256":    sha,
+                        "bytes":     bytes,
+                        "dest_path": dest.display().to_string(),
+                    })
+                ),
+                OutFormat::Text => println!(
+                    "downloaded {} bytes → {}",
+                    bytes, dest.display()
                 ),
             }
         }
