@@ -39,6 +39,7 @@ pub fn all() -> Vec<Box<dyn Migration>> {
     vec![
         Box::new(AddTextTranslatedColumns),
         Box::new(AddAudioMetadataColumns),
+        Box::new(AddImageMetadataColumns),
     ]
 }
 
@@ -194,6 +195,79 @@ impl Migration for AddAudioMetadataColumns {
     }
 }
 
+/// **v102** — Add the 5 image L2 (EXIF) metadata columns:
+/// `image_camera_make` (Utf8), `image_camera_model` (Utf8),
+/// `image_lens_model` (Utf8), `image_taken_at_unix` (Int64),
+/// `image_iso` (Int32).  All nullable — non-image rows leave them
+/// NULL.
+///
+/// Populated at ingest time from `ExtractedDocument.image_exif`
+/// (curated subset of kamadak-exif tags).  Backfills existing
+/// rows with nulls.  Idempotent: re-running on a schema that
+/// already has all five columns is a no-op.  Same shape as the
+/// v101 audio migration.
+pub struct AddImageMetadataColumns;
+
+#[async_trait]
+impl Migration for AddImageMetadataColumns {
+    fn version(&self) -> u32 {
+        102
+    }
+    fn name(&self) -> &str {
+        "add image_* L2 metadata columns"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(
+                "v102 (add_image_metadata_columns) needs the LanceDB \
+                 handle in MigrationContext — caller didn't supply one"
+            ))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v102 migration")?;
+
+        type Pending = (&'static str, arrow_schema::DataType);
+        let candidates: [Pending; 5] = [
+            ("image_camera_make",  arrow_schema::DataType::Utf8),
+            ("image_camera_model", arrow_schema::DataType::Utf8),
+            ("image_lens_model",   arrow_schema::DataType::Utf8),
+            ("image_taken_at_unix", arrow_schema::DataType::Int64),
+            ("image_iso",          arrow_schema::DataType::Int32),
+        ];
+        let fields_to_add: Vec<arrow_schema::Field> = candidates
+            .into_iter()
+            .filter(|(name, _)| schema.field_with_name(name).is_err())
+            .map(|(name, ty)| arrow_schema::Field::new(name, ty, true))
+            .collect();
+
+        if fields_to_add.is_empty() {
+            eprintln!(
+                "[index] v102 migration skipped — all 5 image_* columns already present"
+            );
+            return Ok(());
+        }
+        let added_names: Vec<&str> =
+            fields_to_add.iter().map(|f| f.name().as_str()).collect();
+        let col_schema = Arc::new(arrow_schema::Schema::new(fields_to_add.clone()));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding image_* metadata columns (v102)")?;
+        eprintln!(
+            "[index] v102 migration applied — added columns: {:?}",
+            added_names
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,7 +314,7 @@ mod tests {
         // framework guarantees.
         assert_eq!(
             summary.applied,
-            vec![100, 101],
+            vec![100, 101, 102],
             "first run must apply every registered migration"
         );
         assert!(summary.skipped.is_empty());
@@ -251,7 +325,7 @@ mod tests {
         // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100, 101]);
+        assert_eq!(summary2.skipped, vec![100, 101, 102]);
     }
 
     #[tokio::test]
@@ -296,5 +370,27 @@ mod tests {
         let mig = AddAudioMetadataColumns;
         assert_eq!(mig.version(), 101);
         assert!(mig.name().contains("audio"), "name = {:?}", mig.name());
+    }
+
+    /// Mirror the v101 guards for v102.
+    #[tokio::test]
+    async fn v102_errors_without_lance_handle() {
+        let mig = AddImageMetadataColumns;
+        let ctx = MigrationContext {
+            lance: None,
+            sqlite: None,
+            data_dir: std::env::temp_dir(),
+        };
+        let err = mig.apply(&ctx).await.expect_err("must error");
+        let msg = err.to_string();
+        assert!(msg.contains("LanceDB handle"), "{msg}");
+        assert!(msg.contains("v102"), "{msg}");
+    }
+
+    #[test]
+    fn v102_version_and_name_are_stable() {
+        let mig = AddImageMetadataColumns;
+        assert_eq!(mig.version(), 102);
+        assert!(mig.name().contains("image"), "name = {:?}", mig.name());
     }
 }

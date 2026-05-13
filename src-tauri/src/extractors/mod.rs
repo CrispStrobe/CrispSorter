@@ -82,6 +82,16 @@ pub struct ExtractedDocument {
     /// `AddAudioMetadataColumns` migration (v101).  `None` for
     /// non-audio extractors.
     pub audio: Option<crate::audio::probe::AudioMetadata>,
+    /// P13.6 Step 9 — L2 image (EXIF) metadata.  Populated only by
+    /// the OCR extractor path via [`crate::images::exif::read_exif`]
+    /// (kamadak-exif under the hood).  Full struct is held here for
+    /// frontend display + future migrations; bg_ingest copies the
+    /// curated subset (camera_make / camera_model / lens_model /
+    /// taken_at_unix / iso) into RawDocument's flat image_* fields.
+    /// `None` for non-image extractors and for images whose EXIF
+    /// block is unparseable or absent (common after re-saves
+    /// through phone galleries / Telegram).
+    pub image_exif: Option<crate::images::exif::ExifSummary>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -298,22 +308,34 @@ pub fn extract_text_from_path_with_opts(
             let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
             let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
 
-            if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-                if let Ok(mut doc) = ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
-                    doc.ext = ext.clone();
-                    return Ok(doc);
+            // P13.6 Step 9 — read EXIF once per image, regardless of
+            // which OCR tier fires.  read_exif is cheap (kamadak-exif
+            // streams the header without touching pixel data) and
+            // best-effort: a failed parse returns `None` so non-EXIF
+            // images (PNG without metadata, re-saved JPEGs) flow
+            // through cleanly with image_exif: None.
+            let image_exif = crate::images::exif::read_exif(path).ok();
+
+            let mut doc = if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+                match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                            ocr_ocrs::ocr_via_ocrs(path)
+                                .or_else(|_| ocr::ocr_via_tesseract(path))?
+                        } else {
+                            ocr::ocr_via_tesseract(path)?
+                        }
+                    }
                 }
-            }
-            if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                if let Ok(mut doc) = ocr_ocrs::ocr_via_ocrs(path) {
-                    doc.ext = ext.clone();
-                    return Ok(doc);
-                }
-            }
-            ocr::ocr_via_tesseract(path).map(|mut doc| {
-                doc.ext = ext.clone();
-                doc
-            })
+            } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
+            } else {
+                ocr::ocr_via_tesseract(path)?
+            };
+            doc.ext = ext.clone();
+            doc.image_exif = image_exif;
+            Ok(doc)
         }
         e if audio::AUDIO_EXTS.contains(&e) => {
             // P13.5 slice B / P13.6 Step 7c — audio / video.
@@ -367,6 +389,7 @@ pub fn extract_text_from_path_with_opts(
                         translated_text: None,
                         translated_to_lang: None,
                         audio: audio_meta,
+                        image_exif: None,
                     })
                 }
                 #[cfg(not(feature = "crispasr"))]

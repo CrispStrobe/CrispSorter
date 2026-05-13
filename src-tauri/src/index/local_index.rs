@@ -1487,6 +1487,18 @@ fn chunks_to_record_batch(
         chunks.iter().map(|c| c.audio_channels).collect();
     let audio_bitrate_kbpss: arrow_array::Int32Array =
         chunks.iter().map(|c| c.audio_bitrate_kbps).collect();
+    // P13.6 Step 9 — image L2 (EXIF) columns added by migration v102.
+    // Five nullable columns; non-image rows pass through as nulls.
+    let image_camera_makes: StringArray =
+        chunks.iter().map(|c| c.image_camera_make.as_deref()).collect();
+    let image_camera_models: StringArray =
+        chunks.iter().map(|c| c.image_camera_model.as_deref()).collect();
+    let image_lens_models: StringArray =
+        chunks.iter().map(|c| c.image_lens_model.as_deref()).collect();
+    let image_taken_at_unixs: arrow_array::Int64Array =
+        chunks.iter().map(|c| c.image_taken_at_unix).collect();
+    let image_isos: arrow_array::Int32Array =
+        chunks.iter().map(|c| c.image_iso).collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1525,6 +1537,11 @@ fn chunks_to_record_batch(
             Arc::new(audio_sample_rate_hzs),
             Arc::new(audio_channelss),
             Arc::new(audio_bitrate_kbpss),
+            Arc::new(image_camera_makes),
+            Arc::new(image_camera_models),
+            Arc::new(image_lens_models),
+            Arc::new(image_taken_at_unixs),
+            Arc::new(image_isos),
         ],
     )
     .context("building RecordBatch")?;

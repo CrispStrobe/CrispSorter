@@ -465,6 +465,12 @@ pub async fn index_ingest_path(
         audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
         audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
         audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+        // P13.6 Step 9 — image L2 (EXIF) curated subset.
+        image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+        image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+        image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+        image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+        image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
     };
 
     let lock = state.index.lock().await;
@@ -530,6 +536,11 @@ pub async fn index_ingest_document(
         audio_sample_rate_hz: None,
         audio_channels: None,
         audio_bitrate_kbps: None,
+        image_camera_make: None,
+        image_camera_model: None,
+        image_lens_model: None,
+        image_taken_at_unix: None,
+        image_iso: None,
     };
 
     use tauri::Emitter;
@@ -663,6 +674,12 @@ pub async fn index_ingest_document(
             audio_sample_rate_hz: raw.audio_sample_rate_hz,
             audio_channels: raw.audio_channels,
             audio_bitrate_kbps: raw.audio_bitrate_kbps,
+            // P13.6 Step 9 — image L2 carries through likewise.
+            image_camera_make: raw.image_camera_make.clone(),
+            image_camera_model: raw.image_camera_model.clone(),
+            image_lens_model: raw.image_lens_model.clone(),
+            image_taken_at_unix: raw.image_taken_at_unix,
+            image_iso: raw.image_iso,
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -769,6 +786,11 @@ pub async fn index_ingest_batch(
                 audio_sample_rate_hz: None,
                 audio_channels: None,
                 audio_bitrate_kbps: None,
+                image_camera_make: None,
+                image_camera_model: None,
+                image_lens_model: None,
+                image_taken_at_unix: None,
+                image_iso: None,
             })
             .collect();
 
@@ -850,6 +872,11 @@ pub async fn index_ingest_batch(
             audio_sample_rate_hz: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
@@ -1630,6 +1657,12 @@ pub async fn index_audio_promote_l3(
         audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
         audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
         audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+        // P13.6 Step 9 — image L2 (EXIF) curated subset.
+        image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+        image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+        image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+        image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+        image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
     };
 
     pipeline
@@ -2778,6 +2811,12 @@ async fn promote_path(
         audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
         audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
         audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+        // P13.6 Step 9 — image L2 (EXIF) curated subset.
+        image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+        image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+        image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+        image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+        image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
     };
 
     // Delete the existing L1 row before re-ingesting.
