@@ -97,6 +97,23 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         Field::new("audio_sample_rate_hz", DataType::Int32, true),
         Field::new("audio_channels", DataType::Int32, true),
         Field::new("audio_bitrate_kbps", DataType::Int32, true),
+        // ── P13.6 Step 9 — image L2 (EXIF) ────────────────────────────
+        // Curated subset of the kamadak-exif tags surfaced by the
+        // P13 Bilder preview pane.  5 columns rather than the full
+        // ExifSummary so search-time scalar filters work directly
+        // ("show me photos shot on a Canon EOS R6" / "after 2020").
+        // The full ExifSummary stays accessible via the P13 Bilder
+        // tab; the index columns are the minimum needed for search.
+        // Populated by the OCR extractor when feature `paddle-ocr`
+        // / `ocrs` / tesseract returns successfully, or NULL when
+        // EXIF can't be parsed.  Added on existing tables via the
+        // `AddImageMetadataColumns` migration in
+        // `index/migrations.rs` (v102).
+        Field::new("image_camera_make", DataType::Utf8, true),
+        Field::new("image_camera_model", DataType::Utf8, true),
+        Field::new("image_lens_model", DataType::Utf8, true),
+        Field::new("image_taken_at_unix", DataType::Int64, true),
+        Field::new("image_iso", DataType::Int32, true),
     ]))
 }
 
@@ -168,6 +185,15 @@ pub struct DocumentChunk {
     pub audio_sample_rate_hz: Option<i32>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
+
+    // P13.6 Step 9 — image L2 (EXIF).  Populated by the OCR
+    // extractor for images; `None` for non-image rows.  Lands in
+    // the image_* LanceDB columns added by migration v102.
+    pub image_camera_make: Option<String>,
+    pub image_camera_model: Option<String>,
+    pub image_lens_model: Option<String>,
+    pub image_taken_at_unix: Option<i64>,
+    pub image_iso: Option<i32>,
 }
 
 /// Lightweight search result returned to the frontend.

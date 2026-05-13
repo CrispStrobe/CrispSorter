@@ -36,6 +36,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         translated_text: None,
         translated_to_lang: None,
         audio: None,
+        image_exif: None,
     })
 }
 

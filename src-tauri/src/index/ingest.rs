@@ -131,6 +131,15 @@ pub struct RawDocument {
     pub audio_sample_rate_hz: Option<i32>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
+
+    /// P13.6 Step 9 — image L2 (EXIF).  Populated by the OCR
+    /// extractor for images.  None for non-image rows.  Lands in
+    /// the `image_*` LanceDB columns added by migration v102.
+    pub image_camera_make: Option<String>,
+    pub image_camera_model: Option<String>,
+    pub image_lens_model: Option<String>,
+    pub image_taken_at_unix: Option<i64>,
+    pub image_iso: Option<i32>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -467,6 +476,11 @@ impl IngestPipeline {
                     audio_sample_rate_hz: None,
                     audio_channels: None,
                     audio_bitrate_kbps: None,
+                    image_camera_make: None,
+                    image_camera_model: None,
+                    image_lens_model: None,
+                    image_taken_at_unix: None,
+                    image_iso: None,
                 }
             })
             .collect();
@@ -577,6 +591,11 @@ impl IngestPipeline {
             audio_sample_rate_hz: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -699,6 +718,12 @@ fn build_doc_chunk(
         audio_sample_rate_hz: raw.audio_sample_rate_hz,
         audio_channels: raw.audio_channels,
         audio_bitrate_kbps: raw.audio_bitrate_kbps,
+        // P13.6 Step 9 — image L2 carries through the same way.
+        image_camera_make: raw.image_camera_make.clone(),
+        image_camera_model: raw.image_camera_model.clone(),
+        image_lens_model: raw.image_lens_model.clone(),
+        image_taken_at_unix: raw.image_taken_at_unix,
+        image_iso: raw.image_iso,
     }
 }
 
@@ -766,6 +791,11 @@ mod tests {
             audio_sample_rate_hz: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
         }
     }
 

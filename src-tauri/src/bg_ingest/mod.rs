@@ -589,6 +589,12 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
                 audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
                 audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+                // P13.6 Step 9 — image L2 (EXIF) curated subset.
+                image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+                image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+                image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+                image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+                image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
             };
             pipeline
                 .ingest_document(raw)

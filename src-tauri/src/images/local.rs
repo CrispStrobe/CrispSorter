@@ -446,6 +446,11 @@ mod tests {
             audio_sample_rate_hz: None,
             audio_channels: None,
             audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
         }
     }
 

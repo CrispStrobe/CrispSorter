@@ -117,6 +117,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         translated_text: None,
         translated_to_lang: None,
         audio: audio_meta,
+        image_exif: None,
     })
 }
 
