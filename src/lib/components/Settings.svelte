@@ -9,7 +9,8 @@
         Loader2, FolderOpen, Save, Languages, MessageSquare,
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
         Rocket, FileText, Brain, Square, ChevronUp, ChevronDown, Info,
-        RotateCcw, Search, CheckCircle2, AlertCircle, Beaker, Play, Check
+        RotateCcw, Search, CheckCircle2, AlertCircle, Beaker, Play, Check,
+        Server
     } from 'lucide-svelte';
     import { open as openDialog, save, ask } from '@tauri-apps/plugin-dialog';
     import * as opener from '@tauri-apps/plugin-opener';
@@ -293,6 +294,22 @@
      *  Default off because pushing every image upstream is a
      *  privacy-sensitive action; users opt in explicitly. */
     let indexCrispLensImageEnrichment = $state<boolean>(false);
+
+    /** P13.7 Step 5 — cloud-backup HTTP sync settings.
+     *  URL persists in IndexConfig (JSON-safe); the API key is
+     *  write-only — the input field captures it once and we hand it
+     *  to `sync_cb_set_token` for OS-keychain storage.  Empty + save
+     *  clears the stored token. */
+    let indexCloudBackupUrl                = $state<string>('');
+    let indexCloudBackupApiKeyInput        = $state<string>('');
+    let indexCloudBackupPushManifests      = $state<boolean>(false);
+    let indexCloudBackupPushEmbeddings     = $state<boolean>(false);
+    let indexCloudBackupPullManifests      = $state<boolean>(false);
+    /** Last status payload (refreshed when the panel opens or after
+     *  a save).  Drives the inline "connected to cloud-backup
+     *  0.1.0" hint + the watermark display. */
+    let indexCloudBackupStatus: any        = $state(null);
+    let indexCloudBackupTokenSavedMsg      = $state<string>('');
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -777,6 +794,11 @@
         indexImageExtractionEnabled = await getSetting('indexImageExtractionEnabled', true) as boolean;
         indexIngestImageLevel = await getSetting('indexIngestImageLevel', 'l3') as string;
         indexCrispLensImageEnrichment = await getSetting('indexCrispLensImageEnrichment', false) as boolean;
+        // P13.7 Step 5 — cloud-backup sync settings.
+        indexCloudBackupUrl            = await getSetting('indexCloudBackupUrl', '');
+        indexCloudBackupPushManifests  = await getSetting('indexCloudBackupPushManifests', false) as boolean;
+        indexCloudBackupPushEmbeddings = await getSetting('indexCloudBackupPushEmbeddings', false) as boolean;
+        indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1056,6 +1078,13 @@
         await saveSetting('indexImageExtractionEnabled', indexImageExtractionEnabled);
         await saveSetting('indexIngestImageLevel',       indexIngestImageLevel);
         await saveSetting('indexCrispLensImageEnrichment', indexCrispLensImageEnrichment);
+        // P13.7 Step 5 — cloud-backup sync settings (URL + 3 toggles).
+        // The API key is NEVER persisted here — it goes straight to
+        // the OS keychain via sync_cb_set_token in saveCloudBackupToken.
+        await saveSetting('indexCloudBackupUrl',            indexCloudBackupUrl);
+        await saveSetting('indexCloudBackupPushManifests',  indexCloudBackupPushManifests);
+        await saveSetting('indexCloudBackupPushEmbeddings', indexCloudBackupPushEmbeddings);
+        await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1197,6 +1226,11 @@
                     image_extraction_enabled: indexImageExtractionEnabled,
                     ingest_image_level:       indexIngestImageLevel || 'l3',
                     crisplens_image_enrichment_enabled: indexCrispLensImageEnrichment,
+                    // P13.7 Step 5 — cloud-backup sync.
+                    cloud_backup_url:                        indexCloudBackupUrl.trim() || null,
+                    cloud_backup_push_manifests_enabled:     indexCloudBackupPushManifests,
+                    cloud_backup_push_embeddings_enabled:    indexCloudBackupPushEmbeddings,
+                    cloud_backup_pull_manifests_enabled:     indexCloudBackupPullManifests,
                 }
             });
             if (indexEnabled) {
@@ -1218,6 +1252,50 @@
     async function pickIndexDataDir() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (selected) { indexDataDir = selected as string; }
+    }
+
+    /** P13.7 Step 5 — write the typed API key value to the OS keychain
+     *  via the sync_cb_set_token Tauri command.  Clears the input field
+     *  on success so the value doesn't linger in DOM memory.  An empty
+     *  value clears the stored token (matches the command's idempotent
+     *  delete semantics). */
+    async function saveCloudBackupToken() {
+        if (!indexCloudBackupUrl.trim()) {
+            indexCloudBackupTokenSavedMsg = 'Set the URL first, then save the key.';
+            return;
+        }
+        // The cloud_backup_url is read off IndexConfig by the command;
+        // make sure the in-memory config has the URL applied before we
+        // ask the backend to write the keychain entry against it.
+        try {
+            await invoke('index_set_config', {
+                config: { cloud_backup_url: indexCloudBackupUrl.trim() }
+            });
+        } catch {
+            /* index_set_config tolerates partial configs only when
+               nothing else is in flight; if it fails here we still
+               try to save the token — the URL might already be applied. */
+        }
+        try {
+            await invoke('sync_cb_set_token', { token: indexCloudBackupApiKeyInput });
+            indexCloudBackupApiKeyInput = '';
+            indexCloudBackupTokenSavedMsg = indexCloudBackupApiKeyInput === ''
+                ? 'Token cleared.'
+                : 'Saved to keychain.';
+            await refreshCloudBackupStatus();
+        } catch (e: any) {
+            indexCloudBackupTokenSavedMsg = `Error: ${e}`;
+        }
+    }
+
+    /** Refresh the inline status line (version + watermarks + error).
+     *  Tolerates the cold-start case where data_dir isn't seeded yet. */
+    async function refreshCloudBackupStatus() {
+        try {
+            indexCloudBackupStatus = await invoke('sync_cb_status');
+        } catch {
+            indexCloudBackupStatus = null;
+        }
     }
 
     async function pickIndexModelCacheDir() {
@@ -2663,6 +2741,77 @@
                     {i18n.t.settings.index.crisplens_image_enrichment_hint ??
                      'When on, each indexed image is also pushed to the configured CrispLens server for face detection + clustering. Requires Tier 2 to be configured (URL + login). Default off — pushing every image upstream is a privacy-sensitive action that you should turn on intentionally.'}
                 </p>
+            </div>
+
+            <!-- P13.7 Step 5 — cloud-backup HTTP sync.  Talks to a
+                 FastAPI module on a VPS that owns the same
+                 <catalog-db> vps_worker.py manages.  URL +
+                 toggles live in IndexConfig (JSON-safe); API key
+                 goes to the OS keychain via sync_cb_set_token. -->
+            <div class="section-card">
+                <label><Server size={16} /> {i18n.t.settings.index.cloud_backup_section ?? 'Cloud-backup sync'}</label>
+                <p class="hint">{i18n.t.settings.index.cloud_backup_section_hint ?? ''}</p>
+
+                <label for="index-cb-url" style="margin-top:10px;">
+                    {i18n.t.settings.index.cloud_backup_url ?? 'Cloud-backup URL'}
+                </label>
+                <input id="index-cb-url" type="text" bind:value={indexCloudBackupUrl}
+                       placeholder={i18n.t.settings.index.cloud_backup_url_placeholder ?? 'https://your-vps.example.com/cb'} />
+
+                <label for="index-cb-key" style="margin-top:10px;">
+                    {i18n.t.settings.index.cloud_backup_api_key ?? 'API key'}
+                </label>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <input id="index-cb-key" type="password" autocomplete="off"
+                           bind:value={indexCloudBackupApiKeyInput}
+                           placeholder={i18n.t.settings.index.cloud_backup_api_key_placeholder ?? 'cbk_...'}
+                           style="flex:1;" />
+                    <button type="button" class="btn" onclick={saveCloudBackupToken}
+                            disabled={!indexCloudBackupUrl.trim()}>
+                        Save
+                    </button>
+                </div>
+                {#if indexCloudBackupTokenSavedMsg}
+                    <p class="hint" style="color: var(--color-success, #2a8);">{indexCloudBackupTokenSavedMsg}</p>
+                {/if}
+                <p class="hint">
+                    {i18n.t.settings.index.cloud_backup_api_key_hint ?? ''}
+                </p>
+
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+                    <input type="checkbox" bind:checked={indexCloudBackupPushManifests} />
+                    <span>{i18n.t.settings.index.cloud_backup_push_manifests ?? 'Push manifests'}</span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.cloud_backup_push_manifests_hint ?? ''}</p>
+
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                    <input type="checkbox" bind:checked={indexCloudBackupPushEmbeddings} />
+                    <span>{i18n.t.settings.index.cloud_backup_push_embeddings ?? 'Push embeddings'}</span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.cloud_backup_push_embeddings_hint ?? ''}</p>
+
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                    <input type="checkbox" bind:checked={indexCloudBackupPullManifests} />
+                    <span>{i18n.t.settings.index.cloud_backup_pull_manifests ?? 'Pull manifests'}</span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.cloud_backup_pull_manifests_hint ?? ''}</p>
+
+                <!-- Compact status line — version + watermarks.  Refreshes
+                     on save and on initial mount via refreshCloudBackupStatus. -->
+                {#if indexCloudBackupStatus}
+                    <p class="hint" style="margin-top:10px;">
+                        {#if indexCloudBackupStatus.health?.ok}
+                            ✅ connected to cloud-backup {indexCloudBackupStatus.health.version}
+                            {#if indexCloudBackupStatus.health.shared_catalog}(shared){:else}(per-owner){/if}
+                            · last push: {indexCloudBackupStatus.last_manifest_push_ts ?? '—'}
+                            · last pull: {indexCloudBackupStatus.last_manifest_pull_ts ?? '—'}
+                        {:else if indexCloudBackupStatus.configured && !indexCloudBackupStatus.token_present}
+                            ⚠️ URL configured but no API key in keychain — paste one above and Save.
+                        {:else if indexCloudBackupStatus.error}
+                            ❌ {indexCloudBackupStatus.error}
+                        {/if}
+                    </p>
+                {/if}
             </div>
 
             <!-- Compute device — options depend on the selected engine.
