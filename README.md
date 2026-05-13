@@ -66,7 +66,10 @@ Groq · OpenRouter · Mistral · OpenAI · Nebius · Scaleway
   - **Index-time batch**: flipped on from `Settings → Search Index → Index-time translation` (dropdown with en/de/fr/es/it/ja/zh) → persisted to `<data_dir>/index_config.json` → next `bg_ingest` pass auto-resolves CLD3 text-LID + runs MT after each extraction, writing into dedicated `text_translated` + `text_translated_lang` LanceDB columns alongside the original `full_text`.  Useful for an English-only corpus that wants foreign-language documents pre-translated and searchable by English keywords without per-query MT overhead.
   - **Search-side query rewrite**: `SearchFilters::prefer_translated_lang = Some("en")` restricts results to rows whose `text_translated_lang` matches, AND swaps the displayed snippet from the original to the translated text — the search-results UI's preview shows the English text that matches the English query, not the source-language original.
   - **4 MT backends**: `m2m100` (default, 100 langs any-to-any), `m2m100-wmt21` (EN↔{zh,de,fr,ja,ru,is,ha} direction-specific), `madlad` (419 langs via target-language prefix), `gemma4-e2b` (dual ASR+MT).
-- **Schema-migration framework** — versioned `Migration` async trait with SQLite ledger at `<data-dir>/.crispsorter_migrations.db`.  Gap detection, duplicate-version rejection, downgrade guard (ledger says vN applied but no matching migration registered → refuse to proceed), failure isolation (mid-run failure leaves the ledger consistent for resume).  First real consumer is `AddTextTranslatedColumns` (v100), which added the translation columns to existing LanceDB tables on the 2026-05-12 ship.
+- **Multimodal Settings + L1/L2/L3 ingest depth** (P13.6 + P13.7, complete) — `Settings → Search Index → Multimodal processing` exposes (a) a master switch + ASR backend dropdown (whisper / whisper-large-v3 / whisper-small / whisper-medium / parakeet / qwen3-omni) + LID method + audio ingest depth (L1=filesystem only / L2=symphonia probe / L3=full transcription, default L3); (b) the parallel image controls — master switch + image ingest depth (L1 / L2=EXIF / L3=EXIF+OCR); (c) opt-in CrispLens image-push.  Audio L2 metadata (`duration / codec / sample_rate / channels / bitrate_kbps`) and image L2 EXIF (`camera_make / camera_model / lens_model / taken_at_unix / iso`) land in dedicated LanceDB columns via schema migrations v101 + v102.  Per-row promotion via "Transcribe" (audio) / "Re-OCR" (image) buttons on search results that re-ingest a specific row through the L3 pipeline regardless of the global level.  Drop zones in both Stapel + Kataloge accept all 22 audio/video extensions and surface a "Transcribing" status badge while whisper runs.
+- **CLI search with cloud-backup-parity filters** (P13.7) — `crispsorter index search "query"` accepts `--ext pdf,docx --hash a1b2c3 --folder-prefix /path --lang de --translated-to en --year-min 2020 --year-max 2025 --min-size 100KB --max-size 50MB --after 2023-01-01 --before 2025-06-01 --audio-duration-min 60 --audio-duration-max 1800 --image-camera-make Apple --image-camera-model 'iPhone 15 Pro' --limit 50 -f table|json`.  Pushes ext / hash / folder / language / year / audio-duration / image-camera filters into LanceDB scalar SQL; size + date filters post-hoc on `metadata_json.fs_size` / `fs_mtime` (promote to scalar columns is a tracked follow-up).  Mirrors `../cloud-backup`'s `search.py` flag set so users moving between the two tools don't relearn the surface.
+- **CrispLens image push** (P13.7, opt-in) — `images_crisplens_image_push(path, visibility?)` Tauri command + Settings → Multimodal toggle.  Two-phase: GET `/api/images/by-hash/{sha256}` for dedup, multipart POST `/api/ingest/upload-local` on miss.  Server runs face detection + ArcFace embeddings + (optional) VLM description, stores in its own SQLite + `uploads/` tree.  Privacy-aware default: off until you opt in.
+- **Schema-migration framework** — versioned `Migration` async trait with SQLite ledger at `<data-dir>/.crispsorter_migrations.db`.  Gap detection, duplicate-version rejection, downgrade guard (ledger says vN applied but no matching migration registered → refuse to proceed), failure isolation (mid-run failure leaves the ledger consistent for resume).  Three real consumers landed: `AddTextTranslatedColumns` (v100, P13.5), `AddAudioMetadataColumns` (v101, P13.6), `AddImageMetadataColumns` (v102, P13.7).
 - **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
 - **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs
 - **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
@@ -93,6 +96,19 @@ crispsorter index init --model bge-m3 --device metal   # download embedder weigh
 crispsorter index ingest /path/to/docs                 # full extraction + embedding pipeline
 crispsorter index stats                                # docs / chunks / fts-docs counts
 crispsorter index search "karl barth"                  # BM25 FTS
+
+# Richer search (P13.7) — cloud-backup parity filter set
+crispsorter index search "klimaschutz" \
+    --ext pdf,docx --lang de --year-min 2020 \
+    --folder-prefix /Users/foo/papers \
+    --min-size 100KB --max-size 50MB \
+    --after 2023-01-01 \
+    --limit 30 -f table
+crispsorter index search "podcast" \
+    --ext mp3,wav,m4a --audio-duration-min 600 --audio-duration-max 3600 \
+    --lang en --limit 20
+crispsorter index search "berlin" \
+    --ext jpg,png --image-camera-make Apple --after 2024-01-01 -f json
 crispsorter index list-failed --retryable-only
 crispsorter index retry-failed [--dry-run]
 crispsorter index export-cidx my-archive.cidx --include-fts

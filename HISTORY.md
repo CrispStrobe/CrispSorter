@@ -9,6 +9,116 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-13 — P13.6 Multimodal UX + L1/L2/L3 audio + P13.7 Steps 1+2+3+4+6 (image L1/L2/L3, CLI search, CrispLens push)
+
+Two interlocking verticals shipped end-to-end:
+
+**P13.6** closed the audio-side UX gap from the 2026-05-12 P13.5
+ingest vertical — users can now drop audio/video files into both
+Stapel and Kataloge, watch a "Transcribing" status badge while
+whisper runs, see the detected source language + duration in the
+batch table, configure ASR backend / LID method / L1-L2-L3
+ingest depth in a new Settings → Multimodal panel, and one-click
+promote any L1/L2 audio row to L3 from search results.  Audio
+L2 metadata (duration / codec / sample rate / channels /
+bitrate_kbps) now lives in dedicated LanceDB columns via schema
+migration v101.
+
+**P13.7** ported the same shape onto images and added a search-
+CLI matching cloud-backup's filter set:
+
+  - Image L1/L2/L3 enum + master-switch toggle + "Re-OCR"
+    search-result action (parallel to audio Steps 7c+8).
+  - Image L2 (EXIF) metadata in 5 dedicated LanceDB columns via
+    schema migration v102 (camera_make/model/lens/taken_at_unix/
+    iso) — populated from the kamadak-exif reader inside the
+    OCR dispatch arm.
+  - `crispsorter index search` CLI subcommand with the
+    cloud-backup `search.py` filter set: `--ext`/`--hash`/
+    `--folder-prefix`/`--owner`/`--lang`/`--translated-to`/
+    `--year-{min,max}`/`--min-size`/`--max-size`/`--after`/
+    `--before`/`--audio-duration-{min,max}`/`--image-camera-{make,model}`/
+    `--limit` + `-f json|text` (the global flag).
+  - CrispLens image push (`images_crisplens_image_push`) — POST
+    multipart to `/api/ingest/upload-local` with a `by-hash`
+    dedup precheck.  Privacy-aware: opt-in via the Settings
+    Multimodal panel.
+
+| Commit | Headline |
+|---|---|
+| `191edd3` | P13.6 Step 1 — "Transcribing" status label in Stapel + Kataloge for audio/video extensions.  EN/DE i18n. |
+| `a10cca9` | P13.6 Step 2 — detected-language column in Stapel.  audio_extract_text now returns {text, language}; BatchItem grows detectedLanguage; new (default-hidden) Lang column with sort comparator. |
+| `bc1c77b` | P13.6 Step 3a — `audio_metadata` Tauri command + `audio/probe.rs` symphonia format-reader probe (sub-millisecond, no decode pass).  Returns AudioMetadata { duration_seconds, codec, sample_rate_hz, channels, bitrate_kbps }. |
+| `6607df6` | P13.6 Step 3b — BatchReview row pre-fill + default-hidden Duration column (MM:SS / H:MM:SS) + hover tooltip `mp3 stereo 44.1 kHz @ 192 kbps`. |
+| `435af5a` | P13.6 Step 3c-prep — ExtractedDocument.audio field; extract() runs probe before decode; mechanical sweep adds `audio: None` to the 7 non-audio ExtractedDocument literals. |
+| `e449bd0` | P13.6 Step 4 — empty-state strings ("Drop documents, images, audio or video files…") + IndexIngest drop-area hint widened to mention audio/video extension families. |
+| `9b48038` | P13.6 Steps 5+6 — Multimodal Settings panel: master switch + ASR backend dropdown (whisper / whisper-large-v3 / whisper-small / whisper-medium / parakeet / qwen3-omni) + LID method dropdown.  Three new IndexConfig fields with serde defaults; bg_ingest reads them via the OnceLock override pattern (restart-on-change). |
+| `c6ca5e1` | P13.6 Steps 7a+7b — Schema migration **v101** (`AddAudioMetadataColumns`): 5 new LanceDB columns (audio_duration_seconds Float64, audio_codec Utf8, audio_sample_rate_hz Int32, audio_channels Int32, audio_bitrate_kbps Int32).  RawDocument + DocumentChunk gain matching fields; 10 call sites updated; chunks_to_record_batch builds the new Arrow arrays.  +2 v101 tests, +1 updated idempotency test (now expects vec![100, 101]). |
+| `a6195c1` | P13.6 Step 7c — IngestAudioLevel { L1, L2, L3 } enum + dispatcher 4-way ladder (skip / probe-only / EXIF-only / full).  ExtractOptions plumbed as a String ("l1"/"l2"/"l3").  Settings UI dropdown. |
+| `e7905c5` | P13.6 Step 8 — `index_audio_promote_l3(location_uri)` Tauri command + Transcribe search-result action in IndexSearch.svelte.  Re-ingests through the standard pipeline, overrides Settings (per-row click is unambiguous intent). |
+| `8206afb` | P13.5 follow-up (drop-zone gate) — JS-side AUDIO_EXTENSIONS + MULTIMODAL_EXTENSIONS constants; new `audio_extract_text` Tauri command; BatchReview + IndexIngest accept all 22 audio/video extensions on drop. |
+| `851de8c` | P13.6 Step 9 — Schema migration **v102** (`AddImageMetadataColumns`): 5 new LanceDB columns (image_camera_make/model/lens_model Utf8, image_taken_at_unix Int64, image_iso Int32).  ExtractedDocument.image_exif: Option<ExifSummary>; OCR dispatch arm reads EXIF once per image regardless of which tier fires; bg_ingest copies the curated subset.  +2 v102 tests. |
+| `1505135` | P13.7 Steps 1+2+3 — IngestImageLevel enum + image master switch + `index_image_promote_l3` Tauri command + Re-OCR frontend action. Mirror of P13.6's audio Steps 7c+8.  OCR_IMAGE_EXTS dispatch arm restructured into a 4-way ladder; L2 path produces an empty-text doc with image_exif populated so bg_ingest still writes the image_* columns. |
+| `c8d3074` | P13.7 Step 6 — `crispsorter index search` CLI with cloud-backup-parity filter set.  Seven new SearchFilters fields (ext/source_hash_prefix/parent_dir_prefix/audio_duration_{min,max}_seconds/image_camera_{make,model}) + `to_lance_sql` push-down + new `fetch_search_results_by_ids_filtered` LocalIndex method.  Size + date filters parsed by hand-rolled helpers (no `chrono` / `time` direct-dep growth).  19 new tests. |
+| `5cab459` | P13.7 Step 4 — CrispLens image push: `images_crisplens_image_push(path, visibility?)` Tauri command.  Two-phase by-hash dedup → multipart POST to `/api/ingest/upload-local`.  IndexConfig.crisplens_image_enrichment_enabled (default false; privacy-aware).  reqwest gains the `multipart` feature. |
+
+### Architectural pieces in place after this batch
+
+- **Audio + image symmetry** end-to-end: both have an L1/L2/L3
+  Settings dropdown, both have a Tauri promote command, both
+  ship a search-result UX button for L1/L2 → L3, both populate
+  dedicated L2 LanceDB columns via versioned schema migrations,
+  both flow through bg_ingest with the same master-switch /
+  ingest-level pattern.
+- **CLI search parity** with cloud-backup's `search.py`.  Same
+  filter syntax (`--min-size 100MB`, `--after 2024-01-01`,
+  `--hash a1b2c3`) so users moving between the two tools don't
+  re-learn the surface.  CrispSorter-specific additions
+  (`--audio-duration-{min,max}`, `--image-camera-{make,model}`,
+  `--translated-to`, `--lang`) extend rather than replace.
+- **CrispLens client-side push** unblocked.  `image_push` joins
+  the existing `by-hash` / `people` / `faces` / `search` /
+  `watchfolders` Tier 2 endpoints to make CrispSorter a
+  bidirectional client.
+- **Schema migration framework** has 3 real consumers now
+  (v100, v101, v102) following the same shape.  Adding a
+  follow-up migration is mechanical.
+
+### Net delta
+
++34 unit tests across `tauri-app`:
+  cli   (4 new — `parse_human_size_*`, `parse_iso_date_to_unix_*`,
+        `format_size_human_known_thresholds`, plus the existing
+        is_multilingual_whisper_backend test).
+  schema (7 new `filters_sql_*` tests covering the new ext /
+        hash / parent-dir / audio-duration / image-camera SQL
+        builders).
+  migrations (4 new — v101 + v102 missing-handle guards +
+        version+name pins; idempotency test updated).
+  audio L2 + image L2 are end-to-end exercised by the schema
+  migration tests and the existing OCR / audio extract tests.
+
+Build verification: `cargo check --no-default-features` and
+`cargo check --features crispasr` clean throughout each commit;
+full lib test suite green at commit boundaries.
+
+### Cloud-sync work — explicitly NOT in this session
+
+- Step 5 (cloud-backup FastAPI cross-repo) deferred to a fresh
+  session because (a) it touches the sibling cloud-backup
+  repo's deployment surface and (b) it needs a SQLite migration
+  on the cloud-backup side.  Full design — endpoint shapes,
+  auth, sync watermark semantics — lives in PLAN.md under
+  "P13.7 Step 5".  This batch lands every prerequisite
+  (multipart reqwest, by-hash dedup helper, SearchFilters
+  scalar SQL coverage) so the cross-repo work can focus on the
+  protocol.
+- Step 7 (live tests for the sync routes) deferred with Step 5;
+  the existing P11 mockito patterns + `WEBDAV_TEST_URL`-style
+  env-gated live tests are the model.
+
+---
+
 ## Session log — 2026-05-13 — P13.5 follow-ups batch 2 (4 more shipped + CrispEmbed routing unification)
 
 Continuation of the same-day P13.5 follow-ups session.  Picks
