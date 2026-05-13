@@ -92,6 +92,7 @@ pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
         language: None,     // post-LID hook fills
         translated_text: None,
         translated_to_lang: None,
+        audio: None,
     })
 }
 

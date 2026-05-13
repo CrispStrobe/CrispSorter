@@ -43,6 +43,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         language: None,                // post-LID hook fills
         translated_text: None,         // post-translate hook fills
         translated_to_lang: None,
+        audio: None,
     })
 }
 

@@ -30,5 +30,6 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         // an `ExtractOptions.translate_to` was supplied.
         translated_text: None,
         translated_to_lang: None,
+        audio: None,
     })
 }
