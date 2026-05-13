@@ -460,6 +460,15 @@ export class BatchManager {
                         }
                         if (this.stopRequested) { item.status = 'queued'; break; }
                         item.extractedText = extraction.text;
+                        // P13.6 Step 2: surface the whisper-detected source
+                        // language for audio/video items so the Stapel
+                        // language column can render it.  Documents pass
+                        // through unchanged (metadata.language stays
+                        // undefined for them).
+                        const detected = extraction.metadata?.language;
+                        if (typeof detected === 'string' && detected.length > 0) {
+                            item.detectedLanguage = detected.toLowerCase();
+                        }
                     }
                     item.statusDetail = (item.extractedText?.trim().length ?? 0) < 100 ? '⚠ poor extraction' : undefined;
 

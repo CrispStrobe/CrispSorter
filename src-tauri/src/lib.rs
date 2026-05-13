@@ -573,13 +573,30 @@ async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Audio/video extraction result returned to the JS-side
+/// `extractText` dispatcher.  Mirrors a subset of the Rust-side
+/// `ExtractedDocument` — only the fields the frontend actually
+/// surfaces today (text + detected source language).  Adding
+/// fields here is cheap (serde defaults handle frontend rollback)
+/// so future steps can grow the shape without breaking older
+/// JS callers.
+#[derive(serde::Serialize)]
+struct AudioExtractResult {
+    text: String,
+    /// Whisper-detected source language as an ISO 639-1 code
+    /// (e.g. `"en"`, `"de"`, `"bs"`).  `None` when the ASR
+    /// backend didn't run a LID pass or the audio was too short
+    /// for a confident classification.
+    language: Option<String>,
+}
+
 /// File-path-based audio/video extraction for the JS-side
 /// `extractText` dispatcher.  Wraps [`extractors::audio::extract`]
 /// (symphonia tier-1 + ffmpeg fallback + shared CrispASR handle) and
-/// returns the transcript only — keeps the large `Vec<f32>` PCM
-/// buffer entirely inside the Rust process.  Use this from the
-/// frontend whenever a dropped/picked file's extension is in
-/// `MULTIMODAL_EXTENSIONS` (the audio/video subset) — the same
+/// returns transcript + detected source language — keeps the large
+/// `Vec<f32>` PCM buffer entirely inside the Rust process.  Use this
+/// from the frontend whenever a dropped/picked file's extension is
+/// in `MULTIMODAL_EXTENSIONS` (the audio/video subset) — the same
 /// path the bg_ingest classifier walks for index-time audio.
 ///
 /// Spawns into a blocking thread because the audio extractor builds
@@ -591,11 +608,14 @@ async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// on the failing entry so the user knows to rebuild via
 /// `enable-crispasr.sh` / `.ps1`.
 #[tauri::command]
-async fn audio_extract_text(path: String) -> Result<String, String> {
+async fn audio_extract_text(path: String) -> Result<AudioExtractResult, String> {
     let p = std::path::PathBuf::from(&path);
     tokio::task::spawn_blocking(move || {
         extractors::audio::extract(&p)
-            .map(|doc| doc.full_text)
+            .map(|doc| AudioExtractResult {
+                text: doc.full_text,
+                language: doc.language,
+            })
             .map_err(|e| format!("{e:#}"))
     })
     .await
