@@ -218,6 +218,56 @@ pub struct IndexConfig {
     /// for users who haven't / won't download a separate model.
     #[serde(default)]
     pub use_embedder_as_reranker: bool,
+    /// P13.6 — master switch for audio + video extraction.  When
+    /// `false`, bg_ingest skips audio/video extensions entirely
+    /// (L1 metadata-only path).  When `true`, the audio extractor
+    /// runs symphonia decode + CrispASR transcription per the
+    /// canonical extractor pipeline.  Default `true` so binaries
+    /// built with `crispasr-*` features get audio out of the box;
+    /// users on feature-disabled builds can leave it on (the
+    /// dispatcher's `is_audio_extraction_available()` gate kicks
+    /// in first and falls back to L1 with a clear failure reason).
+    #[serde(default = "default_audio_extraction_enabled")]
+    pub audio_extraction_enabled: bool,
+    /// ASR backend name (any string from `crispasr::list_known_models()`).
+    /// `"whisper"` is the default — multilingual, 99 langs, base ~150 MB.
+    /// Override to `"whisper-large-v3"` (3 GB) for higher accuracy or to
+    /// `"parakeet"` / `"qwen3-omni"` for the alternative non-whisper
+    /// backends.  Wired into `extractors::audio::shared_asr_handle()`
+    /// — the value flows through `AsrConfig::new(...)` so registry
+    /// resolution + auto-download happen on first use.
+    #[serde(default = "default_audio_asr_backend")]
+    pub audio_asr_backend: String,
+    /// Audio LID method.  `"whisper"` (default) uses the loaded ASR
+    /// model's built-in LID head and auto-resolves a model when
+    /// needed (per `2b80345`).  `"silero"` / `"ecapa"` / `"firered"`
+    /// require an explicit `--lid-model` path because those models
+    /// aren't in CrispASR's registry yet — listed for forward
+    /// compatibility when those entries land upstream.
+    #[serde(default = "default_audio_lid_method")]
+    pub audio_lid_method: String,
+    /// P13.6 Step 6 — master switch for image extraction (OCR).
+    /// When `false`, bg_ingest skips image extensions entirely
+    /// (L1 metadata-only path).  Defaults to `true`; the actual
+    /// OCR tier + per-language settings live in the `bg_ingest`
+    /// fields (`ocr_enabled` / `ocr_tier` / `ocr_rec_lang`) which
+    /// already have their own Settings panel.  This flag is the
+    /// "single multimodal toggle" parallel to
+    /// `audio_extraction_enabled` for users who want a one-knob
+    /// shut-off.  Wired into bg_ingest in a follow-up; the field
+    /// lands here now so the persisted IndexConfig shape is
+    /// stable before the wire-up.
+    #[serde(default = "default_image_extraction_enabled")]
+    pub image_extraction_enabled: bool,
+    /// P13.6 Step 9 placeholder — when enabled, images get a
+    /// CrispEmbed embedding (BidirLM-Omni or fallback OCR-text
+    /// embedding) so semantic image search hits work.  Today
+    /// images only go through OCR + the text embedder.  Field
+    /// reserved so the persisted IndexConfig shape stays stable
+    /// when Step 9's pipeline lands.  `false` (default) preserves
+    /// current behaviour.
+    #[serde(default)]
+    pub image_indexing_enabled: bool,
 }
 
 fn default_use_vector() -> bool {
@@ -226,6 +276,35 @@ fn default_use_vector() -> bool {
 
 fn default_rerank_top_n() -> usize {
     50
+}
+
+/// P13.6 — audio extraction is on by default on feature-enabled builds.
+/// The runtime dispatcher's `is_audio_extraction_available()` gate
+/// also fires for feature-disabled builds, so a `true` default here
+/// is safe — no false-positive extraction attempts.
+fn default_audio_extraction_enabled() -> bool {
+    true
+}
+
+/// `whisper` — multilingual, 99 languages, base ~150 MB download.
+/// Same default the legacy `AsrConfig::default()` carries; this
+/// function exists so serde-defaulting on missing-field works
+/// without instantiating an `AsrConfig` in a const context.
+fn default_audio_asr_backend() -> String {
+    "whisper".to_string()
+}
+
+/// `whisper` — reuses the loaded ASR model's LID head.  Auto-resolves
+/// a whisper ggml via the helper added in `2b80345` when the ASR
+/// backend is non-whisper-family.
+fn default_audio_lid_method() -> String {
+    "whisper".to_string()
+}
+
+/// P13.6 Step 6 — image OCR is on by default.  Matching the pattern
+/// for [`default_audio_extraction_enabled`].
+fn default_image_extraction_enabled() -> bool {
+    true
 }
 
 /// Pick the effective model-cache directory, in priority order:
@@ -281,6 +360,11 @@ impl Default for IndexConfig {
             matryoshka_dim: None,
             translate_to: None,
             use_embedder_as_reranker: false,
+            audio_extraction_enabled: default_audio_extraction_enabled(),
+            audio_asr_backend: default_audio_asr_backend(),
+            audio_lid_method: default_audio_lid_method(),
+            image_extraction_enabled: default_image_extraction_enabled(),
+            image_indexing_enabled: false,
         }
     }
 }

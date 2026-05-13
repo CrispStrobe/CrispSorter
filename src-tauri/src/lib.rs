@@ -2279,6 +2279,18 @@ pub fn run() {
                     let mut idx_lock = state.index.blocking_lock();
                     idx_lock.config = persisted;
                 }
+                // P13.6 Step 5 — apply audio_asr_backend from the
+                // persisted config to the shared extractors::audio
+                // handle.  Set-once via OnceLock; subsequent
+                // index_set_config UI submissions won't retroactively
+                // change the loaded handle (restart required).  Same
+                // constraint the existing embedder has.
+                {
+                    let idx_lock = state.index.blocking_lock();
+                    extractors::audio::set_audio_asr_backend_override(
+                        &idx_lock.config.audio_asr_backend,
+                    );
+                }
                 app_log!("info", "Loaded persisted IndexConfig from {}", data_dir.display());
             }
             Ok(())

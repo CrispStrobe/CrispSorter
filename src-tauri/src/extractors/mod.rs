@@ -152,7 +152,7 @@ pub enum OcrRecLang {
 /// landed; the existing call sites pass `ExtractOptions` by value
 /// into `spawn_blocking` (which moves anyway) or take it by reference
 /// in tests, so the loss of `Copy` is a no-op.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExtractOptions {
     /// Run OCR on image extensions (png/jpg/tiff/…) and on PDFs whose
     /// text layer is empty after the regular `pdf::extract` pass.
@@ -190,6 +190,33 @@ pub struct ExtractOptions {
     /// uses CrispASR's registry auto-download.  Ignored when
     /// `translate_to` is `None`.
     pub translate_model: Option<std::path::PathBuf>,
+    /// P13.6 Step 5 — when `false`, audio + video extensions fall
+    /// through to L1 metadata-only (the dispatcher returns an
+    /// "extraction skipped by user setting" error so the bg_ingest
+    /// classifier downgrades to L1 with a clear reason).  Default
+    /// `true` so legacy callers (CLI, the BatchReview JS path) keep
+    /// their previous behaviour without explicit opt-in.  bg_ingest
+    /// reads this from `IndexConfig.audio_extraction_enabled`.
+    pub audio_extraction_enabled: bool,
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        Self {
+            try_ocr: false,
+            ocr_pdf_min_chars: 0,
+            ocr_tier: OcrTier::default(),
+            ocr_rec_lang: OcrRecLang::default(),
+            text_lid_model: None,
+            translate_to: None,
+            translate_backend: None,
+            translate_model: None,
+            // P13.6 Step 5 default — audio extraction ON unless the
+            // caller (bg_ingest reading IndexConfig) explicitly
+            // disables it.
+            audio_extraction_enabled: true,
+        }
+    }
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -207,6 +234,10 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             translate_to: None,
             translate_backend: None,
             translate_model: None,
+            // P13.6 Step 5 — keep audio extraction ON for the
+            // no-opts legacy API; only bg_ingest reading
+            // IndexConfig flips it off.
+            audio_extraction_enabled: true,
         },
     )
 }
@@ -279,7 +310,18 @@ pub fn extract_text_from_path_with_opts(
             // failure.  When the feature IS on, `extract` does the
             // decode-then-transcribe pipeline; first call also primes
             // the process-wide singleton ASR session.
-            if !audio::is_audio_extraction_available() {
+            if !opts.audio_extraction_enabled {
+                // P13.6 Step 5 — user opted out via Settings →
+                // Multimodal → "Audio + Video extraction".  Returns
+                // an explicit "skipped" error so bg_ingest can
+                // downgrade to L1 metadata-only with a clear reason
+                // in the task-failure ledger.
+                Err(anyhow::anyhow!(
+                    "audio extraction skipped by Settings: \
+                     audio_extraction_enabled is false; skipped {}",
+                    path.display()
+                ))
+            } else if !audio::is_audio_extraction_available() {
                 Err(anyhow::anyhow!(
                     "audio extraction needs the `crispasr` cargo feature \
                      (rebuild with --features crispasr-metal / -cuda / -vulkan); \

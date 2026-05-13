@@ -133,17 +133,57 @@ pub fn extract(_path: &Path) -> Result<ExtractedDocument> {
 
 /// Process-level shared `AsrHandle`.  Construction is cheap (no
 /// model load); the actual session load is deferred to the first
-/// `transcribe*` call.  Backend is fixed at `AsrConfig::default()`
-/// (whisper, 99 languages) — Phase 6 will swap to per-document
-/// routing via `asr::lang::route`.
+/// `transcribe*` call.  Backend reads from
+/// [`AUDIO_ASR_BACKEND_OVERRIDE`] on first init (set by `bg_ingest`
+/// at startup from `IndexConfig.audio_asr_backend`); falls back to
+/// `AsrConfig::default()` (whisper, 99 langs) when the override
+/// hasn't been set yet (CLI / GUI push-to-talk paths that pre-date
+/// the IndexConfig-driven configuration).
+///
+/// Restart-on-change semantics: once the OnceLock fires, swapping
+/// IndexConfig.audio_asr_backend has no effect until the next
+/// process start.  Same constraint the existing embedder has.
 #[cfg(feature = "crispasr")]
 fn shared_asr_handle() -> &'static crate::asr::AsrHandle {
     static HANDLE: OnceLock<crate::asr::AsrHandle> = OnceLock::new();
     HANDLE.get_or_init(|| {
-        let config = crate::asr::AsrConfig::default();
+        let backend = AUDIO_ASR_BACKEND_OVERRIDE
+            .get()
+            .cloned()
+            .unwrap_or_else(|| "whisper".to_string());
+        let config = crate::asr::AsrConfig::new(&backend);
         let cache_dir = default_asr_cache_dir();
         crate::asr::AsrHandle::new(config, cache_dir)
     })
+}
+
+/// Process-global ASR backend override, set at startup by bg_ingest
+/// from `IndexConfig.audio_asr_backend`.  Read by
+/// [`shared_asr_handle`] when constructing the lazy handle.  Mutex
+/// + Option pattern rather than `OnceLock<String>` so the bg_ingest
+/// startup can defensively set it before the OnceLock has fired —
+/// the cleaner "write once and forget" semantics belong to the
+/// HANDLE inside shared_asr_handle, which OnceLock locks for us.
+#[cfg(feature = "crispasr")]
+pub(crate) static AUDIO_ASR_BACKEND_OVERRIDE: OnceLock<String> = OnceLock::new();
+
+/// Called from bg_ingest at startup to apply
+/// `IndexConfig.audio_asr_backend`.  Set-once: subsequent calls are
+/// ignored (matches the `OnceLock` guarantee).  Returns `true` when
+/// the call actually set the value, `false` when the slot was
+/// already filled.  bg_ingest doesn't currently surface that to the
+/// user; the boolean is for tests that want to assert the slot got
+/// touched.
+#[cfg(feature = "crispasr")]
+pub fn set_audio_asr_backend_override(backend: &str) -> bool {
+    AUDIO_ASR_BACKEND_OVERRIDE.set(backend.to_string()).is_ok()
+}
+
+/// Feature-off stub.  No-op so call sites in bg_ingest compile
+/// unconditionally.
+#[cfg(not(feature = "crispasr"))]
+pub fn set_audio_asr_backend_override(_backend: &str) -> bool {
+    false
 }
 
 /// Mirror the GUI / CLI app-data-dir resolution so the same
