@@ -1,6 +1,6 @@
 {
   "name": "tauri-app",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "CrispSorter — local-first AI document organizer",
   "type": "module",
   "scripts": {
