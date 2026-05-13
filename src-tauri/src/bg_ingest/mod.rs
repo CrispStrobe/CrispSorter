@@ -331,7 +331,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -348,12 +348,17 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         // and the translated text lands in the LanceDB
         // text_translated column.
         let translate_to = g.config.translate_to.clone();
+        // P13.6 Step 5 — audio extraction master switch.  Forwarded
+        // into ExtractOptions so the dispatcher's audio arm can
+        // short-circuit to "skipped by Settings" when false.  bg_ingest
+        // task-failure ledger then downgrades the file to L1.
+        let audio_extraction_enabled = g.config.audio_extraction_enabled;
         drop(g);
         let bg = app_state.bg_ingest.lock().await;
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to)
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -518,6 +523,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         translate_to,
         translate_backend: None,
         translate_model: None,
+        audio_extraction_enabled,
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

@@ -252,6 +252,28 @@
     // surfaces them.
     let indexTranslateTo    = $state<string>('none');
 
+    // ── P13.6 Multimodal Settings (audio + image processing) ───────────────
+    /** Audio + video extraction master switch.  When false, bg_ingest
+     *  skips audio/video extensions entirely and L1 metadata-only is
+     *  written.  Default true on feature-enabled builds; users with
+     *  feature-disabled builds can leave it on (the runtime
+     *  `is_audio_extraction_available()` gate fires first). */
+    let indexAudioExtractionEnabled = $state<boolean>(true);
+    /** ASR backend name from the crispasr registry.  `whisper` is the
+     *  default (multilingual, 99 langs, base ~150 MB).  Other choices:
+     *  `whisper-large-v3` (3 GB, higher accuracy),
+     *  `parakeet`, `qwen3-omni`, …  Surfaced as a dropdown with a
+     *  small curated set; advanced users can edit the
+     *  IndexConfig directly to use any registry entry. */
+    let indexAudioAsrBackend = $state<string>('whisper');
+    /** Audio LID method.  `whisper` (default) reuses the loaded ASR
+     *  model's LID head and auto-resolves a whisper-base ggml when
+     *  the ASR backend is non-whisper-family (per `2b80345`).
+     *  `silero`/`ecapa`/`firered` placeholders for future upstream
+     *  registry entries — currently require an explicit lid-model
+     *  path that the GUI doesn't surface. */
+    let indexAudioLidMethod = $state<string>('whisper');
+
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
         id:       string;            // uuid-ish, stable
@@ -728,6 +750,9 @@
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
         indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
         indexTranslateTo   = await getSetting('indexTranslateTo', 'none') as string;
+        indexAudioExtractionEnabled = await getSetting('indexAudioExtractionEnabled', true) as boolean;
+        indexAudioAsrBackend = await getSetting('indexAudioAsrBackend', 'whisper') as string;
+        indexAudioLidMethod  = await getSetting('indexAudioLidMethod', 'whisper') as string;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1000,6 +1025,9 @@
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
         await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
         await saveSetting('indexTranslateTo',   indexTranslateTo);
+        await saveSetting('indexAudioExtractionEnabled', indexAudioExtractionEnabled);
+        await saveSetting('indexAudioAsrBackend',        indexAudioAsrBackend);
+        await saveSetting('indexAudioLidMethod',         indexAudioLidMethod);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1133,6 +1161,10 @@
                     translate_to:     (indexTranslateTo && indexTranslateTo.trim() && indexTranslateTo !== 'none')
                         ? indexTranslateTo.trim()
                         : null,
+                    // P13.6 Step 5 — multimodal processing.
+                    audio_extraction_enabled: indexAudioExtractionEnabled,
+                    audio_asr_backend:        indexAudioAsrBackend || 'whisper',
+                    audio_lid_method:         indexAudioLidMethod || 'whisper',
                 }
             });
             if (indexEnabled) {
@@ -2494,6 +2526,62 @@
                 <p class="hint">
                     {i18n.t.settings.index.translate_to_hint ??
                      'Each extracted document is translated to the chosen language at ingest time via m2m100 (100-language any-to-any model). Source language is auto-detected via CLD3. The translated text lands in the text_translated LanceDB column; search hits surface it when the prefer_translated_lang filter is set.'}
+                </p>
+            </div>
+
+            <!-- P13.6 Steps 5+6: Multimodal processing sub-panel.  Audio
+                 + video extraction toggle + ASR backend selection + LID
+                 method.  Image OCR settings already live in their own
+                 panel (settings.ocr.*) — we cross-link from here so the
+                 user has a single mental model of "multimodal
+                 processing" even though the two paths sit in different
+                 IndexConfig fields. -->
+            <div class="section-card">
+                <div style="display:flex; align-items:center; gap:6px; font-weight: 500;">
+                    {i18n.t.settings.index.multimodal_section ?? 'Multimodal processing'}
+                </div>
+                <p class="hint" style="margin-bottom:10px;">
+                    {i18n.t.settings.index.multimodal_section_hint ??
+                     'Audio + video files in the index are transcribed via CrispASR (whisper / parakeet / qwen3-omni). Image OCR is configured in the OCR panel above; image semantic search via CrispEmbed is planned.'}
+                </p>
+
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+                    <input type="checkbox" bind:checked={indexAudioExtractionEnabled} />
+                    <span>{i18n.t.settings.index.audio_extraction ?? 'Audio + video extraction'}</span>
+                </label>
+                <p class="hint">
+                    {i18n.t.settings.index.audio_extraction_hint ??
+                     'When off, audio/video files (mp3/wav/mp4/…) are indexed with filesystem metadata only — no transcript. Symphonia decode + CrispASR transcription is the default index-time path otherwise.'}
+                </p>
+
+                <label for="index-audio-asr-backend" style="margin-top:10px;">
+                    {i18n.t.settings.index.audio_asr_backend ?? 'ASR backend'}
+                </label>
+                <select id="index-audio-asr-backend" bind:value={indexAudioAsrBackend} class="styled-select" disabled={!indexAudioExtractionEnabled}>
+                    <option value="whisper">whisper — multilingual, 99 langs (base, ~150 MB)</option>
+                    <option value="whisper-large-v3">whisper-large-v3 — multilingual, higher accuracy (~3 GB)</option>
+                    <option value="whisper-small">whisper-small — multilingual, balanced (~500 MB)</option>
+                    <option value="whisper-medium">whisper-medium — multilingual (~1.5 GB)</option>
+                    <option value="parakeet">parakeet — NVIDIA Parakeet TDT (English-only, fast)</option>
+                    <option value="qwen3-omni">qwen3-omni — Qwen3 omnimodal ASR</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.audio_asr_backend_hint ??
+                     'Pick which CrispASR backend transcribes audio/video files at index time. whisper (default) is the multilingual baseline; larger variants trade disk + RAM for accuracy. The model auto-downloads on first use through the CrispASR registry. Changing the backend requires an app restart to take effect.'}
+                </p>
+
+                <label for="index-audio-lid-method" style="margin-top:10px;">
+                    {i18n.t.settings.index.audio_lid_method ?? 'LID method'}
+                </label>
+                <select id="index-audio-lid-method" bind:value={indexAudioLidMethod} class="styled-select" disabled={!indexAudioExtractionEnabled}>
+                    <option value="whisper">whisper — reuses ASR model (auto-resolves a whisper-base for non-whisper backends)</option>
+                    <option value="silero" disabled>silero — needs explicit --lid-model (not surfaced yet)</option>
+                    <option value="ecapa" disabled>ecapa — needs explicit --lid-model (not surfaced yet)</option>
+                    <option value="firered" disabled>firered — needs explicit --lid-model (not surfaced yet)</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.audio_lid_method_hint ??
+                     'Which method detects the source language of an audio file. whisper reuses the loaded ASR model and auto-resolves a whisper-base ggml when the ASR backend is non-whisper-family. Silero / Ecapa / Firered are placeholders for future CrispASR registry entries.'}
                 </p>
             </div>
 
