@@ -1512,6 +1512,132 @@ fn parse_l1_meta(meta_json: &Option<String>) -> (u64, u32) {
 
 // ── Document delete ───────────────────────────────────────────────────────────
 
+/// P13.6 Step 8 — promote an L1/L2 audio row to L3 (full
+/// transcription).  Looks up the row's host path from the
+/// `location_uri`, runs the full audio extractor (decode +
+/// transcribe + symphonia probe) with `ingest_audio_level=l3`
+/// regardless of the IndexConfig setting, then re-ingests through
+/// the standard pipeline (existing `reingest_document` deletes
+/// the old chunks first, then writes the fresh transcript +
+/// embeddings + audio_* columns + FTS body).
+///
+/// Used by the "Transcribe" search-result action that surfaces
+/// on L1/L2 audio rows in the frontend.  Returns the
+/// `IngestStats` for the new ingest so the UI can show progress.
+///
+/// Errors when:
+/// - the `crispasr` cargo feature is off (audio extractor stub);
+/// - `location_uri` doesn't map to a local path (e.g. cloud
+///   drive without a manifest);
+/// - the file isn't actually present on disk;
+/// - the audio decoder rejects the file.
+#[tauri::command]
+pub async fn index_audio_promote_l3(
+    state: State<'_, AppState>,
+    location_uri: String,
+) -> Result<IngestStats, String> {
+    // Map URI → local path via the existing helper.  Reusing the
+    // images-side helper keeps the URI grammar identical across
+    // surfaces (crisp+local:// / file:// / bare absolute path).
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| {
+            format!(
+                "location_uri does not map to a local path: {location_uri} \
+                 (cloud-drive promotes need to first download the file)"
+            )
+        })?;
+    if !path.exists() {
+        return Err(format!(
+            "file not present on disk: {} \
+             (the original may have been moved or deleted since indexing)",
+            path.display()
+        ));
+    }
+
+    // Run the audio extractor with explicit L3 — overrides the
+    // IndexConfig.ingest_audio_level setting because the whole
+    // point of "promote" is to transcribe regardless of the
+    // default-level setting.  audio_extraction_enabled is also
+    // ignored: the user explicitly asked for this row, so the
+    // master switch doesn't gate it.
+    let extracted = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || crate::extractors::audio::extract(&p))
+            .await
+            .map_err(|e| format!("audio extract join error: {e}"))?
+            .map_err(|e| format!("{e:#}"))?
+    };
+
+    // Re-build the RawDocument and feed through the standard
+    // ingest pipeline.  reingest_document deletes existing rows
+    // for the doc_id (via source_hash) and writes fresh ones.
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
+    drop(lock);
+
+    let p_meta = std::fs::metadata(&path).ok();
+    let source_hash = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            use sha2::{Digest, Sha256};
+            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            Ok(hex::encode(h.finalize()))
+        })
+        .await
+        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
+    };
+
+    let raw = RawDocument {
+        full_text: extracted.full_text.clone(),
+        full_text_md: extracted.full_text.clone(),
+        headings: extracted.headings.clone(),
+        title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+        author: None,
+        year: None,
+        filename: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        ext: extracted.ext.clone(),
+        language: extracted.language.clone().unwrap_or_default(),
+        source_hash,
+        location_uri: location_uri.clone(),
+        owner_id: "local".to_string(),
+        tags: vec![],
+        mtime_unix: p_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64),
+        file_size: p_meta.as_ref().map(|m| m.len() as i64),
+        volume_id: crate::volume::volume_id_for_path(&path),
+        parent_dir: path
+            .parent()
+            .and_then(|d| d.to_str())
+            .map(|s| s.to_owned()),
+        translated_text: extracted.translated_text.clone(),
+        translated_to_lang: extracted.translated_to_lang.clone(),
+        audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+        audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+        audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+        audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+        audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+    };
+
+    pipeline
+        .reingest_document(raw)
+        .await
+        .map_err(|e| format!("re-ingest after L3 promote failed: {e:#}"))
+}
+
 /// Delete a document completely: removes all chunks from LanceDB and the
 /// corresponding entry from the Tantivy FTS index.
 #[tauri::command]
