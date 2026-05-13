@@ -157,6 +157,10 @@
         // column visibility menu.  Future: auto-show when at least one
         // audio item is in the batch.
         { id: 'language', label: i18n.t.batch.language ?? 'Lang', width: 60, visible: false },
+        // P13.6 Step 3b: audio L2 duration from symphonia probe.  Renders
+        // as "MM:SS" or "H:MM:SS" — same format conventions audio players
+        // use.  Default-hidden; toggle via column visibility menu.
+        { id: 'duration', label: i18n.t.batch.duration ?? 'Dur', width: 70, visible: false },
         { id: 'path', label: i18n.t.batch.path, width: 400, visible: false },
     ]);
 
@@ -231,6 +235,7 @@
                 case 'date': valA = a.modifiedAt; valB = b.modifiedAt; break;
                 case 'extension': valA = a.extension; valB = b.extension; break;
                 case 'language': valA = a.detectedLanguage ?? ''; valB = b.detectedLanguage ?? ''; break;
+                case 'duration': valA = a.audioDurationSeconds ?? -1; valB = b.audioDurationSeconds ?? -1; break;
                 case 'path': valA = a.originalPath; valB = b.originalPath; break;
             }
 
@@ -882,6 +887,34 @@
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
+
+    /** Format seconds → "MM:SS" or "H:MM:SS" — same shape audio
+     *  players use.  Negative / non-finite returns "—" so callers
+     *  don't have to guard. */
+    function formatDuration(seconds: number): string {
+        if (!Number.isFinite(seconds) || seconds < 0) return '—';
+        const total = Math.round(seconds);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+    }
+
+    /** Compact audio-row tooltip — `codec stereo @ 192 kbps` etc.
+     *  Used as the `title` attribute on the duration cell so a
+     *  hover surfaces the full L2 set without a separate column
+     *  per field. */
+    function audioRowTooltip(item: BatchItem): string {
+        const parts: string[] = [];
+        if (item.audioCodec) parts.push(item.audioCodec);
+        if (typeof item.audioChannels === 'number') {
+            parts.push(item.audioChannels === 1 ? 'mono' : item.audioChannels === 2 ? 'stereo' : `${item.audioChannels}ch`);
+        }
+        if (typeof item.audioSampleRateHz === 'number') parts.push(`${(item.audioSampleRateHz / 1000).toFixed(item.audioSampleRateHz % 1000 === 0 ? 0 : 1)} kHz`);
+        if (typeof item.audioBitrateKbps === 'number') parts.push(`@ ${item.audioBitrateKbps} kbps`);
+        return parts.join(' ');
+    }
 </script>
 
 <div class="batch-container" ondragover={e => e.preventDefault()} role="region" aria-label="File drop zone">
@@ -1366,6 +1399,12 @@
                                         {:else if col.id === 'language'}
                                             {#if item.detectedLanguage}
                                                 <span class="ext-badge" title="Detected source language ({item.detectedLanguage})">{item.detectedLanguage.toUpperCase()}</span>
+                                            {:else}
+                                                <span class="mono" style="color: #71717a">–</span>
+                                            {/if}
+                                        {:else if col.id === 'duration'}
+                                            {#if typeof item.audioDurationSeconds === 'number'}
+                                                <span class="mono" title={audioRowTooltip(item)}>{formatDuration(item.audioDurationSeconds)}</span>
                                             {:else}
                                                 <span class="mono" style="color: #71717a">–</span>
                                             {/if}

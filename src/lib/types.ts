@@ -17,6 +17,19 @@ export interface BatchItem {
      *  (their language detection happens elsewhere) and for
      *  audio items where whisper couldn't classify confidently. */
     detectedLanguage?: string;
+
+    /** P13.6 Step 3b — L2 audio metadata, pre-filled by the
+     *  `audio_metadata` Tauri command before the full ASR run.
+     *  Populated for items whose extension is in
+     *  AUDIO_EXTENSIONS; undefined for documents.  Optional
+     *  per-field because symphonia doesn't always expose every
+     *  datapoint (VBR mp3 with no n_frames, container-truncated
+     *  m4a, …) — the UI renders "—" / hides for missing fields. */
+    audioDurationSeconds?: number;
+    audioCodec?: string;
+    audioSampleRateHz?: number;
+    audioChannels?: number;
+    audioBitrateKbps?: number;
     /** Per-stage outcome for the bottom-of-row 3-pip indicator
      *  (M | T | L = Metadata / Text / LLM).
      *
