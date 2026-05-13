@@ -62,6 +62,12 @@ pub fn is_audio_extraction_available() -> bool {
 /// Real implementation — only compiled with `--features crispasr*`.
 #[cfg(feature = "crispasr")]
 pub fn extract(path: &Path) -> Result<ExtractedDocument> {
+    // ── 0. L2 metadata probe (cheap, no decode) ────────────────────
+    // Format-reader-only pass: duration / codec / sample rate /
+    // channels / bitrate.  Best-effort: failure logs but doesn't
+    // error the extraction, because the transcript is what callers
+    // actually wait on.
+    let audio_meta = crate::audio::probe::probe_metadata(path).ok();
     // ── 1. Decode to 16 kHz mono Float32 ───────────────────────────
     // The default `AllowFfmpeg` policy lets .avi / .wmv / .flv etc.
     // through; the bg_ingest classifier doesn't pre-check the
@@ -110,6 +116,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         language: None,
         translated_text: None,
         translated_to_lang: None,
+        audio: audio_meta,
     })
 }
 

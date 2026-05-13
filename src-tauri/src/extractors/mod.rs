@@ -73,6 +73,15 @@ pub struct ExtractedDocument {
     /// downstream consumers (the LanceDB write path in Phase 8b)
     /// know which column the text belongs to.
     pub translated_to_lang: Option<String>,
+    /// P13.6 Step 3c — L2 audio metadata.  Populated only by the
+    /// audio extractor via [`crate::audio::probe::probe_metadata`]
+    /// (symphonia format-reader probe, no decode pass).  All
+    /// fields optional per the underlying probe — see
+    /// [`crate::audio::probe::AudioMetadata`] for per-field
+    /// semantics.  Plumbed into LanceDB columns `audio_*` by the
+    /// `AddAudioMetadataColumns` migration (v101).  `None` for
+    /// non-audio extractors.
+    pub audio: Option<crate::audio::probe::AudioMetadata>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
