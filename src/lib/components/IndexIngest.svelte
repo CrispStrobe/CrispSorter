@@ -3267,7 +3267,7 @@
             <div class="drop-area" class:active={dropActive}>
                 <UploadCloud size={40} style="color:#3b82f6; opacity:0.7;" />
                 <p>Dateien hier ablegen</p>
-                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, WebP/PNG/JPG — oder "Dateien" klicken</p>
+                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, Bilder (PNG/JPG/…), Audio (MP3/WAV/FLAC/M4A/…) und Video (MP4/MOV/MKV/…) — oder "Dateien" klicken</p>
             </div>
         {:else}
             <div class="file-list">
