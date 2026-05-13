@@ -902,13 +902,79 @@ enum IndexCmd {
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
-    /// Full-text search without loading the embedder (BM25 only).
+    /// Full-text search with optional filters — BM25 over Tantivy
+    /// without loading the embedder, then post-filtered against
+    /// the LanceDB scalar columns.  Mirrors the cloud-backup
+    /// `search.py` filter set (size range, date range, hash
+    /// prefix, ext, …) plus CrispSorter-specific knobs (audio
+    /// duration range, image camera make/model, source language,
+    /// preferred-translation language).
     Search {
-        /// Query string.
+        /// Query string.  Empty/`*` lists rows matching only the
+        /// filters (the BM25 stage is short-circuited).
         query: String,
         /// Maximum results.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Restrict to one or more file extensions.  Comma-separated;
+        /// leading dots stripped, case-insensitive.  Multi-select
+        /// via repeated flag or single-flag comma list.
+        /// Example: `--ext pdf,docx,mp3`
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// SHA-256 prefix match against `source_hash`.  Cloud-backup
+        /// parity: `--hash a1b2c3` finds rows whose hash starts
+        /// with that hex.  Case-sensitive (SHA-256 hex is lowercase).
+        #[arg(long)]
+        hash: Option<String>,
+        /// Folder-prefix match against `parent_dir` — scalar-indexed
+        /// in LanceDB so it stays fast on large catalogs.
+        #[arg(long, value_name = "PATH")]
+        folder_prefix: Option<String>,
+        /// Owner UUID filter.  Default `None` matches every owner.
+        #[arg(long, value_name = "UUID")]
+        owner: Option<String>,
+        /// Source-language filter (ISO 639-1, e.g. `en` / `de`).
+        #[arg(long)]
+        lang: Option<String>,
+        /// Show rows whose pre-translated `text_translated` column
+        /// matches this language.  Independent of `--lang` (which
+        /// targets the source language).  ISO 639-1.
+        #[arg(long, value_name = "LANG")]
+        translated_to: Option<String>,
+        /// Year range filters (`year` column).
+        #[arg(long)]
+        year_min: Option<i32>,
+        #[arg(long)]
+        year_max: Option<i32>,
+        /// File-size range — human-readable strings ("100MB", "1.5GB").
+        /// Applied post-hoc against the `fs_size` field in each row's
+        /// `metadata_json` (not a scalar column today; see PLAN.md
+        /// for the promote-to-column follow-up).
+        #[arg(long, value_name = "SIZE")]
+        min_size: Option<String>,
+        #[arg(long, value_name = "SIZE")]
+        max_size: Option<String>,
+        /// ISO-date range against the row's `fs_mtime` metadata blob.
+        /// `--after 2024-01-01`, `--before 2025-06-01` — inclusive.
+        /// Like size, post-hoc filter — fast enough at CLI scale
+        /// (10⁴ rows) but a future scalar column lift would help.
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        after: Option<String>,
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        before: Option<String>,
+        /// Audio duration range (seconds).  Scalar-indexed via the
+        /// `audio_duration_seconds` column added by migration v101.
+        #[arg(long)]
+        audio_duration_min: Option<f64>,
+        #[arg(long)]
+        audio_duration_max: Option<f64>,
+        /// Image camera filters — substring match against the EXIF
+        /// columns added by migration v102.
+        #[arg(long, value_name = "MAKE")]
+        image_camera_make: Option<String>,
+        #[arg(long, value_name = "MODEL")]
+        image_camera_model: Option<String>,
     },
     /// Download the embedder model weights to the local cache.
     /// Run this once on a fresh install before the first `index ingest`.
@@ -1121,53 +1187,215 @@ async fn cmd_index_async(
             eprintln!("{} document(s) shown (limit {})", rows.len(), limit);
         }
 
-        IndexCmd::Search { query, limit } => {
+        IndexCmd::Search {
+            query,
+            limit,
+            ext,
+            hash,
+            folder_prefix,
+            owner,
+            lang,
+            translated_to,
+            year_min,
+            year_max,
+            min_size,
+            max_size,
+            after,
+            before,
+            audio_duration_min,
+            audio_duration_max,
+            image_camera_make,
+            image_camera_model,
+        } => {
             let fts_dir = data_dir.join("fts");
             if !fts_dir.exists() {
                 return Err("FTS index not found — run the app and ingest some files first".into());
             }
             let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
                 .map_err(|e| e.to_string())?;
-            let filters = crate::index::SearchFilters::default();
+
+            // Parse the post-hoc filters (size + date) BEFORE running
+            // the search so a bad value bails fast.  Both human-byte
+            // and ISO-date parsing live as local helpers below.
+            let min_size_bytes = match min_size.as_deref() {
+                Some(s) => Some(parse_human_size(s)
+                    .map_err(|e| format!("--min-size {s}: {e}"))?),
+                None => None,
+            };
+            let max_size_bytes = match max_size.as_deref() {
+                Some(s) => Some(parse_human_size(s)
+                    .map_err(|e| format!("--max-size {s}: {e}"))?),
+                None => None,
+            };
+            let after_unix = match after.as_deref() {
+                Some(s) => Some(parse_iso_date_to_unix(s)
+                    .map_err(|e| format!("--after {s}: {e}"))?),
+                None => None,
+            };
+            let before_unix = match before.as_deref() {
+                Some(s) => Some(parse_iso_date_to_unix(s)
+                    .map_err(|e| format!("--before {s}: {e}"))?),
+                None => None,
+            };
+
+            // Build the SearchFilters from the SQL-pushable flags.
+            let normalised_ext: Vec<String> = ext
+                .into_iter()
+                .map(|e| e.trim().trim_start_matches('.').to_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect();
+            let filters = crate::index::SearchFilters {
+                owner_id: owner,
+                language: lang,
+                year_min,
+                year_max,
+                tags: vec![],
+                prefer_translated_lang: translated_to,
+                ext: normalised_ext,
+                source_hash_prefix: hash,
+                parent_dir_prefix: folder_prefix,
+                audio_duration_min_seconds: audio_duration_min,
+                audio_duration_max_seconds: audio_duration_max,
+                image_camera_make,
+                image_camera_model,
+            };
+
+            // FTS pass.  An empty query is rejected to keep the
+            // search-CLI shape predictable — wildcard syntax (`*foo`)
+            // already lets the user widen the match; a totally
+            // empty input would skip BM25 entirely and that's a
+            // separate command (`index list`).
+            let q_trimmed = query.trim();
+            if q_trimmed.is_empty() {
+                return Err(
+                    "search query is empty — use `index list` to enumerate \
+                     without BM25, or pass a wildcard like `*` to match all"
+                        .into(),
+                );
+            }
             let hits = fts
-                .search(&query, &filters, limit)
+                .search(q_trimmed, &filters, limit.saturating_mul(4))
                 .map_err(|e| e.to_string())?;
-            // Resolve doc metadata from LanceDB.
+            // Resolve doc metadata from LanceDB.  The Lance side
+            // applies the SearchFilters scalar-SQL clauses; the
+            // post-hoc filters (size + date) run in Rust against
+            // each row's `metadata_json` blob.
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
+
+            // Fetch metadata for each hit + apply the SearchFilters
+            // scalar SQL (ext, hash prefix, folder prefix, audio
+            // duration range, image camera, source language, year
+            // range, prefer-translated-lang) as a LanceDB-side
+            // predicate.  Rows that don't pass the SQL are dropped
+            // here, preserving the BM25 ranking on what remains.
             let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+            let extra_sql = filters.to_lance_sql();
             let meta_map: std::collections::HashMap<String, crate::index::SearchResult> = local
-                .fetch_search_results_by_ids(&doc_ids)
+                .fetch_search_results_by_ids_filtered(&doc_ids, extra_sql.as_deref())
                 .await
                 .unwrap_or_default()
                 .into_iter()
                 .map(|r| (r.doc_id.clone(), r))
                 .collect();
-            for hit in &hits {
-                let meta = meta_map.get(&hit.doc_id);
-                match out {
-                    OutFormat::Json => {
+            let mut rows: Vec<crate::index::SearchResult> = hits
+                .iter()
+                .filter_map(|h| meta_map.get(&h.doc_id).cloned())
+                .collect();
+
+            // Post-hoc filter: size + date.  metadata_json shape:
+            // `{"fs_size": int, "fs_mtime": unix_seconds, ...}`.
+            // Parse cheaply (per-row JSON) — at CLI scale (10⁴ rows)
+            // this is microseconds.
+            if min_size_bytes.is_some() || max_size_bytes.is_some()
+                || after_unix.is_some() || before_unix.is_some()
+            {
+                rows.retain(|r| {
+                    let blob: serde_json::Value = r
+                        .metadata_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    let fs_size = blob.get("fs_size").and_then(|v| v.as_i64());
+                    let fs_mtime = blob.get("fs_mtime").and_then(|v| v.as_i64());
+                    if let Some(min) = min_size_bytes {
+                        if fs_size.map_or(true, |s| s < min) {
+                            return false;
+                        }
+                    }
+                    if let Some(max) = max_size_bytes {
+                        if fs_size.map_or(true, |s| s > max) {
+                            return false;
+                        }
+                    }
+                    if let Some(after) = after_unix {
+                        if fs_mtime.map_or(true, |m| m < after) {
+                            return false;
+                        }
+                    }
+                    if let Some(before) = before_unix {
+                        if fs_mtime.map_or(true, |m| m > before) {
+                            return false;
+                        }
+                    }
+                    true
+                });
+            }
+            rows.truncate(limit);
+
+            // Render.
+            match out {
+                OutFormat::Json => {
+                    for r in &rows {
                         let payload = serde_json::json!({
-                            "doc_id": hit.doc_id,
-                            "score": hit.score,
-                            "filename": meta.and_then(|m| m.filename.as_deref()),
-                            "title": meta.and_then(|m| m.title.as_deref()),
-                            "author": meta.and_then(|m| m.author.as_deref()),
-                            "year": meta.and_then(|m| m.year),
+                            "doc_id": r.doc_id,
+                            "filename": r.filename,
+                            "title": r.title,
+                            "author": r.author,
+                            "year": r.year,
+                            "ext": r.ext,
+                            "language": r.language,
+                            "location_uri": r.location_uri,
+                            "snippet": r.snippet,
+                            "score": r.score,
                         });
                         println!("{payload}");
                     }
-                    OutFormat::Text => {
-                        let title = meta
-                            .and_then(|m| m.title.as_deref())
-                            .or_else(|| meta.and_then(|m| m.filename.as_deref()))
-                            .unwrap_or(&hit.doc_id);
-                        println!("[{:.3}] {}", hit.score, title);
+                }
+                OutFormat::Text => {
+                    // Compact table — title (40) / year (4) / ext (8) /
+                    // size human-readable / lang / filename.
+                    println!(
+                        "{:<40}  {:>4}  {:<6}  {:>10}  {:<4}  {}",
+                        "TITLE", "YEAR", "EXT", "SIZE", "LANG", "FILENAME"
+                    );
+                    for r in &rows {
+                        let blob: serde_json::Value = r
+                            .metadata_json
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or(serde_json::Value::Null);
+                        let fs_size = blob.get("fs_size").and_then(|v| v.as_i64());
+                        let title = r
+                            .title
+                            .as_deref()
+                            .or(r.filename.as_deref())
+                            .unwrap_or(&r.doc_id);
+                        let title_short: String = title.chars().take(40).collect();
+                        let year = r.year.map(|y| y.to_string()).unwrap_or_default();
+                        let ext = r.ext.as_deref().unwrap_or("");
+                        let size_h = fs_size.map(format_size_human).unwrap_or_default();
+                        let lang = r.language.as_deref().unwrap_or("");
+                        let filename = r.filename.as_deref().unwrap_or("");
+                        println!(
+                            "{:<40}  {:>4}  {:<6}  {:>10}  {:<4}  {}",
+                            title_short, year, ext, size_h, lang, filename
+                        );
                     }
                 }
             }
-            eprintln!("{} result(s)", hits.len());
+            eprintln!("{} result(s)", rows.len());
         }
 
         IndexCmd::Ingest { paths, owner_id, model, device } => {
@@ -2807,6 +3035,137 @@ fn cmd_chat_transcribe(
     Ok(())
 }
 
+// ── P13.7 Step 6 — search-CLI filter parsers ──────────────────────
+
+/// Parse a human-readable byte size into raw bytes.  Cloud-backup
+/// parity: accepts `"100"` (bytes), `"100KB"`, `"100MB"`, `"1.5GB"`,
+/// `"2TB"`.  Case-insensitive, optional decimal, optional `B` /
+/// `KB`/`MB`/`GB`/`TB` suffix.
+fn parse_human_size(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty size string".into());
+    }
+    // Find the boundary between the numeric prefix and the unit.
+    let split = s
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(s.len());
+    let (num_str, unit_str) = s.split_at(split);
+    let num: f64 = num_str
+        .trim()
+        .parse()
+        .map_err(|e| format!("not a number: {e}"))?;
+    if num < 0.0 {
+        return Err("size must be non-negative".into());
+    }
+    let mul: f64 = match unit_str.trim().to_uppercase().as_str() {
+        "" | "B" => 1.0,
+        "K" | "KB" => 1024.0,
+        "M" | "MB" => 1024.0 * 1024.0,
+        "G" | "GB" => 1024.0 * 1024.0 * 1024.0,
+        "T" | "TB" => 1024.0_f64.powi(4),
+        other => return Err(format!("unknown size unit `{other}`")),
+    };
+    let bytes = (num * mul).round();
+    if !bytes.is_finite() || bytes > i64::MAX as f64 {
+        return Err("size overflows i64".into());
+    }
+    Ok(bytes as i64)
+}
+
+/// Parse `YYYY-MM-DD` (or `YYYY-MM-DD HH:MM:SS` / `YYYY-MM-DDTHH:MM:SS`)
+/// into Unix seconds (UTC).  Hand-written so we don't pull `chrono`
+/// or `time` into src-tauri's direct deps — both are present
+/// transitively but adding either as a direct dep grows the
+/// surface unnecessarily for one parser.
+///
+/// Uses Howard Hinnant's days-from-civil algorithm for the
+/// date → Unix-seconds conversion: handles years 1970..= without
+/// special-casing leap years.
+fn parse_iso_date_to_unix(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty date string".into());
+    }
+
+    // Three shapes accepted: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS`,
+    // and `YYYY-MM-DDTHH:MM:SS` (with optional trailing `Z`).
+    let (date_part, time_part) = if s.len() == 10 {
+        (s, "00:00:00")
+    } else if let Some(t_idx) = s.find(['T', ' ']) {
+        let (d, t) = s.split_at(t_idx);
+        let t = t.trim_start_matches(['T', ' ']).trim_end_matches('Z');
+        (d, t)
+    } else {
+        return Err("expected YYYY-MM-DD[ THH:MM:SS]".into());
+    };
+
+    // Date components.
+    let date_components: Vec<&str> = date_part.split('-').collect();
+    if date_components.len() != 3 {
+        return Err(format!("malformed date `{date_part}` (need YYYY-MM-DD)"));
+    }
+    let y: i32 = date_components[0]
+        .parse()
+        .map_err(|e| format!("year parse: {e}"))?;
+    let m: u32 = date_components[1]
+        .parse()
+        .map_err(|e| format!("month parse: {e}"))?;
+    let d: u32 = date_components[2]
+        .parse()
+        .map_err(|e| format!("day parse: {e}"))?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(format!("date out of range: {y}-{m}-{d}"));
+    }
+
+    // Time components.
+    let (hh, mm, ss) = if time_part.is_empty() {
+        (0u32, 0u32, 0u32)
+    } else {
+        let tc: Vec<&str> = time_part.split(':').collect();
+        if tc.len() != 3 {
+            return Err(format!("malformed time `{time_part}` (need HH:MM:SS)"));
+        }
+        let hh: u32 = tc[0].parse().map_err(|e| format!("hour parse: {e}"))?;
+        let mm: u32 = tc[1].parse().map_err(|e| format!("minute parse: {e}"))?;
+        let ss: u32 = tc[2].parse().map_err(|e| format!("second parse: {e}"))?;
+        if hh > 23 || mm > 59 || ss > 60 {
+            return Err(format!("time out of range: {time_part}"));
+        }
+        (hh, mm, ss)
+    };
+
+    // Howard Hinnant — days_from_civil.
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = y_adj.div_euclid(400);
+    let yoe = (y_adj - era * 400) as u32; // [0, 399]
+    let doy = (153 * if m > 2 { m - 3 } else { m + 9 } + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era as i64 * 146097 + doe as i64 - 719468; // since 1970-01-01
+
+    Ok(days * 86400 + hh as i64 * 3600 + mm as i64 * 60 + ss as i64)
+}
+
+/// Compact human-readable byte size — `"1.4 MB"`, `"950 KB"`, etc.
+/// Mirrors cloud-backup's `format_bytes` output.
+fn format_size_human(bytes: i64) -> String {
+    if bytes < 0 {
+        return String::new();
+    }
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut idx = 0;
+    while size >= 1024.0 && idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        idx += 1;
+    }
+    if idx == 0 {
+        format!("{} {}", bytes, UNITS[idx])
+    } else {
+        format!("{:.1} {}", size, UNITS[idx])
+    }
+}
+
 // ── Subtitle formatters (P13.5 follow-up — SRT / VTT) ─────────────
 
 /// Render seconds as `HH:MM:SS,mmm` (SRT idiom — comma as decimal
@@ -3442,6 +3801,81 @@ fn chrono_like(epoch_secs: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P13.7 Step 6 — search CLI filter helpers ─────────────────────
+
+    #[test]
+    fn parse_human_size_handles_known_units() {
+        assert_eq!(parse_human_size("100").unwrap(), 100);
+        assert_eq!(parse_human_size("100B").unwrap(), 100);
+        assert_eq!(parse_human_size("100KB").unwrap(), 100 * 1024);
+        assert_eq!(parse_human_size("100MB").unwrap(), 100 * 1024 * 1024);
+        assert_eq!(parse_human_size("1.5GB").unwrap(),
+                   (1.5_f64 * 1024.0 * 1024.0 * 1024.0).round() as i64);
+        assert_eq!(parse_human_size("2TB").unwrap(),
+                   2_i64 * 1024_i64.pow(4));
+    }
+
+    #[test]
+    fn parse_human_size_case_insensitive_and_whitespace_tolerant() {
+        assert_eq!(parse_human_size(" 100 mb ").unwrap(), 100 * 1024 * 1024);
+        assert_eq!(parse_human_size("100Mb").unwrap(), 100 * 1024 * 1024);
+        // Single-letter shorthand.
+        assert_eq!(parse_human_size("1G").unwrap(), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_human_size_rejects_invalid() {
+        assert!(parse_human_size("").is_err());
+        assert!(parse_human_size("abc").is_err());
+        assert!(parse_human_size("-100MB").is_err());
+        assert!(parse_human_size("100XB").is_err());
+    }
+
+    #[test]
+    fn parse_iso_date_to_unix_known_dates() {
+        // 1970-01-01 → 0.
+        assert_eq!(parse_iso_date_to_unix("1970-01-01").unwrap(), 0);
+        // 2020-01-01 00:00:00 UTC → 1_577_836_800 (well-known epoch).
+        assert_eq!(parse_iso_date_to_unix("2020-01-01").unwrap(), 1_577_836_800);
+        // Same date with explicit time.
+        assert_eq!(
+            parse_iso_date_to_unix("2020-01-01T00:00:00Z").unwrap(),
+            1_577_836_800
+        );
+        assert_eq!(
+            parse_iso_date_to_unix("2020-01-01 00:00:00").unwrap(),
+            1_577_836_800
+        );
+    }
+
+    #[test]
+    fn parse_iso_date_to_unix_leap_year() {
+        // 2024-02-29 must work (leap year).  Days_from_civil handles
+        // leap years implicitly — this pin catches a future
+        // refactor that gets the algorithm wrong.
+        let d = parse_iso_date_to_unix("2024-02-29").unwrap();
+        let d_next = parse_iso_date_to_unix("2024-03-01").unwrap();
+        assert_eq!(d_next - d, 86400, "Feb 29 → Mar 1 must be exactly 1 day");
+    }
+
+    #[test]
+    fn parse_iso_date_to_unix_rejects_garbage() {
+        assert!(parse_iso_date_to_unix("").is_err());
+        assert!(parse_iso_date_to_unix("not-a-date").is_err());
+        assert!(parse_iso_date_to_unix("2024-13-01").is_err());
+        assert!(parse_iso_date_to_unix("2024-02-30T25:00:00").is_err());
+    }
+
+    #[test]
+    fn format_size_human_known_thresholds() {
+        assert_eq!(format_size_human(0), "0 B");
+        assert_eq!(format_size_human(512), "512 B");
+        assert_eq!(format_size_human(1024), "1.0 KB");
+        assert_eq!(format_size_human(1536), "1.5 KB");
+        assert_eq!(format_size_human(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size_human(1024_i64 * 1024 * 1024), "1.0 GB");
+    }
 
     #[test]
     fn date_formatter_handles_known_epochs() {

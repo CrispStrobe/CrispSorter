@@ -289,6 +289,41 @@ pub struct SearchFilters {
     /// English translation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_translated_lang: Option<String>,
+    /// P13.7 Step 6 — restrict to rows whose `ext` column matches one
+    /// of the given values (lowercased on insert).  Multi-select to
+    /// support `--ext pdf,docx,mp3` style CLI flags.  Empty Vec ==
+    /// no filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// P13.7 Step 6 — SHA-256 prefix match against `source_hash`.
+    /// Mirrors cloud-backup's `--hash PREFIX` flag.  None == no
+    /// filter.  Hex-only (no auto-escape — caller is responsible
+    /// for sanitisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash_prefix: Option<String>,
+    /// P13.7 Step 6 — folder-prefix match against `parent_dir`.
+    /// Already used by the Übersicht's DocumentFilter; surfacing
+    /// it on SearchFilters lets CLI / search-side callers reuse
+    /// the scalar-indexed column without rebuilding the SQL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir_prefix: Option<String>,
+    /// P13.7 Step 6 — audio duration range (seconds).  Closed
+    /// interval; either bound is independently optional.  Filters
+    /// against the `audio_duration_seconds` column added by
+    /// migration v101.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_min_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_max_seconds: Option<f64>,
+    /// P13.7 Step 6 — image EXIF facets.  Substring-match against
+    /// the `image_camera_make` / `image_camera_model` columns added
+    /// by migration v102.  Stored values are typically short ("Apple",
+    /// "iPhone 15 Pro") so the user can pass either an exact value
+    /// or a substring fragment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_make: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_model: Option<String>,
 }
 
 impl SearchFilters {
@@ -312,6 +347,50 @@ impl SearchFilters {
             parts.push(format!(
                 "text_translated_lang = '{}' AND text_translated IS NOT NULL",
                 tgt.replace('\'', "''")
+            ));
+        }
+        // P13.7 Step 6 — ext multi-select.  Builds `ext IN ('pdf',
+        // 'docx', …)` rather than `ext = X OR ext = Y` so LanceDB's
+        // scalar-index path on `ext` fires.
+        if !self.ext.is_empty() {
+            let quoted: Vec<String> = self
+                .ext
+                .iter()
+                .map(|e| format!("'{}'", e.to_lowercase().replace('\'', "''")))
+                .collect();
+            parts.push(format!("ext IN ({})", quoted.join(", ")));
+        }
+        if let Some(ref h) = self.source_hash_prefix {
+            // SHA-256 is hex only; escape just in case a caller
+            // forgets the validation.  LIKE 'prefix%' uses LanceDB's
+            // string-index when prefix is non-empty.
+            parts.push(format!(
+                "source_hash LIKE '{}%'",
+                h.replace('\'', "''")
+            ));
+        }
+        if let Some(ref pdir) = self.parent_dir_prefix {
+            parts.push(format!(
+                "parent_dir LIKE '{}%'",
+                pdir.replace('\'', "''")
+            ));
+        }
+        if let Some(d_min) = self.audio_duration_min_seconds {
+            parts.push(format!("audio_duration_seconds >= {}", d_min));
+        }
+        if let Some(d_max) = self.audio_duration_max_seconds {
+            parts.push(format!("audio_duration_seconds <= {}", d_max));
+        }
+        if let Some(ref make) = self.image_camera_make {
+            parts.push(format!(
+                "image_camera_make LIKE '%{}%'",
+                make.replace('\'', "''")
+            ));
+        }
+        if let Some(ref model) = self.image_camera_model {
+            parts.push(format!(
+                "image_camera_model LIKE '%{}%'",
+                model.replace('\'', "''")
             ));
         }
         if !parts.is_empty() {
@@ -573,6 +652,99 @@ mod tests {
         assert!(sql.contains("language = 'bs'"), "got: {sql}");
         assert!(sql.contains("text_translated_lang = 'en'"), "got: {sql}");
         assert!(sql.contains("text_translated IS NOT NULL"), "got: {sql}");
+    }
+
+    // ── P13.7 Step 6 — CLI search-filter SQL coverage ──────────────────
+
+    #[test]
+    fn filters_sql_ext_multi_select_emits_in_predicate() {
+        let f = SearchFilters {
+            ext: vec!["pdf".to_string(), "docx".to_string(), "mp3".to_string()],
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("ext IN ('pdf', 'docx', 'mp3')"), "sql = {sql}");
+    }
+
+    #[test]
+    fn filters_sql_ext_lowercases_input() {
+        // Drift guard: if a caller passes uppercase, we still emit
+        // lowercase to match the stored column (lowercase-on-insert).
+        let f = SearchFilters {
+            ext: vec!["PDF".to_string()],
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("ext IN ('pdf')"), "sql = {sql}");
+    }
+
+    #[test]
+    fn filters_sql_source_hash_prefix_emits_like() {
+        let f = SearchFilters {
+            source_hash_prefix: Some("a1b2c3".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("source_hash LIKE 'a1b2c3%'"), "sql = {sql}");
+    }
+
+    #[test]
+    fn filters_sql_parent_dir_prefix_emits_like() {
+        let f = SearchFilters {
+            parent_dir_prefix: Some("/Users/foo/docs".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("parent_dir LIKE '/Users/foo/docs%'"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_audio_duration_range_emits_bounds() {
+        let f = SearchFilters {
+            audio_duration_min_seconds: Some(60.0),
+            audio_duration_max_seconds: Some(1800.0),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("audio_duration_seconds >= 60"), "sql = {sql}");
+        assert!(sql.contains("audio_duration_seconds <= 1800"), "sql = {sql}");
+    }
+
+    #[test]
+    fn filters_sql_image_camera_filters_emit_like() {
+        let f = SearchFilters {
+            image_camera_make: Some("Apple".to_string()),
+            image_camera_model: Some("iPhone 15 Pro".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("image_camera_make LIKE '%Apple%'"),
+            "sql = {sql}"
+        );
+        assert!(
+            sql.contains("image_camera_model LIKE '%iPhone 15 Pro%'"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_escapes_single_quotes_in_camera_filters() {
+        // SQL-injection guard: a caller passing `' OR 1=1 --` must
+        // get the literal quote escaped, not interpreted.  Pins the
+        // doubled-quote convention LanceDB / DataFusion follow.
+        let f = SearchFilters {
+            image_camera_model: Some("O'Brien camera".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("image_camera_model LIKE '%O''Brien camera%'"),
+            "sql = {sql}"
+        );
     }
 
     #[test]
