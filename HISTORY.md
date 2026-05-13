@@ -9,6 +9,265 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-13 — P13.7 Stages E + F + G + H (byte sync, durable retry, sharding, server-side embeddings)
+
+Additive infrastructure on top of the morning's P13.7 Step 5/7/8
+closeout.  Each stage is independently testable + live-verified
+against the production VPS; all 8 env-gated live tests in
+`sync::cloud_backup::live_tests` are green after deploy.
+
+### Net story
+
+> "Does CrispSorter really sync filesystem data, indexed text,
+> embeddings, AND let the GUI download files from cloud-backup?"
+
+After this batch:
+
+| Capability | Before this batch | After this batch |
+|---|---|---|
+| Metadata sync (path/hash/size/mtime/owner) | ✅ Step 5 | ✅ |
+| Body text sync (`full_text`) | ❌ | ✅ Stage A → server FTS5 + per-shard FTS5 |
+| Server-side search (`/api/search`) | ❌ | ✅ Stage A |
+| Embeddings sync | ⚠️ wire route only | ✅ + CLI walks LanceDB via `list_chunks_with_embeddings` |
+| Byte upload/download | ❌ (SSH only) | ✅ Stage E — pure-Rust streaming, content-addressed |
+| Durable retry on push failure | ❌ (fire-and-forget) | ✅ Stage F — SyncManager outbox + background drain |
+| TB-scale ready (sharded DB) | ❌ (single SQLite) | ✅ Stage G — 256 shards by sha-prefix, env-gated |
+| Server-side CPU embedding inference | ❌ | ✅ Stage H — fastembed, 10 models, same registry as `fastembed-rs` |
+| **Last not-pure-Rust client path** | SSH/retrieve.py | **Closed**: reqwest streaming |
+
+### Stage A — `full_text` body sync + FTS5
+
+  - `ManifestRow` / `PullRow` gain `full_text: Option<String>`.
+  - Migration adds `file_references.full_text` (nullable).
+  - SQLite FTS5 virtual table `file_references_fts` indexing
+    full_text + filename + title + author.  Triggers keep the
+    FTS in sync on insert/update/delete.
+  - New route `GET /api/search?q=…&limit=…` with bm25 scoring,
+    owner-scoping, FTS5 grammar errors translated to 400.
+  - CrispSorter pull writes `full_text` into the L1
+    `DocumentChunk` so `crispsorter index search` finds remote
+    rows by body text (closes the search-by-text claim).
+  - **pytest**: +8 cases (full_text round-trip, search routes).
+  - **mockito**: +3 cases (search 200/400/percent-encode).
+  - **Live**: `cb_sync_live_full_text_push_and_search`,
+    `cb_sync_live_end_to_end_index_push_pull_search`.
+
+### Stage B — `LocalIndex::list_chunks_with_embeddings` + CLI push
+
+  - New LocalIndex methods:
+    * `list_documents_for_push(since_ts, limit)` — push-shape
+      projection that includes body text.
+    * `list_chunks_with_embeddings(since_ts, limit)` — walks
+      `chunk_index >= 0 AND embedding IS NOT NULL`.
+  - `ManifestPushCandidate` + `EmbeddingPushCandidate` projection
+    types.  Decoders pull from `TimestampMillisecondArray`
+    correctly (the previous Int64 cast was wrong).
+  - CLI `push-embeddings` no longer stubs — real LanceDB walk
+    serialises real f32 vectors.
+  - **Unit tests**: +2 tempdir LocalIndex cases proving the
+    scan filters L1 / null-embedding rows correctly + that the
+    f32 vector round-trips exactly through Arrow.
+
+### Stage C — bg_ingest auto-push (then upgraded to Stage F outbox)
+
+  - `ManifestRow::from_raw_document(&RawDocument)` snapshots the
+    wire payload BEFORE `pipeline.ingest_document` consumes the
+    value.  Includes body text + filesystem path + parent_dir.
+  - bg_ingest's success arm enqueues the snapshot when
+    `IndexConfig.cloud_backup_push_manifests_enabled = true`.
+  - **Unit tests**: +2 mockito cases for `from_raw_document`.
+
+### Stage D — full end-to-end live test
+
+  - `cb_sync_live_end_to_end_index_push_pull_search`:
+    push manifest with body → search server-side by a unique
+    body token → pull → assert byte-identical body comes back
+    → assert second pull with since=watermark returns nothing.
+
+### Stage E — byte upload + download (`/api/files/by-hash/<sha>`)
+
+  - `api/files.py`: content-addressed sharded storage under
+    `CB_API_STORAGE_ROOT` (default `/mnt/akademie_storage/cb_api_blobs`).
+    Layout: `<root>/<sha[:2]>/<sha[2:4]>/<sha>` — caps any single
+    dir to ≤ 16k entries even at millions of blobs.  Atomic
+    `.partial` → `os.replace()` semantics; concurrent reader
+    never sees a half-written file.
+  - `POST /api/files/by-hash/<sha256>` — stream-upload bytes;
+    server verifies the hash; 400 on mismatch; idempotent
+    (`stored=False` for re-uploads); owner-scoped via
+    `file_references` membership.
+  - `GET /api/files/by-hash/<sha256>` — `StreamingResponse`
+    with `X-CB-SHA256` echo header.  Synchronous existence
+    check before constructing the generator → 410 (not lazy
+    crash) when the DB says yes but the FS file is missing.
+  - Migration: `files` gains `local_blob_path`,
+    `blob_uploaded_at`, `blob_uploader_id`.
+  - Rust: `CloudBackupClient::upload_file_by_hash` /
+    `download_file_by_hash`.  Upload streams via
+    `tokio_util::io::ReaderStream` + `reqwest::Body::wrap_stream`
+    so multi-GB files don't buffer in RAM.  Download verifies
+    sha as bytes arrive; integrity failure removes the dest
+    file atomically.
+  - **pytest**: +9 cases (round-trip, hash-mismatch, owner-
+    scoping, 410 on FS drift, idempotency, auth-required,
+    invalid-sha-format).
+  - **mockito**: +5 cases (200/400/integrity-fail/404).
+  - **Live**: `cb_sync_live_byte_upload_download_round_trip`.
+  - CLI: `crispsorter sync cloud-backup {upload-file,download-file}`.
+
+### Stage F — durable retry via SyncManager outbox
+
+  - `SyncManager::drain_cb_outbox(client, batch_size)` — routes
+    `cb_manifest_push` ops to `/api/manifest/push`.  Other ops
+    (the existing crisp-index-server `ingest`/`delete`/`move`)
+    are skipped by the filter so the legacy push path is
+    untouched.
+  - bg_ingest swaps fire-and-forget tokio::spawn for outbox
+    enqueue.  Survives crashes / network outages.  Failed
+    pushes hit the existing 10-retry-max retry counter; after
+    `clear_failed` is invoked, permanently-failed entries are
+    purged.
+  - New CLI subcommand `crispsorter sync cloud-backup drain`
+    for manual flush + manual debug.
+  - New Tauri command `sync_cb_drain`.
+  - **Unit tests**: +3 mockito cases (success drain, server-500
+    bumps retries, other-op rows are ignored).
+  - **Live**: `cb_sync_live_outbox_drain_round_trip`.
+
+### Stage G — 256-way sharding by sha-prefix
+
+  - `CB_API_SHARD_ROOT` env-gate.  Unset → legacy single-DB
+    (the production VPS is in this mode today).  Set → 256
+    shards by `sha[:2]` at `<root>/<aa>/shard.db` + a central
+    `meta.db` for `api_keys` + `sources`.
+  - `connect(sha=…, meta=…)` shard-aware factory.
+    `fanout_query{,_async}` runs a query against every shard in
+    parallel via `asyncio.to_thread` / the default
+    ThreadPoolExecutor; results are unioned and re-sorted in
+    Python.
+  - Every route was refactored to route correctly:
+    * `manifest_push` groups rows by shard prefix, parallel
+      writes; mirrors `sources` + `batches` rows into each
+      touched shard so per-shard pulls / searches don't need
+      a meta-DB join.
+    * `manifest_pull` / `search` / `by_embedding` fan out
+      across every shard, union + sort + truncate to `limit`.
+    * `files_upload_by_hash` / `files_download_by_hash` /
+      `_caller_has_reference_to_hash` use the single-shard
+      path keyed on sha.
+    * `embeddings_push` buckets rows by `doc_id[:2]` (sha-
+      prefixed for CrispSorter's pipeline).
+  - **pytest**: +5 cases in `test_sharded_mode.py` (push
+    creates shard DBs, pull unions across shards, search
+    fan-out + bm25 merge, single-shard byte round-trip,
+    meta.db isolation of api_keys).
+  - All 38 legacy-mode tests stay green; sharded mode adds 5
+    more → 48 pytest cases total before Stage H.
+
+> Architectural caveat: sha-prefix gives perfect distribution
+> but breaks topical locality — a 50GB research-task push
+> scatters across 256 shards.  Follow-up tracked in
+> [PLAN.md → P13.7.x](PLAN.md) to add an optional
+> `collection_id` field with fallback to sha-prefix.
+
+### Stage H — server-side CPU embedding inference
+
+  - `api/embed.py` lazy-loads `fastembed.TextEmbedding`
+    instances per model name.  10 model aliases in the
+    registry (bge-m3 default, bge-small/base/large-en,
+    e5-small/base/large multilingual, nomic-embed-text-v1.5,
+    all-minilm).  Same registry `fastembed-rs` uses on the
+    client → vectors interchangeable for cosine search.
+  - `GET /api/index/embed-query?text=…&model=…` returns the
+    embedding as a JSON `embedding: [f32; D]` payload.
+    Server-side `asyncio.to_thread` so the synchronous
+    fastembed call doesn't block the uvicorn event loop.
+  - `GET /api/index/embed-models` lists the registry + flags
+    whether fastembed is installed at all (503 when missing
+    with a clear remediation hint).
+  - Per-model `threading.Lock` so a burst of concurrent
+    first-requests serialises the ONNX download instead of
+    triggering N parallel `from_pretrained` calls.
+  - `requirements.txt`: `fastembed >= 0.4.0`, `onnxruntime
+    >= 1.18.0`.  Production: set
+    `XDG_CACHE_HOME=/mnt/akademie_storage/.fastembed_cache`
+    in `/etc/cb-api.env` so the ~500MB bge-m3 weights land on
+    the storage box, not the small root disk.
+  - Rust: `CloudBackupClient::embed_query` /
+    `embed_models`.  120s timeout on `embed_query` (first
+    call to a never-loaded model needs the ONNX download).
+  - Tauri: `sync_cb_embed_query`, `sync_cb_embed_models`.
+  - CLI: `crispsorter sync cloud-backup {embed-query,embed-models}`.
+  - **pytest**: +5 cases (vector returned, unknown model,
+    503 when fastembed missing, auth required, embed-models
+    list).
+  - **mockito**: +4 cases (200/400/503 + embed-models list).
+  - **Live**: `cb_sync_live_embed_query_round_trip`.
+
+### Commit table (squashed in the close-out commit)
+
+| Stage | Headline |
+|---|---|
+| A | `full_text` body sync + `/api/search` FTS5 endpoint + L1 store carries body text on pull |
+| B | `LocalIndex::list_documents_for_push` + `list_chunks_with_embeddings` + CLI `push-embeddings` wired |
+| C | `ManifestRow::from_raw_document` + bg_ingest auto-push hook (fire-and-forget initially) |
+| D | End-to-end live test: index → push → fresh-DB pull → search body token → hit |
+| E | `/api/files/by-hash/<sha>` upload + download (content-addressed blob store, pure-Rust streaming) |
+| F | `SyncManager::drain_cb_outbox` + bg_ingest swap to outbox enqueue (durable retry) |
+| G | `CB_API_SHARD_ROOT`-gated 256-way sharding by sha-prefix + `connect(sha=…)` + `fanout_query` |
+| H | `api/embed.py` lazy fastembed registry + `GET /api/index/embed-query` + Rust client + CLI |
+
+### Net delta
+
+`tauri-app` test count: ~452 → ~490.
+  sync (Rust): +17 mockito tests (Stages A: search ×3, E: file
+        upload/download ×5, F: drain ×3, H: embed ×4, plus
+        `from_raw_document` ×2) + 5 new env-gated live tests
+        (full_text+search, end-to-end, byte round-trip,
+        outbox drain, embed-query) → 13 live tests in
+        `cb_sync_live_*` (8 cb-sync + the existing 5 WebDAV).
+  index (Rust): +2 LocalIndex tempdir tests for push/embedding
+        scans.
+
+pytest (Python, `../cloud-backup/tests/`): 21 → 48.
+  +8 for full_text + search (test_search_route.py)
+  +9 for byte routes (test_file_routes.py)
+  +5 for sharded mode (test_sharded_mode.py)
+  +5 for embed (test_embed_route.py)
+
+Build verification: `cargo check -p tauri-app --no-default-features`
++ `cargo check -p tauri-app --features crispasr` clean
+throughout.  43+5=48 pytest green locally + against the
+deployed VPS.
+
+### What's NOT in this batch (tracked in PLAN.md → P13.7.x)
+
+  - **`collection_id` sharding key** — sha-prefix breaks
+    topical locality.  Add an optional `collection_id` field
+    that clients set per logical group; router uses
+    `collection_id[:2]` when set, falls back to `sha[:2]`.
+  - **LanceDB-backed vector index on the VPS** — Python
+    brute-force k-NN over SQLite BLOBs works ≤ 10k chunks.
+    The right scale-out is LanceDB on the storage box
+    (memory-mapped, columnar, larger-than-RAM).  Matches the
+    P13.8 LanceDB-on-VPS work already on the plan.  FAISS was
+    the wrong choice for CPU + 16GB RAM + TB scale (in-memory
+    index doesn't fit); LanceDB's mmap'd columnar reads do.
+  - **FTS5 vs Tantivy convergence** — `search_engine.py`
+    already runs Tantivy over the existing-via-vps_worker
+    7z-extract flow; cb-api's `/api/search` runs FTS5 over
+    client-pushed `full_text`.  Two parallel engines today;
+    convergence options laid out in PLAN.md.
+  - **bg_ingest background drain timer** — drain is manual
+    today (CLI / Tauri command).  Adding a 30-second tokio
+    interval-task in `lib.rs` setup is a 20-line follow-up.
+  - **GUI surface for download** — `sync_cb_download_file`
+    Tauri command is wired; a "Download from cloud-backup"
+    button on search results that calls it for a missing
+    `crisp+local://…` path is the next UX iteration.
+
+---
+
 ## Session log — 2026-05-13 — P13.7 Step 5 + 7 + 8 (cloud-backup HTTP sync, end-to-end)
 
 The final P13.7 slice that gates the v0.1.41 tag.  Cross-repo: adds
