@@ -268,6 +268,37 @@ pub struct IndexConfig {
     /// current behaviour.
     #[serde(default)]
     pub image_indexing_enabled: bool,
+    /// P13.6 Step 7c — how deep the index goes on audio/video files.
+    /// `L1` writes only filesystem metadata (path / size / mtime);
+    /// `L2` additionally runs the cheap symphonia probe to populate
+    /// the audio_* columns (no ASR); `L3` (default) runs the full
+    /// decode → transcribe pipeline.  Mirrors the P11 cloud-drive
+    /// L1/L2/L3 progression — promotes from L1 to L3 via the
+    /// "Transcribe" search-result action (Step 8).
+    #[serde(default)]
+    pub ingest_audio_level: IngestAudioLevel,
+}
+
+/// P13.6 Step 7c — how deeply bg_ingest processes audio/video.
+/// Cheap-to-deep progression; UI dropdown surfaces `serde(rename_all
+/// = "kebab-case")` strings ("l1" / "l2" / "l3") so the persisted
+/// JSON stays human-readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IngestAudioLevel {
+    /// Filesystem metadata only.  Audio extractor is skipped entirely
+    /// — no probe, no transcribe.  Fastest path; rows are
+    /// findable by filename / path but the audio_* columns + the
+    /// full_text transcript stay NULL.
+    L1,
+    /// Run the symphonia probe (sub-ms) to populate the audio_*
+    /// L2 columns (duration / codec / sample rate / channels /
+    /// bitrate).  Still no ASR — the full_text stays NULL.
+    L2,
+    /// Full pipeline: symphonia probe AND ASR transcription.
+    /// Default.  Matches the pre-P13.6 behaviour.
+    #[default]
+    L3,
 }
 
 fn default_use_vector() -> bool {
@@ -365,6 +396,7 @@ impl Default for IndexConfig {
             audio_lid_method: default_audio_lid_method(),
             image_extraction_enabled: default_image_extraction_enabled(),
             image_indexing_enabled: false,
+            ingest_audio_level: IngestAudioLevel::default(),
         }
     }
 }

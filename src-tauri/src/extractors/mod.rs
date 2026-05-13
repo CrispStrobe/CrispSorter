@@ -198,6 +198,16 @@ pub struct ExtractOptions {
     /// their previous behaviour without explicit opt-in.  bg_ingest
     /// reads this from `IndexConfig.audio_extraction_enabled`.
     pub audio_extraction_enabled: bool,
+    /// P13.6 Step 7c — how deeply to ingest audio/video.  `L1`
+    /// short-circuits the extractor entirely; `L2` runs the cheap
+    /// symphonia probe but skips ASR; `L3` (default) runs the full
+    /// decode → transcribe pipeline.  bg_ingest reads this from
+    /// `IndexConfig.ingest_audio_level`.  Plumbed as a String here
+    /// so the existing serde Deserialize on IndexConfig doesn't
+    /// need to import the enum across module boundaries; the
+    /// dispatcher matches on the canonical "l1" / "l2" / "l3"
+    /// kebab-case values.
+    pub ingest_audio_level: String,
 }
 
 impl Default for ExtractOptions {
@@ -215,6 +225,9 @@ impl Default for ExtractOptions {
             // caller (bg_ingest reading IndexConfig) explicitly
             // disables it.
             audio_extraction_enabled: true,
+            // P13.6 Step 7c default — full pipeline.  bg_ingest
+            // overrides per IndexConfig.ingest_audio_level.
+            ingest_audio_level: "l3".to_string(),
         }
     }
 }
@@ -238,6 +251,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             // no-opts legacy API; only bg_ingest reading
             // IndexConfig flips it off.
             audio_extraction_enabled: true,
+            ingest_audio_level: "l3".to_string(),
         },
     )
 }
@@ -302,23 +316,30 @@ pub fn extract_text_from_path_with_opts(
             })
         }
         e if audio::AUDIO_EXTS.contains(&e) => {
-            // P13.5 slice B — audio / video → transcript.
-            // Probe the feature flag first so the bg_ingest classifier
-            // can downgrade to L2 metadata with a clear "feature off"
-            // message rather than letting `audio::extract`'s actionable
-            // stub error bubble through as a generic extraction
-            // failure.  When the feature IS on, `extract` does the
-            // decode-then-transcribe pipeline; first call also primes
-            // the process-wide singleton ASR session.
-            if !opts.audio_extraction_enabled {
-                // P13.6 Step 5 — user opted out via Settings →
-                // Multimodal → "Audio + Video extraction".  Returns
-                // an explicit "skipped" error so bg_ingest can
-                // downgrade to L1 metadata-only with a clear reason
-                // in the task-failure ledger.
+            // P13.5 slice B / P13.6 Step 7c — audio / video.
+            //
+            // Three Settings-driven gates before the full decode +
+            // transcribe pipeline fires:
+            //   1. ingest_audio_level == "l1": user wants filesystem
+            //      metadata only.  Skip ALL extraction.
+            //   2. audio_extraction_enabled == false: master switch
+            //      from P13.6 Step 5.  Same skip behaviour.
+            //   3. Feature flag check: `crispasr` not compiled in.
+            //      Same skip path with a different "rebuild with
+            //      --features" message.
+            //
+            // ingest_audio_level == "l2" — run the symphonia probe
+            // (cheap, no decode) and produce an ExtractedDocument
+            // with the L2 fields populated but an empty transcript.
+            // bg_ingest still writes the audio_* columns; the
+            // full_text stays empty so search-by-content doesn't
+            // match the audio file body.
+            //
+            // ingest_audio_level == "l3" (default) — full pipeline.
+            let level = opts.ingest_audio_level.as_str();
+            if level == "l1" || !opts.audio_extraction_enabled {
                 Err(anyhow::anyhow!(
-                    "audio extraction skipped by Settings: \
-                     audio_extraction_enabled is false; skipped {}",
+                    "audio extraction skipped at L1 by Settings; skipped {}",
                     path.display()
                 ))
             } else if !audio::is_audio_extraction_available() {
@@ -328,7 +349,35 @@ pub fn extract_text_from_path_with_opts(
                      skipped {}",
                     path.display()
                 ))
+            } else if level == "l2" {
+                // L2 — probe only, no decode/transcribe.  Builds an
+                // ExtractedDocument with audio = Some(metadata) and
+                // full_text = "" so the bg_ingest writer still
+                // populates the audio_* columns and the search
+                // doesn't have to recognise an L2 audio row as
+                // anything special.
+                #[cfg(feature = "crispasr")]
+                {
+                    let audio_meta = crate::audio::probe::probe_metadata(path).ok();
+                    Ok(ExtractedDocument {
+                        full_text: String::new(),
+                        headings: Vec::new(),
+                        ext: ext.clone(),
+                        language: None,
+                        translated_text: None,
+                        translated_to_lang: None,
+                        audio: audio_meta,
+                    })
+                }
+                #[cfg(not(feature = "crispasr"))]
+                {
+                    Err(anyhow::anyhow!(
+                        "L2 audio probe needs the `crispasr` cargo feature; skipped {}",
+                        path.display()
+                    ))
+                }
             } else {
+                // L3 — full pipeline (decode + transcribe + probe).
                 audio::extract(path).map(|mut doc| {
                     doc.ext = ext.clone();
                     doc
