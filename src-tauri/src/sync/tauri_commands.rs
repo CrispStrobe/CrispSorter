@@ -375,49 +375,43 @@ pub async fn sync_cb_manifest_push(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    // Pull L1 rows from LocalIndex.  We use `list_documents` (only
-    // chunk_index <= 0 rows) so duplicates per chunk don't end up
-    // multiplying the push.  Then filter client-side to those with
-    // indexed_at > last_ts.  At catalog scale (≤ 10⁵ docs) this is
-    // fast; a future scalar-range pre-filter via list_failed
-    // pattern would scale further but is out of scope here.
-    let docs = local.list_documents(limit * 4).await.map_err(|e| e.to_string())?;
+    // Pull push-candidates from LocalIndex via the dedicated
+    // projection (Stage A — full_text included).  Pre-filters
+    // `indexed_at > last_ts` server-side; we still cap rows
+    // client-side at `limit`.
+    let candidates = local.list_documents_for_push(last_ts, limit)
+        .await.map_err(|e| e.to_string())?;
     let mut rows: Vec<ManifestRow> = Vec::new();
     let mut max_ts = last_ts;
-    for d in docs {
-        // metadata_json carries `fs_mtime` + `fs_size`; the schema
-        // doesn't expose `indexed_at` on `SearchResult`, so we use
-        // metadata_json's `indexed_at` as the watermark when
-        // present, falling back to 0.
-        let meta = d.metadata_json.as_deref()
+    for c in &candidates {
+        // metadata_json may carry the original filesystem path /
+        // size / mtime — lift them when present (matches the
+        // historical L1FileEntry shape).
+        let meta = c.metadata_json.as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .unwrap_or(serde_json::Value::Null);
-        let indexed_at = meta.get("indexed_at").and_then(|v| v.as_i64()).unwrap_or(0);
-        if indexed_at <= last_ts { continue; }
         let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0);
         let fs_mtime = meta.get("fs_mtime").and_then(|v| v.as_f64())
             .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_i64()).map(|i| i as f64))
             .unwrap_or(0.0);
-        let parent_dir = meta.get("parent_dir").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
         let path = meta.get("fs_path").and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| Some(d.location_uri.clone()))
-            .unwrap_or_default();
-        max_ts = max_ts.max(indexed_at);
+            .unwrap_or_else(|| c.location_uri.clone());
+        max_ts = max_ts.max(c.indexed_at);
         rows.push(ManifestRow {
             path,
             size_bytes: fs_size,
-            sha256: meta.get("source_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            sha256: c.source_hash.clone(),
             mtime_unix: fs_mtime,
-            owner_id: d.owner_id.clone(),
-            filename: d.filename.clone().unwrap_or_default(),
-            ext: d.ext.clone().unwrap_or_default(),
-            parent_dir,
-            language: d.language.clone(),
-            title: d.title.clone(),
-            author: d.author.clone(),
-            year: d.year,
+            owner_id: c.owner_id.clone(),
+            filename: c.filename.clone().unwrap_or_default(),
+            ext: c.ext.clone().unwrap_or_default(),
+            parent_dir: c.parent_dir.clone().unwrap_or_default(),
+            language: c.language.clone(),
+            title: c.title.clone(),
+            author: c.author.clone(),
+            year: c.year,
+            full_text: c.full_text.clone(),
         });
         if rows.len() >= limit { break; }
     }
@@ -506,8 +500,13 @@ pub async fn sync_cb_manifest_pull(
             language: r.language.clone(),
             page_count: None,
             headings_text: None,
-            full_text: None,
-            full_text_md: None,
+            // Stage A — copy body text from the server response so a
+            // subsequent `crispsorter index search` finds remote rows
+            // by body content, not just metadata.  `full_text_md`
+            // mirrors `full_text` (no Markdown roundtrip across the
+            // wire — same convention as audio L2 rows).
+            full_text: r.full_text.clone(),
+            full_text_md: r.full_text.clone(),
             embedding: None,
             embedding_sparse: None,
             embedding_model: None,
@@ -551,6 +550,135 @@ pub async fn sync_cb_manifest_pull(
         "applied": applied,
         "watermark": new_watermark,
         "has_more": pulled.has_more,
+    }))
+}
+
+/// `GET /api/index/embed-query?text=…&model=…` — compute the
+/// embedding vector for `text` on the cloud-backup VPS (CPU
+/// inference via fastembed).  Lets clients without a local
+/// embedder (phone / web / headless) feed the returned vector
+/// into `/api/index/by-embedding` for k-NN.
+#[tauri::command]
+pub async fn sync_cb_embed_query(
+    state: State<'_, AppState>,
+    text: String,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let resp = cli.embed_query(&text, model.as_deref())
+        .await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "model":     resp.model,
+        "dim":       resp.dim,
+        "embedding": resp.embedding,
+    }))
+}
+
+/// `GET /api/index/embed-models` — list models the VPS embedder
+/// supports + whether fastembed is installed at all.  Used by the
+/// UI to decide whether to offer "embed remotely" as an option.
+#[tauri::command]
+pub async fn sync_cb_embed_models(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let resp = cli.embed_models().await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "models":    resp.models,
+        "default":   resp.default,
+        "available": resp.available,
+    }))
+}
+
+/// P13.7 Stage F — drain `cb_manifest_push` entries from the
+/// sync_outbox by POSTing batches to `/api/manifest/push`.  Manual
+/// trigger (CLI + Settings button); a background timer in lib.rs
+/// setup runs it periodically when auto-push is on.  Returns
+/// `{pushed, failed}` — pushed is the count of outbox entries
+/// successfully drained; failed is mid-batch errors (retries bump).
+#[tauri::command]
+pub async fn sync_cb_drain(
+    state: State<'_, AppState>,
+    batch_size: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
+    let n = batch_size.unwrap_or(64).clamp(1, 1024);
+    let (pushed, failed) = mgr.drain_cb_outbox(&cli, n).await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "pushed": pushed, "failed": failed }))
+}
+
+/// `POST /api/files/by-hash/<sha>` — stream-upload `local_path` to
+/// the cloud-backup VPS.  Server verifies the hash; idempotent on
+/// re-upload.  Owner-scope: the caller must have a manifest row
+/// referencing this sha (push via `sync_cb_manifest_push` first).
+#[tauri::command]
+pub async fn sync_cb_upload_file(
+    state: State<'_, AppState>,
+    sha256: String,
+    local_path: String,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let path = std::path::PathBuf::from(&local_path);
+    if !path.exists() {
+        return Err(format!("file not found: {local_path}"));
+    }
+    let resp = cli.upload_file_by_hash(&sha256, &path)
+        .await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "sha256":          resp.sha256,
+        "size_bytes":      resp.size_bytes,
+        "stored":          resp.stored,
+        "local_blob_path": resp.local_blob_path,
+    }))
+}
+
+/// `GET /api/files/by-hash/<sha>` — stream bytes to `dest_path`
+/// with sha-verify on the fly.  Returns the byte count written.
+#[tauri::command]
+pub async fn sync_cb_download_file(
+    state: State<'_, AppState>,
+    sha256: String,
+    dest_path: String,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let dest = std::path::PathBuf::from(&dest_path);
+    // Create the parent dir if needed (matches the `tauri-plugin-fs`
+    // convention; a missing parent dir would otherwise produce an
+    // opaque "no such file or directory" error from File::create).
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    let bytes = cli.download_file_by_hash(&sha256, &dest)
+        .await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "sha256":     sha256,
+        "dest_path":  dest_path,
+        "bytes":      bytes,
+    }))
+}
+
+/// `GET /api/search?q=&limit=` — server-side FTS5 query over
+/// `file_references.full_text`.  Returns rows in the same shape
+/// `sync_cb_manifest_pull` does; the GUI can lift a hit straight
+/// into the local L1 store via the same DocumentChunk adapter.
+#[tauri::command]
+pub async fn sync_cb_search(
+    state: State<'_, AppState>,
+    q: String,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let resp = cli.search(&q, limit.unwrap_or(50).clamp(1, 500))
+        .await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "rows":  resp.rows,
+        "total": resp.total,
     }))
 }
 

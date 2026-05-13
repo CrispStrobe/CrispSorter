@@ -681,6 +681,70 @@ impl LocalIndex {
         record_batches_to_search_results(&batches)
     }
 
+    /// P13.7 Stage A — list documents in a shape suitable for
+    /// pushing to cloud-backup over HTTP.  Returns one row per
+    /// document (chunk_index <= 0) with the body text included.
+    ///
+    /// Push-down filter: `chunk_index <= 0`.  The `indexed_at >
+    /// since_ts` watermark is applied client-side after the fetch
+    /// because LanceDB stores `indexed_at` as Timestamp(ms) and
+    /// DataFusion doesn't coerce an Int64 literal against it
+    /// transparently.  Caller passes `limit * 2` worst-case to
+    /// allow for the post-filter; we still return at most `limit`.
+    pub async fn list_documents_for_push(
+        &self,
+        since_ts: i64,
+        limit: usize,
+    ) -> Result<Vec<ManifestPushCandidate>> {
+        // Over-fetch by 4× so a recent batch where only the tail
+        // is above the watermark still saturates the limit.
+        let fetch_n = limit.saturating_mul(4).max(limit);
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index <= 0")
+            .limit(fetch_n)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = record_batches_to_push_candidates(&batches)?;
+        out.retain(|c| c.indexed_at > since_ts);
+        if out.len() > limit {
+            out.truncate(limit);
+        }
+        Ok(out)
+    }
+
+    /// P13.7 Stage B — list chunks with their embedding vectors,
+    /// suitable for pushing to `/api/index/push-embeddings`.  Walks
+    /// `chunk_index >= 0 AND embedding IS NOT NULL`.  L1 rows
+    /// (chunk_index = -1) are skipped — they never carry an
+    /// embedding.  Watermark applied client-side (same reason as
+    /// `list_documents_for_push`).
+    pub async fn list_chunks_with_embeddings(
+        &self,
+        since_ts: i64,
+        limit: usize,
+    ) -> Result<Vec<EmbeddingPushCandidate>> {
+        let fetch_n = limit.saturating_mul(4).max(limit);
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index >= 0 AND embedding IS NOT NULL")
+            .limit(fetch_n)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut out = record_batches_to_embedding_candidates(&batches)?;
+        out.retain(|c| c.indexed_at > since_ts);
+        if out.len() > limit {
+            out.truncate(limit);
+        }
+        Ok(out)
+    }
+
     /// PLAN P9 step 1 — paginated, filterable, sortable browse of the
     /// documents table. Replaces the load-the-whole-table fetch in the
     /// Catalog overview pane with a windowed read.
@@ -1807,6 +1871,133 @@ fn str_col_val_opt(arr: &Option<&StringArray>, i: usize) -> Option<String> {
 
 // ── Error helpers ──────────────────────────────────────────────────────────
 
+/// P13.7 Stage A — projection of a document row for the manifest-push
+/// path.  Includes the body text + every column the
+/// `ManifestRow` wire shape carries.  Distinct from `SearchResult`
+/// (which has `snippet` and no body) to avoid breaking the wider
+/// search surface for one new use case.
+#[derive(Debug, Clone)]
+pub struct ManifestPushCandidate {
+    pub doc_id:        String,
+    pub location_uri:  String,
+    pub owner_id:      String,
+    pub filename:      Option<String>,
+    pub title:         Option<String>,
+    pub author:        Option<String>,
+    pub year:          Option<i32>,
+    pub ext:           Option<String>,
+    pub language:      Option<String>,
+    pub source_hash:   String,
+    pub parent_dir:    Option<String>,
+    pub full_text:     Option<String>,
+    pub indexed_at:    i64,
+    pub metadata_json: Option<String>,
+}
+
+/// P13.7 Stage B — projection of a chunk row for the
+/// embeddings-push path.  Returned only for chunk_index >= 0 rows
+/// that carry a non-null embedding.
+#[derive(Debug, Clone)]
+pub struct EmbeddingPushCandidate {
+    pub doc_id:        String,
+    pub chunk_index:   i32,
+    pub model_id:      Option<String>,
+    pub embedding:     Vec<f32>,
+    pub sparse_json:   Option<String>,
+    pub indexed_at:    i64,
+}
+
+fn record_batches_to_push_candidates(
+    batches: &[RecordBatch],
+) -> Result<Vec<ManifestPushCandidate>> {
+    let mut out = Vec::new();
+    for batch in batches {
+        let doc_id   = str_col(batch, "doc_id")?;
+        let loc      = str_col(batch, "location_uri")?;
+        let owner    = str_col(batch, "owner_id")?;
+        let filename = str_col_opt(batch, "filename");
+        let title    = str_col_opt(batch, "title");
+        let author   = str_col_opt(batch, "author");
+        let year     = i32_col_opt(batch, "year");
+        let ext      = str_col_opt(batch, "ext");
+        let language = str_col_opt(batch, "language");
+        let hash     = str_col(batch, "source_hash")?;
+        let parent   = str_col_opt(batch, "parent_dir");
+        let full_text = str_col_opt(batch, "full_text");
+        // indexed_at is Timestamp(Millisecond, None), not Int64.
+        let indexed_at = ts_ms_col_opt(batch, "indexed_at");
+        let meta_json  = str_col_opt(batch, "metadata_json");
+        for i in 0..batch.num_rows() {
+            out.push(ManifestPushCandidate {
+                doc_id:        str_val(doc_id, i),
+                location_uri:  str_val(loc, i),
+                owner_id:      str_val(owner, i),
+                filename:      str_col_val_opt(&filename, i),
+                title:         str_col_val_opt(&title, i),
+                author:        str_col_val_opt(&author, i),
+                year:          year.and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) }),
+                ext:           str_col_val_opt(&ext, i),
+                language:      str_col_val_opt(&language, i),
+                source_hash:   str_val(hash, i),
+                parent_dir:    str_col_val_opt(&parent, i),
+                full_text:     str_col_val_opt(&full_text, i),
+                indexed_at:    indexed_at.map(|c| c.value(i)).unwrap_or(0),
+                metadata_json: str_col_val_opt(&meta_json, i),
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn record_batches_to_embedding_candidates(
+    batches: &[RecordBatch],
+) -> Result<Vec<EmbeddingPushCandidate>> {
+    let mut out = Vec::new();
+    for batch in batches {
+        let doc_id = str_col(batch, "doc_id")?;
+        let chunk_index = i32_col(batch, "chunk_index")?;
+        let model_id = str_col_opt(batch, "embedding_model");
+        let sparse_json = str_col_opt(batch, "embedding_sparse");
+        let indexed_at = ts_ms_col_opt(batch, "indexed_at");
+        let embedding_col = batch
+            .schema()
+            .index_of("embedding")
+            .ok()
+            .and_then(|i| batch.column(i).as_any().downcast_ref::<FixedSizeListArray>());
+        for i in 0..batch.num_rows() {
+            // Lift the f32 chunk for this row.  FixedSizeListArray
+            // stores all rows' values flat; the per-row slice is
+            // value_length() wide and starts at `i * value_length()`.
+            let embedding: Vec<f32> = if let Some(fsl) = embedding_col {
+                if fsl.is_null(i) {
+                    Vec::new()
+                } else {
+                    let values = fsl.values();
+                    let arr = values
+                        .as_any()
+                        .downcast_ref::<Float32Array>()
+                        .ok_or_else(|| anyhow!("embedding inner type not Float32"))?;
+                    let dim = fsl.value_length() as usize;
+                    let start = i * dim;
+                    arr.values()[start..start + dim].to_vec()
+                }
+            } else {
+                Vec::new()
+            };
+            if embedding.is_empty() { continue; }
+            out.push(EmbeddingPushCandidate {
+                doc_id:      str_val(doc_id, i),
+                chunk_index: chunk_index.value(i),
+                model_id:    str_col_val_opt(&model_id, i),
+                embedding,
+                sparse_json: str_col_val_opt(&sparse_json, i),
+                indexed_at:  indexed_at.map(|c| c.value(i)).unwrap_or(0),
+            });
+        }
+    }
+    Ok(out)
+}
+
 fn is_table_not_found(e: &lancedb::Error) -> bool {
     // LanceDB returns TableNotFound when the table doesn't exist yet.
     matches!(e, lancedb::Error::TableNotFound { .. })
@@ -2245,5 +2436,130 @@ mod volume_id_parse_tests {
             parse_volume_id_from_metadata(r#"{"volume_id":"weird\"id"}"#),
             Some(r#"weird"id"#.to_owned())
         );
+    }
+}
+
+// ── P13.7 Stage A/B — push-candidate scan tests ──────────────────────────
+//
+// End-to-end LanceDB tests for `list_documents_for_push` +
+// `list_chunks_with_embeddings`.  Spin up an isolated LocalIndex on
+// a tempdir, ingest a small mix of L1 / L3 chunks, and assert the
+// scan returns the expected rows under the indexed_at watermark
+// + embedding-not-null filters.
+
+#[cfg(test)]
+mod push_candidate_tests {
+    use super::*;
+    use crate::index::schema::DocumentChunk;
+
+    /// Build a minimal DocumentChunk in either L1 (chunk_index=-1)
+    /// or L3-with-embedding (chunk_index>=0, embedding=Some) shape.
+    /// `dim` controls the embedding vector length; pass `0` for L1.
+    fn mk(
+        doc_id: &str,
+        chunk_index: i32,
+        indexed_at: i64,
+        full_text: Option<&str>,
+        embedding: Option<Vec<f32>>,
+        model_id: Option<&str>,
+    ) -> DocumentChunk {
+        DocumentChunk {
+            id: crate::index::ingest::chunk_row_id(doc_id, chunk_index),
+            doc_id: doc_id.to_owned(),
+            location_uri: format!("crisp+local://owner@m1/{doc_id}.txt"),
+            owner_id: "owner".to_owned(),
+            filename: Some(format!("{doc_id}.txt")),
+            title: Some(format!("Title-{doc_id}")),
+            author: None,
+            year: None,
+            ext: Some("txt".into()),
+            language: Some("en".into()),
+            page_count: None,
+            headings_text: None,
+            full_text: full_text.map(|s| s.to_owned()),
+            full_text_md: full_text.map(|s| s.to_owned()),
+            embedding,
+            embedding_sparse: None,
+            embedding_model: model_id.map(|s| s.to_owned()),
+            chunk_index,
+            chunk_total: if chunk_index < 0 { 0 } else { 1 },
+            chunk_start_char: None,
+            chunk_end_char: None,
+            indexed_at,
+            source_hash: format!("hash-{doc_id}"),
+            tags: vec![],
+            metadata_json: None,
+            parent_dir: Some("/data".into()),
+            volume_id: None,
+            text_translated: None,
+            text_translated_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_documents_for_push_returns_chunks_newer_than_watermark() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Use dim=4 to match the embedding fixtures below; the schema
+        // is built around the dim on first open.
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        local.ingest_batch(&[
+            // L1 sentinel — included in push scan.
+            mk("a", -1, 100, Some("body a"), None, None),
+            // L3 chunk-zero — included.
+            mk("b",  0, 200, Some("body b"), Some(vec![1.0, 0.0, 0.0, 0.0]), Some("m")),
+            // L3 chunk-one — excluded by the chunk_index <= 0 filter
+            // (push only takes one representative row per doc).
+            mk("b",  1, 200, Some("body b"), Some(vec![0.0, 1.0, 0.0, 0.0]), Some("m")),
+        ]).await.unwrap();
+
+        let cand = local.list_documents_for_push(0, 100).await.unwrap();
+        let ids: Vec<&str> = cand.iter().map(|c| c.doc_id.as_str()).collect();
+        assert!(ids.contains(&"a"), "L1 doc 'a' missing from push scan");
+        assert!(ids.contains(&"b"), "L3 doc 'b' missing from push scan");
+        assert_eq!(cand.len(), 2, "chunk_index=1 row leaked into push scan");
+
+        // Watermark = 150 → only 'b' (200) > watermark survives.
+        let cand = local.list_documents_for_push(150, 100).await.unwrap();
+        let ids: Vec<&str> = cand.iter().map(|c| c.doc_id.as_str()).collect();
+        assert_eq!(ids, vec!["b"]);
+        assert_eq!(cand[0].full_text.as_deref(), Some("body b"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_chunks_with_embeddings_filters_l1_and_null_embeddings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        local.ingest_batch(&[
+            // L1 — no embedding; should be skipped.
+            mk("a", -1, 100, Some("body a"), None, None),
+            // L3 chunk-zero — included.
+            mk("b",  0, 200, Some("body b"), Some(vec![0.1, 0.2, 0.3, 0.4]), Some("bge")),
+            // L3 chunk-one — also included (each chunk is a separate row).
+            mk("b",  1, 200, Some("body b"), Some(vec![0.9, 0.8, 0.7, 0.6]), Some("bge")),
+        ]).await.unwrap();
+
+        let cand = local.list_chunks_with_embeddings(0, 100).await.unwrap();
+        let ids: Vec<(String, i32)> = cand.iter()
+            .map(|c| (c.doc_id.clone(), c.chunk_index)).collect();
+        assert_eq!(ids.len(), 2);
+        // L1 row 'a' must be skipped (chunk_index=-1, embedding=None).
+        for (doc_id, ci) in &ids {
+            assert_ne!(doc_id, "a");
+            assert!(*ci >= 0);
+        }
+        // Embedding values round-trip f32-exactly via LanceDB.
+        let chunk0 = cand.iter().find(|c| c.chunk_index == 0).unwrap();
+        assert_eq!(chunk0.embedding, vec![0.1f32, 0.2, 0.3, 0.4]);
+        assert_eq!(chunk0.model_id.as_deref(), Some("bge"));
     }
 }

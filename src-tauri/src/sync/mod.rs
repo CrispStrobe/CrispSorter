@@ -268,6 +268,61 @@ impl SyncManager {
         Ok((rows, max_ts))
     }
 
+    /// P13.7 Stage F — drain `cb_manifest_push` outbox entries
+    /// through the cloud-backup HTTP API.  Mirrors `push_pending`
+    /// but routes via [`cloud_backup::CloudBackupClient`] so the
+    /// existing crisp-index-server flow is untouched.
+    ///
+    /// Batching: claims up to `batch_size` rows from the outbox,
+    /// filters to op="cb_manifest_push", deserialises each payload
+    /// to a [`cloud_backup::ManifestRow`], posts the batch in one
+    /// request.  Success → mark every claimed entry done.  Failure
+    /// → mark every claimed entry as errored (retry counter bumps).
+    ///
+    /// Returns `(pushed, failed)` counts.  When the cloud-backup
+    /// client init itself fails, all entries are reset to retryable
+    /// state (we didn't actually try them).
+    pub async fn drain_cb_outbox(
+        &self,
+        client: &cloud_backup::CloudBackupClient,
+        batch_size: usize,
+    ) -> Result<(usize, usize)> {
+        let claimed = self.claim_batch(batch_size)?;
+        let cb_entries: Vec<_> = claimed.into_iter()
+            .filter(|e| e.op == "cb_manifest_push")
+            .collect();
+        if cb_entries.is_empty() { return Ok((0, 0)); }
+
+        let mut rows: Vec<cloud_backup::ManifestRow> = Vec::with_capacity(cb_entries.len());
+        let mut id_for_row: Vec<i64> = Vec::with_capacity(cb_entries.len());
+        let mut failed = 0;
+        for entry in &cb_entries {
+            match serde_json::from_str::<cloud_backup::ManifestRow>(&entry.payload) {
+                Ok(row) => { rows.push(row); id_for_row.push(entry.id); }
+                Err(e) => {
+                    // Malformed payload — bump retries so a fix can
+                    // reset; don't include in the batch POST.
+                    self.mark_error(entry.id, &format!("payload: {e}")).ok();
+                    failed += 1;
+                }
+            }
+        }
+        if rows.is_empty() { return Ok((0, failed)); }
+
+        match client.manifest_push(&rows).await {
+            Ok(_) => {
+                for id in &id_for_row { self.mark_done(*id).ok(); }
+                self.set_state("cb_last_outbox_drain_ts", &now_ms().to_string()).ok();
+                Ok((rows.len(), failed))
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                for id in &id_for_row { self.mark_error(*id, &msg).ok(); }
+                Ok((0, failed + rows.len()))
+            }
+        }
+    }
+
     pub fn clear_failed(&self) -> Result<usize> {
         let n = self.conn.lock().unwrap()
             .execute("DELETE FROM sync_outbox WHERE retries >= 10", [])?;
@@ -459,6 +514,95 @@ mod tests {
         assert_eq!(rows[0].year, Some(2024));
         assert_eq!(rows[1].title, None); // optional fields tolerated
         assert!(max_ts > 1_500_000_000_000);
+    }
+
+    /// P13.7 Stage F — `drain_cb_outbox` happy path: enqueue two
+    /// rows, drain against a mockito server, both rows marked done.
+    #[tokio::test]
+    async fn drain_cb_outbox_clears_entries_on_success() {
+        use mockito::Server;
+        let (_tmp, mgr) = fresh();
+        // Two valid payloads.
+        let row1 = serde_json::json!({
+            "path": "/a.txt", "size_bytes": 1, "sha256": "a".repeat(64),
+            "mtime_unix": 1.0, "owner_id": "o", "filename": "a.txt",
+            "ext": "txt", "parent_dir": "/",
+        }).to_string();
+        let row2 = serde_json::json!({
+            "path": "/b.txt", "size_bytes": 2, "sha256": "b".repeat(64),
+            "mtime_unix": 2.0, "owner_id": "o", "filename": "b.txt",
+            "ext": "txt", "parent_dir": "/",
+        }).to_string();
+        mgr.enqueue("cb_manifest_push", &row1).unwrap();
+        mgr.enqueue("cb_manifest_push", &row2).unwrap();
+        assert_eq!(mgr.pending_count().unwrap(), 2);
+
+        let mut server = Server::new_async().await;
+        let m = server.mock("POST", "/api/manifest/push")
+            .with_status(200)
+            .with_body(r#"{"accepted": 2}"#)
+            .create_async()
+            .await;
+        let client = cloud_backup::CloudBackupClient::new(server.url(), "k").unwrap();
+
+        let (pushed, failed) = mgr.drain_cb_outbox(&client, 64).await.unwrap();
+        assert_eq!(pushed, 2);
+        assert_eq!(failed, 0);
+        assert_eq!(mgr.pending_count().unwrap(), 0);
+        m.assert_async().await;
+    }
+
+    /// `drain_cb_outbox` failure path: server returns 500, both
+    /// entries marked errored (retries bump) but not done.
+    #[tokio::test]
+    async fn drain_cb_outbox_marks_error_on_server_failure() {
+        use mockito::Server;
+        let (_tmp, mgr) = fresh();
+        let row = serde_json::json!({
+            "path": "/c.txt", "size_bytes": 3, "sha256": "c".repeat(64),
+            "mtime_unix": 3.0, "owner_id": "o", "filename": "c.txt",
+            "ext": "txt", "parent_dir": "/",
+        }).to_string();
+        mgr.enqueue("cb_manifest_push", &row).unwrap();
+
+        let mut server = Server::new_async().await;
+        let m = server.mock("POST", "/api/manifest/push")
+            .with_status(500)
+            .with_body("boom")
+            .create_async()
+            .await;
+        let client = cloud_backup::CloudBackupClient::new(server.url(), "k").unwrap();
+        let (pushed, failed) = mgr.drain_cb_outbox(&client, 64).await.unwrap();
+        assert_eq!(pushed, 0);
+        assert_eq!(failed, 1);
+        // Entry still pending — retries bumped to 1.
+        let batch = mgr.claim_batch(10).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].retries, 1);
+        assert!(batch[0].last_err.is_some());
+        m.assert_async().await;
+    }
+
+    /// `drain_cb_outbox` skips entries with non-cb_manifest_push op
+    /// (so the legacy crisp-index-server `ingest` op isn't drained
+    /// through the wrong route).
+    #[tokio::test]
+    async fn drain_cb_outbox_ignores_other_ops() {
+        let (_tmp, mgr) = fresh();
+        mgr.enqueue("ingest", r#"{"x":1}"#).unwrap();
+        mgr.enqueue("delete", r#"{"x":1}"#).unwrap();
+
+        // Server not even hit; the routing filter discards both.
+        // Use a never-bound port to verify no HTTP call happens.
+        let client = cloud_backup::CloudBackupClient::new(
+            "http://127.0.0.1:1",
+            "k",
+        ).unwrap();
+        let (pushed, failed) = mgr.drain_cb_outbox(&client, 64).await.unwrap();
+        assert_eq!(pushed, 0);
+        assert_eq!(failed, 0);
+        // Both entries still in the outbox, untouched.
+        assert_eq!(mgr.pending_count().unwrap(), 2);
     }
 
     #[test]

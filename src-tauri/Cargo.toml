@@ -47,6 +47,11 @@ futures-util = "0.3.32"
 tauri-plugin-shell = "2.3.5"
 tauri-plugin-process = "2.3.1"
 tokio = { version = "1.50.0", features = ["full"] }
+# `ReaderStream` for streaming file uploads to cloud-backup over
+# reqwest::Body::wrap_stream (avoids buffering multi-GB files in
+# RAM).  tokio-util is already transitive via reqwest+lance — this
+# pin just makes the `io` feature directly usable.
+tokio-util = { version = "0.7", features = ["io"] }
 anyhow = "1.0.102"
 pdf-extract = "0.10.0"
 # Used by the L2 metadata reader to crack open DOCX (.docx) and EPUB
