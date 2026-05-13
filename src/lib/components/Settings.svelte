@@ -288,6 +288,11 @@
      *  action (Step 2). */
     let indexImageExtractionEnabled = $state<boolean>(true);
     let indexIngestImageLevel = $state<string>('l3');
+    /** P13.7 Step 4 — when on, each indexed image is also pushed
+     *  to the configured CrispLens server (POST /api/ingest/upload-local).
+     *  Default off because pushing every image upstream is a
+     *  privacy-sensitive action; users opt in explicitly. */
+    let indexCrispLensImageEnrichment = $state<boolean>(false);
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -771,6 +776,7 @@
         indexIngestAudioLevel = await getSetting('indexIngestAudioLevel', 'l3') as string;
         indexImageExtractionEnabled = await getSetting('indexImageExtractionEnabled', true) as boolean;
         indexIngestImageLevel = await getSetting('indexIngestImageLevel', 'l3') as string;
+        indexCrispLensImageEnrichment = await getSetting('indexCrispLensImageEnrichment', false) as boolean;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1049,6 +1055,7 @@
         await saveSetting('indexIngestAudioLevel',       indexIngestAudioLevel);
         await saveSetting('indexImageExtractionEnabled', indexImageExtractionEnabled);
         await saveSetting('indexIngestImageLevel',       indexIngestImageLevel);
+        await saveSetting('indexCrispLensImageEnrichment', indexCrispLensImageEnrichment);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1189,6 +1196,7 @@
                     ingest_audio_level:       indexIngestAudioLevel || 'l3',
                     image_extraction_enabled: indexImageExtractionEnabled,
                     ingest_image_level:       indexIngestImageLevel || 'l3',
+                    crisplens_image_enrichment_enabled: indexCrispLensImageEnrichment,
                 }
             });
             if (indexEnabled) {
@@ -2642,6 +2650,18 @@
                 <p class="hint">
                     {i18n.t.settings.index.ingest_image_level_hint ??
                      'How deeply bg_ingest processes images.  L1 is fastest; L2 adds the kamadak-exif probe (camera make / model / lens / ISO / taken_at_unix); L3 (default) runs OCR too.  Promote L1/L2 rows to L3 via the "Re-OCR" action in search results.'}
+                </p>
+
+                <!-- P13.7 Step 4 — CrispLens image push.  Default off
+                     because pushing every image upstream is a
+                     privacy-sensitive action; users opt in. -->
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+                    <input type="checkbox" bind:checked={indexCrispLensImageEnrichment} />
+                    <span>{i18n.t.settings.index.crisplens_image_enrichment ?? 'CrispLens image push (Tier 2 server)'}</span>
+                </label>
+                <p class="hint">
+                    {i18n.t.settings.index.crisplens_image_enrichment_hint ??
+                     'When on, each indexed image is also pushed to the configured CrispLens server for face detection + clustering. Requires Tier 2 to be configured (URL + login). Default off — pushing every image upstream is a privacy-sensitive action that you should turn on intentionally.'}
                 </p>
             </div>
 

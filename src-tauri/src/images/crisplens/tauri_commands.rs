@@ -656,6 +656,186 @@ pub async fn images_crisplens_search(
         .map_err(|e| format!("search join: {e}"))?
 }
 
+/// P13.7 Step 4 — push a locally-indexed image to the configured
+/// CrispLens server.  Multipart `POST /api/ingest/upload-local`:
+/// server runs face detection + ArcFace embeddings + (optional)
+/// VLM description, then stores the image in its own SQLite +
+/// uploads/ tree.  Returns the server-side `image_id` + face count.
+///
+/// Two-phase: GET /api/images/by-hash/{sha256} first to dedup —
+/// returns `{action: "already_indexed", server_image_id, face_count}`
+/// when the server already has this file.  Otherwise POSTs the
+/// multipart body and returns `{action: "uploaded", ...}`.
+///
+/// Gated at the call site by
+/// `IndexConfig.crisplens_image_enrichment_enabled` — the command
+/// itself doesn't read the config (so manual/CLI calls work even
+/// when the bg_ingest flag is off; useful for one-off pushes).
+///
+/// Errors when:
+/// - the file isn't readable;
+/// - Tier 2 isn't configured (no URL set);
+/// - the user isn't logged in (no session cookie in keychain);
+/// - the server rejects the multipart body.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CrispLensImagePushResult {
+    /// `"uploaded"` (server now has the image) or `"already_indexed"`
+    /// (by-hash lookup found a row).  Used by the bg_ingest hook
+    /// to skip the network round-trip on a re-ingest of the same
+    /// content.
+    pub action: String,
+    pub server_image_id: Option<i64>,
+    pub face_count: Option<i32>,
+    pub sha256: String,
+}
+
+#[tauri::command]
+pub async fn images_crisplens_image_push(
+    state: State<'_, AppState>,
+    path: String,
+    visibility: Option<String>,
+) -> Result<CrispLensImagePushResult, String> {
+    let data_dir = resolve_data_dir(&state).await?;
+    let local_path = std::path::PathBuf::from(&path);
+    if !local_path.exists() {
+        return Err(format!("file not found: {path}"));
+    }
+
+    // Hash + by-hash dedup off the runtime — small CPU + small
+    // network round-trip, never block the executor.
+    let dd = data_dir.clone();
+    let p_for_hash = local_path.clone();
+    let (sha256, dedup) = tauri::async_runtime::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(&p_for_hash)
+            .map_err(|e| format!("read {}: {e}", p_for_hash.display()))?;
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        let sha = hex::encode(h.finalize());
+        let path = format!("/api/images/by-hash/{sha}");
+        let dedup = get_json_inner::<CrispLensImage>(&dd, &path)
+            .map_err(|e| format!("by-hash check: {e}"))?;
+        Ok::<_, String>((sha, dedup))
+    })
+    .await
+    .map_err(|e| format!("hash join: {e}"))??;
+
+    if let Some(hit) = dedup {
+        return Ok(CrispLensImagePushResult {
+            action: "already_indexed".to_string(),
+            server_image_id: Some(hit.id),
+            face_count: hit.face_count,
+            sha256,
+        });
+    }
+
+    // Upload the file.  Multipart shape from the v2 / v4 CrispLens
+    // API survey: field `file` carries the binary, `local_path`
+    // carries the absolute path string the server stores for the
+    // open-in-Electron flow.  Optional `visibility` ("shared" /
+    // "private") defaults to "shared" server-side.
+    let s = settings::load(&data_dir);
+    if !s.tier2_enabled() {
+        return Err("CrispLens Tier 2 not configured — set URL + login first".to_string());
+    }
+    let url = s.normalised_url().to_owned();
+    let cookie = match secret::get_session_for_url(&url) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Err(
+                "no CrispLens session — call images_crisplens_login first".to_string(),
+            )
+        }
+        Err(e) => return Err(format!("keychain: {e}")),
+    };
+    let visibility = visibility.unwrap_or_else(|| "shared".to_string());
+    let path_for_upload = local_path.clone();
+    let upload_result = tauri::async_runtime::spawn_blocking(move || -> Result<UploadOk, String> {
+        let bytes = std::fs::read(&path_for_upload)
+            .map_err(|e| format!("read {}: {e}", path_for_upload.display()))?;
+        let filename = path_for_upload
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "upload.bin".to_string());
+        let mime = mime_for_ext(
+            path_for_upload
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+        );
+        let form = reqwest::blocking::multipart::Form::new()
+            .text(
+                "local_path",
+                path_for_upload.to_string_lossy().into_owned(),
+            )
+            .text("visibility", visibility.clone())
+            .part(
+                "file",
+                reqwest::blocking::multipart::Part::bytes(bytes)
+                    .file_name(filename.clone())
+                    .mime_str(mime)
+                    .map_err(|e| format!("mime: {e}"))?,
+            );
+
+        let client = reqwest::blocking::Client::builder()
+            .cookie_store(true)
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("http client init: {e}"))?;
+        let resp = client
+            .post(format!("{url}/api/ingest/upload-local"))
+            .header("Cookie", format!("session={cookie}"))
+            .multipart(form)
+            .send()
+            .map_err(|e| format!("POST upload-local: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            let detail = serde_json::from_str::<ErrorResponse>(&body)
+                .map(|e| e.detail)
+                .unwrap_or_else(|_| format!("HTTP {status}: {body}"));
+            return Err(detail);
+        }
+        resp.json::<UploadOk>()
+            .map_err(|e| format!("upload-local body not JSON: {e}"))
+    })
+    .await
+    .map_err(|e| format!("upload join: {e}"))??;
+
+    Ok(CrispLensImagePushResult {
+        action: "uploaded".to_string(),
+        server_image_id: Some(upload_result.image_id),
+        face_count: Some(upload_result.face_count.unwrap_or(0)),
+        sha256,
+    })
+}
+
+/// Minimal subset of the CrispLens `upload-local` response — we
+/// only surface what bg_ingest needs to lift back into the local
+/// row.  Extra fields the server returns are tolerated by serde.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct UploadOk {
+    image_id: i64,
+    #[serde(default)]
+    face_count: Option<i32>,
+}
+
+/// Best-effort MIME for the upload-local Part — server can still
+/// re-detect.  Falls back to octet-stream for unknown extensions.
+fn mime_for_ext(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "tif" | "tiff" => "image/tiff",
+        "bmp" => "image/bmp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "application/octet-stream",
+    }
+}
+
 #[tauri::command]
 pub async fn images_crisplens_logout(
     state: State<'_, AppState>,
