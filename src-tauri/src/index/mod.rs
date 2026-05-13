@@ -285,6 +285,16 @@ pub struct IndexConfig {
     /// shape to `ingest_audio_level`.
     #[serde(default)]
     pub ingest_image_level: IngestImageLevel,
+    /// P13.7 Step 4 — when enabled, the bg_ingest image path
+    /// also pushes each indexed image to the configured CrispLens
+    /// server (POST /api/ingest/upload-local) so the server's
+    /// face-detection + people-clustering pipeline picks it up.
+    /// Requires a working CrispLens Tier 2 session (login via the
+    /// images_crisplens_login Tauri command).  Default `false`:
+    /// users opt in explicitly because pushing every image
+    /// upstream is a privacy-sensitive action.
+    #[serde(default)]
+    pub crisplens_image_enrichment_enabled: bool,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -429,6 +439,7 @@ impl Default for IndexConfig {
             image_indexing_enabled: false,
             ingest_audio_level: IngestAudioLevel::default(),
             ingest_image_level: IngestImageLevel::default(),
+            crisplens_image_enrichment_enabled: false,
         }
     }
 }

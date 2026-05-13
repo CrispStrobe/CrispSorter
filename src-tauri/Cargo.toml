@@ -38,7 +38,7 @@ tauri-plugin-http = "2.5.7"
 tauri-plugin-store = "2.0.0-rc.0"
 tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
-reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies"] }
+reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart"] }
 # Used by drives/{filen,internxt,webdav}.rs to stage downloads / uploads
 # through a temp dir.  Was previously dev-only; promoted to a runtime dep
 # when InternxtDrive started using it for `read_file` / `write_file`.
