@@ -14,7 +14,7 @@
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images
     } from 'lucide-svelte';
-    import { extractText, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
     import CafCatalog from './Catalog.svelte';
     import Duplicates from './Duplicates.svelte';
@@ -2607,7 +2607,17 @@
         return { pending: '#71717a', extracting: '#f59e0b', embedding: '#3b82f6', done: '#22c55e', error: '#ef4444', skipped: '#52525b' }[s] ?? '#71717a';
     }
 
-    function statusLabel(s: FileStatus): string {
+    /** Audio/video extensions — render "Transcribing" instead of the
+     *  generic "Extracting" so the user knows whisper is running.  Mirrors
+     *  the Stapel (BatchReview) behaviour added in P13.6 Step 1. */
+    const AUDIO_EXTS_SET_INGEST = new Set<string>(AUDIO_EXTENSIONS);
+
+    function statusLabel(s: FileStatus, ext?: string): string {
+        if (s === 'extracting' && ext && AUDIO_EXTS_SET_INGEST.has(ext.toLowerCase())) {
+            return i18n.t.batch.status_transcribing + '…';
+        }
+        // Pre-existing inline DE strings — Denglish carry-over from the
+        // P11 ingest UI; a full i18n cleanup is its own follow-up.
         return { pending: 'Ausstehend', extracting: 'Extrahiere…', embedding: 'Indexiere…', done: 'Fertig', error: 'Fehler', skipped: 'Übersprungen' }[s] ?? s;
     }
 
@@ -3275,7 +3285,7 @@
                                 {:else if (entry.status === 'embedding') && entry.chunksTotal}
                                     <span class="file-meta">{entry.chunksDone}/{entry.chunksTotal} Chunks</span>
                                 {:else}
-                                    <span class="file-meta">{statusLabel(entry.status)}</span>
+                                    <span class="file-meta">{statusLabel(entry.status, entry.ext)}</span>
                                 {/if}
                                 {#if entry.status === 'extracting' || entry.status === 'embedding'}
                                     <div class="file-progress-bar">

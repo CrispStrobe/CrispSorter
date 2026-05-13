@@ -2,7 +2,7 @@
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
-    import { MULTIMODAL_EXTENSIONS } from '../extractors';
+    import { AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '../extractors';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { open, save, ask } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
@@ -62,8 +62,16 @@
         }
     });
 
-    function statusLabel(status: BatchStatus): string {
+    /** Audio/video extensions warrant a "Transcribing" badge instead
+     *  of the generic "Extracting" — the user knows they dropped an
+     *  mp3 and is waiting on whisper, not on a docx parser. */
+    const AUDIO_EXTS_SET = new Set<string>(AUDIO_EXTENSIONS);
+
+    function statusLabel(status: BatchStatus, extension?: string): string {
         const t = i18n.t.batch;
+        if (status === 'extracting' && extension && AUDIO_EXTS_SET.has(extension.toLowerCase())) {
+            return t.status_transcribing;
+        }
         const map: Record<BatchStatus, string> = {
             queued: t.status_queued,
             extracting: t.status_extracting,
@@ -1284,7 +1292,7 @@
                                                 class:status-active={['extracting', 'analyzing', 'moving'].includes(item.status)}
                                                 class:status-unfinished={item.status === 'unfinished'}
                                                 class:status-error={item.status === 'error'}>
-                                                {statusLabel(item.status)}
+                                                {statusLabel(item.status, item.extension)}
                                             </span>
                                             {#if item.statusDetail}
                                                 {#if /^\d+\/\d+/.test(item.statusDetail)}
