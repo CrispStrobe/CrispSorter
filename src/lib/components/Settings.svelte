@@ -281,6 +281,13 @@
      *  Promote from L1/L2 to L3 via the "Transcribe" search-result
      *  action (Step 8 follow-up). */
     let indexIngestAudioLevel = $state<string>('l3');
+    /** P13.7 Step 1+3 — image-side master switch + ingest level.
+     *  Parallel to indexAudioExtractionEnabled / indexIngestAudioLevel.
+     *  L1 = filesystem only, L2 = EXIF probe (no OCR), L3 (default)
+     *  = EXIF + OCR.  Promote via the "Re-OCR" search-result
+     *  action (Step 2). */
+    let indexImageExtractionEnabled = $state<boolean>(true);
+    let indexIngestImageLevel = $state<string>('l3');
 
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
@@ -762,6 +769,8 @@
         indexAudioAsrBackend = await getSetting('indexAudioAsrBackend', 'whisper') as string;
         indexAudioLidMethod  = await getSetting('indexAudioLidMethod', 'whisper') as string;
         indexIngestAudioLevel = await getSetting('indexIngestAudioLevel', 'l3') as string;
+        indexImageExtractionEnabled = await getSetting('indexImageExtractionEnabled', true) as boolean;
+        indexIngestImageLevel = await getSetting('indexIngestImageLevel', 'l3') as string;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1038,6 +1047,8 @@
         await saveSetting('indexAudioAsrBackend',        indexAudioAsrBackend);
         await saveSetting('indexAudioLidMethod',         indexAudioLidMethod);
         await saveSetting('indexIngestAudioLevel',       indexIngestAudioLevel);
+        await saveSetting('indexImageExtractionEnabled', indexImageExtractionEnabled);
+        await saveSetting('indexIngestImageLevel',       indexIngestImageLevel);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1176,6 +1187,8 @@
                     audio_asr_backend:        indexAudioAsrBackend || 'whisper',
                     audio_lid_method:         indexAudioLidMethod || 'whisper',
                     ingest_audio_level:       indexIngestAudioLevel || 'l3',
+                    image_extraction_enabled: indexImageExtractionEnabled,
+                    ingest_image_level:       indexIngestImageLevel || 'l3',
                 }
             });
             if (indexEnabled) {
@@ -2606,6 +2619,29 @@
                 <p class="hint">
                     {i18n.t.settings.index.ingest_audio_level_hint ??
                      'How deeply bg_ingest processes audio/video files. L1 is fastest (just the filename in the index); L2 adds a sub-millisecond symphonia probe for duration / codec / bitrate; L3 (default) runs the full transcription too. Promote individual L1/L2 rows to L3 later via the "Transcribe" action in search results.'}
+                </p>
+
+                <!-- P13.7 Step 1+3 — image-side master switch + ingest level. -->
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+                    <input type="checkbox" bind:checked={indexImageExtractionEnabled} />
+                    <span>{i18n.t.settings.index.image_extraction ?? 'Image extraction (OCR + EXIF)'}</span>
+                </label>
+                <p class="hint">
+                    {i18n.t.settings.index.image_extraction_hint ??
+                     'When off, image files (jpg/png/heic/…) are indexed with filesystem metadata only — no OCR, no EXIF. OCR is still gated by the OCR-tier toggle above; this is the master switch that overrides everything.'}
+                </p>
+
+                <label for="index-image-level" style="margin-top:10px;">
+                    {i18n.t.settings.index.ingest_image_level ?? 'Image ingest level'}
+                </label>
+                <select id="index-image-level" bind:value={indexIngestImageLevel} class="styled-select" disabled={!indexImageExtractionEnabled}>
+                    <option value="l3">L3 — full pipeline (EXIF + OCR, default)</option>
+                    <option value="l2">L2 — EXIF probe only (camera / lens / iso / taken_at, no OCR)</option>
+                    <option value="l1">L1 — filesystem only (path + size, no EXIF, no OCR)</option>
+                </select>
+                <p class="hint">
+                    {i18n.t.settings.index.ingest_image_level_hint ??
+                     'How deeply bg_ingest processes images.  L1 is fastest; L2 adds the kamadak-exif probe (camera make / model / lens / ISO / taken_at_unix); L3 (default) runs OCR too.  Promote L1/L2 rows to L3 via the "Re-OCR" action in search results.'}
                 </p>
             </div>
 

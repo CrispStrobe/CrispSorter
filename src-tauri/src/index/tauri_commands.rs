@@ -1671,6 +1671,137 @@ pub async fn index_audio_promote_l3(
         .map_err(|e| format!("re-ingest after L3 promote failed: {e:#}"))
 }
 
+/// P13.7 Step 2 — promote an L1/L2 image row to L3 (OCR + EXIF).
+/// Parallel to [`index_audio_promote_l3`].  Resolves the row's
+/// host path from `location_uri`, runs the OCR pipeline with
+/// `ingest_image_level=l3` regardless of the IndexConfig
+/// setting, then re-ingests through `reingest_document`.
+///
+/// Used by the "Re-OCR" search-result action on rows with an
+/// empty snippet AND an image extension.  Mirrors the rationale
+/// in `index_audio_promote_l3`: a user-initiated promote
+/// overrides the user's global Settings (master switch + ingest
+/// level) because the explicit click is unambiguous intent.
+#[tauri::command]
+pub async fn index_image_promote_l3(
+    state: State<'_, AppState>,
+    location_uri: String,
+) -> Result<IngestStats, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| {
+            format!(
+                "location_uri does not map to a local path: {location_uri} \
+                 (cloud-drive promotes need to first download the file)"
+            )
+        })?;
+    if !path.exists() {
+        return Err(format!(
+            "file not present on disk: {} \
+             (the original may have been moved or deleted since indexing)",
+            path.display()
+        ));
+    }
+
+    // Force L3 + OCR + master-switch on for this single row.  Mirrors
+    // the audio promote — the user explicitly asked, so per-row
+    // overrides win.  ocr_tier stays Auto so the tier ladder picks
+    // whatever's installed.
+    let extract_opts = crate::extractors::ExtractOptions {
+        try_ocr: true,
+        ocr_pdf_min_chars: 50,
+        ocr_tier: crate::extractors::OcrTier::Auto,
+        ocr_rec_lang: crate::extractors::OcrRecLang::Auto,
+        text_lid_model: None,
+        translate_to: None,
+        translate_backend: None,
+        translate_model: None,
+        audio_extraction_enabled: true,
+        ingest_audio_level: "l3".to_string(),
+        image_extraction_enabled: true,
+        ingest_image_level: "l3".to_string(),
+    };
+    let extracted = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::extractors::extract_text_from_path_with_opts(&p, extract_opts)
+        })
+        .await
+        .map_err(|e| format!("image extract join error: {e}"))?
+        .map_err(|e| format!("{e:#}"))?
+    };
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
+    drop(lock);
+
+    let p_meta = std::fs::metadata(&path).ok();
+    let source_hash = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            use sha2::{Digest, Sha256};
+            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            Ok(hex::encode(h.finalize()))
+        })
+        .await
+        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
+    };
+
+    let raw = RawDocument {
+        full_text: extracted.full_text.clone(),
+        full_text_md: extracted.full_text.clone(),
+        headings: extracted.headings.clone(),
+        title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+        author: None,
+        year: None,
+        filename: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        ext: extracted.ext.clone(),
+        language: extracted.language.clone().unwrap_or_default(),
+        source_hash,
+        location_uri: location_uri.clone(),
+        owner_id: "local".to_string(),
+        tags: vec![],
+        mtime_unix: p_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64),
+        file_size: p_meta.as_ref().map(|m| m.len() as i64),
+        volume_id: crate::volume::volume_id_for_path(&path),
+        parent_dir: path
+            .parent()
+            .and_then(|d| d.to_str())
+            .map(|s| s.to_owned()),
+        translated_text: extracted.translated_text.clone(),
+        translated_to_lang: extracted.translated_to_lang.clone(),
+        audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+        audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+        audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+        audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+        audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+        image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+        image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+        image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+        image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+        image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+    };
+
+    pipeline
+        .reingest_document(raw)
+        .await
+        .map_err(|e| format!("re-ingest after image L3 promote failed: {e:#}"))
+}
+
 /// Delete a document completely: removes all chunks from LanceDB and the
 /// corresponding entry from the Tantivy FTS index.
 #[tauri::command]
