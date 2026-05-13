@@ -4,6 +4,7 @@
     import { readTextFile } from '@tauri-apps/plugin-fs';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
+    import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
@@ -94,6 +95,50 @@
     // every translation in one assignment.
     let translateTargetLang = $state<string>('en');
     let translations        = $state<Map<string, TranslateState>>(new Map());
+
+    // P13.6 Step 8 — "Transcribe" surface for audio rows ingested at
+    // L1 (no transcript) or L2 (probe-only).  Same Map-state pattern
+    // as translations; keyed by doc_id (no chunk granularity since
+    // promote operates at the doc level).
+    interface TranscribeState {
+        loading: boolean;
+        done?: boolean;
+        chunks?: number;
+        error?: string;
+    }
+    let transcribes = $state<Map<string, TranscribeState>>(new Map());
+    /** Set of audio/video extensions for O(1) lookup in template. */
+    const AUDIO_EXTS_SET_SEARCH = new Set<string>(AUDIO_EXTENSIONS);
+    /** Heuristic: does this row look like an L1/L2 audio that hasn't
+     *  been transcribed yet?  We don't surface audio_* through
+     *  SearchResult today (display-only L2 columns); rely on the
+     *  extension + empty/short snippet as a proxy.  Conservative —
+     *  a long-snippet audio hit (already transcribed) hides the
+     *  button so we don't re-transcribe perfectly-good rows. */
+    function looksUntranscribed(r: SearchResult): boolean {
+        const ext = (r.ext ?? '').toLowerCase();
+        if (!AUDIO_EXTS_SET_SEARCH.has(ext)) return false;
+        const snip = (r.snippet ?? '').trim();
+        return snip.length < 20;
+    }
+    async function handleTranscribe(r: SearchResult): Promise<void> {
+        const key = r.doc_id;
+        const next = new Map(transcribes);
+        next.set(key, { loading: true });
+        transcribes = next;
+        try {
+            const stats = await invoke<{ chunk_count: number }>('index_audio_promote_l3', {
+                locationUri: r.location_uri,
+            });
+            const after = new Map(transcribes);
+            after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
+            transcribes = after;
+        } catch (e: any) {
+            const after = new Map(transcribes);
+            after.set(key, { loading: false, error: String(e?.message ?? e) });
+            transcribes = after;
+        }
+    }
 
     /** Stable key for the translations map. */
     function translationKey(r: SearchResult): string {
@@ -622,6 +667,49 @@
                          (no text to translate).  Hidden when the result
                          is in the user's target language already (no
                          translation needed). -->
+                    <!-- P13.6 Step 8: Transcribe surface for audio
+                         rows that look untranscribed (L1 or L2).
+                         Disappears once the promote returns; the
+                         search will need to be re-run to see the
+                         new transcript. -->
+                    {#if looksUntranscribed(r)}
+                        {@const tx = transcribes.get(r.doc_id)}
+                        <div class="translate-surface" style="margin-top:6px;">
+                            {#if !tx}
+                                <button
+                                    type="button"
+                                    class="translate-btn"
+                                    onclick={() => handleTranscribe(r)}
+                                    title="Run CrispASR transcription on this audio/video file"
+                                >
+                                    Transcribe (.{r.ext})
+                                </button>
+                            {:else if tx.loading}
+                                <div class="translate-loading">
+                                    <span class="translate-spinner" aria-hidden="true"></span>
+                                    Transcribing… (this can take a few minutes)
+                                </div>
+                            {:else if tx.error}
+                                <div class="translate-error">
+                                    Transcribe failed: {tx.error}
+                                    <button
+                                        type="button"
+                                        class="translate-retry"
+                                        onclick={() => handleTranscribe(r)}
+                                    >
+                                        Retry
+                                    </button>
+                                </div>
+                            {:else if tx.done}
+                                <div class="translate-result">
+                                    <div class="translate-meta">
+                                        <span class="translate-cached">Transcribed → {tx.chunks ?? 0} chunks. Re-run the search to see the new content.</span>
+                                    </div>
+                                </div>
+                            {/if}
+                        </div>
+                    {/if}
+
                     {#if r.snippet && r.language !== translateTargetLang}
                         {@const tkey = translationKey(r)}
                         {@const ts = translations.get(tkey)}
