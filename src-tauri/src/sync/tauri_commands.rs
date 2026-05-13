@@ -136,6 +136,13 @@ pub async fn sync_pull(
                 // Sync-pull L1 metadata rows don't carry translations.
                 text_translated:    None,
                 text_translated_lang: None,
+                // L1 metadata-only — no audio probe data.  Step 8
+                // promote can populate these on transcribe.
+                audio_duration_seconds: None,
+                audio_codec: None,
+                audio_sample_rate_hz: None,
+                audio_channels: None,
+                audio_bitrate_kbps: None,
             }
         })
         .collect();
