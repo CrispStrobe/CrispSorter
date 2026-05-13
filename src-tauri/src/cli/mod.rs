@@ -44,6 +44,7 @@ use std::process::ExitCode;
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
+    "sync",
     "manpage", "completion", "help", "--help", "-h",
 ];
 
@@ -186,6 +187,67 @@ enum Command {
         #[command(subcommand)]
         cmd: ImagesCmd,
     },
+    /// P13.7 Step 5 — bidirectional sync against the cloud-backup
+    /// HTTP API (`../../cloud-backup/api/app.py`).  Talks to the
+    /// FastAPI module running on the VPS alongside vps_worker.py.
+    Sync {
+        /// Override the app data directory.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: SyncCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SyncCmd {
+    /// Cloud-backup HTTP target.
+    CloudBackup {
+        #[command(subcommand)]
+        cmd: CloudBackupCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CloudBackupCmd {
+    /// Print the current cloud-backup sync status: URL, whether a
+    /// token is stored in the OS keychain, the last push/pull
+    /// watermarks, and (if the server is reachable) its health
+    /// payload.  Read-only; doesn't touch state.
+    Status,
+    /// Walk the local index for rows newer than the
+    /// `cb_last_manifest_push_ts` watermark and push them to
+    /// `/api/manifest/push`.  Advances the watermark on success.
+    PushManifest {
+        /// Cap rows-per-invocation.  Callers can re-run until the
+        /// printed `more_available` flag flips to false.
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// Push embeddings for chunks already in the local index whose
+    /// embedding vector + sparse json are populated.  Bandwidth-
+    /// heavy; off by default in `IndexConfig`.
+    PushEmbeddings {
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// `GET /api/manifest/pull?since=last_pull_ts&limit=N`, apply
+    /// returned rows as L1 metadata in the local LanceDB,
+    /// advance the watermark.
+    Pull {
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+    /// Store an API key in the OS keychain for the configured URL.
+    /// Reads the raw key from `--token` or, if absent, from the
+    /// `CB_SYNC_API_KEY` env var.  Never from positional args
+    /// (would leak in shell history).
+    Login {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Wipe the stored token without touching the URL.  Idempotent.
+    Logout,
 }
 
 #[derive(Subcommand, Debug)]
@@ -360,6 +422,26 @@ enum CrispLensCmd {
         /// as the lookup key.
         #[arg(long, conflicts_with = "sha256")]
         from_file: Option<PathBuf>,
+    },
+    /// P13.7 Step 8b — push a single image file to CrispLens via
+    /// `POST /api/ingest/upload-local`.  Two-phase: by-hash dedup
+    /// precheck → multipart upload.  Wraps the
+    /// `images_crisplens_image_push` Tauri command for headless use.
+    Push {
+        /// Local file path to upload.
+        path: PathBuf,
+        /// Visibility scope on the server — `"shared"` (default) or
+        /// `"private"`.  The server accepts either; this flag is a
+        /// thin pass-through.
+        #[arg(long, default_value = "shared")]
+        visibility: String,
+    },
+    /// P13.7 Step 8c — list every image attached to a CrispLens
+    /// person cluster.  Hits `/api/people/{id}` for the cluster
+    /// metadata + image list.
+    Person {
+        /// CrispLens person id (server-side primary key, integer).
+        id: i64,
     },
 }
 
@@ -623,6 +705,7 @@ pub fn run() -> ExitCode {
         Command::Batch { data_dir, cmd } => cmd_batch(cli.format, data_dir, cmd),
         Command::Chat { cmd } => cmd_chat(cli.format, cmd),
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
+        Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             use clap_complete::generate;
@@ -1057,6 +1140,15 @@ enum IndexCmd {
         /// Owner UUID (defaults to nil UUID for single-user installs).
         #[arg(long)]
         owner_id: Option<String>,
+    },
+    /// P13.7 Step 8a — promote a single L1/L2 row to L3 (re-extract).
+    /// Auto-routes by extension: audio/video → `index_audio_promote_l3`,
+    /// images → `index_image_promote_l3`.  Mirrors the "Transcribe" /
+    /// "Re-OCR" actions in the GUI search-result view.
+    PromoteL3 {
+        /// Document ID (UUID or sha256) — printed by `index list`
+        /// or `index search`.
+        doc_id: String,
     },
 }
 
@@ -1791,6 +1883,472 @@ async fn cmd_index_async(
                 }
             }
         }
+
+        // P13.7 Step 8a — promote one L1/L2 row to L3.  Looks the doc
+        // up in LocalIndex by id, resolves its URI to a local path,
+        // re-runs the standard `extract_text_from_path` (always full-
+        // pipeline regardless of IndexConfig.ingest_*_level — the
+        // gate is in bg_ingest, not the extractor), then re-ingests
+        // through the pipeline.  Mirrors index_audio_promote_l3 /
+        // index_image_promote_l3 from the GUI.
+        IndexCmd::PromoteL3 { doc_id } => {
+            use crate::index::embedder::{EmbedderConfig, EmbedderDevice as ED};
+            use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
+
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+
+            // Fetch the row for its location_uri + ext.
+            let batches = local.fetch_by_doc_ids(&[doc_id.clone()])
+                .await.map_err(|e| e.to_string())?;
+            // Empty score map = every row scores 0.0; we don't care
+            // about ranking here, just lifting the row metadata.
+            let empty_scores = std::collections::HashMap::<String, f32>::new();
+            let rows = crate::index::local_index::batches_to_search_results_with_scores(&batches, &empty_scores)
+                .map_err(|e| e.to_string())?;
+            let row = rows.into_iter().next()
+                .ok_or_else(|| format!("no row found for doc_id {doc_id}"))?;
+
+            // URI → local path via the canonical helper.
+            let path = crate::images::tauri_commands::location_uri_to_local_path(&row.location_uri)
+                .ok_or_else(|| format!("non-local URI {}: CLI promote needs the file on disk", row.location_uri))?;
+            if !path.exists() {
+                return Err(format!("file not present on disk: {}", path.display()));
+            }
+
+            // Always-L3 extraction — the L1/L2 gates live in bg_ingest,
+            // not in extract_text_from_path, so a direct call re-runs
+            // the full pipeline regardless of the user's default level.
+            let extracted = {
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || crate::extractors::extract_text_from_path(&p))
+                    .await
+                    .map_err(|e| format!("extract join: {e}"))?
+                    .map_err(|e| format!("extract: {e:#}"))?
+            };
+
+            // Construct a one-shot pipeline using the persisted
+            // IndexConfig (so embedder + model_cache_dir match GUI).
+            let cfg = crate::index::config_persist::load(&data_dir);
+            let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
+            let device = match cfg.embedder_device {
+                crate::index::embedder::EmbedderDevice::Auto  => ED::Auto,
+                crate::index::embedder::EmbedderDevice::Cpu   => ED::Cpu,
+                crate::index::embedder::EmbedderDevice::Cuda  => ED::Cuda,
+                crate::index::embedder::EmbedderDevice::Metal => ED::Metal,
+            };
+            let embedder_config = EmbedderConfig::new(cfg.embedder_model, device, cache_dir);
+            eprintln!("loading embedder for L3 reingest…");
+            let embedder = crate::index::embedder::Embedder::new(embedder_config)
+                .await.map_err(|e| e.to_string())?;
+            let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            let pipeline = IngestPipeline::new(
+                std::sync::Arc::new(fts),
+                std::sync::Arc::new(local),
+                Some(embedder_arc),
+                IngestConfig::default(),
+            );
+
+            // Build the RawDocument from the extraction.  Mirrors
+            // index_audio_promote_l3's shape so audio_*/image_* L2
+            // columns get repopulated.
+            let p_meta = std::fs::metadata(&path).ok();
+            let source_hash = {
+                use sha2::{Digest, Sha256};
+                let p = path.clone();
+                tokio::task::spawn_blocking(move || -> Result<String, String> {
+                    let bytes = std::fs::read(&p)
+                        .map_err(|e| format!("read {}: {e}", p.display()))?;
+                    let mut h = Sha256::new();
+                    h.update(&bytes);
+                    Ok(hex::encode(h.finalize()))
+                })
+                .await
+                .map_err(|e| format!("sha join: {e}"))??
+            };
+            let raw = RawDocument {
+                full_text:    extracted.full_text.clone(),
+                full_text_md: extracted.full_text.clone(),
+                headings:     extracted.headings.clone(),
+                title:        path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+                author:       None,
+                year:         None,
+                filename:     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                ext:          extracted.ext.clone(),
+                language:     extracted.language.clone().unwrap_or_default(),
+                source_hash,
+                location_uri: row.location_uri.clone(),
+                owner_id:     row.owner_id.clone(),
+                tags:         vec![],
+                mtime_unix:   p_meta.as_ref().and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64),
+                file_size:    p_meta.as_ref().map(|m| m.len() as i64),
+                volume_id:    crate::volume::volume_id_for_path(&path),
+                parent_dir:   path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+                translated_text:        extracted.translated_text.clone(),
+                translated_to_lang:     extracted.translated_to_lang.clone(),
+                audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+                audio_codec:            extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+                audio_sample_rate_hz:   extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+                audio_channels:         extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+                audio_bitrate_kbps:     extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+                image_camera_make:      extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+                image_camera_model:     extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+                image_lens_model:       extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+                image_taken_at_unix:    extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+                image_iso:              extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+            };
+            let stats = pipeline.reingest_document(raw)
+                .await.map_err(|e| format!("reingest: {e:#}"))?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "promoted": doc_id,
+                        "location_uri": row.location_uri,
+                        "ext": row.ext,
+                        "chunks": stats.chunk_count,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!(
+                        "promoted to L3: {doc_id} ({} chunks, ext={})",
+                        stats.chunk_count,
+                        row.ext.as_deref().unwrap_or("?"),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── sync (P13.7 Step 5 — cloud-backup HTTP target) ────────────────────────
+
+fn cmd_sync(out: OutFormat, data_dir: Option<PathBuf>, cmd: SyncCmd) -> Result<(), String> {
+    let data_dir = resolve_data_dir(data_dir)?;
+    if !data_dir.exists() {
+        return Err(format!(
+            "data dir not found: {} — run the GUI once to initialise the index",
+            data_dir.display()
+        ));
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    rt.block_on(cmd_sync_async(out, &data_dir, cmd))
+}
+
+async fn cmd_sync_async(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: SyncCmd,
+) -> Result<(), String> {
+    match cmd {
+        SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
+    }
+}
+
+/// Resolve the bearer token from (in priority order): CB_SYNC_API_KEY
+/// env var → OS keychain → None.  The env path is useful for CI /
+/// headless containers where the keychain isn't usable.
+fn cb_resolve_token(url: &str) -> Result<Option<String>, String> {
+    if let Ok(env_token) = std::env::var("CB_SYNC_API_KEY") {
+        let env_token = env_token.trim().to_owned();
+        if !env_token.is_empty() {
+            return Ok(Some(env_token));
+        }
+    }
+    crate::sync::secret::get_token_for_url(url).map_err(|e| format!("keychain: {e}"))
+}
+
+async fn cmd_sync_cloud_backup(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: CloudBackupCmd,
+) -> Result<(), String> {
+    use crate::sync::cloud_backup::CloudBackupClient;
+
+    let cfg = crate::index::config_persist::load(data_dir);
+    let url = cfg.cloud_backup_url.clone().unwrap_or_default();
+
+    // The Login / Logout subcommands operate on the keychain only;
+    // they don't need a live HTTP client.  Route those first.
+    if let CloudBackupCmd::Login { token } = &cmd {
+        if url.is_empty() {
+            return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
+        }
+        let raw = token.clone()
+            .or_else(|| std::env::var("CB_SYNC_API_KEY").ok())
+            .ok_or_else(|| "no token supplied — pass --token or set CB_SYNC_API_KEY".to_string())?;
+        let raw = raw.trim().to_owned();
+        if raw.is_empty() {
+            return Err("token is empty".into());
+        }
+        crate::sync::secret::set_token_for_url(&url, &raw)
+            .map_err(|e| format!("keychain: {e}"))?;
+        match out {
+            OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "url": url})),
+            OutFormat::Text => println!("ok — stored API key for {url}"),
+        }
+        return Ok(());
+    }
+    if matches!(cmd, CloudBackupCmd::Logout) {
+        if url.is_empty() {
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "noop": "no URL configured"})),
+                OutFormat::Text => println!("ok (no URL configured — nothing to log out from)"),
+            }
+            return Ok(());
+        }
+        crate::sync::secret::clear_token_for_url(&url)
+            .map_err(|e| format!("keychain: {e}"))?;
+        match out {
+            OutFormat::Json => println!("{}", serde_json::json!({"ok": true})),
+            OutFormat::Text => println!("ok — cleared API key from keychain"),
+        }
+        return Ok(());
+    }
+
+    if url.is_empty() {
+        return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
+    }
+    let token = cb_resolve_token(&url)?
+        .ok_or_else(|| "no API key — `crispsorter sync cloud-backup login --token cbk_...` first \
+                        (or set CB_SYNC_API_KEY)".to_string())?;
+    let client = CloudBackupClient::new(&url, &token).map_err(|e| e.to_string())?;
+    let mgr = crate::sync::SyncManager::open(data_dir).map_err(|e| e.to_string())?;
+
+    match cmd {
+        CloudBackupCmd::Status => {
+            let health = client.health().await.ok();
+            let push_ts = mgr.get_state("cb_last_manifest_push_ts").ok().flatten()
+                .and_then(|s| s.parse::<i64>().ok());
+            let pull_ts = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
+                .and_then(|s| s.parse::<i64>().ok());
+            let emb_ts = mgr.get_state("cb_last_embeddings_push_ts").ok().flatten()
+                .and_then(|s| s.parse::<i64>().ok());
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "url": url,
+                        "health": health,
+                        "last_manifest_push_ts": push_ts,
+                        "last_manifest_pull_ts": pull_ts,
+                        "last_embeddings_push_ts": emb_ts,
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("Cloud-backup URL : {url}");
+                    if let Some(h) = &health {
+                        println!("  health          : ok={} version={} shared_catalog={}",
+                                 h.ok, h.version, h.shared_catalog);
+                    } else {
+                        println!("  health          : unreachable");
+                    }
+                    println!("  last push (ms)  : {}", push_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
+                    println!("  last pull (ms)  : {}", pull_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
+                    println!("  last emb (ms)   : {}", emb_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
+                }
+            }
+        }
+
+        CloudBackupCmd::PushManifest { limit } => {
+            use crate::sync::cloud_backup::ManifestRow;
+            let limit = limit.clamp(1, 2000);
+            let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+
+            let last_ts: i64 = mgr.get_state("cb_last_manifest_push_ts").ok().flatten()
+                .and_then(|s| s.parse().ok()).unwrap_or(0);
+            let docs = local.list_documents(limit * 4).await.map_err(|e| e.to_string())?;
+
+            let mut rows: Vec<ManifestRow> = Vec::new();
+            let mut max_ts = last_ts;
+            for d in docs {
+                let meta = d.metadata_json.as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                let indexed_at = meta.get("indexed_at").and_then(|v| v.as_i64()).unwrap_or(0);
+                if indexed_at <= last_ts { continue; }
+                let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0);
+                let fs_mtime = meta.get("fs_mtime").and_then(|v| v.as_f64())
+                    .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_i64()).map(|i| i as f64))
+                    .unwrap_or(0.0);
+                let parent_dir = meta.get("parent_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let path = meta.get("fs_path").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .unwrap_or_else(|| d.location_uri.clone());
+                max_ts = max_ts.max(indexed_at);
+                rows.push(ManifestRow {
+                    path,
+                    size_bytes: fs_size,
+                    sha256: meta.get("source_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    mtime_unix: fs_mtime,
+                    owner_id: d.owner_id.clone(),
+                    filename: d.filename.clone().unwrap_or_default(),
+                    ext: d.ext.clone().unwrap_or_default(),
+                    parent_dir,
+                    language: d.language.clone(),
+                    title: d.title.clone(),
+                    author: d.author.clone(),
+                    year: d.year,
+                });
+                if rows.len() >= limit { break; }
+            }
+            let pushed = rows.len();
+            if pushed == 0 {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({"pushed": 0, "watermark": last_ts})),
+                    OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
+                }
+                return Ok(());
+            }
+            let resp = client.manifest_push(&rows).await.map_err(|e| e.to_string())?;
+            mgr.set_state("cb_last_manifest_push_ts", &max_ts.to_string())
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "pushed": pushed,
+                        "accepted": resp.accepted,
+                        "watermark": max_ts,
+                        "more_available": pushed == limit,
+                    })
+                ),
+                OutFormat::Text => println!(
+                    "pushed {pushed} row(s) (server accepted {}, watermark={max_ts}){}",
+                    resp.accepted,
+                    if pushed == limit { " — more available, re-run to drain" } else { "" }
+                ),
+            }
+        }
+
+        CloudBackupCmd::PushEmbeddings { limit: _ } => {
+            // The embedding payload requires re-fetching the dense
+            // + sparse vectors from LanceDB.  The local_index has
+            // no `list_chunks_with_embeddings(limit)` helper yet —
+            // the GUI flow goes through bg_ingest which already has
+            // the vectors at write time.  We surface an explicit
+            // "not yet" message rather than a silent zero-push so
+            // the CLI user knows where to look next.  Wired into
+            // the same task (the protocol + Tauri command +
+            // mockito tests are all in place) once the helper lands.
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "pushed": 0,
+                        "note": "PushEmbeddings requires a LocalIndex::list_chunks_with_embeddings \
+                                 helper that doesn't exist yet — the protocol + Tauri command + \
+                                 mockito tests are in place; the LanceDB scan helper lands in a \
+                                 follow-up.  Use sync_cb_embeddings_push from the GUI / scripts \
+                                 with a hand-built EmbeddingRow list in the meantime."
+                    })
+                ),
+                OutFormat::Text => println!(
+                    "PushEmbeddings: not yet exposed from the CLI (server route + Tauri command \
+                     are live; the LanceDB row→vector scan helper lands in a follow-up).  \
+                     Call sync_cb_embeddings_push from the GUI / scripts for now."
+                ),
+            }
+        }
+
+        CloudBackupCmd::Pull { limit } => {
+            let limit = limit.clamp(1, 2000);
+            let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
+                .and_then(|s| s.parse().ok()).unwrap_or(0);
+            let resp = client.manifest_pull(last_ts, limit).await.map_err(|e| e.to_string())?;
+            if resp.rows.is_empty() {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({
+                        "pulled": 0, "applied": 0, "watermark": last_ts, "has_more": resp.has_more,
+                    })),
+                    OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
+                }
+                return Ok(());
+            }
+
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+                .as_millis() as i64;
+            let chunks: Vec<crate::index::schema::DocumentChunk> = resp.rows.iter().map(|r| {
+                let doc_id = if r.sha256.is_empty() {
+                    uuid::Uuid::new_v4().to_string()
+                } else { r.sha256.clone() };
+                crate::index::schema::DocumentChunk {
+                    id: crate::index::ingest::chunk_row_id(&doc_id, -1),
+                    doc_id: doc_id.clone(),
+                    location_uri: r.path.clone(),
+                    owner_id: r.owner_id.clone(),
+                    filename: Some(r.filename.clone()),
+                    title: r.title.clone(),
+                    author: r.author.clone(),
+                    year: r.year,
+                    ext: Some(r.ext.clone()),
+                    language: r.language.clone(),
+                    page_count: None,
+                    headings_text: None,
+                    full_text: None,
+                    full_text_md: None,
+                    embedding: None,
+                    embedding_sparse: None,
+                    embedding_model: None,
+                    chunk_index: -1,
+                    chunk_total: 0,
+                    chunk_start_char: None,
+                    chunk_end_char: None,
+                    indexed_at: now_ms,
+                    source_hash: r.sha256.clone(),
+                    tags: vec![],
+                    metadata_json: Some(format!(
+                        r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
+                        r.indexed_at
+                    )),
+                    parent_dir: if r.parent_dir.is_empty() { None } else { Some(r.parent_dir.clone()) },
+                    volume_id: None,
+                    text_translated: None,
+                    text_translated_lang: None,
+                    audio_duration_seconds: None,
+                    audio_codec: None,
+                    audio_sample_rate_hz: None,
+                    audio_channels: None,
+                    audio_bitrate_kbps: None,
+                    image_camera_make: None,
+                    image_camera_model: None,
+                    image_lens_model: None,
+                    image_taken_at_unix: None,
+                    image_iso: None,
+                }
+            }).collect();
+            let applied = chunks.len();
+            local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+            mgr.set_state("cb_last_manifest_pull_ts", &resp.max_indexed_at.to_string())
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "pulled": resp.rows.len(),
+                    "applied": applied,
+                    "watermark": resp.max_indexed_at,
+                    "has_more": resp.has_more,
+                })),
+                OutFormat::Text => println!(
+                    "pulled {} row(s), applied {applied} (watermark={}){}",
+                    resp.rows.len(), resp.max_indexed_at,
+                    if resp.has_more { " — more available, re-run to drain" } else { "" }
+                ),
+            }
+        }
+
+        // Login/Logout already handled above.
+        CloudBackupCmd::Login { .. } | CloudBackupCmd::Logout => unreachable!(),
     }
     Ok(())
 }
@@ -2457,6 +3015,175 @@ async fn cmd_images_crisplens(
             match out {
                 OutFormat::Json => println!("{}", serde_json::json!({"ok": true})),
                 OutFormat::Text => println!("ok — session cleared"),
+            }
+        }
+
+        // P13.7 Step 8b — single-image push.  Wraps the Tauri command
+        // `images_crisplens_image_push` so headless / scripted pushes
+        // share the same dedup + auth path the GUI uses.
+        CrispLensCmd::Push { path, visibility } => {
+            use crate::images::crisplens::tauri_commands::{
+                get_json_inner, sha256_file,
+            };
+            use crisplens_protocol::Image as CrispLensImage;
+
+            let s = settings::load(data_dir);
+            if !s.tier2_enabled() {
+                return Err("CrispLens Tier 2 not configured — set URL + login first".into());
+            }
+            let url = s.normalised_url().to_owned();
+            let cookie = secret::get_session_for_url(&url)
+                .map_err(|e| format!("keychain: {e}"))?
+                .ok_or_else(|| "no CrispLens session — `crispsorter images crisplens login` first".to_string())?;
+
+            // Hash + dedup precheck.
+            let abs_path = std::fs::canonicalize(&path)
+                .map_err(|e| format!("canonicalize {}: {e}", path.display()))?;
+            let p_for_hash = abs_path.to_string_lossy().into_owned();
+            let dd_for_dedup = data_dir.to_path_buf();
+            let (sha, dedup) = tokio::task::spawn_blocking(move || {
+                let sha = sha256_file(&p_for_hash)?;
+                let dedup_path = format!("/api/images/by-hash/{sha}");
+                let dedup = get_json_inner::<CrispLensImage>(&dd_for_dedup, &dedup_path)
+                    .unwrap_or(None);
+                Ok::<_, String>((sha, dedup))
+            })
+            .await
+            .map_err(|e| format!("hash join: {e}"))??;
+
+            if let Some(hit) = dedup {
+                match out {
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "action": "already_indexed",
+                            "server_image_id": hit.id,
+                            "face_count": hit.face_count,
+                            "sha256": sha,
+                        })
+                    ),
+                    OutFormat::Text => println!(
+                        "already indexed: server_image_id={} faces={} sha256={sha}",
+                        hit.id,
+                        hit.face_count.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
+                    ),
+                }
+                return Ok(());
+            }
+
+            // Multipart upload — mirrors images_crisplens_image_push.
+            let p_for_upload = abs_path.clone();
+            let url_for_upload = url.clone();
+            let visibility_for_upload = visibility.clone();
+            let upload_result: serde_json::Value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                let bytes = std::fs::read(&p_for_upload)
+                    .map_err(|e| format!("read {}: {e}", p_for_upload.display()))?;
+                let filename = p_for_upload
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "upload.bin".to_string());
+                let mime = match p_for_upload.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "png" => "image/png",
+                    "gif" => "image/gif",
+                    "webp" => "image/webp",
+                    "tif" | "tiff" => "image/tiff",
+                    "bmp" => "image/bmp",
+                    "heic" => "image/heic",
+                    "heif" => "image/heif",
+                    _ => "application/octet-stream",
+                };
+                let form = reqwest::blocking::multipart::Form::new()
+                    .text("local_path", p_for_upload.to_string_lossy().into_owned())
+                    .text("visibility", visibility_for_upload)
+                    .part(
+                        "file",
+                        reqwest::blocking::multipart::Part::bytes(bytes)
+                            .file_name(filename)
+                            .mime_str(mime)
+                            .map_err(|e| format!("mime: {e}"))?,
+                    );
+                let client = reqwest::blocking::Client::builder()
+                    .cookie_store(true)
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build()
+                    .map_err(|e| format!("http client init: {e}"))?;
+                let resp = client
+                    .post(format!("{url_for_upload}/api/ingest/upload-local"))
+                    .header("Cookie", format!("session={cookie}"))
+                    .multipart(form)
+                    .send()
+                    .map_err(|e| format!("POST upload-local: {e}"))?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let body = resp.text().unwrap_or_default();
+                    return Err(format!("HTTP {status}: {body}"));
+                }
+                resp.json::<serde_json::Value>()
+                    .map_err(|e| format!("upload-local body not JSON: {e}"))
+            })
+            .await
+            .map_err(|e| format!("upload join: {e}"))??;
+
+            match out {
+                OutFormat::Json => {
+                    let mut envelope = serde_json::json!({
+                        "action": "uploaded",
+                        "sha256": sha,
+                    });
+                    if let serde_json::Value::Object(ref mut map) = envelope {
+                        if let serde_json::Value::Object(server_map) = upload_result {
+                            for (k, v) in server_map { map.insert(k, v); }
+                        }
+                    }
+                    println!("{envelope}");
+                }
+                OutFormat::Text => {
+                    let image_id = upload_result.get("image_id")
+                        .and_then(|v| v.as_i64())
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "?".into());
+                    let face_count = upload_result.get("face_count")
+                        .and_then(|v| v.as_i64())
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "?".into());
+                    println!("uploaded: server_image_id={image_id} faces={face_count} sha256={sha}");
+                }
+            }
+        }
+
+        // P13.7 Step 8c — list every image attached to a person cluster.
+        // Calls /api/people/{id} (already proxied through get_json_inner
+        // for cookie + URL plumbing).
+        CrispLensCmd::Person { id } => {
+            use crate::images::crisplens::tauri_commands::get_json_inner;
+            let dd = data_dir.to_path_buf();
+            let path = format!("/api/people/{id}");
+            let person_data: Option<serde_json::Value> = tokio::task::spawn_blocking(move || {
+                get_json_inner::<serde_json::Value>(&dd, &path)
+            })
+            .await
+            .map_err(|e| format!("person join: {e}"))??;
+
+            match (out, person_data) {
+                (_, None) => {
+                    return Err("CrispLens Tier 2 not configured / unauthenticated".into());
+                }
+                (OutFormat::Json, Some(v)) => {
+                    println!("{}", serde_json::to_string(&v).map_err(|e| e.to_string())?);
+                }
+                (OutFormat::Text, Some(v)) => {
+                    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("(unnamed)");
+                    let count = v.get("face_count").and_then(|x| x.as_i64()).unwrap_or(0);
+                    println!("Person #{id} — {name} ({count} faces)");
+                    if let Some(images) = v.get("images").and_then(|x| x.as_array()) {
+                        for img in images {
+                            let img_id = img.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                            let filename = img.get("filename").and_then(|x| x.as_str()).unwrap_or("");
+                            println!("  [{img_id:>4}]  {filename}");
+                        }
+                    }
+                }
             }
         }
     }
