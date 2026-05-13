@@ -38,21 +38,38 @@ For per-feature deep-dives, see [HISTORY.md → "Phase ship index"](HISTORY.md).
 
 ## In Progress
 
-P13.7 Cloud sync — **all 8 steps now shipped** (Steps 1+2+3+4+6
-on 2026-05-13 morning; Steps 5+7+8 on 2026-05-13 evening with
-the cloud-backup HTTP API live-deployed to the production VPS).
-See [HISTORY.md → 2026-05-13](HISTORY.md) for the full session
-logs.  The v0.1.41 tag captures the closeout.
+P13.7 Cloud sync — all 8 steps shipped 2026-05-13.  Stages
+E/F/G/H followed in the same session as additive infrastructure:
 
-**Test coverage:** ~452 unit tests in `tauri-app` (+5 `#[ignore]`'d
-env-gated live tests: 2 WebDAV gated by `WEBDAV_TEST_URL`/`USER`/`PASS`
-and 3 cloud-backup gated by `CB_SYNC_TEST_URL`/`CB_SYNC_TEST_API_KEY`,
-all 3 of which were live-verified against the production VPS during
-the 2026-05-13 evening session), 20 in `crispcat`, 29 in
-`crisplens-protocol`, 5 in `crisp-index-protocol`, 21 pytest cases
-in `../cloud-backup/tests/`.  Run `cargo test --workspace --lib`
-for the exact current Rust count; `python -m pytest tests/` inside
-`../cloud-backup/` for the FastAPI suite.
+  - **E** — content-addressed byte upload/download
+    (`POST/GET /api/files/by-hash/<sha>`).  Closes the last
+    not-pure-Rust path on the client side — reqwest streams
+    instead of SSH shell-out.
+  - **F** — durable retry via SyncManager outbox.  bg_ingest
+    enqueues `cb_manifest_push` ops; background drain ships
+    them.  Survives crashes / network outages.
+  - **G** — optional 256-way sharding by sha-prefix
+    (`CB_API_SHARD_ROOT` env-gate).  Legacy single-DB mode is
+    the default + the production VPS.
+  - **H** — server-side CPU embedding inference
+    (`GET /api/index/embed-query?text=…&model=…`) via
+    fastembed.  Same model registry as `fastembed-rs` on the
+    client → vectors interchangeable for cosine search.
+
+All 8 live tests pass against the production VPS.
+
+**Test coverage:** ~470 unit tests in `tauri-app` (+8
+`#[ignore]`'d env-gated live tests against the cloud-backup VPS:
+`cb_sync_live_{health,manifest_push_pull,outbox_drain,
+byte_upload_download,full_text_push_and_search,
+end_to_end_index_push_pull_search,embed_query,
+embedding_push_rejects_empty}` gated by `CB_SYNC_TEST_URL` /
+`CB_SYNC_TEST_API_KEY`), 20 in `crispcat`, 29 in
+`crisplens-protocol`, 5 in `crisp-index-protocol`, 48 pytest
+cases in `../cloud-backup/tests/`.  Run
+`cargo test --workspace --lib` for the exact Rust count;
+`python -m pytest tests/` inside `../cloud-backup/` for the
+FastAPI suite.
 
 ---
 
@@ -335,6 +352,51 @@ This is the sole gate on the v0.1.41 (or v0.2.0) tag.
   - [x] v0.1.41 tag cut (minor: the cloud-backup HTTP protocol
     is additive, not a breaking shift — see the architectural-
     decisions summary in the HISTORY entry).
+
+### P13.7.x — Cloud-sync follow-ups
+
+Open items from the Stage E/F/G/H additive batch (HISTORY.md → Session log — 2026-05-13 — P13.7 Stages E-H).  None blocks v0.1.41; all are scale-out / convergence work for when the catalog grows.
+
+- [ ] **`collection_id` as the shard key** (rebalances Stage G).
+      The current sha-prefix sharding gives perfect distribution
+      but breaks topical locality — a 50GB research-task push
+      scatters across 256 shards.  Add an optional
+      `collection_id` field to `ManifestRow`; router uses
+      `collection_id[:2]` when set, falls back to `sha[:2]`
+      when absent.  Migration: 1 new nullable column on
+      `file_references` + a routing switch in `api/db.py`.
+      Clients set the field per logical group ("research-task-X").
+      Operators can re-balance with a one-shot
+      `python -m api.shard_rebalance --by collection_id` tool.
+- [ ] **LanceDB-backed vector index on the VPS** (P13.8
+      pre-existing on the plan; correctness fix on the FAISS
+      misstep).  Per-shard LanceDB on the storage box.
+      Memory-mapped columnar reads → larger-than-RAM at TB
+      scale (the 16GB-RAM VPS can serve a 200GB+ vector index
+      via mmap).  Same Lance format the CrispSorter client
+      uses → no engine drift in vectors.  Brute-force k-NN
+      initially; IVF-PQ once a shard crosses ~100k chunks.
+      Replaces the current Python brute-force over SQLite
+      BLOBs in `/api/index/by-embedding`.
+- [ ] **FTS5 vs Tantivy convergence** — `search_engine.py`
+      already runs Tantivy over the existing-via-vps_worker
+      7z-extract flow.  cb-api's `/api/search` runs FTS5 over
+      the client-pushed `full_text`.  Two parallel full-text
+      engines today.  Three options on the table:
+      (a) unify on Tantivy (replace FTS5; bigger refactor),
+      (b) keep both + federate at `/api/search` with a
+      `?include=tantivy` flag (bandage; doubles ops surface),
+      (c) keep FTS5 as the always-fresh client-cache + let
+      Tantivy do periodic re-index over the archive flow
+      (each engine serves what it's good at).  Decision
+      deferred until the search performance profile warrants
+      the engine change.
+- [ ] **`shard_rebalance` admin tool** — `python -m api.shard_rebalance`
+      that walks every `file_references` row and re-routes by
+      a new sharding key.  Needed for the `collection_id` cutover
+      AND for future re-balancing when a power user's owner-shard
+      grows too fat.  Atomic per-row move; resumable via a
+      `migration_progress` table.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 
