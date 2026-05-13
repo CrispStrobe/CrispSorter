@@ -573,6 +573,35 @@ async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// File-path-based audio/video extraction for the JS-side
+/// `extractText` dispatcher.  Wraps [`extractors::audio::extract`]
+/// (symphonia tier-1 + ffmpeg fallback + shared CrispASR handle) and
+/// returns the transcript only — keeps the large `Vec<f32>` PCM
+/// buffer entirely inside the Rust process.  Use this from the
+/// frontend whenever a dropped/picked file's extension is in
+/// `MULTIMODAL_EXTENSIONS` (the audio/video subset) — the same
+/// path the bg_ingest classifier walks for index-time audio.
+///
+/// Spawns into a blocking thread because the audio extractor builds
+/// a nested current-thread tokio runtime (the standard pattern for
+/// bridging the sync extractor boundary into async ASR).
+///
+/// Errors out with a clear --features hint when the binary was built
+/// without `crispasr-*`; the JS side surfaces the message verbatim
+/// on the failing entry so the user knows to rebuild via
+/// `enable-crispasr.sh` / `.ps1`.
+#[tauri::command]
+async fn audio_extract_text(path: String) -> Result<String, String> {
+    let p = std::path::PathBuf::from(&path);
+    tokio::task::spawn_blocking(move || {
+        extractors::audio::extract(&p)
+            .map(|doc| doc.full_text)
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("audio_extract_text join error: {e}"))?
+}
+
 /// Transcribe Float32 PCM 16 kHz mono audio to text via CrispASR.
 ///
 /// Lazy-initializes the ASR handle on first call (the handle's first
@@ -2320,6 +2349,7 @@ pub fn run() {
             index::tauri_commands::embedder_registry_list,
             index::tauri_commands::index_benchmark_embedder,
             asr_transcribe,
+            audio_extract_text,
             tts_speak,
             tts_stop,
             watch_start,

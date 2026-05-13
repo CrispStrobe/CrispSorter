@@ -14,7 +14,7 @@
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images
     } from 'lucide-svelte';
-    import { extractText, SUPPORTED_EXTENSIONS } from '$lib/extractors/index';
+    import { extractText, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
     import CafCatalog from './Catalog.svelte';
     import Duplicates from './Duplicates.svelte';
@@ -713,7 +713,11 @@
     }
     let downloadProgress = $state<DownloadProgress | null>(null);
 
-    const supported = new Set<string>(SUPPORTED_EXTENSIONS);
+    // Accept the full multimodal set on drop / file-picker.  Audio +
+    // video extensions route through extractText's audio dispatch
+    // path (audio_extract_text Tauri command); documents + images
+    // continue through the existing JS-side extractors.
+    const supported = new Set<string>(MULTIMODAL_EXTENSIONS);
 
     // ── Stats ──────────────────────────────────────────────────────────────────
 
@@ -1034,7 +1038,10 @@
     async function addFiles() {
         const selected = await openDialog({
             multiple: true,
-            filters: [{ name: 'Documents', extensions: [...SUPPORTED_EXTENSIONS] }]
+            // Documents + images + audio/video — extension whitelist matches
+            // the `supported` Set used by the drop handler so picker + drop
+            // accept the same files.
+            filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
         });
         if (!selected) return;
         await addPaths(Array.isArray(selected) ? selected : [selected]);
@@ -1363,8 +1370,14 @@
                             continue;
                         }
 
-                        const fileObj = new File([bytes.buffer as ArrayBuffer], filename, { type: mimeFor(ext) });
-                        const result = await extractText(fileObj);
+                        // Pass `path` so extractText can route audio/video
+                        // extensions to the Rust audio_extract_text command
+                        // (keeps the PCM buffer in Rust).
+                        const result = await extractText({
+                            name: filename,
+                            arrayBuffer: bytes.buffer as ArrayBuffer,
+                            path: qf.filePath,
+                        });
                         logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
 
                         if (!result.text || result.text.trim().length < 20) {
@@ -2465,8 +2478,11 @@
                     const ab = bytes.buffer as ArrayBuffer;
                     const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
                     const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
-                    const fileObj = new File([ab], filename, { type: mimeFor(ext) });
-                    const result = await extractText(fileObj);
+                    const result = await extractText({
+                        name: filename,
+                        arrayBuffer: ab,
+                        path,
+                    });
                     if (!result.text || result.text.trim().length < 20) {
                         skipped++;
                         l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
