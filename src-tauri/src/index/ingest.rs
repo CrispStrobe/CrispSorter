@@ -120,6 +120,17 @@ pub struct RawDocument {
     /// future search-side filter say "give me docs where the
     /// translated column is English" without parsing every row.
     pub translated_to_lang: Option<String>,
+
+    /// P13.6 Step 7 — audio L2 metadata.  Populated by bg_ingest
+    /// from `ExtractedDocument.audio` (symphonia probe, no decode
+    /// pass).  Replicated across every chunk row of the same doc;
+    /// `None` for non-audio extractors.  Lands in the `audio_*`
+    /// LanceDB columns added by migration v101.
+    pub audio_duration_seconds: Option<f64>,
+    pub audio_codec: Option<String>,
+    pub audio_sample_rate_hz: Option<i32>,
+    pub audio_channels: Option<i32>,
+    pub audio_bitrate_kbps: Option<i32>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -447,6 +458,15 @@ impl IngestPipeline {
                     // translation possible.
                     text_translated: None,
                     text_translated_lang: None,
+                    // L1 manifest-only writes don't have audio L2
+                    // metadata — the symphonia probe runs during
+                    // L3 extraction.  Promotes via Step 8 will
+                    // patch these fields when transcribing.
+                    audio_duration_seconds: None,
+                    audio_codec: None,
+                    audio_sample_rate_hz: None,
+                    audio_channels: None,
+                    audio_bitrate_kbps: None,
                 }
             })
             .collect();
@@ -549,6 +569,14 @@ impl IngestPipeline {
             // to translate.
             text_translated: None,
             text_translated_lang: None,
+            // No symphonia probe runs on L2-fallback paths — Step 8
+            // promote can patch these fields if the user re-runs
+            // extraction via the "Transcribe" search-result action.
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -662,6 +690,15 @@ fn build_doc_chunk(
         // keeps downstream queries from needing a JOIN.
         text_translated: raw.translated_text.clone(),
         text_translated_lang: raw.translated_to_lang.clone(),
+        // P13.6 Step 7 — replicate the per-doc audio L2 metadata
+        // across every chunk row (same wasteful-but-simple
+        // convention as text_translated).  None when raw came
+        // from a non-audio extractor.
+        audio_duration_seconds: raw.audio_duration_seconds,
+        audio_codec: raw.audio_codec.clone(),
+        audio_sample_rate_hz: raw.audio_sample_rate_hz,
+        audio_channels: raw.audio_channels,
+        audio_bitrate_kbps: raw.audio_bitrate_kbps,
     }
 }
 
@@ -724,6 +761,11 @@ mod tests {
             parent_dir: None,
             translated_text: None,
             translated_to_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
         }
     }
 

@@ -1476,6 +1476,17 @@ fn chunks_to_record_batch(
     // P13.5 Phase 8 batch — translated text + its target language.
     let text_translateds: StringArray = chunks.iter().map(|c| c.text_translated.as_deref()).collect();
     let text_translated_langs: StringArray = chunks.iter().map(|c| c.text_translated_lang.as_deref()).collect();
+    // P13.6 Step 7 — audio L2 metadata columns added by migration v101.
+    // Five nullable columns; non-audio rows pass through as nulls.
+    let audio_duration_seconds: arrow_array::Float64Array =
+        chunks.iter().map(|c| c.audio_duration_seconds).collect();
+    let audio_codecs: StringArray = chunks.iter().map(|c| c.audio_codec.as_deref()).collect();
+    let audio_sample_rate_hzs: arrow_array::Int32Array =
+        chunks.iter().map(|c| c.audio_sample_rate_hz).collect();
+    let audio_channelss: arrow_array::Int32Array =
+        chunks.iter().map(|c| c.audio_channels).collect();
+    let audio_bitrate_kbpss: arrow_array::Int32Array =
+        chunks.iter().map(|c| c.audio_bitrate_kbps).collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1509,6 +1520,11 @@ fn chunks_to_record_batch(
             Arc::new(volume_ids),
             Arc::new(text_translateds),
             Arc::new(text_translated_langs),
+            Arc::new(audio_duration_seconds),
+            Arc::new(audio_codecs),
+            Arc::new(audio_sample_rate_hzs),
+            Arc::new(audio_channelss),
+            Arc::new(audio_bitrate_kbpss),
         ],
     )
     .context("building RecordBatch")?;

@@ -83,6 +83,20 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // search side filter / facet on the available translation
         // language without scanning text.
         Field::new("text_translated_lang", DataType::Utf8, true),
+        // ── P13.6 Step 3c / 7 — audio L2 metadata ─────────────────────────
+        // Populated by bg_ingest from ExtractedDocument.audio (symphonia
+        // probe, no decode pass).  Replicated across every chunk row of
+        // the same doc, matching the convention used for full_text_md /
+        // text_translated.  All nullable because (a) non-audio rows
+        // simply leave them NULL, (b) symphonia doesn't always expose
+        // every datapoint (VBR mp3 with no n_frames, truncated m4a, …).
+        // Added on existing tables via the `AddAudioMetadataColumns`
+        // migration in `index/migrations.rs` (v101).
+        Field::new("audio_duration_seconds", DataType::Float64, true),
+        Field::new("audio_codec", DataType::Utf8, true),
+        Field::new("audio_sample_rate_hz", DataType::Int32, true),
+        Field::new("audio_channels", DataType::Int32, true),
+        Field::new("audio_bitrate_kbps", DataType::Int32, true),
     ]))
 }
 
@@ -141,6 +155,19 @@ pub struct DocumentChunk {
     // no translation was attempted or MT failed.
     pub text_translated: Option<String>,
     pub text_translated_lang: Option<String>,
+
+    // P13.6 Step 7 — audio L2 metadata (symphonia probe).  Populated
+    // by bg_ingest from ExtractedDocument.audio for audio/video
+    // extensions; replicated across every chunk row matching the
+    // text_translated convention.  All Option-shaped because (a)
+    // non-audio docs leave them None, (b) symphonia doesn't always
+    // expose every datapoint.  Lands in the audio_* LanceDB columns
+    // via the AddAudioMetadataColumns migration (v101).
+    pub audio_duration_seconds: Option<f64>,
+    pub audio_codec: Option<String>,
+    pub audio_sample_rate_hz: Option<i32>,
+    pub audio_channels: Option<i32>,
+    pub audio_bitrate_kbps: Option<i32>,
 }
 
 /// Lightweight search result returned to the frontend.

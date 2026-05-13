@@ -1,3 +1,8 @@
+# Per-session local artifacts (Claude harness lock + personal launcher).
+# Both are user-machine-specific and shouldn't follow into shared history.
+.claude/scheduled_tasks.lock
+start-codex-crispsorter.sh
+
 # Node.js
 node_modules
 /build

@@ -439,6 +439,13 @@ mod tests {
             volume_id:         None,
             text_translated:   None,
             text_translated_lang: None,
+            // Fixture-only DocumentChunks for image tests — no audio
+            // metadata present.
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
         }
     }
 

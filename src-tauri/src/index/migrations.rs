@@ -36,7 +36,10 @@ use crate::migrations::{Migration, MigrationContext};
 /// new migration means: write the struct here, add it to this
 /// `Vec`, and pick the next free version number.
 pub fn all() -> Vec<Box<dyn Migration>> {
-    vec![Box::new(AddTextTranslatedColumns)]
+    vec![
+        Box::new(AddTextTranslatedColumns),
+        Box::new(AddAudioMetadataColumns),
+    ]
 }
 
 /// **v100** — Add the `text_translated` + `text_translated_lang`
@@ -116,6 +119,81 @@ impl Migration for AddTextTranslatedColumns {
     }
 }
 
+/// **v101** — Add the 5 audio L2 metadata columns:
+/// `audio_duration_seconds` (Float64), `audio_codec` (Utf8),
+/// `audio_sample_rate_hz` (Int32), `audio_channels` (Int32),
+/// `audio_bitrate_kbps` (Int32).  All nullable — non-audio rows
+/// leave them NULL.
+///
+/// Populated at ingest time from `ExtractedDocument.audio` (the
+/// symphonia probe added in P13.6 Step 3a).  Backfills existing
+/// rows with nulls.  Idempotent: re-running on a schema that
+/// already has all five columns is a no-op.
+pub struct AddAudioMetadataColumns;
+
+#[async_trait]
+impl Migration for AddAudioMetadataColumns {
+    fn version(&self) -> u32 {
+        101
+    }
+    fn name(&self) -> &str {
+        "add audio_* L2 metadata columns"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(
+                "v101 (add_audio_metadata_columns) needs the LanceDB \
+                 handle in MigrationContext — caller didn't supply one"
+            ))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v101 migration")?;
+
+        // 5 columns; check each independently so partial-applied
+        // migrations (interrupted by app crash mid-run) finish
+        // cleanly on next start.
+        type Pending = (&'static str, arrow_schema::DataType);
+        let candidates: [Pending; 5] = [
+            ("audio_duration_seconds", arrow_schema::DataType::Float64),
+            ("audio_codec",             arrow_schema::DataType::Utf8),
+            ("audio_sample_rate_hz",    arrow_schema::DataType::Int32),
+            ("audio_channels",          arrow_schema::DataType::Int32),
+            ("audio_bitrate_kbps",      arrow_schema::DataType::Int32),
+        ];
+        let fields_to_add: Vec<arrow_schema::Field> = candidates
+            .into_iter()
+            .filter(|(name, _)| schema.field_with_name(name).is_err())
+            .map(|(name, ty)| arrow_schema::Field::new(name, ty, true))
+            .collect();
+
+        if fields_to_add.is_empty() {
+            eprintln!(
+                "[index] v101 migration skipped — all 5 audio_* columns already present"
+            );
+            return Ok(());
+        }
+        let added_names: Vec<&str> =
+            fields_to_add.iter().map(|f| f.name().as_str()).collect();
+        let col_schema = Arc::new(arrow_schema::Schema::new(fields_to_add.clone()));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding audio_* metadata columns (v101)")?;
+        eprintln!(
+            "[index] v101 migration applied — added columns: {:?}",
+            added_names
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,16 +233,25 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
         };
         let summary = runner.run(&ctx, &ledger).await.unwrap();
-        assert_eq!(summary.applied, vec![100], "first run must apply v100");
+        // First run applies every registered migration in `all()` —
+        // v100 (text_translated) + v101 (audio_*).  Pinning the full
+        // list catches accidental migration drift (new version added
+        // without updating tests) AND the in-order property the
+        // framework guarantees.
+        assert_eq!(
+            summary.applied,
+            vec![100, 101],
+            "first run must apply every registered migration"
+        );
         assert!(summary.skipped.is_empty());
 
-        // Second run on the same ledger → version is in the ledger,
+        // Second run on the same ledger → versions in the ledger,
         // the runner short-circuits BEFORE calling apply() at all.
         // So this also verifies the framework's idempotency, not
-        // just the migration's internal check.
+        // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100]);
+        assert_eq!(summary2.skipped, vec![100, 101]);
     }
 
     #[tokio::test]
@@ -183,5 +270,31 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("LanceDB handle"), "{msg}");
         assert!(msg.contains("v100"), "{msg}");
+    }
+
+    /// Pin v101's missing-handle error path the same way v100 has —
+    /// catches a future refactor that silently swallows the
+    /// "needs lance" guard.
+    #[tokio::test]
+    async fn v101_errors_without_lance_handle() {
+        let mig = AddAudioMetadataColumns;
+        let ctx = MigrationContext {
+            lance: None,
+            sqlite: None,
+            data_dir: std::env::temp_dir(),
+        };
+        let err = mig.apply(&ctx).await.expect_err("must error");
+        let msg = err.to_string();
+        assert!(msg.contains("LanceDB handle"), "{msg}");
+        assert!(msg.contains("v101"), "{msg}");
+    }
+
+    /// Sanity-pin the version + name surface so a future drift
+    /// (e.g. someone reassigning version() to 102) trips immediately.
+    #[test]
+    fn v101_version_and_name_are_stable() {
+        let mig = AddAudioMetadataColumns;
+        assert_eq!(mig.version(), 101);
+        assert!(mig.name().contains("audio"), "name = {:?}", mig.name());
     }
 }

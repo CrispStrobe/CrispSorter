@@ -458,6 +458,13 @@ pub async fn index_ingest_path(
         parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
         translated_text: extracted.translated_text,
         translated_to_lang: extracted.translated_to_lang,
+        // P13.6 Step 7 — audio L2 from the symphonia probe inside
+        // extractors::audio::extract.  None for non-audio extractors.
+        audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+        audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+        audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+        audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+        audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
     };
 
     let lock = state.index.lock().await;
@@ -518,6 +525,11 @@ pub async fn index_ingest_document(
         // is the path for translating these post-ingest.
         translated_text: None,
         translated_to_lang: None,
+        audio_duration_seconds: None,
+        audio_codec: None,
+        audio_sample_rate_hz: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
     };
 
     use tauri::Emitter;
@@ -645,6 +657,12 @@ pub async fn index_ingest_document(
             // same replication pattern the main make_chunk path uses.
             text_translated: raw.translated_text.clone(),
             text_translated_lang: raw.translated_to_lang.clone(),
+            // P13.6 Step 7 — audio L2 carries through the same way.
+            audio_duration_seconds: raw.audio_duration_seconds,
+            audio_codec: raw.audio_codec.clone(),
+            audio_sample_rate_hz: raw.audio_sample_rate_hz,
+            audio_channels: raw.audio_channels,
+            audio_bitrate_kbps: raw.audio_bitrate_kbps,
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -746,6 +764,11 @@ pub async fn index_ingest_batch(
                 // MT pass — Phase 8 on-demand handles per-result translation.
                 translated_text: None,
                 translated_to_lang: None,
+                audio_duration_seconds: None,
+                audio_codec: None,
+                audio_sample_rate_hz: None,
+                audio_channels: None,
+                audio_bitrate_kbps: None,
             })
             .collect();
 
@@ -822,6 +845,11 @@ pub async fn index_ingest_batch(
             // Remote-batch ingest doesn't run the extractor's MT pass.
             translated_text: None,
             translated_to_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
@@ -2617,6 +2645,13 @@ async fn promote_path(
             .map(|s| s.to_owned()),
         translated_text: extracted.translated_text,
         translated_to_lang: extracted.translated_to_lang,
+        // P13.6 Step 7 — audio L2 from the symphonia probe inside
+        // extractors::audio::extract.  None for non-audio extractors.
+        audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+        audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+        audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+        audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+        audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
     };
 
     // Delete the existing L1 row before re-ingesting.

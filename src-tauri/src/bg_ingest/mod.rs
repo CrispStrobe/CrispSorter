@@ -572,6 +572,15 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 // and bg_ingest reads it (follow-up).
                 translated_text: extracted.translated_text,
                 translated_to_lang: extracted.translated_to_lang,
+                // P13.6 Step 7 — audio L2 metadata from the symphonia
+                // probe inside extractors::audio::extract.  None for
+                // non-audio extractors; the audio extractor's probe
+                // result rides along in ExtractedDocument.audio.
+                audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+                audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+                audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+                audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+                audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
             };
             pipeline
                 .ingest_document(raw)

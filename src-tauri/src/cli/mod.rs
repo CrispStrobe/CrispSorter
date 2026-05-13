@@ -1270,6 +1270,12 @@ async fn cmd_index_async(
                     parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
                     translated_text: extracted.translated_text,
                     translated_to_lang: extracted.translated_to_lang,
+                    // P13.6 Step 7 — audio L2 from the symphonia probe.
+                    audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+                    audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+                    audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+                    audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+                    audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
