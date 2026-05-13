@@ -61,6 +61,197 @@ WebDAV-live integration tests gated by
 
 Only `[ ]` items live here.  Shipped items are in HISTORY.md.
 
+### P13.7 — Cloud-sync APIs + CLI search filters + image L1/L2/L3
+
+After the 2026-05-13 P13.6 audio-vertical wins (Settings panel,
+audio L1/L2/L3 enum, `index_audio_promote_l3` action, schema
+migration v101) and the parallel image L2 (EXIF) plumbing in
+Step 9, the user-quoted follow-ups split into four threads:
+
+1. **Image L1/L2/L3 progression** mirroring the audio one, plus
+   making OCR opt-in via Settings.
+2. **CrispLens push** — wire CrispSorter's ingest pipeline to
+   `POST /api/ingest/import-processed` (v2 FastAPI / v4 Express)
+   so images flow into the CrispLens person + semantic index as
+   they're indexed locally.
+3. **Cloud-backup manifest + index sync** — extend the existing
+   `source_files` import (P12) so manifest deltas + optional
+   text/vector embeddings flow up to the VPS.  Today
+   cloud-backup is CLI-only; the smallest viable shape is a
+   thin FastAPI route in cloud-backup (`POST /manifest/push`,
+   `POST /embeddings/push`) that CrispSorter posts to, plus
+   `GET /manifest/pull` for the reverse direction.  Builds on
+   the existing SSH/rsync L3 retrieve path.
+4. **CLI search command** with the same filter set
+   cloud-backup's `search.py` exposes — free-text + size range +
+   date range + ext + owner + hash prefix + parent-dir prefix +
+   audio duration range + image camera make/model — mapping
+   onto the existing `SearchFilters` LanceDB-side scalar
+   predicate builder.
+
+Survey of existing infrastructure:
+
+- **cloud-backup** (`../cloud-backup`): CLI-only today
+  (no HTTP API).  Manifest format = SQLite `source_files` +
+  `archives` + `file_manifest` tables.  Tantivy shard
+  master_index holds full text only, no vector embeddings.
+  Retrieve is SSH + `7z` extraction, batch-returning a temp
+  file path.  CrispSorter already imports the manifest →
+  LanceDB L1 (P12) and shells out to `retrieve.py` for L3.
+- **CrispLens** (`../CrispLens`): v2 FastAPI + v4 Express both
+  expose `POST /api/ingest/import-processed` accepting
+  `{local_path, filename, thumbnail_b64, file_hash, file_size,
+  exif_data, faces: [{bbox, embedding[512], age, gender}]}` —
+  server runs FAISS person-matching only, no re-detection.
+  Plus `POST /api/ingest/upload-local` (multipart, server
+  detects + embeds).  Auth = session cookie set by
+  `POST /api/auth/login`.  Hash lookup via
+  `GET /api/images/by-hash/{sha256}` (already consumed by
+  CrispSorter's Tier-2 connector).
+
+#### Step 1 — Image L1/L2/L3 ingest-level enum
+- [ ] **~1-1.5 h** — mirror P13.6 Step 7c on the image side.
+  Add `IngestImageLevel { L1, L2, L3 }` to `IndexConfig`,
+  default `L3` (current behaviour).  Plumb through
+  `ExtractOptions.ingest_image_level`.  Dispatcher gate in
+  `extractors::mod.rs::OCR_IMAGE_EXTS` arm:
+    L1 — skip extractor entirely, write filesystem metadata
+         only (mirror the audio L1 path).
+    L2 — run `read_exif` only (no OCR), produce
+         ExtractedDocument with `image_exif: Some(...)` and
+         `full_text: ""`.  bg_ingest still writes the
+         `image_*` LanceDB columns added by v102.
+    L3 — full OCR + EXIF (current).
+  Settings UI: dropdown beneath the Audio L1/L2/L3 dropdown.
+  i18n keys EN+DE.
+
+#### Step 2 — Image L3-promote command
+- [ ] **~1 h** — `index_image_promote_l3(location_uri)` Tauri
+  command, mirroring `index_audio_promote_l3` (`e7905c5`).
+  Frontend "Re-OCR" button on search results with an empty
+  snippet AND an image extension.  Uses the standard
+  `pipeline.reingest_document` flow.
+
+#### Step 3 — `image_extraction_enabled` master switch + OCR-on-images Settings UI
+- [ ] **~45 min** — IndexConfig.image_extraction_enabled is
+  already a field (P13.6 Step 6 placeholder).  Wire it into
+  the OCR dispatch arm: when false, return "skipped by
+  Settings" the same way audio does.  Move the existing
+  `ocrEnabled` toggle into the Multimodal section
+  (cross-linked, not duplicated).  Image-OCR-tier dropdown
+  already exists; reposition under "Multimodal" cosmetic-only.
+
+#### Step 4 — CrispLens "Index Image Push" Tauri command
+- [ ] **~3-4 h** — new `crisplens_image_push(image_id)` Tauri
+  command (and bg_ingest hook).  Flow:
+    a. Resolve the LanceDB image row by `doc_id` →
+       `location_uri` + thumbnail bytes.
+    b. Hash the file; first call
+       `GET /api/images/by-hash/{sha256}` to dedup (server
+       may already have it).
+    c. On hit: lift the server's `people` / `tags` /
+       `ai_description` into the row's `metadata_json`.
+    d. On miss: POST `/api/ingest/import-processed` with our
+       local 512-D ArcFace embeddings (we'd need to compute
+       these via a new `faces::detect_and_embed(path)` Rust
+       helper bridging `crispembed` or `usls`).  Stretch: if
+       we don't have ArcFace locally yet, fall back to
+       `POST /api/ingest/upload-local` (multipart, server
+       runs detection).
+  Gated by IndexConfig.crisplens_image_enrichment_enabled
+  (new flag, default false).  Settings UI: checkbox in the
+  Multimodal section with a one-line note "Indexed images
+  also pushed to your CrispLens server".
+
+#### Step 5 — Cloud-backup HTTP API (cross-repo contribution)
+- [ ] **~4-6 h, split between two repos** — add a thin
+  FastAPI to cloud-backup with three routes:
+    `POST /api/manifest/push` — body `{rows: [{path, size,
+        hash, mtime, owner_id, ...}], cursor}`.  Upserts
+        into `source_files` table.  Returns `{accepted: N,
+        next_cursor: opaque}`.
+    `POST /api/index/push-embeddings` — body `{rows:
+        [{doc_id, chunk_index, text_embedding[1024], sparse_
+        json}], cursor}`.  Stores into a new
+        `chunk_embeddings` SQLite table (one new schema
+        migration on the cloud-backup side).  Optional —
+        server records what it has, can serve as a backup
+        of the local vector index.
+    `GET /api/manifest/pull?since={timestamp}&limit=200` —
+        returns `{rows: [...], max_indexed_at: int}`.  Mirrors
+        the existing CrispSorter sync-pull contract.
+  Auth: bearer token via `Authorization: Bearer {api_key}`
+  header (api_key managed server-side, matches the CrispLens
+  pattern).
+  CrispSorter side: extend the existing P11 SyncManager with
+  a `manifest_push` / `manifest_pull` mode that talks to
+  cloud-backup specifically (currently SyncManager is geared
+  at `crisp-index-server`).
+
+#### Step 6 — `crispsorter search` CLI subcommand
+- [ ] **~2-3 h** — new subcommand under the existing
+  `crispsorter` CLI with the full filter set:
+    `crispsorter search 'query'`
+    `  --min-size 100MB    --max-size 1GB`
+    `  --after 2024-01-01  --before 2025-06-01`
+    `  --ext pdf,docx,mp3`
+    `  --hash a1b2c3`
+    `  --folder-prefix /Users/foo/docs`
+    `  --owner alice`
+    `  --lang de`
+    `  --audio-duration-min 60     --audio-duration-max 1800`
+    `  --image-camera-make Apple`
+    `  --image-camera-model 'iPhone 15 Pro'`
+    `  --limit 50`
+    `  --format json | table`
+  Maps onto `SearchFilters` (`prefer_translated_lang` already
+  in P13.5 follow-ups).  Reuses the existing scalar-filter
+  SQL builder; the only new bits are the four audio + two
+  image filter knobs (lift these into `SearchFilters` first).
+  Output: `--format table` default, `--format json` for piping.
+  At least 6 unit tests pinning the filter SQL surface +
+  one end-to-end smoke test against a fixture LanceDB.
+
+#### Step 7 — Tests for the sync routes
+- [ ] **~2-3 h** — three layers:
+    a. **Unit tests (CrispSorter side)**: mock HTTP server
+       (existing `mockito` pattern) for `crisplens_image_push`
+       hit/miss/error paths + `manifest_push` accept/reject
+       paths.  ~8 tests.
+    b. **Live tests (CrispSorter side, env-gated)**:
+       `CRISPLENS_TEST_URL` / `CRISPLENS_TEST_API_KEY` like
+       the existing WebDAV tests, runs a full push round-trip
+       against a real CrispLens server.  `#[ignore]` by
+       default; CI doesn't run them.
+    c. **CrispLens side**: existing pytest covers the FastAPI
+       routes already; cross-repo unit tests for the new
+       `/manifest/push` route land in cloud-backup's repo
+       once Step 5 ships.
+
+#### Step 8 — Docs + tagging
+- [ ] **~1 h** — README capabilities table, HISTORY entry
+  per the usual format, cut v0.1.41 (or v0.2.0 if the
+  cloud-backup HTTP API counts as a major shift).
+
+#### Suggested execution order
+
+Cheap-first, like P13.6.  The cross-repo Step 5 is the
+biggest single piece and can sit late.
+
+1. **Steps 1 + 2 + 3** (image L1/L2/L3 + promote + master
+   switch) — ~3 h.  Closes the symmetry with the audio side
+   and lets users index a 50k-photo folder fast.
+2. **Step 6** (CLI search filters) — ~2-3 h.  Pure local
+   read; no network surface.  Big UX win.
+3. **Step 4** (CrispLens push) — ~3-4 h.  Needs the local
+   face-embedding helper (or accepts the fallback to
+   multipart upload).
+4. **Step 5** (cloud-backup API) — ~4-6 h, cross-repo PR.
+   Last because it touches another repo's lifecycle.
+5. **Step 7** (tests) interleaved with 4 + 5 so each route
+   lands with coverage.
+6. **Step 8** (docs + tag) closes the slice.
+
 ### P13.6 — Multimodal UX + L1/L2/L3 integration
 
 The 2026-05-12 P13.5 vertical landed full audio+video extraction
