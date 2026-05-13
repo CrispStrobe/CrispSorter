@@ -331,7 +331,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     use tauri::Manager;
 
     let app_state = app.state::<AppState>();
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -360,12 +360,19 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             crate::index::IngestAudioLevel::L2 => "l2".to_string(),
             crate::index::IngestAudioLevel::L3 => "l3".to_string(),
         };
+        // P13.7 Step 1+3 — image master switch + ingest level.
+        let image_extraction_enabled = g.config.image_extraction_enabled;
+        let ingest_image_level = match g.config.ingest_image_level {
+            crate::index::IngestImageLevel::L1 => "l1".to_string(),
+            crate::index::IngestImageLevel::L2 => "l2".to_string(),
+            crate::index::IngestImageLevel::L3 => "l3".to_string(),
+        };
         drop(g);
         let bg = app_state.bg_ingest.lock().await;
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level)
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -532,6 +539,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         translate_model: None,
         audio_extraction_enabled,
         ingest_audio_level: ingest_audio_level.clone(),
+        image_extraction_enabled,
+        ingest_image_level: ingest_image_level.clone(),
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

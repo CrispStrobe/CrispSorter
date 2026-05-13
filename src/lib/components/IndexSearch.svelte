@@ -109,6 +109,14 @@
     let transcribes = $state<Map<string, TranscribeState>>(new Map());
     /** Set of audio/video extensions for O(1) lookup in template. */
     const AUDIO_EXTS_SET_SEARCH = new Set<string>(AUDIO_EXTENSIONS);
+    /** Set of image extensions — kept in lockstep with
+     *  `extractors::OCR_IMAGE_EXTS`.  Used to decide whether to
+     *  surface the "Re-OCR" button on a row with an empty
+     *  snippet (P13.7 Step 2 follow-up to the audio Transcribe
+     *  button). */
+    const IMAGE_EXTS_SET_SEARCH = new Set<string>([
+        'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp',
+    ]);
     /** Heuristic: does this row look like an L1/L2 audio that hasn't
      *  been transcribed yet?  We don't surface audio_* through
      *  SearchResult today (display-only L2 columns); rely on the
@@ -121,6 +129,15 @@
         const snip = (r.snippet ?? '').trim();
         return snip.length < 20;
     }
+    /** Parallel heuristic for images — surfaces the "Re-OCR"
+     *  button when an image row has no recognisable OCR text.
+     *  Same caveats as looksUntranscribed. */
+    function looksUnOcred(r: SearchResult): boolean {
+        const ext = (r.ext ?? '').toLowerCase();
+        if (!IMAGE_EXTS_SET_SEARCH.has(ext)) return false;
+        const snip = (r.snippet ?? '').trim();
+        return snip.length < 20;
+    }
     async function handleTranscribe(r: SearchResult): Promise<void> {
         const key = r.doc_id;
         const next = new Map(transcribes);
@@ -128,6 +145,30 @@
         transcribes = next;
         try {
             const stats = await invoke<{ chunk_count: number }>('index_audio_promote_l3', {
+                locationUri: r.location_uri,
+            });
+            const after = new Map(transcribes);
+            after.set(key, { loading: false, done: true, chunks: stats.chunk_count });
+            transcribes = after;
+        } catch (e: any) {
+            const after = new Map(transcribes);
+            after.set(key, { loading: false, error: String(e?.message ?? e) });
+            transcribes = after;
+        }
+    }
+
+    /** P13.7 Step 2 — image L3 promote.  Shares the `transcribes`
+     *  state Map because the per-row UI surface mirrors the audio
+     *  one (loading / done / error transitions).  Backend command
+     *  differs; user-visible label says "Re-OCR" instead of
+     *  "Transcribe". */
+    async function handleReOcr(r: SearchResult): Promise<void> {
+        const key = r.doc_id;
+        const next = new Map(transcribes);
+        next.set(key, { loading: true });
+        transcribes = next;
+        try {
+            const stats = await invoke<{ chunk_count: number }>('index_image_promote_l3', {
                 locationUri: r.location_uri,
             });
             const after = new Map(transcribes);
@@ -667,6 +708,50 @@
                          (no text to translate).  Hidden when the result
                          is in the user's target language already (no
                          translation needed). -->
+                    <!-- P13.7 Step 2: Re-OCR surface for image
+                         rows ingested at L1/L2.  Same Map-state +
+                         transition shape as the Transcribe surface
+                         below; the underlying Tauri command differs
+                         (`index_image_promote_l3`) but the UX is
+                         identical. -->
+                    {#if looksUnOcred(r)}
+                        {@const tx = transcribes.get(r.doc_id)}
+                        <div class="translate-surface" style="margin-top:6px;">
+                            {#if !tx}
+                                <button
+                                    type="button"
+                                    class="translate-btn"
+                                    onclick={() => handleReOcr(r)}
+                                    title="Run OCR + EXIF probe on this image (image L3 promote)"
+                                >
+                                    Re-OCR (.{r.ext})
+                                </button>
+                            {:else if tx.loading}
+                                <div class="translate-loading">
+                                    <span class="translate-spinner" aria-hidden="true"></span>
+                                    Running OCR…
+                                </div>
+                            {:else if tx.error}
+                                <div class="translate-error">
+                                    Re-OCR failed: {tx.error}
+                                    <button
+                                        type="button"
+                                        class="translate-retry"
+                                        onclick={() => handleReOcr(r)}
+                                    >
+                                        Retry
+                                    </button>
+                                </div>
+                            {:else if tx.done}
+                                <div class="translate-result">
+                                    <div class="translate-meta">
+                                        <span class="translate-cached">OCR'd → {tx.chunks ?? 0} chunks. Re-run the search to see the new content.</span>
+                                    </div>
+                                </div>
+                            {/if}
+                        </div>
+                    {/if}
+
                     <!-- P13.6 Step 8: Transcribe surface for audio
                          rows that look untranscribed (L1 or L2).
                          Disappears once the promote returns; the

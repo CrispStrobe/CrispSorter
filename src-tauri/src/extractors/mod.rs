@@ -218,6 +218,19 @@ pub struct ExtractOptions {
     /// dispatcher matches on the canonical "l1" / "l2" / "l3"
     /// kebab-case values.
     pub ingest_audio_level: String,
+    /// P13.7 Step 3 — image-extraction master switch.  When
+    /// `false`, the OCR dispatch arm short-circuits with an
+    /// explicit "skipped by Settings" error so bg_ingest writes
+    /// the file as L1 metadata-only.  Default `true` preserves
+    /// pre-P13.7 behaviour for legacy callers.  bg_ingest reads
+    /// this from `IndexConfig.image_extraction_enabled`.
+    pub image_extraction_enabled: bool,
+    /// P13.7 Step 1 — how deeply to ingest images.  `"l1"`
+    /// short-circuits the extractor entirely; `"l2"` runs the
+    /// kamadak-exif probe but skips OCR; `"l3"` (default) runs
+    /// EXIF + OCR.  Plumbed as a String matching the audio enum
+    /// pattern (canonical kebab-case `"l1"` / `"l2"` / `"l3"`).
+    pub ingest_image_level: String,
 }
 
 impl Default for ExtractOptions {
@@ -238,6 +251,9 @@ impl Default for ExtractOptions {
             // P13.6 Step 7c default — full pipeline.  bg_ingest
             // overrides per IndexConfig.ingest_audio_level.
             ingest_audio_level: "l3".to_string(),
+            // P13.7 default — image extraction ON, L3 full pipeline.
+            image_extraction_enabled: true,
+            ingest_image_level: "l3".to_string(),
         }
     }
 }
@@ -262,6 +278,9 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             // IndexConfig flips it off.
             audio_extraction_enabled: true,
             ingest_audio_level: "l3".to_string(),
+            // P13.7 — image side parallel defaults.
+            image_extraction_enabled: true,
+            ingest_image_level: "l3".to_string(),
         },
     )
 }
@@ -300,22 +319,49 @@ pub fn extract_text_from_path_with_opts(
             doc.ext = ext.clone();
             doc
         }),
-        e if OCR_IMAGE_EXTS.contains(&e) && opts.try_ocr => {
+        e if OCR_IMAGE_EXTS.contains(&e) => {
             // PLAN P7.8 — tiered OCR for images.
-            // Tier 3 (PaddleOCR, best quality, requires --features paddle-ocr)
-            // → Tier 2 (ocrs, pure Rust, Latin-script)
-            // → Tier 1 (Tesseract, system install).
-            let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
-            let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
-
-            // P13.6 Step 9 — read EXIF once per image, regardless of
-            // which OCR tier fires.  read_exif is cheap (kamadak-exif
-            // streams the header without touching pixel data) and
-            // best-effort: a failed parse returns `None` so non-EXIF
-            // images (PNG without metadata, re-saved JPEGs) flow
-            // through cleanly with image_exif: None.
+            // P13.7 Step 1+3 — image-side L1/L2/L3 + master-switch
+            // gate, parallel to the audio dispatch arm.
+            //
+            //   L1 OR image_extraction_enabled=false → skip
+            //                                          (filesystem
+            //                                          metadata only).
+            //   L2 → EXIF probe only; full_text stays "".  Still
+            //        populates image_* columns.
+            //   L3 (default) → EXIF + OCR (when opts.try_ocr).
+            //                  Without try_ocr, L3 behaves like L2 —
+            //                  the OCR-tier ladder doesn't fire.
+            let level = opts.ingest_image_level.as_str();
+            if level == "l1" || !opts.image_extraction_enabled {
+                return Err(anyhow::anyhow!(
+                    "image extraction skipped at L1 by Settings; skipped {}",
+                    path.display()
+                ));
+            }
+            // EXIF runs unconditionally for L2 + L3.  Cheap; failed
+            // parses come back as None.
             let image_exif = crate::images::exif::read_exif(path).ok();
 
+            if level == "l2" || !opts.try_ocr {
+                // L2 or "L3 but OCR off" — return an empty-text doc
+                // with image_exif populated.  bg_ingest writes the
+                // image_* columns either way.
+                return Ok(ExtractedDocument {
+                    full_text: String::new(),
+                    headings: Vec::new(),
+                    ext: ext.clone(),
+                    language: None,
+                    translated_text: None,
+                    translated_to_lang: None,
+                    audio: None,
+                    image_exif,
+                });
+            }
+
+            // L3 + OCR enabled: tier ladder.
+            let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
+            let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
             let mut doc = if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
                 match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
                     Ok(d) => d,

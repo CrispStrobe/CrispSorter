@@ -277,6 +277,37 @@ pub struct IndexConfig {
     /// "Transcribe" search-result action (Step 8).
     #[serde(default)]
     pub ingest_audio_level: IngestAudioLevel,
+    /// P13.7 Step 1 — how deep the index goes on image files.
+    /// `L1` writes only filesystem metadata; `L2` runs the EXIF
+    /// probe (kamadak-exif) and populates the image_* columns
+    /// without OCR; `L3` (default) runs OCR + EXIF.  Promote via
+    /// the "Re-OCR" search-result action (Step 2).  Parallel
+    /// shape to `ingest_audio_level`.
+    #[serde(default)]
+    pub ingest_image_level: IngestImageLevel,
+}
+
+/// P13.7 Step 1 — how deeply bg_ingest processes images.
+/// Parallel to [`IngestAudioLevel`].  Default L3 preserves the
+/// existing OCR-on-image behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IngestImageLevel {
+    /// Filesystem metadata only.  Image extractor is skipped
+    /// entirely — no EXIF, no OCR.  Fastest path; rows are
+    /// findable by filename / path but image_* + full_text stay
+    /// NULL.
+    L1,
+    /// Run the EXIF probe only (kamadak-exif streams the header
+    /// without touching pixel data).  Populates image_camera_*
+    /// / image_taken_at_unix / image_iso.  No OCR — full_text
+    /// stays "".
+    L2,
+    /// Full pipeline: EXIF + OCR (Tier 3 paddle → Tier 2 ocrs →
+    /// Tier 1 tesseract per `bg_ingest.ocr_tier`).  Default,
+    /// matches the pre-P13.7 behaviour.
+    #[default]
+    L3,
 }
 
 /// P13.6 Step 7c — how deeply bg_ingest processes audio/video.
@@ -397,6 +428,7 @@ impl Default for IndexConfig {
             image_extraction_enabled: default_image_extraction_enabled(),
             image_indexing_enabled: false,
             ingest_audio_level: IngestAudioLevel::default(),
+            ingest_image_level: IngestImageLevel::default(),
         }
     }
 }
