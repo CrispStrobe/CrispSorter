@@ -400,6 +400,58 @@ impl LocalIndex {
         Ok(batches)
     }
 
+    /// Same as [`Self::fetch_by_doc_ids`] but appends `extra_sql` to the
+    /// `doc_id IN (...) AND chunk_index = 0` predicate via ` AND `.  Used
+    /// by the CLI search-with-filters path (P13.7 Step 6): the BM25 stage
+    /// produces a candidate doc_id set, the filters get pushed to LanceDB
+    /// as a SQL fragment instead of post-hoc Rust filtering.  Empty
+    /// `extra_sql` is a no-op.
+    pub async fn fetch_by_doc_ids_filtered(
+        &self,
+        doc_ids: &[String],
+        extra_sql: Option<&str>,
+    ) -> Result<Vec<RecordBatch>> {
+        if doc_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let quoted: Vec<String> = doc_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect();
+        let mut filter = format!(
+            "doc_id IN ({}) AND chunk_index = 0",
+            quoted.join(", ")
+        );
+        if let Some(extra) = extra_sql {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() {
+                filter.push_str(" AND ");
+                filter.push_str(trimmed);
+            }
+        }
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(filter)
+            .limit(doc_ids.len())
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        Ok(batches)
+    }
+
+    /// Wrapper around [`Self::fetch_by_doc_ids_filtered`] that returns
+    /// the converted SearchResult vec.
+    pub async fn fetch_search_results_by_ids_filtered(
+        &self,
+        doc_ids: &[String],
+        extra_sql: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
+        let batches = self.fetch_by_doc_ids_filtered(doc_ids, extra_sql).await?;
+        record_batches_to_search_results(&batches)
+    }
+
     /// Fetch `SearchResult`s for a set of doc IDs — combines `fetch_by_doc_ids`
     /// with the private batch→result conversion. Useful in CLI and test contexts
     /// that can't call the private `record_batches_to_search_results` directly.
