@@ -1892,6 +1892,11 @@ pub struct ManifestPushCandidate {
     pub full_text:     Option<String>,
     pub indexed_at:    i64,
     pub metadata_json: Option<String>,
+    /// Stage K — when set, the SyncManager push routes this row
+    /// to the VPS shard owning the `collection_id`.  Pulled from
+    /// the local row's `tags` (look for `collection:<id>`) at
+    /// projection time; `None` falls back to sha-prefix routing.
+    pub collection_id: Option<String>,
 }
 
 /// P13.7 Stage B — projection of a chunk row for the
@@ -1927,7 +1932,19 @@ fn record_batches_to_push_candidates(
         // indexed_at is Timestamp(Millisecond, None), not Int64.
         let indexed_at = ts_ms_col_opt(batch, "indexed_at");
         let meta_json  = str_col_opt(batch, "metadata_json");
+        // Stage K — the LanceDB schema doesn't have a top-level
+        // `collection_id` column (it'd be a schema migration);
+        // we lift it out of metadata_json's `collection_id` key
+        // when present.  L1 + L3 ingest both write the same
+        // metadata_json shape, so this works uniformly.
         for i in 0..batch.num_rows() {
+            let meta = str_col_val_opt(&meta_json, i);
+            let collection_id = meta.as_deref().and_then(|s| {
+                serde_json::from_str::<serde_json::Value>(s).ok()
+                    .and_then(|v| v.get("collection_id")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string()))
+            });
             out.push(ManifestPushCandidate {
                 doc_id:        str_val(doc_id, i),
                 location_uri:  str_val(loc, i),
@@ -1942,7 +1959,8 @@ fn record_batches_to_push_candidates(
                 parent_dir:    str_col_val_opt(&parent, i),
                 full_text:     str_col_val_opt(&full_text, i),
                 indexed_at:    indexed_at.map(|c| c.value(i)).unwrap_or(0),
-                metadata_json: str_col_val_opt(&meta_json, i),
+                metadata_json: meta,
+                collection_id,
             });
         }
     }

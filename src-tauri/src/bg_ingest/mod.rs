@@ -620,15 +620,44 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
                 image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
             };
-            // P13.7 Stage F — capture the wire-shape snapshot BEFORE
-            // ingest_document consumes `raw`.  Enqueue to the outbox
-            // *after* the local write succeeds so a crash between
-            // the local write and the enqueue at worst means a
-            // missed push — which the user can recover by manually
-            // running `crispsorter sync cloud-backup push-manifest`
-            // to walk the LanceDB documents table.
+            // P13.7 Stage F + N — capture the wire-shape snapshot
+            // BEFORE ingest_document consumes `raw`.  If the auto-
+            // partition map (Stage N) has an entry for this file's
+            // path, overwrite the snapshot's `collection_id` with
+            // the map's choice so related files land on the same
+            // VPS shard.  Manual `collection:<id>` tags still win
+            // (`from_raw_document` reads them first).
             let cb_row = if cb_auto_push_enabled {
-                Some(crate::sync::cloud_backup::ManifestRow::from_raw_document(&raw))
+                let mut row = crate::sync::cloud_backup::ManifestRow::from_raw_document(&raw);
+                // Only consult the map when no manual tag was set.
+                if row.collection_id.is_none() {
+                    if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
+                        if let Ok(map) = crate::sync::partition::PartitionMap::open(&data_dir) {
+                            // The map is keyed by (root_path, file_path);
+                            // we don't carry the root through bg_ingest,
+                            // so probe each watched root as the prefix.
+                            // Linear scan is fine: watch roots are O(1-10).
+                            let watch_roots: Vec<std::path::PathBuf> = {
+                                let w = app_state.watcher.lock().await;
+                                w.list().into_iter().map(std::path::PathBuf::from).collect()
+                            };
+                            let file_path = std::path::PathBuf::from(
+                                crate::images::tauri_commands::location_uri_to_local_path(&row.path)
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| row.path.clone())
+                            );
+                            for root in &watch_roots {
+                                if file_path.starts_with(root) {
+                                    if let Some(cid) = map.lookup(root, &file_path) {
+                                        row.collection_id = Some(cid);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(row)
             } else { None };
             let result = pipeline
                 .ingest_document(raw)
