@@ -305,6 +305,16 @@
     let indexCloudBackupPushManifests      = $state<boolean>(false);
     let indexCloudBackupPushEmbeddings     = $state<boolean>(false);
     let indexCloudBackupPullManifests      = $state<boolean>(false);
+    /** P13.7 Stage I — tiered-cache opt-in.  When true, pulls
+     *  include the body text; when false (default), metadata-only. */
+    let indexCloudBackupPullFullText       = $state<boolean>(false);
+    /** P13.7 Stage N — partition controls.  These don't persist
+     *  per-run (the partition map itself is the persistent
+     *  artifact); the form just remembers the user's last picks. */
+    let cloudBackupPartitionRoot   = $state<string>('');
+    let cloudBackupPartitionMax    = $state<number>(64);
+    let cloudBackupPartitionDepth  = $state<number>(1);
+    let cloudBackupPartitionStatus = $state<string>('');
     /** Last status payload (refreshed when the panel opens or after
      *  a save).  Drives the inline "connected to cloud-backup
      *  0.1.0" hint + the watermark display. */
@@ -799,6 +809,10 @@
         indexCloudBackupPushManifests  = await getSetting('indexCloudBackupPushManifests', false) as boolean;
         indexCloudBackupPushEmbeddings = await getSetting('indexCloudBackupPushEmbeddings', false) as boolean;
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
+        indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
+        cloudBackupPartitionRoot       = await getSetting('cloudBackupPartitionRoot', '');
+        cloudBackupPartitionMax        = await getSetting('cloudBackupPartitionMax', 64) as number;
+        cloudBackupPartitionDepth      = await getSetting('cloudBackupPartitionDepth', 1) as number;
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
@@ -1085,6 +1099,10 @@
         await saveSetting('indexCloudBackupPushManifests',  indexCloudBackupPushManifests);
         await saveSetting('indexCloudBackupPushEmbeddings', indexCloudBackupPushEmbeddings);
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
+        await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
+        await saveSetting('cloudBackupPartitionRoot',       cloudBackupPartitionRoot);
+        await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
+        await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
         await saveSetting('indexDataDir',       indexDataDir);
         llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
         llmClient.noThinking = noThinking;
@@ -1231,6 +1249,7 @@
                     cloud_backup_push_manifests_enabled:     indexCloudBackupPushManifests,
                     cloud_backup_push_embeddings_enabled:    indexCloudBackupPushEmbeddings,
                     cloud_backup_pull_manifests_enabled:     indexCloudBackupPullManifests,
+                    cloud_backup_pull_full_text_enabled:     indexCloudBackupPullFullText,
                 }
             });
             if (indexEnabled) {
@@ -1285,6 +1304,32 @@
             await refreshCloudBackupStatus();
         } catch (e: any) {
             indexCloudBackupTokenSavedMsg = `Error: ${e}`;
+        }
+    }
+
+    /** P13.7 Stage N — trigger sync_cb_partition with the form's
+     *  current root / max-shards / group-depth values.  Reports
+     *  the resulting num_files + num_shards inline so the operator
+     *  sees the partition map size at a glance. */
+    async function runCloudBackupPartition() {
+        const root = cloudBackupPartitionRoot.trim();
+        if (!root) {
+            cloudBackupPartitionStatus = 'Set a watched root path first.';
+            return;
+        }
+        cloudBackupPartitionStatus = 'Partitioning…';
+        try {
+            const r = await invoke<any>('sync_cb_partition', {
+                rootPath:   root,
+                maxShards:  Number(cloudBackupPartitionMax) || 64,
+                groupDepth: Number(cloudBackupPartitionDepth) || 1,
+            });
+            cloudBackupPartitionStatus =
+                `partitioned ${r.num_files} file(s) into ${r.num_shards} shard(s) ` +
+                `(max ${r.max_shards}, depth ${r.group_depth}). ` +
+                `sample: ${(r.sample_collections ?? []).slice(0, 3).join(', ')}…`;
+        } catch (e: any) {
+            cloudBackupPartitionStatus = `Error: ${e}`;
         }
     }
 
@@ -2795,6 +2840,48 @@
                     <span>{i18n.t.settings.index.cloud_backup_pull_manifests ?? 'Pull manifests'}</span>
                 </label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_pull_manifests_hint ?? ''}</p>
+
+                <!-- Stage I — opt into body text on pull (off by
+                     default = tiered-cache mode). -->
+                <label class="cb-row" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                    <input type="checkbox" bind:checked={indexCloudBackupPullFullText} />
+                    <span>{i18n.t.settings.index.cloud_backup_pull_full_text ?? 'Pull body text alongside metadata'}</span>
+                </label>
+                <p class="hint">{i18n.t.settings.index.cloud_backup_pull_full_text_hint ?? ''}</p>
+
+                <!-- Stage N — volume-proportional auto-partition.
+                     Pure operator surface; doesn't persist into
+                     IndexConfig (the partition_map.db is the
+                     persistent artefact). -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <strong>{i18n.t.settings.index.cloud_backup_partition ?? 'Auto-partition shards'}</strong>
+                    <p class="hint" style="margin-top:4px;">
+                        {i18n.t.settings.index.cloud_backup_partition_hint ?? ''}
+                    </p>
+                    <label for="cb-part-root" style="margin-top:8px;">Watched root</label>
+                    <input id="cb-part-root" type="text"
+                           bind:value={cloudBackupPartitionRoot}
+                           placeholder="/path/to/watched/folder" />
+                    <div style="display:flex; gap:12px; margin-top:8px; align-items:end;">
+                        <div style="flex:1;">
+                            <label for="cb-part-max">{i18n.t.settings.index.cloud_backup_partition_max ?? 'Max shards'}</label>
+                            <input id="cb-part-max" type="number" min="1" max="256"
+                                   bind:value={cloudBackupPartitionMax} />
+                        </div>
+                        <div style="flex:1;">
+                            <label for="cb-part-depth">{i18n.t.settings.index.cloud_backup_partition_depth ?? 'Group depth'}</label>
+                            <input id="cb-part-depth" type="number" min="1" max="6"
+                                   bind:value={cloudBackupPartitionDepth} />
+                        </div>
+                        <button type="button" class="btn" onclick={runCloudBackupPartition}
+                                disabled={!cloudBackupPartitionRoot.trim()}>
+                            {i18n.t.settings.index.cloud_backup_partition_run ?? 'Re-partition now'}
+                        </button>
+                    </div>
+                    {#if cloudBackupPartitionStatus}
+                        <p class="hint" style="margin-top:6px;">{cloudBackupPartitionStatus}</p>
+                    {/if}
+                </div>
 
                 <!-- Compact status line — version + watermarks.  Refreshes
                      on save and on initial mount via refreshCloudBackupStatus. -->

@@ -76,6 +76,12 @@ pub struct ManifestRow {
     /// into the FTS5 virtual table behind `/api/search`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_text:  Option<String>,
+    /// Stage K — topical-locality sharding hint.  Set this per
+    /// logical group ("research-task-X") so related files land
+    /// on the same Lance/SQLite shard on the VPS.  `None` falls
+    /// back to sha-prefix sharding (the Stage G default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_id: Option<String>,
 }
 
 impl ManifestRow {
@@ -97,6 +103,14 @@ impl ManifestRow {
         };
         let mtime_unix = raw.mtime_unix.map(|s| s as f64).unwrap_or(0.0);
         let size_bytes = raw.file_size.unwrap_or(0);
+        // Stage K — pick a collection_id from raw.tags when one
+        // is tagged via the convention `collection:<id>`.  Lets
+        // a user mark a batch of docs (e.g. all files from one
+        // research task) by adding that tag at ingest time;
+        // bg_ingest's auto-push then routes them to the same
+        // VPS shard.  `None` falls back to sha-prefix routing.
+        let collection_id = raw.tags.iter()
+            .find_map(|t| t.strip_prefix("collection:").map(str::to_string));
         ManifestRow {
             path,
             size_bytes,
@@ -111,6 +125,7 @@ impl ManifestRow {
             author:     raw.author.clone(),
             year:       raw.year,
             full_text:  if raw.full_text.is_empty() { None } else { Some(raw.full_text.clone()) },
+            collection_id,
         }
     }
 }
@@ -155,6 +170,11 @@ pub struct PullRow {
     pub indexed_at: i64,
     #[serde(default)]
     pub archived_in: Option<i64>,
+    /// Stage K — echoed back so the client can preserve the
+    /// shard-routing key when promoting a pulled row to a local
+    /// cache write.
+    #[serde(default)]
+    pub collection_id: Option<String>,
 }
 
 /// One row returned by `/api/search`.  Same payload shape as
@@ -304,6 +324,10 @@ pub struct HybridSearchFilters {
     pub year_max: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexed_after_ms: Option<i64>,
+    /// Stage K — narrow to one or more collection_id values.
+    /// "show me everything in this research task" queries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collection_ids: Vec<String>,
     #[serde(default)]
     pub require_bytes_local: bool,
 }
@@ -358,6 +382,10 @@ pub struct HybridSearchHit {
     pub score_text:    Option<f32>,
     #[serde(default)]
     pub score_vector:  Option<f32>,
+    /// Stage K — surfaced so clients can group results by
+    /// research task / corpus.
+    #[serde(default)]
+    pub collection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1470,6 +1498,7 @@ mod tests {
             title: None,
             author: None,
             year: None,
+            collection_id: None,
         }
     }
 }
@@ -1529,6 +1558,7 @@ mod live_tests {
             parent_dir: "/test".into(),
             language: None, title: None, author: None, year: None,
             full_text: None,
+            collection_id: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push");
@@ -1576,6 +1606,7 @@ mod live_tests {
             parent_dir: "/test".into(),
             language: None, title: None, author: None, year: None,
             full_text: Some(body.clone()),
+            collection_id: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push with full_text");
@@ -1648,6 +1679,7 @@ mod live_tests {
             author: None,
             year: None,
             full_text: Some(body.clone()),
+            collection_id: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&push_row))
             .await
@@ -1739,6 +1771,7 @@ mod live_tests {
             parent_dir: "/test".into(),
             language: None, title: None, author: None, year: None,
             full_text: None,
+            collection_id: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push prelude");
@@ -1819,6 +1852,7 @@ mod live_tests {
             author: None,
             year: Some(2024),
             full_text: Some(body.clone()),
+            collection_id: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push");
@@ -1969,6 +2003,7 @@ mod live_tests {
             parent_dir: "/test".into(),
             language: None, title: None, author: None, year: None,
             full_text: Some(format!("outbox sentinel {unique}")),
+            collection_id: None,
         };
         let payload = serde_json::to_string(&row).expect("serialise row");
 

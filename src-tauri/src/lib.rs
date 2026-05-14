@@ -2292,6 +2292,62 @@ pub fn run() {
                     );
                 }
                 app_log!("info", "Loaded persisted IndexConfig from {}", data_dir.display());
+
+                // P13.7 Stage J — background drain task for the
+                // cb_manifest_push outbox.  Runs every 30s while
+                // the app is open AND the user has opted in via
+                // `cloud_backup_push_manifests_enabled`.  Drain is
+                // a no-op when the outbox is empty or the URL/
+                // token is missing — cheap to leave running.
+                //
+                // Snapshot the handle so the task can read state
+                // without owning it; tokio::spawn lifts ownership
+                // into the runtime.
+                let drain_handle = app.handle().clone();
+                tokio::spawn(async move {
+                    use std::time::Duration;
+                    // 30s feels right: fresh enough that a user
+                    // who pushes a manifest then opens cloud-backup
+                    // search sees the row within seconds; not so
+                    // tight that an idle app burns CPU.  Operators
+                    // who want immediate flush can hit the
+                    // `crispsorter sync cloud-backup drain` CLI
+                    // or the Settings → "Sync now" button.
+                    let mut ticker = tokio::time::interval(Duration::from_secs(30));
+                    ticker.set_missed_tick_behavior(
+                        tokio::time::MissedTickBehavior::Skip,
+                    );
+                    loop {
+                        ticker.tick().await;
+                        if let Some(state) = drain_handle.try_state::<AppState>() {
+                            let (enabled, url_opt) = {
+                                let idx = state.index.lock().await;
+                                (
+                                    idx.config.cloud_backup_push_manifests_enabled,
+                                    idx.config.cloud_backup_url.clone(),
+                                )
+                            };
+                            if !enabled { continue; }
+                            let Some(url) = url_opt.filter(|s| !s.is_empty()) else { continue };
+                            let Ok(Some(token)) = crate::sync::secret::get_token_for_url(&url) else { continue };
+                            let Ok(cli) = crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) else { continue };
+                            let data_dir = state.data_dir.lock().await.clone();
+                            let Some(data_dir) = data_dir else { continue };
+                            let Ok(mgr) = crate::sync::SyncManager::open(&data_dir) else { continue };
+                            // Drain up to 200 entries per tick; if more
+                            // accumulate, the next tick picks them up.
+                            match mgr.drain_cb_outbox(&cli, 200).await {
+                                Ok((pushed, failed)) if pushed > 0 || failed > 0 => {
+                                    app_log!(
+                                        "info",
+                                        "cb-api outbox drain: pushed={pushed} failed={failed}"
+                                    );
+                                }
+                                _ => {}  // nothing to drain or transient error
+                            }
+                        }
+                    }
+                });
             }
             Ok(())
         })
@@ -2359,6 +2415,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_embed_query,
             sync::tauri_commands::sync_cb_embed_models,
             sync::tauri_commands::sync_cb_v2_search,
+            sync::tauri_commands::sync_cb_partition,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,

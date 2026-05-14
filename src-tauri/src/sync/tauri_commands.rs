@@ -413,6 +413,7 @@ pub async fn sync_cb_manifest_push(
             author: c.author.clone(),
             year: c.year,
             full_text: c.full_text.clone(),
+            collection_id: c.collection_id.clone(),
         });
         if rows.len() >= limit { break; }
     }
@@ -556,6 +557,96 @@ pub async fn sync_cb_manifest_pull(
         "applied": applied,
         "watermark": new_watermark,
         "has_more": pulled.has_more,
+    }))
+}
+
+/// Stage N — recompute the volume-proportional partition map for
+/// `root_path`.  Walks the local LanceDB for L1 rows under the
+/// root, sums sizes per group (depth-N path prefix), allocates
+/// shards proportional to volume capped at `max_shards`, writes
+/// the per-file `collection_id` assignments to the persistent
+/// partition map at `<data-dir>/partition_map.db`.
+///
+/// Returns `{root, num_files, num_shards, sample_collections}`.
+/// The next `sync_cb_manifest_push` (auto or manual) picks up the
+/// new assignments via the bg_ingest lookup hook.
+#[tauri::command]
+pub async fn sync_cb_partition(
+    state: State<'_, AppState>,
+    root_path: String,
+    max_shards: Option<usize>,
+    group_depth: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    use crate::sync::partition::{
+        partition_assignments, FileSize, PartitionMap, PartitionOptions,
+    };
+
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let local = {
+        let idx = state.index.lock().await;
+        idx.local.clone()
+    };
+    let local = local.ok_or("Local index not initialised")?;
+
+    let root_path = std::path::PathBuf::from(&root_path);
+    // Scan all documents — partition is a periodic full-scan, not
+    // incremental.  At catalog scale (≤ 10M docs) this is one
+    // long-ish LanceDB query but fine to run on a "re-partition"
+    // button.
+    let candidates = local.list_documents_for_push(0, 10_000_000)
+        .await.map_err(|e| e.to_string())?;
+
+    // Filter to rows whose `path` is under the given root, and lift
+    // (path, size) tuples for the algorithm.  Size comes from the
+    // metadata_json `fs_size` field; missing → 0 (still counted,
+    // just doesn't tilt the partition).
+    let mut files: Vec<FileSize> = Vec::new();
+    for c in &candidates {
+        let meta = c.metadata_json.as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+        // Path resolution: prefer the fs_path metadata; fall back
+        // to location_uri stripped of the scheme.
+        let raw_path = meta.get("fs_path").and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| c.location_uri.clone());
+        let file_path = std::path::PathBuf::from(&raw_path);
+        if file_path.starts_with(&root_path) {
+            files.push(FileSize { path: file_path, size: fs_size });
+        }
+    }
+
+    let opts = PartitionOptions {
+        max_shards: max_shards.unwrap_or(64).max(1),
+        group_depth: group_depth.unwrap_or(1).max(1),
+        min_fraction: 0.25,
+    };
+    let assignments = partition_assignments(&root_path, &files, &opts);
+    let num_files = assignments.len();
+    let num_shards = assignments.iter()
+        .map(|a| a.collection_id.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let sample: Vec<String> = assignments.iter()
+        .take(8)
+        .map(|a| a.collection_id.clone())
+        .collect();
+
+    // Persist.
+    let map = PartitionMap::open(&data_dir).map_err(|e| e.to_string())?;
+    map.write_batch(&assignments).map_err(|e| e.to_string())?;
+    map.record_run(&root_path, num_files, num_shards, &opts)
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "root":                root_path.display().to_string(),
+        "num_files":           num_files,
+        "num_shards":          num_shards,
+        "max_shards":          opts.max_shards,
+        "group_depth":         opts.group_depth,
+        "sample_collections":  sample,
     }))
 }
 

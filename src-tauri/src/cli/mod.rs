@@ -307,6 +307,28 @@ enum CloudBackupCmd {
     /// /api/index/embed-query route accepts + whether fastembed is
     /// installed at all.
     EmbedModels,
+    /// Stage N — recompute the volume-proportional partition map
+    /// for the given watched root.  Walks the local LanceDB for
+    /// L1 rows under the root, sums per-subfolder bytes, allocates
+    /// ≤ `--max-shards` partitions weighted by volume, persists
+    /// the (file → collection_id) map at
+    /// `<data-dir>/partition_map.db`.  Subsequent cb-api pushes
+    /// auto-tag rows from the map so related files land on the
+    /// same VPS shard.
+    Partition {
+        /// Watched root to partition under (e.g. `/home/u/Documents`).
+        #[arg(long)]
+        root: PathBuf,
+        /// Maximum shards to allocate across this root.  Default 64.
+        #[arg(long = "max-shards", default_value_t = 64)]
+        max_shards: usize,
+        /// Path-depth at which subfolders become "groups".  `1`
+        /// (default) groups by the first segment under the root
+        /// (e.g. `/root/Authors/...` → group `Authors`).  Bump
+        /// to `2` for finer locality.
+        #[arg(long = "group-depth", default_value_t = 1)]
+        group_depth: usize,
+    },
     /// Stage I — hybrid LanceDB search.  Combines metadata filters
     /// + FTS over `full_text` + vector k-NN (optionally server-
     /// side inference).  Single-shot escalation when local search
@@ -338,6 +360,10 @@ enum CloudBackupCmd {
         /// Substring match against the `author` column.
         #[arg(long)]
         author: Option<String>,
+        /// Restrict to one or more `collection_id` values
+        /// ("research-task-X").  Repeatable / comma-separated.
+        #[arg(long = "collection", value_delimiter = ',')]
+        collection_ids: Vec<String>,
         #[arg(long = "year-min")]
         year_min: Option<i32>,
         #[arg(long = "year-max")]
@@ -2299,6 +2325,7 @@ async fn cmd_sync_cloud_backup(
                     author: c.author.clone(),
                     year: c.year,
                     full_text: c.full_text.clone(),
+                    collection_id: c.collection_id.clone(),
                 });
                 if rows.len() >= limit { break; }
             }
@@ -2569,6 +2596,75 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
+        CloudBackupCmd::Partition { root, max_shards, group_depth } => {
+            use crate::sync::partition::{
+                partition_assignments, FileSize, PartitionMap, PartitionOptions,
+            };
+            let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            // Full-scan: partition is a periodic re-compute, not
+            // incremental.  At catalog scale (≤ 10M rows) this is
+            // one Lance query.
+            let candidates = local.list_documents_for_push(0, 10_000_000)
+                .await.map_err(|e| e.to_string())?;
+            let mut files: Vec<FileSize> = Vec::new();
+            for c in &candidates {
+                let meta = c.metadata_json.as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+                let raw_path = meta.get("fs_path").and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| c.location_uri.clone());
+                let file_path = std::path::PathBuf::from(&raw_path);
+                if file_path.starts_with(&root) {
+                    files.push(FileSize { path: file_path, size: fs_size });
+                }
+            }
+            let opts = PartitionOptions {
+                max_shards: max_shards.max(1),
+                group_depth: group_depth.max(1),
+                min_fraction: 0.25,
+            };
+            let assignments = partition_assignments(&root, &files, &opts);
+            let num_files = assignments.len();
+            let num_shards = assignments.iter()
+                .map(|a| a.collection_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            let map = PartitionMap::open(data_dir).map_err(|e| e.to_string())?;
+            map.write_batch(&assignments).map_err(|e| e.to_string())?;
+            map.record_run(&root, num_files, num_shards, &opts)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "root":          root.display().to_string(),
+                        "num_files":     num_files,
+                        "num_shards":    num_shards,
+                        "max_shards":    opts.max_shards,
+                        "group_depth":   opts.group_depth,
+                        "sample":        assignments.iter().take(8)
+                            .map(|a| a.collection_id.clone()).collect::<Vec<_>>(),
+                    })
+                ),
+                OutFormat::Text => {
+                    println!("partitioned {num_files} file(s) under {}", root.display());
+                    println!("  shards allocated : {num_shards} (of max {})", opts.max_shards);
+                    println!("  group depth      : {}", opts.group_depth);
+                    println!("  sample collections:");
+                    let mut seen = std::collections::HashSet::new();
+                    for a in &assignments {
+                        if seen.insert(a.collection_id.clone()) {
+                            println!("    {}", a.collection_id);
+                            if seen.len() >= 12 { break; }
+                        }
+                    }
+                }
+            }
+        }
+
         CloudBackupCmd::EmbedQuery { text, model } => {
             let resp = client.embed_query(&text, model.as_deref())
                 .await.map_err(|e| e.to_string())?;
@@ -2596,7 +2692,8 @@ async fn cmd_sync_cloud_backup(
 
         CloudBackupCmd::HybridSearch {
             q, embed_text, embed_model, ext, lang, folder_prefix,
-            author, year_min, year_max, bytes_local, limit,
+            author, collection_ids, year_min, year_max,
+            bytes_local, limit,
         } => {
             use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
             let filters = HybridSearchFilters {
@@ -2608,6 +2705,7 @@ async fn cmd_sync_cloud_backup(
                 year_min,
                 year_max,
                 indexed_after_ms: None,
+                collection_ids: collection_ids.clone(),
                 require_bytes_local: bytes_local,
             };
             let req = HybridSearchRequest {
