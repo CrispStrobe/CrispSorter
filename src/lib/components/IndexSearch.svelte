@@ -2,6 +2,7 @@
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
     import { readTextFile } from '@tauri-apps/plugin-fs';
+    import { save } from '@tauri-apps/plugin-dialog';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
@@ -95,6 +96,44 @@
     // every translation in one assignment.
     let translateTargetLang = $state<string>('en');
     let translations        = $state<Map<string, TranslateState>>(new Map());
+
+    // P13.7 Stage M — remote search via /api/v2/index/search.
+    // Held separately from `results` so the local + remote panes
+    // stay independently visible; clicking "Search remote" doesn't
+    // wipe the local pane, and the user can flip between them
+    // without re-running.
+    interface RemoteHit {
+        doc_id:         string;
+        sha256:         string;
+        path?:          string | null;
+        filename?:      string | null;
+        title?:         string | null;
+        author?:        string | null;
+        year?:          number | null;
+        ext?:           string | null;
+        language?:      string | null;
+        full_text?:     string | null;
+        indexed_at:     number;
+        score:          number;
+        score_text?:    number | null;
+        score_vector?:  number | null;
+        collection_id?: string | null;
+    }
+    let remoteResults  = $state<RemoteHit[]>([]);
+    let remoteLoading  = $state(false);
+    let remoteError    = $state('');
+    let remoteSearched = $state(false);
+    let remoteUsedText   = $state(false);
+    let remoteUsedVector = $state(false);
+    let remoteShards     = $state(0);
+    // Per-row download state (sha → state).
+    interface RemoteDownloadState {
+        downloading: boolean;
+        bytes?: number;
+        dest?: string;
+        error?: string;
+    }
+    let remoteDownloads = $state<Map<string, RemoteDownloadState>>(new Map());
 
     // P13.6 Step 8 — "Transcribe" surface for audio rows ingested at
     // L1 (no transcript) or L2 (probe-only).  Same Map-state pattern
@@ -440,6 +479,75 @@
         if (e.key === 'Enter') runSearch();
     }
 
+    // P13.7 Stage M — search the cloud-backup VPS over HTTPS via
+    // /api/v2/index/search.  Uses the same query box; remote hits
+    // surface in a separate panel below the local results.  Embed
+    // text matches the query so the server runs vector inference
+    // alongside FTS — true hybrid retrieval.
+    async function runRemoteSearch() {
+        const q = query.trim();
+        if (!q) return;
+        remoteLoading  = true;
+        remoteError    = '';
+        remoteSearched = true;
+        remoteResults  = [];
+        try {
+            const r = await invoke<any>('sync_cb_v2_search', {
+                params: {
+                    q,
+                    embedText:  q,        // server-side fastembed for the vector arm
+                    embedModel: 'e5-large', // matches the LanceDB default-dim table
+                    limit,
+                    rrfK: 60,
+                    filters: {},
+                },
+            });
+            remoteResults    = (r.rows ?? []) as RemoteHit[];
+            remoteUsedText   = !!r.used_text;
+            remoteUsedVector = !!r.used_vector;
+            remoteShards     = Number(r.shards_queried ?? 0);
+        } catch (e: any) {
+            remoteError = String(e);
+        } finally {
+            remoteLoading = false;
+        }
+    }
+
+    // P13.7 Stage E + M — download a remote hit's bytes to a
+    // user-picked local path via sync_cb_download_file.  Streaming
+    // + sha-verified on arrival; failure removes any partial.
+    async function downloadRemoteRow(hit: RemoteHit) {
+        const dest = await save({
+            defaultPath: hit.filename ?? hit.sha256,
+            title: 'Save downloaded file',
+        });
+        if (!dest) return;
+        // Mark the row as downloading so the button shows a spinner.
+        const next = new Map(remoteDownloads);
+        next.set(hit.sha256, { downloading: true });
+        remoteDownloads = next;
+        try {
+            const r = await invoke<{ bytes: number; dest_path: string }>(
+                'sync_cb_download_file',
+                { sha256: hit.sha256, destPath: dest as string },
+            );
+            const done = new Map(remoteDownloads);
+            done.set(hit.sha256, {
+                downloading: false,
+                bytes: r.bytes,
+                dest: r.dest_path,
+            });
+            remoteDownloads = done;
+        } catch (e: any) {
+            const fail = new Map(remoteDownloads);
+            fail.set(hit.sha256, {
+                downloading: false,
+                error: String(e),
+            });
+            remoteDownloads = fail;
+        }
+    }
+
     function toggleExpand(doc_id: string) {
         const next = new Set(expanded);
         if (next.has(doc_id)) next.delete(doc_id);
@@ -516,6 +624,15 @@
         <button class="search-btn" onclick={runSearch} disabled={loading || !query.trim()}>
             {#if loading}<Loader2 size={15} class="spin" />{:else}<Search size={15} />{/if}
             Suchen
+        </button>
+        <!-- P13.7 Stage M — search the cloud-backup VPS over HTTPS.
+             Uses the same query string; the server runs FTS5 + a
+             server-side embedding pass and RRF-fuses both arms. -->
+        <button class="filter-toggle" onclick={runRemoteSearch}
+                disabled={remoteLoading || !query.trim()}
+                title="Search the cloud-backup VPS over HTTPS">
+            {#if remoteLoading}<Loader2 size={15} class="spin" />{:else}🌐{/if}
+            Cloud
         </button>
         <button
             class="filter-toggle"
@@ -901,9 +1018,99 @@
         </aside>
     {/if}
     </div>
+
+    <!-- P13.7 Stage M — remote search panel.  Shown once the user
+         has clicked the "Cloud" button at least once.  Independent
+         of the local results state; the user can flip between
+         local + remote without losing either pane.  Per-row
+         "Download" button calls sync_cb_download_file (HTTPS
+         streaming, sha-verified) to fetch the file bytes from the
+         VPS into a chosen local path. -->
+    {#if remoteSearched}
+        <section class="remote-results">
+            <header class="remote-header">
+                <strong>Cloud-backup hits</strong>
+                {#if remoteLoading}<Loader2 size={14} class="spin" />{/if}
+                <span class="remote-meta">
+                    {remoteResults.length} hit(s)
+                    {#if remoteUsedText && remoteUsedVector}· hybrid (FTS + vector)
+                    {:else if remoteUsedText}· FTS
+                    {:else if remoteUsedVector}· vector
+                    {:else}· metadata
+                    {/if}
+                    · {remoteShards} shard(s) queried
+                </span>
+            </header>
+            {#if remoteError}
+                <p class="error">{remoteError}</p>
+            {:else if remoteResults.length === 0 && !remoteLoading}
+                <p class="hint">No matches on the cloud-backup VPS for that query.</p>
+            {:else}
+                <ul class="remote-list">
+                    {#each remoteResults as hit (hit.sha256)}
+                        {@const d = remoteDownloads.get(hit.sha256)}
+                        <li>
+                            <div class="remote-row">
+                                <div class="remote-meta-row">
+                                    <span class="remote-score">{hit.score.toFixed(3)}</span>
+                                    <span class="remote-title">
+                                        {hit.title ?? hit.filename ?? '(no title)'}
+                                    </span>
+                                    {#if hit.year}<span class="remote-year">{hit.year}</span>{/if}
+                                    {#if hit.author}<span class="remote-author">{hit.author}</span>{/if}
+                                    {#if hit.language}<span class="remote-lang">{hit.language}</span>{/if}
+                                    {#if hit.collection_id}<span class="remote-coll">{hit.collection_id}</span>{/if}
+                                </div>
+                                <div class="remote-path">{hit.path ?? ''}</div>
+                                {#if hit.full_text}
+                                    <div class="remote-snippet">
+                                        {hit.full_text.slice(0, 240)}{hit.full_text.length > 240 ? '…' : ''}
+                                    </div>
+                                {/if}
+                                <div class="remote-actions">
+                                    <button class="open-btn"
+                                            onclick={() => downloadRemoteRow(hit)}
+                                            disabled={d?.downloading}>
+                                        {#if d?.downloading}<Loader2 size={13} class="spin" />{/if}
+                                        Download bytes
+                                    </button>
+                                    {#if d?.bytes}
+                                        <span class="remote-dl-ok">
+                                            ✓ {d.bytes} B → {d.dest}
+                                        </span>
+                                    {/if}
+                                    {#if d?.error}
+                                        <span class="remote-dl-err">✗ {d.error}</span>
+                                    {/if}
+                                </div>
+                            </div>
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+        </section>
+    {/if}
 </div>
 
 <style>
+    .remote-results { padding: 12px 16px; border-top: 1px solid var(--color-border, #444); }
+    .remote-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .remote-meta { color: var(--color-text-muted, #aaa); font-size: 0.85em; }
+    .remote-list { list-style: none; padding: 0; margin: 0; }
+    .remote-list li { padding: 8px 0; border-bottom: 1px solid var(--color-border-subtle, #2c2c2c); }
+    .remote-meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .remote-score { font-family: ui-monospace, monospace; color: var(--color-accent, #4a9eff); min-width: 4em; }
+    .remote-title { font-weight: 600; }
+    .remote-year, .remote-author, .remote-lang, .remote-coll {
+        font-size: 0.8em; color: var(--color-text-muted, #aaa);
+        padding: 1px 6px; border-radius: 3px;
+        background: var(--color-bg-subtle, #2c2c2c);
+    }
+    .remote-path { font-size: 0.85em; color: var(--color-text-muted, #aaa); margin-top: 2px; font-family: ui-monospace, monospace; }
+    .remote-snippet { margin-top: 4px; font-size: 0.9em; color: var(--color-text-secondary, #ccc); }
+    .remote-actions { margin-top: 6px; display: flex; gap: 10px; align-items: center; }
+    .remote-dl-ok { color: var(--color-success, #2a8); font-size: 0.85em; }
+    .remote-dl-err { color: var(--color-danger, #d44); font-size: 0.85em; }
     .search-root {
         display: flex; flex-direction: column; height: 100%;
         background: #09090b; color: #fafafa; padding: 20px;
