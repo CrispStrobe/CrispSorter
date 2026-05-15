@@ -453,6 +453,47 @@ enum CloudBackupCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Stage T — manage API keys via the VPS admin surface.
+    /// Requires the `CB_API_ADMIN_TOKEN` (or `--admin-token`) set on
+    /// the VPS in `/etc/cb-api.env`.  Never sent over HTTP as a
+    /// regular bearer key — uses the `X-Admin-Token` header instead.
+    Admin {
+        #[command(subcommand)]
+        sub: AdminSubCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AdminSubCmd {
+    /// Mint a new bearer key.  Prints the raw key exactly once;
+    /// store it immediately (it cannot be retrieved later).
+    Mint {
+        /// Human-readable name for this key (unique across active keys).
+        name: String,
+        /// Owner UUID — defaults to the nil UUID (shared / single-user
+        /// setup).  Used for per-owner scoping in shared-catalog mode.
+        #[arg(long)]
+        owner_id: Option<String>,
+        /// Admin token.  Falls back to the `CB_API_ADMIN_TOKEN` env var.
+        #[arg(long = "admin-token", env = "CB_API_ADMIN_TOKEN")]
+        admin_token: String,
+    },
+    /// Soft-revoke a key by name.  Keeps the audit row; subsequent
+    /// auth attempts with the old key return 401.
+    Revoke {
+        /// Name of the key to revoke.
+        name: String,
+        #[arg(long = "admin-token", env = "CB_API_ADMIN_TOKEN")]
+        admin_token: String,
+    },
+    /// List all API keys (names + metadata, never raw values).
+    List {
+        #[arg(long = "admin-token", env = "CB_API_ADMIN_TOKEN")]
+        admin_token: String,
+        /// Emit compact JSON instead of a text table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2409,6 +2450,11 @@ async fn cmd_sync_cloud_backup(
         return cmd_cloud_backup_federated(out, data_dir, cfg, cmd).await;
     }
 
+    // Admin subcommands only need the URL + admin token — not a bearer key.
+    if let CloudBackupCmd::Admin { .. } = &cmd {
+        return cmd_cloud_backup_admin(out, &url, cmd).await;
+    }
+
     if url.is_empty() {
         return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
     }
@@ -3310,8 +3356,106 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        // FederatedSearch is routed before the client is built (see above).
+        // Routed before the client is built (see above).
         CloudBackupCmd::FederatedSearch { .. } => unreachable!(),
+        CloudBackupCmd::Admin { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn cmd_cloud_backup_admin(
+    out: OutFormat,
+    url: &str,
+    cmd: CloudBackupCmd,
+) -> Result<(), String> {
+    use crate::sync::cloud_backup::CloudBackupClient;
+
+    if url.is_empty() {
+        return Err("cloud_backup_url not configured — set it in Settings first".into());
+    }
+    // Admin routes only need _any_ valid bearer token to build the client;
+    // the actual admin check is the X-Admin-Token header.  Use whatever
+    // bearer token is stored (may be a service account key or even a
+    // placeholder — the server validates the admin token, not the bearer key
+    // for these routes).  If no token stored, pass a dummy to keep the
+    // client happy (admin routes don't enforce bearer auth server-side).
+    let token = crate::sync::secret::get_token_for_url(url)
+        .ok().flatten().unwrap_or_else(|| "placeholder".to_string());
+    let client = CloudBackupClient::new(url, &token).map_err(|e| e.to_string())?;
+
+    let CloudBackupCmd::Admin { sub } = cmd else { unreachable!() };
+
+    match sub {
+        AdminSubCmd::Mint { name, owner_id, admin_token } => {
+            let resp = client
+                .admin_mint(&admin_token, &name, owner_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "raw_key":  resp.raw_key,
+                    "name":     resp.name,
+                    "owner_id": resp.owner_id,
+                })),
+                OutFormat::Text => {
+                    println!("API key minted.  Copy now — this is the only time it's shown:");
+                    println!();
+                    println!("  {}", resp.raw_key);
+                    println!();
+                    println!("Set it on a client as:");
+                    println!("  crispsorter sync cloud-backup login --token {}", resp.raw_key);
+                }
+            }
+        }
+        AdminSubCmd::Revoke { name, admin_token } => {
+            let resp = client
+                .admin_revoke(&admin_token, &name)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "revoked": resp.revoked,
+                    "name":    resp.name,
+                })),
+                OutFormat::Text => {
+                    if resp.revoked {
+                        println!("revoked: {}", resp.name);
+                    } else {
+                        eprintln!("no active key named {:?}", resp.name);
+                    }
+                }
+            }
+        }
+        AdminSubCmd::List { admin_token, json } => {
+            let keys = client
+                .admin_list_keys(&admin_token)
+                .await
+                .map_err(|e| e.to_string())?;
+            if json || matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::json!({ "keys": keys }));
+            } else {
+                if keys.is_empty() {
+                    println!("no keys");
+                } else {
+                    println!("{:<24}  {:<8}  created_at", "name", "status");
+                    for k in &keys {
+                        let status = if k.revoked_at.is_some() { "revoked" } else { "active" };
+                        let ts = {
+                            let secs = k.created_at / 1000;
+                            let dt = std::time::UNIX_EPOCH
+                                + std::time::Duration::from_secs(secs as u64);
+                            let elapsed = dt.elapsed().unwrap_or_default();
+                            if elapsed.as_secs() < 86400 {
+                                format!("{} sec ago", elapsed.as_secs())
+                            } else {
+                                format!("{} days ago", elapsed.as_secs() / 86400)
+                            }
+                        };
+                        println!("{:<24}  {:<8}  {ts}", &k.name[..k.name.len().min(24)], status);
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }

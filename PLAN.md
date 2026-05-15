@@ -410,10 +410,10 @@ Today the user picks one backend for search.  A unified "search everywhere" pane
 
 Today key mint requires SSH'ing to the VPS and running `python -m api.admin mint`.  Settings should expose this for ops convenience — but with a hard security boundary.
 
-- [ ] **Server-side admin token** — distinct from regular bearer tokens.  Minted once on cb-api install via `python -m api.admin mint-admin`; stored in `/etc/cb-api.env` as `CB_API_ADMIN_TOKEN`.
-- [ ] **`POST /api/admin/keys/mint`** + `revoke` + `list` routes, all gated on the admin token.
-- [ ] **Settings UI**: separate "Admin" tab; user pastes admin token; can then mint / list / revoke regular keys.
-- [ ] **CLI**: `crispsorter sync cloud-backup admin mint <NAME> [--owner-id UUID]`.
+- [x] **Server-side admin token** — distinct from regular bearer tokens.  Minted once on cb-api install via `python -m api.admin mint-admin`; stored in `/etc/cb-api.env` as `CB_API_ADMIN_TOKEN`.  **SHIPPED 2026-05-15**
+- [x] **`POST /api/admin/keys/mint`** + `revoke` + `list` routes, all gated on the admin token.  **SHIPPED 2026-05-15**
+- [x] **Settings UI**: collapsible "Admin — API key management" sub-section in Cloud-backup Settings; user pastes admin token; can mint / revoke / list regular keys.  **SHIPPED 2026-05-15**
+- [x] **CLI**: `crispsorter sync cloud-backup admin mint <NAME>` + `revoke` + `list --json`.  **SHIPPED 2026-05-15**
 
 #### Stage U — L1-only local + zip-batch handoff to VPS (~8–10 h, the user's "thin client" mode)
 

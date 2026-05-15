@@ -11,6 +11,7 @@
 use tauri::State;
 use crate::AppState;
 use super::cloud_backup::{
+    AdminKeyInfo, AdminMintResponse, AdminRevokeResponse,
     CloudBackupClient, EmbeddingRow, FederatedHit, HealthResponse,
     HybridSearchFilters, HybridSearchRequest, ManifestRow,
 };
@@ -1441,6 +1442,79 @@ pub async fn sync_federated_search(
         "hits":   merged,
         "errors": errors,
     }))
+}
+
+// ── Stage T — admin key management ─────────────────────────────────────────
+
+fn cb_client_for_admin(state: &AppState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(CloudBackupClient, String), String>> + Send + '_>> {
+    Box::pin(async move {
+        let (url, _) = {
+            let idx = state.index.lock().await;
+            let url = idx.config.cloud_backup_url.clone().unwrap_or_default();
+            (url, ())
+        };
+        if url.is_empty() {
+            return Err("cloud_backup_url not configured".into());
+        }
+        let token = super::secret::get_token_for_url(&url)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no API token stored — run sync cloud-backup login first".to_owned())?;
+        let cli = CloudBackupClient::new(&url, &token).map_err(|e| e.to_string())?;
+        Ok((cli, url))
+    })
+}
+
+/// Stage T — mint a new API key on the VPS admin surface.
+/// `admin_token` is the `CB_API_ADMIN_TOKEN` value from the VPS env file.
+#[tauri::command]
+pub async fn sync_cb_admin_mint(
+    state: State<'_, AppState>,
+    admin_token: String,
+    name: String,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (cli, _url) = cb_client_for_admin(&state).await?;
+    let resp: AdminMintResponse = cli
+        .admin_mint(&admin_token, &name, owner_id.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "raw_key":  resp.raw_key,
+        "name":     resp.name,
+        "owner_id": resp.owner_id,
+    }))
+}
+
+/// Stage T — revoke an existing API key by name.
+#[tauri::command]
+pub async fn sync_cb_admin_revoke(
+    state: State<'_, AppState>,
+    admin_token: String,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let (cli, _url) = cb_client_for_admin(&state).await?;
+    let resp: AdminRevokeResponse = cli
+        .admin_revoke(&admin_token, &name)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "revoked": resp.revoked,
+        "name":    resp.name,
+    }))
+}
+
+/// Stage T — list all API keys on the VPS (metadata only, no hashes).
+#[tauri::command]
+pub async fn sync_cb_admin_list_keys(
+    state: State<'_, AppState>,
+    admin_token: String,
+) -> Result<serde_json::Value, String> {
+    let (cli, _url) = cb_client_for_admin(&state).await?;
+    let rows: Vec<AdminKeyInfo> = cli
+        .admin_list_keys(&admin_token)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "keys": rows }))
 }
 
 #[cfg(test)]
