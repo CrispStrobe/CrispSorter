@@ -356,6 +356,14 @@ pub struct IndexConfig {
     #[serde(default = "default_local_extraction_enabled")]
     pub local_extraction_enabled: bool,
 
+    /// Registry-driven embedder model override.  When non-empty and the
+    /// backend is `Gguf`, the crispembed library resolves this name (a
+    /// registry alias, e.g. "nomic-embed-text-v2.0" or "qwen3-0.6b") to
+    /// a cached GGUF file and loads it, bypassing the `EmbedderModel` enum.
+    /// The actual output dim is discovered at load time via `Embedder::dims()`.
+    #[serde(default)]
+    pub embedder_model_name: Option<String>,
+
     /// Stage W — skeleton-only mode.  When `true`, bg_ingest writes
     /// ONLY the two lightweight KV tables in `skeleton_index.db`
     /// (author_index + parent_dir_index).  No LanceDB rows, no FTS,
@@ -522,6 +530,7 @@ impl Default for IndexConfig {
             local_max_size_bytes: None,
             local_extraction_enabled: true,
             local_skeleton_only: false,
+            embedder_model_name: None,
         }
     }
 }

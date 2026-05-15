@@ -414,8 +414,12 @@
      *  existing embedder dropdown still keys off `EmbedderModel` enum
      *  variants today, so non-enum entries are read-only.  Wiring full
      *  registry-driven selection is tracked separately. */
-    type EmbedderRegistryEntry = { name: string; desc: string; filename: string; size: string };
+    type EmbedderRegistryEntry = { name: string; desc: string; filename: string; size: string; cached: boolean };
     let embedderRegistry = $state<EmbedderRegistryEntry[]>([]);
+    /** Name of registry model selected via Stage X UI ("" = use enum dropdown). */
+    let indexEmbedderModelName = $state<string>('');
+    let registryDownloadBusy = $state<string>('');  // name of model currently downloading
+    let registryDownloadMsg  = $state<string>('');
 
     /** Approximate download size (MB) for the selected embedder, returned by
      *  `index_model_download_mb`. 0 means unknown. Drives the "first run
@@ -445,6 +449,27 @@
     function resetNonCommercialDeclines() {
         nonCommercialDeclined = new Set();
         persistNonCommercialDeclines();
+    }
+
+    async function downloadRegistryModel(name: string) {
+        registryDownloadBusy = name;
+        registryDownloadMsg  = '';
+        try {
+            await invoke('embedder_download_registry_model', { name });
+            // Refresh the registry list so `cached` flags update.
+            embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
+            registryDownloadMsg = 'Downloaded.';
+        } catch (e: any) {
+            registryDownloadMsg = String(e);
+        } finally {
+            registryDownloadBusy = '';
+        }
+    }
+
+    function selectRegistryModel(name: string) {
+        indexEmbedderModelName = name;
+        // When a registry model is active, force GGUF backend (registry models are GGUF only).
+        indexEmbedderBackend = 'gguf';
     }
 
     /** Switch the Inference Engine. If the currently-selected model isn't
@@ -829,6 +854,7 @@
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
         indexLocalExtractionEnabled    = await getSetting('indexLocalExtractionEnabled', true) as boolean;
         indexSkeletonOnly              = await getSetting('indexSkeletonOnly', false) as boolean;
+        indexEmbedderModelName         = await getSetting('indexEmbedderModelName', '') as string;
         indexLocalMaxSizeGb            = await getSetting('indexLocalMaxSizeGb', 0) as number;
         backupDriveId                  = await getSetting('backupDriveId', '') as string;
         backupKeepDaily                = await getSetting('backupKeepDaily', 7) as number;
@@ -1124,6 +1150,7 @@
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
         await saveSetting('indexLocalExtractionEnabled',   indexLocalExtractionEnabled);
         await saveSetting('indexSkeletonOnly',             indexSkeletonOnly);
+        await saveSetting('indexEmbedderModelName',        indexEmbedderModelName);
         await saveSetting('indexLocalMaxSizeGb',            indexLocalMaxSizeGb);
         await saveSetting('backupDriveId',                  backupDriveId);
         await saveSetting('backupKeepDaily',                backupKeepDaily);
@@ -1284,6 +1311,8 @@
                     // Stage U — thin client: when false, bg_ingest skips extraction.
                     local_extraction_enabled: indexLocalExtractionEnabled,
                     local_skeleton_only: indexSkeletonOnly,
+                    // Stage X — registry-driven model override (empty = use enum dropdown).
+                    embedder_model_name: indexEmbedderModelName.trim() || null,
                 }
             });
             if (indexEnabled) {
@@ -2744,18 +2773,50 @@
                         <summary style="cursor: pointer; color: #71717a;">
                             {i18n.t.settings.index.crispembed_registry_summary.replace('{count}', String(embedderRegistry.length))}
                         </summary>
-                        <div style="font-size: 11px; color: #71717a; margin: 6px 0 8px; line-height:1.45;">
+                        <div style="font-size: 11px; color: #71717a; margin: 6px 0 4px; line-height:1.45;">
                             {i18n.t.settings.index.crispembed_registry_hint}
                         </div>
-                        <ul style="margin: 0; padding: 0; list-style: none; max-height: 240px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px;">
+                        {#if indexEmbedderModelName}
+                            <div style="font-size: 11px; background: #ede9fe; color: #6d28d9; padding: 4px 8px; border-radius: 4px; margin-bottom: 6px; display:flex; align-items:center; gap:6px;">
+                                <span>Active override: <strong>{indexEmbedderModelName}</strong></span>
+                                <button onclick={() => { indexEmbedderModelName = ''; }} style="margin-left:auto; font-size:10px; color:#6d28d9; background:none; border:1px solid #c4b5fd; border-radius:3px; padding:1px 6px; cursor:pointer;">Clear</button>
+                            </div>
+                        {/if}
+                        {#if registryDownloadMsg}
+                            <div style="font-size:11px; color: #6b7280; margin-bottom:4px;">{registryDownloadMsg}</div>
+                        {/if}
+                        <ul style="margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px;">
                             {#each embedderRegistry as entry}
-                                <li style="padding: 6px 10px; border-bottom: 1px solid #f1f5f9;">
-                                    <div style="font-weight: 600; font-family: ui-monospace, monospace; color: #1f2937;">{entry.name}</div>
-                                    {#if entry.desc}
-                                        <div style="color: #4b5563; margin-top: 2px;">{entry.desc}</div>
-                                    {/if}
-                                    <div style="color: #9ca3af; margin-top: 2px; font-family: ui-monospace, monospace; font-size: 10px;">
-                                        {entry.filename}{entry.size ? ` — ${entry.size}` : ''}
+                                <li style="padding: 6px 10px; border-bottom: 1px solid #f1f5f9; display:flex; gap:8px; align-items:flex-start;">
+                                    <div style="flex:1; min-width:0;">
+                                        <div style="font-weight: 600; font-family: ui-monospace, monospace; color: #1f2937;">{entry.name}</div>
+                                        {#if entry.desc}
+                                            <div style="color: #4b5563; margin-top: 2px; font-size:11px;">{entry.desc}</div>
+                                        {/if}
+                                        <div style="color: #9ca3af; margin-top: 2px; font-family: ui-monospace, monospace; font-size: 10px;">
+                                            {entry.filename}{entry.size ? ` — ${entry.size}` : ''}
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; flex-direction:column; gap:3px; flex-shrink:0;">
+                                        {#if entry.cached || entry.name === indexEmbedderModelName}
+                                            <button
+                                                onclick={() => selectRegistryModel(entry.name)}
+                                                style="font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid {entry.name === indexEmbedderModelName ? '#6d28d9' : '#a78bfa'}; background:{entry.name === indexEmbedderModelName ? '#ede9fe' : 'white'}; color:{entry.name === indexEmbedderModelName ? '#6d28d9' : '#7c3aed'}; cursor:pointer;">
+                                                {entry.name === indexEmbedderModelName ? 'Active' : 'Select'}
+                                            </button>
+                                        {:else}
+                                            <button
+                                                disabled={registryDownloadBusy === entry.name}
+                                                onclick={() => downloadRegistryModel(entry.name)}
+                                                style="font-size:10px; padding:2px 8px; border-radius:3px; border:1px solid #d1d5db; background:white; color:#374151; cursor:pointer; display:flex; align-items:center; gap:3px;">
+                                                {#if registryDownloadBusy === entry.name}
+                                                    <Loader2 size={10} style="animation: spin 1s linear infinite;" />
+                                                {:else}
+                                                    <Download size={10} />
+                                                {/if}
+                                                Download
+                                            </button>
+                                        {/if}
                                     </div>
                                 </li>
                             {/each}

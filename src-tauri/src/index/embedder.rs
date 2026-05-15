@@ -1379,6 +1379,15 @@ pub struct EmbedderConfig {
     /// MRL-trained models (BGE-M3, Snowflake Arctic L v2, PIXIE-Rune).
     #[serde(default)]
     pub matryoshka_dim: Option<u32>,
+
+    /// Registry-driven model override (Stage: registry-driven selection).
+    /// When set and the backend is `Gguf`, this name/path is passed to
+    /// `crispembed::CrispEmbed::new` instead of resolving through the
+    /// `EmbedderModel` enum's `to_gguf_spec()`.  The crispembed library
+    /// handles name → cached-path → download automatically.
+    /// Has no effect on the ONNX/OrtPath backends.
+    #[serde(default)]
+    pub model_name_override: Option<String>,
 }
 
 impl EmbedderConfig {
@@ -1390,7 +1399,13 @@ impl EmbedderConfig {
             batch_size: 32,
             backend: EmbedderBackend::Onnx,
             matryoshka_dim: None,
+            model_name_override: None,
         }
+    }
+
+    pub fn with_model_name_override(mut self, name: Option<String>) -> Self {
+        self.model_name_override = name.filter(|s| !s.is_empty());
+        self
     }
 
     pub fn with_backend(mut self, backend: EmbedderBackend) -> Self {
@@ -1832,6 +1847,20 @@ impl CrispEmbedBackend {
         Ok(Self { model })
     }
 
+    /// Load by registry name, repo alias, or absolute path.  The crispembed
+    /// library resolves the name to a cached path and downloads if needed.
+    pub(crate) fn load_by_name(name: &str) -> Result<Self> {
+        println!("[embedder] Loading GGUF by name via CrispEmbed: {name}");
+        let model = crispembed::CrispEmbed::new(name, 0)
+            .map_err(|e| anyhow::anyhow!("crispembed load failed for '{name}': {e}"))?;
+        Ok(Self { model })
+    }
+
+    /// Actual output dimension as reported by the loaded model.
+    pub(crate) fn dim(&self) -> usize {
+        self.model.dim()
+    }
+
     fn embed(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
@@ -1958,6 +1987,11 @@ pub struct Embedder {
     config: EmbedderConfig,
     dense: DenseBackend,
     sparse: Option<SparseTextEmbedding>,
+    /// Actual output dim discovered at load time.  Set when the model was
+    /// loaded via `model_name_override` (registry-driven path) where the
+    /// static `EmbedderModel::dims()` would return the enum-default dim
+    /// rather than the real model's dim.  `None` = use `config.effective_dim()`.
+    runtime_dim: Option<usize>,
 }
 
 impl Embedder {
@@ -1976,17 +2010,39 @@ impl Embedder {
         // cargo feature is on AND the caller asked for it AND the model has a
         // known-good GGUF equivalent. Otherwise we fall through to the normal
         // ONNX paths.
+        // registry_dim: Some(dim) when loaded via model_name_override; used to
+        // populate Embedder::runtime_dim so dims() returns the actual model dim.
         #[cfg(feature = "crispembed")]
-        let gguf_backend: Option<DenseBackend> = 'gguf: {
+        let (gguf_backend, registry_dim): (Option<DenseBackend>, Option<usize>) = 'gguf: {
             if !matches!(config.backend, EmbedderBackend::Gguf) {
-                break 'gguf None;
+                break 'gguf (None, None);
             }
+
+            // ── Registry-driven override: load by name / alias ────────────
+            if let Some(ref name) = config.model_name_override {
+                crate::app_log!(
+                    "info",
+                    "Embedder: registry-driven load '{}' (bypassing enum spec)",
+                    name
+                );
+                let backend = CrispEmbedBackend::load_by_name(name)?;
+                let actual_dim = backend.dim();
+                let mut backend = backend;
+                if let Some(d) = config.matryoshka_dim {
+                    if d > 0 {
+                        let clamped = (d as usize).min(actual_dim) as i32;
+                        backend.set_dim(clamped);
+                    }
+                }
+                break 'gguf (Some(DenseBackend::CrispEmbed(backend)), Some(actual_dim));
+            }
+
             let Some(spec) = config.model.to_gguf_spec() else {
                 eprintln!(
                     "[embedder] GGUF requested for {:?} but no GGUF spec available — falling back to ONNX",
                     config.model
                 );
-                break 'gguf None;
+                break 'gguf (None, None);
             };
             let gguf_path = ensure_gguf_on_disk(&spec, &config.cache_dir).await?;
             let mut backend = CrispEmbedBackend::load(&gguf_path)?;
@@ -2005,10 +2061,10 @@ impl Embedder {
                     backend.set_dim(clamped);
                 }
             }
-            Some(DenseBackend::CrispEmbed(backend))
+            (Some(DenseBackend::CrispEmbed(backend)), None)
         };
         #[cfg(not(feature = "crispembed"))]
-        let gguf_backend: Option<DenseBackend> = None;
+        let (gguf_backend, registry_dim): (Option<DenseBackend>, Option<usize>) = (None, None);
 
         let dense = if let Some(g) = gguf_backend {
             g
@@ -2137,6 +2193,7 @@ impl Embedder {
             config,
             dense,
             sparse,
+            runtime_dim: registry_dim,
         })
     }
 
@@ -2309,6 +2366,13 @@ impl Embedder {
     }
 
     pub fn dims(&self) -> usize {
+        // Registry-driven path: real dim discovered at load time overrides
+        // the static enum dim.  Matryoshka truncation still applies on top.
+        if let Some(rt) = self.runtime_dim {
+            return self.config.matryoshka_dim
+                .map(|d| (d as usize).min(rt))
+                .unwrap_or(rt);
+        }
         // Matryoshka, when configured + supported by backend (GGUF only),
         // truncates the output. The LanceDB column must match this dim,
         // so callers (LocalIndex, callers passing dims into schemas) must
@@ -2784,5 +2848,71 @@ mod tests {
         let spec = EmbedderModel::BgeSmallEnV15.to_gguf_spec();
         assert!(spec.is_some(),
             "BgeSmallEnV15 should have a GGUF spec under feature crispembed");
+    }
+
+    #[test]
+    fn model_name_override_builder() {
+        let cfg = EmbedderConfig::new(
+            EmbedderModel::BgeM3,
+            EmbedderDevice::Cpu,
+            std::path::PathBuf::from("/tmp"),
+        );
+        assert!(cfg.model_name_override.is_none());
+
+        // Non-empty name is preserved.
+        let cfg2 = cfg.clone().with_model_name_override(Some("nomic-embed-text-v2.0".into()));
+        assert_eq!(cfg2.model_name_override.as_deref(), Some("nomic-embed-text-v2.0"));
+
+        // Empty string is normalised to None.
+        let cfg3 = cfg.clone().with_model_name_override(Some(String::new()));
+        assert!(cfg3.model_name_override.is_none());
+
+        // None is preserved.
+        let cfg4 = cfg.with_model_name_override(None);
+        assert!(cfg4.model_name_override.is_none());
+    }
+
+    #[test]
+    fn runtime_dim_override_wins_in_dims() {
+        // Validate the `dims()` precedence rule through the helper exposed for tests.
+        // Rule: when runtime_dim is Some(r),
+        //   dims = matryoshka_dim.map(|d| d.min(r)).unwrap_or(r)
+        let cfg_base = EmbedderConfig::new(
+            EmbedderModel::BgeM3,
+            EmbedderDevice::Cpu,
+            std::path::PathBuf::from("/tmp"),
+        );
+
+        // matryoshka 512 ≤ runtime 1024 → 512.
+        assert_eq!(
+            compute_dims_with_runtime(cfg_base.clone().with_matryoshka_dim(Some(512)), Some(1024)),
+            512
+        );
+        // matryoshka 2048 > runtime 768 → clamped to 768.
+        assert_eq!(
+            compute_dims_with_runtime(cfg_base.clone().with_matryoshka_dim(Some(2048)), Some(768)),
+            768
+        );
+        // No matryoshka, runtime 512 → 512.
+        assert_eq!(
+            compute_dims_with_runtime(cfg_base.clone(), Some(512)),
+            512
+        );
+        // No runtime_dim → falls through to config.effective_dim() = 1024 (BgeM3 default).
+        assert_eq!(
+            compute_dims_with_runtime(cfg_base.clone(), None),
+            1024
+        );
+    }
+
+    /// Replicates `Embedder::dims()` without constructing a real `Embedder`.
+    fn compute_dims_with_runtime(config: EmbedderConfig, runtime_dim: Option<usize>) -> usize {
+        if let Some(rt) = runtime_dim {
+            return config
+                .matryoshka_dim
+                .map(|d| (d as usize).min(rt))
+                .unwrap_or(rt);
+        }
+        config.effective_dim()
     }
 }

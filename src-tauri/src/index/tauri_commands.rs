@@ -2260,41 +2260,100 @@ pub fn index_model_download_mb(model: String, backend: Option<String>) -> u32 {
 /// the C-side `crispembed_model_*` arrays).  Surfacing this through a
 /// Tauri command lets the Settings panel display the upstream registry
 /// without each new model needing a CrispSorter release.
-///
-/// Note: today the existing embedder dropdown still keys off
-/// `EmbedderModel` (enum, hardcoded in Rust + Svelte).  Entries listed
-/// here that don't have a matching `EmbedderModel` variant are
-/// informational only — selecting one in the UI is a follow-up task
-/// (PLAN: "crispembed::list_models() registry helper" → registry-
-/// driven model selection refactor).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmbedderRegistryEntry {
     pub name: String,
     pub desc: String,
     pub filename: String,
     pub size: String,
+    /// `true` when the GGUF file is already present in the model cache dir.
+    pub cached: bool,
 }
 
-/// Return CrispEmbed's bundled model registry (43 entries as of
-/// crispembed 0.3.2).  Empty Vec when the `crispembed` cargo feature is
-/// off — keeps the frontend code path unconditional.
+/// Return CrispEmbed's bundled model registry.  Empty Vec when the
+/// `crispembed` cargo feature is off — keeps the frontend unconditional.
+///
+/// Each entry includes `cached: bool` so the Settings panel can show a
+/// "Select" button for already-downloaded models and a "Download" button
+/// for the rest, without a separate round-trip.
 #[tauri::command]
-pub fn embedder_registry_list() -> Vec<EmbedderRegistryEntry> {
+pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
     #[cfg(feature = "crispembed")]
     {
+        // Best-effort: resolve cache dir from current config.  Falls back to
+        // `None` (unknown) when AppState isn't reachable (shouldn't happen in
+        // practice, but we don't want a blocking lock here).
+        let cache_dir: Option<PathBuf> = {
+            // Try a non-blocking try_lock; fall back to None on contention.
+            if let Ok(lock) = state.index.try_lock() {
+                let data_dir = state.data_dir.try_lock().ok().and_then(|g| g.clone());
+                data_dir.map(|d| super::resolve_model_cache_dir(&lock.config, &d))
+            } else {
+                None
+            }
+        };
+
         crispembed::CrispEmbed::list_models()
             .into_iter()
-            .map(|m| EmbedderRegistryEntry {
-                name: m.name,
-                desc: m.desc,
-                filename: m.filename,
-                size: m.size,
+            .map(|m| {
+                let cached = cache_dir.as_ref().map_or(false, |d| {
+                    d.join(&m.filename).exists()
+                });
+                EmbedderRegistryEntry {
+                    name: m.name,
+                    desc: m.desc,
+                    filename: m.filename,
+                    size: m.size,
+                    cached,
+                }
             })
             .collect()
     }
     #[cfg(not(feature = "crispembed"))]
     {
+        let _ = state;
         Vec::new()
+    }
+}
+
+/// Trigger a background download of a registry model by name.  The
+/// crispembed `resolve_model` logic checks the cache first and returns
+/// immediately if already present, so calling this on a cached model is
+/// a no-op.  Returns `Ok(path)` with the resolved cache path on success.
+#[tauri::command]
+pub async fn embedder_download_registry_model(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<String, String> {
+    #[cfg(feature = "crispembed")]
+    {
+        let cache_dir: Option<PathBuf> = {
+            if let Ok(lock) = state.index.try_lock() {
+                let data_dir = state.data_dir.try_lock().ok().and_then(|g| g.clone());
+                data_dir.map(|d| super::resolve_model_cache_dir(&lock.config, &d))
+            } else {
+                None
+            }
+        };
+
+        // crispembed resolves by name/alias, checks the cache, downloads if missing.
+        let path = tokio::task::spawn_blocking(move || {
+            // Override env var so crispembed writes to our models dir.
+            if let Some(ref d) = cache_dir {
+                unsafe { std::env::set_var("CRISPEMBED_CACHE_DIR", d.as_os_str()) };
+            }
+            crispembed::CrispEmbed::resolve_model(&name, Some(true))
+                .map_err(|e| format!("crispembed resolve_model failed: {e}"))
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking join error: {e}"))??;
+
+        Ok(path.to_string_lossy().into_owned())
+    }
+    #[cfg(not(feature = "crispembed"))]
+    {
+        let _ = (state, name);
+        Err("crispembed feature not enabled".into())
     }
 }
 
@@ -2429,7 +2488,8 @@ pub async fn init_index(
     // can be built whether or not we end up loading the embedder.
     let probe_cfg = EC::new(model, device, models_dir.clone())
         .with_backend(config.embedder_backend)
-        .with_matryoshka_dim(config.matryoshka_dim);
+        .with_matryoshka_dim(config.matryoshka_dim)
+        .with_model_name_override(config.embedder_model_name.clone());
     let effective_dim = probe_cfg.effective_dim();
 
     // Optional embedder construction. Skipped when:
@@ -2453,7 +2513,8 @@ pub async fn init_index(
 
         let embedder_cfg = EC::new(model, device, models_dir.clone())
             .with_backend(config.embedder_backend)
-            .with_matryoshka_dim(config.matryoshka_dim);
+            .with_matryoshka_dim(config.matryoshka_dim)
+            .with_model_name_override(config.embedder_model_name.clone());
         let embedder = Embedder::new(embedder_cfg).await?;
         emit!("embedder_done", "Embedder loaded", 40);
         Some(Arc::new(Mutex::new(embedder)))
