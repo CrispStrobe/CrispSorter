@@ -2542,6 +2542,7 @@ pub fn run() {
             index::tauri_commands::index_capabilities,
             index::tauri_commands::index_model_download_mb,
             index::tauri_commands::embedder_registry_list,
+            index::tauri_commands::embedder_download_registry_model,
             index::tauri_commands::index_benchmark_embedder,
             asr_transcribe,
             audio_extract_text,

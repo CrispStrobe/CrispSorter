@@ -473,6 +473,18 @@ Everything else lives on the VPS.  Search flow:
 - [x] **Settings UI**: "Skeleton-only mode" checkbox with explanatory hint.  `indexSkeletonOnly` state wired to load/save/IndexConfig.  **SHIPPED 2026-05-15**
 - [x] **Rust unit tests**: 7 tests in `index::skeleton::tests` — upsert_author_increments, upsert_parent_dir_increments, empty_author_is_noop, search_is_case_insensitive, search_returns_empty_for_no_match, stats_reflect_upserts, open_idempotent.  **SHIPPED 2026-05-15**
 
+#### Stage X — Registry-driven embedder selection (~1 session, child of Stage W) — SHIPPED 2026-05-15
+
+Allows any crispembed registry entry (GGUF) to be selected without a CrispSorter release.
+
+- [x] **`IndexConfig.embedder_model_name: Option<String>`** — registry-keyed override.  When non-empty and backend=GGUF, `CrispEmbedBackend::load_by_name(name)` resolves via `crispembed::CrispEmbed::new(name, 0)` bypassing `EmbedderModel` enum.  `embedder_model_name: None` added to `IndexConfig::default()`.  **SHIPPED 2026-05-15**
+- [x] **`Embedder.runtime_dim: Option<usize>`** — stores actual output dim discovered at load time; `dims()` updated to clamp matryoshka against it.  **SHIPPED 2026-05-15**
+- [x] **`EmbedderConfig.model_name_override`** builder + serde field; threaded through both `probe_cfg` and `embedder_cfg` construction in `tauri_commands.rs`.  **SHIPPED 2026-05-15**
+- [x] **`EmbedderRegistryEntry.cached: bool`** — `embedder_registry_list` now checks filesystem for each model's filename in the cache dir.  **SHIPPED 2026-05-15**
+- [x] **`embedder_download_registry_model(name)`** Tauri command — calls `crispembed::CrispEmbed::resolve_model`, checks cache first, downloads if missing; refreshes registry on success.  **SHIPPED 2026-05-15**
+- [x] **Settings UI upgrade** — registry rows show "Select" (cached) or "Download+Loader" (uncached) buttons; active override shown in a violet chip with "Clear"; selecting a registry model forces GGUF backend; `indexEmbedderModelName` persisted.  **SHIPPED 2026-05-15**
+- [x] **Rust unit tests**: 2 new tests — `model_name_override_builder`, `runtime_dim_override_wins_in_dims` (24 embedder tests total pass).  **SHIPPED 2026-05-15**
+
 ---
 
 **Out of scope for this batch** (tracked but deferred):
@@ -558,13 +570,19 @@ jina-reranker, gte-base/large-en-v1.5).
       grid_thw), and a decision about how the 2048-d cross-modal
       vector coexists with the existing per-backend dense column
       (separate column? per-index dim selection at init?).
-- [ ] **Registry-driven embedder selection** — the
-      `embedder_registry_list` Tauri command surfaces the full
-      CrispEmbed registry, but the dropdown still keys off the
-      `EmbedderModel` enum.  Wiring a parallel String-keyed
-      selection path (or refactoring `EmbedderModel` to String)
-      would let new upstream registry models be picked without a
-      CrispSorter release.  ~1 session.
+- [x] **Registry-driven embedder selection (Stage X)** — **SHIPPED 2026-05-15**
+      `IndexConfig.embedder_model_name: Option<String>` added; when
+      non-empty and backend=GGUF, `CrispEmbedBackend::load_by_name(name)`
+      resolves the name via `crispembed::CrispEmbed::new(name, 0)` bypassing
+      the `EmbedderModel` enum.  `Embedder.runtime_dim` stores the actual
+      model dim discovered at load, `dims()` clamps matryoshka against it.
+      `embedder_registry_list` now returns `cached: bool` (checks filesystem);
+      new `embedder_download_registry_model(name)` Tauri command downloads via
+      `crispembed::CrispEmbed::resolve_model`.  Settings UI upgraded: registry
+      list shows "Select" (for cached) / "Download" (for uncached) per entry;
+      active override shown with a "Clear" chip; selecting a registry model
+      forces GGUF backend.  2 new Rust unit tests: `model_name_override_builder`
+      + `runtime_dim_override_wins_in_dims` (all 24 embedder tests pass).
 
 ### P13.5 follow-ups (remaining after the 2026-05-13 batch)
 
