@@ -133,6 +133,28 @@ impl SyncManager {
         Ok(rows)
     }
 
+    pub fn claim_batch_by_op(&self, op: &str, limit: usize) -> Result<Vec<OutboxEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, op, payload, retries, last_err, queued_at
+             FROM sync_outbox WHERE op = ?1 AND retries < 10
+             ORDER BY queued_at ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![op, limit as i64], |r| {
+            Ok(OutboxEntry {
+                id:        r.get(0)?,
+                op:        r.get(1)?,
+                payload:   r.get(2)?,
+                retries:   r.get(3)?,
+                last_err:  r.get(4)?,
+                queued_at: r.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+        Ok(rows)
+    }
+
     /// Mark an entry as successfully pushed (delete it).
     pub fn mark_done(&self, id: i64) -> Result<()> {
         self.conn.lock().unwrap()
@@ -323,6 +345,59 @@ impl SyncManager {
                 Ok((0, failed + rows.len()))
             }
         }
+    }
+
+    /// Stage U — drain `cb_file_upload` outbox entries.  Each entry
+    /// payload is `{"sha256": "…", "path": "/abs/path"}`.  For each
+    /// entry the file at `path` is uploaded via the existing
+    /// `POST /api/files/by-hash/<sha>` endpoint.  Entries where the
+    /// local file is missing are silently completed (the file may have
+    /// been moved; the VPS will never see bytes for that sha).
+    pub async fn drain_cb_file_uploads(
+        &self,
+        client: &cloud_backup::CloudBackupClient,
+        batch_size: usize,
+    ) -> Result<(usize, usize)> {
+        let claimed = self.claim_batch_by_op("cb_file_upload", batch_size)?;
+        if claimed.is_empty() { return Ok((0, 0)); }
+
+        let mut uploaded = 0usize;
+        let mut failed   = 0usize;
+        for entry in &claimed {
+            #[derive(serde::Deserialize)]
+            struct UploadJob { sha256: String, path: String }
+            match serde_json::from_str::<UploadJob>(&entry.payload) {
+                Err(e) => {
+                    self.mark_error(entry.id, &format!("payload parse: {e}")).ok();
+                    failed += 1;
+                }
+                Ok(job) => {
+                    let path = std::path::PathBuf::from(&job.path);
+                    if !path.exists() {
+                        // File moved or deleted — skip, mark done so we
+                        // don't retry forever.
+                        self.mark_done(entry.id).ok();
+                        continue;
+                    }
+                    match std::fs::read(&path) {
+                        Err(e) => {
+                            self.mark_error(entry.id, &format!("read: {e}")).ok();
+                            failed += 1;
+                        }
+                        Ok(bytes) => {
+                            match client.upload_file_bytes(&job.sha256, bytes).await {
+                                Ok(_) => { self.mark_done(entry.id).ok(); uploaded += 1; }
+                                Err(e) => {
+                                    self.mark_error(entry.id, &format!("upload: {e}")).ok();
+                                    failed += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok((uploaded, failed))
     }
 
     pub fn clear_failed(&self) -> Result<usize> {

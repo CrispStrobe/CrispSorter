@@ -345,6 +345,15 @@ pub struct IndexConfig {
     /// `crispsorter index purge --max-size N` runs an immediate pass.
     #[serde(default)]
     pub local_max_size_bytes: Option<u64>,
+    /// Stage U — "thin client" switch.  When `false`, bg_ingest skips
+    /// all extraction (text, audio, OCR) and writes L1-only rows:
+    /// path + sha256 + mtime + size.  When cloud-backup push is also
+    /// enabled, bg_ingest additionally enqueues a `cb_file_upload`
+    /// outbox entry for each file so the actual bytes are shipped to
+    /// the VPS; the VPS extraction worker then extracts full_text and
+    /// pushes the enriched row back.  Default `true` (extraction on).
+    #[serde(default = "default_local_extraction_enabled")]
+    pub local_extraction_enabled: bool,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -429,6 +438,10 @@ fn default_image_extraction_enabled() -> bool {
     true
 }
 
+fn default_local_extraction_enabled() -> bool {
+    true
+}
+
 /// Pick the effective model-cache directory, in priority order:
 ///   1. `CRISPSORTER_MODEL_CACHE_DIR` env var (machine-wide override)
 ///   2. `IndexConfig.model_cache_dir` (UI setting)
@@ -496,6 +509,7 @@ impl Default for IndexConfig {
             cloud_backup_pull_manifests_enabled: false,
             cloud_backup_pull_full_text_enabled: false,
             local_max_size_bytes: None,
+            local_extraction_enabled: true,
         }
     }
 }

@@ -2345,6 +2345,21 @@ pub fn run() {
                                 }
                                 _ => {}  // nothing to drain or transient error
                             }
+                            // Stage U — also drain cb_file_upload entries (thin-client mode).
+                            let thin_enabled = {
+                                state.index.lock().await.config.local_extraction_enabled == false
+                            };
+                            if thin_enabled {
+                                match mgr.drain_cb_file_uploads(&cli, 8).await {
+                                    Ok((up, fail)) if up > 0 || fail > 0 => {
+                                        app_log!(
+                                            "info",
+                                            "cb-api file-upload drain: uploaded={up} failed={fail}"
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                 });
@@ -2467,6 +2482,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_admin_mint,
             sync::tauri_commands::sync_cb_admin_revoke,
             sync::tauri_commands::sync_cb_admin_list_keys,
+            sync::tauri_commands::sync_cb_extract_status,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,

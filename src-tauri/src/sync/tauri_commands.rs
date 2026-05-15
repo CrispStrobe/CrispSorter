@@ -752,7 +752,20 @@ pub async fn sync_cb_drain(
     let n = batch_size.unwrap_or(64).clamp(1, 1024);
     let (pushed, failed) = mgr.drain_cb_outbox(&cli, n).await
         .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "pushed": pushed, "failed": failed }))
+    // Stage U — also drain file uploads in the same call.
+    let thin_enabled = !state.index.lock().await.config.local_extraction_enabled;
+    let (uploaded, upload_failed) = if thin_enabled {
+        mgr.drain_cb_file_uploads(&cli, n).await.unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+    Ok(serde_json::json!({
+        "pushed":         pushed,
+        "failed":         failed,
+        "uploaded":       uploaded,
+        "upload_failed":  upload_failed,
+        "drained":        pushed + uploaded,
+    }))
 }
 
 /// `POST /api/files/by-hash/<sha>` — stream-upload `local_path` to
@@ -1441,6 +1454,25 @@ pub async fn sync_federated_search(
     Ok(serde_json::json!({
         "hits":   merged,
         "errors": errors,
+    }))
+}
+
+// ── Stage U — thin-client extract-status ───────────────────────────────────
+
+/// Stage U — poll the VPS extraction-worker queue depths.
+/// Returns `{pending, in_progress, done, failed, worker_db_found}`.
+#[tauri::command]
+pub async fn sync_cb_extract_status(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let cli = make_cb_client(&state).await?;
+    let r = cli.extract_status().await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "pending":         r.pending,
+        "in_progress":     r.in_progress,
+        "done":            r.done,
+        "failed":          r.failed,
+        "worker_db_found": r.worker_db_found,
     }))
 }
 
