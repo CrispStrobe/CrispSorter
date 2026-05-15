@@ -2483,6 +2483,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_admin_revoke,
             sync::tauri_commands::sync_cb_admin_list_keys,
             sync::tauri_commands::sync_cb_extract_status,
+            sync::tauri_commands::sync_skeleton_search,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,

@@ -190,6 +190,31 @@
         }
     }
 
+    // Stage W — skeleton hint state.
+    interface SkeletonHit { name: string; doc_count: number; }
+    let skeletonAuthors    = $state<SkeletonHit[]>([]);
+    let skeletonParentDirs = $state<SkeletonHit[]>([]);
+    let skeletonVisible    = $state(false);
+
+    async function runSkeletonSearch(q: string) {
+        if (!q.trim()) {
+            skeletonAuthors = [];
+            skeletonParentDirs = [];
+            skeletonVisible = false;
+            return;
+        }
+        try {
+            const r = await invoke<{ authors: SkeletonHit[]; parent_dirs: SkeletonHit[] }>(
+                'sync_skeleton_search', { query: q.trim() }
+            );
+            skeletonAuthors    = r.authors    ?? [];
+            skeletonParentDirs = r.parent_dirs ?? [];
+            skeletonVisible    = skeletonAuthors.length > 0 || skeletonParentDirs.length > 0;
+        } catch {
+            skeletonVisible = false;
+        }
+    }
+
     // P13.6 Step 8 — "Transcribe" surface for audio rows ingested at
     // L1 (no transcript) or L2 (probe-only).  Same Map-state pattern
     // as translations; keyed by doc_id (no chunk granularity since
@@ -667,6 +692,7 @@
                 class="query-input"
                 type="text"
                 bind:value={query}
+                oninput={() => runSkeletonSearch(query)}
                 onkeydown={onKeydown}
                 placeholder="Suche in indizierten Dokumenten …"
                 title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
@@ -1153,6 +1179,32 @@
         </section>
     {/if}
 
+    <!-- Stage W — skeleton hint panel -->
+    {#if skeletonVisible}
+        <section class="skeleton-hints">
+            <header class="skeleton-header">
+                <span class="skeleton-badge">✦ Local hints</span>
+                <span class="skeleton-meta">(from skeleton index — instant, no remote call)</span>
+            </header>
+            {#if skeletonAuthors.length > 0}
+                <div class="skeleton-group">
+                    <span class="skeleton-group-label">Authors</span>
+                    {#each skeletonAuthors as h}
+                        <span class="skeleton-chip">{h.name} <em>{h.doc_count}</em></span>
+                    {/each}
+                </div>
+            {/if}
+            {#if skeletonParentDirs.length > 0}
+                <div class="skeleton-group">
+                    <span class="skeleton-group-label">Folders</span>
+                    {#each skeletonParentDirs as h}
+                        <span class="skeleton-chip">{h.name} <em>{h.doc_count}</em></span>
+                    {/each}
+                </div>
+            {/if}
+        </section>
+    {/if}
+
     <!-- Stage S — federated search panel -->
     {#if fedSearched}
         <section class="fed-results">
@@ -1560,6 +1612,31 @@
     :global(mark) { background: #854d0e55; color: #fbbf24; border-radius: 2px; padding: 0 1px; }
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    /* Stage W — skeleton hint panel */
+    .skeleton-hints {
+        padding: 8px 16px;
+        border-bottom: 1px solid #27272a;
+        background: #18181b;
+    }
+    .skeleton-header {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    }
+    .skeleton-badge {
+        font-size: 0.7rem; font-weight: 600; color: #a78bfa;
+        background: #3b204d40; padding: 2px 6px; border-radius: 4px;
+        letter-spacing: 0.03em;
+    }
+    .skeleton-meta { font-size: 0.65rem; color: #52525b; }
+    .skeleton-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 5px; align-items: center; }
+    .skeleton-group-label {
+        font-size: 0.65rem; color: #71717a; min-width: 46px; text-align: right; margin-right: 4px;
+    }
+    .skeleton-chip {
+        font-size: 0.72rem; background: #27272a; color: #d4d4d8;
+        padding: 2px 8px; border-radius: 12px; white-space: nowrap;
+    }
+    .skeleton-chip em { color: #a78bfa; font-style: normal; margin-left: 4px; }
 
     /* Stage S — federated panel */
     .fed-results { padding: 12px 16px; border-top: 1px solid var(--color-border, #444); }

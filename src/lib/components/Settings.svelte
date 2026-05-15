@@ -326,6 +326,7 @@
      *  and only writes L1 metadata; the VPS extraction worker handles
      *  full_text from the uploaded bytes. */
     let indexLocalExtractionEnabled        = $state<boolean>(true);
+    let indexSkeletonOnly                  = $state<boolean>(false);
 
     // ── Stage T — admin key management ────────────────────────────────────
     let cbAdminToken      = $state<string>('');
@@ -827,6 +828,7 @@
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
         indexLocalExtractionEnabled    = await getSetting('indexLocalExtractionEnabled', true) as boolean;
+        indexSkeletonOnly              = await getSetting('indexSkeletonOnly', false) as boolean;
         indexLocalMaxSizeGb            = await getSetting('indexLocalMaxSizeGb', 0) as number;
         backupDriveId                  = await getSetting('backupDriveId', '') as string;
         backupKeepDaily                = await getSetting('backupKeepDaily', 7) as number;
@@ -1121,6 +1123,7 @@
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
         await saveSetting('indexLocalExtractionEnabled',   indexLocalExtractionEnabled);
+        await saveSetting('indexSkeletonOnly',             indexSkeletonOnly);
         await saveSetting('indexLocalMaxSizeGb',            indexLocalMaxSizeGb);
         await saveSetting('backupDriveId',                  backupDriveId);
         await saveSetting('backupKeepDaily',                backupKeepDaily);
@@ -1280,6 +1283,7 @@
                         : null,
                     // Stage U — thin client: when false, bg_ingest skips extraction.
                     local_extraction_enabled: indexLocalExtractionEnabled,
+                    local_skeleton_only: indexSkeletonOnly,
                 }
             });
             if (indexEnabled) {
@@ -3021,13 +3025,24 @@
 
                 <!-- Stage U — thin-client switch. -->
                 <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
-                    <input type="checkbox" bind:checked={indexLocalExtractionEnabled} />
+                    <input type="checkbox" bind:checked={indexLocalExtractionEnabled} disabled={indexSkeletonOnly} />
                     <span>Local extraction (uncheck for thin-client / VPS-only extraction)</span>
                 </label>
                 <p class="hint">
                     When unchecked, bg_ingest writes L1-only rows (path + sha256 + size) and
                     uploads the raw bytes to the VPS for extraction. Saves CPU on low-power clients.
                     Requires cloud-backup push manifests to be enabled.
+                </p>
+
+                <!-- Stage W — skeleton-only switch. -->
+                <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
+                    <input type="checkbox" bind:checked={indexSkeletonOnly} />
+                    <span>Skeleton-only mode (ultra-lightweight: author/dir hints only, full search via VPS)</span>
+                </label>
+                <p class="hint">
+                    When checked, no LanceDB rows, FTS, or embeddings are written locally.
+                    Only a tiny author-index and parent-dir-index are kept (~kilobytes).
+                    Search results come entirely from the remote VPS. Implies thin-client mode.
                 </p>
 
                 <!-- Stage P — local DB size cap. -->

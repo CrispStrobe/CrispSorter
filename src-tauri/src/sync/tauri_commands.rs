@@ -1476,6 +1476,49 @@ pub async fn sync_cb_extract_status(
     }))
 }
 
+// ── Stage W — skeleton index search ────────────────────────────────────────
+
+/// Stage W — search the local skeleton index for quick author / dir hints.
+///
+/// Returns `{authors: [{name, doc_count}], parent_dirs: [{name, doc_count}]}`.
+/// Safe to call even when `local_skeleton_only=false` — returns empty lists if
+/// no skeleton DB exists yet.
+#[tauri::command]
+pub async fn sync_skeleton_search(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<serde_json::Value, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not set")?;
+
+    let sk = match crate::index::skeleton::SkeletonIndex::open_or_create(&data_dir) {
+        Ok(s) => s,
+        Err(_) => {
+            return Ok(serde_json::json!({ "authors": [], "parent_dirs": [] }));
+        }
+    };
+
+    let authors = sk
+        .search_authors(&query, 10)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|h| serde_json::json!({ "name": h.name, "doc_count": h.doc_count }))
+        .collect::<Vec<_>>();
+
+    let parent_dirs = sk
+        .search_parent_dirs(&query, 10)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|h| serde_json::json!({ "name": h.name, "doc_count": h.doc_count }))
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({ "authors": authors, "parent_dirs": parent_dirs }))
+}
+
 // ── Stage T — admin key management ─────────────────────────────────────────
 
 fn cb_client_for_admin(state: &AppState) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(CloudBackupClient, String), String>> + Send + '_>> {

@@ -341,12 +341,12 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     // The decision "should we enqueue" is read here once per
     // worker_loop spawn so a Settings change mid-run picks up at
     // the next worker_loop restart.
-    let (cb_auto_push_enabled, cb_thin_client_mode) = {
+    let (cb_auto_push_enabled, cb_thin_client_mode, skeleton_only) = {
         let g = app_state.index.lock().await;
         let push = g.config.cloud_backup_push_manifests_enabled
             && g.config.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
         let thin = !g.config.local_extraction_enabled;
-        (push, thin)
+        (push, thin, g.config.local_skeleton_only)
     };
     let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level) = {
         let g = app_state.index.lock().await;
@@ -525,6 +525,26 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let volume_id = crate::volume::volume_id_for_path(&p);
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
     let doc_id = uuid::Uuid::new_v4().to_string();
+
+    // ── Stage W — skeleton-only fast path ──────────────────────────────
+    // When `local_skeleton_only = true` we skip everything except the two
+    // lightweight KV tables in skeleton_index.db.  No LanceDB, no FTS,
+    // no embedder.  Fires before the thin-client branch so both flags
+    // being set still only writes the skeleton.
+    if skeleton_only {
+        if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
+            if let Ok(sk) = crate::index::skeleton::SkeletonIndex::open_or_create(&data_dir) {
+                let l2 = crate::index::l2_metadata::read(&p);
+                if let Some(author) = item.author.as_deref().or(l2.author.as_deref()) {
+                    let _ = sk.upsert_author(author);
+                }
+                if let Some(dir) = parent_dir.as_deref() {
+                    let _ = sk.upsert_parent_dir(dir);
+                }
+            }
+        }
+        return Ok(());
+    }
 
     // ── Stage U — thin-client fast path ────────────────────────────────
     // When `local_extraction_enabled = false` we skip all extraction and
