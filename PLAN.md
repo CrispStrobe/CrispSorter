@@ -387,15 +387,15 @@ VPS shards live on the Hetzner storage box.  Need offsite mirror via the existin
 - [x] **`BackupState` unit test** — `round_trip_backup_record` in `backup_state.rs`.  SHIPPED 2026-05-15
 - [ ] **Live test**: backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked shard.  (deferred — requires live drive)
 
-#### Stage R — Manifests-DB import bridge (~2 h)
+#### Stage R — Manifests-DB import bridge (~2 h) — SHIPPED 2026-05-15
 
 controller.py owns `index_manifest.db` (the legacy SQLite that aggregates every host's manifest via SYNC_MANIFESTS).  Today cb-api reads from `<catalog-db>` directly; controller.py's SQLite isn't ingested over HTTP.  Close the loop so a one-shot import populates cb-api from a controller-box.
 
-- [ ] **`crispsorter sync cloud-backup import-from-manifest-db PATH`** — reads the source `source_files` / `file_manifest` tables, POSTs every row through `/api/manifest/push` in 200-row batches.
-- [ ] **Server endpoint optionally accepts already-archived rows** — `ManifestRow.archived_in: Optional<batch_id>` so the controller.py state ("this file is in 7z archive #42") survives the round-trip.
-- [ ] **Resumable** — keeps a watermark in the controller-box state so re-runs skip already-imported rows.
-- [ ] **GUI**: a one-shot import button in Settings → Cloud-backup → "Import from controller.py manifest".
-- [ ] **Pytest**: synthetic SQLite with 100 source_files rows → import → verify identical rows visible via `/api/manifest/pull`.
+- [x] **`crispsorter sync cloud-backup import-from-manifest-db PATH`** — reads the source `source_files` / `file_manifest` tables, POSTs every row through `/api/manifest/push` in 200-row batches.  SHIPPED 2026-05-15
+- [x] **Server endpoint optionally accepts already-archived rows** — `ManifestRow.archived_in: Optional<batch_id>` so the controller.py state ("this file is in 7z archive #42") survives the round-trip.  SHIPPED 2026-05-15
+- [x] **Resumable** — keeps a watermark in `manifest_import_state.db` so re-runs skip already-imported rows.  SHIPPED 2026-05-15
+- [x] **GUI**: a one-shot import button in Settings → Cloud-backup → "Import from controller.py manifest".  SHIPPED 2026-05-15
+- [x] **Pytest**: synthetic SQLite with 100 source_files rows → import → verify identical rows visible via `/api/manifest/pull`.  SHIPPED 2026-05-15
 
 #### Stage S — Federated search across all backends (~5–6 h)
 

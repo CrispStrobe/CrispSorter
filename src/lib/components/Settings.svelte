@@ -1384,6 +1384,31 @@
     let backupNowBusy     = $state(false);
     let backupNowMsg      = $state('');
 
+    // Stage R — controller.py manifest import.
+    let importManifestPath  = $state<string>('');
+    let importManifestOwner = $state<string>('');
+    let importManifestBusy  = $state(false);
+    let importManifestMsg   = $state('');
+
+    async function importFromManifestDb() {
+        if (!importManifestPath.trim()) { importManifestMsg = 'Enter a path first.'; return; }
+        importManifestBusy = true;
+        importManifestMsg  = 'Importing…';
+        try {
+            const result = await invoke<any>('sync_cb_import_from_manifest_db', {
+                path:      importManifestPath.trim(),
+                ownerId:   importManifestOwner.trim(),
+                batchSize: 200,
+                dryRun:    false,
+            });
+            importManifestMsg = `Imported ${result.imported ?? 0} rows (watermark → ${result.watermark ?? 0})`;
+        } catch (e: any) {
+            importManifestMsg = `Error: ${e}`;
+        } finally {
+            importManifestBusy = false;
+        }
+    }
+
     async function backupShardsNow() {
         if (!backupDriveId.trim()) { backupNowMsg = 'Select a drive first.'; return; }
         backupNowBusy = true;
@@ -3002,6 +3027,33 @@
                     </button>
                     {#if syncNowMsg}
                         <span class="hint" style="margin:0;">{syncNowMsg}</span>
+                    {/if}
+                </div>
+
+                <!-- Stage R — import from controller.py manifest SQLite. -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <strong>Import from controller.py manifest</strong>
+                    <p class="hint" style="margin-top:4px;">
+                        One-shot import from a controller.py <code>index_manifest.db</code>.
+                        Resumable: re-runs skip already-imported rows.
+                    </p>
+                    <label for="cb-import-path" style="margin-top:8px;">Manifest DB path</label>
+                    <input id="cb-import-path" type="text"
+                           bind:value={importManifestPath}
+                           placeholder="/path/to/index_manifest.db" />
+                    <label for="cb-import-owner" style="margin-top:6px;">Owner ID (optional)</label>
+                    <input id="cb-import-owner" type="text"
+                           bind:value={importManifestOwner}
+                           placeholder="leave blank to use key's owner_id" />
+                    <div style="margin-top:8px;">
+                        <button type="button" class="btn"
+                                onclick={importFromManifestDb}
+                                disabled={importManifestBusy || !indexCloudBackupUrl.trim() || !importManifestPath.trim()}>
+                            {importManifestBusy ? 'Importing…' : 'Import now'}
+                        </button>
+                    </div>
+                    {#if importManifestMsg}
+                        <p class="hint" style="margin-top:6px;">{importManifestMsg}</p>
                     {/if}
                 </div>
 

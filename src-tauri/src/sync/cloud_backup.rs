@@ -85,6 +85,12 @@ pub struct ManifestRow {
     /// back to sha-prefix sharding (the Stage G default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collection_id: Option<String>,
+    /// Stage R — controller.py archive reference.  Non-None only
+    /// when importing rows from a controller.py manifest DB; carries
+    /// the source `archive_id` so archive-membership survives the
+    /// HTTP round-trip.  Normal bg_ingest pushes leave this `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_in: Option<i64>,
 }
 
 impl ManifestRow {
@@ -129,6 +135,7 @@ impl ManifestRow {
             year:       raw.year,
             full_text:  if raw.full_text.is_empty() { None } else { Some(raw.full_text.clone()) },
             collection_id,
+            archived_in: None,
         }
     }
 }
@@ -1583,6 +1590,7 @@ mod tests {
             author: None,
             year: None,
             collection_id: None,
+            archived_in: None,
         }
     }
 }
@@ -1643,6 +1651,7 @@ mod live_tests {
             language: None, title: None, author: None, year: None,
             full_text: None,
             collection_id: None,
+            archived_in: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push");
@@ -1691,6 +1700,7 @@ mod live_tests {
             language: None, title: None, author: None, year: None,
             full_text: Some(body.clone()),
             collection_id: None,
+            archived_in: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push with full_text");
@@ -1764,6 +1774,7 @@ mod live_tests {
             year: None,
             full_text: Some(body.clone()),
             collection_id: None,
+            archived_in: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&push_row))
             .await
@@ -1856,6 +1867,7 @@ mod live_tests {
             language: None, title: None, author: None, year: None,
             full_text: None,
             collection_id: None,
+            archived_in: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push prelude");
@@ -1937,6 +1949,7 @@ mod live_tests {
             year: Some(2024),
             full_text: Some(body.clone()),
             collection_id: None,
+            archived_in: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push");
@@ -2088,6 +2101,7 @@ mod live_tests {
             language: None, title: None, author: None, year: None,
             full_text: Some(format!("outbox sentinel {unique}")),
             collection_id: None,
+            archived_in: None,
         };
         let payload = serde_json::to_string(&row).expect("serialise row");
 
