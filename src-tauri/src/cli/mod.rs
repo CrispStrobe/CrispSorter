@@ -380,6 +380,42 @@ enum CloudBackupCmd {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Stage Q — back up VPS shards to a configured cloud drive.
+    /// Downloads each shard as a gzip tarball from cb-api, uploads
+    /// to `cb-backups/<YYYY-MM-DD>/<prefix>.tar.gz` on the drive,
+    /// records watermarks for incremental re-runs.  Only shards whose
+    /// `max_indexed_at` watermark advanced since the last backup are
+    /// re-uploaded; unchanged shards are skipped.
+    BackupShards {
+        /// Drive ID (as returned by `crispsorter drives list`).
+        #[arg(long = "drive")]
+        drive_id: String,
+        /// Limit to one shard prefix (e.g. `aa`).  When omitted all
+        /// shards are backed up.
+        #[arg(long)]
+        shard: Option<String>,
+        /// Upload even if the VPS watermark hasn't changed.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Keep at most N daily backup directories on the drive.
+        /// Oldest directories are deleted first.  0 = keep all.
+        #[arg(long = "keep-daily", default_value_t = 7)]
+        keep_daily: usize,
+    },
+    /// Stage Q — restore a shard from a cloud-drive backup.
+    /// Downloads the tarball from `cb-backups/<date>/<prefix>.tar.gz`
+    /// and POSTs it to `POST /api/shard/import/{prefix}` on the VPS.
+    RestoreShard {
+        /// Two-char shard prefix to restore (e.g. `aa`).
+        prefix: String,
+        /// Drive ID to restore from.
+        #[arg(long = "from-drive")]
+        drive_id: String,
+        /// Specific backup date directory (YYYY-MM-DD).  When omitted,
+        /// the most-recent backup directory on the drive is used.
+        #[arg(long)]
+        date: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2915,6 +2951,178 @@ async fn cmd_sync_cloud_backup(
 
         // Login/Logout already handled above.
         CloudBackupCmd::Login { .. } | CloudBackupCmd::Logout => unreachable!(),
+
+        CloudBackupCmd::BackupShards { drive_id, shard, force, keep_daily } => {
+            use crate::drives::{DriveRegistry, DriveConfig};
+
+            // Resolve drive.
+            let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+            let drive_cfg: DriveConfig = registry.drives.iter()
+                .find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{}' not found; run `crispsorter drives list`", drive_id))?
+                .clone();
+            let drive = DriveRegistry::instantiate(&drive_cfg);
+
+            let bs = crate::sync::backup_state::BackupState::open(&data_dir)
+                .map_err(|e| e.to_string())?;
+
+            // List shards from VPS.
+            let shard_list = client.shard_list().await.map_err(|e| e.to_string())?;
+            let shards_to_backup: Vec<_> = shard_list.shards.iter()
+                .filter(|s| {
+                    // Scope to requested prefix if given.
+                    if let Some(ref requested) = shard {
+                        if &s.prefix != requested { return false; }
+                    }
+                    // Skip unchanged shards unless --force.
+                    if !force {
+                        if let Ok(Some(rec)) = bs.last_backup(&s.prefix) {
+                            if rec.last_watermark >= s.max_indexed_at {
+                                return false; // no change
+                            }
+                        }
+                    }
+                    true
+                })
+                .collect();
+
+            if shards_to_backup.is_empty() {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({"backed_up": 0, "skipped": shard_list.shards.len()})),
+                    OutFormat::Text => println!("all shards up-to-date; nothing to back up"),
+                }
+                return Ok(());
+            }
+
+            // Date-stamped directory on the drive.
+            let today = {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // Simple YYYY-MM-DD from epoch seconds.
+                let secs = now;
+                let days = secs / 86400;
+                // Rata Die → Gregorian (days since 1970-01-01 + offset to 0001-01-01).
+                let z = days as i64 + 719468;
+                let era = if z >= 0 { z } else { z - 146096 } / 146097;
+                let doe = z - era * 146097;
+                let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+                let y   = yoe + era * 400;
+                let doy = doe - (365*yoe + yoe/4 - yoe/100);
+                let mp  = (5*doy + 2)/153;
+                let d   = doy - (153*mp+2)/5 + 1;
+                let m   = if mp < 10 { mp + 3 } else { mp - 9 };
+                let y   = if m <= 2 { y + 1 } else { y };
+                format!("{:04}-{:02}-{:02}", y, m, d)
+            };
+            let backup_dir = std::path::Path::new("cb-backups").join(&today);
+
+            let mut backed_up = 0usize;
+            let mut errors = Vec::<String>::new();
+            for shard_info in &shards_to_backup {
+                let tar_name = format!("{}.tar.gz", shard_info.prefix);
+                let drive_path = backup_dir.join(&tar_name);
+                match client.shard_export(&shard_info.prefix).await {
+                    Ok(data) => {
+                        if let Err(e) = drive.write_file(&drive_path, &data) {
+                            errors.push(format!("write {} to drive: {e}", shard_info.prefix));
+                        } else {
+                            let _ = bs.record_backup(
+                                &shard_info.prefix,
+                                shard_info.max_indexed_at,
+                                &drive_id,
+                                &drive_path.to_string_lossy(),
+                            );
+                            backed_up += 1;
+                        }
+                    }
+                    Err(e) => errors.push(format!("export {}: {e}", shard_info.prefix)),
+                }
+            }
+
+            // Retention: prune oldest backup dirs on the drive.
+            if keep_daily > 0 {
+                let cb_root = std::path::Path::new("cb-backups");
+                if let Ok(entries) = drive.list_dir(cb_root) {
+                    let mut dirs: Vec<String> = entries.iter()
+                        .filter(|e| e.is_dir)
+                        .map(|e| e.name.clone())
+                        .collect();
+                    dirs.sort(); // YYYY-MM-DD sorts chronologically
+                    let to_delete = dirs.len().saturating_sub(keep_daily);
+                    for old_dir in dirs.iter().take(to_delete) {
+                        let old_path = cb_root.join(old_dir);
+                        if let Ok(files) = drive.list_dir(&old_path) {
+                            for f in files {
+                                let _ = drive.delete(&old_path.join(&f.name));
+                            }
+                        }
+                        let _ = drive.delete(&old_path);
+                    }
+                }
+            }
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "backed_up": backed_up,
+                    "errors":    errors,
+                    "date_dir":  today,
+                })),
+                OutFormat::Text => {
+                    println!("backed up {backed_up} shard(s) → cb-backups/{today}/");
+                    for e in &errors { eprintln!("error: {e}"); }
+                }
+            }
+        }
+
+        CloudBackupCmd::RestoreShard { prefix, drive_id, date } => {
+            use crate::drives::DriveRegistry;
+
+            let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+            let drive_cfg = registry.drives.iter()
+                .find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", drive_id))?
+                .clone();
+            let drive = DriveRegistry::instantiate(&drive_cfg);
+
+            // Resolve the date dir: explicit or most-recent.
+            let cb_root = std::path::Path::new("cb-backups");
+            let date_dir = if let Some(d) = date {
+                d
+            } else {
+                // Pick the lexicographically latest backup directory.
+                let mut dirs: Vec<String> = drive.list_dir(cb_root)
+                    .map_err(|e| format!("list cb-backups: {e}"))?
+                    .into_iter()
+                    .filter(|e| e.is_dir)
+                    .map(|e| e.name)
+                    .collect();
+                dirs.sort();
+                dirs.pop().ok_or("no backup directories found on drive")?
+            };
+
+            let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
+            let data = drive.read_file(&tar_path)
+                .map_err(|e| format!("read {} from drive: {e}", tar_path.display()))?;
+
+            client.shard_import(&prefix, data).await.map_err(|e| e.to_string())?;
+
+            // Update backup state so next incremental backup knows about this.
+            if let Ok(bs) = crate::sync::backup_state::BackupState::open(&data_dir) {
+                let drive_path_str = tar_path.to_string_lossy().into_owned();
+                let _ = bs.record_backup(&prefix, 0, &drive_id, &drive_path_str);
+            }
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "restored": prefix,
+                    "from_drive": drive_id,
+                    "date": date_dir,
+                })),
+                OutFormat::Text => println!("restored shard {prefix} from {drive_id}:{date_dir}"),
+            }
+        }
     }
     Ok(())
 }

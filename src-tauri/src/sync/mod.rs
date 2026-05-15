@@ -19,6 +19,7 @@
 //! A single row in `sync_state` tracks `last_pull_ts` and `last_push_ts`
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
+pub mod backup_state;
 pub mod cloud_backup;
 pub mod partition;
 pub mod secret;

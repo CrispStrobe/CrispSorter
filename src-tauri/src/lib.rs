@@ -2461,6 +2461,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_v2_search,
             sync::tauri_commands::sync_cb_partition,
             sync::tauri_commands::sync_status_all,
+            sync::tauri_commands::sync_cb_backup_shards,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,

@@ -953,3 +953,116 @@ pub async fn sync_status_all(
         "crisplens": cl,
     }))
 }
+
+/// Stage Q — back up VPS shards to a cloud drive from the GUI.
+///
+/// Mirrors `crispsorter sync cloud-backup backup-shards` but runs
+/// in-process so the Settings "Backup now" button can invoke it
+/// without spawning a subprocess.
+#[tauri::command]
+pub async fn sync_cb_backup_shards(
+    state: State<'_, AppState>,
+    drive_id: String,
+    shard: Option<String>,
+    force: bool,
+    keep_daily: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    use crate::drives::DriveRegistry;
+    use crate::sync::backup_state::BackupState;
+
+    let cli = make_cb_client(&state).await?;
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+
+    let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let drive_cfg = registry.drives.iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?
+        .clone();
+    let drive = DriveRegistry::instantiate(&drive_cfg);
+
+    let bs = BackupState::open(&data_dir).map_err(|e| e.to_string())?;
+    let shard_list = cli.shard_list().await.map_err(|e| e.to_string())?;
+
+    let shards_to_backup: Vec<_> = shard_list.shards.iter()
+        .filter(|s| {
+            if let Some(ref requested) = shard {
+                if &s.prefix != requested { return false; }
+            }
+            if !force {
+                if let Ok(Some(rec)) = bs.last_backup(&s.prefix) {
+                    if rec.last_watermark >= s.max_indexed_at { return false; }
+                }
+            }
+            true
+        })
+        .collect();
+
+    if shards_to_backup.is_empty() {
+        return Ok(serde_json::json!({ "backed_up": 0, "skipped": shard_list.shards.len() }));
+    }
+
+    // Date-stamped directory.
+    let today = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let days = secs / 86400;
+        let z = days as i64 + 719468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+        let y   = yoe + era * 400;
+        let doy = doe - (365*yoe + yoe/4 - yoe/100);
+        let mp  = (5*doy + 2)/153;
+        let d   = doy - (153*mp+2)/5 + 1;
+        let m   = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y   = if m <= 2 { y + 1 } else { y };
+        format!("{:04}-{:02}-{:02}", y, m, d)
+    };
+    let backup_dir = std::path::Path::new("cb-backups").join(&today);
+
+    let mut backed_up = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    for si in &shards_to_backup {
+        let drive_path = backup_dir.join(format!("{}.tar.gz", si.prefix));
+        match cli.shard_export(&si.prefix).await {
+            Ok(data) => {
+                if let Err(e) = drive.write_file(&drive_path, &data) {
+                    errors.push(format!("write {}: {e}", si.prefix));
+                } else {
+                    let _ = bs.record_backup(&si.prefix, si.max_indexed_at, &drive_id,
+                        &drive_path.to_string_lossy());
+                    backed_up += 1;
+                }
+            }
+            Err(e) => errors.push(format!("export {}: {e}", si.prefix)),
+        }
+    }
+
+    // Retention.
+    let keep = keep_daily.unwrap_or(7);
+    if keep > 0 {
+        let cb_root = std::path::Path::new("cb-backups");
+        if let Ok(entries) = drive.list_dir(cb_root) {
+            let mut dirs: Vec<String> = entries.iter()
+                .filter(|e| e.is_dir).map(|e| e.name.clone()).collect();
+            dirs.sort();
+            let to_delete = dirs.len().saturating_sub(keep);
+            for old_dir in dirs.iter().take(to_delete) {
+                let old_path = cb_root.join(old_dir);
+                if let Ok(files) = drive.list_dir(&old_path) {
+                    for f in files { let _ = drive.delete(&old_path.join(&f.name)); }
+                }
+                let _ = drive.delete(&old_path);
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "backed_up": backed_up,
+        "errors":    errors,
+        "date_dir":  today,
+    }))
+}
