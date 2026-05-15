@@ -6,6 +6,7 @@ pub mod ingest;
 pub mod l2_metadata;
 pub mod local_index;
 pub mod reranker;
+pub mod skeleton;
 pub mod task_failure;
 /// CrispSorter search / RAG index module.
 ///
@@ -354,6 +355,16 @@ pub struct IndexConfig {
     /// pushes the enriched row back.  Default `true` (extraction on).
     #[serde(default = "default_local_extraction_enabled")]
     pub local_extraction_enabled: bool,
+
+    /// Stage W — skeleton-only mode.  When `true`, bg_ingest writes
+    /// ONLY the two lightweight KV tables in `skeleton_index.db`
+    /// (author_index + parent_dir_index).  No LanceDB rows, no FTS,
+    /// no embedder.  Designed for laptops where the full corpus lives
+    /// on the VPS and only quick author/dir hints are wanted locally.
+    /// Implies `local_extraction_enabled = false` in practice; the
+    /// bg_ingest early-return fires before the thin-client branch.
+    #[serde(default)]
+    pub local_skeleton_only: bool,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -510,6 +521,7 @@ impl Default for IndexConfig {
             cloud_backup_pull_full_text_enabled: false,
             local_max_size_bytes: None,
             local_extraction_enabled: true,
+            local_skeleton_only: false,
         }
     }
 }

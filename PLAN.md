@@ -450,7 +450,7 @@ Self-contained because the cross-service plumbing has its own surface area:
 - [x] **Pytest**: 13 tests in `tests/test_stage_v.py` — CrispLens HTTP mock, CrispASR subprocess mock, dispatch-by-ext unit tests.  **SHIPPED 2026-05-15**
 - [ ] **Live test**: VPS with CB_CRISPLENS_URL + CB_CRISPASR_BIN populated — upload an image + audio, verify face_count + full_text in <catalog-db>.  (deferred — requires live VPS with crispasr binary)
 
-#### Stage W — Skeleton local index + remote-only search fallback (~5–7 h, child of Stage U + P)
+#### Stage W — Skeleton local index + remote-only search fallback (~5–7 h, child of Stage U + P) — SHIPPED 2026-05-15
 
 The extreme tiered-cache mode: when the user has TB on the VPS but wants their laptop to use ~100 MB, keep ONLY:
 
@@ -465,10 +465,13 @@ Everything else lives on the VPS.  Search flow:
 3. CrispSorter fetches `GET /api/v2/index/search?q=kant&limit=50` → renders the hits.
 4. Selected rows can be cached in local LanceDB for re-use (LRU cap from Stage P).
 
-- [ ] **`IndexConfig.local_skeleton_only`** boolean.  When true, bg_ingest writes ONLY the skeleton indices (not LanceDB rows).
-- [ ] **`SkeletonIndex` SQLite** at `<data-dir>/skeleton_index.db` with the two KV tables.  Populated at bg_ingest write time + at every `/api/v2/index/search` hit (so frequently-queried rows accumulate in the skeleton too).
-- [ ] **GUI**: search panel shows skeleton hits first (instant ✦ badge), then merges in cb-api hits.
-- [ ] **Pytest + Rust unit tests** for the skeleton-only mode.
+- [x] **`IndexConfig.local_skeleton_only`** boolean.  When true, bg_ingest writes ONLY `skeleton_index.db` (no LanceDB, no FTS, no embedder).  **SHIPPED 2026-05-15**
+- [x] **`SkeletonIndex` SQLite** at `<data-dir>/skeleton_index.db` with `author_index` + `parent_dir_index` KV tables.  `upsert_author` / `upsert_parent_dir` / `search_authors` / `search_parent_dirs` / `stats` methods.  **SHIPPED 2026-05-15**
+- [x] **`sync_skeleton_search(query)`** Tauri command — returns matching authors + parent_dirs with doc_counts from the skeleton DB.  Safe no-op when DB absent.  **SHIPPED 2026-05-15**
+- [x] **bg_ingest early return** — when `local_skeleton_only=true`, fires before the thin-client branch; reads L2 author/dir metadata, upserts, returns `Ok(())`.  **SHIPPED 2026-05-15**
+- [x] **GUI**: search input fires `runSkeletonSearch` on every keystroke; instant `✦ Local hints` panel above results shows matching author chips + folder chips with doc counts.  Disabled local-extraction checkbox when skeleton mode is on.  **SHIPPED 2026-05-15**
+- [x] **Settings UI**: "Skeleton-only mode" checkbox with explanatory hint.  `indexSkeletonOnly` state wired to load/save/IndexConfig.  **SHIPPED 2026-05-15**
+- [x] **Rust unit tests**: 7 tests in `index::skeleton::tests` — upsert_author_increments, upsert_parent_dir_increments, empty_author_is_noop, search_is_case_insensitive, search_returns_empty_for_no_match, stats_reflect_upserts, open_idempotent.  **SHIPPED 2026-05-15**
 
 ---
 
