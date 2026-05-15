@@ -438,14 +438,17 @@ The bigger architectural shift: when the local catalog is huge, the user doesn't
 - [x] **Pytest**: 11 tests in `tests/test_stage_u.py` — extraction helpers, `ExtractionWorker` unit tests, HTTP status endpoint.  **SHIPPED 2026-05-15**
 - [ ] **Live tests**: ship a small zipped batch end-to-end; verify the rows show up in `/api/v2/index/search` with the expected `full_text` + `embedding`.  (deferred — requires live VPS)
 
-#### Stage V — vps_worker leverages CrispLens + CrispASR for full-spectrum extraction (~6–8 h, child of Stage U)
+#### Stage V — vps_worker leverages CrispLens + CrispASR for full-spectrum extraction (~6–8 h, child of Stage U) — SHIPPED 2026-05-15
 
 Self-contained because the cross-service plumbing has its own surface area:
 
-- [ ] **vps_worker → CrispLens bridge**: image files routed via a new internal `crisplens_image_push()` helper.  CrispLens already lives on the VPS; vps_worker hits its loopback URL.  Captures face count + ArcFace embedding back into `<catalog-db>.file_references`.
-- [ ] **vps_worker → CrispASR bridge**: audio/video files transcribed via a `crispasr` CLI subprocess.  The Rust binary already exists in CrispSorter's tree; build a slim VPS-only variant + ship it to `/opt/cb-api/bin/crispasr`.  Output goes into `full_text`.  Decoded via symphonia → 16 kHz mono → whisper-base ggml weights cached on the storage box.
-- [ ] **vps_worker → text extractors**: already imports pypdf / python-docx via `search_engine.py`.  Wire a slim `extract_text(path)` helper, reuse `ContentExtractor`.
-- [ ] **Job dispatching**: a single `vps_worker.py:extract_one(job)` switch on extension that picks the right extractor.
+- [x] **vps_worker → CrispLens bridge**: `_extract_via_crisplens()` in `api/extract.py` — multipart POST to `CB_CRISPLENS_URL/api/ingest/upload-local`; captures `face_count` + caption; written to `file_references.face_count` + `full_text`.  **SHIPPED 2026-05-15**
+- [x] **vps_worker → CrispASR bridge**: `_extract_via_crispasr()` in `api/extract.py` — runs `CB_CRISPASR_BIN transcribe <path>` as subprocess; stdout → `full_text`.  **SHIPPED 2026-05-15**
+- [x] **vps_worker → text extractors**: `_extract_text_from_blob()` (Stage U); dispatched for pdf/docx/xlsx/txt/md/rst/log/csv.  **SHIPPED 2026-05-15**
+- [x] **Job dispatching**: `ExtractionWorker.extract_one()` switches on `IMAGE_EXTS` / `AUDIO_EXTS` / text ext sets; gracefully skips bridges when their env vars are unset.  **SHIPPED 2026-05-15**
+- [x] **`face_count` column**: added to `pending_extractions` (state DB) and `file_references` (cb-api DB via `_FILE_REFERENCES_NEW_COLS`).  **SHIPPED 2026-05-15**
+- [x] **Pytest**: 13 tests in `tests/test_stage_v.py` — CrispLens HTTP mock, CrispASR subprocess mock, dispatch-by-ext unit tests.  **SHIPPED 2026-05-15**
+- [ ] **Live test**: VPS with CB_CRISPLENS_URL + CB_CRISPASR_BIN populated — upload an image + audio, verify face_count + full_text in <catalog-db>.  (deferred — requires live VPS with crispasr binary)
 
 #### Stage W — Skeleton local index + remote-only search fallback (~5–7 h, child of Stage U + P)
 
