@@ -135,6 +135,61 @@
     }
     let remoteDownloads = $state<Map<string, RemoteDownloadState>>(new Map());
 
+    // Stage S — federated search state.
+    interface FederatedHit {
+        id: string;
+        source: 'local' | 'cloud_backup' | 'crisplens' | string;
+        score: number;
+        rrf_rank: number;
+        filename?: string | null;
+        path?: string | null;
+        ext?: string | null;
+        title?: string | null;
+        author?: string | null;
+        year?: number | null;
+        language?: string | null;
+        sha256?: string | null;
+        size_bytes?: number | null;
+        snippet?: string | null;
+        location_uri?: string | null;
+    }
+    let fedBackends     = $state<string[]>(['local', 'cloud_backup', 'crisplens']);
+    let fedResults      = $state<FederatedHit[]>([]);
+    let fedLoading      = $state(false);
+    let fedSearched     = $state(false);
+    let fedErrors       = $state<Record<string, string>>({});
+
+    const SOURCE_ICON: Record<string, string> = {
+        local: '💾',
+        cloud_backup: '☁',
+        crisplens: '👁',
+    };
+
+    async function runFederatedSearch() {
+        const q = query.trim();
+        if (!q) return;
+        fedLoading  = true;
+        fedSearched = true;
+        fedResults  = [];
+        fedErrors   = {};
+        try {
+            const r = await invoke<{ hits: FederatedHit[]; errors: Record<string, string> }>(
+                'sync_federated_search',
+                {
+                    q,
+                    limit,
+                    backends: fedBackends.join(','),
+                },
+            );
+            fedResults = r.hits ?? [];
+            fedErrors  = r.errors ?? {};
+        } catch (e: any) {
+            fedErrors = { global: String(e?.message ?? e) };
+        } finally {
+            fedLoading = false;
+        }
+    }
+
     // P13.6 Step 8 — "Transcribe" surface for audio rows ingested at
     // L1 (no transcript) or L2 (probe-only).  Same Map-state pattern
     // as translations; keyed by doc_id (no chunk granularity since
@@ -634,6 +689,13 @@
             {#if remoteLoading}<Loader2 size={15} class="spin" />{:else}🌐{/if}
             Cloud
         </button>
+        <!-- Stage S — federated search across all backends. -->
+        <button class="filter-toggle fed-btn" onclick={runFederatedSearch}
+                disabled={fedLoading || !query.trim() || fedBackends.length === 0}
+                title="Search all backends (local + cloud-backup + CrispLens) with RRF merge">
+            {#if fedLoading}<Loader2 size={15} class="spin" />{:else}🔀{/if}
+            Alle
+        </button>
         <button
             class="filter-toggle"
             onclick={saveCurrentSearch}
@@ -1090,6 +1152,64 @@
             {/if}
         </section>
     {/if}
+
+    <!-- Stage S — federated search panel -->
+    {#if fedSearched}
+        <section class="fed-results">
+            <header class="remote-header">
+                <strong>🔀 Federated results</strong>
+                {#if fedLoading}<Loader2 size={14} class="spin" />{/if}
+                <span class="remote-meta">{fedResults.length} hit(s) across {fedBackends.join(', ')}</span>
+                <!-- backend filter checkboxes -->
+                <span class="fed-toggles">
+                    {#each ['local', 'cloud_backup', 'crisplens'] as b}
+                        <label class="fed-toggle">
+                            <input type="checkbox"
+                                   checked={fedBackends.includes(b)}
+                                   onchange={(e) => {
+                                       const checked = (e.target as HTMLInputElement).checked;
+                                       fedBackends = checked
+                                           ? [...fedBackends, b]
+                                           : fedBackends.filter(x => x !== b);
+                                   }} />
+                            {SOURCE_ICON[b] ?? b} {b.replace('_', ' ')}
+                        </label>
+                    {/each}
+                </span>
+            </header>
+            {#each Object.entries(fedErrors) as [k, v]}
+                <p class="error">[{k}] {v}</p>
+            {/each}
+            {#if fedResults.length === 0 && !fedLoading}
+                <p class="hint">No federated results — run a search or enable more backends.</p>
+            {:else}
+                <ul class="remote-list">
+                    {#each fedResults as hit (hit.id)}
+                        <li>
+                            <div class="remote-row">
+                                <div class="remote-meta-row">
+                                    <span class="fed-source-badge">{SOURCE_ICON[hit.source] ?? ''} {hit.source}</span>
+                                    <span class="remote-score">{hit.score.toFixed(4)}</span>
+                                    <span class="fed-rank">#{hit.rrf_rank}</span>
+                                    <span class="remote-title">{hit.title ?? hit.filename ?? '(no title)'}</span>
+                                    {#if hit.year}<span class="remote-year">{hit.year}</span>{/if}
+                                    {#if hit.author}<span class="remote-author">{hit.author}</span>{/if}
+                                    {#if hit.language}<span class="remote-lang">{hit.language}</span>{/if}
+                                    {#if hit.ext}<span class="remote-lang">{hit.ext}</span>{/if}
+                                </div>
+                                {#if hit.path}
+                                    <div class="remote-path">{hit.path}</div>
+                                {/if}
+                                {#if hit.snippet}
+                                    <div class="remote-snippet">{hit.snippet.slice(0, 240)}{hit.snippet.length > 240 ? '…' : ''}</div>
+                                {/if}
+                            </div>
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+        </section>
+    {/if}
 </div>
 
 <style>
@@ -1440,4 +1560,15 @@
     :global(mark) { background: #854d0e55; color: #fbbf24; border-radius: 2px; padding: 0 1px; }
     :global(.spin) { animation: spin 1s linear infinite; display: inline-flex; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    /* Stage S — federated panel */
+    .fed-results { padding: 12px 16px; border-top: 1px solid var(--color-border, #444); }
+    .fed-toggles { display: flex; gap: 10px; margin-left: auto; }
+    .fed-toggle { display: flex; align-items: center; gap: 4px; font-size: 0.8em; cursor: pointer; }
+    .fed-source-badge {
+        font-size: 0.75em; padding: 1px 7px; border-radius: 10px;
+        background: #27272a; color: #a1a1aa; white-space: nowrap;
+    }
+    .fed-rank { font-size: 0.75em; color: #71717a; }
+    .fed-btn { background: #1a1a2e; }
 </style>

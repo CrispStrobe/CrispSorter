@@ -2463,6 +2463,7 @@ pub fn run() {
             sync::tauri_commands::sync_status_all,
             sync::tauri_commands::sync_cb_backup_shards,
             sync::tauri_commands::sync_cb_import_from_manifest_db,
+            sync::tauri_commands::sync_federated_search,
             drives::tauri_commands::drive_list,
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,

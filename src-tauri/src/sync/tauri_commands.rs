@@ -11,8 +11,8 @@
 use tauri::State;
 use crate::AppState;
 use super::cloud_backup::{
-    CloudBackupClient, EmbeddingRow, HealthResponse, HybridSearchFilters,
-    HybridSearchRequest, ManifestRow,
+    CloudBackupClient, EmbeddingRow, FederatedHit, HealthResponse,
+    HybridSearchFilters, HybridSearchRequest, ManifestRow,
 };
 use super::secret;
 use super::{SyncManager, SyncStatus};
@@ -1198,4 +1198,341 @@ pub async fn sync_cb_import_from_manifest_db(
         "watermark":  max_source_id,
         "dry_run":    dry_run,
     }))
+}
+
+// ── Stage S — Federated search ──────────────────────────────────────────────
+
+/// RRF constant k (60 is the standard default).
+pub(crate) const RRF_K: f32 = 60.0;
+
+fn rrf_score(rank: usize) -> f32 {
+    1.0 / (RRF_K + rank as f32)
+}
+
+/// Merge per-backend ranked lists into a single RRF-fused ranking.
+///
+/// `lists` is a slice of ranked `FederatedHit` vecs (best-first).
+/// Deduplication key: sha256 when non-empty, otherwise the hit's `id`.
+/// When two backends return the same file (same sha256), their RRF
+/// contributions are summed and only one record is kept (the one with
+/// the higher source-score).  Hits without a sha256 are keyed by `id`
+/// and never merged across backends.
+pub(crate) fn rrf_merge(lists: Vec<Vec<FederatedHit>>, limit: usize) -> Vec<FederatedHit> {
+    use std::collections::HashMap;
+
+    // Map merge_key → (accumulated_score, best hit so far)
+    let mut scores: HashMap<String, (f32, FederatedHit)> = HashMap::new();
+
+    for list in lists {
+        for (rank0, mut hit) in list.into_iter().enumerate() {
+            let contribution = rrf_score(rank0 + 1);
+            let key = hit.sha256.as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| hit.id.clone());
+            let entry = scores.entry(key).or_insert_with(|| {
+                hit.score = contribution;
+                (0.0, hit.clone())
+            });
+            entry.0 += contribution;
+            // Keep the hit with the higher source-score as the display record.
+            if hit.score > entry.1.score {
+                entry.1 = hit;
+            }
+            entry.1.score = entry.0;
+        }
+    }
+
+    let mut merged: Vec<FederatedHit> = scores.into_values().map(|(_, h)| h).collect();
+    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged.truncate(limit);
+    for (i, h) in merged.iter_mut().enumerate() {
+        h.rrf_rank = i + 1;
+    }
+    merged
+}
+
+/// Stage S — fan out a free-text query to all enabled backends in parallel,
+/// normalise their payloads to `FederatedHit`, RRF-merge, and return the
+/// union ranked list.
+///
+/// `backends` is a comma-separated list drawn from
+/// `"local"`, `"cloud_backup"`, `"crisplens"`.  Omit or pass an empty
+/// string to query all three.
+///
+/// Per-backend errors are swallowed and reported in the `errors` field
+/// of the returned JSON so a degraded backend doesn't suppress results
+/// from the others.
+#[tauri::command]
+pub async fn sync_federated_search(
+    state: State<'_, AppState>,
+    q: String,
+    limit: Option<usize>,
+    backends: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use tokio::join;
+
+    let q = q.trim().to_owned();
+    if q.is_empty() {
+        return Ok(serde_json::json!({ "hits": [], "errors": {} }));
+    }
+    let limit = limit.unwrap_or(20).clamp(1, 200);
+
+    let enabled: std::collections::HashSet<&str> = {
+        let raw = backends.as_deref().unwrap_or("");
+        if raw.is_empty() {
+            ["local", "cloud_backup", "crisplens"].into()
+        } else {
+            raw.split(',').map(str::trim).collect()
+        }
+    };
+
+    let want_local = enabled.contains("local");
+    let want_cb    = enabled.contains("cloud_backup");
+    let want_cl    = enabled.contains("crisplens");
+
+    // Snapshot config under a single lock.
+    let (cb_url_val, data_dir_opt) = {
+        let idx = state.index.lock().await;
+        let url = idx.config.cloud_backup_url.clone().unwrap_or_default();
+        let dd  = state.data_dir.lock().await.clone();
+        (url, dd)
+    };
+    let data_dir = data_dir_opt.ok_or("data_dir not initialised")?;
+
+    // ── Local backend ───────────────────────────────────────────────────────
+    let local_fut = async {
+        if !want_local { return (Vec::new(), None); }
+        let lock = state.index.lock().await;
+        if !lock.config.enabled { return (Vec::new(), None); }
+        let engine = lock.engine.clone();
+        drop(lock);
+        let Some(engine) = engine else {
+            return (Vec::new(), Some("local index not initialised".to_owned()));
+        };
+        match engine.search_hybrid(&q, &Default::default(), limit).await {
+            Err(e) => (Vec::new(), Some(e.to_string())),
+            Ok(hits) => {
+                let fed: Vec<FederatedHit> = hits.into_iter().enumerate().map(|(i, r)| {
+                    FederatedHit {
+                        id: format!("local:{}", r.doc_id),
+                        source: "local".into(),
+                        score: r.score,
+                        rrf_rank: i + 1,
+                        filename: r.filename,
+                        path: Some(r.location_uri.clone()),
+                        ext: r.ext,
+                        title: r.title,
+                        author: r.author,
+                        year: r.year,
+                        language: r.language,
+                        sha256: if r.source_hash.is_empty() { None } else { Some(r.source_hash) },
+                        size_bytes: None,
+                        snippet: if r.snippet.is_empty() { None } else { Some(r.snippet) },
+                        location_uri: Some(r.location_uri),
+                    }
+                }).collect();
+                (fed, None)
+            }
+        }
+    };
+
+    // ── Cloud-backup backend ────────────────────────────────────────────────
+    let cb_fut = async {
+        if !want_cb || cb_url_val.is_empty() { return (Vec::new(), None); }
+        let token = match super::secret::get_token_for_url(&cb_url_val) {
+            Ok(Some(t)) => t,
+            Ok(None)    => return (Vec::new(), Some("cloud_backup: no token configured".to_owned())),
+            Err(e)      => return (Vec::new(), Some(format!("cloud_backup: keychain error: {e}"))),
+        };
+        let cli = match CloudBackupClient::new(&cb_url_val, &token) {
+            Ok(c)  => c,
+            Err(e) => return (Vec::new(), Some(format!("cloud_backup: client error: {e}"))),
+        };
+        match cli.search(&q, limit).await {
+            Err(e) => (Vec::new(), Some(format!("cloud_backup: {e}"))),
+            Ok(resp) => {
+                let fed: Vec<FederatedHit> = resp.rows.into_iter().enumerate().map(|(i, h)| {
+                    FederatedHit {
+                        id: format!("cloud_backup:{}", h.sha256),
+                        source: "cloud_backup".into(),
+                        score: h.score,
+                        rrf_rank: i + 1,
+                        filename: Some(h.filename),
+                        path: Some(h.path.clone()),
+                        ext: Some(h.ext),
+                        title: h.title,
+                        author: h.author,
+                        year: h.year,
+                        language: h.language,
+                        sha256: Some(h.sha256),
+                        size_bytes: Some(h.size_bytes),
+                        snippet: h.full_text.map(|t| t.chars().take(300).collect()),
+                        location_uri: None,
+                    }
+                }).collect();
+                (fed, None)
+            }
+        }
+    };
+
+    // ── CrispLens backend ───────────────────────────────────────────────────
+    let cl_fut = async {
+        if !want_cl { return (Vec::new(), None); }
+        let dd = data_dir.clone();
+        let q2 = q.clone();
+        let lim = limit as i64;
+        match tauri::async_runtime::spawn_blocking(move || {
+            use crate::images::crisplens::tauri_commands::get_json;
+            let encoded: String = q2.chars().flat_map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
+                }
+            }).collect();
+            let path = format!("/api/search/semantic?q={encoded}&limit={lim}");
+            get_json::<Vec<crisplens_protocol::SearchHit>>(&dd, &path)
+        }).await {
+            Err(e) => (Vec::new(), Some(format!("crisplens: join error: {e}"))),
+            Ok(Err(e)) => (Vec::new(), Some(format!("crisplens: {e}"))),
+            Ok(Ok(hits)) => {
+                let fed: Vec<FederatedHit> = hits.into_iter().enumerate().map(|(i, h)| {
+                    let filename = h.filename.clone();
+                    FederatedHit {
+                        id: format!("crisplens:{}", h.id),
+                        source: "crisplens".into(),
+                        score: h.score.unwrap_or(0.0),
+                        rrf_rank: i + 1,
+                        filename: Some(filename),
+                        path: Some(h.filepath.clone()),
+                        ext: h.filepath.rsplit('.').next().map(|e| e.to_lowercase()),
+                        title: h.description.clone(),
+                        author: None,
+                        year: None,
+                        language: None,
+                        sha256: None,
+                        size_bytes: None,
+                        snippet: h.description,
+                        location_uri: None,
+                    }
+                }).collect();
+                (fed, None)
+            }
+        }
+    };
+
+    let ((local_hits, local_err), (cb_hits, cb_err), (cl_hits, cl_err)) =
+        join!(local_fut, cb_fut, cl_fut);
+
+    let mut lists: Vec<Vec<FederatedHit>> = Vec::new();
+    if !local_hits.is_empty() { lists.push(local_hits); }
+    if !cb_hits.is_empty()    { lists.push(cb_hits); }
+    if !cl_hits.is_empty()    { lists.push(cl_hits); }
+
+    let merged = rrf_merge(lists, limit);
+
+    let mut errors = serde_json::Map::new();
+    if let Some(e) = local_err { errors.insert("local".into(), e.into()); }
+    if let Some(e) = cb_err    { errors.insert("cloud_backup".into(), e.into()); }
+    if let Some(e) = cl_err    { errors.insert("crisplens".into(), e.into()); }
+
+    Ok(serde_json::json!({
+        "hits":   merged,
+        "errors": errors,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::cloud_backup::FederatedHit;
+
+    fn make_hit(source: &str, id: &str, score: f32) -> FederatedHit {
+        make_hit_with_sha(source, id, score, None)
+    }
+
+    fn make_hit_with_sha(source: &str, id: &str, score: f32, sha: Option<&str>) -> FederatedHit {
+        FederatedHit {
+            id: format!("{source}:{id}"),
+            source: source.into(),
+            score,
+            rrf_rank: 0,
+            filename: Some(format!("{id}.pdf")),
+            path: None, ext: None, title: None, author: None, year: None,
+            language: None,
+            sha256: sha.map(|s| s.to_owned()),
+            size_bytes: None, snippet: None,
+            location_uri: None,
+        }
+    }
+
+    #[test]
+    fn rrf_merge_deduplicates_by_sha256_and_ranks() {
+        // Two backends each return hits; one sha256 appears in both.
+        // The shared sha256 should accumulate RRF from both backends →
+        // rank above a hit that only appeared in one backend at rank 1.
+        let shared_sha = "aa".repeat(32); // 64-char hex
+        let local = vec![
+            make_hit("local", "a", 0.9),
+            make_hit_with_sha("local", "shared", 0.8, Some(&shared_sha)),
+            make_hit("local", "b", 0.7),
+        ];
+        let cb = vec![
+            // cloud_backup rank-1 hit has same sha256 → merges with local:shared
+            make_hit_with_sha("cloud_backup", "shared-cb", 0.95, Some(&shared_sha)),
+            make_hit("cloud_backup", "c", 0.85),
+        ];
+        let merged = rrf_merge(vec![local, cb], 10);
+
+        // "shared" accumulated RRF(rank-2-in-local) + RRF(rank-1-in-cb).
+        // "local:a" only has RRF(rank-1-in-local).
+        // RRF(1) = 1/61 ≈ 0.01639
+        // RRF(2) = 1/62 ≈ 0.01613
+        // shared_rrf = 1/61 + 1/62 ≈ 0.03252  >  local:a_rrf = 1/61 ≈ 0.01639
+        let winner_sha = merged[0].sha256.as_deref().unwrap_or("");
+        assert_eq!(winner_sha, shared_sha,
+            "sha-merged hit should win; top hit sha={winner_sha:?}, \
+             all: {:?}", merged.iter().map(|h| (&h.id, h.score)).collect::<Vec<_>>());
+
+        // 4 unique sha/id keys: shared, a, b, c (not 5 — shared is merged).
+        assert_eq!(merged.len(), 4,
+            "expected 4 hits after dedup; got {}: {:?}",
+            merged.len(), merged.iter().map(|h| &h.id).collect::<Vec<_>>());
+
+        // All non-shared unique items present by id substring.
+        let ids: Vec<&str> = merged.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.iter().any(|id| id.contains("local:a")));
+        assert!(ids.iter().any(|id| id.contains("cloud_backup:c")));
+        assert!(ids.iter().any(|id| id.contains("local:b")));
+
+        // rrf_rank is 1-based and strictly increasing.
+        for (i, h) in merged.iter().enumerate() {
+            assert_eq!(h.rrf_rank, i + 1);
+        }
+    }
+
+    #[test]
+    fn rrf_merge_no_dedup_without_sha256() {
+        // Hits without sha256 are not deduplicated even if they look related.
+        let local = vec![make_hit("local", "x", 0.9)];
+        let cb    = vec![make_hit("cloud_backup", "x", 0.9)]; // same id stem, no sha
+        let merged = rrf_merge(vec![local, cb], 10);
+        assert_eq!(merged.len(), 2, "no sha → no dedup");
+    }
+
+    #[test]
+    fn rrf_merge_respects_limit() {
+        let list: Vec<FederatedHit> = (0..10u32)
+            .map(|i| make_hit("local", &i.to_string(), 1.0 - i as f32 * 0.1))
+            .collect();
+        let merged = rrf_merge(vec![list], 3);
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn rrf_merge_empty_lists() {
+        let merged = rrf_merge(vec![], 10);
+        assert!(merged.is_empty());
+    }
 }

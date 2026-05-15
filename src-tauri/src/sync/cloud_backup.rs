@@ -219,6 +219,34 @@ pub struct SearchResponse {
     pub total: usize,
 }
 
+/// Stage S — normalised hit shape returned by `sync_federated_search`.
+/// Carries enough metadata for the frontend to badge the source backend
+/// and open the file; heavy fields (full_text / snippet) are elided to
+/// keep the payload small.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FederatedHit {
+    /// Composite key: `"<source>:<id>"`.  Stable within a search result
+    /// set; the frontend uses it as a `key=` binding only.
+    pub id: String,
+    /// `"local"` | `"cloud_backup"` | `"crisplens"`
+    pub source: String,
+    pub score: f32,
+    /// RRF rank (1-based, lower = better) after merging all backends.
+    pub rrf_rank: usize,
+    pub filename: Option<String>,
+    pub path: Option<String>,
+    pub ext: Option<String>,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub year: Option<i32>,
+    pub language: Option<String>,
+    pub sha256: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub snippet: Option<String>,
+    /// `location_uri` for local hits (e.g. `file:///…`); empty for remote.
+    pub location_uri: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestPullResponse {
     pub rows: Vec<PullRow>,
