@@ -237,6 +237,11 @@ enum CloudBackupCmd {
     Pull {
         #[arg(long, default_value_t = 200)]
         limit: usize,
+        /// Pull body text alongside metadata.  Overrides the Settings
+        /// checkbox for this one invocation.  Default: follow the
+        /// `cloud_backup_pull_full_text_enabled` IndexConfig flag.
+        #[arg(long)]
+        include_full_text: bool,
     },
     /// Store an API key in the OS keychain for the configured URL.
     /// Reads the raw key from `--token` or, if absent, from the
@@ -2421,13 +2426,17 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::Pull { limit } => {
+        CloudBackupCmd::Pull { limit, include_full_text } => {
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
                 .await.map_err(|e| e.to_string())?;
             let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
                 .and_then(|s| s.parse().ok()).unwrap_or(0);
-            let resp = client.manifest_pull(last_ts, limit).await.map_err(|e| e.to_string())?;
+            // CLI flag overrides the Settings checkbox for one-shot headless use.
+            let pull_full_text =
+                include_full_text || cfg.cloud_backup_pull_full_text_enabled;
+            let resp = client.manifest_pull_with_options(last_ts, limit, pull_full_text)
+                .await.map_err(|e| e.to_string())?;
             if resp.rows.is_empty() {
                 match out {
                     OutFormat::Json => println!("{}", serde_json::json!({

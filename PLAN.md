@@ -353,50 +353,122 @@ This is the sole gate on the v0.1.41 (or v0.2.0) tag.
     is additive, not a breaking shift — see the architectural-
     decisions summary in the HISTORY entry).
 
-### P13.7.x — Cloud-sync follow-ups
+### P13.7.x — Cloud-sync follow-ups (post Stages E–N)
 
-Open items from the Stage E/F/G/H additive batch (HISTORY.md → Session log — 2026-05-13 — P13.7 Stages E-H).  None blocks v0.1.41; all are scale-out / convergence work for when the catalog grows.
+Stages J / K / L / M / N landed in the 2026-05-14 batch — see HISTORY.md for the session log.  What remains, ordered by the user's priority sweep on 2026-05-14:
 
-- [ ] **`collection_id` as the shard key** (rebalances Stage G).
-      The current sha-prefix sharding gives perfect distribution
-      but breaks topical locality — a 50GB research-task push
-      scatters across 256 shards.  Add an optional
-      `collection_id` field to `ManifestRow`; router uses
-      `collection_id[:2]` when set, falls back to `sha[:2]`
-      when absent.  Migration: 1 new nullable column on
-      `file_references` + a routing switch in `api/db.py`.
-      Clients set the field per logical group ("research-task-X").
-      Operators can re-balance with a one-shot
-      `python -m api.shard_rebalance --by collection_id` tool.
-- [ ] **LanceDB-backed vector index on the VPS** (P13.8
-      pre-existing on the plan; correctness fix on the FAISS
-      misstep).  Per-shard LanceDB on the storage box.
-      Memory-mapped columnar reads → larger-than-RAM at TB
-      scale (the 16GB-RAM VPS can serve a 200GB+ vector index
-      via mmap).  Same Lance format the CrispSorter client
-      uses → no engine drift in vectors.  Brute-force k-NN
-      initially; IVF-PQ once a shard crosses ~100k chunks.
-      Replaces the current Python brute-force over SQLite
-      BLOBs in `/api/index/by-embedding`.
-- [ ] **FTS5 vs Tantivy convergence** — `search_engine.py`
-      already runs Tantivy over the existing-via-vps_worker
-      7z-extract flow.  cb-api's `/api/search` runs FTS5 over
-      the client-pushed `full_text`.  Two parallel full-text
-      engines today.  Three options on the table:
-      (a) unify on Tantivy (replace FTS5; bigger refactor),
-      (b) keep both + federate at `/api/search` with a
-      `?include=tantivy` flag (bandage; doubles ops surface),
-      (c) keep FTS5 as the always-fresh client-cache + let
-      Tantivy do periodic re-index over the archive flow
-      (each engine serves what it's good at).  Decision
-      deferred until the search performance profile warrants
-      the engine change.
-- [ ] **`shard_rebalance` admin tool** — `python -m api.shard_rebalance`
-      that walks every `file_references` row and re-routes by
-      a new sharding key.  Needed for the `collection_id` cutover
-      AND for future re-balancing when a power user's owner-shard
-      grows too fat.  Atomic per-row move; resumable via a
-      `migration_progress` table.
+#### Stage O — Small UX completeness — SHIPPED 2026-05-14
+
+- [x] **"Sync now" GUI button** in the Cloud-backup Settings panel that hits `sync_cb_drain` + `sync_cb_manifest_pull` in sequence.  Today's drain is auto every 30 s (Stage J) OR manual via CLI — no GUI button.
+- [x] **`--include-full-text` flag** on `crispsorter sync cloud-backup pull` so headless flows can opt into body sync without flipping the Settings checkbox.  XS effort.
+- [x] **`sync_status_all` Tauri command** — polls all three backends (crisp-index-server / CrispLens / cb-api) in parallel via `tokio::join!`, returns combined JSON with per-backend reachability + auth-state + last-sync-ts.
+
+#### Stage P — Local DB size cap + LRU pruning (~3–4 h)
+
+Today the local LanceDB grows unbounded.  At terabyte-scale corpora the user wants a hard cap: keep recent rows in full (metadata + body + embedding), older rows trimmed to metadata-only, oldest rows evicted entirely.
+
+- [ ] **`IndexConfig.local_max_size_bytes`** — new field (default `None` = unbounded).  Settings UI gets a slider 1 GB → 1 TB.
+- [ ] **`crispsorter index purge --max-size N`** CLI — walks LanceDB by `indexed_at` desc, drops `embedding` + `full_text` cols on older rows first, then evicts entirely.  Stops when on-disk size ≤ N.  Reports bytes reclaimed.
+- [ ] **Background purge worker** — when `local_max_size_bytes` is set, a 1-hour tokio interval re-runs the purge.  Mirrors the Stage J drain timer pattern.
+- [ ] **Skeleton index preservation** (extreme case for Stage W) — when purging, optionally keep an `author_index` SQLite KV: `{author_name → doc_count, last_seen_at}`.  Bounded at ~thousands of authors; survives full-LanceDB-evict.
+- [ ] **Pytest + Rust unit tests**: purge with a known-shape index → assert resulting size + that the oldest rows lost their body/embedding columns.
+
+#### Stage Q — Backup shards to cloud drives (~2–3 h)
+
+VPS shards live on the Hetzner storage box.  Need offsite mirror via the existing CloudDrive abstraction (Filen / Internxt / WebDAV).
+
+- [ ] **`crispsorter sync cloud-backup backup-shards --drive <id> [--shard <prefix>]`** — tarballs `<CB_API_SHARD_ROOT>/<aa>/shard.db` + `<CB_API_LANCE_ROOT>/shards/<aa>/lance.db` for one or all shards, uploads to the drive at `cb-backups/<date>/<aa>.tar`.
+- [ ] **Per-shard incremental backup** — only re-upload shards whose `indexed_at` watermark moved since the last backup.  Tracked in a new `backup_state` SQLite.
+- [ ] **`crispsorter sync cloud-backup restore-shard <prefix> --from-drive <id>`** — the matching inverse.
+- [ ] **Retention** — keep last N daily / weekly / monthly backups (operator config).
+- [ ] **GUI surface**: "Backup destination" dropdown in Settings → Cloud-backup → list configured drives + "Backup now" + "Schedule" controls.
+- [ ] **Live test**: backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked shard.
+
+#### Stage R — Manifests-DB import bridge (~2 h)
+
+controller.py owns `index_manifest.db` (the legacy SQLite that aggregates every host's manifest via SYNC_MANIFESTS).  Today cb-api reads from `<catalog-db>` directly; controller.py's SQLite isn't ingested over HTTP.  Close the loop so a one-shot import populates cb-api from a controller-box.
+
+- [ ] **`crispsorter sync cloud-backup import-from-manifest-db PATH`** — reads the source `source_files` / `file_manifest` tables, POSTs every row through `/api/manifest/push` in 200-row batches.
+- [ ] **Server endpoint optionally accepts already-archived rows** — `ManifestRow.archived_in: Optional<batch_id>` so the controller.py state ("this file is in 7z archive #42") survives the round-trip.
+- [ ] **Resumable** — keeps a watermark in the controller-box state so re-runs skip already-imported rows.
+- [ ] **GUI**: a one-shot import button in Settings → Cloud-backup → "Import from controller.py manifest".
+- [ ] **Pytest**: synthetic SQLite with 100 source_files rows → import → verify identical rows visible via `/api/manifest/pull`.
+
+#### Stage S — Federated search across all backends (~5–6 h)
+
+Today the user picks one backend for search.  A unified "search everywhere" panel queries local + cb-api + CrispLens in parallel, RRF-merges results, shows source-of-truth badges per hit.
+
+- [ ] **`sync_federated_search(query, filters)`** Tauri command that fans out across all three backends via `tokio::try_join!`, normalises payloads to a shared `FederatedHit` shape, RRF-merges by per-backend rank, returns the union.
+- [ ] **GUI panel** in IndexSearch.svelte: backend filter checkboxes (Local / Cloud-backup / CrispLens) defaulting to all-on.  Result rows badge their source backend with an icon.
+- [ ] **CLI**: `crispsorter search "query" --backends local,cb-api,crisplens`.
+- [ ] **Test**: stub each backend with mockito → assert RRF order is correct + per-backend timeouts don't poison the whole query.
+
+#### Stage T — cb-api key minting from the GUI (~2–3 h)
+
+Today key mint requires SSH'ing to the VPS and running `python -m api.admin mint`.  Settings should expose this for ops convenience — but with a hard security boundary.
+
+- [ ] **Server-side admin token** — distinct from regular bearer tokens.  Minted once on cb-api install via `python -m api.admin mint-admin`; stored in `/etc/cb-api.env` as `CB_API_ADMIN_TOKEN`.
+- [ ] **`POST /api/admin/keys/mint`** + `revoke` + `list` routes, all gated on the admin token.
+- [ ] **Settings UI**: separate "Admin" tab; user pastes admin token; can then mint / list / revoke regular keys.
+- [ ] **CLI**: `crispsorter sync cloud-backup admin mint <NAME> [--owner-id UUID]`.
+
+#### Stage U — L1-only local + zip-batch handoff to VPS (~8–10 h, the user's "thin client" mode)
+
+The bigger architectural shift: when the local catalog is huge, the user doesn't want CrispSorter to do extraction locally at all.  Instead:
+
+1. Local walks the filesystem at L1 only (paths + sizes + mtime + sha256).
+2. Local zips files in batches (size or count threshold) and ships them to the VPS via the existing rsync/SCP/SCP-fallback machinery (`controller.py`-style).
+3. VPS-side **vps_worker** unzips + runs extraction for every supported type — text, audio, images.
+4. VPS pushes the resulting manifests + body + embeddings into `<catalog-db>` + Lance shards.
+5. VPS also forwards the encrypted-or-plain blob to Internxt for cold storage (same as today's vps_worker).
+6. CrispSorter client never holds full extraction state; it sees the corpus only through `/api/v2/index/search`.
+
+- [ ] **`crispsorter index l1-only`** CLI mode — runs scan + zip + upload without local extraction.
+- [ ] **`IndexConfig.local_extraction_enabled`** master switch (default `true`).  When `false`, bg_ingest writes L1 rows only.
+- [ ] **vps_worker extension** — currently it just decrypts + uploads.  Add per-extension extraction:
+    - Text: PyMuPDF / pypdf / python-docx (already in requirements.txt for `search_engine.py`).
+    - Audio: CrispASR via the `crispasr-cli` Rust binary OR a Python wrapper (faster-whisper).
+    - Images: forward to **CrispLens** (already on the VPS) via its `/api/ingest/upload-local` route.
+- [ ] **Job state** — extend `worker_state.db` with a `pending_extractions` table; vps_worker processes one extraction at a time off the queue.
+- [ ] **Backpressure / progress** — controller-style status reports back over `/api/v2/extract/status`.
+- [ ] **Live tests**: ship a small zipped batch end-to-end; verify the rows show up in `/api/v2/index/search` with the expected `full_text` + `embedding`.
+
+#### Stage V — vps_worker leverages CrispLens + CrispASR for full-spectrum extraction (~6–8 h, child of Stage U)
+
+Self-contained because the cross-service plumbing has its own surface area:
+
+- [ ] **vps_worker → CrispLens bridge**: image files routed via a new internal `crisplens_image_push()` helper.  CrispLens already lives on the VPS; vps_worker hits its loopback URL.  Captures face count + ArcFace embedding back into `<catalog-db>.file_references`.
+- [ ] **vps_worker → CrispASR bridge**: audio/video files transcribed via a `crispasr` CLI subprocess.  The Rust binary already exists in CrispSorter's tree; build a slim VPS-only variant + ship it to `/opt/cb-api/bin/crispasr`.  Output goes into `full_text`.  Decoded via symphonia → 16 kHz mono → whisper-base ggml weights cached on the storage box.
+- [ ] **vps_worker → text extractors**: already imports pypdf / python-docx via `search_engine.py`.  Wire a slim `extract_text(path)` helper, reuse `ContentExtractor`.
+- [ ] **Job dispatching**: a single `vps_worker.py:extract_one(job)` switch on extension that picks the right extractor.
+
+#### Stage W — Skeleton local index + remote-only search fallback (~5–7 h, child of Stage U + P)
+
+The extreme tiered-cache mode: when the user has TB on the VPS but wants their laptop to use ~100 MB, keep ONLY:
+
+- A bounded `author_index` SQLite KV: `{author_name → (doc_count, last_seen_at)}`.  Thousands of rows, megabytes.
+- A bounded `parent_dir_index` SQLite KV: `{parent_dir → (doc_count, last_seen_at)}`.  Same.
+- The SyncManager outbox.
+
+Everything else lives on the VPS.  Search flow:
+
+1. User types "kant".
+2. Skeleton local index recognises "kant" as a known author → shows count locally (instant).
+3. CrispSorter fetches `GET /api/v2/index/search?q=kant&limit=50` → renders the hits.
+4. Selected rows can be cached in local LanceDB for re-use (LRU cap from Stage P).
+
+- [ ] **`IndexConfig.local_skeleton_only`** boolean.  When true, bg_ingest writes ONLY the skeleton indices (not LanceDB rows).
+- [ ] **`SkeletonIndex` SQLite** at `<data-dir>/skeleton_index.db` with the two KV tables.  Populated at bg_ingest write time + at every `/api/v2/index/search` hit (so frequently-queried rows accumulate in the skeleton too).
+- [ ] **GUI**: search panel shows skeleton hits first (instant ✦ badge), then merges in cb-api hits.
+- [ ] **Pytest + Rust unit tests** for the skeleton-only mode.
+
+---
+
+**Out of scope for this batch** (tracked but deferred):
+
+- **LanceDB IVF-PQ vector index** on the VPS — for shards crossing ~100k embeddings.  Today's brute-force k-NN holds at 10k–50k chunks per shard.
+- **FTS5 ↔ Tantivy convergence** — two parallel engines (cb-api FTS5 over client-pushed bodies + `search_engine.py` Tantivy over the 7z-extract flow).  Decision deferred until search-perf profile demands the change.
+- **`shard_rebalance` admin tool** — for migrating between sharding keys after a Stage K config change.  Atomic per-row move; resumable.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 

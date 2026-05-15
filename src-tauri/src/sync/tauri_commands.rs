@@ -851,3 +851,105 @@ pub async fn sync_cb_embeddings_push(
         "errors":   resp.errors,
     }))
 }
+
+/// Stage O — unified backend health snapshot.  Polls cb-api,
+/// CrispLens, and crisp-index-server in parallel, returns one
+/// combined JSON object with per-backend reachability + auth state +
+/// last-sync timestamps.  Individual backend failures are captured in
+/// the response rather than propagated as errors so the GUI banner
+/// can show a partial-degraded state.
+#[tauri::command]
+pub async fn sync_status_all(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use tokio::join;
+
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+
+    // Snapshot config fields we need for the cb-api and crisp-index-server
+    // probes, then drop the lock.  CrispLens settings live in their own
+    // store (read inside status_blocking).
+    let (remote_url, cb_url_val) = {
+        let idx = state.index.lock().await;
+        (
+            idx.config.remote_url.clone(),
+            idx.config.cloud_backup_url.clone().unwrap_or_default(),
+        )
+    };
+
+    // Probe cb-api.
+    let cb_probe = async {
+        if cb_url_val.is_empty() {
+            return serde_json::json!({"configured": false});
+        }
+        let token = match super::secret::get_token_for_url(&cb_url_val) {
+            Ok(Some(t)) => t,
+            Ok(None)    => return serde_json::json!({"configured": true, "token_present": false}),
+            Err(e)      => return serde_json::json!({"configured": true, "error": e.to_string()}),
+        };
+        match CloudBackupClient::new(&cb_url_val, &token) {
+            Ok(cli) => match cli.health().await {
+                Ok(h)  => serde_json::json!({
+                    "configured": true,
+                    "token_present": true,
+                    "ok": h.ok,
+                    "version": h.version,
+                    "lance_enabled": h.lance_enabled,
+                }),
+                Err(e) => serde_json::json!({"configured": true, "token_present": true, "ok": false, "error": e.to_string()}),
+            },
+            Err(e) => serde_json::json!({"configured": true, "error": e.to_string()}),
+        }
+    };
+
+    // Probe crisp-index-server.
+    let cis_probe = async {
+        let url_str = remote_url.as_deref().unwrap_or("");
+        if url_str.is_empty() {
+            return serde_json::json!({"configured": false});
+        }
+        let online = SyncManager::is_remote_online(url_str).await;
+        let mgr_res = SyncManager::open(&data_dir);
+        let (push_ts, pull_ts) = mgr_res.map(|m| (
+            m.get_state("last_push_ts").ok().flatten().and_then(|s| s.parse::<i64>().ok()),
+            m.get_state("last_pull_ts").ok().flatten().and_then(|s| s.parse::<i64>().ok()),
+        )).unwrap_or((None, None));
+        serde_json::json!({
+            "configured": true,
+            "ok": online,
+            "last_push_ts": push_ts,
+            "last_pull_ts": pull_ts,
+        })
+    };
+
+    // Probe CrispLens (blocking call, spawn to avoid blocking the async runtime).
+    // status_blocking handles the "not configured" case internally.
+    let cl_probe = {
+        let data_dir2 = data_dir.clone();
+        async move {
+            let status = tauri::async_runtime::spawn_blocking(move || {
+                crate::images::crisplens::tauri_commands::status_blocking(&data_dir2)
+            }).await;
+            match status {
+                Ok(s) => serde_json::json!({
+                    "configured": s.tier2_configured,
+                    "ok": s.health_ok,
+                    "version": s.health_version,
+                    "model_ready": s.health_model_ready,
+                    "authenticated": s.authenticated,
+                    "username": s.username,
+                    "error": s.error,
+                }),
+                Err(e) => serde_json::json!({"configured": false, "error": e.to_string()}),
+            }
+        }
+    };
+
+    let (cb, cis, cl) = join!(cb_probe, cis_probe, cl_probe);
+    Ok(serde_json::json!({
+        "cloud_backup": cb,
+        "crisp_index_server": cis,
+        "crisplens": cl,
+    }))
+}
