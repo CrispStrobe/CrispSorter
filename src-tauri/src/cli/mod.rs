@@ -416,6 +416,26 @@ enum CloudBackupCmd {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Stage R — one-shot import from a controller.py manifest SQLite.
+    /// Reads `source_files` (with `archived_in`) from the given DB,
+    /// POSTs every row through `/api/manifest/push` in batches.
+    /// Resumable: re-running skips rows already imported via a
+    /// `source_id` watermark stored in `<data-dir>/manifest_import_state.db`.
+    ImportFromManifestDb {
+        /// Path to the controller.py `index_manifest.db` (or any SQLite
+        /// with a compatible `source_files` schema).
+        manifest_db: PathBuf,
+        /// Owner ID to stamp on all imported rows.  Leave blank to let
+        /// the server use the calling API key's owner_id.
+        #[arg(long, default_value = "")]
+        owner_id: String,
+        /// Rows per HTTP push request.
+        #[arg(long = "batch-size", default_value_t = 200)]
+        batch_size: usize,
+        /// Report what would be imported without actually pushing.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2451,6 +2471,7 @@ async fn cmd_sync_cloud_backup(
                     year: c.year,
                     full_text: c.full_text.clone(),
                     collection_id: c.collection_id.clone(),
+                    archived_in: None,
                 });
                 if rows.len() >= limit { break; }
             }
@@ -3121,6 +3142,148 @@ async fn cmd_sync_cloud_backup(
                     "date": date_dir,
                 })),
                 OutFormat::Text => println!("restored shard {prefix} from {drive_id}:{date_dir}"),
+            }
+        }
+
+        CloudBackupCmd::ImportFromManifestDb { manifest_db, owner_id, batch_size, dry_run } => {
+            use rusqlite::{Connection as RConn, OpenFlags};
+            use crate::sync::cloud_backup::ManifestRow;
+            use std::path::Path as StdPath;
+
+            if !manifest_db.exists() {
+                return Err(format!("manifest_db not found: {}", manifest_db.display()));
+            }
+
+            // ── watermark state ──────────────────────────────────────
+            let state_path = data_dir.join("manifest_import_state.db");
+            let state_conn = RConn::open(&state_path).map_err(|e| e.to_string())?;
+            state_conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS manifest_imports \
+                 (db_path TEXT PRIMARY KEY, last_source_id INTEGER NOT NULL DEFAULT 0)"
+            ).map_err(|e| e.to_string())?;
+            let db_key = manifest_db.canonicalize()
+                .unwrap_or_else(|_| manifest_db.clone())
+                .to_string_lossy()
+                .into_owned();
+            let mut watermark: i64 = state_conn.query_row(
+                "SELECT last_source_id FROM manifest_imports WHERE db_path = ?",
+                rusqlite::params![&db_key],
+                |r| r.get(0),
+            ).unwrap_or(0i64);
+
+            // ── read source_files ────────────────────────────────────
+            let src = RConn::open_with_flags(
+                &manifest_db, OpenFlags::SQLITE_OPEN_READ_ONLY,
+            ).map_err(|e| e.to_string())?;
+
+            let owner = if owner_id.is_empty() {
+                // Server will rewrite to authenticated key's owner_id.
+                "".to_string()
+            } else {
+                owner_id.clone()
+            };
+
+            let mut total_imported = 0usize;
+            let mut total_skipped  = 0usize;
+            let mut max_source_id  = watermark;
+
+            loop {
+                let mut stmt = src.prepare(
+                    "SELECT source_id, file_path, file_hash, file_size_bytes, \
+                            modified_time, archived_in \
+                     FROM source_files \
+                     WHERE source_id > ? AND file_hash IS NOT NULL \
+                     ORDER BY source_id \
+                     LIMIT ?"
+                ).map_err(|e| e.to_string())?;
+
+                struct SrcRow {
+                    source_id:  i64,
+                    file_path:  String,
+                    file_hash:  String,
+                    size_bytes: i64,
+                    mtime:      f64,
+                    archived_in: Option<i64>,
+                }
+                let rows: Vec<SrcRow> = stmt.query_map(
+                    rusqlite::params![watermark, batch_size as i64],
+                    |r| Ok(SrcRow {
+                        source_id:   r.get(0)?,
+                        file_path:   r.get(1)?,
+                        file_hash:   r.get(2)?,
+                        size_bytes:  r.get(3)?,
+                        mtime:       r.get::<_, f64>(4).unwrap_or(0.0),
+                        archived_in: r.get(5)?,
+                    }),
+                ).map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+
+                if rows.is_empty() { break; }
+
+                let manifest_rows: Vec<ManifestRow> = rows.iter()
+                    .map(|r| {
+                        let p = StdPath::new(&r.file_path);
+                        let filename  = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let ext       = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                        let parent_dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                        ManifestRow {
+                            path:        r.file_path.clone(),
+                            size_bytes:  r.size_bytes,
+                            sha256:      r.file_hash.clone(),
+                            mtime_unix:  r.mtime,
+                            owner_id:    owner.clone(),
+                            filename,
+                            ext,
+                            parent_dir,
+                            language:    None,
+                            title:       None,
+                            author:      None,
+                            year:        None,
+                            full_text:   None,
+                            collection_id: None,
+                            archived_in: r.archived_in,
+                        }
+                    })
+                    .collect();
+
+                let new_max = rows.iter().map(|r| r.source_id).max().unwrap_or(watermark);
+
+                if dry_run {
+                    total_skipped += manifest_rows.len();
+                } else {
+                    let resp = client.manifest_push(&manifest_rows)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    total_imported += resp.accepted;
+                    // Advance watermark only on success.
+                    max_source_id = new_max;
+                    state_conn.execute(
+                        "INSERT INTO manifest_imports (db_path, last_source_id) \
+                         VALUES (?1, ?2) \
+                         ON CONFLICT(db_path) DO UPDATE SET last_source_id = excluded.last_source_id",
+                        rusqlite::params![&db_key, max_source_id],
+                    ).ok();
+                }
+
+                watermark = new_max;
+                if rows.len() < batch_size { break; }
+            }
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "imported":   total_imported,
+                    "skipped":    total_skipped,
+                    "watermark":  max_source_id,
+                    "dry_run":    dry_run,
+                })),
+                OutFormat::Text => {
+                    if dry_run {
+                        println!("dry-run: would import {total_skipped} rows");
+                    } else {
+                        println!("imported {total_imported} rows (watermark → {max_source_id})");
+                    }
+                }
             }
         }
     }

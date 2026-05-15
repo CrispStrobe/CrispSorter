@@ -414,6 +414,7 @@ pub async fn sync_cb_manifest_push(
             year: c.year,
             full_text: c.full_text.clone(),
             collection_id: c.collection_id.clone(),
+            archived_in: None,
         });
         if rows.len() >= limit { break; }
     }
@@ -1064,5 +1065,137 @@ pub async fn sync_cb_backup_shards(
         "backed_up": backed_up,
         "errors":    errors,
         "date_dir":  today,
+    }))
+}
+
+/// Stage R — one-shot import of `source_files` rows from a controller.py
+/// manifest SQLite into the cb-api VPS via `/api/manifest/push`.
+/// Resumable: a per-path watermark in `<data-dir>/manifest_import_state.db`
+/// lets re-runs skip already-pushed rows.
+///
+/// All rusqlite I/O runs in `spawn_blocking` so the `!Send` Connection
+/// never crosses an `.await` boundary.
+#[tauri::command]
+pub async fn sync_cb_import_from_manifest_db(
+    state:      tauri::State<'_, crate::AppState>,
+    path:       String,
+    owner_id:   String,
+    batch_size: usize,
+    dry_run:    bool,
+) -> Result<serde_json::Value, String> {
+    use crate::sync::cloud_backup::ManifestRow;
+    use std::path::PathBuf;
+
+    let manifest_db = PathBuf::from(&path);
+    if !manifest_db.exists() {
+        return Err(format!("manifest_db not found: {path}"));
+    }
+
+    let cli = make_cb_client(&state).await?;
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let state_path = data_dir.join("manifest_import_state.db");
+    let owner = if owner_id.is_empty() { "".to_string() } else { owner_id };
+
+    // Read initial watermark in a blocking task.
+    let db_key = manifest_db.canonicalize()
+        .unwrap_or_else(|_| manifest_db.clone())
+        .to_string_lossy()
+        .into_owned();
+    let mut watermark: i64 = {
+        let sp = state_path.clone();
+        let dk = db_key.clone();
+        tokio::task::spawn_blocking(move || -> i64 {
+            use rusqlite::Connection as RC;
+            let Ok(c) = RC::open(&sp) else { return 0 };
+            let _ = c.execute_batch(
+                "CREATE TABLE IF NOT EXISTS manifest_imports \
+                 (db_path TEXT PRIMARY KEY, last_source_id INTEGER NOT NULL DEFAULT 0)"
+            );
+            c.query_row(
+                "SELECT last_source_id FROM manifest_imports WHERE db_path = ?",
+                rusqlite::params![&dk], |r| r.get(0),
+            ).unwrap_or(0i64)
+        }).await.unwrap_or(0)
+    };
+
+    let mut total_imported = 0usize;
+    let mut max_source_id  = watermark;
+
+    loop {
+        // Read one batch synchronously.
+        type BatchRow = (i64, String, String, i64, f64, Option<i64>);
+        let batch: Vec<BatchRow> = {
+            let mb = manifest_db.clone();
+            let wm = watermark;
+            let bs = batch_size;
+            tokio::task::spawn_blocking(move || -> Result<Vec<BatchRow>, String> {
+                use rusqlite::{Connection as RC, OpenFlags};
+                let c = RC::open_with_flags(&mb, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(|e| e.to_string())?;
+                let mut s = c.prepare(
+                    "SELECT source_id, file_path, file_hash, file_size_bytes, \
+                            modified_time, archived_in \
+                     FROM source_files \
+                     WHERE source_id > ? AND file_hash IS NOT NULL \
+                     ORDER BY source_id LIMIT ?"
+                ).map_err(|e| e.to_string())?;
+                let result: Vec<BatchRow> = s.query_map(
+                    rusqlite::params![wm, bs as i64],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?,
+                            r.get::<_, f64>(4).unwrap_or(0.0), r.get(5)?)),
+                ).map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+                Ok(result)
+            }).await.map_err(|e| e.to_string())??
+        };
+
+        if batch.is_empty() { break; }
+        let new_max = batch.iter().map(|r| r.0).max().unwrap_or(watermark);
+        let n = batch.len();
+
+        let manifest_rows: Vec<ManifestRow> = batch.iter().map(|r| {
+            let p = std::path::Path::new(&r.1);
+            ManifestRow {
+                path:        r.1.clone(), size_bytes: r.3, sha256: r.2.clone(),
+                mtime_unix:  r.4, owner_id: owner.clone(),
+                filename:    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                ext:         p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default(),
+                parent_dir:  p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+                language: None, title: None, author: None, year: None,
+                full_text: None, collection_id: None, archived_in: r.5,
+            }
+        }).collect();
+
+        if !dry_run {
+            let resp = cli.manifest_push(&manifest_rows).await.map_err(|e| e.to_string())?;
+            total_imported += resp.accepted;
+            max_source_id = new_max;
+            let sp = state_path.clone();
+            let dk = db_key.clone();
+            tokio::task::spawn_blocking(move || {
+                use rusqlite::Connection as RC;
+                let Ok(c) = RC::open(&sp) else { return };
+                let _ = c.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS manifest_imports \
+                     (db_path TEXT PRIMARY KEY, last_source_id INTEGER NOT NULL DEFAULT 0)"
+                );
+                let _ = c.execute(
+                    "INSERT INTO manifest_imports (db_path, last_source_id) VALUES (?1, ?2) \
+                     ON CONFLICT(db_path) DO UPDATE SET last_source_id = excluded.last_source_id",
+                    rusqlite::params![&dk, new_max],
+                );
+            }).await.ok();
+        }
+
+        watermark = new_max;
+        if n < batch_size { break; }
+    }
+
+    Ok(serde_json::json!({
+        "imported":   total_imported,
+        "watermark":  max_source_id,
+        "dry_run":    dry_run,
     }))
 }
