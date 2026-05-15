@@ -686,64 +686,88 @@ impl LocalIndex {
             return Ok((0, 0, 0));
         }
 
+        use lance::dataset::scanner::ColumnOrdering;
+
         let mut stripped = 0usize;
         let mut deleted  = 0usize;
+        let batch_size   = 1000usize;
+
+        // Helper: collect doc_id strings from a batch of RecordBatches.
+        let collect_doc_ids = |batches: &[RecordBatch]| -> Vec<String> {
+            batches.iter()
+                .flat_map(|b| {
+                    b.column_by_name("doc_id")
+                        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                        .map(|arr| (0..arr.len())
+                            .filter(|&i| arr.is_valid(i) && !arr.value(i).is_empty())
+                            .map(|i| arr.value(i).to_owned())
+                            .collect::<Vec<_>>())
+                        .unwrap_or_default()
+                })
+                .collect()
+        };
+
+        // Helper: build a SQL IN list, escaping single-quotes in values.
+        let in_list = |ids: &[String]| -> String {
+            ids.iter()
+                .map(|id| format!("'{}'", id.replace('\'', "''")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
 
         // ── Phase 1: strip heavy columns from oldest batches ──────────
-        // We walk `indexed_at` in ascending order (oldest first) and
-        // null out the four heavy columns per batch of up to 1000 rows.
-        // After each batch we compact + prune and re-measure.
-        let batch_size = 1000usize;
-        let mut watermark: i64 = 0;
+        // We use the lance Scanner (not the Query builder) so we can order
+        // by `indexed_at` ASC without putting the timestamp in a filter
+        // predicate.  LanceDB's custom filter planner cannot coerce Int64,
+        // Float64, or Utf8 literals to Timestamp(Millisecond) — so every
+        // push-down filter over `indexed_at` fails.  Instead we filter
+        // only on non-timestamp columns (heavy-col presence) and update /
+        // delete by `doc_id IN (...)` which is unambiguously a TEXT
+        // comparison.
         loop {
             if dir_size_bytes(lance_dir) <= max_bytes { break; }
 
-            // Fetch a batch of old rows that still have non-NULL heavy cols.
-            let filter = format!(
-                "indexed_at > {watermark} AND (full_text IS NOT NULL OR embedding IS NOT NULL)"
-            );
-            let batches: Vec<RecordBatch> = self
-                .table
-                .query()
-                .only_if(filter.clone())
-                .select(lancedb::query::Select::Columns(vec!["indexed_at".to_owned()]))
-                .limit(batch_size)
-                .execute()
-                .await
-                .context("purge phase-1 scan")?
-                .try_collect()
-                .await
-                .context("purge phase-1 collect")?;
+            let batches: Vec<RecordBatch> = {
+                let guard = self.table
+                    .dataset()
+                    .ok_or_else(|| anyhow!("purge: not a native LanceDB table"))?
+                    .get().await
+                    .context("purge phase-1: dataset guard")?;
+                let mut scanner = guard.scan();
+                scanner
+                    .filter("full_text IS NOT NULL OR embedding IS NOT NULL")
+                    .context("purge phase-1: filter")?;
+                scanner
+                    .order_by(Some(vec![ColumnOrdering::asc_nulls_last("indexed_at".to_string())]))
+                    .context("purge phase-1: order_by")?;
+                scanner
+                    .limit(Some(batch_size as i64), None)
+                    .context("purge phase-1: limit")?;
+                scanner
+                    .project(&["doc_id", "_rowid"])
+                    .context("purge phase-1: project")?;
+                scanner
+                    .try_into_stream().await.context("purge phase-1: stream")?
+                    .try_collect().await.context("purge phase-1: collect")?
+            };
 
             if batches.is_empty() { break; }
+            let doc_ids = collect_doc_ids(&batches);
+            if doc_ids.is_empty() { break; }
+            let row_count = doc_ids.len();
 
-            // Find the max indexed_at in this batch to set the next cutoff.
-            let max_ts: i64 = batches.iter()
-                .flat_map(|b| {
-                    b.column_by_name("indexed_at")
-                        .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>())
-                        .map(|arr| arr.values().iter().copied().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                })
-                .max()
-                .unwrap_or(watermark);
-            let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-
-            // Null the heavy columns for every row up to this watermark.
             self.table
                 .update()
-                .only_if(format!("indexed_at <= {max_ts} AND (full_text IS NOT NULL OR embedding IS NOT NULL)"))
-                .column("full_text",       "NULL")
-                .column("full_text_md",    "NULL")
-                .column("embedding",       "NULL")
-                .column("embedding_sparse","NULL")
+                .only_if(format!("doc_id IN ({})", in_list(&doc_ids)))
+                .column("full_text",        "NULL")
+                .column("full_text_md",     "NULL")
+                .column("embedding",        "NULL")
+                .column("embedding_sparse", "NULL")
                 .execute()
                 .await
                 .context("purge phase-1 strip")?;
             stripped += row_count;
-            watermark = max_ts;
 
-            // Compact + prune so the space is actually reclaimed on disk.
             self.table
                 .optimize(OptimizeAction::Prune { older_than: None, delete_unverified: Some(true), error_if_tagged_old_versions: None })
                 .await
@@ -753,47 +777,44 @@ impl LocalIndex {
                 .await
                 .context("purge compact after strip")?;
 
-            if row_count < batch_size { break; } // no more rows to strip
+            if row_count < batch_size { break; }
         }
 
         // ── Phase 2: delete oldest rows if still over cap ─────────────
-        let mut del_watermark: i64 = 0;
         loop {
             if dir_size_bytes(lance_dir) <= max_bytes { break; }
 
-            let filter = format!("indexed_at > {del_watermark}");
-            let batches: Vec<RecordBatch> = self
-                .table
-                .query()
-                .only_if(filter)
-                .select(lancedb::query::Select::Columns(vec!["indexed_at".to_owned()]))
-                .limit(batch_size)
-                .execute()
-                .await
-                .context("purge phase-2 scan")?
-                .try_collect()
-                .await
-                .context("purge phase-2 collect")?;
+            let batches: Vec<RecordBatch> = {
+                let guard = self.table
+                    .dataset()
+                    .ok_or_else(|| anyhow!("purge: not a native LanceDB table"))?
+                    .get().await
+                    .context("purge phase-2: dataset guard")?;
+                let mut scanner = guard.scan();
+                scanner
+                    .order_by(Some(vec![ColumnOrdering::asc_nulls_last("indexed_at".to_string())]))
+                    .context("purge phase-2: order_by")?;
+                scanner
+                    .limit(Some(batch_size as i64), None)
+                    .context("purge phase-2: limit")?;
+                // No project() call: project + order_by + no-filter triggers
+                // TakeExec without a row-address column in lance 2.0.  Accept
+                // full rows and extract doc_id client-side.
+                scanner
+                    .try_into_stream().await.context("purge phase-2: stream")?
+                    .try_collect().await.context("purge phase-2: collect")?
+            };
 
             if batches.is_empty() { break; }
-
-            let max_ts: i64 = batches.iter()
-                .flat_map(|b| {
-                    b.column_by_name("indexed_at")
-                        .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>())
-                        .map(|arr| arr.values().iter().copied().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                })
-                .max()
-                .unwrap_or(del_watermark);
-            let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+            let doc_ids = collect_doc_ids(&batches);
+            if doc_ids.is_empty() { break; }
+            let row_count = doc_ids.len();
 
             self.table
-                .delete(&format!("indexed_at <= {max_ts}"))
+                .delete(&format!("doc_id IN ({})", in_list(&doc_ids)))
                 .await
                 .context("purge phase-2 delete")?;
             deleted += row_count;
-            del_watermark = max_ts;
 
             self.table
                 .optimize(OptimizeAction::Prune { older_than: None, delete_unverified: Some(true), error_if_tagged_old_versions: None })
