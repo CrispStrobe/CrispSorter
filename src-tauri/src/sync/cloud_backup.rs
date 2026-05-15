@@ -46,6 +46,7 @@ const EMBED_MODELS_PATH: &str = "/api/index/embed-models";
 const V2_SEARCH_PATH: &str = "/api/v2/index/search";
 const HEALTH_PATH: &str = "/api/health";
 const SHARD_LIST_PATH: &str = "/api/shard/list";
+const EXTRACT_STATUS_PATH: &str = "/api/v2/extract/status";
 const SHARD_EXPORT_PREFIX: &str = "/api/shard/export/";
 const SHARD_IMPORT_PREFIX: &str = "/api/shard/import/";
 
@@ -281,6 +282,16 @@ pub struct AdminKeyInfo {
     pub created_at: i64,
     pub revoked_at: Option<i64>,
     pub last_used_at: Option<i64>,
+}
+
+/// Stage U — extraction worker queue depths from `/api/v2/extract/status`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExtractStatusResponse {
+    pub pending:         u64,
+    pub in_progress:     u64,
+    pub done:            u64,
+    pub failed:          u64,
+    pub worker_db_found: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -816,6 +827,32 @@ impl CloudBackupClient {
             .context("upload_file_by_hash: parse body")?)
     }
 
+    /// Stage U — upload already-read bytes for a sha.  Used by the
+    /// drain loop for thin-client `cb_file_upload` outbox entries where
+    /// the bytes are already in memory from the read step.
+    pub async fn upload_file_bytes(
+        &self,
+        sha256: &str,
+        bytes: Vec<u8>,
+    ) -> Result<FileUploadResponse> {
+        let url = format!("{}{}{}", self.base_url, FILES_PATH_PREFIX, sha256);
+        let resp = self.client
+            .post(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .context("upload_file_bytes: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("upload_file_bytes: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<FileUploadResponse>().await
+            .context("upload_file_bytes: parse body")?)
+    }
+
     /// `GET /api/files/by-hash/<sha256>` — stream the file bytes to
     /// `dest_path`, verifying the hash matches as bytes arrive.
     ///
@@ -994,6 +1031,24 @@ impl CloudBackupClient {
     }
 
     // ── Stage T — admin key management ──────────────────────────────────────
+
+    /// Stage U — `GET /api/v2/extract/status` — VPS extraction-worker
+    /// queue depths.  Requires a valid bearer token.
+    pub async fn extract_status(&self) -> Result<ExtractStatusResponse> {
+        let url = format!("{}{}", self.base_url, EXTRACT_STATUS_PATH);
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("extract_status: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("extract_status: HTTP {status}: {body}");
+        }
+        Ok(resp.json().await.context("extract_status: parse body")?)
+    }
 
     /// `POST /api/admin/keys/mint` — mint a new regular API key.
     /// Requires `admin_token` (stored as `X-Admin-Token`).

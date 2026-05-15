@@ -341,10 +341,12 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     // The decision "should we enqueue" is read here once per
     // worker_loop spawn so a Settings change mid-run picks up at
     // the next worker_loop restart.
-    let cb_auto_push_enabled: bool = {
+    let (cb_auto_push_enabled, cb_thin_client_mode) = {
         let g = app_state.index.lock().await;
-        g.config.cloud_backup_push_manifests_enabled
-            && g.config.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
+        let push = g.config.cloud_backup_push_manifests_enabled
+            && g.config.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+        let thin = !g.config.local_extraction_enabled;
+        (push, thin)
     };
     let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level) = {
         let g = app_state.index.lock().await;
@@ -523,6 +525,92 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let volume_id = crate::volume::volume_id_for_path(&p);
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
     let doc_id = uuid::Uuid::new_v4().to_string();
+
+    // ── Stage U — thin-client fast path ────────────────────────────────
+    // When `local_extraction_enabled = false` we skip all extraction and
+    // write an L1-only row.  If cloud-backup push is also enabled, we
+    // additionally enqueue a `cb_file_upload` outbox entry so the VPS
+    // can run extraction on the actual bytes.
+    if cb_thin_client_mode {
+        let l2 = crate::index::l2_metadata::read(&p);
+        let raw_l1 = crate::index::ingest::RawDocument {
+            full_text: String::new(),
+            full_text_md: String::new(),
+            headings: Vec::new(),
+            title: item.title.clone().or(l2.title),
+            author: item.author.clone().or(l2.author),
+            year: item.year.or(l2.year),
+            filename: filename.clone(),
+            ext: ext_from_path.clone(),
+            language: item.language.clone().or(l2.language).unwrap_or_default(),
+            source_hash: source_hash.clone(),
+            location_uri: location_uri.clone(),
+            owner_id: owner.clone(),
+            tags: Vec::new(),
+            mtime_unix,
+            file_size,
+            volume_id: volume_id.clone(),
+            parent_dir: parent_dir.clone(),
+            translated_text: None,
+            translated_to_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+        };
+        // Write L1 row locally (mtime guard already ran above).
+        let _ = pipeline.ingest_document(raw_l1.clone()).await;
+
+        // Enqueue manifest push + file upload for the VPS.
+        if cb_auto_push_enabled {
+            let mut row = crate::sync::cloud_backup::ManifestRow::from_raw_document(&raw_l1);
+            if row.collection_id.is_none() {
+                if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
+                    if let Ok(map) = crate::sync::partition::PartitionMap::open(&data_dir) {
+                        let watch_roots: Vec<std::path::PathBuf> = {
+                            let w = app_state.watcher.lock().await;
+                            w.list().into_iter().map(std::path::PathBuf::from).collect()
+                        };
+                        let file_path = std::path::PathBuf::from(
+                            crate::images::tauri_commands::location_uri_to_local_path(&row.path)
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| row.path.clone())
+                        );
+                        for root in &watch_roots {
+                            if file_path.starts_with(root) {
+                                if let Some(cid) = map.lookup(root, &file_path) {
+                                    row.collection_id = Some(cid);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
+                if let Ok(payload) = serde_json::to_string(&row) {
+                    if let Ok(mgr) = crate::sync::SyncManager::open(&data_dir) {
+                        let _ = mgr.enqueue("cb_manifest_push", &payload);
+                        // Stage U: also enqueue the raw bytes for VPS extraction.
+                        let upload_payload = serde_json::json!({
+                            "sha256": source_hash,
+                            "path":   p.to_string_lossy(),
+                        });
+                        if let Ok(s) = serde_json::to_string(&upload_payload) {
+                            let _ = mgr.enqueue("cb_file_upload", &s);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
 
     // ── Extract with timeout (P10) ──────────────────────────────────────
     let extract_opts = crate::extractors::ExtractOptions {

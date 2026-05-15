@@ -322,6 +322,10 @@
      *  0.1.0" hint + the watermark display. */
     let indexCloudBackupStatus: any        = $state(null);
     let indexCloudBackupTokenSavedMsg      = $state<string>('');
+    /** Stage U — thin client.  When false, bg_ingest skips extraction
+     *  and only writes L1 metadata; the VPS extraction worker handles
+     *  full_text from the uploaded bytes. */
+    let indexLocalExtractionEnabled        = $state<boolean>(true);
 
     // ── Stage T — admin key management ────────────────────────────────────
     let cbAdminToken      = $state<string>('');
@@ -822,6 +826,7 @@
         indexCloudBackupPushEmbeddings = await getSetting('indexCloudBackupPushEmbeddings', false) as boolean;
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
+        indexLocalExtractionEnabled    = await getSetting('indexLocalExtractionEnabled', true) as boolean;
         indexLocalMaxSizeGb            = await getSetting('indexLocalMaxSizeGb', 0) as number;
         backupDriveId                  = await getSetting('backupDriveId', '') as string;
         backupKeepDaily                = await getSetting('backupKeepDaily', 7) as number;
@@ -1115,6 +1120,7 @@
         await saveSetting('indexCloudBackupPushEmbeddings', indexCloudBackupPushEmbeddings);
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
+        await saveSetting('indexLocalExtractionEnabled',   indexLocalExtractionEnabled);
         await saveSetting('indexLocalMaxSizeGb',            indexLocalMaxSizeGb);
         await saveSetting('backupDriveId',                  backupDriveId);
         await saveSetting('backupKeepDaily',                backupKeepDaily);
@@ -1272,6 +1278,8 @@
                     local_max_size_bytes: indexLocalMaxSizeGb > 0
                         ? Math.round(indexLocalMaxSizeGb * 1_000_000_000)
                         : null,
+                    // Stage U — thin client: when false, bg_ingest skips extraction.
+                    local_extraction_enabled: indexLocalExtractionEnabled,
                 }
             });
             if (indexEnabled) {
@@ -3010,6 +3018,17 @@
                     <span>{i18n.t.settings.index.cloud_backup_pull_full_text ?? 'Pull body text alongside metadata'}</span>
                 </label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_pull_full_text_hint ?? ''}</p>
+
+                <!-- Stage U — thin-client switch. -->
+                <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
+                    <input type="checkbox" bind:checked={indexLocalExtractionEnabled} />
+                    <span>Local extraction (uncheck for thin-client / VPS-only extraction)</span>
+                </label>
+                <p class="hint">
+                    When unchecked, bg_ingest writes L1-only rows (path + sha256 + size) and
+                    uploads the raw bytes to the VPS for extraction. Saves CPU on low-power clients.
+                    Requires cloud-backup push manifests to be enabled.
+                </p>
 
                 <!-- Stage P — local DB size cap. -->
                 <div style="margin-top:14px;">

@@ -453,6 +453,10 @@ enum CloudBackupCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Stage U — query the VPS extraction-worker queue depths.
+    /// Requires the cloud-backup URL + bearer token to be configured.
+    /// Returns `{pending, in_progress, done, failed, worker_db_found}`.
+    ExtractStatus,
     /// Stage T — manage API keys via the VPS admin surface.
     /// Requires the `CB_API_ADMIN_TOKEN` (or `--admin-token`) set on
     /// the VPS in `/etc/cb-api.env`.  Never sent over HTTP as a
@@ -1409,6 +1413,17 @@ enum IndexCmd {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
+    /// Stage U — walk a directory, hash every file, write L1-only rows
+    /// (no extraction), and enqueue each file for upload to the VPS
+    /// if cloud-backup push is configured.  Equivalent to setting
+    /// `local_extraction_enabled = false` in Settings for one scan.
+    L1Only {
+        /// Root path to scan (recursively).
+        path: PathBuf,
+        /// Owner UUID to stamp on every row.
+        #[arg(long, default_value = "")]
+        owner_id: String,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -2331,6 +2346,146 @@ async fn cmd_index_async(
                 })),
                 OutFormat::Text => println!(
                     "purge done — stripped {stripped} rows, deleted {deleted} rows, reclaimed {reclaimed} bytes"
+                ),
+            }
+        }
+
+        IndexCmd::L1Only { path, owner_id } => {
+            // Walk `path` recursively; for each file: compute sha256 + L1
+            // metadata and write a thin manifest row.  If cloud-backup push
+            // is configured, also enqueue `cb_manifest_push` +
+            // `cb_file_upload` outbox entries so the VPS can extract
+            // full_text from the bytes.
+            use sha2::{Digest, Sha256};
+
+            let cfg = crate::index::config_persist::load(&data_dir);
+            let cb_push_enabled = cfg.cloud_backup_push_manifests_enabled
+                && cfg.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+                .map_err(|e| e.to_string())?;
+            let pipeline = crate::index::ingest::IngestPipeline::new(
+                std::sync::Arc::new(fts),
+                std::sync::Arc::new(local),
+                None, // L1-only: no embedder needed
+                crate::index::ingest::IngestConfig::default(),
+            );
+            let mgr_opt = if cb_push_enabled {
+                crate::sync::SyncManager::open(&data_dir).ok()
+            } else { None };
+
+            let owner = if owner_id.is_empty() {
+                uuid::Uuid::nil().to_string()
+            } else { owner_id.clone() };
+
+            let mut total_scanned = 0usize;
+            let mut total_written = 0usize;
+            let mut total_enqueued = 0usize;
+
+            for entry in jwalk::WalkDir::new(&path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let fp = entry.path();
+                total_scanned += 1;
+
+                let meta = match std::fs::metadata(&fp) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mtime_unix = meta.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+                let file_size = meta.len() as i64;
+                let filename = fp.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let ext = fp.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let parent_dir = fp.parent()
+                    .and_then(|d| d.to_str())
+                    .map(|s| s.to_owned());
+
+                let bytes = match std::fs::read(&fp) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let mut h = Sha256::new();
+                h.update(&bytes);
+                let sha256 = hex::encode(h.finalize());
+
+                let loc = crate::index::location::FileLocation::Local {
+                    user_id: uuid::Uuid::parse_str(&owner).unwrap_or(uuid::Uuid::nil()),
+                    machine_id: uuid::Uuid::nil(),
+                    path: fp.to_path_buf(),
+                };
+
+                let raw = crate::index::ingest::RawDocument {
+                    full_text: String::new(),
+                    full_text_md: String::new(),
+                    headings: Vec::new(),
+                    title: None,
+                    author: None,
+                    year: None,
+                    filename: filename.clone(),
+                    ext: ext.clone(),
+                    language: String::new(),
+                    source_hash: sha256.clone(),
+                    location_uri: loc.to_uri(),
+                    owner_id: owner.clone(),
+                    tags: Vec::new(),
+                    mtime_unix,
+                    file_size: Some(file_size),
+                    volume_id: crate::volume::volume_id_for_path(fp.as_path()),
+                    parent_dir: parent_dir.clone(),
+                    translated_text: None,
+                    translated_to_lang: None,
+                    audio_duration_seconds: None,
+                    audio_codec: None,
+                    audio_sample_rate_hz: None,
+                    audio_channels: None,
+                    audio_bitrate_kbps: None,
+                    image_camera_make: None,
+                    image_camera_model: None,
+                    image_lens_model: None,
+                    image_taken_at_unix: None,
+                    image_iso: None,
+                };
+
+                if pipeline.ingest_document(raw.clone()).await.is_ok() {
+                    total_written += 1;
+                }
+
+                if let Some(ref mgr) = mgr_opt {
+                    let row = crate::sync::cloud_backup::ManifestRow::from_raw_document(&raw);
+                    if let Ok(payload) = serde_json::to_string(&row) {
+                        let _ = mgr.enqueue("cb_manifest_push", &payload);
+                        let upload = serde_json::json!({
+                            "sha256": sha256,
+                            "path":   fp.to_string_lossy(),
+                        });
+                        if let Ok(s) = serde_json::to_string(&upload) {
+                            let _ = mgr.enqueue("cb_file_upload", &s);
+                        }
+                        total_enqueued += 1;
+                    }
+                }
+            }
+
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "scanned":  total_scanned,
+                    "written":  total_written,
+                    "enqueued": total_enqueued,
+                })),
+                OutFormat::Text => println!(
+                    "l1-only scan done — scanned {total_scanned}, written {total_written}, enqueued {total_enqueued}"
                 ),
             }
         }
@@ -3351,6 +3506,29 @@ async fn cmd_sync_cloud_backup(
                         println!("dry-run: would import {total_skipped} rows");
                     } else {
                         println!("imported {total_imported} rows (watermark → {max_source_id})");
+                    }
+                }
+            }
+        }
+
+        CloudBackupCmd::ExtractStatus => {
+            let resp = client.extract_status().await.map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "pending":         resp.pending,
+                    "in_progress":     resp.in_progress,
+                    "done":            resp.done,
+                    "failed":          resp.failed,
+                    "worker_db_found": resp.worker_db_found,
+                })),
+                OutFormat::Text => {
+                    if !resp.worker_db_found {
+                        println!("VPS worker-state DB not found (worker never ran?)");
+                    } else {
+                        println!(
+                            "pending={} in-progress={} done={} failed={}",
+                            resp.pending, resp.in_progress, resp.done, resp.failed
+                        );
                     }
                 }
             }

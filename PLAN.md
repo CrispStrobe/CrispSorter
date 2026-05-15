@@ -415,7 +415,7 @@ Today key mint requires SSH'ing to the VPS and running `python -m api.admin mint
 - [x] **Settings UI**: collapsible "Admin — API key management" sub-section in Cloud-backup Settings; user pastes admin token; can mint / revoke / list regular keys.  **SHIPPED 2026-05-15**
 - [x] **CLI**: `crispsorter sync cloud-backup admin mint <NAME>` + `revoke` + `list --json`.  **SHIPPED 2026-05-15**
 
-#### Stage U — L1-only local + zip-batch handoff to VPS (~8–10 h, the user's "thin client" mode)
+#### Stage U — L1-only local + zip-batch handoff to VPS (~8–10 h, the user's "thin client" mode) — SHIPPED 2026-05-15
 
 The bigger architectural shift: when the local catalog is huge, the user doesn't want CrispSorter to do extraction locally at all.  Instead:
 
@@ -426,15 +426,17 @@ The bigger architectural shift: when the local catalog is huge, the user doesn't
 5. VPS also forwards the encrypted-or-plain blob to Internxt for cold storage (same as today's vps_worker).
 6. CrispSorter client never holds full extraction state; it sees the corpus only through `/api/v2/index/search`.
 
-- [ ] **`crispsorter index l1-only`** CLI mode — runs scan + zip + upload without local extraction.
-- [ ] **`IndexConfig.local_extraction_enabled`** master switch (default `true`).  When `false`, bg_ingest writes L1 rows only.
-- [ ] **vps_worker extension** — currently it just decrypts + uploads.  Add per-extension extraction:
-    - Text: PyMuPDF / pypdf / python-docx (already in requirements.txt for `search_engine.py`).
-    - Audio: CrispASR via the `crispasr-cli` Rust binary OR a Python wrapper (faster-whisper).
-    - Images: forward to **CrispLens** (already on the VPS) via its `/api/ingest/upload-local` route.
-- [ ] **Job state** — extend `worker_state.db` with a `pending_extractions` table; vps_worker processes one extraction at a time off the queue.
-- [ ] **Backpressure / progress** — controller-style status reports back over `/api/v2/extract/status`.
-- [ ] **Live tests**: ship a small zipped batch end-to-end; verify the rows show up in `/api/v2/index/search` with the expected `full_text` + `embedding`.
+- [x] **`crispsorter index l1-only`** CLI mode — runs scan + zip + upload without local extraction.  **SHIPPED 2026-05-15**
+- [x] **`IndexConfig.local_extraction_enabled`** master switch (default `true`).  When `false`, bg_ingest writes L1 rows only.  **SHIPPED 2026-05-15**
+- [x] **vps_worker extension** — `api/extract.py` (`ExtractionWorker`) dispatches by extension:  **SHIPPED 2026-05-15**
+    - Text: PyMuPDF / pypdf / python-docx / openpyxl / plain-text.
+    - Audio: (Stage V — CrispASR bridge).
+    - Images: (Stage V — CrispLens bridge).
+- [x] **Job state** — `pending_extractions` table in `worker_state.db`; `vps_worker.py` calls `extractor.extract_one()` each loop iteration.  **SHIPPED 2026-05-15**
+- [x] **Backpressure / progress** — `GET /api/v2/extract/status` (requires bearer auth); `sync_cb_extract_status` Tauri command + `extract-status` CLI sub-command.  **SHIPPED 2026-05-15**
+- [x] **cb_file_upload outbox** — new op type; `drain_cb_file_uploads()` in `sync/mod.rs` ships raw bytes to `/api/files/by-hash/<sha>`.  **SHIPPED 2026-05-15**
+- [x] **Pytest**: 11 tests in `tests/test_stage_u.py` — extraction helpers, `ExtractionWorker` unit tests, HTTP status endpoint.  **SHIPPED 2026-05-15**
+- [ ] **Live tests**: ship a small zipped batch end-to-end; verify the rows show up in `/api/v2/index/search` with the expected `full_text` + `embedding`.  (deferred — requires live VPS)
 
 #### Stage V — vps_worker leverages CrispLens + CrispASR for full-spectrum extraction (~6–8 h, child of Stage U)
 
