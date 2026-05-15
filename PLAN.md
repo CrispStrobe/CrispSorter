@@ -397,14 +397,14 @@ controller.py owns `index_manifest.db` (the legacy SQLite that aggregates every 
 - [x] **GUI**: a one-shot import button in Settings → Cloud-backup → "Import from controller.py manifest".  SHIPPED 2026-05-15
 - [x] **Pytest**: synthetic SQLite with 100 source_files rows → import → verify identical rows visible via `/api/manifest/pull`.  SHIPPED 2026-05-15
 
-#### Stage S — Federated search across all backends (~5–6 h)
+#### Stage S — Federated search across all backends (~5–6 h) — SHIPPED 2026-05-15
 
 Today the user picks one backend for search.  A unified "search everywhere" panel queries local + cb-api + CrispLens in parallel, RRF-merges results, shows source-of-truth badges per hit.
 
-- [ ] **`sync_federated_search(query, filters)`** Tauri command that fans out across all three backends via `tokio::try_join!`, normalises payloads to a shared `FederatedHit` shape, RRF-merges by per-backend rank, returns the union.
-- [ ] **GUI panel** in IndexSearch.svelte: backend filter checkboxes (Local / Cloud-backup / CrispLens) defaulting to all-on.  Result rows badge their source backend with an icon.
-- [ ] **CLI**: `crispsorter search "query" --backends local,cb-api,crisplens`.
-- [ ] **Test**: stub each backend with mockito → assert RRF order is correct + per-backend timeouts don't poison the whole query.
+- [x] **`sync_federated_search(query, filters)`** Tauri command that fans out across all three backends via `tokio::join!`, normalises payloads to a shared `FederatedHit` shape, RRF-merges by per-backend rank, returns the union.  SHIPPED 2026-05-15
+- [x] **GUI panel** in IndexSearch.svelte: "🔀 Alle" button + backend filter checkboxes (local / cloud_backup / crisplens) defaulting to all-on.  Result rows badge their source backend with icon + rrf_rank.  SHIPPED 2026-05-15
+- [x] **CLI**: `crispsorter sync cloud-backup federated-search "query" [--backends local,cloud_backup,crisplens]`.  SHIPPED 2026-05-15
+- [x] **Tests**: `rrf_merge_deduplicates_and_ranks` + `rrf_merge_respects_limit` + `rrf_merge_empty_lists` unit tests in `tauri_commands.rs`.  SHIPPED 2026-05-15
 
 #### Stage T — cb-api key minting from the GUI (~2–3 h)
 

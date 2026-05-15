@@ -436,6 +436,23 @@ enum CloudBackupCmd {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
+    /// Stage S — fan out a query across all enabled backends
+    /// (local LanceDB + cloud-backup VPS + CrispLens), RRF-merge
+    /// results, and print the union.  Any backend that isn't
+    /// configured is silently skipped; errors are reported per-
+    /// backend without suppressing results from healthy backends.
+    FederatedSearch {
+        /// Query text.
+        query: String,
+        /// Comma-separated subset of backends to query.
+        /// Valid values: `local`, `cloud_backup`, `crisplens`.
+        /// Default: all three.
+        #[arg(long, default_value = "")]
+        backends: String,
+        /// Maximum hits to return (after RRF merge).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2386,6 +2403,12 @@ async fn cmd_sync_cloud_backup(
         return Ok(());
     }
 
+    // FederatedSearch may run even when cb-api isn't configured — it simply
+    // marks cloud_backup as errored and still queries the other backends.
+    if let CloudBackupCmd::FederatedSearch { .. } = &cmd {
+        return cmd_cloud_backup_federated(out, data_dir, cfg, cmd).await;
+    }
+
     if url.is_empty() {
         return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
     }
@@ -3282,6 +3305,230 @@ async fn cmd_sync_cloud_backup(
                         println!("dry-run: would import {total_skipped} rows");
                     } else {
                         println!("imported {total_imported} rows (watermark → {max_source_id})");
+                    }
+                }
+            }
+        }
+
+        // FederatedSearch is routed before the client is built (see above).
+        CloudBackupCmd::FederatedSearch { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn cmd_cloud_backup_federated(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cfg: crate::index::IndexConfig,
+    cmd: CloudBackupCmd,
+) -> Result<(), String> {
+    use crate::sync::tauri_commands::rrf_merge;
+    use crate::sync::cloud_backup::FederatedHit;
+    use crate::images::crisplens::tauri_commands::get_json;
+
+    let CloudBackupCmd::FederatedSearch { query, backends, limit } = cmd else {
+        unreachable!()
+    };
+
+    let q = query.trim().to_owned();
+    if q.is_empty() {
+        return Err("query is empty".into());
+    }
+
+    let enabled: std::collections::HashSet<&str> = {
+        if backends.is_empty() {
+            ["local", "cloud_backup", "crisplens"].into()
+        } else {
+            backends.split(',').map(str::trim).collect()
+        }
+    };
+    let want_local = enabled.contains("local");
+    let want_cb    = enabled.contains("cloud_backup");
+    let want_cl    = enabled.contains("crisplens");
+
+    let mut lists: Vec<Vec<FederatedHit>> = Vec::new();
+    let mut errors: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+
+    // ── Local ────────────────────────────────────────────────────────────
+    if want_local {
+        let fts_dir = data_dir.join("fts");
+        if !fts_dir.exists() {
+            errors.insert("local", "FTS index not found".into());
+        } else {
+            match crate::index::FtsIndex::open_or_create(&fts_dir) {
+                Err(e) => { errors.insert("local", e.to_string()); }
+                Ok(fts) => {
+                    match fts.search(&q, &Default::default(), limit * 4) {
+                        Err(e) => { errors.insert("local", e.to_string()); }
+                        Ok(hits) => {
+                            let local_res: Result<Vec<_>, String> = async {
+                                let li = crate::index::LocalIndex::open_or_create(
+                                    data_dir, 1024,
+                                ).await.map_err(|e| e.to_string())?;
+                                let ids: Vec<String> = hits.iter()
+                                    .map(|h| h.doc_id.clone()).collect();
+                                let meta: std::collections::HashMap<String, _> = li
+                                    .fetch_search_results_by_ids_filtered(&ids, None)
+                                    .await
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|r| (r.doc_id.clone(), r))
+                                    .collect();
+                                Ok(hits.iter()
+                                   .filter_map(|h| meta.get(&h.doc_id).cloned())
+                                   .collect())
+                            }.await;
+                            match local_res {
+                                Err(e) => { errors.insert("local", e); }
+                                Ok(rows) => {
+                                    let fed: Vec<FederatedHit> = rows.into_iter()
+                                        .enumerate()
+                                        .map(|(i, r)| FederatedHit {
+                                            id: format!("local:{}", r.doc_id),
+                                            source: "local".into(),
+                                            score: r.score,
+                                            rrf_rank: i + 1,
+                                            filename: r.filename,
+                                            path: Some(r.location_uri.clone()),
+                                            ext: r.ext,
+                                            title: r.title,
+                                            author: r.author,
+                                            year: r.year,
+                                            language: r.language,
+                                            sha256: if r.source_hash.is_empty() { None }
+                                                    else { Some(r.source_hash) },
+                                            size_bytes: None,
+                                            snippet: if r.snippet.is_empty() { None }
+                                                     else { Some(r.snippet) },
+                                            location_uri: Some(r.location_uri),
+                                        })
+                                        .collect();
+                                    lists.push(fed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Cloud-backup ─────────────────────────────────────────────────────
+    if want_cb {
+        let url = cfg.cloud_backup_url.clone().unwrap_or_default();
+        let token = if url.is_empty() { String::new() }
+            else {
+                crate::sync::secret::get_token_for_url(&url)
+                    .ok().flatten().unwrap_or_default()
+            };
+        if url.is_empty() {
+            errors.insert("cloud_backup", "not configured".into());
+        } else if token.is_empty() {
+            errors.insert("cloud_backup", "no API token stored".into());
+        } else {
+            match crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) {
+                Err(e) => { errors.insert("cloud_backup", e.to_string()); }
+                Ok(cli) => {
+                    match cli.search(&q, limit).await {
+                        Err(e) => { errors.insert("cloud_backup", e.to_string()); }
+                        Ok(resp) => {
+                            let fed: Vec<FederatedHit> = resp.rows.into_iter()
+                                .enumerate()
+                                .map(|(i, h)| FederatedHit {
+                                    id: format!("cloud_backup:{}", h.sha256),
+                                    source: "cloud_backup".into(),
+                                    score: h.score,
+                                    rrf_rank: i + 1,
+                                    filename: Some(h.filename),
+                                    path: Some(h.path.clone()),
+                                    ext: Some(h.ext),
+                                    title: h.title,
+                                    author: h.author,
+                                    year: h.year,
+                                    language: h.language,
+                                    sha256: Some(h.sha256),
+                                    size_bytes: Some(h.size_bytes),
+                                    snippet: h.full_text.map(|t| t.chars().take(300).collect()),
+                                    location_uri: None,
+                                })
+                                .collect();
+                            lists.push(fed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── CrispLens ────────────────────────────────────────────────────────
+    if want_cl {
+        let encoded: String = q.chars().flat_map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                vec![c]
+            } else {
+                format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
+            }
+        }).collect();
+        let path = format!("/api/search/semantic?q={encoded}&limit={limit}");
+        match get_json::<Vec<crisplens_protocol::SearchHit>>(data_dir, &path) {
+            Err(e) => { errors.insert("crisplens", e); }
+            Ok(hits) => {
+                let fed: Vec<FederatedHit> = hits.into_iter()
+                    .enumerate()
+                    .map(|(i, h)| FederatedHit {
+                        id: format!("crisplens:{}", h.id),
+                        source: "crisplens".into(),
+                        score: h.score.unwrap_or(0.0),
+                        rrf_rank: i + 1,
+                        filename: Some(h.filename),
+                        path: Some(h.filepath.clone()),
+                        ext: h.filepath.rsplit('.').next().map(|e| e.to_lowercase()),
+                        title: h.description.clone(),
+                        author: None,
+                        year: None,
+                        language: None,
+                        sha256: None,
+                        size_bytes: None,
+                        snippet: h.description,
+                        location_uri: None,
+                    })
+                    .collect();
+                lists.push(fed);
+            }
+        }
+    }
+
+    let merged = rrf_merge(lists, limit);
+
+    match out {
+        OutFormat::Json => {
+            let errs: serde_json::Map<String, serde_json::Value> = errors
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.into()))
+                .collect();
+            println!("{}", serde_json::json!({
+                "hits":   merged,
+                "errors": errs,
+            }));
+        }
+        OutFormat::Text => {
+            for (k, v) in &errors {
+                eprintln!("[{k}] error: {v}");
+            }
+            if merged.is_empty() {
+                println!("no results");
+            } else {
+                for h in &merged {
+                    let name  = h.filename.as_deref().unwrap_or("?");
+                    let src   = &h.source;
+                    let score = h.score;
+                    println!("[{src}] {name}  (score {score:.4})");
+                    if let Some(ref p) = h.path {
+                        println!("   path: {p}");
+                    }
+                    if let Some(ref s) = h.snippet {
+                        let preview: String = s.chars().take(120).collect();
+                        println!("   {preview}");
                     }
                 }
             }
