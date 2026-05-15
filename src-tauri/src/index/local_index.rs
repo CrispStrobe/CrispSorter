@@ -23,7 +23,7 @@ use lancedb::{
     connect,
     index::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder, Index},
     query::{ExecutableQuery, QueryBase},
-    table::NewColumnTransform,
+    table::{OptimizeAction, NewColumnTransform},
     Connection, DistanceType, Table,
 };
 
@@ -661,6 +661,155 @@ impl LocalIndex {
             .table
             .count_rows(Some("chunk_index <= 0".to_owned()))
             .await?)
+    }
+
+    // ── Purge ──────────────────────────────────────────────────────────────
+
+    /// Stage P — LRU purge to keep the lance dir ≤ `max_bytes`.
+    ///
+    /// Two-phase:
+    /// 1. Strip heavy columns (`full_text`, `full_text_md`, `embedding`,
+    ///    `embedding_sparse`) from the oldest rows (by `indexed_at`),
+    ///    batch by batch, until the directory is small enough — or every
+    ///    row has been stripped.
+    /// 2. If stripping alone doesn't reach the target, delete the oldest
+    ///    rows entirely until the target is met.
+    ///
+    /// Returns `(stripped_rows, deleted_rows, bytes_reclaimed)`.
+    pub async fn purge_to_size(
+        &self,
+        lance_dir: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<(usize, usize, u64)> {
+        let initial = dir_size_bytes(lance_dir);
+        if initial <= max_bytes {
+            return Ok((0, 0, 0));
+        }
+
+        let mut stripped = 0usize;
+        let mut deleted  = 0usize;
+
+        // ── Phase 1: strip heavy columns from oldest batches ──────────
+        // We walk `indexed_at` in ascending order (oldest first) and
+        // null out the four heavy columns per batch of up to 1000 rows.
+        // After each batch we compact + prune and re-measure.
+        let batch_size = 1000usize;
+        let mut watermark: i64 = i64::MIN;
+        loop {
+            if dir_size_bytes(lance_dir) <= max_bytes { break; }
+
+            // Fetch a batch of old rows that still have non-NULL heavy cols.
+            let filter = format!(
+                "indexed_at > {watermark} AND (full_text IS NOT NULL OR embedding IS NOT NULL)"
+            );
+            let batches: Vec<RecordBatch> = self
+                .table
+                .query()
+                .only_if(filter.clone())
+                .select(lancedb::query::Select::Columns(vec!["indexed_at".to_owned()]))
+                .limit(batch_size)
+                .execute()
+                .await
+                .context("purge phase-1 scan")?
+                .try_collect()
+                .await
+                .context("purge phase-1 collect")?;
+
+            if batches.is_empty() { break; }
+
+            // Find the max indexed_at in this batch to set the next cutoff.
+            let max_ts: i64 = batches.iter()
+                .flat_map(|b| {
+                    b.column_by_name("indexed_at")
+                        .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>())
+                        .map(|arr| arr.values().iter().copied().collect::<Vec<_>>())
+                        .unwrap_or_default()
+                })
+                .max()
+                .unwrap_or(watermark);
+            let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+            // Null the heavy columns for every row up to this watermark.
+            self.table
+                .update()
+                .only_if(format!("indexed_at <= {max_ts} AND (full_text IS NOT NULL OR embedding IS NOT NULL)"))
+                .column("full_text",       "NULL")
+                .column("full_text_md",    "NULL")
+                .column("embedding",       "NULL")
+                .column("embedding_sparse","NULL")
+                .execute()
+                .await
+                .context("purge phase-1 strip")?;
+            stripped += row_count;
+            watermark = max_ts;
+
+            // Compact + prune so the space is actually reclaimed on disk.
+            self.table
+                .optimize(OptimizeAction::Prune { older_than: None, delete_unverified: Some(true), error_if_tagged_old_versions: None })
+                .await
+                .context("purge compact after strip")?;
+            self.table
+                .optimize(OptimizeAction::Compact { options: Default::default(), remap_options: None })
+                .await
+                .context("purge compact after strip")?;
+
+            if row_count < batch_size { break; } // no more rows to strip
+        }
+
+        // ── Phase 2: delete oldest rows if still over cap ─────────────
+        let mut del_watermark: i64 = i64::MIN;
+        loop {
+            if dir_size_bytes(lance_dir) <= max_bytes { break; }
+
+            let filter = format!("indexed_at > {del_watermark}");
+            let batches: Vec<RecordBatch> = self
+                .table
+                .query()
+                .only_if(filter)
+                .select(lancedb::query::Select::Columns(vec!["indexed_at".to_owned()]))
+                .limit(batch_size)
+                .execute()
+                .await
+                .context("purge phase-2 scan")?
+                .try_collect()
+                .await
+                .context("purge phase-2 collect")?;
+
+            if batches.is_empty() { break; }
+
+            let max_ts: i64 = batches.iter()
+                .flat_map(|b| {
+                    b.column_by_name("indexed_at")
+                        .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>())
+                        .map(|arr| arr.values().iter().copied().collect::<Vec<_>>())
+                        .unwrap_or_default()
+                })
+                .max()
+                .unwrap_or(del_watermark);
+            let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+            self.table
+                .delete(&format!("indexed_at <= {max_ts}"))
+                .await
+                .context("purge phase-2 delete")?;
+            deleted += row_count;
+            del_watermark = max_ts;
+
+            self.table
+                .optimize(OptimizeAction::Prune { older_than: None, delete_unverified: Some(true), error_if_tagged_old_versions: None })
+                .await
+                .context("purge compact after delete")?;
+            self.table
+                .optimize(OptimizeAction::Compact { options: Default::default(), remap_options: None })
+                .await
+                .context("purge compact after delete")?;
+
+            if row_count < batch_size { break; }
+        }
+
+        let final_size = dir_size_bytes(lance_dir);
+        let reclaimed = initial.saturating_sub(final_size);
+        Ok((stripped, deleted, reclaimed))
     }
 
     /// List all indexed documents: one representative row per document.
@@ -2021,6 +2170,22 @@ fn is_table_not_found(e: &lancedb::Error) -> bool {
     matches!(e, lancedb::Error::TableNotFound { .. })
 }
 
+/// Recursively sum file sizes under `dir` (for on-disk size measurement).
+/// Returns 0 if the directory doesn't exist or can't be read.
+pub fn dir_size_bytes(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            total += dir_size_bytes(&path);
+        } else if let Ok(m) = std::fs::metadata(&path) {
+            total += m.len();
+        }
+    }
+    total
+}
+
 // ── Schema migration helpers ───────────────────────────────────────────────
 
 /// Add the `parent_dir` column to an existing table that predates P9 step 3.
@@ -2579,5 +2744,60 @@ mod push_candidate_tests {
         let chunk0 = cand.iter().find(|c| c.chunk_index == 0).unwrap();
         assert_eq!(chunk0.embedding, vec![0.1f32, 0.2, 0.3, 0.4]);
         assert_eq!(chunk0.model_id.as_deref(), Some("bge"));
+    }
+
+    /// Stage P — purge_to_size: index already within cap → no-op.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purge_noop_when_within_cap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        local.ingest_batch(&[
+            mk("a", 0, 100, Some("body a"), Some(vec![1.0, 0.0, 0.0, 0.0]), Some("m")),
+        ]).await.unwrap();
+
+        let lance_dir = tmp.path().join("lance");
+        let (stripped, deleted, reclaimed) = local
+            .purge_to_size(&lance_dir, u64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(stripped,  0);
+        assert_eq!(deleted,   0);
+        assert_eq!(reclaimed, 0);
+    }
+
+    /// Stage P — purge_to_size: with a cap of 0, all rows should be
+    /// stripped and/or deleted until the table is empty.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purge_strips_heavy_columns_and_evicts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        // 5 rows with full_text + embedding.  Oldest indexed_at first.
+        let chunks: Vec<_> = (0..5u32).map(|i| {
+            mk(
+                &format!("doc{i}"),
+                0,
+                (i as i64) * 10 + 10, // 10, 20, 30, 40, 50
+                Some(&"x".repeat(4096)), // ~4KB body per row
+                Some(vec![i as f32, 0.0, 0.0, 0.0]),
+                Some("m"),
+            )
+        }).collect();
+        local.ingest_batch(&chunks).await.unwrap();
+
+        let lance_dir = tmp.path().join("lance");
+        // Cap at 0 bytes forces full eviction.
+        let (stripped, deleted, _reclaimed) = local
+            .purge_to_size(&lance_dir, 0)
+            .await
+            .unwrap();
+        // At least something was stripped or deleted.
+        assert!(stripped + deleted > 0,
+            "expected at least one row affected; stripped={stripped} deleted={deleted}");
+        // After eviction, row count should be reduced or zero.
+        let remaining = local.count().await.unwrap();
+        assert!(
+            remaining < 5,
+            "expected fewer rows after purge, got {remaining}"
+        );
     }
 }

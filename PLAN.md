@@ -367,11 +367,11 @@ Stages J / K / L / M / N landed in the 2026-05-14 batch — see HISTORY.md for t
 
 Today the local LanceDB grows unbounded.  At terabyte-scale corpora the user wants a hard cap: keep recent rows in full (metadata + body + embedding), older rows trimmed to metadata-only, oldest rows evicted entirely.
 
-- [ ] **`IndexConfig.local_max_size_bytes`** — new field (default `None` = unbounded).  Settings UI gets a slider 1 GB → 1 TB.
-- [ ] **`crispsorter index purge --max-size N`** CLI — walks LanceDB by `indexed_at` desc, drops `embedding` + `full_text` cols on older rows first, then evicts entirely.  Stops when on-disk size ≤ N.  Reports bytes reclaimed.
-- [ ] **Background purge worker** — when `local_max_size_bytes` is set, a 1-hour tokio interval re-runs the purge.  Mirrors the Stage J drain timer pattern.
-- [ ] **Skeleton index preservation** (extreme case for Stage W) — when purging, optionally keep an `author_index` SQLite KV: `{author_name → doc_count, last_seen_at}`.  Bounded at ~thousands of authors; survives full-LanceDB-evict.
-- [ ] **Pytest + Rust unit tests**: purge with a known-shape index → assert resulting size + that the oldest rows lost their body/embedding columns.
+- [x] **`IndexConfig.local_max_size_bytes`** — new field (default `None` = unbounded).  Settings UI gets a slider 0–1000 GB (0 = unlimited).  SHIPPED 2026-05-15
+- [x] **`crispsorter index purge --max-size N`** CLI — walks LanceDB by `indexed_at` asc (oldest first), drops `full_text`/`full_text_md`/`embedding`/`embedding_sparse` cols first, then evicts rows entirely until on-disk ≤ N.  Supports SI suffixes (K/M/G/T).  SHIPPED 2026-05-15
+- [x] **Background purge worker** — 1-hour tokio interval; no-op when cap unset or index already within bounds.  SHIPPED 2026-05-15
+- [ ] **Skeleton index preservation** (extreme case for Stage W) — deferred to Stage W.
+- [x] **Rust unit tests**: `purge_noop_when_within_cap` + `purge_strips_heavy_columns_and_evicts`.  SHIPPED 2026-05-15
 
 #### Stage Q — Backup shards to cloud drives (~2–3 h)
 

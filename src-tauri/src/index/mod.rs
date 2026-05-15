@@ -337,6 +337,14 @@ pub struct IndexConfig {
     /// the on-demand promotion path into the local cache.
     #[serde(default)]
     pub cloud_backup_pull_full_text_enabled: bool,
+    /// P13.7 Stage P — soft cap on the local LanceDB on-disk
+    /// footprint in bytes.  `None` (default) = unbounded.  When set,
+    /// a background 1-hour timer runs `purge_to_size`: oldest rows
+    /// lose their `full_text` + `embedding` columns first; rows still
+    /// over the cap are evicted entirely.  The CLI flag
+    /// `crispsorter index purge --max-size N` runs an immediate pass.
+    #[serde(default)]
+    pub local_max_size_bytes: Option<u64>,
 }
 
 /// P13.7 Step 1 — how deeply bg_ingest processes images.
@@ -487,6 +495,7 @@ impl Default for IndexConfig {
             cloud_backup_push_embeddings_enabled: false,
             cloud_backup_pull_manifests_enabled: false,
             cloud_backup_pull_full_text_enabled: false,
+            local_max_size_bytes: None,
         }
     }
 }
