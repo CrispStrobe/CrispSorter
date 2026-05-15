@@ -323,6 +323,16 @@
     let indexCloudBackupStatus: any        = $state(null);
     let indexCloudBackupTokenSavedMsg      = $state<string>('');
 
+    // ── Stage T — admin key management ────────────────────────────────────
+    let cbAdminToken      = $state<string>('');
+    let cbAdminMintName   = $state<string>('');
+    let cbAdminMintOwner  = $state<string>('');
+    let cbAdminMintedKey  = $state<string>('');
+    let cbAdminRevokeName = $state<string>('');
+    let cbAdminKeys: any[]= $state([]);
+    let cbAdminBusy       = $state<boolean>(false);
+    let cbAdminMsg        = $state<string>('');
+
     // ── Catalogs (named bundles of the above settings) ────────────────────
     interface Catalog {
         id:       string;            // uuid-ish, stable
@@ -1352,6 +1362,69 @@
             indexCloudBackupStatus = await invoke('sync_cb_status');
         } catch {
             indexCloudBackupStatus = null;
+        }
+    }
+
+    // ── Stage T — admin key management handlers ──────────────────────────
+    async function cbAdminMint() {
+        if (!cbAdminToken.trim() || !cbAdminMintName.trim()) {
+            cbAdminMsg = 'Admin token and key name are required.';
+            return;
+        }
+        cbAdminBusy = true;
+        cbAdminMsg  = '';
+        cbAdminMintedKey = '';
+        try {
+            const r = await invoke<any>('sync_cb_admin_mint', {
+                adminToken: cbAdminToken.trim(),
+                name:       cbAdminMintName.trim(),
+                ownerId:    cbAdminMintOwner.trim() || null,
+            });
+            cbAdminMintedKey = r.raw_key ?? '';
+            cbAdminMsg = `Key "${r.name}" minted. Copy it now — it won't be shown again.`;
+            cbAdminMintName  = '';
+            cbAdminMintOwner = '';
+            await cbAdminRefreshList();
+        } catch (e: any) {
+            cbAdminMsg = `Mint error: ${e}`;
+        } finally {
+            cbAdminBusy = false;
+        }
+    }
+
+    async function cbAdminRevoke() {
+        if (!cbAdminToken.trim() || !cbAdminRevokeName.trim()) {
+            cbAdminMsg = 'Admin token and key name are required.';
+            return;
+        }
+        cbAdminBusy = true;
+        cbAdminMsg  = '';
+        try {
+            const r = await invoke<any>('sync_cb_admin_revoke', {
+                adminToken: cbAdminToken.trim(),
+                name:       cbAdminRevokeName.trim(),
+            });
+            cbAdminMsg = r.revoked
+                ? `Key "${r.name}" revoked.`
+                : `No active key named "${r.name}".`;
+            cbAdminRevokeName = '';
+            await cbAdminRefreshList();
+        } catch (e: any) {
+            cbAdminMsg = `Revoke error: ${e}`;
+        } finally {
+            cbAdminBusy = false;
+        }
+    }
+
+    async function cbAdminRefreshList() {
+        if (!cbAdminToken.trim()) return;
+        try {
+            const r = await invoke<any>('sync_cb_admin_list_keys', {
+                adminToken: cbAdminToken.trim(),
+            });
+            cbAdminKeys = r.keys ?? [];
+        } catch (e: any) {
+            cbAdminMsg = `List error: ${e}`;
         }
     }
 
@@ -3073,6 +3146,94 @@
                         {/if}
                     </p>
                 {/if}
+
+                <!-- Stage T — Admin key management (collapsible sub-section) -->
+                <details class="cb-admin-panel">
+                    <summary style="cursor:pointer; font-weight:600; margin-top:14px;">
+                        Admin — API key management
+                    </summary>
+                    <p class="hint">
+                        Requires the <code>CB_API_ADMIN_TOKEN</code> set on the VPS
+                        (<code>python -m api.admin mint-admin</code>).  Admin tokens are
+                        never stored here — enter below for each action.
+                    </p>
+                    <label class="cb-admin-label">Admin token (VPS)</label>
+                    <input type="password" class="cb-admin-input"
+                           bind:value={cbAdminToken}
+                           placeholder="cbadm_…"
+                           autocomplete="off" />
+
+                    <div class="cb-admin-row">
+                        <div class="cb-admin-group">
+                            <strong>Mint new key</strong>
+                            <label class="cb-admin-label">Key name</label>
+                            <input type="text" class="cb-admin-input"
+                                   bind:value={cbAdminMintName}
+                                   placeholder="my-laptop" />
+                            <label class="cb-admin-label">Owner ID (optional)</label>
+                            <input type="text" class="cb-admin-input"
+                                   bind:value={cbAdminMintOwner}
+                                   placeholder="uuid or blank" />
+                            <button type="button" class="btn"
+                                    onclick={cbAdminMint}
+                                    disabled={cbAdminBusy || !cbAdminToken.trim() || !cbAdminMintName.trim()}>
+                                Mint
+                            </button>
+                            {#if cbAdminMintedKey}
+                                <div class="cb-admin-minted-key">
+                                    <span class="hint">New key (copy now):</span>
+                                    <code>{cbAdminMintedKey}</code>
+                                </div>
+                            {/if}
+                        </div>
+
+                        <div class="cb-admin-group">
+                            <strong>Revoke key</strong>
+                            <label class="cb-admin-label">Key name to revoke</label>
+                            <input type="text" class="cb-admin-input"
+                                   bind:value={cbAdminRevokeName}
+                                   placeholder="my-laptop" />
+                            <button type="button" class="btn btn-danger"
+                                    onclick={cbAdminRevoke}
+                                    disabled={cbAdminBusy || !cbAdminToken.trim() || !cbAdminRevokeName.trim()}>
+                                Revoke
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn" style="margin-top:8px;"
+                            onclick={cbAdminRefreshList}
+                            disabled={cbAdminBusy || !cbAdminToken.trim()}>
+                        List keys
+                    </button>
+
+                    {#if cbAdminMsg}
+                        <p class="hint" style="margin-top:6px;">{cbAdminMsg}</p>
+                    {/if}
+
+                    {#if cbAdminKeys.length > 0}
+                        <table class="cb-admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                    <th>Owner ID</th>
+                                    <th>Created</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {#each cbAdminKeys as k}
+                                    <tr class={k.revoked_at ? 'cb-admin-revoked' : ''}>
+                                        <td>{k.name}</td>
+                                        <td>{k.revoked_at ? 'revoked' : 'active'}</td>
+                                        <td style="font-size:0.8em;">{k.owner_id ?? '—'}</td>
+                                        <td style="font-size:0.8em;">{new Date(k.created_at).toLocaleDateString()}</td>
+                                    </tr>
+                                {/each}
+                            </tbody>
+                        </table>
+                    {/if}
+                </details>
             </div>
 
             <!-- Compute device — options depend on the selected engine.
@@ -3944,4 +4105,19 @@
     .icon-btn-tiny { background: transparent; border: none; color: #52525b; cursor: pointer; padding: 2px 4px; border-radius: 3px; font-size: 0.65rem; line-height: 1; }
     .icon-btn-tiny:hover:not(:disabled) { color: #a1a1aa; background: #27272a; }
     .icon-btn-tiny:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Stage T — admin panel */
+    .cb-admin-panel { margin-top: 12px; }
+    .cb-admin-label { display: block; font-size: 0.78rem; color: #a1a1aa; margin: 6px 0 2px; }
+    .cb-admin-input { width: 100%; max-width: 340px; background: #18181b; border: 1px solid #3f3f46; border-radius: 6px; color: #e4e4e7; padding: 5px 8px; font-size: 0.82rem; }
+    .cb-admin-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+    .cb-admin-group { flex: 1 1 200px; display: flex; flex-direction: column; gap: 4px; }
+    .cb-admin-minted-key { margin-top: 6px; background: #09090b; border: 1px solid #3f3f46; border-radius: 6px; padding: 6px 8px; }
+    .cb-admin-minted-key code { display: block; font-size: 0.75rem; color: #4ade80; word-break: break-all; margin-top: 2px; }
+    .cb-admin-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 10px; }
+    .cb-admin-table th { text-align: left; color: #71717a; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid #27272a; }
+    .cb-admin-table td { padding: 4px 8px; border-bottom: 1px solid #1c1c1f; }
+    .cb-admin-revoked td { opacity: 0.5; text-decoration: line-through; }
+    .btn-danger { background: #7f1d1d; border-color: #991b1b; }
+    .btn-danger:hover:not(:disabled) { background: #991b1b; }
 </style>

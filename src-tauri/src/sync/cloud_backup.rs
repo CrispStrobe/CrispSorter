@@ -247,6 +247,42 @@ pub struct FederatedHit {
     pub location_uri: Option<String>,
 }
 
+/// Stage T — admin key management wire types.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminMintRequest<'a> {
+    pub name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminMintResponse {
+    pub raw_key: String,
+    pub name: String,
+    pub owner_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminRevokeRequest<'a> {
+    pub name: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminRevokeResponse {
+    pub revoked: bool,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminKeyInfo {
+    pub id: i64,
+    pub name: String,
+    pub owner_id: Option<String>,
+    pub created_at: i64,
+    pub revoked_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestPullResponse {
     pub rows: Vec<PullRow>,
@@ -955,6 +991,78 @@ impl CloudBackupClient {
             anyhow::bail!("search: HTTP {status}: {body}");
         }
         Ok(resp.json::<SearchResponse>().await.context("search: parse body")?)
+    }
+
+    // ── Stage T — admin key management ──────────────────────────────────────
+
+    /// `POST /api/admin/keys/mint` — mint a new regular API key.
+    /// Requires `admin_token` (stored as `X-Admin-Token`).
+    pub async fn admin_mint(
+        &self,
+        admin_token: &str,
+        name: &str,
+        owner_id: Option<&str>,
+    ) -> Result<AdminMintResponse> {
+        let url = format!("{}/api/admin/keys/mint", self.base_url);
+        let req = AdminMintRequest { name, owner_id };
+        let resp = self.client
+            .post(url)
+            .header("X-Admin-Token", admin_token)
+            .json(&req)
+            .send()
+            .await
+            .context("admin_mint: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("admin_mint: HTTP {status}: {body}");
+        }
+        Ok(resp.json().await.context("admin_mint: parse body")?)
+    }
+
+    /// `POST /api/admin/keys/revoke` — soft-delete a key by name.
+    /// Requires `admin_token`.
+    pub async fn admin_revoke(
+        &self,
+        admin_token: &str,
+        name: &str,
+    ) -> Result<AdminRevokeResponse> {
+        let url = format!("{}/api/admin/keys/revoke", self.base_url);
+        let req = AdminRevokeRequest { name };
+        let resp = self.client
+            .post(url)
+            .header("X-Admin-Token", admin_token)
+            .json(&req)
+            .send()
+            .await
+            .context("admin_revoke: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("admin_revoke: HTTP {status}: {body}");
+        }
+        Ok(resp.json().await.context("admin_revoke: parse body")?)
+    }
+
+    /// `GET /api/admin/keys/list` — list all API key rows (no hashes).
+    /// Requires `admin_token`.
+    pub async fn admin_list_keys(
+        &self,
+        admin_token: &str,
+    ) -> Result<Vec<AdminKeyInfo>> {
+        let url = format!("{}/api/admin/keys/list", self.base_url);
+        let resp = self.client
+            .get(url)
+            .header("X-Admin-Token", admin_token)
+            .send()
+            .await
+            .context("admin_list_keys: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("admin_list_keys: HTTP {status}: {body}");
+        }
+        Ok(resp.json().await.context("admin_list_keys: parse body")?)
     }
 }
 
