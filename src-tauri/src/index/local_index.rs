@@ -694,7 +694,7 @@ impl LocalIndex {
         // null out the four heavy columns per batch of up to 1000 rows.
         // After each batch we compact + prune and re-measure.
         let batch_size = 1000usize;
-        let mut watermark: i64 = i64::MIN;
+        let mut watermark: i64 = 0;
         loop {
             if dir_size_bytes(lance_dir) <= max_bytes { break; }
 
@@ -757,7 +757,7 @@ impl LocalIndex {
         }
 
         // ── Phase 2: delete oldest rows if still over cap ─────────────
-        let mut del_watermark: i64 = i64::MIN;
+        let mut del_watermark: i64 = 0;
         loop {
             if dir_size_bytes(lance_dir) <= max_bytes { break; }
 
