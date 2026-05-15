@@ -2349,6 +2349,50 @@ pub fn run() {
                     }
                 });
             }
+
+            // P13.7 Stage P — hourly LRU purge: when the user has set
+            // `local_max_size_bytes`, trim the lance dir down to that cap.
+            // Runs every 3600 s; cheap no-op when no cap is configured or
+            // the index is already within bounds.
+            {
+                let purge_handle = app.handle().clone();
+                tokio::spawn(async move {
+                    use std::time::Duration;
+                    let mut ticker = tokio::time::interval(Duration::from_secs(3600));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        ticker.tick().await;
+                        if let Some(state) = purge_handle.try_state::<AppState>() {
+                            let (max_bytes_opt, data_dir_opt) = {
+                                let idx = state.index.lock().await;
+                                (
+                                    idx.config.local_max_size_bytes,
+                                    state.data_dir.try_lock().ok().and_then(|g| g.clone()),
+                                )
+                            };
+                            let (Some(max_bytes), Some(data_dir)) = (max_bytes_opt, data_dir_opt) else { continue };
+                            let lance_dir = data_dir.join("lance");
+                            if crate::index::local_index::dir_size_bytes(&lance_dir) <= max_bytes { continue; }
+                            match crate::index::LocalIndex::open_or_create(&data_dir, 1024).await {
+                                Ok(local) => {
+                                    match local.purge_to_size(&lance_dir, max_bytes).await {
+                                        Ok((s, d, r)) if s > 0 || d > 0 => {
+                                            app_log!("info",
+                                                "index purge: stripped={s} deleted={d} reclaimed={r}B");
+                                        }
+                                        Err(e) => {
+                                            app_log!("error", "index purge failed: {e}");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                Err(e) => app_log!("error", "index purge open failed: {e}"),
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .manage(AppState {

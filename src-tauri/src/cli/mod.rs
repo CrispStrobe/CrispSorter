@@ -1282,6 +1282,19 @@ enum IndexCmd {
         /// or `index search`.
         doc_id: String,
     },
+    /// P13.7 Stage P — strip heavy columns from old rows, then evict
+    /// the oldest rows entirely until the lance dir is ≤ max_size.
+    /// Reports bytes reclaimed.
+    Purge {
+        /// Target on-disk cap in bytes.  Supports SI suffixes:
+        /// `5G` = 5 × 10^9, `500M` = 500 × 10^6.
+        #[arg(long = "max-size", value_name = "BYTES")]
+        max_size: String,
+        /// Dry-run: print what would be stripped/deleted without
+        /// actually modifying the index.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -2154,8 +2167,79 @@ async fn cmd_index_async(
                 }
             }
         }
+        IndexCmd::Purge { max_size, dry_run } => {
+            let max_bytes = parse_size_str(&max_size)
+                .map_err(|e| format!("--max-size: {e}"))?;
+            let lance_dir = data_dir.join("lance");
+            let current = crate::index::local_index::dir_size_bytes(&lance_dir);
+            if current <= max_bytes {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({
+                        "status": "already_within_cap",
+                        "current_bytes": current,
+                        "max_bytes": max_bytes,
+                    })),
+                    OutFormat::Text => println!(
+                        "index is already within cap ({} ≤ {} bytes); nothing to do",
+                        current, max_bytes
+                    ),
+                }
+                return Ok(());
+            }
+            if dry_run {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({
+                        "dry_run": true,
+                        "current_bytes": current,
+                        "max_bytes": max_bytes,
+                        "excess_bytes": current.saturating_sub(max_bytes),
+                    })),
+                    OutFormat::Text => println!(
+                        "dry-run: would purge up to {} bytes (current {}, cap {})",
+                        current.saturating_sub(max_bytes), current, max_bytes
+                    ),
+                }
+                return Ok(());
+            }
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let (stripped, deleted, reclaimed) = local
+                .purge_to_size(&lance_dir, max_bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "stripped_rows": stripped,
+                    "deleted_rows":  deleted,
+                    "bytes_reclaimed": reclaimed,
+                    "final_bytes": crate::index::local_index::dir_size_bytes(&lance_dir),
+                })),
+                OutFormat::Text => println!(
+                    "purge done — stripped {stripped} rows, deleted {deleted} rows, reclaimed {reclaimed} bytes"
+                ),
+            }
+        }
     }
     Ok(())
+}
+
+/// Parse a byte-count string with optional SI suffix (G / M / K).
+fn parse_size_str(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (digits, suffix) = s.split_at(
+        s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len())
+    );
+    let base: u64 = digits.parse().map_err(|_| format!("not a number: {digits}"))?;
+    let multiplier = match suffix.to_uppercase().as_str() {
+        ""  | "B" => 1u64,
+        "K" | "KB" => 1_000,
+        "M" | "MB" => 1_000_000,
+        "G" | "GB" => 1_000_000_000,
+        "T" | "TB" => 1_000_000_000_000,
+        other => return Err(format!("unknown suffix '{other}'; use K/M/G/T")),
+    };
+    Ok(base * multiplier)
 }
 
 // ── sync (P13.7 Step 5 — cloud-backup HTTP target) ────────────────────────

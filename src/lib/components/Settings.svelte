@@ -308,6 +308,8 @@
     /** P13.7 Stage I — tiered-cache opt-in.  When true, pulls
      *  include the body text; when false (default), metadata-only. */
     let indexCloudBackupPullFullText       = $state<boolean>(false);
+    /** P13.7 Stage P — local DB size cap in GB (0 = unlimited). */
+    let indexLocalMaxSizeGb        = $state<number>(0);
     /** P13.7 Stage N — partition controls.  These don't persist
      *  per-run (the partition map itself is the persistent
      *  artifact); the form just remembers the user's last picks. */
@@ -810,6 +812,7 @@
         indexCloudBackupPushEmbeddings = await getSetting('indexCloudBackupPushEmbeddings', false) as boolean;
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
+        indexLocalMaxSizeGb            = await getSetting('indexLocalMaxSizeGb', 0) as number;
         cloudBackupPartitionRoot       = await getSetting('cloudBackupPartitionRoot', '');
         cloudBackupPartitionMax        = await getSetting('cloudBackupPartitionMax', 64) as number;
         cloudBackupPartitionDepth      = await getSetting('cloudBackupPartitionDepth', 1) as number;
@@ -1100,6 +1103,7 @@
         await saveSetting('indexCloudBackupPushEmbeddings', indexCloudBackupPushEmbeddings);
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
+        await saveSetting('indexLocalMaxSizeGb',            indexLocalMaxSizeGb);
         await saveSetting('cloudBackupPartitionRoot',       cloudBackupPartitionRoot);
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
@@ -1250,6 +1254,10 @@
                     cloud_backup_push_embeddings_enabled:    indexCloudBackupPushEmbeddings,
                     cloud_backup_pull_manifests_enabled:     indexCloudBackupPullManifests,
                     cloud_backup_pull_full_text_enabled:     indexCloudBackupPullFullText,
+                    // P13.7 Stage P — 0 means unlimited (null in Rust).
+                    local_max_size_bytes: indexLocalMaxSizeGb > 0
+                        ? Math.round(indexLocalMaxSizeGb * 1_000_000_000)
+                        : null,
                 }
             });
             if (indexEnabled) {
@@ -2871,6 +2879,22 @@
                     <span>{i18n.t.settings.index.cloud_backup_pull_full_text ?? 'Pull body text alongside metadata'}</span>
                 </label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_pull_full_text_hint ?? ''}</p>
+
+                <!-- Stage P — local DB size cap. -->
+                <div style="margin-top:14px;">
+                    <label for="local-max-size" style="display:block; margin-bottom:4px;">
+                        {i18n.t.settings.index.local_max_size ?? 'Local index size cap (GB)'}
+                    </label>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <input id="local-max-size" type="range" min="0" max="1000" step="1"
+                               bind:value={indexLocalMaxSizeGb}
+                               style="flex:1;" />
+                        <span style="min-width:60px; text-align:right;">
+                            {indexLocalMaxSizeGb > 0 ? `${indexLocalMaxSizeGb} GB` : 'Unlimited'}
+                        </span>
+                    </div>
+                    <p class="hint">{i18n.t.settings.index.local_max_size_hint ?? 'When set, old rows are stripped and evicted hourly to stay within the cap. 0 = unlimited.'}</p>
+                </div>
 
                 <!-- Stage N — volume-proportional auto-partition.
                      Pure operator surface; doesn't persist into
