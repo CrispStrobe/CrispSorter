@@ -1343,6 +1343,29 @@
         }
     }
 
+    // Stage O — "Sync now" button state.
+    let syncNowBusy = $state(false);
+    let syncNowMsg  = $state('');
+
+    /** Drain the outbox (push), then pull manifest deltas — mirrors
+     *  the auto-drain timer but triggered on demand from the UI. */
+    async function syncNow() {
+        syncNowBusy = true;
+        syncNowMsg  = 'Pushing…';
+        try {
+            const drain = await invoke<any>('sync_cb_drain', { batchSize: 64 });
+            syncNowMsg = `Pushed ${drain.drained ?? 0} row(s). Pulling…`;
+            const pull  = await invoke<any>('sync_cb_manifest_pull');
+            const pulled = pull.pulled ?? pull.applied ?? 0;
+            syncNowMsg = `Done — pushed ${drain.drained ?? 0}, pulled ${pulled} row(s).`;
+            await refreshCloudBackupStatus();
+        } catch (e: any) {
+            syncNowMsg = `Error: ${e}`;
+        } finally {
+            syncNowBusy = false;
+        }
+    }
+
     async function pickIndexModelCacheDir() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (selected) { indexModelCacheDir = selected as string; }
@@ -2880,6 +2903,18 @@
                     </div>
                     {#if cloudBackupPartitionStatus}
                         <p class="hint" style="margin-top:6px;">{cloudBackupPartitionStatus}</p>
+                    {/if}
+                </div>
+
+                <!-- Stage O — "Sync now" button: drain outbox then pull deltas. -->
+                <div style="display:flex; gap:10px; align-items:center; margin-top:14px;">
+                    <button type="button" class="btn"
+                            onclick={syncNow}
+                            disabled={syncNowBusy || !indexCloudBackupUrl.trim()}>
+                        {syncNowBusy ? 'Syncing…' : 'Sync now'}
+                    </button>
+                    {#if syncNowMsg}
+                        <span class="hint" style="margin:0;">{syncNowMsg}</span>
                     {/if}
                 </div>
 
