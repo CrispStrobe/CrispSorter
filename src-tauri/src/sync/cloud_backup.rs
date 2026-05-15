@@ -45,6 +45,9 @@ const EMBED_QUERY_PATH: &str = "/api/index/embed-query";
 const EMBED_MODELS_PATH: &str = "/api/index/embed-models";
 const V2_SEARCH_PATH: &str = "/api/v2/index/search";
 const HEALTH_PATH: &str = "/api/health";
+const SHARD_LIST_PATH: &str = "/api/shard/list";
+const SHARD_EXPORT_PREFIX: &str = "/api/shard/export/";
+const SHARD_IMPORT_PREFIX: &str = "/api/shard/import/";
 
 /// Single row of the manifest-push payload.  Field names match the
 /// FastAPI `ManifestRow` model exactly; reordering or renaming
@@ -300,6 +303,21 @@ pub struct HealthResponse {
     pub lance_enabled: bool,
     #[serde(default)]
     pub fastembed_enabled: bool,
+}
+
+// ── Stage Q — shard backup / restore wire shapes ────────────────────────
+
+/// One row in the shard list from `GET /api/shard/list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardInfo {
+    pub prefix:         String,
+    pub row_count:      u64,
+    pub max_indexed_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShardListResponse {
+    pub shards: Vec<ShardInfo>,
 }
 
 // ── Stage I — v2 hybrid search wire shapes ──────────────────────────────
@@ -806,6 +824,72 @@ impl CloudBackupClient {
     /// errors as 400 responses).  Tokens with `-` need to be
     /// wrapped in `"…"` because FTS5 treats `-` as the NOT
     /// operator.  Multi-word queries are AND-by-default.
+    // ── Stage Q — shard backup / restore ─────────────────────────────────
+
+    /// `GET /api/shard/list` — enumerate all shards with their
+    /// `max_indexed_at` watermarks.  Used for incremental backup
+    /// (compare watermark against `backup_state.db` to skip unchanged
+    /// shards).
+    pub async fn shard_list(&self) -> Result<ShardListResponse> {
+        let url = format!("{}{}", self.base_url, SHARD_LIST_PATH);
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("shard_list: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("shard_list: HTTP {status}: {body}");
+        }
+        resp.json::<ShardListResponse>().await.context("shard_list: parse")
+    }
+
+    /// `GET /api/shard/export/{prefix}` — download the shard's
+    /// tarball bytes.  The caller uploads them to the cloud drive.
+    pub async fn shard_export(&self, prefix: &str) -> Result<Vec<u8>> {
+        use futures_util::StreamExt;
+        let url = format!("{}{}{}", self.base_url, SHARD_EXPORT_PREFIX, prefix);
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("shard_export: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("shard_export: HTTP {status}: {body}");
+        }
+        let mut out = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            out.extend_from_slice(&chunk.context("shard_export: stream")?);
+        }
+        Ok(out)
+    }
+
+    /// `POST /api/shard/import/{prefix}` — upload a previously-saved
+    /// tarball to restore the shard on the VPS.
+    pub async fn shard_import(&self, prefix: &str, data: Vec<u8>) -> Result<()> {
+        let url = format!("{}{}{}", self.base_url, SHARD_IMPORT_PREFIX, prefix);
+        let resp = self.client
+            .post(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .header("Content-Type", "application/octet-stream")
+            .body(data)
+            .send()
+            .await
+            .context("shard_import: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("shard_import: HTTP {status}: {body}");
+        }
+        Ok(())
+    }
+
     pub async fn search(&self, q: &str, limit: usize) -> Result<SearchResponse> {
         // Percent-encode the query — unlike the embedding vec
         // (numeric-only), user input here can contain `&` / `#` /

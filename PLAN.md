@@ -373,16 +373,19 @@ Today the local LanceDB grows unbounded.  At terabyte-scale corpora the user wan
 - [ ] **Skeleton index preservation** (extreme case for Stage W) — deferred to Stage W.
 - [x] **Rust unit tests**: `purge_noop_when_within_cap` + `purge_strips_heavy_columns_and_evicts`.  SHIPPED 2026-05-15
 
-#### Stage Q — Backup shards to cloud drives (~2–3 h)
+#### Stage Q — Backup shards to cloud drives (~2–3 h) — SHIPPED 2026-05-15
 
 VPS shards live on the Hetzner storage box.  Need offsite mirror via the existing CloudDrive abstraction (Filen / Internxt / WebDAV).
 
-- [ ] **`crispsorter sync cloud-backup backup-shards --drive <id> [--shard <prefix>]`** — tarballs `<CB_API_SHARD_ROOT>/<aa>/shard.db` + `<CB_API_LANCE_ROOT>/shards/<aa>/lance.db` for one or all shards, uploads to the drive at `cb-backups/<date>/<aa>.tar`.
-- [ ] **Per-shard incremental backup** — only re-upload shards whose `indexed_at` watermark moved since the last backup.  Tracked in a new `backup_state` SQLite.
-- [ ] **`crispsorter sync cloud-backup restore-shard <prefix> --from-drive <id>`** — the matching inverse.
-- [ ] **Retention** — keep last N daily / weekly / monthly backups (operator config).
-- [ ] **GUI surface**: "Backup destination" dropdown in Settings → Cloud-backup → list configured drives + "Backup now" + "Schedule" controls.
-- [ ] **Live test**: backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked shard.
+- [x] **`crispsorter sync cloud-backup backup-shards --drive <id> [--shard <prefix>]`** — exports shard tarballs from `/api/shard/export/{prefix}`, uploads to drive at `cb-backups/<date>/<prefix>.tar.gz`.  SHIPPED 2026-05-15
+- [x] **Per-shard incremental backup** — only re-uploads shards whose `max_indexed_at` watermark advanced since last backup.  Tracked in new `backup_state.db` SQLite (`shard_backups` table).  SHIPPED 2026-05-15
+- [x] **`crispsorter sync cloud-backup restore-shard <prefix> --from-drive <id>`** — downloads tarball from drive, imports via `/api/shard/import/{prefix}`.  SHIPPED 2026-05-15
+- [x] **Retention (`--keep-daily N`)** — deletes older daily dirs from the drive, keeps last N.  SHIPPED 2026-05-15
+- [x] **GUI surface** — "Cloud drive backup" panel in Settings → Cloud-backup: drive-id input, keep-daily counter, "Backup now" button.  Load/save wired to `IndexConfig`.  SHIPPED 2026-05-15
+- [x] **VPS API** — `GET /api/shard/list`, `GET /api/shard/export/{prefix}`, `POST /api/shard/import/{prefix}` added to `../cloud-backup/api/app.py`.  SHIPPED 2026-05-15
+- [x] **`sync_cb_backup_shards` Tauri command** — mirrors CLI handler via AppState; registered in invoke_handler.  SHIPPED 2026-05-15
+- [x] **`BackupState` unit test** — `round_trip_backup_record` in `backup_state.rs`.  SHIPPED 2026-05-15
+- [ ] **Live test**: backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked shard.  (deferred — requires live drive)
 
 #### Stage R — Manifests-DB import bridge (~2 h)
 

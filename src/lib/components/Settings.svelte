@@ -813,6 +813,8 @@
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
         indexLocalMaxSizeGb            = await getSetting('indexLocalMaxSizeGb', 0) as number;
+        backupDriveId                  = await getSetting('backupDriveId', '') as string;
+        backupKeepDaily                = await getSetting('backupKeepDaily', 7) as number;
         cloudBackupPartitionRoot       = await getSetting('cloudBackupPartitionRoot', '');
         cloudBackupPartitionMax        = await getSetting('cloudBackupPartitionMax', 64) as number;
         cloudBackupPartitionDepth      = await getSetting('cloudBackupPartitionDepth', 1) as number;
@@ -1104,6 +1106,8 @@
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
         await saveSetting('indexLocalMaxSizeGb',            indexLocalMaxSizeGb);
+        await saveSetting('backupDriveId',                  backupDriveId);
+        await saveSetting('backupKeepDaily',                backupKeepDaily);
         await saveSetting('cloudBackupPartitionRoot',       cloudBackupPartitionRoot);
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
@@ -1371,6 +1375,35 @@
             syncNowMsg = `Error: ${e}`;
         } finally {
             syncNowBusy = false;
+        }
+    }
+
+    // Stage Q — shard backup controls.
+    let backupDriveId     = $state<string>('');
+    let backupKeepDaily   = $state<number>(7);
+    let backupNowBusy     = $state(false);
+    let backupNowMsg      = $state('');
+
+    async function backupShardsNow() {
+        if (!backupDriveId.trim()) { backupNowMsg = 'Select a drive first.'; return; }
+        backupNowBusy = true;
+        backupNowMsg  = 'Starting backup…';
+        try {
+            const result = await invoke<any>('sync_cb_backup_shards', {
+                driveId:    backupDriveId,
+                shard:      null,
+                force:      false,
+                keepDaily:  backupKeepDaily,
+            });
+            const n = result.backed_up ?? 0;
+            const errs = (result.errors ?? []) as string[];
+            backupNowMsg = errs.length > 0
+                ? `Backed up ${n} shard(s). Errors: ${errs.join('; ')}`
+                : `Backed up ${n} shard(s) → cb-backups/${result.date_dir ?? ''}`;
+        } catch (e: any) {
+            backupNowMsg = `Error: ${e}`;
+        } finally {
+            backupNowBusy = false;
         }
     }
 
@@ -2894,6 +2927,36 @@
                         </span>
                     </div>
                     <p class="hint">{i18n.t.settings.index.local_max_size_hint ?? 'When set, old rows are stripped and evicted hourly to stay within the cap. 0 = unlimited.'}</p>
+                </div>
+
+                <!-- Stage Q — shard backup to cloud drive. -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <strong>{i18n.t.settings.index.cloud_backup_shard_backup ?? 'Shard backup'}</strong>
+                    <p class="hint" style="margin-top:4px;">
+                        {i18n.t.settings.index.cloud_backup_shard_backup_hint ?? 'Back up VPS shards to a cloud drive. Only changed shards are re-uploaded (incremental).'}
+                    </p>
+                    <label for="backup-drive-id" style="margin-top:8px; display:block;">
+                        {i18n.t.settings.index.cloud_backup_backup_drive ?? 'Backup drive ID'}
+                    </label>
+                    <input id="backup-drive-id" type="text"
+                           bind:value={backupDriveId}
+                           placeholder="drive-uuid (from Drives settings)" />
+                    <div style="display:flex; gap:12px; margin-top:8px; align-items:end;">
+                        <div>
+                            <label for="backup-keep-daily">{i18n.t.settings.index.cloud_backup_keep_daily ?? 'Keep daily backups'}</label>
+                            <input id="backup-keep-daily" type="number" min="0" max="365"
+                                   bind:value={backupKeepDaily}
+                                   style="width:80px;" />
+                        </div>
+                        <button type="button" class="btn"
+                                onclick={backupShardsNow}
+                                disabled={backupNowBusy || !indexCloudBackupUrl.trim() || !backupDriveId.trim()}>
+                            {backupNowBusy ? 'Backing up…' : 'Backup now'}
+                        </button>
+                    </div>
+                    {#if backupNowMsg}
+                        <p class="hint" style="margin-top:6px;">{backupNowMsg}</p>
+                    {/if}
                 </div>
 
                 <!-- Stage N — volume-proportional auto-partition.
