@@ -2294,6 +2294,7 @@ pub struct EmbedderRegistryEntry {
 pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistryEntry> {
     #[cfg(feature = "crispembed")]
     {
+        use std::path::PathBuf;
         // Best-effort: resolve cache dir from current config.  Falls back to
         // `None` (unknown) when AppState isn't reachable (shouldn't happen in
         // practice, but we don't want a blocking lock here).
@@ -2341,6 +2342,7 @@ pub async fn embedder_download_registry_model(
 ) -> Result<String, String> {
     #[cfg(feature = "crispembed")]
     {
+        use std::path::PathBuf;
         let cache_dir: Option<PathBuf> = {
             if let Ok(lock) = state.index.try_lock() {
                 let data_dir = state.data_dir.try_lock().ok().and_then(|g| g.clone());
@@ -2362,7 +2364,10 @@ pub async fn embedder_download_registry_model(
         .await
         .map_err(|e| format!("spawn_blocking join error: {e}"))??;
 
-        Ok(path.to_string_lossy().into_owned())
+        // crispembed::CrispEmbed::resolve_model returns the cached
+        // path as `String` (NOT `PathBuf`), so no to_string_lossy
+        // conversion is needed.
+        Ok(path)
     }
     #[cfg(not(feature = "crispembed"))]
     {
