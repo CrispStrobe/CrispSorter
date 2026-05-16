@@ -125,11 +125,37 @@ export class BatchManager {
         await this.saveCurrentSession();
     }
 
+    private lastStopAtMs = 0;
     stopAll() {
         this.stopRequested = true;
         this.extractionAbort?.abort();
         this.llmAbort?.abort();
-        flog('info', 'Stop requested by user — aborting extraction and LLM');
+
+        // First click: signal stop and wait for workers to drain.
+        // For CPU-bound extractors (pdfjs-dist on a 50+ MB PDF) the
+        // abort signal is honored only at the next page boundary,
+        // so the worker can be busy for ~30–60 s before the finally
+        // runs and `isProcessing` flips false.  Users repeatedly
+        // clicking Stop think the button is broken.
+        //
+        // Second click within 5 s: force-finalize the UI state
+        // immediately.  The workers will still run to a clean exit
+        // in the background (they own the AbortControllers, no
+        // dangling subprocesses), but the toolbar unfreezes now —
+        // the user can start a fresh batch without waiting.
+        const now = Date.now();
+        if (this.isProcessing && now - this.lastStopAtMs < 5000) {
+            flog('warn', 'Stop forced — second click within 5 s. Workers still draining in the background.');
+            this.isProcessing = false;
+            this.stopRequested = false;
+            this.llmAbort = null;
+            this.extractionAbort = null;
+            this.extractionActive = 0;
+            this.llmActive = 0;
+        } else {
+            flog('info', 'Stop requested by user — aborting extraction and LLM. Click Stop again to force.');
+        }
+        this.lastStopAtMs = now;
     }
 
     /** Reset all items in 'review' (or any given statuses) back to 'queued'
