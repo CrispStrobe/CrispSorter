@@ -1092,4 +1092,63 @@ mod tests {
         // 5 bytes can't hold even one full float → empty
         assert!(unpack_multivec(&[0u8; 5], 1, 3).is_empty());
     }
+
+    /// Stage AE wiring coverage — flag off short-circuits before any DB
+    /// or embedder access.  Verifies the cheap no-op path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn maybe_colbert_rerank_flag_off_is_noop() {
+        let fts_dir = tempfile::TempDir::new().unwrap();
+        let lance_dir = tempfile::TempDir::new().unwrap();
+        let fts = std::sync::Arc::new(
+            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap());
+        let vector = std::sync::Arc::new(
+            super::super::local_index::LocalIndex::open_or_create(lance_dir.path(), 4)
+                .await.unwrap());
+        let engine = SearchEngine::new(fts, vector, None);
+
+        let input = vec![
+            SearchResult { doc_id: "a".into(), location_uri: "u".into(),
+                owner_id: "o".into(), title: None, author: None, year: None,
+                filename: None, ext: None, language: None, snippet: String::new(),
+                score: 0.5, chunk_index: 0, metadata_json: None,
+                catalog_source: None, volume_id: None, indexed_at: 0,
+                source_hash: String::new(), text_translated: None,
+                text_translated_lang: None },
+        ];
+        let mut filters = SearchFilters::default();
+        filters.colbert_rerank = false; // flag off → no-op
+        let out = engine.maybe_colbert_rerank("any", input.clone(), &filters, 10).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].doc_id, "a");
+        assert_eq!(out[0].score, 0.5);
+    }
+
+    /// Stage AE wiring coverage — flag on but no embedder configured
+    /// must also be a no-op (graceful: caller didn't load a model).
+    #[tokio::test(flavor = "current_thread")]
+    async fn maybe_colbert_rerank_no_embedder_is_noop() {
+        let fts_dir = tempfile::TempDir::new().unwrap();
+        let lance_dir = tempfile::TempDir::new().unwrap();
+        let fts = std::sync::Arc::new(
+            super::super::fts_index::FtsIndex::open_or_create(fts_dir.path()).unwrap());
+        let vector = std::sync::Arc::new(
+            super::super::local_index::LocalIndex::open_or_create(lance_dir.path(), 4)
+                .await.unwrap());
+        let engine = SearchEngine::new(fts, vector, None); // no embedder
+
+        let input = vec![
+            SearchResult { doc_id: "a".into(), location_uri: "u".into(),
+                owner_id: "o".into(), title: None, author: None, year: None,
+                filename: None, ext: None, language: None, snippet: String::new(),
+                score: 0.5, chunk_index: 0, metadata_json: None,
+                catalog_source: None, volume_id: None, indexed_at: 0,
+                source_hash: String::new(), text_translated: None,
+                text_translated_lang: None },
+        ];
+        let mut filters = SearchFilters::default();
+        filters.colbert_rerank = true; // flag ON but no embedder
+        let out = engine.maybe_colbert_rerank("any", input, &filters, 10).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].score, 0.5);
+    }
 }

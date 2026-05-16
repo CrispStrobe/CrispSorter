@@ -560,7 +560,7 @@ mod tests {
         // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104]);
+        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104, 105]);
     }
 
     #[tokio::test]
