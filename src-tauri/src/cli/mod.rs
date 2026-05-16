@@ -6555,7 +6555,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn is_multilingual_whisper_backend_covers_known_variants() {
         // Pin the membership list — distil-whisper deliberately EXCLUDED
         // because its model is English-only (auto-resolving it as a

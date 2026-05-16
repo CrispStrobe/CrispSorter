@@ -648,7 +648,7 @@ mod tests {
         (q, dir)
     }
 
-    fn sample_files(job_id: &str, n: usize) -> Vec<FileEntry> {
+    fn sample_files(_job_id: &str, n: usize) -> Vec<FileEntry> {
         (0..n)
             .map(|i| FileEntry {
                 file_path: format!("/docs/file_{i}.pdf"),
