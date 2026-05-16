@@ -392,6 +392,15 @@
     }
 
     function handleRowClick(e: MouseEvent | KeyboardEvent, id: string) {
+        // Reported: clicking anywhere on a row was popping up the
+        // bulk-actions bar (because plain-click set `selectedIds`).
+        // Split the concepts:
+        //   * `selectedItemId` — single-focus highlight, drives the
+        //     preview/detail panel.  Plain click sets this only.
+        //   * `selectedIds`    — bulk selection, drives the actions
+        //     bar.  Toggled exclusively via the left-edge checkbox
+        //     (`toggleId`), shift-click for range, or cmd/ctrl-click
+        //     for multi-toggle.  Plain click DOES NOT touch it.
         if (e.shiftKey && lastClickedId) {
             const items = sortedItems;
             const start = items.findIndex(i => i.id === lastClickedId);
@@ -408,7 +417,10 @@
                 selectedIds = [...selectedIds, id];
             }
         } else {
-            selectedIds = [id];
+            // Plain click: focus only.  Do NOT collapse bulk selection
+            // to this one row — that was the bug; users expected the
+            // detail-panel selection to be independent of bulk
+            // selection.
             selectedItemId = id;
         }
         lastClickedId = id;
@@ -918,104 +930,9 @@
 </script>
 
 <div class="batch-container" ondragover={e => e.preventDefault()} role="region" aria-label="File drop zone">
-    {#if selectedIds.length > 0}
-        <div class="selection-toolbar">
-            <span class="selection-info">
-                <CheckSquare size={14} />
-                {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
-            </span>
-            <div class="toolbar-divider"></div>
-            <div class="dropdown-container">
-                <div class="split-btn-group">
-                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
-                        <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
-                    </button>
-                    <button class="action-btn small split-caret" onclick={() => showReanalyzeOpts = !showReanalyzeOpts} title="Options">
-                        <ChevronDown size={11} />
-                    </button>
-                </div>
-                {#if showReanalyzeOpts}
-                    <div class="dropdown-menu reanalyze-opts">
-                        <div class="opts-row">
-                            <label for="reanalProvider">{i18n.t.batch.reanalyze_provider}</label>
-                            <select id="reanalProvider" bind:value={reanalProviderId} onchange={onReanalProviderChange}>
-                                {#each reanalProviders as p}
-                                    <option value={p.id}>{p.name}</option>
-                                {/each}
-                            </select>
-                        </div>
-                        <div class="opts-row">
-                            <label for="reanalModel">{i18n.t.batch.reanalyze_model}</label>
-                            {#if reanalModelsLoading}
-                                <span style="display:flex;align-items:center;gap:6px;font-size:0.75rem;color:#a1a1aa;">
-                                    <Loader2 size={12} class="loader-spin" /> Loading…
-                                </span>
-                            {:else if reanalModelsFetched.length > 0}
-                                <select id="reanalModel" bind:value={reanalModel} class="styled-select" style="flex:1;min-width:0;">
-                                    {#each reanalModelsFetched as m}<option value={m}>{m}</option>{/each}
-                                </select>
-                            {:else}
-                                <input id="reanalModel" type="text" bind:value={reanalModel} placeholder="model id…" />
-                            {/if}
-                        </div>
-                        <div class="opts-row">
-                            <label for="reanalMaxChars">{i18n.t.batch.reanalyze_max_chars}</label>
-                            <input id="reanalMaxChars" type="number" bind:value={reanalMaxChars} min="500" step="500" style="width: 80px;" />
-                        </div>
-                        <div class="opts-row">
-                            <label for="reanalAuthorSort">{i18n.t.batch.reanalyze_author_step}</label>
-                            <input id="reanalAuthorSort" type="checkbox" bind:checked={reanalAuthorSort} />
-                        </div>
-                        <button class="action-btn small primary opts-run" onclick={handleRedoWithOptions}>
-                            <Play size={12} /> {i18n.t.batch.reanalyze_run} ({selectedIds.length})
-                        </button>
-                    </div>
-                {/if}
-            </div>
-            
-            <div class="dropdown-container">
-                <div class="split-btn-group">
-                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
-                        <FileSearch size={14} /> {i18n.t.batch.reextract}
-                    </button>
-                    <button class="action-btn small split-caret" onclick={() => showReextractOpts = !showReextractOpts} title="Options">
-                        <ChevronDown size={11} />
-                    </button>
-                </div>
-                {#if showReextractOpts}
-                    <div class="dropdown-menu">
-                        <button onclick={() => { handleBatchReextract(); showReextractOpts = false; }}>
-                            <FileSearch size={14} /> {i18n.t.batch.reextract}
-                        </button>
-                        <button onclick={() => { handleBatchEnforceOcr(); showReextractOpts = false; }}>
-                            <Scan size={14} /> {i18n.t.batch.reextract_ocr}
-                        </button>
-                    </div>
-                {/if}
-            </div>
-
-            <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
-                <Check size={14} /> {i18n.t.batch.confirm}
-            </button>
-            <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
-                <X size={14} /> {i18n.t.batch.ignore}
-            </button>
-            <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
-                <Trash2 size={14} /> {i18n.t.batch.remove}
-            </button>
-            <div class="toolbar-divider"></div>
-            <button class="action-btn small" onclick={addSelectedToIndex}
-                disabled={indexingSelected}
-                title="Ausgewählte zum Suchindex hinzufügen">
-                {#if indexingSelected}
-                    <Loader2 size={14} class="loader-spin" /> Indexiere …
-                {:else}
-                    <UploadCloud size={14} /> Zum Index
-                {/if}
-            </button>
-            <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
-        </div>
-    {/if}
+    <!-- Selection-toolbar moved below the main toolbar to keep it
+         from overlaying the Start/Stop / Force-reset bar — see the
+         `{#if selectedIds.length > 0}` block AFTER the next `</div>`. -->
 
     <div class="toolbar">
         <div class="left-actions">
@@ -1178,6 +1095,110 @@
             </div>
         </div>
     </div>
+
+    {#if selectedIds.length > 0}
+        <!-- Bulk-selection toolbar — only appears when items are ticked
+             via the left-edge checkbox / shift-click / cmd-click.  Plain
+             row click only sets `selectedItemId` (detail-panel focus)
+             and does NOT touch `selectedIds`.  Sits below the main
+             toolbar so it never overlays the Start/Stop bar. -->
+        <div class="selection-toolbar">
+            <span class="selection-info">
+                <CheckSquare size={14} />
+                {i18n.t.batch.selected_count.replace('{count}', selectedIds.length.toString())}
+            </span>
+            <div class="toolbar-divider"></div>
+            <div class="dropdown-container">
+                <div class="split-btn-group">
+                    <button class="action-btn small" onclick={handleRedoSelected} title={i18n.t.batch.reanalyze}>
+                        <RefreshCw size={14} /> {i18n.t.batch.reanalyze}
+                    </button>
+                    <button class="action-btn small split-caret" onclick={() => showReanalyzeOpts = !showReanalyzeOpts} title="Options">
+                        <ChevronDown size={11} />
+                    </button>
+                </div>
+                {#if showReanalyzeOpts}
+                    <div class="dropdown-menu reanalyze-opts">
+                        <div class="opts-row">
+                            <label for="reanalProvider">{i18n.t.batch.reanalyze_provider}</label>
+                            <select id="reanalProvider" bind:value={reanalProviderId} onchange={onReanalProviderChange}>
+                                {#each reanalProviders as p}
+                                    <option value={p.id}>{p.name}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalModel">{i18n.t.batch.reanalyze_model}</label>
+                            {#if reanalModelsLoading}
+                                <span style="display:flex;align-items:center;gap:6px;font-size:0.75rem;color:#a1a1aa;">
+                                    <Loader2 size={12} class="loader-spin" /> Loading…
+                                </span>
+                            {:else if reanalModelsFetched.length > 0}
+                                <select id="reanalModel" bind:value={reanalModel} class="styled-select" style="flex:1;min-width:0;">
+                                    {#each reanalModelsFetched as m}<option value={m}>{m}</option>{/each}
+                                </select>
+                            {:else}
+                                <input id="reanalModel" type="text" bind:value={reanalModel} placeholder="model id…" />
+                            {/if}
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalMaxChars">{i18n.t.batch.reanalyze_max_chars}</label>
+                            <input id="reanalMaxChars" type="number" bind:value={reanalMaxChars} min="500" step="500" style="width: 80px;" />
+                        </div>
+                        <div class="opts-row">
+                            <label for="reanalAuthorSort">{i18n.t.batch.reanalyze_author_step}</label>
+                            <input id="reanalAuthorSort" type="checkbox" bind:checked={reanalAuthorSort} />
+                        </div>
+                        <button class="action-btn small primary opts-run" onclick={handleRedoWithOptions}>
+                            <Play size={12} /> {i18n.t.batch.reanalyze_run} ({selectedIds.length})
+                        </button>
+                    </div>
+                {/if}
+            </div>
+
+            <div class="dropdown-container">
+                <div class="split-btn-group">
+                    <button class="action-btn small" onclick={handleBatchReextract} title={i18n.t.batch.reextract}>
+                        <FileSearch size={14} /> {i18n.t.batch.reextract}
+                    </button>
+                    <button class="action-btn small split-caret" onclick={() => showReextractOpts = !showReextractOpts} title="Options">
+                        <ChevronDown size={11} />
+                    </button>
+                </div>
+                {#if showReextractOpts}
+                    <div class="dropdown-menu">
+                        <button onclick={() => { handleBatchReextract(); showReextractOpts = false; }}>
+                            <FileSearch size={14} /> {i18n.t.batch.reextract}
+                        </button>
+                        <button onclick={() => { handleBatchEnforceOcr(); showReextractOpts = false; }}>
+                            <Scan size={14} /> {i18n.t.batch.reextract_ocr}
+                        </button>
+                    </div>
+                {/if}
+            </div>
+
+            <button class="action-btn small" onclick={() => handleBatchAccept(true)} title={i18n.t.batch.confirm}>
+                <Check size={14} /> {i18n.t.batch.confirm}
+            </button>
+            <button class="action-btn small" onclick={() => handleBatchAccept(false)} title={i18n.t.batch.ignore}>
+                <X size={14} /> {i18n.t.batch.ignore}
+            </button>
+            <button class="action-btn small danger" onclick={handleBatchRemove} title={i18n.t.batch.remove}>
+                <Trash2 size={14} /> {i18n.t.batch.remove}
+            </button>
+            <div class="toolbar-divider"></div>
+            <button class="action-btn small" onclick={addSelectedToIndex}
+                disabled={indexingSelected}
+                title="Ausgewählte zum Suchindex hinzufügen">
+                {#if indexingSelected}
+                    <Loader2 size={14} class="loader-spin" /> Indexiere …
+                {:else}
+                    <UploadCloud size={14} /> Zum Index
+                {/if}
+            </button>
+            <button class="close-btn-minimal" onclick={() => selectedIds = []}>×</button>
+        </div>
+    {/if}
 
     {#if showFilters}
         <div class="filter-bar">
