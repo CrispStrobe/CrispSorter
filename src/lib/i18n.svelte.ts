@@ -474,6 +474,14 @@ export const translations = {
                 cloud_backup_partition_run: 'Re-partition now',
                 cloud_backup_partition_max: 'Max shards',
                 cloud_backup_partition_depth: 'Group depth',
+                // Stage P — local DB size cap
+                local_max_size: 'Local index size cap (GB)',
+                local_max_size_hint: 'When set, old rows are stripped and evicted hourly to stay within the cap. 0 = unlimited.',
+                // Stage Q — shard backup to cloud drive
+                cloud_backup_shard_backup: 'Shard backup',
+                cloud_backup_shard_backup_hint: 'Back up VPS shards to a cloud drive. Only changed shards are re-uploaded (incremental).',
+                cloud_backup_backup_drive: 'Backup drive ID',
+                cloud_backup_keep_daily: 'Keep daily backups',
                 use_embedder_as_reranker: 'Use loaded embedder as bi-encoder reranker',
                 use_embedder_as_reranker_hint: 'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.',
                 non_commercial_confirm: 'This model (Jina-v5) is licensed under CC-BY-NC-4.0 for non-commercial use only. Do you confirm that you will use it non-commercially?',
@@ -1170,6 +1178,14 @@ export const translations = {
                 cloud_backup_partition_run: 'Jetzt neu partitionieren',
                 cloud_backup_partition_max: 'Maximale Shards',
                 cloud_backup_partition_depth: 'Gruppentiefe',
+                // Stage P — lokale DB-Größenbegrenzung
+                local_max_size: 'Größenbegrenzung des lokalen Index (GB)',
+                local_max_size_hint: 'Wenn gesetzt, werden alte Zeilen stündlich gekappt und evictet, um innerhalb der Grenze zu bleiben. 0 = unbegrenzt.',
+                // Stage Q — Shard-Backup auf Cloud-Laufwerk
+                cloud_backup_shard_backup: 'Shard-Backup',
+                cloud_backup_shard_backup_hint: 'Sichert VPS-Shards auf ein Cloud-Laufwerk. Nur geänderte Shards werden erneut hochgeladen (inkrementell).',
+                cloud_backup_backup_drive: 'Backup-Laufwerks-ID',
+                cloud_backup_keep_daily: 'Tägliche Backups behalten',
                 use_embedder_as_reranker: 'Bi-Encoder-Reranking über geladenen Embedder',
                 use_embedder_as_reranker_hint: 'Bewertet die Top-N-Hybridtreffer neu nach Kosinus-Ähnlichkeit zur Suchanfrage — über den bereits geladenen Dense-Embedder. Schneller als ein Cross-Encoder, pro Paar weniger genau — gute Zwischenlösung, wenn kein dediziertes Reranker-GGUF installiert ist.',
                 model_mini_lm: 'Multilingual MiniLM (Schnell, Wenig RAM)',
