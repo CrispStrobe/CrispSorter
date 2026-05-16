@@ -2098,18 +2098,25 @@
             </button>
 
             <div class="sidebar-divider"></div>
-            <h2>{i18n.t.settings.providers}</h2>
-            <div class="provider-list">
-                {#each providers.filter(p => isMacOS || p.id !== 'mlx') as p}
-                    <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
-                        <span style="display:flex; align-items:center; gap:8px;">
-                            {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs' || p.id === 'webllm' || p.id === 'ort'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
-                            {p.name}
-                        </span>
-                        {#if activeProviderId === p.id}<Zap size={12} style="color: #eab308;" />{/if}
-                    </button>
-                {/each}
-            </div>
+            <!-- Long provider list (14 entries) is collapsed by default —
+                 only opens when the user explicitly clicks it.  The
+                 active provider's chip is still visible above as a chevron
+                 hint via the {Zap} icon on whichever provider is the
+                 currently-selected one. -->
+            <details class="provider-details">
+                <summary><h2 style="display:inline; margin:0;">{i18n.t.settings.providers}</h2></summary>
+                <div class="provider-list">
+                    {#each providers.filter(p => isMacOS || p.id !== 'mlx') as p}
+                        <button class="provider-btn" class:active={selectedProviderId === p.id} onclick={() => selectedProviderId = p.id}>
+                            <span style="display:flex; align-items:center; gap:8px;">
+                                {#if p.id === 'ollama' || p.id === 'llamacpp' || p.id === 'mlx' || p.id === 'mistralrs' || p.id === 'webllm' || p.id === 'ort'}<Cpu size={14} />{:else}<Globe size={14} />{/if}
+                                {p.name}
+                            </span>
+                            {#if activeProviderId === p.id}<Zap size={12} style="color: #eab308;" />{/if}
+                        </button>
+                    {/each}
+                </div>
+            </details>
         </div>
 
         <div class="sidebar-footer">
@@ -3107,24 +3114,16 @@
                 <!-- Stage U — thin-client switch. -->
                 <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
                     <input type="checkbox" bind:checked={indexLocalExtractionEnabled} disabled={indexSkeletonOnly} />
-                    <span>Local extraction (uncheck for thin-client / VPS-only extraction)</span>
+                    <span>{i18n.t.settings.index.local_extraction_label}</span>
                 </label>
-                <p class="hint">
-                    When unchecked, bg_ingest writes L1-only rows (path + sha256 + size) and
-                    uploads the raw bytes to the VPS for extraction. Saves CPU on low-power clients.
-                    Requires cloud-backup push manifests to be enabled.
-                </p>
+                <p class="hint">{i18n.t.settings.index.local_extraction_hint}</p>
 
                 <!-- Stage W — skeleton-only switch. -->
                 <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
                     <input type="checkbox" bind:checked={indexSkeletonOnly} />
-                    <span>Skeleton-only mode (ultra-lightweight: author/dir hints only, full search via VPS)</span>
+                    <span>{i18n.t.settings.index.skeleton_only_label}</span>
                 </label>
-                <p class="hint">
-                    When checked, no LanceDB rows, FTS, or embeddings are written locally.
-                    Only a tiny author-index and parent-dir-index are kept (~kilobytes).
-                    Search results come entirely from the remote VPS. Implies thin-client mode.
-                </p>
+                <p class="hint">{i18n.t.settings.index.skeleton_only_hint}</p>
 
                 <!-- Stage P — local DB size cap. -->
                 <div style="margin-top:14px;">
@@ -3153,7 +3152,7 @@
                     </label>
                     <input id="backup-drive-id" type="text"
                            bind:value={backupDriveId}
-                           placeholder="drive-uuid (from Drives settings)" />
+                           placeholder={i18n.t.settings.index.backup_drive_placeholder} />
                     <div style="display:flex; gap:12px; margin-top:8px; align-items:end;">
                         <div>
                             <label for="backup-keep-daily">{i18n.t.settings.index.cloud_backup_keep_daily ?? 'Keep daily backups'}</label>
@@ -3220,24 +3219,21 @@
 
                 <!-- Stage R — import from controller.py manifest SQLite. -->
                 <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
-                    <strong>Import from controller.py manifest</strong>
-                    <p class="hint" style="margin-top:4px;">
-                        One-shot import from a controller.py <code>index_manifest.db</code>.
-                        Resumable: re-runs skip already-imported rows.
-                    </p>
-                    <label for="cb-import-path" style="margin-top:8px;">Manifest DB path</label>
+                    <strong>{i18n.t.settings.index.import_manifest_title}</strong>
+                    <p class="hint" style="margin-top:4px;">{i18n.t.settings.index.import_manifest_hint}</p>
+                    <label for="cb-import-path" style="margin-top:8px;">{i18n.t.settings.index.import_manifest_path_label}</label>
                     <input id="cb-import-path" type="text"
                            bind:value={importManifestPath}
                            placeholder="/path/to/index_manifest.db" />
-                    <label for="cb-import-owner" style="margin-top:6px;">Owner ID (optional)</label>
+                    <label for="cb-import-owner" style="margin-top:6px;">{i18n.t.settings.index.owner_id_optional}</label>
                     <input id="cb-import-owner" type="text"
                            bind:value={importManifestOwner}
-                           placeholder="leave blank to use key's owner_id" />
+                           placeholder={i18n.t.settings.index.owner_id_placeholder} />
                     <div style="margin-top:8px;">
                         <button type="button" class="btn"
                                 onclick={importFromManifestDb}
                                 disabled={importManifestBusy || !indexCloudBackupUrl.trim() || !importManifestPath.trim()}>
-                            {importManifestBusy ? 'Importing…' : 'Import now'}
+                            {importManifestBusy ? i18n.t.settings.index.importing : i18n.t.settings.index.import_now}
                         </button>
                     </div>
                     {#if importManifestMsg}
@@ -3265,14 +3261,10 @@
                 <!-- Stage T — Admin key management (collapsible sub-section) -->
                 <details class="cb-admin-panel">
                     <summary style="cursor:pointer; font-weight:600; margin-top:14px;">
-                        Admin — API key management
+                        {i18n.t.settings.index.admin_panel_title}
                     </summary>
-                    <p class="hint">
-                        Requires the <code>CB_API_ADMIN_TOKEN</code> set on the VPS
-                        (<code>python -m api.admin mint-admin</code>).  Admin tokens are
-                        never stored here — enter below for each action.
-                    </p>
-                    <label class="cb-admin-label">Admin token (VPS)</label>
+                    <p class="hint">{i18n.t.settings.index.admin_panel_hint}</p>
+                    <label class="cb-admin-label">{i18n.t.settings.index.admin_token_label}</label>
                     <input type="password" class="cb-admin-input"
                            bind:value={cbAdminToken}
                            placeholder="cbadm_…"
@@ -3280,38 +3272,38 @@
 
                     <div class="cb-admin-row">
                         <div class="cb-admin-group">
-                            <strong>Mint new key</strong>
-                            <label class="cb-admin-label">Key name</label>
+                            <strong>{i18n.t.settings.index.admin_mint_title}</strong>
+                            <label class="cb-admin-label">{i18n.t.settings.index.admin_key_name_label}</label>
                             <input type="text" class="cb-admin-input"
                                    bind:value={cbAdminMintName}
                                    placeholder="my-laptop" />
-                            <label class="cb-admin-label">Owner ID (optional)</label>
+                            <label class="cb-admin-label">{i18n.t.settings.index.owner_id_optional}</label>
                             <input type="text" class="cb-admin-input"
                                    bind:value={cbAdminMintOwner}
-                                   placeholder="uuid or blank" />
+                                   placeholder={i18n.t.settings.index.admin_owner_placeholder} />
                             <button type="button" class="btn"
                                     onclick={cbAdminMint}
                                     disabled={cbAdminBusy || !cbAdminToken.trim() || !cbAdminMintName.trim()}>
-                                Mint
+                                {i18n.t.settings.index.admin_mint_btn}
                             </button>
                             {#if cbAdminMintedKey}
                                 <div class="cb-admin-minted-key">
-                                    <span class="hint">New key (copy now):</span>
+                                    <span class="hint">{i18n.t.settings.index.admin_minted_key_hint}</span>
                                     <code>{cbAdminMintedKey}</code>
                                 </div>
                             {/if}
                         </div>
 
                         <div class="cb-admin-group">
-                            <strong>Revoke key</strong>
-                            <label class="cb-admin-label">Key name to revoke</label>
+                            <strong>{i18n.t.settings.index.admin_revoke_title}</strong>
+                            <label class="cb-admin-label">{i18n.t.settings.index.admin_revoke_name_label}</label>
                             <input type="text" class="cb-admin-input"
                                    bind:value={cbAdminRevokeName}
                                    placeholder="my-laptop" />
                             <button type="button" class="btn btn-danger"
                                     onclick={cbAdminRevoke}
                                     disabled={cbAdminBusy || !cbAdminToken.trim() || !cbAdminRevokeName.trim()}>
-                                Revoke
+                                {i18n.t.settings.index.admin_revoke_btn}
                             </button>
                         </div>
                     </div>
@@ -3319,7 +3311,7 @@
                     <button type="button" class="btn" style="margin-top:8px;"
                             onclick={cbAdminRefreshList}
                             disabled={cbAdminBusy || !cbAdminToken.trim()}>
-                        List keys
+                        {i18n.t.settings.index.admin_list_btn}
                     </button>
 
                     {#if cbAdminMsg}
@@ -3433,20 +3425,15 @@
             <!-- Stage Z — Multilingual reranker (CJK/Arabic/Cyrillic auto-routing) -->
             <div class="section-card">
                 <label for="index-reranker-multi-select">
-                    <Cpu size={16} /> Multilingual reranker (CJK / Arabic / Cyrillic)
+                    <Cpu size={16} /> {i18n.t.settings.index.reranker_multilingual_label}
                 </label>
                 <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} class="styled-select">
-                    <option value="">Off</option>
+                    <option value="">{i18n.t.settings.index.reranker_off}</option>
                     <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
                     <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
                     <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
                 </select>
-                <p class="hint" style="margin-top:6px;">
-                    When set, queries detected as predominantly CJK, Arabic, Cyrillic, or other non-Latin scripts
-                    (≥ 25% of non-whitespace characters) are reranked with this model instead of the primary
-                    reranker. If the primary reranker is off, this fires for all queries.
-                    BGE-Reranker-v2-M3 works well for multilingual text.
-                </p>
+                <p class="hint" style="margin-top:6px;">{i18n.t.settings.index.reranker_multilingual_hint}</p>
             </div>
 
             <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->
@@ -4254,6 +4241,15 @@
     .cb-admin-table th { text-align: left; color: #71717a; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid #27272a; }
     .cb-admin-table td { padding: 4px 8px; border-bottom: 1px solid #1c1c1f; }
     .cb-admin-revoked td { opacity: 0.5; text-decoration: line-through; }
-    .btn-danger { background: #7f1d1d; border-color: #991b1b; }
+    /* Force readable text on admin-panel buttons.  Global .btn rules
+       inherit grey text from the surrounding muted panel; on the
+       red `.btn-danger` background that became unreadable, and the
+       neutral `.btn` on the muted-grey card was nearly as bad.
+       Pinning white text + slightly heavier weight fixes both. */
+    .cb-admin-panel .btn,
+    .cb-admin-panel .btn-danger { color: #fafafa; font-weight: 600; }
+    .cb-admin-panel .btn:disabled,
+    .cb-admin-panel .btn-danger:disabled { color: #a1a1aa; }
+    .btn-danger { background: #7f1d1d; border-color: #991b1b; color: #fafafa; }
     .btn-danger:hover:not(:disabled) { background: #991b1b; }
 </style>

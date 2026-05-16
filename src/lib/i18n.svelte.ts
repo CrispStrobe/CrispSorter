@@ -478,6 +478,40 @@ export const translations = {
                 // Stage P — local DB size cap
                 local_max_size: 'Local index size cap (GB)',
                 local_max_size_hint: 'When set, old rows are stripped and evicted hourly to stay within the cap. 0 = unlimited.',
+                // Stage U — thin-client switch
+                local_extraction_label: 'Local extraction (uncheck for thin-client / VPS-only extraction)',
+                local_extraction_hint: 'When unchecked, bg_ingest writes L1-only rows (path + sha256 + size) and uploads the raw bytes to the VPS for extraction. Saves CPU on low-power clients. Requires cloud-backup push manifests to be enabled.',
+                // Stage W — skeleton-only switch
+                skeleton_only_label: 'Skeleton-only mode (ultra-lightweight: author/dir hints only, full search via VPS)',
+                skeleton_only_hint: 'When checked, no LanceDB rows, FTS, or embeddings are written locally. Only a tiny author-index and parent-dir-index are kept (~kilobytes). Search results come entirely from the remote VPS. Implies thin-client mode.',
+                // Stage Q drive-id placeholder
+                backup_drive_placeholder: 'drive-uuid (from Drives settings)',
+                // Stage R — controller.py manifest import
+                import_manifest_title: 'Import from controller.py manifest',
+                import_manifest_hint: 'One-shot import from a controller.py `index_manifest.db`. Resumable: re-runs skip already-imported rows.',
+                import_manifest_path_label: 'Manifest DB path',
+                owner_id_optional: 'Owner ID (optional)',
+                owner_id_placeholder: "leave blank to use key's owner_id",
+                import_now: 'Import now',
+                importing: 'Importing…',
+                // Stage T — admin key management
+                admin_panel_title: 'Admin — API key management',
+                admin_panel_hint: 'Requires the `CB_API_ADMIN_TOKEN` set on the VPS (`python -m api.admin mint-admin`). Admin tokens are never stored here — enter below for each action.',
+                admin_token_label: 'Admin token (VPS)',
+                admin_mint_title: 'Mint new key',
+                admin_key_name_label: 'Key name',
+                admin_owner_placeholder: 'uuid or blank',
+                admin_mint_btn: 'Mint',
+                admin_minted_key_hint: 'New key (copy now):',
+                admin_revoke_title: 'Revoke key',
+                admin_revoke_name_label: 'Key name to revoke',
+                admin_revoke_btn: 'Revoke',
+                admin_list_btn: 'List keys',
+                // Stage Z — multilingual reranker.  (Note: `reranker_off`
+                // is already defined above with the richer "Off — keep
+                // RRF order" string; reuse that one.)
+                reranker_multilingual_label: 'Multilingual reranker (CJK / Arabic / Cyrillic)',
+                reranker_multilingual_hint: 'When set, queries detected as predominantly CJK, Arabic, Cyrillic, or other non-Latin scripts (≥ 25% of non-whitespace characters) are reranked with this model instead of the primary reranker. If the primary reranker is off, this fires for all queries. BGE-Reranker-v2-M3 works well for multilingual text.',
                 // Stage Q — shard backup to cloud drive
                 cloud_backup_shard_backup: 'Shard backup',
                 cloud_backup_shard_backup_hint: 'Back up VPS shards to a cloud drive. Only changed shards are re-uploaded (incremental).',
@@ -1183,6 +1217,39 @@ export const translations = {
                 // Stage P — lokale DB-Größenbegrenzung
                 local_max_size: 'Größenbegrenzung des lokalen Index (GB)',
                 local_max_size_hint: 'Wenn gesetzt, werden alte Zeilen stündlich gekappt und evictet, um innerhalb der Grenze zu bleiben. 0 = unbegrenzt.',
+                // Stage U — Thin-Client-Schalter
+                local_extraction_label: 'Lokale Extraktion (deaktivieren für Thin-Client / VPS-Extraktion)',
+                local_extraction_hint: 'Wenn deaktiviert, schreibt bg_ingest nur L1-Zeilen (Pfad + sha256 + Größe) und lädt die Rohdaten zur Extraktion an den VPS hoch. Spart CPU auf schwachen Clients. Erfordert aktiviertes „Manifeste hochladen".',
+                // Stage W — Skeleton-Modus
+                skeleton_only_label: 'Skelett-Modus (ultraschlank: nur Autor/Verzeichnis-Hints, vollständige Suche über VPS)',
+                skeleton_only_hint: 'Wenn aktiviert, werden keine LanceDB-Zeilen, FTS oder Embeddings lokal geschrieben. Nur ein winziger Autor-Index und Verzeichnis-Index werden behalten (~Kilobyte). Suchergebnisse kommen vollständig vom VPS. Impliziert Thin-Client-Modus.',
+                // Stage Q drive-id placeholder
+                backup_drive_placeholder: 'drive-uuid (aus den Drives-Einstellungen)',
+                // Stage R — controller.py-Manifest-Import
+                import_manifest_title: 'Import aus controller.py-Manifest',
+                import_manifest_hint: 'Einmaliger Import aus einer controller.py-`index_manifest.db`. Wiederaufnehmbar: Erneute Läufe überspringen bereits importierte Zeilen.',
+                import_manifest_path_label: 'Pfad der Manifest-DB',
+                owner_id_optional: 'Owner-ID (optional)',
+                owner_id_placeholder: 'leer lassen, um die owner_id des Schlüssels zu verwenden',
+                import_now: 'Jetzt importieren',
+                importing: 'Importiere …',
+                // Stage T — Admin-Schlüsselverwaltung
+                admin_panel_title: 'Admin — API-Schlüssel verwalten',
+                admin_panel_hint: 'Erfordert das auf dem VPS gesetzte `CB_API_ADMIN_TOKEN` (`python -m api.admin mint-admin`). Admin-Token werden hier nie gespeichert — bitte für jede Aktion neu eingeben.',
+                admin_token_label: 'Admin-Token (VPS)',
+                admin_mint_title: 'Neuen Schlüssel erstellen',
+                admin_key_name_label: 'Schlüsselname',
+                admin_owner_placeholder: 'UUID oder leer',
+                admin_mint_btn: 'Erstellen',
+                admin_minted_key_hint: 'Neuer Schlüssel (jetzt kopieren):',
+                admin_revoke_title: 'Schlüssel widerrufen',
+                admin_revoke_name_label: 'Name des zu widerrufenden Schlüssels',
+                admin_revoke_btn: 'Widerrufen',
+                admin_list_btn: 'Schlüssel auflisten',
+                // Stage Z — mehrsprachiger Reranker (reranker_off ist
+                // weiter oben mit der ausführlicheren Variante definiert).
+                reranker_multilingual_label: 'Mehrsprachiger Reranker (CJK / Arabisch / Kyrillisch)',
+                reranker_multilingual_hint: 'Wenn gesetzt, werden Anfragen mit überwiegend CJK-, arabischen, kyrillischen oder anderen nicht-lateinischen Schriften (≥ 25 % der Nicht-Whitespace-Zeichen) mit diesem Modell statt mit dem primären Reranker bewertet. Wenn der primäre Reranker aus ist, gilt dies für alle Anfragen. BGE-Reranker-v2-M3 funktioniert gut für mehrsprachigen Text.',
                 // Stage Q — Shard-Backup auf Cloud-Laufwerk
                 cloud_backup_shard_backup: 'Shard-Backup',
                 cloud_backup_shard_backup_hint: 'Sichert VPS-Shards auf ein Cloud-Laufwerk. Nur geänderte Shards werden erneut hochgeladen (inkrementell).',
