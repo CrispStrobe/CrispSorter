@@ -3122,4 +3122,69 @@ mod push_candidate_tests {
             text_translated: None, text_translated_lang: None,
         }
     }
+
+    /// Stage AE coverage — a candidate whose row has NULL multivec data
+    /// (pre-v105 ingest or non-ColBERT model) must keep its original
+    /// score after re-rank.  No silent zeroing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rerank_with_colbert_keeps_original_score_for_null_rows() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        // One row with multivec, one row without.
+        let multivec = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+        let (packed, n_tok) = crate::index::ingest::pack_multivec(multivec).unwrap();
+        let mut with_mv = mk("hasvec", 0, 100, Some("a"),
+            Some(vec![0.5, 0.5, 0.5, 0.5]), Some("m"));
+        with_mv.multivec_packed = Some(packed);
+        with_mv.multivec_n_tokens = Some(n_tok);
+        let no_mv = mk("nullvec", 0, 100, Some("b"),
+            Some(vec![0.5, 0.5, 0.5, 0.5]), Some("m"));
+
+        local.ingest_batch(&[with_mv, no_mv]).await.unwrap();
+
+        let candidates = vec![
+            SearchResult { doc_id: "hasvec".into(), score: 0.2, ..mk_result("hasvec", None, None) },
+            SearchResult { doc_id: "nullvec".into(), score: 0.7, ..mk_result("nullvec", None, None) },
+        ];
+        let query = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+        let out = local.rerank_with_colbert(candidates, &query, 5).await.unwrap();
+
+        // The null-multivec row keeps its 0.7; the multivec row picks up
+        // its MaxSim score (2.0 for identical query/doc).  Order: hasvec
+        // (2.0) then nullvec (0.7).
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].doc_id, "hasvec");
+        assert!(out[0].score > 1.5, "MaxSim should be ~2.0, got {}", out[0].score);
+        assert_eq!(out[1].doc_id, "nullvec");
+        assert!((out[1].score - 0.7).abs() < 1e-5, "original 0.7 preserved, got {}", out[1].score);
+    }
+
+    /// Stage AE coverage — re-rank truncates the output to `limit` even
+    /// when the candidate pool is larger.  Top-K contract.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rerank_with_colbert_truncates_to_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        // Ingest 5 rows, all with the same aligned multivec → same MaxSim.
+        let multivec = vec![vec![1.0_f32, 0.0]];
+        let (packed, n_tok) = crate::index::ingest::pack_multivec(multivec).unwrap();
+        let chunks: Vec<_> = (0..5).map(|i| {
+            let mut c = mk(&format!("doc{i}"), 0, 100, Some("body"),
+                Some(vec![0.5, 0.5, 0.5, 0.5]), Some("m"));
+            c.multivec_packed = Some(packed.clone());
+            c.multivec_n_tokens = Some(n_tok);
+            c
+        }).collect();
+        local.ingest_batch(&chunks).await.unwrap();
+
+        let candidates: Vec<_> = (0..5).map(|i| SearchResult {
+            doc_id: format!("doc{i}"),
+            score: 0.1, ..mk_result(&format!("doc{i}"), None, None)
+        }).collect();
+        let query = vec![vec![1.0_f32, 0.0]];
+        let out = local.rerank_with_colbert(candidates, &query, 2).await.unwrap();
+        assert_eq!(out.len(), 2, "limit=2 must trim 5 candidates to 2");
+    }
 }
