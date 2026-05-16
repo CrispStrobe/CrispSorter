@@ -727,23 +727,59 @@ export class BatchManager {
                     const textSample = item.extractedText!.substring(0, llmMaxChars);
                     const prompt = `${basePrompt}\n\nFilename: "${item.originalName}"\n\nDocument snippet:\n${textSample}`;
 
-                    // Try providers in round-robin order; advance index on non-abort failure.
+                    // Try providers in round-robin order; advance index on
+                    // non-abort failure.  Honor per-provider cooldowns
+                    // recorded by llmClient on 429 — skip a provider that
+                    // is currently parked, only fall back to waiting if
+                    // EVERY rr provider is parked simultaneously.
                     const queryRR = async (p: string): Promise<string> => {
                         let lastErr: any = null;
-                        for (let i = rrIdx; i < rrProviders.length; i++) {
-                            const rr = rrProviders[i];
-                            try {
-                                const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, this.llmAbort?.signal);
-                                rrIdx = i; // stick with this provider for subsequent items
-                                return res;
-                            } catch (e: any) {
-                                if (e?.name === 'AbortError' || e?.message?.includes('LLM_TIMEOUT')) throw e;
-                                lastErr = e;
-                                flog('warn', `Provider ${rr.id} failed — trying next fallback (${i + 1}/${rrProviders.length}): ${e.message}`);
-                                rrIdx = i + 1;
+                        // Up to two full sweeps: first sweep skips cooling
+                        // providers; if everyone is cooling, sleep for the
+                        // shortest cooldown and do one more sweep.
+                        for (let sweep = 0; sweep < 2; sweep++) {
+                            const cooling: number[] = [];
+                            for (let off = 0; off < rrProviders.length; off++) {
+                                const i = (rrIdx + off) % rrProviders.length;
+                                const rr = rrProviders[i];
+                                if (llmClient.isProviderCoolingDown(rr.id)) {
+                                    cooling.push(llmClient.cooldownUntil(rr.id));
+                                    continue;
+                                }
+                                try {
+                                    const res = await llmClient.query(rr.id, rr.modelId, p, rr.apiKey, 0.3, this.llmAbort?.signal);
+                                    rrIdx = i; // stick with this provider for subsequent items
+                                    return res;
+                                } catch (e: any) {
+                                    if (e?.name === 'AbortError' || e?.message?.includes('LLM_TIMEOUT')) throw e;
+                                    lastErr = e;
+                                    if (e?.name === 'RateLimitError') {
+                                        flog('info', `Provider ${rr.id} 429 — advancing rrIdx, will retry it after cooldown.`);
+                                    } else {
+                                        flog('warn', `Provider ${rr.id} failed — trying next fallback: ${e.message}`);
+                                    }
+                                    // Move past this provider on the next pick.
+                                    rrIdx = (i + 1) % rrProviders.length;
+                                }
                             }
+                            // First sweep done.  If every provider was
+                            // cooling (no actual call was attempted), wait
+                            // for the soonest one to come back.  Skip the
+                            // second sweep when we tried a real call —
+                            // failures already produced `lastErr` and
+                            // a second sweep would just repeat them.
+                            if (cooling.length === rrProviders.length) {
+                                const soonest = Math.min(...cooling);
+                                const sleepMs = Math.max(200, soonest - Date.now() + 200);
+                                flog('warn', `All ${rrProviders.length} providers cooling down; sleeping ${sleepMs} ms for the soonest.`);
+                                await new Promise<void>((resolve, reject) => {
+                                    const t = setTimeout(resolve, sleepMs);
+                                    this.llmAbort?.signal.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+                                });
+                                continue;
+                            }
+                            break;
                         }
-                        // All providers exhausted — reset index and throw last error
                         rrIdx = 0;
                         throw lastErr ?? new Error('All LLM providers exhausted');
                     };

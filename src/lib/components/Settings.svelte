@@ -1676,7 +1676,21 @@
         }
     }
 
+    /**
+     * Per-provider testing state.  Reading `testingProviders[id]` is the
+     * source of truth for the Test button's disabled state.  The legacy
+     * single `testingConnection` boolean still tracks the active panel
+     * so the spinner icon stays correct; it just no longer locks the
+     * Test buttons across other providers' panels.
+     *
+     * Reported: "testen of providers is blocked on all as long as one
+     * provider test runs" — the global flag was the cause.
+     */
+    let testingProviders = $state<Record<string, boolean>>({});
+
     async function handleTestConnection() {
+        const pid = selectedProvider.id;
+        testingProviders[pid] = true;
         testingConnection = true;
         testResult = null;
         try {
@@ -1686,6 +1700,7 @@
         } catch (e: any) {
             testResult = { success: false, message: e.message };
         } finally {
+            delete testingProviders[pid];
             testingConnection = false;
         }
     }
@@ -3660,9 +3675,11 @@
                     <p class="hint" style="margin: 8px 0 4px;">{i18n.t.settings.active_model} <strong>{selectedProvider.selectedModel}</strong></p>
                 {/if}
                 <div class="actions">
-                    <button class="action-btn test-btn" onclick={handleTestConnection} disabled={testingConnection || !selectedProvider.selectedModel}>
-                        <span class={testingConnection ? "loader-spin" : ""}>
-                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                    <button class="action-btn test-btn"
+                            onclick={handleTestConnection}
+                            disabled={!!testingProviders[selectedProvider.id] || !selectedProvider.selectedModel}>
+                        <span class={testingProviders[selectedProvider.id] ? "loader-spin" : ""}>
+                            {#if testingProviders[selectedProvider.id]}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
                         </span>
                         {i18n.t.settings.test_connection}
                     </button>
