@@ -402,7 +402,7 @@ impl SyncManager {
         Ok(n)
     }
 
-    pub fn status(&self, _remote_url: Option<&str>) -> SyncStatus {
+    pub fn status(&self, remote_url: Option<&str>) -> SyncStatus {
         let pending_count = self.pending_count().unwrap_or(0);
         let last_push_ts = self.get_state("last_push_ts").ok().flatten()
             .and_then(|s| s.parse::<i64>().ok());
