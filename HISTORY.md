@@ -232,6 +232,133 @@ verification + scoping for the next 4 PLAN items:
 - **Memory** — `streaming-upload-pattern` added to
   `~/.claude/projects/.../memory/`; indexed in `MEMORY.md`.
 
+### Late-afternoon — Live-test bug bash, WebDAV closure, auto-process design (2026-05-16)
+
+After the cb-api deploy stabilised, ran the three P13.7 live tests
+end-to-end against the live infrastructure.  Each one caught at least
+one real bug; four cross-repo fixes landed alongside the test runs:
+
+- **Live test #1 — Shard backup to WebDAV** ✅ closed.
+  - **WebDAV transport** verified against `internxt webdav-start
+    -b` on `localhost:9999` — both `webdav_live_*` tests (PROPFIND
+    root + PUT→STAT→GET→DELETE) pass.
+  - **InternxtDrive direct path** (cli.py subprocess) — new
+    `internxt_live_*` tests in `src-tauri/src/drives/internxt.rs`,
+    full WRITE→STAT→READ→DEL→STAT-after-delete roundtrip against
+    a live Internxt account.  Caught four real bugs:
+    - `cli.py --json` output had a `📁 Listing folder: <path>`
+      header line leaking from `services/drive.py:257`'s
+      unconditional `print()` — added `extract_json_body()` helper
+      that slices from the first `{` (defensive against any future
+      stray prints).  Upstream fix in
+      `internxt-python 7b09898 fix(drive_service): drop redundant
+      print; --json now emits clean JSON`.
+    - `ListPathOutput.current_path` was required but the live CLI
+      omits it on some calls and emits it *at the end* on others
+      (post-order serialisation makes the field's position flaky).
+      Made it `Option<String>` with `#[serde(default)]`.
+    - `NodeInfo.size` was `Option<u64>` but the CLI encodes file
+      sizes as JSON strings (`"size": "191175"`) and folder sizes
+      as numbers (`"size": 0`).  Added `de_size_flex` deserialiser
+      accepting both; same flex applied in `stat()`'s metadata
+      lookup.
+    - `write_file` staged into a `NamedTempFile` and uploaded
+      *that* — the file landed at `/<random tmpXXXX>` instead of
+      the target basename, because `cli.py upload` preserves the
+      source basename and has no `--name` flag.  Stage into a
+      `tempdir/<basename>` instead.
+  - Commit: `5ab135f fix(drives,internxt): tolerate real cli.py
+    --json wire shape; add live tests` — 210 ins / 13 del.
+  - **Integration** — the layer above transport: pulled the
+    production `__single__` shard from cb-api `/api/shard/export`
+    (88179 byte gzip tarball, sha256 captured), MKCOL parent,
+    PUT via WebDAV (201), GET back (200, 88179 bytes), **sha256
+    matched byte-for-byte**, tarball contained `shard.db` as
+    expected.  Cleanup DELETE 204+204.  Three-layer verification
+    (transport, Internxt-direct, full integration) closes the
+    item.
+
+- **Live test #3 — CrispLens image bridge** ✅ closed.
+  - Tested `_extract_via_crisplens` against the live CrispLens
+    on the VPS (`127.0.0.1:7865`) with a real JPEG.  Two real
+    bugs found and fixed in `cloud-backup 9f56cb5 fix(extract):
+    send required local_path field + bump CrispLens timeout`:
+    - The bridge only sent the `file` multipart field, but
+      `/api/ingest/upload-local` also requires `local_path`
+      (HTTP 422 "Field required").  Added a second form-data
+      part carrying the absolute blob path; recomputed
+      Content-Length.
+    - 30s connection timeout was too short for cold-load
+      RetinaFace + ArcFace (30–90s in practice) — curl worked
+      but the bridge silently logged "timed out".  Bumped to
+      180s with a comment.
+  - Post-fix bridge returns `{face_count: 0, caption: ""}` for a
+    27 KB JPEG with no faces.  Image side fully verified.
+  - Audio side blocked: `which crispasr` empty on the VPS (only
+    `crispasr-quantize` built); deferring per the PLAN.md note.
+
+- **Stage AC Phase 6 upstream + wrap** — the
+  `crispasr::LidMethod` Rust enum was missing the `Firered=2`
+  and `Ecapa=3` variants even though the C-ABI
+  `crispasr_detect_language_pcm` already accepted method values
+  0-3 and dispatched all four backends internally (see
+  `crispasr_lid.cpp` switch on `CrispasrLidMethod`).  Added the
+  two discriminants upstream (`CrispASR 2036f0db`); rewired
+  CrispSorter's `detect_language_from_pcm` (commit `69c955e`'s
+  `Phase 6` block) to route all four through the same
+  module-level path — removes the "use whisper or silero"
+  error for Ecapa/Firered callers.
+
+- **Auto-process toggle UX design pass** —
+  PLAN.md flagged this with the note "risky, needs UX design
+  pass before any code"; the watcher's own module doc string
+  (`src-tauri/src/watcher/mod.rs:25-28`) names the same risks.
+  Wrote a complete 6-slice implementation arc into
+  `handover-prompts/session-prompt-auto-process-toggle.md`
+  (gitignored per convention; ~16 h work).  Key design choices:
+  - Per-folder dropdown, not a global flag (mixing curated
+    `~/Inbox/Scans` with `~/Downloads` shouldn't be
+    all-or-nothing).
+  - Three modes per folder (`off` / `analyse` / `sort`) — isolates
+    the irreversible move step from the reversible analyse step.
+  - Opt-in initial scan (adding a 10K-file folder doesn't
+    auto-process everything).
+  - Debounced queue + hourly file cap + daily $ cap for paid
+    providers (LLM cost runaway protection).
+  - Tray icon + pause-without-removing-watcher (unattended UX
+    needs a status surface, not modals).
+  - Fail-soft errors with deferred tray notification (no silent
+    retries → no duplicate LLM bills).
+  Six open questions flagged for the implementer (tray plugin
+  presence, move-step function name, cost-per-token table, etc.).
+  Pointer added to PLAN.md as `4f2bcce docs(plan): auto-process
+  toggle UX design pass complete`.
+
+- **Stage AE test expansion** — 4 new unit tests in
+  `6ee36c1 test(index): expand Stage AD/AE coverage`:
+  `rerank_with_colbert_keeps_original_score_for_null_rows`,
+  `rerank_with_colbert_truncates_to_limit`,
+  `maybe_colbert_rerank_flag_off_is_noop`,
+  `maybe_colbert_rerank_no_embedder_is_noop`.  Also fixed a
+  latent v100/v105 migration-runner assertion drift (`summary2.
+  skipped` was missing v105 from the expected list).
+
+- **Cross-repo commits landed today** (cron-ordered):
+  - `CrispASR 2036f0db` — `LidMethod::{Firered=2, Ecapa=3}` upstream.
+  - `cloud-backup 9f56cb5` — `_extract_via_crisplens` local_path
+    + 180s timeout.
+  - `internxt-python 7b09898` — drop redundant print breaking
+    `--json`.
+  - `CrispSorter f42c39d` Stage AD storage + ingest + MaxSim.
+  - `CrispSorter 8a50bdd` Stage AE `LocalIndex::rerank_with_colbert`.
+  - `CrispSorter a3bbc61` `fix(sync)` streaming uploads.
+  - `CrispSorter ffd0aaf` `chore` warning cleanups.
+  - `CrispSorter 69c955e` Stage AE wiring + Stage AC Phase 6.
+  - `CrispSorter 6ee36c1` test expansion + migration fix.
+  - `CrispSorter 5ab135f` InternxtDrive parser fixes + live tests.
+  - `CrispSorter 9a80bb6` / `bb8540c` / `4f2bcce` PLAN.md
+    progressions (live tests + auto-process design).
+
 Test totals at the very end of session:
 9/9 ingest, 7/7 skeleton, 72/9 sync, 19/19 partition, 3/3 purge,
 4/4 RRF, migrations v100-v105 green, 103/4 cb-api, plus the live VPS
