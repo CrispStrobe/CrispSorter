@@ -146,6 +146,7 @@ export const translations = {
             status_done: 'Done',
             status_error: 'Error',
             reset_stuck: 'Reset stuck',
+            force_reset: 'Force reset',
             processing_stats: '{done}/{total} done'
         },
         history: {
@@ -863,6 +864,7 @@ export const translations = {
             status_done: 'Erledigt',
             status_error: 'Fehler',
             reset_stuck: 'Hänger zurücksetzen',
+            force_reset: 'Hart zurücksetzen',
             processing_stats: '{done}/{total} erledigt'
         },
         history: {

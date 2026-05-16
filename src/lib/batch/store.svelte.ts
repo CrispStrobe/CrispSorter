@@ -186,6 +186,48 @@ export class BatchManager {
         this.saveCurrentSession();
     }
 
+    /** Nuclear escape hatch — when the graceful Stop path is wedged and
+     *  even the force-stop second-click within 5 s didn't help (i.e.
+     *  the user thinks the UI is taken down by a deeper hang),
+     *  this combines all the recovery primitives in one click:
+     *
+     *  1. Force-finalize the processAll/executeBatch state machine
+     *     (isProcessing / isExecuting flags, abort controllers, worker
+     *     counters) so the toolbar unfreezes.
+     *  2. Lift every `extracting` / `analyzing` / `unfinished` item
+     *     back to `queued` so they survive the next Start press.
+     *  3. Clear any leftover statusDetail / errorMessage stuck on items.
+     *
+     *  Workers that were genuinely mid-flight in the background will
+     *  hit `stopRequested` or their abort signal at the next yield and
+     *  exit; nothing here can leak a subprocess (the Rust side owns
+     *  its own scoped tasks). */
+    forceReset() {
+        flog('warn', 'Force reset — abandoning in-flight workers, lifting stuck items back to queued.');
+        // 1. Force-finalize the state machine.  Abort controllers
+        // first so any awaiting worker wakes up before we null them.
+        this.extractionAbort?.abort();
+        this.llmAbort?.abort();
+        this.stopRequested = true;
+        this.isProcessing = false;
+        this.isExecuting = false;
+        this.llmAbort = null;
+        this.extractionAbort = null;
+        this.extractionActive = 0;
+        this.llmActive = 0;
+        this.lastStopAtMs = 0;
+        // 2. Lift stuck items.
+        for (const item of this.items) {
+            if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
+                item.status = 'queued';
+                item.statusDetail = undefined;
+                item.errorMessage = undefined;
+            }
+        }
+        // 3. Persist so a re-launch doesn't restore the wedged shape.
+        this.saveCurrentSession();
+    }
+
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);

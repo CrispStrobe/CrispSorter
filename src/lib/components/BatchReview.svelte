@@ -1109,9 +1109,11 @@
                 </button>
             {/if}
 
-            {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing' || i.status === 'unfinished')}
-                <button class="action-btn small danger" onclick={() => batchManager.resetStuckItems()} title={i18n.t.batch.reset_stuck}>
-                    <RefreshCw size={14} /> {i18n.t.batch.reset_stuck}
+            {#if batchManager.isProcessing || batchManager.items.some(i => i.status === 'extracting' || i.status === 'analyzing' || i.status === 'unfinished')}
+                <button class="action-btn small danger"
+                        onclick={() => batchManager.forceReset()}
+                        title={i18n.t.batch.force_reset ?? 'Nuclear reset: abandon in-flight workers, lift stuck items back to queued'}>
+                    <RefreshCw size={14} /> {i18n.t.batch.force_reset ?? 'Force reset'}
                 </button>
             {/if}
             {#if !batchManager.isProcessing && batchManager.items.some(i => i.status === 'review' || i.status === 'ready')}
