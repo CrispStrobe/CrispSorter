@@ -520,11 +520,29 @@ export class BatchManager {
                         ['pdf', 'docx', 'epub', 'jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'].includes(ext);
                     if (isPdf && (await getSetting('pdfMetadataPrefill', true))) {
                         try {
-                            const meta = await invoke<{
-                                title?: string | null;
-                                author?: string | null;
-                                year?: number | null;
-                            }>('extract_pdf_metadata', { path: item.originalPath });
+                            // 30 s wall-clock cap on the Rust-side lopdf call.
+                            // `lopdf::Document::load` is fully synchronous and
+                            // doesn't honor an abort signal — a pathological
+                            // PDF (broken xref, deeply-nested compressed
+                            // streams, encrypted content) can stall it
+                            // indefinitely.  Without this race, the
+                            // extraction worker is stuck on the metadata
+                            // pre-fill BEFORE the page watchdog has any
+                            // signal to trip on, so the whole batch
+                            // appears frozen with no log line.
+                            const meta = await Promise.race([
+                                invoke<{
+                                    title?: string | null;
+                                    author?: string | null;
+                                    year?: number | null;
+                                }>('extract_pdf_metadata', { path: item.originalPath }),
+                                new Promise<never>((_, rej) =>
+                                    setTimeout(
+                                        () => rej(new Error('PDF metadata timeout (30 s)')),
+                                        30_000
+                                    )
+                                ),
+                            ]);
                             if (meta?.title && !item.suggestedTitle) {
                                 item.suggestedTitle = meta.title.trim();
                             }
