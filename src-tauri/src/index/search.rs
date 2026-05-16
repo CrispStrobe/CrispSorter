@@ -37,6 +37,43 @@ pub struct SearchEngine {
     /// closes the "no reranker model installed" gap with a real
     /// recall lift over no-rerank.
     use_embedder_as_reranker: bool,
+    /// Stage Z — alternate reranker for non-Latin-script queries.
+    /// When set AND `has_nonlatin_script(query)` returns `true`,
+    /// `maybe_rerank` routes to this handle instead of `reranker`.
+    /// Useful for installing a CJK/Arabic-optimised reranker (e.g.
+    /// `bge-reranker-v2-m3`, which excels at Chinese/Japanese/Korean)
+    /// alongside a Latin-primary one — zero config for monolingual
+    /// users, automatic upgrade for multilingual users.
+    reranker_multilingual: Option<RerankerHandle>,
+}
+
+/// Returns `true` when ≥ 25% of non-whitespace characters in `query`
+/// are outside the Latin + Latin Extended Unicode blocks.  Covers CJK
+/// (0x3000-0x9FFF, 0xAC00-0xD7FF, 0xF900-0xFAFF, 0x20000-0x3FFFF),
+/// Arabic (0x0600-0x06FF), Hebrew (0x0590-0x05FF), Cyrillic (0x0400-0x04FF),
+/// Devanagari (0x0900-0x097F), Thai (0x0E00-0x0E7F), and more.
+///
+/// Used by `SearchEngine::maybe_rerank` to route queries to the
+/// multilingual reranker when the primary one is Latin-optimised.
+pub(crate) fn has_nonlatin_script(query: &str) -> bool {
+    let mut total = 0usize;
+    let mut nonlatin = 0usize;
+    for c in query.chars() {
+        if c.is_whitespace() || c.is_ascii_punctuation() {
+            continue;
+        }
+        total += 1;
+        let cp = c as u32;
+        // Latin ranges: Basic Latin (0–0x7F), Latin-1 Supplement (0x80–0xFF),
+        // Latin Extended-A/B (0x100–0x24F), Latin Extended Additional (0x1E00–0x1EFF).
+        let in_latin = cp <= 0x024F || (0x1E00..=0x1EFF).contains(&cp);
+        if !in_latin {
+            nonlatin += 1;
+        }
+    }
+    // Require at least 4 relevant chars to avoid false positives on very
+    // short or purely-numeric queries (e.g. "2024" or "ok").
+    total >= 4 && nonlatin * 4 >= total
 }
 
 impl SearchEngine {
@@ -52,6 +89,7 @@ impl SearchEngine {
             reranker: None,
             rerank_top_n: 50,
             use_embedder_as_reranker: false,
+            reranker_multilingual: None,
         }
     }
 
@@ -60,6 +98,23 @@ impl SearchEngine {
     pub fn with_reranker(mut self, handle: RerankerHandle, top_n: usize) -> Self {
         self.reranker = Some(handle);
         self.rerank_top_n = top_n.max(1);
+        self
+    }
+
+    /// Enable the alternate reranker for non-Latin-script queries.
+    /// When a query is detected as predominantly CJK / Arabic / Cyrillic /
+    /// etc. (≥ 25% of non-whitespace characters outside Latin + Latin
+    /// Extended Unicode blocks), `maybe_rerank` routes to `handle`
+    /// instead of the primary `reranker`.  When the primary reranker
+    /// is absent, the multilingual one becomes the sole reranker for
+    /// all queries.
+    pub fn with_multilingual_reranker(mut self, handle: RerankerHandle, top_n: usize) -> Self {
+        self.reranker_multilingual = Some(handle);
+        if self.reranker.is_none() {
+            // When no primary reranker is set, the multilingual one applies
+            // to all queries; rerank_top_n controls the candidate window.
+            self.rerank_top_n = self.rerank_top_n.max(top_n.max(1));
+        }
         self
     }
 
@@ -79,7 +134,10 @@ impl SearchEngine {
     }
 
     fn fetch_limit(&self, requested: usize) -> usize {
-        if self.reranker.is_some() || self.use_embedder_as_reranker {
+        if self.reranker.is_some()
+            || self.reranker_multilingual.is_some()
+            || self.use_embedder_as_reranker
+        {
             self.rerank_top_n.max(requested)
         } else {
             requested
@@ -115,7 +173,16 @@ impl SearchEngine {
             EmbedderBiEncoder, // uses self.embedder, gated on the flag
             None,
         }
-        let path = if let Some(ref h) = self.reranker {
+        // Stage Z: when the query is predominantly non-Latin-script (CJK,
+        // Arabic, Cyrillic, …) AND a multilingual reranker is configured,
+        // prefer it over the primary cross-encoder.  When no primary exists
+        // the multilingual handle fires for all queries.
+        let use_multilingual = self.reranker_multilingual.is_some()
+            && (self.reranker.is_none() || has_nonlatin_script(query));
+
+        let path = if use_multilingual {
+            RerankPath::Dedicated(self.reranker_multilingual.as_ref().unwrap())
+        } else if let Some(ref h) = self.reranker {
             RerankPath::Dedicated(h)
         } else if self.use_embedder_as_reranker && self.embedder.is_some() {
             RerankPath::EmbedderBiEncoder
@@ -829,5 +896,56 @@ mod tests {
         let mut rows = vec![mk_result("short", Some(&long), Some("en"))];
         SearchEngine::apply_translation_snippet(&mut rows, Some("en"));
         assert_eq!(rows[0].snippet.chars().count(), 400);
+    }
+
+    // ── has_nonlatin_script ────────────────────────────────────────────────
+
+    #[test]
+    fn nonlatin_japanese_is_detected() {
+        // "Tokyo conference" in Japanese (kanji + kana)
+        assert!(has_nonlatin_script("東京会議"));
+    }
+
+    #[test]
+    fn nonlatin_arabic_is_detected() {
+        assert!(has_nonlatin_script("مرحبا بالعالم"));
+    }
+
+    #[test]
+    fn nonlatin_cyrillic_is_detected() {
+        assert!(has_nonlatin_script("привет мир"));
+    }
+
+    #[test]
+    fn nonlatin_mixed_latin_majority_is_not_detected() {
+        // 5 Japanese out of 22 total non-whitespace chars ≈ 23% < 25% threshold
+        assert!(!has_nonlatin_script("hello world foobar こんにちは"));
+    }
+
+    #[test]
+    fn nonlatin_pure_ascii_query_is_not_detected() {
+        assert!(!has_nonlatin_script("search the documents"));
+    }
+
+    #[test]
+    fn nonlatin_short_query_is_not_detected() {
+        // 3 non-whitespace chars (< 4 threshold)
+        assert!(!has_nonlatin_script("你好"));
+    }
+
+    #[test]
+    fn nonlatin_german_with_umlauts_is_not_detected() {
+        // Umlauts (ä/ö/ü) are in Latin Extended block → not non-Latin.
+        assert!(!has_nonlatin_script("Universität für Wissenschaft"));
+    }
+
+    #[test]
+    fn nonlatin_numeric_only_is_not_detected() {
+        assert!(!has_nonlatin_script("2024 1234"));
+    }
+
+    #[test]
+    fn nonlatin_chinese_query_is_detected() {
+        assert!(has_nonlatin_script("深度学习模型评估"));
     }
 }

@@ -600,12 +600,21 @@ FTS-over-translated-body Tantivy schema slice (`be73321`).
 
 Still open:
 
-- [ ] **Per-language reranker selection** — `language` LanceDB
-      column is populated (Phase 7); routing the reranker model
-      by it is the next slice.  Likely shape: `IndexConfig` gets a
-      `Map<Language, RerankerModel>` (per-language pick) or a
-      simpler "use multilingual reranker when language differs
-      from the embedder's primary" toggle.
+- [x] **Per-language reranker selection (Stage Z)** —
+      **SHIPPED 2026-05-16**.  `has_nonlatin_script(query)` in
+      `index/search.rs` classifies a query as CJK/Arabic/Cyrillic
+      when ≥25% of its non-whitespace chars fall outside Latin
+      Unicode blocks (U+0000–U+024F, U+1E00–U+1EFF); threshold 4
+      chars min.  `SearchEngine.reranker_multilingual: Option<RerankerHandle>`
+      stores the second optional reranker; `with_multilingual_reranker()`
+      builder wires it; `maybe_rerank()` routes to it when the query
+      is non-Latin (or always when no primary reranker is set).
+      `IndexConfig.reranker_model_multilingual: Option<RerankerModel>`
+      persisted; Settings UI adds "Multilingual reranker" card with
+      Off/bge_v2_m3/bge_base/jina_v2_multi dropdown.  9 new unit tests
+      for `has_nonlatin_script` covering Japanese, Arabic, Cyrillic,
+      mixed-Latin, ASCII, short, German umlauts, numeric, Chinese — all
+      pass.
 - [ ] **Per-chunk vs per-doc translation storage** — today we
       replicate the full translation across every chunk row of a
       doc, matching the existing `full_text_md` convention.  For

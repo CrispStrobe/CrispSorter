@@ -236,6 +236,8 @@
     // no-rerank for users who haven't installed a separate
     // reranker model.
     let indexUseEmbedderAsReranker = $state<boolean>(false);
+    /** Stage Z — alternate reranker for CJK/Arabic/Cyrillic queries. */
+    let indexRerankerModelMultilingual = $state<string>('');
     // Empty = use default ({data_dir}/models). Override is shared by
     // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
     // downloads, so one setting controls every model weight on disk.
@@ -834,6 +836,7 @@
         indexUseVector          = await getSetting('indexUseVector', true) as boolean;
         indexEmbedderLocation   = await getSetting('indexEmbedderLocation', 'client') as any;
         indexRerankerModel = await getSetting('indexRerankerModel', '') as any;
+        indexRerankerModelMultilingual = await getSetting('indexRerankerModelMultilingual', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexUseEmbedderAsReranker = await getSetting('indexUseEmbedderAsReranker', false) as boolean;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
@@ -1128,6 +1131,7 @@
         await saveSetting('indexUseVector',         indexUseVector);
         await saveSetting('indexEmbedderLocation',  indexEmbedderLocation);
         await saveSetting('indexRerankerModel', indexRerankerModel);
+        await saveSetting('indexRerankerModelMultilingual', indexRerankerModelMultilingual);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexUseEmbedderAsReranker', indexUseEmbedderAsReranker);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
@@ -1274,7 +1278,8 @@
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
                     use_vector:           indexUseVector,
                     embedder_location:    indexEmbedderLocation,
-                    reranker_model:       rerankerToRust(indexRerankerModel),
+                    reranker_model:             rerankerToRust(indexRerankerModel),
+                    reranker_model_multilingual: rerankerToRust(indexRerankerModelMultilingual),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
                     use_embedder_as_reranker: indexUseEmbedderAsReranker,
                     model_cache_dir:  indexModelCacheDir.trim() || null,
@@ -3408,6 +3413,25 @@
                          'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.'}
                     </p>
                 {/if}
+            </div>
+
+            <!-- Stage Z — Multilingual reranker (CJK/Arabic/Cyrillic auto-routing) -->
+            <div class="section-card">
+                <label for="index-reranker-multi-select">
+                    <Cpu size={16} /> Multilingual reranker (CJK / Arabic / Cyrillic)
+                </label>
+                <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} class="styled-select">
+                    <option value="">Off</option>
+                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
+                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
+                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
+                </select>
+                <p class="hint" style="margin-top:6px;">
+                    When set, queries detected as predominantly CJK, Arabic, Cyrillic, or other non-Latin scripts
+                    (≥ 25% of non-whitespace characters) are reranked with this model instead of the primary
+                    reranker. If the primary reranker is off, this fires for all queries.
+                    BGE-Reranker-v2-M3 works well for multilingual text.
+                </p>
             </div>
 
             <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->

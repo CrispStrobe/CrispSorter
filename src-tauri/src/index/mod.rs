@@ -172,6 +172,15 @@ pub struct IndexConfig {
     /// GGUF-only via CrispEmbed (requires the `crispembed` cargo feature).
     #[serde(default)]
     pub reranker_model: Option<RerankerModel>,
+    /// Stage Z — alternate reranker for non-Latin-script queries (CJK,
+    /// Arabic, Cyrillic, Devanagari, …).  When set AND the query is
+    /// detected as predominantly non-Latin-script (≥ 25% of non-whitespace
+    /// chars outside Latin + Latin Extended Unicode blocks), the search
+    /// pipeline routes to this handle instead of `reranker_model`.
+    /// If `reranker_model` is absent, this fires for all queries.
+    /// `None` (default) = no script-aware routing.
+    #[serde(default)]
+    pub reranker_model_multilingual: Option<RerankerModel>,
     /// How many top candidates to score with the reranker after RRF.
     /// Default 50; smaller is faster, larger trades latency for recall.
     #[serde(default = "default_rerank_top_n")]
@@ -509,6 +518,7 @@ impl Default for IndexConfig {
             use_vector: true,
             embedder_location: EmbedderLocation::Client,
             reranker_model: None,
+            reranker_model_multilingual: None,
             rerank_top_n: default_rerank_top_n(),
             model_cache_dir: None,
             matryoshka_dim: None,
