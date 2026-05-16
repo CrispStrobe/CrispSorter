@@ -25,12 +25,38 @@ use super::{CloudDrive, DirEntry, DriveType, FileStat};
 
 /// Wire shape of `cli.py list-path --json` output.
 /// Mirrors `drive_service.list_folder_with_paths`'s return value.
-#[derive(Debug, Deserialize)]
+///
+/// `current_path` is `Option` because the real CLI's `--json` output
+/// only emits `folders` + `files`; older fixtures had a `current_path`
+/// key that the live CLI never produces.  Kept on the struct so a
+/// future CLI revision adding it back parses cleanly without a code
+/// change here.
+#[derive(Debug, Deserialize, Default)]
 struct ListPathOutput {
     #[allow(dead_code)]
-    current_path: String,
+    #[serde(default)]
+    current_path: Option<String>,
+    #[serde(default)]
     folders: Vec<NodeInfo>,
+    #[serde(default)]
     files:   Vec<NodeInfo>,
+}
+
+/// Tolerant deserializer for `size`: the live CLI emits it as a JSON
+/// string (`"191175"`) for files but `0` (number) for folders — accept
+/// both and parse string-encoded ints back to `u64`.
+fn de_size_flex<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<u64>, D::Error> {
+    use serde::de::Error;
+    let v: serde_json::Value = serde::Deserialize::deserialize(d)?;
+    match v {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => Ok(n.as_u64()),
+        serde_json::Value::String(s) => {
+            if s.is_empty() { return Ok(None); }
+            s.parse::<u64>().map(Some).map_err(D::Error::custom)
+        }
+        _ => Err(D::Error::custom("size must be number, string, or null")),
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -40,8 +66,10 @@ struct NodeInfo {
     /// Plain name (without extension for files, same as display for folders).
     #[serde(rename = "plainName", default)]
     plain_name:      Option<String>,
-    /// File size in bytes (only present on files).
-    #[serde(default)]
+    /// File size in bytes (only present on files).  The live CLI
+    /// encodes this as a string for file rows, so deserialise via a
+    /// tolerant helper that accepts both number and string forms.
+    #[serde(default, deserialize_with = "de_size_flex")]
     size:            Option<u64>,
     /// ISO-8601 modification time (driveinet uses `modificationTime`,
     /// falls back to `updatedAt`).
@@ -138,6 +166,20 @@ fn parse_iso(s: &str) -> Option<i64> {
     Some(days * 86_400 + h * 3600 + mi * 60 + s_int)
 }
 
+/// The patched `cli.py --json` mode still emits a human-readable
+/// `📁 Listing folder: …` line before the JSON body.  Find the first
+/// `{` (or `[`) and slice from there so `serde_json` sees only the
+/// structured payload.  Returns the full input unchanged when no
+/// JSON sentinel is present — lets `from_slice` produce its own
+/// error.
+fn extract_json_body(stdout: &[u8]) -> &[u8] {
+    if let Some(i) = stdout.iter().position(|&b| b == b'{' || b == b'[') {
+        &stdout[i..]
+    } else {
+        stdout
+    }
+}
+
 impl CloudDrive for InternxtDrive {
     fn label(&self) -> &str { &self.label }
     fn drive_type(&self) -> DriveType { DriveType::Internxt }
@@ -146,10 +188,11 @@ impl CloudDrive for InternxtDrive {
         let path_str = if path.as_os_str().is_empty() { "/".to_owned() }
                        else { path.to_string_lossy().into_owned() };
         let output = self.run(&["list-path", &path_str, "--json"])?;
-        let parsed: ListPathOutput = serde_json::from_slice(&output.stdout)
+        let json_body = extract_json_body(&output.stdout);
+        let parsed: ListPathOutput = serde_json::from_slice(json_body)
             .with_context(|| format!(
                 "parsing internxt-cli list-path output: {}",
-                String::from_utf8_lossy(&output.stdout)
+                String::from_utf8_lossy(json_body)
             ))?;
 
         let mut entries = Vec::with_capacity(parsed.folders.len() + parsed.files.len());
@@ -172,15 +215,22 @@ impl CloudDrive for InternxtDrive {
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let path_str = path.to_string_lossy();
         let output = self.run(&["resolve", &path_str, "--json"])?;
-        let parsed: ResolveOutput = serde_json::from_slice(&output.stdout)
+        let json_body = extract_json_body(&output.stdout);
+        let parsed: ResolveOutput = serde_json::from_slice(json_body)
             .with_context(|| format!(
                 "parsing internxt-cli resolve output: {}",
-                String::from_utf8_lossy(&output.stdout)
+                String::from_utf8_lossy(json_body)
             ))?;
 
         let is_dir = parsed.kind == "folder";
+        // The CLI encodes file sizes as JSON strings ("191175") but
+        // folder sizes as numbers (0).  Accept both.
         let size = parsed.metadata.get("size")
-            .and_then(|v| v.as_u64()).unwrap_or(0);
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            })
+            .unwrap_or(0);
         let mtime_unix = parsed.metadata.get("modificationTime")
             .and_then(|v| v.as_str())
             .or_else(|| parsed.metadata.get("updatedAt").and_then(|v| v.as_str()))
@@ -215,13 +265,19 @@ impl CloudDrive for InternxtDrive {
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
-        let tmp = tempfile::NamedTempFile::new().context("temp file for upload")?;
-        std::fs::write(tmp.path(), data).context("staging upload bytes")?;
+        // The CLI's `upload` preserves the source basename — it has no
+        // `--name` flag.  Stage the bytes in a tempdir under the target
+        // basename so the remote ends up at `target_dir/basename`.
+        let basename = path.file_name()
+            .ok_or_else(|| anyhow!("write_file: path has no filename: {}", path.display()))?;
+        let tmpdir = tempfile::tempdir().context("temp dir for upload")?;
+        let staged = tmpdir.path().join(basename);
+        std::fs::write(&staged, data).context("staging upload bytes")?;
         let target_dir = path.parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "/".to_owned());
         self.run(&[
-            "upload", &tmp.path().to_string_lossy(),
+            "upload", &staged.to_string_lossy(),
             "-t", &target_dir,
             "--on-conflict", "overwrite",
         ])?;
@@ -284,7 +340,8 @@ mod tests {
 
     #[test]
     fn list_path_json_shape_deserialises() {
-        // Match the wire shape that cli.py list-path --json emits.
+        // Synthetic wire shape with a `current_path` (some CLI versions
+        // emit it; the field is optional on our side).
         let json = r#"{
             "current_path": "/Documents",
             "folders": [
@@ -302,6 +359,74 @@ mod tests {
     }
 
     #[test]
+    fn node_info_size_as_string_parses() {
+        // Real CLI emits `"size": "191175"` (JSON string) for files.
+        let json = r#"{"display_name": "x.txt", "size": "191175"}"#;
+        let n: NodeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(n.size, Some(191175));
+    }
+
+    #[test]
+    fn node_info_size_as_number_still_parses() {
+        // Folders get `"size": 0` (number, not string).
+        let json = r#"{"display_name": "d", "size": 0}"#;
+        let n: NodeInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(n.size, Some(0));
+    }
+
+    #[test]
+    fn node_info_size_null_or_missing_is_none() {
+        let n: NodeInfo = serde_json::from_str(r#"{"display_name": "x"}"#).unwrap();
+        assert_eq!(n.size, None);
+        let n: NodeInfo = serde_json::from_str(r#"{"display_name": "x", "size": null}"#).unwrap();
+        assert_eq!(n.size, None);
+    }
+
+    #[test]
+    fn list_path_json_no_current_path_still_parses() {
+        // Real CLI wire shape — no `current_path` key; just folders + files.
+        // Captured 2026-05-16 from a live Internxt account against `/`.
+        // If this regresses, `list_dir` will panic in production.
+        let json = r#"{
+            "folders": [
+                {"plainName": "Example Folder", "display_name": "Example Folder"}
+            ],
+            "files": []
+        }"#;
+        let parsed: ListPathOutput = serde_json::from_str(json).unwrap();
+        assert!(parsed.current_path.is_none());
+        assert_eq!(parsed.folders.len(), 1);
+        assert_eq!(parsed.folders[0].plain_name.as_deref(), Some("Example Folder"));
+    }
+
+    #[test]
+    fn extract_json_body_strips_header_line() {
+        // cli.py --json mode still emits a header before the JSON body.
+        // Verify the slicing keeps everything from the first `{`.
+        let raw = b"\xf0\x9f\x93\x81 Listing folder: /\n{\"a\": 1}";
+        let body = extract_json_body(raw);
+        assert_eq!(body, b"{\"a\": 1}");
+    }
+
+    #[test]
+    fn extract_json_body_pure_json_unchanged() {
+        let raw = b"{\"folders\": []}";
+        assert_eq!(extract_json_body(raw), raw);
+    }
+
+    #[test]
+    fn extract_json_body_starts_at_array_too() {
+        let raw = b"prefix\n[1, 2, 3]";
+        assert_eq!(extract_json_body(raw), b"[1, 2, 3]");
+    }
+
+    #[test]
+    fn extract_json_body_no_json_returns_full_input() {
+        let raw = b"plain text only";
+        assert_eq!(extract_json_body(raw), raw);
+    }
+
+    #[test]
     fn resolve_json_shape_deserialises() {
         let json = r#"{
             "type": "file",
@@ -312,5 +437,77 @@ mod tests {
         let parsed: ResolveOutput = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.kind, "file");
         assert_eq!(parsed.metadata.get("size").and_then(|v| v.as_u64()), Some(5678));
+    }
+
+    // ── Live tests (gated, ignored by default) ────────────────────────────
+    //
+    // Exercise the InternxtDrive trait end-to-end against a real Internxt
+    // account.  Mirrors the WebDAV live tests in src/drives/webdav.rs
+    // (env-gated + `#[ignore]`).
+    //
+    // To run:
+    //   INTERNXT_CLI_PATH=/path/to/cli.py \
+    //   INTERNXT_CLI_PYTHON=/path/to/python \
+    //   cargo test -p tauri-app --lib -- --ignored internxt_live --nocapture
+    //
+    // Requirements:
+    //   * `cli.py` patched with `--json` on whoami/list-path/resolve.
+    //   * `python cli.py login` has been run; session lives in
+    //     `~/.config/internxt-cli/`.
+
+    fn live_drive() -> Option<InternxtDrive> {
+        let cli_py = std::env::var("INTERNXT_CLI_PATH").ok()?;
+        Some(InternxtDrive::new("live-test", cli_py))
+    }
+
+    #[test]
+    #[ignore]
+    fn internxt_live_list_root() {
+        let Some(drive) = live_drive() else {
+            eprintln!("skip: INTERNXT_CLI_PATH not set");
+            return;
+        };
+        let entries = drive.list_dir(Path::new("/")).expect("list_dir / failed");
+        eprintln!("--- root listing ({} entries) ---", entries.len());
+        for e in entries.iter().take(20) {
+            eprintln!("  {} {}", if e.is_dir { "DIR " } else { "FILE" }, e.name);
+        }
+        // Tolerate empty drives; we just need the JSON to round-trip
+        // through the trait without panicking.
+        let _ = entries;
+    }
+
+    #[test]
+    #[ignore]
+    fn internxt_live_write_read_stat_delete_roundtrip() {
+        let Some(drive) = live_drive() else {
+            eprintln!("skip: INTERNXT_CLI_PATH not set");
+            return;
+        };
+        let nonce: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let test_path = format!("/_crispsorter_internxt_test_{nonce}.txt");
+        let content = format!("hello from CrispSorter internxt test at {nonce}").into_bytes();
+
+        eprintln!("WRITE {test_path}");
+        drive.write_file(Path::new(&test_path), &content)
+            .expect("write_file failed");
+
+        eprintln!("STAT  {test_path}");
+        let stat = drive.stat(Path::new(&test_path)).expect("stat failed");
+        assert!(!stat.is_dir, "test file must not be a dir");
+        assert_eq!(stat.size, content.len() as u64,
+            "stat reported {} bytes, wrote {}", stat.size, content.len());
+
+        eprintln!("READ  {test_path}");
+        let got = drive.read_file(Path::new(&test_path)).expect("read_file failed");
+        assert_eq!(got, content, "read content did not match what we wrote");
+
+        eprintln!("DEL   {test_path}");
+        drive.delete(Path::new(&test_path)).expect("delete failed");
+
+        eprintln!("STAT-after-delete {test_path} (should error)");
+        assert!(drive.stat(Path::new(&test_path)).is_err(),
+            "stat must error after delete");
     }
 }
