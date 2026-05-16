@@ -685,7 +685,7 @@ mod tests {
         let local = std::sync::Arc::new(
             LocalIndex::open_or_create(tmp.path(), 1024).await.unwrap(),
         );
-        let mut chunk = |doc: &str, name: &str, ext: &str, hash: &str, ts: i64| {
+        let chunk = |doc: &str, name: &str, ext: &str, hash: &str, ts: i64| {
             let mut c = l1_chunk(doc, "/photos", name, ext, 1234, ts);
             c.source_hash = hash.to_owned();
             c

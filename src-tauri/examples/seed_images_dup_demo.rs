@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     // green ramp, blue constant.  Has real intra-image variation so
     // pHash has signal to work with.  Resizes preserve the gradient
     // shape → pHash-similar.
-    let mut write_gradient = |name: &str, side: u32| -> anyhow::Result<PathBuf> {
+    let write_gradient = |name: &str, side: u32| -> anyhow::Result<PathBuf> {
         let p = img_dir.join(name);
         let img = ImageBuffer::from_fn(side, side, |x, y| {
             let r = (x as f32 / side as f32 * 255.0) as u8;
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(p)
     };
     // High-contrast diagonal split — orthogonal pHash to the gradient.
-    let mut write_split = |name: &str| -> anyhow::Result<PathBuf> {
+    let write_split = |name: &str| -> anyhow::Result<PathBuf> {
         let p = img_dir.join(name);
         let img = ImageBuffer::from_fn(128u32, 128u32, |x, y| {
             if x + y < 128 { Rgb([5u8, 5u8, 5u8]) } else { Rgb([250u8, 250u8, 250u8]) }
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     // frequency components that DCT-pHash picks up clearly.  Truly
     // distinct from any gradient (gradients have only DC + low
     // frequency; checkerboard concentrates energy in higher bins).
-    let mut write_checker = |name: &str| -> anyhow::Result<PathBuf> {
+    let write_checker = |name: &str| -> anyhow::Result<PathBuf> {
         let p = img_dir.join(name);
         let img = ImageBuffer::from_fn(128u32, 128u32, |x, y| {
             if ((x / 16) + (y / 16)) % 2 == 0 {
