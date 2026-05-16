@@ -3,6 +3,10 @@
 .claude/scheduled_tasks.lock
 start-codex-crispsorter.sh
 
+# Session-local notes that reference absolute paths, VPS access patterns,
+# and credentials by env-var name.  Same rationale as handover-prompts/.
+CLAUDE.md
+
 # Node.js
 node_modules
 /build
