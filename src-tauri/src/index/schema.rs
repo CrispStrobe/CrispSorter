@@ -339,6 +339,14 @@ pub struct SearchFilters {
     pub image_camera_make: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_camera_model: Option<String>,
+    /// Stage AE follow-up — when set, run ColBERT MaxSim re-ranking on
+    /// the top-K candidates before any cross-encoder reranker fires.
+    /// Requires a model with a ColBERT head (BGE-M3 GGUF today) and
+    /// rows ingested at or after schema v105 — gracefully degrades to a
+    /// no-op otherwise (the re-rank only fires for rows that carry
+    /// `multivec_packed` data).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub colbert_rerank: bool,
 }
 
 impl SearchFilters {

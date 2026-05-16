@@ -1311,6 +1311,13 @@ enum IndexCmd {
         image_camera_make: Option<String>,
         #[arg(long, value_name = "MODEL")]
         image_camera_model: Option<String>,
+        /// Stage AE — run ColBERT MaxSim re-ranking on the top-K
+        /// candidates before any cross-encoder reranker fires.
+        /// Only fires when the loaded embedder has a ColBERT head
+        /// (BGE-M3 GGUF) and rows carry `multivec_packed` data
+        /// (schema v105+).  Graceful no-op otherwise.
+        #[arg(long)]
+        colbert: bool,
     },
     /// Download the embedder model weights to the local cache.
     /// Run this once on a fresh install before the first `index ingest`.
@@ -1575,6 +1582,7 @@ async fn cmd_index_async(
             audio_duration_max,
             image_camera_make,
             image_camera_model,
+            colbert,
         } => {
             let fts_dir = data_dir.join("fts");
             if !fts_dir.exists() {
@@ -1627,6 +1635,7 @@ async fn cmd_index_async(
                 audio_duration_max_seconds: audio_duration_max,
                 image_camera_make,
                 image_camera_model,
+                colbert_rerank: colbert,
             };
 
             // FTS pass.  An empty query is rejected to keep the
@@ -4179,7 +4188,7 @@ async fn cmd_images_crisplens(
 ) -> Result<(), String> {
     use crate::images::crisplens::{
         secret,
-        settings::{self, ImagesBackend, ImagesSettings},
+        settings::{self, ImagesBackend},
         tauri_commands::{login_blocking, logout_blocking},
     };
 
@@ -4813,6 +4822,7 @@ fn asr_cache_dir(data_dir: Option<PathBuf>) -> Result<PathBuf, String> {
 /// Tracks the upstream `crispasr` registry — entries that come back
 /// as multilingual ggmls live here; ones that don't get listed in
 /// `Self::is_whisper_family` are filed under "use --lid-model PATH".
+#[cfg_attr(not(any(feature = "crispasr", test)), allow(dead_code))]
 fn is_multilingual_whisper_backend(backend: &str) -> bool {
     matches!(
         backend,
