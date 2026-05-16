@@ -10,9 +10,7 @@
 //! Models auto-download from HuggingFace on first use (~50 MB det + ~10 MB rec).
 //! Gated behind the `paddle-ocr` Cargo feature.
 
-#[cfg(feature = "paddle-ocr")]
-use anyhow::Context;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::{ExtractedDocument, OcrRecLang};
@@ -28,7 +26,6 @@ pub fn is_paddle_ocr_available() -> bool {
 /// Heuristic: does the path contain CJK Unicode characters?
 /// Used when `OcrRecLang::Auto` — if the filename or parent directory
 /// has a significant proportion of CJK codepoints we prefer the CH model.
-#[cfg(feature = "paddle-ocr")]
 fn path_looks_cjk(path: &Path) -> bool {
     let s = path.to_string_lossy();
     let total = s.chars().count().max(1);
@@ -36,7 +33,6 @@ fn path_looks_cjk(path: &Path) -> bool {
     cjk * 5 > total // >20% CJK codepoints
 }
 
-#[cfg(feature = "paddle-ocr")]
 fn is_cjk(c: char) -> bool {
     matches!(c as u32,
         0x4E00..=0x9FFF |  // CJK Unified Ideographs
