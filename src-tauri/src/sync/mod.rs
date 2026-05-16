@@ -379,19 +379,15 @@ impl SyncManager {
                         self.mark_done(entry.id).ok();
                         continue;
                     }
-                    match std::fs::read(&path) {
+                    // Stream the body straight from disk via
+                    // `upload_file_by_hash`, which wraps a
+                    // `tokio_util::io::ReaderStream` in a `reqwest::Body`.
+                    // Keeps multi-GB media uploads off the heap.
+                    match client.upload_file_by_hash(&job.sha256, &path).await {
+                        Ok(_) => { self.mark_done(entry.id).ok(); uploaded += 1; }
                         Err(e) => {
-                            self.mark_error(entry.id, &format!("read: {e}")).ok();
+                            self.mark_error(entry.id, &format!("upload: {e}")).ok();
                             failed += 1;
-                        }
-                        Ok(bytes) => {
-                            match client.upload_file_bytes(&job.sha256, bytes).await {
-                                Ok(_) => { self.mark_done(entry.id).ok(); uploaded += 1; }
-                                Err(e) => {
-                                    self.mark_error(entry.id, &format!("upload: {e}")).ok();
-                                    failed += 1;
-                                }
-                            }
                         }
                     }
                 }
