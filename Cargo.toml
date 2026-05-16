@@ -52,3 +52,12 @@ repository = "https://github.com/CrispStrobe/CrispSorter"
 # desktop app is at 0.1.39 (matches its current release tag); the
 # server and protocol crates are at 0.1.0 (separate cadence). They will
 # diverge intentionally.
+
+# ── Dev build size ──────────────────────────────────────────────────────────
+# Strip debug info from third-party deps only (keep it for our own crates).
+# Cuts `target/debug/` on Windows by ~5–10 GB (MSVC PDBs are large).
+# Cargo requires `[profile.*]` tables to live at the workspace root; placing
+# them in `src-tauri/Cargo.toml` emits the "profiles for the non root package
+# will be ignored" warning on every build.
+[profile.dev.package."*"]
+debug = 0
