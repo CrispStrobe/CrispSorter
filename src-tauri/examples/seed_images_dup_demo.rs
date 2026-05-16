@@ -7,7 +7,7 @@
 //! Not part of the production build — invoke via:
 //!
 //! ```
-//! cargo run -p tauri-app --example seed_images_dup_demo -- /tmp/p13_a3_demo
+//! cargo run -p crispsorter --example seed_images_dup_demo -- /tmp/p13_a3_demo
 //! crispsorter --data-dir /tmp/p13_a3_demo images duplicates -f text
 //! ```
 

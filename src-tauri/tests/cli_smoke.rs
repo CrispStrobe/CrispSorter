@@ -20,7 +20,7 @@
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_tauri-app"))
+    Command::new(env!("CARGO_BIN_EXE_crispsorter"))
 }
 
 #[test]

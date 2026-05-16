@@ -14,15 +14,15 @@
 //!
 //! ```bash
 //! # Decode + print metadata only
-//! cargo run -p tauri-app --features crispasr \
+//! cargo run -p crispsorter --features crispasr \
 //!   --example audio_decode_demo -- /path/to/input.mp3
 //!
 //! # Decode + write 16 kHz mono PCM back as WAV for verification
-//! cargo run -p tauri-app --features crispasr \
+//! cargo run -p crispsorter --features crispasr \
 //!   --example audio_decode_demo -- /path/to/input.m4a /tmp/out.wav
 //!
 //! # Strict mode — fail rather than fall back to ffmpeg shell-out
-//! cargo run -p tauri-app --features crispasr \
+//! cargo run -p crispsorter --features crispasr \
 //!   --example audio_decode_demo -- --pure-rust /path/to/input.opus
 //! ```
 

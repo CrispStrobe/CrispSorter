@@ -17,7 +17,7 @@
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_tauri-app"))
+    Command::new(env!("CARGO_BIN_EXE_crispsorter"))
 }
 
 /// Smallest available embedder model: ~90 MB, English-only, 384-dim.

@@ -1994,6 +1994,37 @@ async fn execute_batch(
                     success: true,
                     error: None,
                 },
+                // Cross-volume move (EXDEV, errno 18 on macOS/Linux):
+                // src and dest are on different filesystems, so the
+                // kernel can't atomic-rename them.  Fall back to
+                // copy + delete-source.  This is the dominant cause
+                // of "every item errored" when the user pointed the
+                // sort target at a different drive (`/Volumes/...`)
+                // than the source.
+                //
+                // Windows file-lock (os error 32) keeps its existing
+                // copy-only fallback (orig stays in place) since the
+                // source delete would also fail with the lock.
+                Err(ref e) if e.raw_os_error() == Some(18) => {
+                    match fs::copy(src, dest) {
+                        Ok(_) => match fs::remove_file(src) {
+                            Ok(()) => BatchExecutionResult {
+                                success: true,
+                                error: None, // full move via copy+remove
+                            },
+                            Err(rm_err) => BatchExecutionResult {
+                                success: true,
+                                error: Some(format!(
+                                    "COPY_FALLBACK_NO_DELETE: source remove failed: {rm_err}"
+                                )),
+                            },
+                        },
+                        Err(cp_err) => BatchExecutionResult {
+                            success: false,
+                            error: Some(format!("CROSS_DEVICE_COPY_FAILED: {cp_err}")),
+                        },
+                    }
+                }
                 Err(ref e) if e.raw_os_error() == Some(32) => {
                     // File locked by another process (os error 32) — try copy as fallback
                     match fs::copy(src, dest) {
@@ -2007,10 +2038,17 @@ async fn execute_batch(
                         },
                     }
                 }
-                Err(e) => BatchExecutionResult {
-                    success: false,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => {
+                    // Surface the underlying OS error message so the
+                    // FE can show something more diagnostic than just
+                    // "error" in the histogram.  Prefix with the errno
+                    // for grep-ability.
+                    let errno = e.raw_os_error().map(|n| format!("errno={n} ")).unwrap_or_default();
+                    BatchExecutionResult {
+                        success: false,
+                        error: Some(format!("RENAME_FAILED: {errno}{e}")),
+                    }
+                }
             },
         };
         // P11: if the move succeeded and the document was indexed, update the location URI.

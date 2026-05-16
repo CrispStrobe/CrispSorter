@@ -1772,7 +1772,7 @@ mod tests {
 //
 //     CB_SYNC_TEST_URL=http://localhost:7869 \
 //     CB_SYNC_TEST_API_KEY=cbk_... \
-//         cargo test -p tauri-app --lib --no-default-features --ignored cb_sync_live
+//         cargo test -p crispsorter --lib --no-default-features --ignored cb_sync_live
 //
 #[cfg(test)]
 mod live_tests {
