@@ -2566,29 +2566,25 @@ pub async fn init_index(
         // For now behaves identically to Local — same init path.
         BackendType::Hybrid | BackendType::Local => {
             let dims = effective_dim;
-            let fts_dir = data_dir.join("fts");
 
-            emit!("fts_start", "Öffne Volltext-Index (Tantivy) …", 55);
-            let fts = Arc::new(FtsIndex::open_or_create(&fts_dir)?);
-            emit!("fts_done", "Volltext-Index bereit", 70);
-
-            emit!("lance_start", "Öffne Vektor-Datenbank (LanceDB) …", 75);
+            // ── LanceDB ────────────────────────────────────────────────
+            // Opens first so the migration runner (which needs a Lance
+            // handle) can run before FtsIndex is opened.  The Stage Y
+            // v103 migration may delete and rebuild the fts/ dir; FTS
+            // must therefore open AFTER migrations complete.
+            emit!("lance_start", "Öffne Vektor-Datenbank (LanceDB) …", 55);
             let local = Arc::new(LocalIndex::open_or_create(data_dir, dims).await?);
-            emit!("lance_done", "Vektor-Datenbank bereit", 90);
+            emit!("lance_done", "Vektor-Datenbank bereit", 70);
 
-            // ── Schema migrations (P13.5 Phase 8b — first real consumer
-            //    of crate::migrations) ──────────────────────────────────
+            // ── Schema migrations ──────────────────────────────────────
             //
             // Runs AFTER LocalIndex::open_or_create (which already
             // applied the two legacy ad-hoc migrations for parent_dir
-            // + volume_id) and BEFORE SearchEngine / IngestPipeline so
-            // any new columns introduced by a migration are visible
-            // to the first ingest.  Ledger lives in
-            // `<data_dir>/.crispsorter_migrations.db` (separate from
-            // the job-queue SQLite to keep admin metadata isolated
-            // from runtime data — the framework supports either
-            // location; this is the cleaner choice when init_index
-            // doesn't have a reachable AppState::job_queue).
+            // + volume_id) and BEFORE FtsIndex::open_or_create so that
+            // v103 (FTS rebuild for body_translated) can delete and
+            // recreate the fts/ dir, with the init path then opening
+            // the freshly-upgraded schema.  Ledger lives in
+            // `<data_dir>/.crispsorter_migrations.db`.
             {
                 use std::sync::Mutex as StdMutex;
                 let ledger_path = data_dir.join(".crispsorter_migrations.db");
@@ -2611,6 +2607,13 @@ pub async fn init_index(
                     );
                 }
             }
+
+            // ── Tantivy FTS ────────────────────────────────────────────
+            // Opens AFTER migrations so v103 rebuilds are visible here.
+            let fts_dir = data_dir.join("fts");
+            emit!("fts_start", "Öffne Volltext-Index (Tantivy) …", 75);
+            let fts = Arc::new(FtsIndex::open_or_create(&fts_dir)?);
+            emit!("fts_done", "Volltext-Index bereit", 90);
 
             let mut engine_inner = SearchEngine::new(
                 fts.clone(),

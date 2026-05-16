@@ -1380,6 +1380,30 @@ impl LocalIndex {
     /// `LocalIndex::open_cidx` API.
     ///
     /// `volume_id` — export only rows for this volume. `None` = full snapshot.
+    /// Scan the FTS-relevant columns for the v103 Tantivy rebuild migration.
+    /// Returns `RecordBatch`es containing `doc_id`, `owner_id`, `language`,
+    /// `title`, `headings_text`, `full_text`, `text_translated`, and
+    /// `chunk_index`.  Used exclusively by `index::migrations::RebuildFtsForBodyTranslated`.
+    pub async fn scan_for_fts_rebuild(&self) -> anyhow::Result<Vec<RecordBatch>> {
+        let select_cols: Vec<String> = [
+            "doc_id", "owner_id", "language", "title",
+            "headings_text", "full_text", "text_translated", "chunk_index",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        self.table
+            .query()
+            .select(lancedb::query::Select::Columns(select_cols))
+            .execute()
+            .await
+            .context("scan_for_fts_rebuild: LanceDB execute")?
+            .try_collect()
+            .await
+            .context("scan_for_fts_rebuild: collecting batches")
+    }
+
     /// `include_embeddings` — when `false` (default) the embedding columns
     ///   are stripped; the snapshot supports FTS + columnar browse offline.
     /// `include_fts` — when `true` (default `false`), a Tantivy FTS index is
