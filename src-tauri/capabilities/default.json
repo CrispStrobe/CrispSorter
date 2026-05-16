@@ -8,6 +8,8 @@
     "opener:default",
     "http:default",
     "dialog:default",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
     "store:default",
     "fs:default",
     "shell:default",
