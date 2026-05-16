@@ -1911,6 +1911,18 @@ impl CrispEmbedBackend {
         self.model.encode_sparse(text)
     }
 
+    /// Check if model has a ColBERT head (per-token L2-normalised
+    /// projections).  Only BGE-M3 GGUF qualifies today.
+    pub(crate) fn has_colbert(&self) -> bool {
+        self.model.has_colbert()
+    }
+
+    /// ColBERT multi-vector encode — returns one L2-normalised
+    /// vector per input token (dim = ColBERT projection dim).
+    pub(crate) fn encode_multivec(&mut self, text: &str) -> Vec<Vec<f32>> {
+        self.model.encode_multivec(text)
+    }
+
     /// Check if model is a cross-encoder reranker.
     /// Used by `index::reranker::Reranker::load` to verify a reranker
     /// GGUF was actually loaded.
@@ -2399,6 +2411,35 @@ impl Embedder {
             }
         }
         false
+    }
+
+    /// Whether the loaded model has a ColBERT head (per-token
+    /// L2-normalised projections). Only BGE-M3 GGUF qualifies today.
+    pub fn has_colbert(&self) -> bool {
+        #[cfg(feature = "crispembed")]
+        {
+            if let DenseBackend::CrispEmbed(ref backend) = self.dense {
+                return backend.has_colbert();
+            }
+        }
+        false
+    }
+
+    /// Encode `texts` to per-token ColBERT vectors via the CrispEmbed backend.
+    ///
+    /// Returns one `Vec<Vec<f32>>` per input text; each inner vec is one
+    /// L2-normalised token vector (dim = ColBERT projection dim, 128 for BGE-M3).
+    /// Returns `vec![vec![]; texts.len()]` when the model has no ColBERT head.
+    pub fn embed_multivec(&mut self, texts: Vec<String>) -> Result<Vec<Vec<Vec<f32>>>> {
+        #[cfg(feature = "crispembed")]
+        {
+            if let DenseBackend::CrispEmbed(ref mut backend) = self.dense {
+                if backend.has_colbert() {
+                    return Ok(texts.iter().map(|t| backend.encode_multivec(t)).collect());
+                }
+            }
+        }
+        Ok(vec![vec![]; texts.len()])
     }
 }
 

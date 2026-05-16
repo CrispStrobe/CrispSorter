@@ -14,7 +14,8 @@ use arrow_array::{
     Float32Array,
 };
 use arrow_array::{
-    Array, FixedSizeListArray, Int32Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    Array, FixedSizeListArray, Int16Array, Int32Array, LargeBinaryArray, RecordBatch,
+    StringArray, TimestampMillisecondArray,
 };
 use arrow_schema::Schema;
 use async_trait::async_trait;
@@ -1849,6 +1850,16 @@ fn chunks_to_record_batch(
         chunks.iter().map(|c| c.image_taken_at_unix).collect();
     let image_isos: arrow_array::Int32Array =
         chunks.iter().map(|c| c.image_iso).collect();
+    // Stage AD — ColBERT multi-vector columns added by migration v105.
+    // Nullable; rows without a ColBERT head (most models) pass through as nulls.
+    let multivec_packed_col: LargeBinaryArray = chunks
+        .iter()
+        .map(|c| c.multivec_packed.as_deref())
+        .collect();
+    let multivec_n_tokens_col: Int16Array = chunks
+        .iter()
+        .map(|c| c.multivec_n_tokens)
+        .collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1892,6 +1903,8 @@ fn chunks_to_record_batch(
             Arc::new(image_lens_models),
             Arc::new(image_taken_at_unixs),
             Arc::new(image_isos),
+            Arc::new(multivec_packed_col),
+            Arc::new(multivec_n_tokens_col),
         ],
     )
     .context("building RecordBatch")?;
@@ -2771,6 +2784,8 @@ mod push_candidate_tests {
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         }
     }
 

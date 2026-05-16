@@ -45,6 +45,7 @@ pub fn all() -> Vec<Box<dyn Migration>> {
         Box::new(AddImageMetadataColumns),
         Box::new(RebuildFtsForBodyTranslated),
         Box::new(NullifyTranslationOnSubChunks),
+        Box::new(AddColbertMultivec),
     ]
 }
 
@@ -548,7 +549,7 @@ mod tests {
         // framework guarantees.
         assert_eq!(
             summary.applied,
-            vec![100, 101, 102, 103, 104],
+            vec![100, 101, 102, 103, 104, 105],
             "first run must apply every registered migration"
         );
         assert!(summary.skipped.is_empty());
@@ -865,6 +866,8 @@ mod tests {
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         };
         local.ingest_batch(&[make_chunk(0), make_chunk(1)]).await.expect("ingest");
 
@@ -921,4 +924,58 @@ mod tests {
         assert!(found_ci1_null, "chunk_index=1 row not found or column not null");
     }
 
+}
+
+/// **v105** — Add the `multivec_packed` (LargeBinary) and
+/// `multivec_n_tokens` (Int16) columns for ColBERT multi-vector retrieval.
+/// Both are nullable — most models have no ColBERT head and leave them NULL.
+/// Populated at ingest time when the active embedder `has_colbert()`.
+pub struct AddColbertMultivec;
+
+#[async_trait]
+impl Migration for AddColbertMultivec {
+    fn version(&self) -> u32 {
+        105
+    }
+    fn name(&self) -> &str {
+        "add ColBERT multivec_packed + multivec_n_tokens columns"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v105 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v105 migration")?;
+
+        type Pending = (&'static str, arrow_schema::DataType);
+        let candidates: [Pending; 2] = [
+            ("multivec_packed",   arrow_schema::DataType::LargeBinary),
+            ("multivec_n_tokens", arrow_schema::DataType::Int16),
+        ];
+        let fields_to_add: Vec<arrow_schema::Field> = candidates
+            .into_iter()
+            .filter(|(name, _)| schema.field_with_name(name).is_err())
+            .map(|(name, ty)| arrow_schema::Field::new(name, ty, true))
+            .collect();
+
+        if fields_to_add.is_empty() {
+            eprintln!("[index] v105 migration skipped — columns already present");
+            return Ok(());
+        }
+
+        let col_schema = Arc::new(arrow_schema::Schema::new(fields_to_add));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding multivec columns (v105)")?;
+        eprintln!("[index] v105 migration applied — added multivec_packed + multivec_n_tokens");
+        Ok(())
+    }
 }

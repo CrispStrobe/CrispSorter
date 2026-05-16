@@ -140,6 +140,14 @@ pub struct RawDocument {
     pub image_lens_model: Option<String>,
     pub image_taken_at_unix: Option<i64>,
     pub image_iso: Option<i32>,
+
+    /// Stage Z — pre-packed ColBERT multivec (raw little-endian f32 bytes,
+    /// `n_tokens × dim × 4` bytes total).  `None` unless the embedder
+    /// ran the ColBERT model.  Forwarded into `DocumentChunk.multivec_packed`
+    /// so the LanceDB writer can persist it without re-packing.
+    pub multivec_packed: Option<Vec<u8>>,
+    /// Stage Z — number of token vectors in `multivec_packed`.
+    pub multivec_n_tokens: Option<i16>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -357,10 +365,17 @@ impl IngestPipeline {
 
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-                let (dense, sparse) = {
+                let (dense, sparse, multivecs) = {
                     use super::embedder::EmbedRole;
                     let mut emb = embedder.lock().await;
-                    emb.embed_full(texts, EmbedRole::Passage)?
+                    let (dense, sparse) = emb.embed_full(texts.clone(), EmbedRole::Passage)?;
+                    // Stage AD: ColBERT multi-vector encoding (BGE-M3 only).
+                    let multivecs = if emb.has_colbert() {
+                        emb.embed_multivec(texts)?
+                    } else {
+                        vec![vec![]; batch.len()]
+                    };
+                    (dense, sparse, multivecs)
                 };
                 let model_id = {
                     let emb = embedder.lock().await;
@@ -371,6 +386,7 @@ impl IngestPipeline {
                     let sparse_json = sparse
                         .get(i)
                         .and_then(|sv| sv.as_ref().map(|s| s.to_json().to_string()));
+                    let multivec = multivecs.get(i).cloned().filter(|v| !v.is_empty());
                     all_chunks.push(build_doc_chunk(
                         text_chunk,
                         raw,
@@ -378,6 +394,7 @@ impl IngestPipeline {
                         embedding,
                         sparse_json,
                         model_id.clone(),
+                        multivec,
                     ));
                 }
             }
@@ -481,6 +498,8 @@ impl IngestPipeline {
                     image_lens_model: None,
                     image_taken_at_unix: None,
                     image_iso: None,
+                    multivec_packed: None,
+                    multivec_n_tokens: None,
                 }
             })
             .collect();
@@ -596,6 +615,8 @@ impl IngestPipeline {
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -649,6 +670,22 @@ pub fn chunk_row_id(doc_id: &str, chunk_index: i32) -> String {
     format!("{:016x}", h.finish())
 }
 
+/// Pack `Vec<Vec<f32>>` (ColBERT token vecs) into little-endian f32 bytes.
+/// Returns `(bytes, n_tokens)` or `None` when the input is empty.
+fn pack_multivec(vecs: Vec<Vec<f32>>) -> Option<(Vec<u8>, i16)> {
+    if vecs.is_empty() { return None; }
+    let n = vecs.len();
+    let dim = vecs[0].len();
+    if dim == 0 { return None; }
+    let mut bytes = Vec::with_capacity(n * dim * 4);
+    for vec in &vecs {
+        for &f in vec {
+            bytes.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    Some((bytes, n as i16))
+}
+
 /// Convert a `TextChunk` + `RawDocument` metadata + embedding into a `DocumentChunk`.
 fn build_doc_chunk(
     tc: &super::embedder::TextChunk,
@@ -657,7 +694,12 @@ fn build_doc_chunk(
     embedding: Option<Vec<f32>>,
     sparse_json: Option<String>,
     model_id: String,
+    multivec: Option<Vec<Vec<f32>>>,
 ) -> DocumentChunk {
+    let (multivec_packed, multivec_n_tokens) = multivec
+        .and_then(pack_multivec)
+        .map(|(b, n)| (Some(b), Some(n)))
+        .unwrap_or((None, None));
     let doc_id = doc_id_for(raw);
     let id = chunk_row_id(&doc_id, tc.chunk_index);
 
@@ -723,6 +765,9 @@ fn build_doc_chunk(
         image_lens_model: raw.image_lens_model.clone(),
         image_taken_at_unix: raw.image_taken_at_unix,
         image_iso: raw.image_iso,
+        // Stage AD — ColBERT per-token vectors, packed as LE f32 bytes.
+        multivec_packed,
+        multivec_n_tokens,
     }
 }
 
@@ -795,6 +840,8 @@ mod tests {
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         }
     }
 
@@ -853,7 +900,7 @@ mod tests {
             end_char: 19,
             chunk_index: 0,
         };
-        let dc = build_doc_chunk(&tc, &raw, 2, Some(vec![0.1; 4]), None, "bge-m3".to_owned());
+        let dc = build_doc_chunk(&tc, &raw, 2, Some(vec![0.1; 4]), None, "bge-m3".to_owned(), None);
         assert_eq!(dc.doc_id, "abc123def456");
         assert_eq!(dc.chunk_index, 0);
         assert_eq!(dc.chunk_total, 2);
@@ -880,5 +927,37 @@ mod tests {
         let raw_c = sample_raw();
         let raw_d = sample_raw();
         assert_eq!(doc_id_for(&raw_c), doc_id_for(&raw_d));
+    }
+
+    #[test]
+    fn pack_multivec_round_trips() {
+        let vecs: Vec<Vec<f32>> = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let (bytes, n) = pack_multivec(vecs.clone()).expect("pack should succeed");
+        assert_eq!(n, 2);
+        assert_eq!(bytes.len(), 2 * 2 * 4);
+        // Verify first f32
+        let first = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert!((first - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pack_multivec_empty_returns_none() {
+        assert!(pack_multivec(vec![]).is_none());
+        assert!(pack_multivec(vec![vec![]]).is_none());
+    }
+
+    #[test]
+    fn build_doc_chunk_with_multivec_populates_fields() {
+        let raw = sample_raw();
+        let tc = crate::index::embedder::TextChunk {
+            text: "hello".to_owned(),
+            start_char: 0,
+            end_char: 5,
+            chunk_index: 0,
+        };
+        let multivec = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+        let dc = build_doc_chunk(&tc, &raw, 1, None, None, "bge-m3".to_owned(), Some(multivec));
+        assert!(dc.multivec_packed.is_some());
+        assert_eq!(dc.multivec_n_tokens, Some(2));
     }
 }

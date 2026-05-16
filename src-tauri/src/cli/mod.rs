@@ -1879,6 +1879,8 @@ async fn cmd_index_async(
                     image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
                     image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
                     image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+                    multivec_packed: None,
+                    multivec_n_tokens: None,
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
@@ -2277,6 +2279,8 @@ async fn cmd_index_async(
                 image_lens_model:       extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
                 image_taken_at_unix:    extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
                 image_iso:              extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+                multivec_packed: None,
+                multivec_n_tokens: None,
             };
             let stats = pipeline.reingest_document(raw)
                 .await.map_err(|e| format!("reingest: {e:#}"))?;
@@ -2459,6 +2463,8 @@ async fn cmd_index_async(
                     image_lens_model: None,
                     image_taken_at_unix: None,
                     image_iso: None,
+                    multivec_packed: None,
+                    multivec_n_tokens: None,
                 };
 
                 if pipeline.ingest_document(raw.clone()).await.is_ok() {
@@ -2868,6 +2874,8 @@ async fn cmd_sync_cloud_backup(
                     image_lens_model: None,
                     image_taken_at_unix: None,
                     image_iso: None,
+                    multivec_packed: None,
+                    multivec_n_tokens: None,
                 }
             }).collect();
             let applied = chunks.len();

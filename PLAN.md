@@ -32,7 +32,8 @@
 - P15 Batch pre-processing: content-dedup (SHA-256), book-chapter grouping (ISBN-13)
 - OCR: Tier 1 Tesseract, Tier 2 ocrs, Tier 3 PaddleOCR (`--features paddle-ocr`)
 - `.cidx` offline archives: LanceDB + Tantivy FTS export/mount, Archiv tab in Übersicht, background-promote per row
-- Schema-migration framework: versioned `Migration` trait with SQLite ledger, gap/duplicate detection, idempotent reruns; five consumers: `AddTextTranslatedColumns` (v100), `AddAudioMetadataColumns` (v101), `AddImageMetadataColumns` (v102), `RebuildFtsForBodyTranslated` (v103 — rebuilds Tantivy dir with `body_translated` schema on legacy indexes), `NullifyTranslationOnSubChunks` (v104 — nulls replicated translations on sub-chunk rows, saves O(N) storage); per-chunk translation dedup in ingest (Stage AA)
+- Schema-migration framework: versioned `Migration` trait with SQLite ledger, gap/duplicate detection, idempotent reruns; six consumers: `AddTextTranslatedColumns` (v100), `AddAudioMetadataColumns` (v101), `AddImageMetadataColumns` (v102), `RebuildFtsForBodyTranslated` (v103), `NullifyTranslationOnSubChunks` (v104), `AddColbertMultivec` (v105 — `multivec_packed LargeBinary` + `multivec_n_tokens Int16`)
+- Stage AD — ColBERT multi-vector retrieval: `EmbedHandle::embed_multivec` + `has_colbert`; ingest populates `multivec_packed`/`multivec_n_tokens` when BGE-M3 GGUF is active; `maxsim` late-interaction scorer + `unpack_multivec` in search.rs
 - `crisp+cb-archive://` URI scheme for cloud-backup archived files
 - `crisp+drive://` URI scheme for any registered CloudDrive
 - macOS arm64 packaging: `scripts/bundle_macos_native_libs.sh` co-bundles dylibs + ggml backends + homebrew transitives into `.app/Contents/Frameworks/`
@@ -48,7 +49,6 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P13.7 — Cloud-sync deferred items
 
-- [x] **Skeleton index preservation (Stage AB)** — **SHIPPED 2026-05-16**. In `purge_to_size` Phase 2, opens `skeleton_index.db` (if it exists beside `lance/`) before deleting rows; extracts `author` + `parent_dir` from the full-row batches (deduped on `chunk_index==0`), upserts to `SkeletonIndex`; no-op on installs without skeleton mode. 1 new test `purge_preserves_skeleton_hints_on_eviction`.
 - [ ] **Live test: shard backup to WebDAV** — backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked tarball. (requires live drive)
 - [ ] **Live tests: thin-client batch upload** — ship a small zipped batch end-to-end; verify rows appear in `/api/v2/index/search` with expected `full_text` + `embedding`. (requires live VPS)
 - [ ] **Live test: VPS extraction** — VPS with `CB_CRISPLENS_URL` + `CB_CRISPASR_BIN` populated; upload an image + audio file; verify `face_count` + `full_text` in `<catalog-db>`. (requires live VPS with crispasr binary)
@@ -74,7 +74,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### CrispEmbed — leverage unused capabilities
 
-- [ ] **ColBERT multi-vector retrieval** (`encode_multivec`, ~1 session) — per-token L2-normalised embeddings (BGE-M3 ColBERT head). Needs a new LanceDB column for the per-token vectors (FixedSizeList of variable length is awkward; might need a separate `chunk_multivec` table joined by `id`) + a late-interaction MaxSim scorer in the search pipeline.
+- [ ] **ColBERT search-time re-ranking** — storage + scorer shipped (Stage AD); wire `maxsim` + `unpack_multivec` into `LocalIndex::search_vector` as an optional post-retrieval re-rank step triggered by a new `SearchFilters::colbert_rerank` flag. ~2 h.
 - [ ] **Omnimodal cross-modal search** (`encode_audio` / `encode_image`, ~2 sessions) — BidirLM-Omni encodes text, audio, and images into a shared 2048-d space. Unlocks: type "photo of a sunset" → image hits without OCR; type "podcast about Bosnia" → audio hits without transcription. Needs a new model class (BidirLM-Omni isn't in the existing `EmbedderModel` enum), image-patch preprocessing (pixel patches + `grid_thw`), and a decision about how the 2048-d cross-modal vector coexists with the existing per-backend dense column (separate column? per-index dim selection at init?).
 
 ---

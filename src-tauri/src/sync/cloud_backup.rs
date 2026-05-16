@@ -1720,6 +1720,8 @@ mod tests {
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert_eq!(row.sha256, "abc");
@@ -1759,6 +1761,8 @@ mod tests {
             image_camera_make: None, image_camera_model: None,
             image_lens_model: None, image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert!(row.full_text.is_none(), "empty body should map to None on wire");

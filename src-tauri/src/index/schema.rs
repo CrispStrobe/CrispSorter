@@ -114,6 +114,12 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         Field::new("image_lens_model", DataType::Utf8, true),
         Field::new("image_taken_at_unix", DataType::Int64, true),
         Field::new("image_iso", DataType::Int32, true),
+        // Stage AD — ColBERT multi-vector retrieval (v105 migration).
+        // multivec_packed: raw little-endian f32 bytes, n_tokens × dim × 4.
+        // multivec_n_tokens: number of ColBERT token vectors packed.
+        // Both NULL for models without a ColBERT head (all non-BGE-M3 models).
+        Field::new("multivec_packed", DataType::LargeBinary, true),
+        Field::new("multivec_n_tokens", DataType::Int16, true),
     ]))
 }
 
@@ -194,6 +200,15 @@ pub struct DocumentChunk {
     pub image_lens_model: Option<String>,
     pub image_taken_at_unix: Option<i64>,
     pub image_iso: Option<i32>,
+
+    // Stage AD — ColBERT multi-vector retrieval (v105 migration).
+    // Packed as little-endian f32 bytes (n_tokens × dim × 4).
+    // None for models without a ColBERT head; skipped in JSON
+    // serialization (transient ingest-pipeline field).
+    #[serde(skip)]
+    pub multivec_packed: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub multivec_n_tokens: Option<i16>,
 }
 
 /// Lightweight search result returned to the frontend.
