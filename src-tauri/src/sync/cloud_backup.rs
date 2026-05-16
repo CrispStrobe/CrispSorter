@@ -827,32 +827,6 @@ impl CloudBackupClient {
             .context("upload_file_by_hash: parse body")?)
     }
 
-    /// Stage U — upload already-read bytes for a sha.  Used by the
-    /// drain loop for thin-client `cb_file_upload` outbox entries where
-    /// the bytes are already in memory from the read step.
-    pub async fn upload_file_bytes(
-        &self,
-        sha256: &str,
-        bytes: Vec<u8>,
-    ) -> Result<FileUploadResponse> {
-        let url = format!("{}{}{}", self.base_url, FILES_PATH_PREFIX, sha256);
-        let resp = self.client
-            .post(url)
-            .header(AUTHORIZATION, self.auth_header())
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes)
-            .send()
-            .await
-            .context("upload_file_bytes: send")?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("upload_file_bytes: HTTP {status}: {body}");
-        }
-        Ok(resp.json::<FileUploadResponse>().await
-            .context("upload_file_bytes: parse body")?)
-    }
-
     /// `GET /api/files/by-hash/<sha256>` — stream the file bytes to
     /// `dest_path`, verifying the hash matches as bytes arrive.
     ///
