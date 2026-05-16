@@ -9,6 +9,181 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-15/16 — Stages O–AA (cloud-sync polish, shard backup, federated search, embedder registry, schema migrations, multilingual reranker, translation dedup)
+
+Fourteen additive stages across two sessions.  All tests pass at the end
+of each stage; no regressions in the full `cargo test --workspace --lib`
+suite.
+
+### Stage O — Small UX completeness (2026-05-14)
+
+- **"Sync now" GUI button** in Cloud-backup Settings: calls `sync_cb_drain`
+  + `sync_cb_manifest_pull` in sequence; replaces the manual CLI-only path.
+- **`--include-full-text` flag** on `crispsorter sync cloud-backup pull` for
+  headless flows that need body sync without touching Settings.
+- **`sync_status_all` Tauri command** — polls crisp-index-server / CrispLens /
+  cb-api in parallel via `tokio::join!`, returns combined JSON with per-backend
+  reachability + auth-state + last-sync-ts.
+
+### Stage P — Local DB size cap + LRU pruning (2026-05-15)
+
+- **`IndexConfig.local_max_size_bytes`** — new field (default `None` =
+  unbounded); Settings slider 0–1000 GB.
+- **`crispsorter index purge --max-size N`** CLI — walks LanceDB by
+  `indexed_at` asc, drops `full_text`/`full_text_md`/`embedding`/
+  `embedding_sparse` cols first, then evicts rows entirely until on-disk ≤ N;
+  SI suffixes (K/M/G/T).
+- **Background purge worker** — 1-hour tokio interval; no-op when cap unset
+  or within bounds.
+- **Rust unit tests**: `purge_noop_when_within_cap` +
+  `purge_strips_heavy_columns_and_evicts`.
+
+### Stage Q — Backup shards to cloud drives (2026-05-15)
+
+- **`crispsorter sync cloud-backup backup-shards --drive <id>`** — exports
+  shard tarballs from `/api/shard/export/{prefix}`, uploads to drive at
+  `cb-backups/<date>/<prefix>.tar.gz`; per-shard incremental (skip unchanged
+  `max_indexed_at` watermarks); tracked in `backup_state.db`.
+- **`crispsorter sync cloud-backup restore-shard <prefix> --from-drive <id>`**
+  — downloads and imports via `/api/shard/import/{prefix}`.
+- **Retention (`--keep-daily N`)** — deletes older daily dirs from the drive.
+- **GUI**: "Cloud drive backup" panel in Settings → Cloud-backup.
+- **VPS API**: `GET /api/shard/list`, `GET /api/shard/export/{prefix}`,
+  `POST /api/shard/import/{prefix}` added to `api/app.py`.
+- **`sync_cb_backup_shards` Tauri command**; `round_trip_backup_record` test.
+
+### Stage R — Manifests-DB import bridge (2026-05-15)
+
+- **`crispsorter sync cloud-backup import-from-manifest-db PATH`** — reads
+  `source_files` / `file_manifest` tables from a controller.py SQLite, POSTs
+  every row through `/api/manifest/push` in 200-row batches; resumable via
+  `manifest_import_state.db` watermark.
+- Server endpoint accepts `ManifestRow.archived_in: Optional<batch_id>` so
+  controller.py archive state survives the round-trip.
+- GUI one-shot import button in Settings → Cloud-backup.
+- Pytest: synthetic SQLite with 100 rows → import → verify via pull.
+
+### Stage S — Federated search across all backends (2026-05-15)
+
+- **`sync_federated_search(query, filters)`** Tauri command — fans out across
+  local + cb-api + CrispLens via `tokio::join!`, normalises to `FederatedHit`,
+  RRF-merges by per-backend rank.
+- GUI panel: "🔀 Alle" button + backend filter checkboxes; result rows badge
+  their source backend.
+- CLI: `crispsorter sync cloud-backup federated-search "query"
+  [--backends local,cloud_backup,crisplens]`.
+- Tests: `rrf_merge_deduplicates_and_ranks`, `rrf_merge_respects_limit`,
+  `rrf_merge_empty_lists`.
+
+### Stage T — cb-api key minting from the GUI (2026-05-15)
+
+- **Server-side admin token** minted via `python -m api.admin mint-admin`;
+  stored in `/etc/cb-api.env` as `CB_API_ADMIN_TOKEN`.
+- **`POST /api/admin/keys/mint`** + `revoke` + `list` routes gated on the
+  admin token.
+- **Settings UI**: collapsible "Admin — API key management" sub-section; user
+  pastes admin token; can mint / revoke / list regular keys.
+- **CLI**: `crispsorter sync cloud-backup admin mint <NAME>` + `revoke` +
+  `list --json`.
+
+### Stage U — L1-only thin-client mode (2026-05-15)
+
+- **`IndexConfig.local_extraction_enabled`** master switch; when `false`,
+  bg_ingest writes L1 rows only (paths + sizes + mtime + sha256) and ships
+  raw files to the VPS for server-side extraction.
+- **`crispsorter index l1-only`** CLI mode — scan + zip + upload without
+  local extraction.
+- **vps_worker extension** (`api/extract.py` `ExtractionWorker`) dispatches
+  by extension: text (PyMuPDF / pypdf / python-docx / openpyxl), audio
+  (Stage V), images (Stage V).
+- **Job state** in `pending_extractions` table; backpressure via
+  `GET /api/v2/extract/status` + `sync_cb_extract_status` Tauri command.
+- **`cb_file_upload` outbox** — new op type in `sync/mod.rs` ships raw bytes
+  to `/api/files/by-hash/<sha>`.
+- Pytest: 11 tests in `tests/test_stage_u.py`.
+
+### Stage V — vps_worker CrispLens + CrispASR bridges (2026-05-15)
+
+- **CrispLens bridge** (`_extract_via_crisplens()`) — multipart POST to
+  `CB_CRISPLENS_URL/api/ingest/upload-local`; captures `face_count` +
+  caption; written to `file_references`.
+- **CrispASR bridge** (`_extract_via_crispasr()`) — runs
+  `CB_CRISPASR_BIN transcribe <path>` as subprocess; stdout → `full_text`.
+- **`face_count` column** added to `pending_extractions` + `file_references`.
+- Pytest: 13 tests in `tests/test_stage_v.py`.
+
+### Stage W — Skeleton local index + remote-only search fallback (2026-05-15)
+
+- **`IndexConfig.local_skeleton_only`** boolean — when true, bg_ingest writes
+  ONLY `skeleton_index.db` (no LanceDB, no FTS, no embedder).
+- **`SkeletonIndex` SQLite** at `<data-dir>/skeleton_index.db` with
+  `author_index` + `parent_dir_index` KV tables; `upsert_*` / `search_*` /
+  `stats` methods.
+- **`sync_skeleton_search(query)`** Tauri command — instant local hints.
+- **GUI**: search input fires `runSkeletonSearch` on every keystroke; "✦ Local
+  hints" panel shows matching author chips + folder chips with doc counts.
+- **Settings UI**: "Skeleton-only mode" checkbox.
+- **Rust unit tests**: 7 tests in `index::skeleton::tests`.
+
+### Stage X — Registry-driven embedder selection (2026-05-15)
+
+- **`IndexConfig.embedder_model_name: Option<String>`** — when non-empty and
+  backend=GGUF, `CrispEmbedBackend::load_by_name(name)` resolves via
+  `crispembed::CrispEmbed::new(name, 0)`, bypassing the `EmbedderModel` enum.
+- **`Embedder.runtime_dim: Option<usize>`** — actual output dim discovered at
+  load; `dims()` clamps matryoshka against it.
+- **`EmbedderRegistryEntry.cached: bool`** — filesystem check in
+  `embedder_registry_list`.
+- **`embedder_download_registry_model(name)` Tauri command** — downloads via
+  `crispembed::CrispEmbed::resolve_model`.
+- **Settings UI**: "Select" (cached) / "Download+Loader" (uncached) per
+  registry entry; active override as violet chip with "Clear".
+- **Rust unit tests**: `model_name_override_builder` +
+  `runtime_dim_override_wins_in_dims` (24 embedder tests pass).
+
+### Stage Y — FTS body_translated rebuild migration v103 (2026-05-16)
+
+- **`RebuildFtsForBodyTranslated` (v103)** in `index/migrations.rs` — checks
+  `.v103_done` marker (idempotent); skips when no fts/ dir or schema already
+  fresh; else deletes old Tantivy dir, creates fresh with `body_translated` in
+  schema, streams LanceDB via `LocalIndex::scan_for_fts_rebuild()`, commits,
+  writes marker.
+- **Init reordered** in `tauri_commands::init_index`: LanceDB open →
+  migrations (v103 may rebuild fts/) → FtsIndex open (now sees fresh schema).
+- **5 new v103 unit tests** (16 migration tests total pass).
+
+### Stage Z — Script-aware multilingual reranker routing (2026-05-16)
+
+- **`has_nonlatin_script(query)`** — pure Unicode code-point check: ≥25% of
+  non-whitespace chars outside Latin blocks (U+0000–U+024F, U+1E00–U+1EFF),
+  minimum 4-char threshold.  No ML, no FFI.
+- **`SearchEngine.reranker_multilingual: Option<RerankerHandle>`** +
+  `with_multilingual_reranker()` builder; `maybe_rerank()` routes to it for
+  CJK/Arabic/Cyrillic queries (or always when no primary reranker is set).
+- **`IndexConfig.reranker_model_multilingual: Option<RerankerModel>`**
+  persisted; Settings UI "Multilingual reranker" card (Off / bge_v2_m3 /
+  bge_base / jina_v2_multi).
+- **9 new unit tests** for `has_nonlatin_script` (Japanese, Arabic, Cyrillic,
+  mixed Latin majority, pure ASCII, short <4 chars, German umlauts, numeric,
+  Chinese) — 21/21 index::search tests pass.
+
+### Stage AA — Per-chunk translation dedup + v104 migration (2026-05-16)
+
+- **`build_doc_chunk`** in `index/ingest.rs` — `text_translated` /
+  `text_translated_lang` written only on `chunk_index == 0`; sub-chunks
+  receive `None`, eliminating O(chunk_count × translation_size) replication.
+- **Migration v104 `NullifyTranslationOnSubChunks`** — probes for legacy rows
+  with `chunk_index > 0 AND text_translated IS NOT NULL`, runs a single
+  LanceDB `UPDATE` to null both columns, writes `.v104_done` idempotency
+  marker; skips cleanly on fresh indexes.
+- **`translation_snippet_swap`** already handles null translations gracefully
+  (existing tests cover that path) — no further changes needed.
+- **5 new v104 unit tests**: version/name stability, done-marker skip,
+  error-without-lance, fresh-index no-op, functional null-verify via direct
+  table scan — 16/16 migration tests pass.
+
+---
+
 ## Session log — 2026-05-13 — P13.7 Stages E + F + G + H (byte sync, durable retry, sharding, server-side embeddings)
 
 Additive infrastructure on top of the morning's P13.7 Step 5/7/8
