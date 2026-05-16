@@ -614,14 +614,15 @@ Still open:
       `chunk_index = 0` and JOIN at search time — needs a careful
       migration on shipped data + decisions around the
       `record_batches_to_search_results` snippet path.
-- [ ] **FTS body_translated migration on legacy indexes** —
-      `be73321` adds the field for fresh indexes and gracefully
-      degrades for legacy ones (`IndexFields.body_translated =
-      None`).  A proper "rebuild Tantivy from LanceDB to upgrade
-      the schema" migration is needed for users with shipped
-      indexes to get the FTS-over-translated-body benefit
-      without re-ingesting from disk.  Should go through the
-      migration framework with a fresh version > v100.
+- [x] **FTS body_translated migration on legacy indexes (Stage Y)** —
+      **SHIPPED 2026-05-16**.  `RebuildFtsForBodyTranslated` (v103) in
+      `index/migrations.rs`: checks `.v103_done` marker (idempotency),
+      skips if no fts/ dir or schema already fresh, else deletes old
+      Tantivy dir, creates fresh (body_translated in schema), streams
+      LanceDB via `LocalIndex::scan_for_fts_rebuild()`, commits, writes
+      marker.  Init reordered: LanceDB open → migrations (v103 may
+      rebuild fts/) → FtsIndex open (now with fresh schema).  5 new
+      v103 unit tests (11 migration tests total pass).
 - [ ] **Non-whisper audio-LID auto-resolution** — `2b80345`
       handles the whisper-method case by registry-resolving
       `whisper`.  Silero / Ecapa / Firered still require explicit
