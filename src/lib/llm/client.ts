@@ -47,6 +47,22 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'google', name: 'Google (Gemini)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', apiKey: '', models: [], selectedModel: '', isConfigured: false },
 ];
 
+/**
+ * Typed error thrown when a provider returns HTTP 429.  Carries the
+ * cooldown window so the round-robin caller can pick a different
+ * provider immediately and re-include this one once the window elapses.
+ */
+export class RateLimitError extends Error {
+    readonly providerId: string;
+    readonly cooldownUntilMs: number;
+    constructor(providerId: string, cooldownUntilMs: number, message?: string) {
+        super(message ?? `Rate limited (${providerId}); cooldown until ${new Date(cooldownUntilMs).toISOString()}`);
+        this.name = 'RateLimitError';
+        this.providerId = providerId;
+        this.cooldownUntilMs = cooldownUntilMs;
+    }
+}
+
 export class LLMClient {
     private keys: Record<string, string> = {};
     noThinking: boolean = false;
@@ -54,9 +70,30 @@ export class LLMClient {
     mlxPort: number = 8000;
     requestDelayMs: number = 0;
     private serverReadyAt: Record<string, number> = {};
+    /** providerId -> epoch-ms until which we should NOT call this provider.
+     *  Populated by the 429 handler, read by `isProviderCoolingDown`. */
+    private providerCooldowns: Record<string, number> = {};
 
     constructor(keys: Record<string, string> = {}) {
         this.keys = keys;
+    }
+
+    /** True when the provider was 429'd recently and the retry-after window
+     *  hasn't elapsed.  Stale entries are reaped lazily on access. */
+    isProviderCoolingDown(providerId: string): boolean {
+        const until = this.providerCooldowns[providerId];
+        if (!until) return false;
+        if (Date.now() >= until) {
+            delete this.providerCooldowns[providerId];
+            return false;
+        }
+        return true;
+    }
+
+    /** Epoch-ms when the provider's cooldown ends, or 0 if not cooling. */
+    cooldownUntil(providerId: string): number {
+        const until = this.providerCooldowns[providerId];
+        return (until && Date.now() < until) ? until : 0;
     }
 
     setKeys(keys: Record<string, string>) {
@@ -278,15 +315,32 @@ export class LLMClient {
                     clearTimeout(timeoutId);
                 }
 
-                if (response.status === 429 && rateLimitRetries < MAX_RL_RETRIES) {
+                if (response.status === 429) {
                     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-                    rateLimitRetries++;
                     const errorText = await response.text();
                     const waitMs = this.getRetryAfterMs(response.headers, errorText);
-                    flog('warn', `Rate limited (429). Waiting ${waitMs}ms (rl-retry ${rateLimitRetries}/${MAX_RL_RETRIES})`);
-                    await this.abortableSleep(waitMs, signal);
-                    attempt--;
-                    continue;
+
+                    // SHORT bursts (< 2 s, typical of Groq's per-second
+                    // token bucket): keep the in-loop retry — switching
+                    // providers and back for sub-second pauses is more
+                    // overhead than just waiting.
+                    if (waitMs < 2000 && rateLimitRetries < MAX_RL_RETRIES) {
+                        rateLimitRetries++;
+                        flog('warn', `Rate limited (429, short ${waitMs} ms). In-loop retry ${rateLimitRetries}/${MAX_RL_RETRIES}.`);
+                        await this.abortableSleep(waitMs, signal);
+                        attempt--;
+                        continue;
+                    }
+
+                    // LONG cooldown (≥ 2 s): record it so the caller's
+                    // round-robin can skip this provider until the
+                    // window elapses, and throw RateLimitError so the
+                    // caller picks the next provider immediately
+                    // instead of blocking 28 s on one provider.
+                    const until = Date.now() + waitMs;
+                    this.providerCooldowns[providerId] = until;
+                    flog('warn', `Rate limited (429, ${waitMs} ms cooldown). Provider '${providerId}' parked until ${new Date(until).toISOString()}; caller should pick another.`);
+                    throw new RateLimitError(providerId, until);
                 }
 
                 if (!response.ok) {
