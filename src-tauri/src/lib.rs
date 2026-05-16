@@ -1953,12 +1953,26 @@ async fn execute_batch(
             }
         }
 
-        // 1. Save TXT if requested
+        // 1. Save TXT if requested.  Skip when the source is itself a
+        //    .txt file — `dest.with_extension("txt")` would resolve to
+        //    the same path as `dest`, so the sidecar-write would race
+        //    with the immediately-following rename and (best case) be
+        //    overwritten, (worst case) cause a partial-write of the
+        //    extracted text to clobber the original bytes via a
+        //    surviving handle.  For a .txt source, the original file
+        //    IS the txt sidecar; the move alone is correct.
         if payload.save_txt {
             if let Some(text) = &item.extracted_text {
-                let txt_path = dest.with_extension("txt");
-                if let Err(e) = fs::write(txt_path, text) {
-                    println!("Warning: Failed to save .txt for {}: {}", item.id, e);
+                let src_is_txt = src
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("txt"))
+                    .unwrap_or(false);
+                if !src_is_txt {
+                    let txt_path = dest.with_extension("txt");
+                    if let Err(e) = fs::write(txt_path, text) {
+                        println!("Warning: Failed to save .txt for {}: {}", item.id, e);
+                    }
                 }
             }
         }
