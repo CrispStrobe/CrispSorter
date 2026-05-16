@@ -50,9 +50,9 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P13.7 — Cloud-sync deferred items
 
-- [ ] **Live test: shard backup to WebDAV** — backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked tarball. (requires live drive)
-- [ ] **Live tests: thin-client batch upload** — ship a small zipped batch end-to-end; verify rows appear in `/api/v2/index/search` with expected `full_text` + `embedding`. (requires live VPS)
-- [ ] **Live test: VPS extraction** — VPS with `CB_CRISPLENS_URL` + `CB_CRISPASR_BIN` populated; upload an image + audio file; verify `face_count` + `full_text` in `<catalog-db>`. (requires live VPS with crispasr binary)
+- [ ] **Live test: shard backup to WebDAV** — backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked tarball. (requires live WebDAV drive)
+- [~] **Live tests: thin-client batch upload** — *partial 2026-05-16*: manifest push → file upload-by-hash → download roundtrip verified against production cb-api on `127.0.0.1:7869` (SSH tunnel; details in `CLAUDE.md`); proves the streaming-upload Rust fix + the `archived_in`/`collection_id` Stage R wire shape on live data.  Still pending: end-to-end through `crispsorter index l1-only` against the new Stage U `/api/v2/extract/status` route, which requires deploying the post-merge cloud-backup `main` to the VPS (current cb-api service is older).
+- [ ] **Live test: VPS extraction** — blocked on two VPS-side prerequisites: deploy the post-merge cloud-backup `main`, and either install CrispASR on the VPS (`which crispasr` returns empty as of 2026-05-16) or route audio extraction client-side.  Populate `CB_CRISPLENS_URL` + `CB_CRISPLENS_SESSION` in `/etc/vps-worker.env` before exercising the image path.
 
 ### P3.5 — CrispEmbed / CrispASR bundling
 
@@ -66,16 +66,16 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P7.8 — OCR Tier 3 polish + Tier 4
 
-- [ ] **SLANet table extraction** on top of Tier 3 PaddleOCR — adds structured table output for invoices / bank statements / grids. The `usls` crate already hosts a SLANet model. ~3-5 h.
-- [ ] **Tier 4 — VLM OCR** (~1 wk) — `deepseek-ocr.rs`-style via Candle (not ort). DeepSeek-OCR / PaddleOCR-VL, Q4_K–Q8_0 quantisation, 4.7-9 GB models, macOS Metal target.
+- [ ] **SLANet table extraction** on top of Tier 3 PaddleOCR — adds structured table output for invoices / bank statements / grids.  The `usls` crate already hosts a SLANet model.  ~3-5 h.  *Handover prompt ready:* `handover-prompts/session-prompt-slanet-table-extraction.md` (210 lines; design questions resolved, step-by-step plan).
+- [ ] **Tier 4 — VLM OCR** (~1 wk, 3-4 focused sessions) — `deepseek-ocr.rs`-style via Candle (not ort). DeepSeek-OCR / PaddleOCR-VL, Q4_K–Q8_0 quantisation, 4.7-9 GB models, macOS Metal target.  *Handover prompt ready:* `handover-prompts/session-prompt-tier4-vlm-ocr.md` (226 lines; full multi-session arc).
 
 ### P8.2 — CLI polish remaining
 
-- [ ] **`cargo install crispsorter`** for the Tauri-app binary — needs binstall recipe + signing (macOS Developer ID, Windows Authenticode). `cargo install --path crates/crispcat-cli` already ships. ~2-4 h once a signing identity is in hand.
+- [ ] **`cargo install crispsorter`** for the Tauri-app binary — needs binstall recipe + signing (macOS Developer ID, Windows Authenticode). `cargo install --path crates/crispcat-cli` already ships. ~2-4 h once a signing identity is in hand.  *Handover prompt ready:* `handover-prompts/session-prompt-cargo-install-signed.md` (354 lines; covers Apple notarisation + Authenticode + crates.io flow + the `if: always()` release-pipeline fix).
 
 ### CrispEmbed — leverage unused capabilities
 
-- [ ] **Omnimodal cross-modal search** (`encode_audio` / `encode_image`, ~2 sessions) — BidirLM-Omni encodes text, audio, and images into a shared 2048-d space. Unlocks: type "photo of a sunset" → image hits without OCR; type "podcast about Bosnia" → audio hits without transcription. Needs a new model class (BidirLM-Omni isn't in the existing `EmbedderModel` enum), image-patch preprocessing (pixel patches + `grid_thw`), and a decision about how the 2048-d cross-modal vector coexists with the existing per-backend dense column (separate column? per-index dim selection at init?).
+- [ ] **Omnimodal cross-modal search** (`encode_audio` / `encode_image`, ~2 sessions) — BidirLM-Omni encodes text, audio, and images into a shared 2048-d space. Unlocks: type "photo of a sunset" → image hits without OCR; type "podcast about Bosnia" → audio hits without transcription.  *Handover prompt ready:* `handover-prompts/session-prompt-omnimodal-cross-modal-search.md` (399 lines; 9 design questions resolved, schema v106 spec, sidecar-embedder pattern, Rust-port spec for the HF image processor).
 
 ---
 

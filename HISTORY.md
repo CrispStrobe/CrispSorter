@@ -83,6 +83,94 @@ cb-api pytest 103 pass / 4 skipped.
   chunks → trailer).  Tests re-pinned to mock `http.client`.
 - Stage V suite: 13 / 13 pass; full cb-api 103 / 103 unchanged.
 
+### Post-AE polish (2026-05-16)
+
+After AB–AE shipped, the remainder of the session was cleanup +
+verification + scoping for the next 4 PLAN items:
+
+- **Cargo workspace warnings: 17 → 0**
+  - `chore: clean up rustc dead-code + unused-import warnings`
+    (`ffd0aaf`) gated 11 unused imports / dead helpers behind
+    `#[cfg(feature = ...)]` matching their callsites; underscore-prefix
+    on `_remote_url` (intentional public-API parameter); `#[allow(dead_code)]`
+    on JSON-deserialised struct fields (`filen.rs`, `internxt.rs`).
+  - `chore(workspace): move [profile.dev.package."*"] to the workspace
+    root` (`33898de`) — hoisted the Windows PDB-strip stanza from
+    `src-tauri/Cargo.toml` into the root `Cargo.toml`.  Cargo only
+    honours profile tables on the workspace root; the per-package
+    version was silently ignored AND emitted a warning on every build.
+    Side-benefit: the 5–10 GB Windows-dev `target/debug/` shrink
+    actually applies now.
+
+- **Cloud-backup security hardening**
+  - `fix(api): apply PEP 706 data_filter to /api/shard/import
+    tar.extractall` (cloud-backup `0ebe475`).  Stage Q's restore route
+    accepted any tarball admin auth could POST and ran
+    `tar.extractall()` with no filter; even with admin-gating, a
+    stolen key or hostile shard archive could path-traverse.  Now
+    passes `filter="data"` (PEP 706, available on this deploy's
+    Python 3.11.8 via backport).  Hand-rolled member-filter fallback
+    for the unlikely <3.8 runtime.  E2E F5 shard roundtrip still passes.
+
+- **Convergence between feature-branch and `main`**
+  - cloud-backup `feat/p13.7-cloud-backup-sync` fast-forwarded into
+    `main` (13 commits: Stages R + S + T + U + V + streaming + audit +
+    tar filter).  Local + remote feat branches deleted in both repos.
+  - CrispSorter `main` absorbed the AB-AE bundle + the streaming +
+    profile + warning commits.
+
+- **CrispASR / VPS-extraction Stage AC Phase 6 wired into search**
+  - `feat(search,asr): Stage AE wiring + Stage AC Phase 6` (`69c955e`)
+    — `SearchEngine::maybe_colbert_rerank` now actually fires in
+    `search_hybrid` + `search_text` when `SearchFilters.colbert_rerank`
+    is set; `crispsorter index search --colbert` flag added.
+
+- **Live VPS smoke verification**
+  - Production cb-api on `127.0.0.1:7869` (loopback-only post-audit;
+    reached via SSH port-forward).  Tested manifest push → file upload
+    → file download roundtrip with sha-verified bytes against the live
+    catalog.  Confirmed:
+    - the streaming-upload Rust fix (`upload_file_by_hash`) works
+      against a real server,
+    - owner-scoping + manifest-first ordering are enforced (file routes
+      reject orphan uploads),
+    - the `archived_in` + `collection_id` Stage R fields survive
+      `manifest/pull`.
+  - The Stages U/V/Q routes return 404 on the deployed VPS — the cb-api
+    service is running the older code (deploy required to activate the
+    routes the local `main` now ships).  Captured in CLAUDE.md.
+
+- **Handover prompts for the four largest open PLAN items** —
+  `handover-prompts/` (gitignored) now contains standalone
+  ~200–400 line plans for each.  Each starts with prerequisites,
+  resolves all design questions up-front, defines step-by-step commit
+  boundaries, and lists known pitfalls.  Files:
+  - `session-prompt-omnimodal-cross-modal-search.md` (399 lines) —
+    BidirLM-Omni `encode_audio` + `encode_image` through Rust embedder
+    + 3-column schema v106 migration.
+  - `session-prompt-slanet-table-extraction.md` (210 lines) —
+    SLANet table-structure pass on top of Tier 3 PaddleOCR.
+  - `session-prompt-tier4-vlm-ocr.md` (226 lines) — DeepSeek-OCR via
+    Candle, ~3-4 focused sessions.
+  - `session-prompt-cargo-install-signed.md` (354 lines) — release
+    pipeline: signed binstall artefacts + crates.io publish.
+
+- **`CLAUDE.md` (gitignored) — VPS access topology** —
+  captures the cb-api-on-loopback + SSH-tunnel pattern, env-file
+  layout, owner-scoping gotcha, smoke-test recipe, and VPS-side TODOs
+  (deploy the new code; install CrispASR; populate
+  `CB_CRISPLENS_URL`).  `.gitignore` updated.
+
+- **Memory** — `streaming-upload-pattern` added to
+  `~/.claude/projects/.../memory/`; indexed in `MEMORY.md`.
+
+Test totals at the very end of session:
+9/9 ingest, 7/7 skeleton, 72/9 sync, 19/19 partition, 3/3 purge,
+4/4 RRF, migrations v100-v105 green, 103/4 cb-api, plus the live VPS
+manifest+file roundtrip.  Cargo workspace-wide test interrupted by
+two multi-minute `index::benchmarks::*` runs (ML model loads);
+~100 tests completed pre-interrupt, all green.
+
 ---
 
 ## Session log — 2026-05-15/16 — Stages O–AA (cloud-sync polish, shard backup, federated search, embedder registry, schema migrations, multilingual reranker, translation dedup)
