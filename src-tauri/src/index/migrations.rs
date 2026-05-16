@@ -29,6 +29,8 @@
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array as _, StringArray};
 use async_trait::async_trait;
+use futures_util::TryStreamExt as _;
+use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use std::sync::Arc;
 
 use crate::migrations::{Migration, MigrationContext};
@@ -42,6 +44,7 @@ pub fn all() -> Vec<Box<dyn Migration>> {
         Box::new(AddAudioMetadataColumns),
         Box::new(AddImageMetadataColumns),
         Box::new(RebuildFtsForBodyTranslated),
+        Box::new(NullifyTranslationOnSubChunks),
     ]
 }
 
@@ -423,6 +426,67 @@ impl Migration for RebuildFtsForBodyTranslated {
     }
 }
 
+/// **v104** — Null out `text_translated` and `text_translated_lang` for all
+/// rows where `chunk_index > 0`.  Stage AA changed ingest to only write the
+/// translation on the representative `chunk_index = 0` row; this migration
+/// reclaims the storage wasted by legacy replicated copies.
+///
+/// Fast paths:
+///   1. `.v104_done` marker → skip (idempotent).
+///   2. No matching rows (`chunk_index > 0 AND text_translated IS NOT NULL`)
+///      → write marker, skip.
+pub struct NullifyTranslationOnSubChunks;
+
+#[async_trait]
+impl Migration for NullifyTranslationOnSubChunks {
+    fn version(&self) -> u32 { 104 }
+    fn name(&self) -> &str { "nullify text_translated on chunk_index > 0 rows" }
+
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let done_marker = ctx.data_dir.join(".v104_done");
+        if done_marker.exists() {
+            return Ok(());
+        }
+
+        let lance = ctx.lance.as_ref().ok_or_else(|| {
+            anyhow!("v104 needs the LanceDB handle in MigrationContext")
+        })?;
+
+        let table = lance.table_ref();
+
+        // Probe: does any sub-chunk row carry a translation?
+        let probe: Vec<arrow_array::RecordBatch> = table
+            .query()
+            .only_if("chunk_index > 0 AND text_translated IS NOT NULL")
+            .select(lancedb::query::Select::Columns(vec!["chunk_index".to_owned()]))
+            .limit(1)
+            .execute()
+            .await
+            .context("v104: probe query")?
+            .try_collect()
+            .await
+            .context("v104: probe collect")?;
+
+        if probe.iter().all(|b| b.num_rows() == 0) {
+            std::fs::write(&done_marker, b"").context("v104: writing done marker")?;
+            return Ok(());
+        }
+
+        table
+            .update()
+            .only_if("chunk_index > 0")
+            .column("text_translated", "NULL")
+            .column("text_translated_lang", "NULL")
+            .execute()
+            .await
+            .context("v104: nullify update")?;
+
+        std::fs::write(&done_marker, b"").context("v104: writing done marker")?;
+        eprintln!("[index] v104 migration applied — text_translated nulled on sub-chunk rows");
+        Ok(())
+    }
+}
+
 fn col_str<'a>(
     batch: &'a arrow_array::RecordBatch,
     name: &str,
@@ -484,7 +548,7 @@ mod tests {
         // framework guarantees.
         assert_eq!(
             summary.applied,
-            vec![100, 101, 102, 103],
+            vec![100, 101, 102, 103, 104],
             "first run must apply every registered migration"
         );
         assert!(summary.skipped.is_empty());
@@ -495,7 +559,7 @@ mod tests {
         // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100, 101, 102, 103]);
+        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104]);
     }
 
     #[tokio::test]
@@ -680,6 +744,181 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
         };
         mig.apply(&ctx).await.expect("marker fast-path must succeed without lance handle");
+    }
+
+    // ── v104 tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn v104_version_and_name_are_stable() {
+        let mig = NullifyTranslationOnSubChunks;
+        assert_eq!(mig.version(), 104);
+        assert_eq!(mig.name(), "nullify text_translated on chunk_index > 0 rows");
+    }
+
+    /// v104 done-marker short-circuits without needing a lance handle.
+    #[tokio::test]
+    async fn v104_done_marker_skips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".v104_done"), b"").unwrap();
+        let mig = NullifyTranslationOnSubChunks;
+        let ctx = MigrationContext {
+            lance: None,
+            sqlite: None,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        mig.apply(&ctx).await.expect("marker fast-path must not need lance");
+    }
+
+    /// v104 errors when lance handle is missing and no marker exists.
+    #[tokio::test]
+    async fn v104_errors_without_lance_handle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mig = NullifyTranslationOnSubChunks;
+        let ctx = MigrationContext {
+            lance: None,
+            sqlite: None,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        let err = mig.apply(&ctx).await.unwrap_err();
+        assert!(err.to_string().contains("LanceDB handle"), "got: {err}");
+    }
+
+    /// v104 on a fresh index (no sub-chunk rows) writes the marker and skips.
+    #[tokio::test]
+    async fn v104_skips_on_fresh_index_and_writes_marker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = Arc::new(
+            LocalIndex::open_or_create(tmp.path(), 384)
+                .await
+                .expect("open LanceDB"),
+        );
+        let mig = NullifyTranslationOnSubChunks;
+        let ctx = MigrationContext {
+            lance: Some(local),
+            sqlite: None,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        mig.apply(&ctx).await.expect("v104 on fresh index must succeed");
+        assert!(
+            tmp.path().join(".v104_done").exists(),
+            ".v104_done marker must be written even when no rows needed updating"
+        );
+    }
+
+    /// v104 nulls text_translated on sub-chunk rows and leaves chunk_index=0 intact.
+    #[tokio::test]
+    async fn v104_nullifies_sub_chunk_translations() {
+        use crate::index::ingest::chunk_row_id;
+        use crate::index::schema::DocumentChunk;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = Arc::new(
+            LocalIndex::open_or_create(tmp.path(), 384)
+                .await
+                .expect("open LanceDB"),
+        );
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let doc_id = "test-doc-v104".to_owned();
+
+        // Build two chunks — both with text_translated set, simulating legacy ingest.
+        let make_chunk = |ci: i32| DocumentChunk {
+            id: chunk_row_id(&doc_id, ci),
+            doc_id: doc_id.clone(),
+            location_uri: format!("/tmp/test-{}.txt", ci),
+            owner_id: String::new(),
+            filename: None,
+            title: None,
+            author: None,
+            year: None,
+            ext: Some("txt".to_owned()),
+            language: None,
+            page_count: None,
+            headings_text: None,
+            full_text: Some(format!("chunk {ci}")),
+            full_text_md: None,
+            embedding: None,
+            embedding_sparse: None,
+            embedding_model: None,
+            chunk_index: ci,
+            chunk_total: 2,
+            chunk_start_char: None,
+            chunk_end_char: None,
+            indexed_at: now_ms,
+            source_hash: String::new(),
+            tags: vec![],
+            metadata_json: None,
+            parent_dir: None,
+            volume_id: None,
+            text_translated: Some("Translated text".to_owned()),
+            text_translated_lang: Some("en".to_owned()),
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+        };
+        local.ingest_batch(&[make_chunk(0), make_chunk(1)]).await.expect("ingest");
+
+        let mig = NullifyTranslationOnSubChunks;
+        let ctx = MigrationContext {
+            lance: Some(local.clone()),
+            sqlite: None,
+            data_dir: tmp.path().to_path_buf(),
+        };
+        mig.apply(&ctx).await.expect("v104 must succeed");
+        assert!(tmp.path().join(".v104_done").exists(), "marker must be written");
+
+        // Read back ALL chunks directly (fetch_by_doc_ids only returns chunk_index=0).
+        let batches: Vec<arrow_array::RecordBatch> = local
+            .table_ref()
+            .query()
+            .only_if(format!("doc_id = '{}'", doc_id))
+            .execute()
+            .await
+            .expect("query all chunks")
+            .try_collect()
+            .await
+            .expect("collect");
+        let mut found_ci0_ok = false;
+        let mut found_ci1_null = false;
+        for batch in &batches {
+            let cidx_col = batch
+                .schema()
+                .index_of("chunk_index")
+                .ok()
+                .and_then(|i| batch.column(i).as_any().downcast_ref::<arrow_array::Int32Array>());
+            let trans_col = batch
+                .schema()
+                .index_of("text_translated")
+                .ok()
+                .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+            if let (Some(ci), Some(tr)) = (cidx_col, trans_col) {
+                for i in 0..batch.num_rows() {
+                    match ci.value(i) {
+                        0 => {
+                            assert!(!tr.is_null(i), "chunk_index=0 must keep translation");
+                            found_ci0_ok = true;
+                        }
+                        1 => {
+                            assert!(tr.is_null(i), "chunk_index=1 must have translation nulled");
+                            found_ci1_null = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(found_ci0_ok, "chunk_index=0 row not found or missing column");
+        assert!(found_ci1_null, "chunk_index=1 row not found or column not null");
     }
 
 }

@@ -615,14 +615,17 @@ Still open:
       for `has_nonlatin_script` covering Japanese, Arabic, Cyrillic,
       mixed-Latin, ASCII, short, German umlauts, numeric, Chinese — all
       pass.
-- [ ] **Per-chunk vs per-doc translation storage** — today we
-      replicate the full translation across every chunk row of a
-      doc, matching the existing `full_text_md` convention.  For
-      very long docs (100 KB translation × 100 chunks = 10 MB
-      replicated) this is wasteful.  Alternative: store only on
-      `chunk_index = 0` and JOIN at search time — needs a careful
-      migration on shipped data + decisions around the
-      `record_batches_to_search_results` snippet path.
+- [x] **Per-chunk vs per-doc translation storage (Stage AA)** —
+      **SHIPPED 2026-05-16**.  `build_doc_chunk` in `index/ingest.rs`
+      now writes `text_translated`/`text_translated_lang` only when
+      `chunk_index == 0`; sub-chunks get `None`.  Migration v104
+      (`NullifyTranslationOnSubChunks`) probes for legacy rows with
+      `chunk_index > 0 AND text_translated IS NOT NULL`, runs a
+      single LanceDB `UPDATE` to null both columns, writes `.v104_done`
+      marker.  `translation_snippet_swap` already skips rows with null
+      translation (existing tests cover that path).  5 new v104 unit
+      tests (version/name stability, done-marker skip, error-without-lance,
+      fresh-index no-op, functional null-verify) — all pass.
 - [x] **FTS body_translated migration on legacy indexes (Stage Y)** —
       **SHIPPED 2026-05-16**.  `RebuildFtsForBodyTranslated` (v103) in
       `index/migrations.rs`: checks `.v103_done` marker (idempotency),
