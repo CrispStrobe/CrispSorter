@@ -905,7 +905,35 @@ export class BatchManager {
 
     async recalculateTargetPath(itemId: string) {
         const item = this.items.find(i => i.id === itemId);
-        if (item) await this.calculateTargetPath(item);
+        if (!item) return;
+        await this.calculateTargetPath(item);
+
+        // Auto-accept on completion: when the user has edited the three
+        // metadata fields so that *none* of Title / Author / Year is a
+        // sentinel ("Unknown", "n.n.", "?", "0000", …), flip the green
+        // check on automatically.  Inverse direction is also covered —
+        // if the user edits back to "Unknown", the check flips OFF so
+        // sort can't accidentally include the row.  Reported: "if we
+        // change items metadata per column field or in right side item
+        // view, and complete it, so that no more 'Unknown' fields, the
+        // checkmark should become auto-green".
+        const titleOk  = !isUnknownSentinel(item.suggestedTitle);
+        const authorOk = !isUnknownSentinel(item.suggestedAuthor);
+        const yearOk   = !isUnknownSentinel(item.suggestedYear);
+        const allComplete = titleOk && authorOk && yearOk;
+        if (allComplete && !item.isAccepted) {
+            item.isAccepted = true;
+            flog('info', `Auto-accepted '${item.originalName}' — all three metadata fields are non-sentinel.`);
+        } else if (!allComplete && item.isAccepted) {
+            // Same fairness rule in reverse: don't keep a green check
+            // on a row the user just downgraded by reverting a field
+            // to "Unknown".  Prevents an awkward "I unchecked it
+            // implicitly and the next Sortieren still moved the file"
+            // surprise.
+            item.isAccepted = false;
+            flog('info', `Auto-unchecked '${item.originalName}' — metadata reverted to a sentinel.`);
+        }
+        await this.saveCurrentSession();
     }
 
     private async calculateTargetPath(item: BatchItem) {
