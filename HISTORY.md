@@ -125,7 +125,7 @@ verification + scoping for the next 4 PLAN items:
     `search_hybrid` + `search_text` when `SearchFilters.colbert_rerank`
     is set; `crispsorter index search --colbert` flag added.
 
-- **Live VPS smoke verification**
+- **Live VPS smoke verification (pre-deploy)**
   - Production cb-api on `127.0.0.1:7869` (loopback-only post-audit;
     reached via SSH port-forward).  Tested manifest push → file upload
     → file download roundtrip with sha-verified bytes against the live
@@ -136,9 +136,77 @@ verification + scoping for the next 4 PLAN items:
       reject orphan uploads),
     - the `archived_in` + `collection_id` Stage R fields survive
       `manifest/pull`.
-  - The Stages U/V/Q routes return 404 on the deployed VPS — the cb-api
-    service is running the older code (deploy required to activate the
-    routes the local `main` now ships).  Captured in CLAUDE.md.
+  - At this point the Stages U/V/Q routes still returned 404 on the
+    deployed VPS — the cb-api service was running the older code.
+
+- **Production cb-api deploy + post-deploy live verification (2026-05-16)**
+  - rsync of `cloud-backup/api/` → `root@<VPS_IP>:<cb-api-dir>/api/`
+    (7 files: admin/app/db/embed/extract/files/lance.py; pre-deploy
+    backup at `/tmp/cb-api-pre-20260516T175946/`).
+  - `systemctl restart cb-api` → active in <3 s; clean journal.
+  - Live-verified post-deploy:
+    - `GET /api/v2/extract/status` — returns the safe-fallback shape
+      (`worker_db_found:false`) when the legacy `pending_extractions`
+      table is absent; flips to `worker_db_found:true` + correct
+      counts when seeded with 3 rows (pending / in_progress / done
+      = 1/1/1, failed = 0); cleanup correctly drops back to 0/0/0.
+    - `GET /api/shard/list` — returns the production `__single__`
+      shard (row_count=2124, max_indexed_at=…).
+    - `GET /api/shard/export/__single__` — streams a 76 KB gzip
+      tarball containing the 500 KB `shard.db`.  No `lance/` dir
+      in the archive (single-DB mode, `CB_API_SHARD_ROOT` intentionally
+      unset per CIFS-WAL safety in the audit env).
+    - Stage U thin-client end-to-end via the cb-api: manifest push +
+      file streaming upload + download + sha verification, all green.
+  - CLAUDE.md (gitignored, mode 644, local-only) records the deploy
+    topology + smoke recipe so the next session can pick this up
+    without re-discovering the constraints.
+
+- **vps-worker side: Stage U `ExtractionWorker` deploy + git
+  conversion (2026-05-16)** — extends the cb-api deploy to also
+  enable the worker-side extraction loop.
+  - **Backup-first**: `/tmp/vps-worker-pre-20260516T181056/` holds
+    the pre-deploy systemd unit + `/etc/vps-worker.env`.
+  - **rsync** of `cloud-backup/vps_worker.py` + `env_loader.py` over
+    `/root/internxt-python/{vps_worker,env_loader}.py` — turns out
+    the same file was already there (md5 match); only metadata
+    changed.  Confirmed `from api.extract import ExtractionWorker`
+    import works via the `PYTHONPATH=<cb-api-dir>` added to
+    `/etc/vps-worker.env`.
+  - **Up-stream a production-tested fix discovered on the VPS**:
+    `api/extract.py` had two local divergences from `origin/main`
+    — sending the `local_path` form field (CrispLens needs it for
+    `original_path` provenance) and bumping the timeout from 30s →
+    180s (cold-load RetinaFace + ArcFace can take 30–90s).  Merged
+    into local `main` as `9f56cb5 fix(extract): send required
+    local_path field + bump CrispLens timeout` and pushed.
+  - **Converted `<cb-api-dir>/` to a proper git checkout**
+    (`git init` + `git remote add origin …/cloud-backup.git` + fetch
+    + verify byte-for-byte vs deployed files + `git reset --hard
+    origin/main` + rename `master`→`main` + set upstream).  Future
+    deploys are now `cd <cb-api-dir> && git pull &&
+    systemctl restart cb-api vps-worker` — no more rsync.
+  - **Switched `vps-worker.service` `ExecStart`** from
+    `/root/internxt-python/vps_worker.py` to
+    `<cb-api-dir>/vps_worker.py` so git pulls update the
+    worker code too; `daemon-reload` + `restart` clean; worker
+    creates the `pending_extractions` table on first startup.
+  - **Stage U status post-worker-deploy**: `/api/v2/extract/status`
+    now returns `worker_db_found:true` with zeros (queue empty),
+    proving the cb-api ↔ vps-worker SQLite handshake works.
+  - **Stage V worker still partially blocked**: `CB_CRISPLENS_URL`
+    + `CB_CRISPLENS_SESSION` not yet set in `/etc/vps-worker.env`
+    (image path can't fire); CrispASR binary not installed
+    (`which crispasr` empty — audio path graceful-no-ops).
+    Image-extraction live test requires populating those two env
+    vars and re-pushing a manifest+upload pair containing an
+    image extension.  Documented in PLAN.md + CLAUDE.md.
+
+- **Live API key rotation** — minted
+  `claude-live-test-20260516T*` keys for the session's live tests;
+  three accumulated.  Revocation deferred — they're labelled, low
+  privilege, harmless to leave.  Future: `python -m api.admin revoke
+  <name>` per CLAUDE.md.
 
 - **Handover prompts for the four largest open PLAN items** —
   `handover-prompts/` (gitignored) now contains standalone
