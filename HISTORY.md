@@ -366,6 +366,132 @@ manifest+file roundtrip.  Cargo workspace-wide test interrupted by
 two multi-minute `index::benchmarks::*` runs (ML model loads);
 ~100 tests completed pre-interrupt, all green.
 
+### Evening — Stage U+V end-to-end live on production (2026-05-16)
+
+Full production deploy + every Stage U/V live test ✅ closed.  Four
+of the four P13.7 — Cloud-sync deferred items in PLAN.md flipped to
+shipped during this stretch.
+
+- **Production cb-api + vps-worker deploy (2026-05-16):**
+  - rsync of `cloud-backup/api/` to `<cb-api-dir>/api/` on the
+    VPS (pre-deploy backup `/tmp/cb-api-pre-20260516T175946/api/`).
+  - `systemctl restart cb-api`; active in <3 s, clean journal.
+  - rsync of `cloud-backup/vps_worker.py` + `env_loader.py` to
+    `/root/internxt-python/`; metadata-only change (md5-identical
+    files were already there).  `PYTHONPATH=<cb-api-dir>`
+    added to `/etc/vps-worker.env` so `from api.extract import
+    ExtractionWorker` resolves.
+  - **Converted `<cb-api-dir>/` into a proper git checkout**
+    tracking `origin/main`.  Used in-place `git init` + remote add +
+    fetch + byte-for-byte parity check vs origin/main + `git reset
+    --hard` + rename `master`→`main` + set upstream.  Future deploys
+    are `cd <cb-api-dir> && git pull && systemctl restart
+    cb-api vps-worker`.  No more rsync.
+  - **Switched `vps-worker.service` `ExecStart`** from
+    `/root/internxt-python/vps_worker.py` to
+    `<cb-api-dir>/vps_worker.py` so git pulls update worker
+    code too.
+  - Upstreamed a VPS-side hotfix: `cloud-backup 9f56cb5
+    fix(extract): send required local_path field + bump CrispLens
+    timeout` — VPS-discovered that CrispLens needs a `local_path`
+    multipart field for `original_path` provenance, and that
+    cold-load RetinaFace+ArcFace can take 30-90 s (30 s timeout was
+    too short).
+
+- **Live test #2 — Thin-client batch upload** ✅ closed.
+  Verified end-to-end against production cb-api on `127.0.0.1:7869`:
+  manifest push (`accepted:1`) → file upload-by-hash streaming POST
+  (`stored:true`, content-addressed `local_blob_path:"b2/75/<sha>"`)
+  → GET download with byte-for-byte sha verification.  Also
+  validated `/api/v2/extract/status` queue counter via 3 seeded
+  rows (pending/in_progress/done → `1/1/1` → cleanup → `0/0/0`),
+  `/api/shard/list` (`__single__`, row_count=2124), and
+  `/api/shard/export/__single__` (76 KB gzip tarball containing
+  500 KB `shard.db`).
+
+- **Live test #3 — VPS extraction image path** ✅ closed.
+  - Required two **new env-var lines** on the VPS:
+    `CB_CRISPLENS_URL=http://127.0.0.1:7865` (CrispLens listens
+    here as `face-rec.service`, NOT 7860) and
+    `CB_CRISPLENS_SESSION=session=<token>` after a `POST
+    /api/auth/login` with `<admin-user> / <admin-pw>`.
+  - Found and fixed: `cloud-backup 9aaefb1 fix(extract): join
+    through files for blob path; use file_hash on file_references`
+    — `ExtractionWorker.enqueue_pending()` queried `local_blob_path`
+    + `sha256` from `file_references` directly, but in the
+    controller.py legacy schema `local_blob_path` lives on the
+    `files` table and the canonical sha column is `file_hash`.  The
+    SELECT raised `OperationalError("no such column:
+    local_blob_path")` and silently returned 0; queue stayed empty
+    forever despite eligible rows.  Fix joins through `files`,
+    aliases `file_hash → sha256`, and the `extract_one()` UPDATE
+    probes `PRAGMA table_info` to pick `file_hash` vs `sha256`.
+    Back-compat fallback for hypothetical single-table DBs.
+  - Required env addition: `CB_API_STORAGE_ROOT=/mnt/akademie_storage/cb_api_blobs`
+    + `CB_API_DB_PATH=/root/cloudworker_state/<catalog-db>`
+    in `/etc/vps-worker.env` so the worker resolves
+    `local_blob_path` → absolute and finds the cb-api SQLite.
+  - End-to-end result: **11 image+text blobs drained in ~30 s**.
+    Test 8×8 red PNG returned `face_count=0` (correctly, no faces);
+    text blobs got `full_text` populated by `_extract_text_from_blob`
+    (PyMuPDF/pypdf/docx/openpyxl/plain-text dispatch).
+
+- **Live test #4 — VPS extraction audio path** ✅ closed.
+  - **The C++ `crispasr` binary** already built at
+    `/mnt/storage/whisper.cpp/build/bin/crispasr` (v0.6.6, gcc
+    13.3.0, Release).  The Rust crate at
+    `/mnt/storage/whisper.cpp/crispasr/` is **library-only** — no
+    `[[bin]]` section, only `lib.rs`; the cargo build I started
+    produced `libcrispasr.rlib`, no CLI binary.  (12 min of compile
+    on a CIFS-mount `target/` that initially failed with `EINVAL`
+    until I redirected via `--target-dir /root/crispasr-target` to
+    local ext4.)
+  - Found and fixed: `cloud-backup 5d9e4fc fix(extract): CrispASR
+    CLI takes <path> not transcribe; capture via -otxt -of` —
+    Stage V's `_extract_via_crispasr` called `[bin, "transcribe",
+    blob]` (fed `transcribe` as `argv[1]` = a filename → silent
+    fail), and read `result.stdout` (only decoder logs go there).
+    Fix invokes `crispasr -otxt -of <tmp_prefix> <blob>`, reads
+    `<tmp_prefix>.txt` back, cleans up.  Scratch dir uses
+    `CB_API_SCRATCH_DIR > TMPDIR > system default`.
+  - End-to-end result: **1 audio blob (1-s 16 kHz mono 440 Hz sine,
+    32 KB WAV) drained in 7.9 s** wall time (queue pickup +
+    crispasr cold-load of ~147 MB default whisper model from
+    `HF_HOME` + first-use download of `fireredpunc-q4_k.gguf` to
+    `~/.cache/crispasr/` + transcribe + DB update).  Empty
+    transcript is correct for a pure tone with no speech.
+    `pending_extractions` row has `started_at`/`done_at` set,
+    `error IS NULL`.
+
+- **Final `/etc/vps-worker.env` env-var inventory** (7 cb-api-side
+  vars now wired for the Stage U/V chain):
+  - `PYTHONPATH=<cb-api-dir>`
+  - `CB_API_DB_PATH=/root/cloudworker_state/<catalog-db>`
+  - `CB_API_STORAGE_ROOT=/mnt/akademie_storage/cb_api_blobs`
+  - `CB_CRISPLENS_URL=http://127.0.0.1:7865`
+  - `CB_CRISPLENS_SESSION=session=<token>` (rotate before
+    `expires=1781540418` ≈ 30-day window)
+  - `CB_CRISPASR_BIN=/mnt/storage/whisper.cpp/build/bin/crispasr`
+  - plus pre-existing legacy archive-worker env (VPS_STORAGE_ROOT,
+    etc.) that `cloud-backup/vps_worker.py` still uses.
+
+Commits referenced this stretch:
+  - `cloud-backup f93a2ee` audit hardening (paths, scratch dirs).
+  - `cloud-backup 0ebe475` Stage Q tar.extractall PEP 706 filter.
+  - `cloud-backup de90d96` Stage V CrispLens streaming-upload.
+  - `cloud-backup 9f56cb5` CrispLens local_path + 180s timeout.
+  - `cloud-backup 9aaefb1` ExtractionWorker JOIN + file_hash fix.
+  - `cloud-backup 5d9e4fc` CrispASR CLI shape fix.
+  - `CrispSorter 24f56e2` gitignore CLAUDE.md.
+  - `CrispSorter 33898de` workspace [profile] hoist.
+  - `CrispSorter 24a1c50 / a384f89 / 8f20939` PLAN+HISTORY closures.
+
+CLAUDE.md (gitignored, 558 lines) holds 27 numbered learnings + a
+full smoke-test recipe + the deploy topology + the VPS-side TODOs
+that remain (rotate the CrispLens session cookie ≤30 d; refactor
+`_extract_via_crisplens` to re-login on 401; optional admin token
+for Stage T HTTP routes).
+
 ---
 
 ## Session log — 2026-05-15/16 — Stages O–AA (cloud-sync polish, shard backup, federated search, embedder registry, schema migrations, multilingual reranker, translation dedup)
