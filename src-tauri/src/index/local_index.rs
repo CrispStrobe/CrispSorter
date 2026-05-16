@@ -29,7 +29,9 @@ use lancedb::{
 };
 
 use super::embedder::SparseVector;
+use super::ingest::chunk_row_id;
 use super::schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
+use super::search::{maxsim, unpack_multivec};
 use super::IndexBackend;
 
 // ── Constant ───────────────────────────────────────────────────────────────
@@ -149,6 +151,101 @@ impl LocalIndex {
 
         let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
         record_batches_to_search_results(&batches)
+    }
+
+    /// Stage AE — ColBERT late-interaction re-ranking of an existing
+    /// candidate pool.  Fetches each candidate's `multivec_packed` +
+    /// `multivec_n_tokens`, computes MaxSim against `query_multivec`,
+    /// replaces each candidate's `score` with the MaxSim, re-sorts
+    /// descending, and trims to `limit`.
+    ///
+    /// Candidates whose row has no ColBERT vectors (NULL column from
+    /// rows ingested before v105, or models without a ColBERT head)
+    /// are kept with their original score — the re-rank is purely
+    /// additive on rows that have the data.
+    ///
+    /// `query_multivec` is the per-token L2-normalised query encoding
+    /// from `Embedder::embed_multivec(vec![query]).unwrap()[0]`.  Empty
+    /// outer vec is a no-op (returns `candidates` truncated to `limit`).
+    pub async fn rerank_with_colbert(
+        &self,
+        candidates: Vec<SearchResult>,
+        query_multivec: &[Vec<f32>],
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if query_multivec.is_empty() || candidates.is_empty() {
+            let mut out = candidates;
+            out.truncate(limit);
+            return Ok(out);
+        }
+
+        // Build `id IN (...)` filter from the candidates' (doc_id,
+        // chunk_index) — matches the row-id formula used at ingest.
+        let ids: Vec<String> = candidates
+            .iter()
+            .map(|r| chunk_row_id(&r.doc_id, r.chunk_index))
+            .collect();
+        let quoted: Vec<String> = ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect();
+        let filter = format!("id IN ({})", quoted.join(", "));
+
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(filter)
+            .limit(candidates.len())
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Build id -> MaxSim score map.
+        let dim = query_multivec[0].len();
+        let mut score_by_id: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::with_capacity(candidates.len());
+        for batch in &batches {
+            let id_col = str_col(batch, "id")?;
+            let packed_col = batch
+                .column_by_name("multivec_packed")
+                .and_then(|c| c.as_any().downcast_ref::<LargeBinaryArray>());
+            let n_tok_col = batch
+                .column_by_name("multivec_n_tokens")
+                .and_then(|c| c.as_any().downcast_ref::<Int16Array>());
+            let (Some(packed_col), Some(n_tok_col)) = (packed_col, n_tok_col) else {
+                // Column missing entirely — corpus pre-v105.  Bail to
+                // the original-score path.
+                break;
+            };
+            for i in 0..batch.num_rows() {
+                if packed_col.is_null(i) || n_tok_col.is_null(i) {
+                    continue;
+                }
+                let packed = packed_col.value(i);
+                let n_tok = n_tok_col.value(i);
+                let doc_vecs = unpack_multivec(packed, n_tok, dim);
+                if doc_vecs.is_empty() {
+                    continue;
+                }
+                let score = maxsim(query_multivec, &doc_vecs);
+                score_by_id.insert(id_col.value(i).to_owned(), score);
+            }
+        }
+
+        let mut out: Vec<SearchResult> = candidates
+            .into_iter()
+            .map(|mut r| {
+                let id = chunk_row_id(&r.doc_id, r.chunk_index);
+                if let Some(s) = score_by_id.get(&id) {
+                    r.score = *s;
+                }
+                r
+            })
+            .collect();
+        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.truncate(limit);
+        Ok(out)
     }
 
     /// Fetch the best-matching chunk per doc_id for FTS result display.
@@ -2934,5 +3031,95 @@ mod push_candidate_tests {
             dirs.iter().any(|h| h.name.contains("philosophy")),
             "expected /philosophy in skeleton dirs after eviction, got: {dirs:?}"
         );
+    }
+
+    /// Stage AE — ColBERT re-ranking reorders candidates by MaxSim.
+    /// Ingest two chunks: one whose token vectors align with the
+    /// query, one orthogonal.  The orthogonal one has a higher
+    /// original score (simulating a noisy ANN hit) and must drop
+    /// after re-ranking.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rerank_with_colbert_reorders_by_maxsim() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        let aligned = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+        let orthogonal = vec![vec![0.0_f32, 0.0], vec![0.0_f32, 0.0]]; // zero -> MaxSim=0
+        let (aligned_bytes, aligned_n) =
+            crate::index::ingest::pack_multivec(aligned).unwrap();
+        let (ortho_bytes, ortho_n) =
+            crate::index::ingest::pack_multivec(orthogonal).unwrap();
+
+        let mut c_aligned = mk("aligned", 0, 100, Some("body a"),
+            Some(vec![0.5, 0.5, 0.5, 0.5]), Some("m"));
+        c_aligned.multivec_packed = Some(aligned_bytes);
+        c_aligned.multivec_n_tokens = Some(aligned_n);
+
+        let mut c_ortho = mk("ortho", 0, 100, Some("body b"),
+            Some(vec![0.5, 0.5, 0.5, 0.5]), Some("m"));
+        c_ortho.multivec_packed = Some(ortho_bytes);
+        c_ortho.multivec_n_tokens = Some(ortho_n);
+
+        local.ingest_batch(&[c_aligned, c_ortho]).await.unwrap();
+
+        // Candidate pool: ortho ranked first by some noisy upstream score.
+        let candidates = vec![
+            SearchResult {
+                doc_id: "ortho".into(),
+                chunk_index: 0,
+                score: 0.9, // ANN said this was "better"
+                ..mk_result("ortho", None, None)
+            },
+            SearchResult {
+                doc_id: "aligned".into(),
+                chunk_index: 0,
+                score: 0.1, // ANN said this was "worse"
+                ..mk_result("aligned", None, None)
+            },
+        ];
+
+        let query = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+        let reranked = local
+            .rerank_with_colbert(candidates, &query, 2)
+            .await
+            .unwrap();
+
+        assert_eq!(reranked.len(), 2);
+        assert_eq!(reranked[0].doc_id, "aligned",
+            "MaxSim should promote 'aligned' to rank 1, got {:?}",
+            reranked.iter().map(|r| &r.doc_id).collect::<Vec<_>>());
+        assert!(reranked[0].score > reranked[1].score,
+            "scores should be ordered: {:?}",
+            reranked.iter().map(|r| r.score).collect::<Vec<_>>());
+    }
+
+    /// Empty query_multivec is a no-op (no DB call) — returns the
+    /// candidates truncated to `limit`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rerank_with_colbert_empty_query_is_noop() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+        let candidates = vec![
+            SearchResult { doc_id: "a".into(), score: 0.5, ..mk_result("a", None, None) },
+            SearchResult { doc_id: "b".into(), score: 0.3, ..mk_result("b", None, None) },
+            SearchResult { doc_id: "c".into(), score: 0.1, ..mk_result("c", None, None) },
+        ];
+        let out = local.rerank_with_colbert(candidates, &[], 2).await.unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].doc_id, "a");
+        assert_eq!(out[1].doc_id, "b");
+    }
+
+    fn mk_result(doc_id: &str, _f: Option<&str>, _y: Option<i32>) -> SearchResult {
+        SearchResult {
+            doc_id: doc_id.to_owned(),
+            location_uri: format!("crisp+local://owner@m1/{doc_id}.txt"),
+            owner_id: "owner".into(),
+            title: None, author: None, year: None, filename: None, ext: None,
+            language: None, snippet: String::new(), score: 0.0, chunk_index: 0,
+            metadata_json: None, catalog_source: None, volume_id: None,
+            indexed_at: 0, source_hash: String::new(),
+            text_translated: None, text_translated_lang: None,
+        }
     }
 }

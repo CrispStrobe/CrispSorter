@@ -672,7 +672,7 @@ pub fn chunk_row_id(doc_id: &str, chunk_index: i32) -> String {
 
 /// Pack `Vec<Vec<f32>>` (ColBERT token vecs) into little-endian f32 bytes.
 /// Returns `(bytes, n_tokens)` or `None` when the input is empty.
-fn pack_multivec(vecs: Vec<Vec<f32>>) -> Option<(Vec<u8>, i16)> {
+pub(crate) fn pack_multivec(vecs: Vec<Vec<f32>>) -> Option<(Vec<u8>, i16)> {
     if vecs.is_empty() { return None; }
     let n = vecs.len();
     let dim = vecs[0].len();
