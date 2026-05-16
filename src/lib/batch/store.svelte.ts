@@ -205,6 +205,15 @@ export class BatchManager {
         this.extractionDone = 0;
         this.llmDone = 0;
 
+        // Wrap the whole body in try/finally so isProcessing always
+        // resets — earlier shape only had the producer/consumer block
+        // inside try, so any throw from the ~45 lines of setup
+        // (getSetting × 8, ensureProviderRunning, detectAndMark…) left
+        // isProcessing stuck true forever.  Symptom: after one
+        // successful batch, the toolbar got stuck on "Stop" and the
+        // user couldn't start the next run, even after `clear()` was
+        // refused-no-op'd by its own `isProcessing` guard.
+        try {
         const providers = await getSetting('providers', []);
         const activeProviderId = overrides?.providerId || await getSetting('activeProviderId', 'ollama');
         const activeProvider = (providers as any[]).find(p => p.id === activeProviderId) || providers[0];
@@ -740,6 +749,22 @@ export class BatchManager {
             this.llmActive = 0;
             flog('info', 'processAll finished');
             await this.saveCurrentSession();
+        }
+        } catch (e) {
+            // Outer-scope catch: any throw from the ~45 lines of
+            // setup BEFORE the inner try (getSetting × 8, provider
+            // boot, dedup detection) used to leave `isProcessing`
+            // stuck `true` forever — toolbar froze on "Stop", clear()
+            // refused to fire (its own isProcessing guard), Start
+            // button could never reappear.  Now any setup-time error
+            // also resets the flag and logs.
+            flog('error', `processAll setup threw: ${(e as any)?.message ?? e}`);
+            this.isProcessing = false;
+            this.stopRequested = false;
+            this.llmAbort = null;
+            this.extractionAbort = null;
+            await this.saveCurrentSession();
+            throw e;
         }
     }
 
