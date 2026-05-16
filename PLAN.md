@@ -28,6 +28,7 @@
 - P13.7 Image L1/L2/L3 + search CLI + CrispLens push: image L2 via migration v102; `crispsorter index search` CLI with full filter set; CrispLens image push
 - P13.7 Cloud-backup HTTP API + bidirectional sync: cb-api (FastAPI, bcrypt auth, manifest push/pull, shard export/import/list, embedding push/query); CrispSorter SyncManager `CloudBackup` mode; GUI Cloud-backup panel; sync CLI; shard backup to cloud drives (Stage Q) with incremental watermarks + retention; manifests-DB import bridge (Stage R); cb-api key minting from GUI (Stage T); L1-only thin-client mode (Stage U) with vps_worker CrispLens + CrispASR bridges (Stage V); skeleton local index (Stage W) + remote-only search fallback; "Sync now" button + `sync_status_all` (Stage O)
 - P13.7 Local DB size cap + LRU pruning (Stage P): `IndexConfig.local_max_size_bytes`, `crispsorter index purge --max-size N`, 1-hour background purge worker
+- P13.5 Stage AC — Non-whisper audio-LID auto-resolution: `lid-silero` / `lid-ecapa` / `lid-firered` registry entries in CrispASR; `LidMethodChoice::Ecapa/Firered` CLI variants; `resolve_audio_lid_model_path` generic resolver; Silero/Ecapa/Firered auto-resolve arms in `cmd_chat_transcribe`
 - P15 Batch pre-processing: content-dedup (SHA-256), book-chapter grouping (ISBN-13)
 - OCR: Tier 1 Tesseract, Tier 2 ocrs, Tier 3 PaddleOCR (`--features paddle-ocr`)
 - `.cidx` offline archives: LanceDB + Tantivy FTS export/mount, Archiv tab in Übersicht, background-promote per row
@@ -75,10 +76,6 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 - [ ] **ColBERT multi-vector retrieval** (`encode_multivec`, ~1 session) — per-token L2-normalised embeddings (BGE-M3 ColBERT head). Needs a new LanceDB column for the per-token vectors (FixedSizeList of variable length is awkward; might need a separate `chunk_multivec` table joined by `id`) + a late-interaction MaxSim scorer in the search pipeline.
 - [ ] **Omnimodal cross-modal search** (`encode_audio` / `encode_image`, ~2 sessions) — BidirLM-Omni encodes text, audio, and images into a shared 2048-d space. Unlocks: type "photo of a sunset" → image hits without OCR; type "podcast about Bosnia" → audio hits without transcription. Needs a new model class (BidirLM-Omni isn't in the existing `EmbedderModel` enum), image-patch preprocessing (pixel patches + `grid_thw`), and a decision about how the 2048-d cross-modal vector coexists with the existing per-backend dense column (separate column? per-index dim selection at init?).
-
-### P13.5 follow-ups (remaining)
-
-- [ ] **Non-whisper audio-LID auto-resolution** — `2b80345` handles the whisper-method case by registry-resolving `whisper`. Silero / Ecapa / Firered still require explicit `--lid-model` paths because they aren't in CrispASR's registry. Add upstream registry entries (`lid-silero`, `lid-ecapa`, `lid-firered`) to close this.
 
 ---
 

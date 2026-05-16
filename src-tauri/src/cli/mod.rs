@@ -114,14 +114,15 @@ enum LidPolicy {
 }
 
 /// LID model method choice for `chat transcribe --lid-method`.
-/// Mirrors `crate::asr::lang::LidMethod`'s Whisper + Silero variants.
-/// `ecapa` / `firered` are reserved for a follow-up: they only work
-/// through the session-level C-ABI today and would need session
-/// pre-load wiring here.
+/// Whisper and Silero auto-resolve their model via the CrispASR registry when
+/// `--lid-model` is not given. Ecapa and Firered also auto-resolve but require
+/// Phase 6 session wiring (`Session::detect_language`) to actually run.
 #[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
 enum LidMethodChoice {
     Whisper,
     Silero,
+    Ecapa,
+    Firered,
 }
 
 impl LidMethodChoice {
@@ -129,6 +130,8 @@ impl LidMethodChoice {
         match self {
             LidMethodChoice::Whisper => crate::asr::LidMethod::Whisper,
             LidMethodChoice::Silero => crate::asr::LidMethod::Silero,
+            LidMethodChoice::Ecapa => crate::asr::LidMethod::Ecapa,
+            LidMethodChoice::Firered => crate::asr::LidMethod::Firered,
         }
     }
 }
@@ -4890,6 +4893,52 @@ async fn resolve_whisper_lid_model_path(
     )
 }
 
+/// Generic audio-LID auto-resolver for non-Whisper methods (Silero, Ecapa, Firered).
+/// Looks up `registry_name` in the CrispASR registry and downloads the GGUF if absent.
+#[cfg(feature = "crispasr")]
+async fn resolve_audio_lid_model_path(
+    registry_name: &str,
+    cache_dir: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    let registry_name = registry_name.to_owned();
+    let cache_str = cache_dir.to_string_lossy().into_owned();
+    let path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let entry = crispasr::registry_lookup(&registry_name)
+            .map_err(|e| anyhow::anyhow!("registry_lookup {registry_name}: {e}"))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "LID auto-resolve: `{registry_name}` not in CrispASR registry — \
+                     add an entry in crispasr_model_registry.cpp"
+                )
+            })?;
+        let path = crispasr::cache_ensure_file(
+            &entry.filename,
+            &entry.url,
+            false,
+            Some(&cache_str),
+        )
+        .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
+        .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
+        Ok(path)
+    })
+    .await
+    .context("spawn_blocking joined unexpectedly")??;
+    Ok(PathBuf::from(path))
+}
+
+#[cfg(not(feature = "crispasr"))]
+#[allow(dead_code)]
+async fn resolve_audio_lid_model_path(
+    _registry_name: &str,
+    _cache_dir: &std::path::Path,
+) -> anyhow::Result<PathBuf> {
+    anyhow::bail!(
+        "Audio LID auto-resolve needs the `crispasr` cargo feature \
+         (build with --features crispasr-metal / -cuda / -vulkan)"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_chat_transcribe(
     out: OutFormat,
@@ -4986,19 +5035,17 @@ fn cmd_chat_transcribe(
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
-    // P13.5 follow-up — audio-LID auto-resolution for the Whisper
-    // method.  Three cases:
+    // Stage AC — audio-LID auto-resolution (Whisper + Silero + Ecapa + Firered).
     //   1. User passed `--lid-model PATH` → use it verbatim.
-    //   2. No --lid-model AND --lid-method whisper AND LID is
-    //      actually going to fire (language=auto AND policy !=
-    //      as-configured) → auto-resolve a Whisper ggml file.
-    //      Reuses the user's explicit `--model PATH` when the ASR
-    //      backend is whisper-family; otherwise downloads whisper-
-    //      base via the CrispASR registry.
-    //   3. No --lid-model AND --lid-method silero|ecapa|firered →
-    //      `None` — orchestrator errors with a clear "needs
-    //      --language or --lid-model" message because those LID
-    //      models aren't in the upstream registry yet.
+    //   2. No --lid-model AND --lid-method whisper AND LID fires →
+    //      reuse user's `--model` when whisper-family; else download
+    //      whisper-base via the CrispASR registry.
+    //   3. No --lid-model AND --lid-method silero AND LID fires →
+    //      auto-resolve `lid-silero` via the CrispASR registry.
+    //   4. No --lid-model AND --lid-method ecapa|firered AND LID fires →
+    //      auto-resolve the GGUF; Ecapa/Firered still need Phase 6
+    //      session wiring, so detect_language_from_pcm will surface a
+    //      clear "use whisper or silero" error at runtime.
     let needs_lid =
         language_for_orchestrator.is_none() && !matches!(policy, LidPolicy::AsConfigured);
     let lid_options = match (lid_model, lid_method, needs_lid) {
@@ -5018,6 +5065,51 @@ fn cmd_chat_transcribe(
             );
             Some(crate::asr::LidOptions {
                 method: crate::asr::LidMethod::Whisper,
+                model_path: resolved,
+                n_threads: 2,
+            })
+        }
+        (None, LidMethodChoice::Silero, true) => {
+            let lid_cache = asr_cache_dir(data_dir.clone())?;
+            let resolved = rt
+                .block_on(resolve_audio_lid_model_path("lid-silero", &lid_cache))
+                .map_err(|e| format!("Silero LID auto-resolve: {e:#}"))?;
+            eprintln!(
+                "[lid] auto-resolved Silero LID model → {}",
+                resolved.display()
+            );
+            Some(crate::asr::LidOptions {
+                method: crate::asr::LidMethod::Silero,
+                model_path: resolved,
+                n_threads: 2,
+            })
+        }
+        (None, LidMethodChoice::Ecapa, true) => {
+            let lid_cache = asr_cache_dir(data_dir.clone())?;
+            let resolved = rt
+                .block_on(resolve_audio_lid_model_path("lid-ecapa", &lid_cache))
+                .map_err(|e| format!("Ecapa LID auto-resolve: {e:#}"))?;
+            eprintln!(
+                "[lid] auto-resolved Ecapa LID model → {}",
+                resolved.display()
+            );
+            Some(crate::asr::LidOptions {
+                method: crate::asr::LidMethod::Ecapa,
+                model_path: resolved,
+                n_threads: 2,
+            })
+        }
+        (None, LidMethodChoice::Firered, true) => {
+            let lid_cache = asr_cache_dir(data_dir.clone())?;
+            let resolved = rt
+                .block_on(resolve_audio_lid_model_path("lid-firered", &lid_cache))
+                .map_err(|e| format!("FireRed LID auto-resolve: {e:#}"))?;
+            eprintln!(
+                "[lid] auto-resolved FireRed LID model → {}",
+                resolved.display()
+            );
+            Some(crate::asr::LidOptions {
+                method: crate::asr::LidMethod::Firered,
                 model_path: resolved,
                 n_threads: 2,
             })
