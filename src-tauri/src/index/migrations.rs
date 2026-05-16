@@ -326,13 +326,26 @@ impl Migration for RebuildFtsForBodyTranslated {
         // If yes, just write the marker and exit.  This handles the case
         // where the dir exists but the process was killed after building
         // the fresh dir but before writing the marker.
-        {
-            let fts_check = super::fts_index::FtsIndex::open_or_create(&fts_dir)
-                .context("v103: opening fts dir for schema check")?;
-            if fts_check.fields.body_translated.is_some() {
-                eprintln!("[index] v103 migration skipped — body_translated already in FTS schema");
-                let _ = std::fs::write(&done_marker, b"");
-                return Ok(());
+        //
+        // If the dir exists but is unopenable (missing required fields,
+        // i.e. created by a much older CrispSorter that predates the
+        // current schema entirely), fall through to the rebuild path
+        // instead of bailing — that path deletes the dir and recreates
+        // it from LanceDB anyway, which is the correct recovery.
+        match super::fts_index::FtsIndex::open_or_create(&fts_dir) {
+            Ok(fts_check) => {
+                if fts_check.fields.body_translated.is_some() {
+                    eprintln!("[index] v103 migration skipped — body_translated already in FTS schema");
+                    let _ = std::fs::write(&done_marker, b"");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[index] v103: existing FTS dir not openable ({e:#}); \
+                     proceeding to full rebuild from LanceDB"
+                );
+                // Fall through to the rebuild path below.
             }
         }
 
