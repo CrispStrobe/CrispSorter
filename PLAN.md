@@ -47,7 +47,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P13.7 — Cloud-sync deferred items
 
-- [ ] **Skeleton index preservation** — when the LRU cap (Stage P) evicts a doc entirely, write a skeleton stub to `skeleton_index.db` so the author/dir hint survives. (deferred from Stage W)
+- [x] **Skeleton index preservation (Stage AB)** — **SHIPPED 2026-05-16**. In `purge_to_size` Phase 2, opens `skeleton_index.db` (if it exists beside `lance/`) before deleting rows; extracts `author` + `parent_dir` from the full-row batches (deduped on `chunk_index==0`), upserts to `SkeletonIndex`; no-op on installs without skeleton mode. 1 new test `purge_preserves_skeleton_hints_on_eviction`.
 - [ ] **Live test: shard backup to WebDAV** — backup to a tempfile WebDAV server, verify integrity via sha256 of unpacked tarball. (requires live drive)
 - [ ] **Live tests: thin-client batch upload** — ship a small zipped batch end-to-end; verify rows appear in `/api/v2/index/search` with expected `full_text` + `embedding`. (requires live VPS)
 - [ ] **Live test: VPS extraction** — VPS with `CB_CRISPLENS_URL` + `CB_CRISPASR_BIN` populated; upload an image + audio file; verify `face_count` + `full_text` in `<catalog-db>`. (requires live VPS with crispasr binary)

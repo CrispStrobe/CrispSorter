@@ -781,6 +781,16 @@ impl LocalIndex {
         }
 
         // ── Phase 2: delete oldest rows if still over cap ─────────────
+        // Open the skeleton index once if it exists — evicted docs have their
+        // author + parent_dir preserved there so the "✦ Local hints" panel
+        // keeps showing them even after the LanceDB row is gone.
+        let skeleton: Option<crate::index::skeleton::SkeletonIndex> = lance_dir
+            .parent()
+            .filter(|data_dir| data_dir.join("skeleton_index.db").exists())
+            .and_then(|data_dir| {
+                crate::index::skeleton::SkeletonIndex::open_or_create(data_dir).ok()
+            });
+
         loop {
             if dir_size_bytes(lance_dir) <= max_bytes { break; }
 
@@ -809,6 +819,36 @@ impl LocalIndex {
             let doc_ids = collect_doc_ids(&batches);
             if doc_ids.is_empty() { break; }
             let row_count = doc_ids.len();
+
+            // Preserve author/parent_dir hints before the rows disappear.
+            // Deduplicate by doc_id (chunk_index=0 representative) so
+            // upsert_* counts one per doc, not one per chunk.
+            if let Some(ref sk) = skeleton {
+                let mut seen_docs = std::collections::HashSet::new();
+                for batch in &batches {
+                    let doc_id_col = batch.schema().index_of("doc_id").ok()
+                        .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                    let cidx_col = batch.schema().index_of("chunk_index").ok()
+                        .and_then(|i| batch.column(i).as_any().downcast_ref::<Int32Array>());
+                    let author_col = batch.schema().index_of("author").ok()
+                        .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                    let parent_dir_col = batch.schema().index_of("parent_dir").ok()
+                        .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
+                    for i in 0..batch.num_rows() {
+                        // Only process the representative chunk (chunk_index == 0).
+                        let is_rep = cidx_col.map_or(true, |c| !c.is_null(i) && c.value(i) == 0);
+                        if !is_rep { continue; }
+                        let doc_id = doc_id_col.filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("");
+                        if doc_id.is_empty() || !seen_docs.insert(doc_id.to_owned()) { continue; }
+                        if let Some(col) = author_col {
+                            if !col.is_null(i) { let _ = sk.upsert_author(col.value(i)); }
+                        }
+                        if let Some(col) = parent_dir_col {
+                            if !col.is_null(i) { let _ = sk.upsert_parent_dir(col.value(i)); }
+                        }
+                    }
+                }
+            }
 
             self.table
                 .delete(&format!("doc_id IN ({})", in_list(&doc_ids)))
@@ -2843,6 +2883,41 @@ mod push_candidate_tests {
         assert!(
             remaining < 5,
             "expected fewer rows after purge, got {remaining}"
+        );
+    }
+
+    /// Stage AB — purge preserves author + parent_dir in skeleton_index.db
+    /// when it exists alongside the lance dir.
+    #[tokio::test(flavor = "current_thread")]
+    async fn purge_preserves_skeleton_hints_on_eviction() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Pre-create the skeleton index so purge_to_size finds it.
+        let sk = crate::index::skeleton::SkeletonIndex::open_or_create(tmp.path()).unwrap();
+        drop(sk); // close before purge opens it
+
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        // Ingest a doc with author + parent_dir set.
+        let mut chunk = mk("evict-me", 0, 1, Some("body"), None, None);
+        chunk.author = Some("Kant, Immanuel".to_owned());
+        chunk.parent_dir = Some("/philosophy".to_owned());
+        local.ingest_batch(&[chunk]).await.unwrap();
+
+        let lance_dir = tmp.path().join("lance");
+        local.purge_to_size(&lance_dir, 0).await.unwrap();
+
+        // Skeleton should now contain the author and parent_dir from the evicted doc.
+        let sk2 = crate::index::skeleton::SkeletonIndex::open_or_create(tmp.path()).unwrap();
+        let authors = sk2.search_authors("kant", 10).unwrap();
+        assert!(
+            authors.iter().any(|h| h.name.contains("Kant")),
+            "expected Kant in skeleton authors after eviction, got: {authors:?}"
+        );
+        let dirs = sk2.search_parent_dirs("philosophy", 10).unwrap();
+        assert!(
+            dirs.iter().any(|h| h.name.contains("philosophy")),
+            "expected /philosophy in skeleton dirs after eviction, got: {dirs:?}"
         );
     }
 }
