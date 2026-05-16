@@ -573,14 +573,14 @@ mod tests {
     //   WEBDAV_TEST_URL=http://localhost:8088/ \
     //   WEBDAV_TEST_USER=filen \
     //   WEBDAV_TEST_PASS=filen-webdav \
-    //   cargo test -p tauri-app --lib -- --ignored webdav_live --nocapture
+    //   cargo test -p crispsorter --lib -- --ignored webdav_live --nocapture
     //
     // For Internxt's HTTPS server with self-signed cert:
     //   WEBDAV_TEST_URL=https://127.0.0.1:9999/ \
     //   WEBDAV_TEST_USER=internxt \
     //   WEBDAV_TEST_PASS=<from `internxt webdav-config`> \
     //   WEBDAV_TEST_INSECURE=1 \
-    //   cargo test -p tauri-app --lib -- --ignored webdav_live --nocapture
+    //   cargo test -p crispsorter --lib -- --ignored webdav_live --nocapture
     //
     // Spin up the server first with the matching CLI's `webdav-start -b`.
 

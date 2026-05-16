@@ -448,7 +448,7 @@ mod tests {
     // To run:
     //   INTERNXT_CLI_PATH=/path/to/cli.py \
     //   INTERNXT_CLI_PYTHON=/path/to/python \
-    //   cargo test -p tauri-app --lib -- --ignored internxt_live --nocapture
+    //   cargo test -p crispsorter --lib -- --ignored internxt_live --nocapture
     //
     // Requirements:
     //   * `cli.py` patched with `--json` on whoami/list-path/resolve.

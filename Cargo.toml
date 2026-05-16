@@ -22,7 +22,7 @@
 #
 # The server can still be released and deployed independently — its
 # Docker recipe in `crisp-index-server/README.md` works unchanged. Build
-# only the desktop side with `cargo build -p tauri-app`; only the server
+# only the desktop side with `cargo build -p crispsorter`; only the server
 # with `cargo build -p crisp-index-server --release`.
 
 [workspace]

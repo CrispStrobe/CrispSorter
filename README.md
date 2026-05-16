@@ -618,7 +618,7 @@ If EPUB extraction fails with a reference to the Node.js `process` global, ensur
 
 ```bash
 # Fast unit tests (no network, no model download)
-cargo test -p tauri-app --lib                    # ~200 unit tests across the desktop app
+cargo test -p crispsorter --lib                    # ~200 unit tests across the desktop app
 cargo test -p crispcat                           # ~20 unit tests in the catalog library
 
 # Standalone CLI integration tests (compile + spawn `crispcat` binary)
@@ -626,11 +626,11 @@ cargo test -p crispcat-cli                       # 8 e2e tests on real .caf file
 
 # Full Tauri-binary smoke tests (require ~30 GB free disk for the build).
 # Each test spawns the actual `crispsorter` binary and exercises a real subcommand.
-cargo test -p tauri-app --test cli_smoke -- --ignored
+cargo test -p crispsorter --test cli_smoke -- --ignored
 
 # Heavy: full ingest → search → delete e2e.
 # Downloads ~90 MB of all-MiniLM-L6-v2 ONNX weights from HuggingFace on first run.
-cargo test -p tauri-app --test cli_e2e_embedder -- --ignored
+cargo test -p crispsorter --test cli_e2e_embedder -- --ignored
 ```
 
 The unit-test sweep (`cargo test --workspace`) covers cross-cutting components:
