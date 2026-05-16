@@ -135,6 +135,8 @@ async fn main() -> anyhow::Result<()> {
             image_lens_model:       None,
             image_taken_at_unix:    None,
             image_iso:              None,
+            multivec_packed:        None,
+            multivec_n_tokens:      None,
         }
     };
 
