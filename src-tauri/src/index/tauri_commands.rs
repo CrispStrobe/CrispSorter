@@ -2533,6 +2533,9 @@ pub async fn init_index(
     let reranker_handle: Option<super::RerankerHandle> = config
         .reranker_model
         .map(|m| super::RerankerHandle::new(m, models_dir.clone()));
+    let reranker_multilingual_handle: Option<super::RerankerHandle> = config
+        .reranker_model_multilingual
+        .map(|m| super::RerankerHandle::new(m, models_dir.clone()));
 
     match config.backend_type {
         BackendType::Remote => {
@@ -2632,6 +2635,11 @@ pub async fn init_index(
                 // path uses, so users tune the candidate window
                 // once and both paths honour it.
                 engine_inner = engine_inner.with_embedder_as_reranker(true, config.rerank_top_n);
+            }
+            // Stage Z — script-aware multilingual reranker.  Independent of
+            // the primary reranker; both can be active simultaneously.
+            if let Some(ref h) = reranker_multilingual_handle {
+                engine_inner = engine_inner.with_multilingual_reranker(h.clone(), config.rerank_top_n);
             }
             let engine = Arc::new(engine_inner);
             let pipeline = Arc::new(IngestPipeline::new(
