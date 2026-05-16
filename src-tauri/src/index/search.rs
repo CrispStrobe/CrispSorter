@@ -633,6 +633,52 @@ fn doc_ids_from_results(results: &[SearchResult]) -> Vec<String> {
     results.iter().map(|r| r.doc_id.clone()).collect()
 }
 
+// ── ColBERT MaxSim ───────────────────────────────────────────────────────────
+
+/// Late-interaction ColBERT MaxSim score.
+///
+/// For each query token vector, finds the maximum dot product against
+/// all document token vectors, then sums these per-query-token maxima.
+/// Both `query_vecs` and `doc_vecs` are expected to be L2-normalised
+/// (as produced by BGE-M3's ColBERT head).
+///
+/// Returns 0.0 when either side is empty.
+pub(crate) fn maxsim(query_vecs: &[Vec<f32>], doc_vecs: &[Vec<f32>]) -> f32 {
+    if query_vecs.is_empty() || doc_vecs.is_empty() {
+        return 0.0;
+    }
+    query_vecs
+        .iter()
+        .map(|qv| {
+            doc_vecs
+                .iter()
+                .map(|dv| qv.iter().zip(dv.iter()).map(|(a, b)| a * b).sum::<f32>())
+                .fold(f32::NEG_INFINITY, f32::max)
+        })
+        .sum()
+}
+
+/// Unpack `multivec_packed` bytes (little-endian f32) back into token vectors.
+///
+/// `dim` is the ColBERT projection dimension (128 for BGE-M3).
+/// Returns an empty Vec on size mismatch or when `packed` is empty.
+pub(crate) fn unpack_multivec(packed: &[u8], n_tokens: i16, dim: usize) -> Vec<Vec<f32>> {
+    let n = n_tokens as usize;
+    if packed.is_empty() || n == 0 || dim == 0 { return vec![]; }
+    let expected = n * dim * 4;
+    if packed.len() < expected { return vec![]; }
+    (0..n)
+        .map(|i| {
+            (0..dim)
+                .map(|j| {
+                    let off = (i * dim + j) * 4;
+                    f32::from_le_bytes(packed[off..off + 4].try_into().unwrap())
+                })
+                .collect()
+        })
+        .collect()
+}
+
 // ── Pure-logic tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -947,5 +993,50 @@ mod tests {
     #[test]
     fn nonlatin_chinese_query_is_detected() {
         assert!(has_nonlatin_script("深度学习模型评估"));
+    }
+
+    // ── ColBERT MaxSim ──────────────────────────────────────────────────────
+
+    #[test]
+    fn maxsim_identical_single_vector_scores_one() {
+        let v = vec![vec![1.0_f32, 0.0, 0.0]];
+        let score = maxsim(&v, &v);
+        assert!((score - 1.0).abs() < 1e-5, "score={score}");
+    }
+
+    #[test]
+    fn maxsim_orthogonal_vectors_score_zero() {
+        let q = vec![vec![1.0_f32, 0.0]];
+        let d = vec![vec![0.0_f32, 1.0]];
+        let score = maxsim(&q, &d);
+        assert!(score.abs() < 1e-5, "score={score}");
+    }
+
+    #[test]
+    fn maxsim_empty_inputs_return_zero() {
+        assert_eq!(maxsim(&[], &[vec![1.0]]), 0.0);
+        assert_eq!(maxsim(&[vec![1.0]], &[]), 0.0);
+    }
+
+    #[test]
+    fn unpack_multivec_round_trips_pack() {
+        // Build a small 2-token × 3-dim matrix of known values.
+        let vecs: Vec<Vec<f32>> = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
+        let mut packed = Vec::new();
+        for v in &vecs {
+            for &f in v {
+                packed.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let unpacked = unpack_multivec(&packed, 2, 3);
+        assert_eq!(unpacked.len(), 2);
+        assert_eq!(unpacked[0], vecs[0]);
+        assert_eq!(unpacked[1], vecs[1]);
+    }
+
+    #[test]
+    fn unpack_multivec_truncated_returns_empty() {
+        // 5 bytes can't hold even one full float → empty
+        assert!(unpack_multivec(&[0u8; 5], 1, 3).is_empty());
     }
 }

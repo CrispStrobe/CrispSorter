@@ -583,6 +583,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         };
         // Write L1 row locally (mtime guard already ran above).
         let _ = pipeline.ingest_document(raw_l1.clone()).await;
@@ -727,6 +729,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
                 image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
                 image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+                multivec_packed: None,
+                multivec_n_tokens: None,
             };
             // P13.7 Stage F + N — capture the wire-shape snapshot
             // BEFORE ingest_document consumes `raw`.  If the auto-

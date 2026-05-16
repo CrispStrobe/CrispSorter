@@ -162,6 +162,8 @@ pub async fn sync_pull(
                 image_lens_model: None,
                 image_taken_at_unix: None,
                 image_iso: None,
+                multivec_packed: None,
+                multivec_n_tokens: None,
             }
         })
         .collect();
@@ -544,6 +546,8 @@ pub async fn sync_cb_manifest_pull(
             image_lens_model: None,
             image_taken_at_unix: None,
             image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
         }
     }).collect();
 
