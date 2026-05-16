@@ -2304,7 +2304,13 @@ pub fn run() {
                 // without owning it; tokio::spawn lifts ownership
                 // into the runtime.
                 let drain_handle = app.handle().clone();
-                tokio::spawn(async move {
+                // tauri::async_runtime::spawn — NOT tokio::spawn — because
+                // the .setup() callback runs synchronously before the
+                // tokio reactor is attached.  tauri::async_runtime
+                // wraps the tokio runtime in a way that's reachable
+                // from setup.  Bare tokio::spawn here panics with
+                // "no reactor running".
+                tauri::async_runtime::spawn(async move {
                     use std::time::Duration;
                     // 30s feels right: fresh enough that a user
                     // who pushes a manifest then opens cloud-backup
@@ -2371,7 +2377,10 @@ pub fn run() {
             // the index is already within bounds.
             {
                 let purge_handle = app.handle().clone();
-                tokio::spawn(async move {
+                // tauri::async_runtime::spawn (not tokio::spawn) for the
+                // same reason as the drain task above — setup() runs
+                // before the tokio reactor is attached.
+                tauri::async_runtime::spawn(async move {
                     use std::time::Duration;
                     let mut ticker = tokio::time::interval(Duration::from_secs(3600));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
