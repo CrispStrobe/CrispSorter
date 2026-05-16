@@ -9,6 +9,82 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-16 — Stages AB–AE + cloud-backup streaming fix (skeleton-hint persistence, audio-LID auto-resolve, ColBERT multi-vector + MaxSim, RAM-flat uploads)
+
+Five additive landings on top of the O–AA bundle.  All tests green at end:
+`index::ingest` 9/9, `index::skeleton` 7/7, `sync::` 72 pass / 9 ignored,
+cb-api pytest 103 pass / 4 skipped.
+
+### Stage AB — Preserve skeleton hints on LRU eviction (2026-05-16)
+
+- **`LocalIndex::purge_to_size` phase-2** opens
+  `<data-dir>/skeleton_index.db` when present and, before deleting LanceDB
+  rows over the size cap, upserts the representative chunk's `author` +
+  `parent_dir` into `author_index` / `parent_dir_index`.  Evicted docs
+  remain findable as "✦ Local hints" chips even after the row is gone.
+- Deduplication uses `chunk_index == 0` as the representative + a
+  `HashSet<doc_id>` so 100 chunks of one doc count once.
+- New test `purge_preserves_skeleton_hints_on_eviction`
+  (3 / 3 purge tests pass).
+
+### Stage AC — Non-whisper audio-LID auto-resolution (2026-05-16)
+
+- **`crispsorter audio resolve-lid <path>`** CLI subcommand —
+  delegates to the CrispASR binary's language-detect pass (no full
+  transcribe).
+- Default policy: when `IngestAudioLevel = L2` and CrispASR reports
+  confidence ≥ 0.7, the detected ISO-639-1 code is written to
+  `chunk.language` *before* the L3 transcript path runs; downstream
+  the multilingual reranker (Stage Z) routes to the right model.
+- CLI wired through the same `cli/asr.rs` plumbing used by
+  `audio transcribe`.
+
+### Stage AD — ColBERT multi-vector retrieval (2026-05-16)
+
+- **Schema v105** adds `multivec_packed` (LargeBinary) +
+  `multivec_n_tokens` (Int16) columns; idempotent
+  `AddColbertMultivec` migration via `AllNulls` transform.
+- **`DocumentChunk` + `RawDocument`** carry the new fields
+  (`#[serde(skip)]` — transient ingest data, no JSON wire surface).
+- **`Embedder::{has_colbert, embed_multivec}`** delegate to
+  `CrispEmbedBackend::{has_colbert, encode_multivec}`.
+- Ingest packs token vectors via `pack_multivec` (little-endian f32
+  bytes, `n_tokens × dim × 4` bytes total); `build_doc_chunk` wires
+  them in; the batch path calls `embed_multivec` when the loaded
+  model exposes a ColBERT head.
+- `search::{maxsim, unpack_multivec}` provide the late-interaction
+  scoring primitive for AE.
+- 9 / 9 `index::ingest` tests pass (incl. `pack_multivec_round_trips`,
+  `build_doc_chunk_with_multivec_populates_fields`).
+
+### Stage AE — ColBERT late-interaction re-ranking on candidate pool (2026-05-16)
+
+- **`SearchEngine::rerank_with_colbert(query, hits, k)`** — re-orders
+  the top-K candidates by `maxsim(query_tokens, doc_tokens)`; falls
+  through to the original ANN order when no doc in the pool has
+  `multivec_packed` (zero-cost path for legacy indexes).
+- Test `rerank_with_colbert_reorders_by_maxsim` ingests two chunks
+  (one aligned token-wise, one orthogonal) and asserts the orthogonal
+  hit drops despite a higher ANN score.
+
+### Cloud-backup streaming fix — RAM-flat uploads (2026-05-16)
+
+- **`drain_cb_file_uploads`** (Rust, `src-tauri/src/sync/mod.rs`) —
+  swapped `std::fs::read(path)` + `upload_file_bytes(bytes)` for
+  `client.upload_file_by_hash(sha, path)`, which streams via
+  `tokio::fs::File` → `tokio_util::io::ReaderStream` →
+  `reqwest::Body::wrap_stream`.  Peak RAM during a 4 GB media upload
+  drops from ~4 GB → ~8 KiB.  The unused `upload_file_bytes` method
+  was deleted to avoid a footgun.
+- Companion fix on the cloud-backup side
+  (`api/extract.py::_extract_via_crisplens`) replaced
+  `urllib.request.urlopen(req_with_full_body)` with
+  `http.client.HTTPConnection` chunked send (preamble → 64 KiB file
+  chunks → trailer).  Tests re-pinned to mock `http.client`.
+- Stage V suite: 13 / 13 pass; full cb-api 103 / 103 unchanged.
+
+---
+
 ## Session log — 2026-05-15/16 — Stages O–AA (cloud-sync polish, shard backup, federated search, embedder registry, schema migrations, multilingual reranker, translation dedup)
 
 Fourteen additive stages across two sessions.  All tests pass at the end
