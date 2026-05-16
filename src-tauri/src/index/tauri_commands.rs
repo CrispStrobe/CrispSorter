@@ -2893,7 +2893,6 @@ pub async fn index_promote_cb_archive(
     output_dir: Option<String>,
     owner_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use sha2::{Digest, Sha256};
     use tauri::Manager;
 
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());

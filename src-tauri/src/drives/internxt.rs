@@ -46,8 +46,10 @@ struct NodeInfo {
     /// ISO-8601 modification time (driveinet uses `modificationTime`,
     /// falls back to `updatedAt`).
     #[serde(rename = "modificationTime", default)]
+    #[allow(dead_code)]
     modification_time: Option<String>,
     #[serde(rename = "updatedAt", default)]
+    #[allow(dead_code)]
     updated_at:        Option<String>,
 }
 
