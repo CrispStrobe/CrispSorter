@@ -62,7 +62,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P5 — Future / planned
 
-- [ ] **Auto-process toggle on watch detection** — risky, needs UX design pass before any code
+- [ ] **Auto-process toggle on watch detection** — UX design pass complete (2026-05-16): per-folder three-mode dropdown (off / analyse / sort), opt-in initial scan, debounced queue, hourly file cap + daily cost cap, tray status surface, fail-soft error path.  6-slice implementation arc spec'd in `handover-prompts/session-prompt-auto-process-toggle.md` (~16 h total).
 - [ ] **PWA demo via File System Access API** — speculative
 
 ### P7.8 — OCR Tier 3 polish + Tier 4
