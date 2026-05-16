@@ -290,6 +290,57 @@ impl SearchEngine {
     /// the original `full_text` columns — true cross-lingual
     /// retrieval-side query rewrite needs a Tantivy schema field
     /// for translated text, which is a separate slice.
+    /// Stage AE wiring — when `filters.colbert_rerank` is set AND the
+    /// active embedder has a ColBERT head, embed the query as per-token
+    /// vectors and call `LocalIndex::rerank_with_colbert` on `results`
+    /// before the final reranker pass.  Falls back to the input
+    /// unchanged whenever any prerequisite is missing (no flag, no
+    /// embedder, no ColBERT head, embedding error, empty results) —
+    /// the re-rank is purely additive on supported corpora.
+    ///
+    /// Holds the embedder mutex for one query-side encode; the
+    /// document-side multivecs are already on disk in
+    /// `multivec_packed`, so the DB round-trip is one filter scan.
+    async fn maybe_colbert_rerank(
+        &self,
+        query: &str,
+        results: Vec<SearchResult>,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        if !filters.colbert_rerank || results.is_empty() {
+            return results;
+        }
+        let Some(embedder) = self.embedder.as_ref() else {
+            return results;
+        };
+        let query_multivec = {
+            let mut emb = embedder.lock().await;
+            if !emb.has_colbert() {
+                return results;
+            }
+            match emb.embed_multivec(vec![query.to_owned()]) {
+                Ok(mut v) if !v.is_empty() => v.remove(0),
+                _ => return results,
+            }
+        };
+        if query_multivec.is_empty() {
+            return results;
+        }
+        let snapshot = results.clone();
+        match self
+            .vector
+            .rerank_with_colbert(results, &query_multivec, limit)
+            .await
+        {
+            Ok(reranked) => reranked,
+            Err(e) => {
+                eprintln!("[search] colbert_rerank failed, keeping RRF order: {e:#}");
+                snapshot
+            }
+        }
+    }
+
     fn apply_translation_snippet(
         results: &mut [SearchResult],
         prefer_translated_lang: Option<&str>,
@@ -355,6 +406,7 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
+        let results = self.maybe_colbert_rerank(query, results, filters, limit).await;
         Ok(self.maybe_rerank(query, results, limit).await)
     }
 
@@ -503,6 +555,7 @@ impl SearchEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
+        let results = self.maybe_colbert_rerank(query_text, results, filters, limit).await;
         Ok(self.maybe_rerank(query_text, results, limit).await)
     }
 

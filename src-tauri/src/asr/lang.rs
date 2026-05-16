@@ -170,41 +170,29 @@ pub fn detect_language_from_pcm(
     }
     let model_path_str = model_path.to_string_lossy().into_owned();
 
-    match method {
-        LidMethod::Whisper | LidMethod::Silero => {
-            // Module-level surface — no Session needed.  Maps our
-            // method enum to crispasr's (Whisper = 0, Silero = 1).
-            let upstream_method = match method {
-                LidMethod::Whisper => crispasr::LidMethod::Whisper,
-                LidMethod::Silero => crispasr::LidMethod::Silero,
-                // Unreachable — outer match already excludes these.
-                _ => unreachable!(),
-            };
-            let result = crispasr::detect_language_pcm(
-                pcm,
-                upstream_method,
-                &model_path_str,
-                n_threads,
-                false, // use_gpu — LID is fast enough on CPU
-                0,     // gpu_device — ignored when use_gpu = false
-                false, // flash_attn — not all backends honour it
-            )
-            .map_err(|e| anyhow::anyhow!("crispasr detect_language_pcm: {e}"))?;
-            convert_lid(result)
-        }
-        LidMethod::Ecapa | LidMethod::Firered => {
-            // Session-level surface — needs a loaded session for the
-            // C-ABI.  We don't have one here, so this path errors
-            // with an actionable message asking the caller to use
-            // the per-session variant once Phase 6 wires it in.
-            anyhow::bail!(
-                "LID method {} requires a loaded ASR session — call \
-                 AsrHandle::detect_language_from_pcm instead (wired \
-                 in Phase 6).  For now use whisper or silero.",
-                method.as_str()
-            )
-        }
-    }
+    // Stage AC Phase 6 — all four methods (Whisper, Silero, Firered,
+    // Ecapa) dispatch through the same module-level
+    // `crispasr_detect_language_pcm` C-ABI; no `Session` required.
+    // The earlier "Ecapa/Firered need a loaded session" comment was
+    // stale — the C layer always took a `CrispasrLidMethod` enum value
+    // and dispatched internally (`crispasr_lid.cpp` switch on method).
+    let upstream_method = match method {
+        LidMethod::Whisper => crispasr::LidMethod::Whisper,
+        LidMethod::Silero => crispasr::LidMethod::Silero,
+        LidMethod::Firered => crispasr::LidMethod::Firered,
+        LidMethod::Ecapa => crispasr::LidMethod::Ecapa,
+    };
+    let result = crispasr::detect_language_pcm(
+        pcm,
+        upstream_method,
+        &model_path_str,
+        n_threads,
+        false, // use_gpu — LID is fast enough on CPU
+        0,     // gpu_device — ignored when use_gpu = false
+        false, // flash_attn — not all backends honour it
+    )
+    .map_err(|e| anyhow::anyhow!("crispasr detect_language_pcm: {e}"))?;
+    convert_lid(result)
 }
 
 /// Stub for builds without the `crispasr` feature.  Errors with a
