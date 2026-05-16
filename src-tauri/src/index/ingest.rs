@@ -703,12 +703,11 @@ fn build_doc_chunk(
         metadata_json: build_metadata_json(raw.mtime_unix, raw.file_size, raw.volume_id.as_deref()),
         parent_dir: raw.parent_dir.clone(),
         volume_id: raw.volume_id.clone(),
-        // P13.5 Phase 8 batch — replicate the per-doc translation
-        // across every chunk row (matches the existing full_text_md
-        // convention). Slightly wasteful for big translations but
-        // keeps downstream queries from needing a JOIN.
-        text_translated: raw.translated_text.clone(),
-        text_translated_lang: raw.translated_to_lang.clone(),
+        // Stage AA: store translation only on chunk_index=0 (the
+        // representative chunk).  Sub-chunks skip it to avoid O(N)
+        // replication; migration v104 nulls legacy copies.
+        text_translated: if tc.chunk_index == 0 { raw.translated_text.clone() } else { None },
+        text_translated_lang: if tc.chunk_index == 0 { raw.translated_to_lang.clone() } else { None },
         // P13.6 Step 7 — replicate the per-doc audio L2 metadata
         // across every chunk row (same wasteful-but-simple
         // convention as text_translated).  None when raw came
