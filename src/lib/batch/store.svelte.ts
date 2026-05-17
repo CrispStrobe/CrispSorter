@@ -686,6 +686,14 @@ export class BatchManager {
                                 : forceOCR ? 'OCR (Tesseract)'
                                 : `JS extractor (.${ext})`;
                     flog('info', `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars via ${tool}`);
+                    // Persist the freshly-extracted text BEFORE handing it
+                    // to the LLM consumer.  Without this, an unclean exit
+                    // (Force-reset, restart, crash) between extraction
+                    // and LLM analysis loses the extracted text — the
+                    // next run sees the item as `queued` with no
+                    // `extractedText` and has to re-extract.  Reported:
+                    // "the files became lost" after restart.
+                    await this.saveCurrentSession();
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
                         queuePush(item);
@@ -1001,13 +1009,32 @@ export class BatchManager {
         item.targetPath = await join(baseDir, ...parts);
     }
 
+    /** Single-writer chain so overlapping `saveCurrentSession` calls
+     *  can't race.  Without this, 121 rapid `addItem`s each fire a
+     *  save and the underlying `store.save()` writes can complete in
+     *  any order — an older 80-item snapshot can land AFTER a newer
+     *  121-item snapshot, silently truncating the on-disk batch.
+     *  Reported: "now you restarted this again and the files became
+     *  lost."  Every save now awaits the previous one, so the final
+     *  snapshot on disk is always the freshest. */
+    private _saveInFlight: Promise<void> = Promise.resolve();
+
     async saveCurrentSession() {
-        const session = {
-            id: 'current',
-            items: $state.snapshot(this.items),
-            timestamp: Date.now()
-        };
-        await saveSetting('lastSession', session);
+        // Capture the current items snapshot NOW (before any concurrent
+        // mutation can interleave), then chain the actual store write
+        // onto the existing in-flight save promise.  Returning the
+        // chain lets awaited callers (e.g. inside finallys) still
+        // block until the write commits.
+        const snapshot = $state.snapshot(this.items);
+        const next = this._saveInFlight.then(async () => {
+            await saveSetting('lastSession', {
+                id: 'current',
+                items: snapshot,
+                timestamp: Date.now(),
+            });
+        });
+        this._saveInFlight = next.catch(() => {/* swallow so one failure doesn't poison the chain */});
+        return next;
     }
 
     async resumeLastSession() {
