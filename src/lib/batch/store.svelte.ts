@@ -377,6 +377,29 @@ export class BatchManager {
         // already-extracted items from being analysed; the consumer
         // keeps draining. Stop button aborts both via the existing
         // extractionAbort + llmAbort signals.
+        // Auto-recover items left in `extracting`/`analyzing` by a
+        // previous interrupted run: lift them back to `queued` so this
+        // run picks them up.  Pre-fix the worker loop's
+        // `needsProcessing` gate rejected them, so a relaunch after
+        // an unclean exit left a chunk of items unreachable — Ex:
+        // 0/4 idle workers while ~100 items still needed extraction.
+        // The user could fix this manually via Force-reset; doing it
+        // automatically at processAll's start is friendlier.
+        const stuckCount = this.items.filter(i =>
+            (i.status === 'extracting' || i.status === 'analyzing') &&
+            (!onlyIds || onlyIds.has(i.id))
+        ).length;
+        if (stuckCount > 0) {
+            flog('info', `Found ${stuckCount} item(s) stuck in extracting/analyzing from a prior run; lifting back to queued.`);
+            for (const item of this.items) {
+                if ((item.status === 'extracting' || item.status === 'analyzing') &&
+                    (!onlyIds || onlyIds.has(item.id))) {
+                    item.status = 'queued';
+                    item.statusDetail = undefined;
+                }
+            }
+        }
+
         const needsProcessing = (item: BatchItem) =>
             (item.status === 'queued' || item.status === 'error' || item.status === 'unfinished') &&
             (!onlyIds || onlyIds.has(item.id));
