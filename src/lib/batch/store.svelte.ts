@@ -477,6 +477,15 @@ export class BatchManager {
                 item.status = 'extracting';
                 const forceOCR = overrides?.enforceOcr ?? false;
 
+                // Surfaced at info so the user sees which file each
+                // worker is handling — pre-fix the only visible
+                // pre-extraction signal was the BE "Reading PDF
+                // metadata" line which fires AFTER extractText
+                // completes.  "Starting" before, "Extracted" after,
+                // both at info level so the gap surfaces clearly.
+                const extractStartTs = performance.now();
+                flog('info', `Starting extraction: ${item.originalName} via worker ${workerId}`);
+
                 try {
                     if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR) {
                         flog('info', `Rust extraction: ${item.originalName}`);
@@ -685,15 +694,20 @@ export class BatchManager {
                     const tool = isPdf && pdfBackend === 'rust' && !forceOCR ? 'pdf-extract (Rust)'
                                 : forceOCR ? 'OCR (Tesseract)'
                                 : `JS extractor (.${ext})`;
-                    flog('info', `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars via ${tool}`);
-                    // Persist the freshly-extracted text BEFORE handing it
-                    // to the LLM consumer.  Without this, an unclean exit
-                    // (Force-reset, restart, crash) between extraction
-                    // and LLM analysis loses the extracted text — the
-                    // next run sees the item as `queued` with no
-                    // `extractedText` and has to re-extract.  Reported:
-                    // "the files became lost" after restart.
-                    await this.saveCurrentSession();
+                    const extractMs = Math.round(performance.now() - extractStartTs);
+                    flog('info',
+                        `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars in ${extractMs} ms via ${tool}`
+                    );
+                    // Fire-and-forget save: the single-writer chain in
+                    // saveCurrentSession serialises writes, so this
+                    // doesn't race with concurrent worker saves.  Not
+                    // awaited because awaiting it after every extract
+                    // serialises the extraction workers themselves —
+                    // 4 workers waiting on disk one-after-another
+                    // halved throughput in the latest run.  The chain
+                    // still guarantees a stale snapshot never lands
+                    // after a fresher one.
+                    this.saveCurrentSession();
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
                         queuePush(item);
@@ -1025,15 +1039,54 @@ export class BatchManager {
         // onto the existing in-flight save promise.  Returning the
         // chain lets awaited callers (e.g. inside finallys) still
         // block until the write commits.
-        const snapshot = $state.snapshot(this.items);
-        const next = this._saveInFlight.then(async () => {
-            await saveSetting('lastSession', {
-                id: 'current',
-                items: snapshot,
-                timestamp: Date.now(),
-            });
+        //
+        // Strip `extractedText` from the persisted snapshot —
+        // potentially MB per item, blowing up the single-JSON-blob
+        // persistence model that tauri-plugin-store uses
+        // (every save rewrites the entire file).  Tradeoff: items
+        // resumed from a restart will need to re-extract.  Metadata
+        // (title/author/year/targetPath/isAccepted/status) IS still
+        // persisted, so the user's manual review work survives —
+        // only the extracted body is lost across restarts.
+        const snapshot = $state.snapshot(this.items).map((it: any) => {
+            // Keep a short preview only — needed so the UI can show
+            // "⚠ poor extraction" markers, but bounded so the
+            // saved JSON stays small.
+            if (it.extractedText && it.extractedText.length > 500) {
+                return { ...it, extractedText: it.extractedText.slice(0, 500) };
+            }
+            return it;
         });
-        this._saveInFlight = next.catch(() => {/* swallow so one failure doesn't poison the chain */});
+        const itemCount = snapshot.length;
+        const next = this._saveInFlight.then(async () => {
+            const t0 = performance.now();
+            try {
+                await saveSetting('lastSession', {
+                    id: 'current',
+                    items: snapshot,
+                    timestamp: Date.now(),
+                });
+                const dt = Math.round(performance.now() - t0);
+                // Log every save so persistence loss is visible at the
+                // moment it happens.  At debug level so it doesn't
+                // flood at info; users investigating a loss will set
+                // verbosity to debug.
+                if (dt > 200) {
+                    flog('warn', `saveCurrentSession: ${itemCount} items took ${dt} ms — disk pressure may be backing up reactivity.`);
+                } else {
+                    flog('debug', `saveCurrentSession: persisted ${itemCount} items in ${dt} ms.`);
+                }
+            } catch (e: any) {
+                // Surface failures (previous behaviour swallowed them).
+                flog('error', `saveCurrentSession FAILED for ${itemCount} items: ${e?.message ?? e}`);
+                throw e;
+            }
+        });
+        // Single-writer chain: every subsequent save waits for this
+        // one's write to commit (or fail).  The catch is on the chain
+        // pointer only — the returned `next` still propagates errors
+        // to direct awaiters.
+        this._saveInFlight = next.catch(() => {/* poison-pill swallow on chain pointer only */});
         return next;
     }
 
