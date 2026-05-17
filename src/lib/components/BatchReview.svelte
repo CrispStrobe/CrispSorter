@@ -1472,6 +1472,13 @@
                                                     {isEV ? '📖' : '📚'}{item.isChapterRepresentative ? ` ${n}` : ` ${item.chapterSuffix ?? ''}`}
                                                 </span>
                                             {/if}
+                                            {#if item.historyMatch}
+                                                <span class="inline-badge history-badge"
+                                                      title="Already sorted on {new Date(item.historyMatch.processedAt).toLocaleDateString()} — click to re-process from scratch"
+                                                      onclick={(e) => { e.stopPropagation(); item.historyMatch = undefined; item.skipHistoryCheck = true; item.status = 'queued'; item.suggestedTitle = undefined; item.suggestedAuthor = undefined; item.suggestedYear = undefined; item.targetPath = undefined; upsertItem(item); }}>
+                                                    ✓ sorted
+                                                </span>
+                                            {/if}
                                         {:else if col.id === 'title'}
                                             <input type="text" bind:value={item.suggestedTitle} onclick={(e) => { e.stopPropagation(); selectedItemId = item.id; }} onchange={() => batchManager.recalculateTargetPath(item.id)} class:fallback={isUnknown(item.suggestedTitle)} aria-label="Suggested Title" />
                                         {:else if col.id === 'author'}
@@ -1883,6 +1890,7 @@
     .dupe-primary-badge { background: #78350f55; color: #fde68a; }
     .chapter-badge              { background: #1e3a5f55; color: #93c5fd; }
     .chapter-badge.chapter-edited-vol { background: #2e1a5255; color: #c084fc; }
+    .history-badge { background: #064e3b88; color: #34d399; }
     
     .dense-table input[type="text"] { width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; border-radius: 4px; font-size: 0.8125rem; color: #f8fafc; }
     .dense-table tr:hover input[type="text"] { background: #0f172a; border-color: #334155; }

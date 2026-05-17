@@ -73,6 +73,19 @@ CREATE TABLE IF NOT EXISTS extracted_texts (
     text         TEXT    NOT NULL,
     extracted_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS processed_history (
+    sha256           TEXT    PRIMARY KEY,
+    filename         TEXT    NOT NULL,
+    size_bytes       INTEGER NOT NULL,
+    suggested_title  TEXT,
+    suggested_author TEXT,
+    suggested_year   TEXT,
+    target_path      TEXT,
+    processed_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS processed_history_filename_idx ON processed_history(filename);
 "#;
 
 // ── Data types ────────────────────────────────────────────────────────────────
@@ -142,6 +155,25 @@ pub struct BatchItemRow {
     /// Full text lives in `extracted_texts`; call `get_extracted_text` to hydrate.
     #[serde(default)]
     pub extracted_text_preview: Option<String>,
+}
+
+/// One row in the `processed_history` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessedHistoryRow {
+    pub sha256: String,
+    pub filename: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: i64,
+    #[serde(default)]
+    pub suggested_title: Option<String>,
+    #[serde(default)]
+    pub suggested_author: Option<String>,
+    #[serde(default)]
+    pub suggested_year: Option<String>,
+    #[serde(default)]
+    pub target_path: Option<String>,
+    pub processed_at: i64,
 }
 
 // ── BatchSessionStore ─────────────────────────────────────────────────────────
@@ -285,6 +317,73 @@ impl BatchSessionStore {
         )
         .context("inserting migration sentinel")?;
         Ok(())
+    }
+
+    /// Record a successfully-processed item in the persistent history table.
+    /// Idempotent — repeated calls for the same sha256 update the record.
+    pub fn record_processed(&self, row: &ProcessedHistoryRow) -> Result<()> {
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO processed_history (sha256, filename, size_bytes, suggested_title, suggested_author, suggested_year, target_path, processed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(sha256) DO UPDATE SET
+               filename         = excluded.filename,
+               size_bytes       = excluded.size_bytes,
+               suggested_title  = excluded.suggested_title,
+               suggested_author = excluded.suggested_author,
+               suggested_year   = excluded.suggested_year,
+               target_path      = excluded.target_path,
+               processed_at     = excluded.processed_at",
+            params![
+                row.sha256,
+                row.filename,
+                row.size_bytes,
+                row.suggested_title,
+                row.suggested_author,
+                row.suggested_year,
+                row.target_path,
+                now,
+            ],
+        )
+        .context("recording processed history")?;
+        Ok(())
+    }
+
+    /// Look up a previously-processed item by its SHA-256.
+    /// Returns `None` when the hash has never been seen.
+    pub fn lookup_history_by_sha256(&self, sha256: &str) -> Result<Option<ProcessedHistoryRow>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT sha256, filename, size_bytes, suggested_title, suggested_author, suggested_year, target_path, processed_at
+                 FROM processed_history WHERE sha256 = ?1",
+                params![sha256],
+                |r| {
+                    Ok(ProcessedHistoryRow {
+                        sha256: r.get(0)?,
+                        filename: r.get(1)?,
+                        size_bytes: r.get(2)?,
+                        suggested_title: r.get(3)?,
+                        suggested_author: r.get(4)?,
+                        suggested_year: r.get(5)?,
+                        target_path: r.get(6)?,
+                        processed_at: r.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .context("looking up processed history")?;
+        Ok(result)
+    }
+
+    /// Total number of distinct files in the processed history.
+    pub fn processed_history_count(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM processed_history", [], |r| r.get(0))
+            .context("counting processed history")?;
+        Ok(count)
     }
 }
 
@@ -605,5 +704,50 @@ mod tests {
         assert_eq!(loaded[0].is_duplicate_primary, Some(false));
         assert_eq!(loaded[0].is_chapter_representative, Some(true));
         assert_eq!(loaded[0].chapter_is_edited_volume, Some(false));
+    }
+
+    #[test]
+    fn processed_history_roundtrip() {
+        let (store, _dir) = make_store();
+        let row = ProcessedHistoryRow {
+            sha256: "abc123".to_owned(),
+            filename: "kant.pdf".to_owned(),
+            size_bytes: 98765,
+            suggested_title: Some("Critique of Pure Reason".to_owned()),
+            suggested_author: Some("Kant, Immanuel".to_owned()),
+            suggested_year: Some("1781".to_owned()),
+            target_path: Some("/sorted/Kant/kant.pdf".to_owned()),
+            processed_at: 1_700_000_000_000,
+        };
+        store.record_processed(&row).unwrap();
+        let found = store.lookup_history_by_sha256("abc123").unwrap();
+        assert!(found.is_some());
+        let f = found.unwrap();
+        assert_eq!(f.sha256, "abc123");
+        assert_eq!(f.suggested_title.as_deref(), Some("Critique of Pure Reason"));
+        assert_eq!(f.suggested_author.as_deref(), Some("Kant, Immanuel"));
+        // Missing sha256 returns None
+        assert!(store.lookup_history_by_sha256("no-such-hash").unwrap().is_none());
+    }
+
+    #[test]
+    fn processed_history_upsert_updates() {
+        let (store, _dir) = make_store();
+        let mut row = ProcessedHistoryRow {
+            sha256: "dup-hash".to_owned(),
+            filename: "file.pdf".to_owned(),
+            size_bytes: 1000,
+            suggested_title: Some("Old Title".to_owned()),
+            suggested_author: None,
+            suggested_year: None,
+            target_path: None,
+            processed_at: 1_700_000_000_000,
+        };
+        store.record_processed(&row).unwrap();
+        row.suggested_title = Some("New Title".to_owned());
+        store.record_processed(&row).unwrap(); // idempotent upsert
+        let found = store.lookup_history_by_sha256("dup-hash").unwrap().unwrap();
+        assert_eq!(found.suggested_title.as_deref(), Some("New Title"));
+        assert_eq!(store.processed_history_count().unwrap(), 1);
     }
 }

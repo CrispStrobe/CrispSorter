@@ -8,6 +8,7 @@ import { getSetting } from '../store';
 import {
     loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch,
     setExtractedText, getExtractedText, migrateFromJson,
+    recordProcessed, lookupHistory,
 } from '../batchStore';
 import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
@@ -486,6 +487,40 @@ export class BatchManager {
                     if (item.extractedText && !overrides?.extractionOnly) queuePush(item);
                     continue;
                 }
+                // Processed-history dedup: if we've seen this exact file content
+                // before (same SHA-256) pre-fill the metadata from the last run
+                // and jump straight to 'review' — no extraction, no LLM call.
+                // The user can click "Re-process" to override (sets skipHistoryCheck).
+                if (!item.skipHistoryCheck) {
+                    if (!item.sha256) {
+                        try {
+                            item.sha256 = await invoke<string>('file_sha256', { path: item.originalPath });
+                        } catch (e) {
+                            logDebug(`sha256 failed for ${item.originalName}: ${e}`);
+                        }
+                    }
+                    if (item.sha256) {
+                        const hist = await lookupHistory(item.sha256);
+                        if (hist) {
+                            item.historyMatch = {
+                                suggestedTitle:  hist.suggestedTitle,
+                                suggestedAuthor: hist.suggestedAuthor,
+                                suggestedYear:   hist.suggestedYear,
+                                targetPath:      hist.targetPath,
+                                processedAt:     hist.processedAt,
+                            };
+                            item.suggestedTitle  = hist.suggestedTitle  ?? item.suggestedTitle;
+                            item.suggestedAuthor = hist.suggestedAuthor ?? item.suggestedAuthor;
+                            item.suggestedYear   = hist.suggestedYear   ?? item.suggestedYear;
+                            item.status = 'review';
+                            if (overrides?.extractionOnly) await this.calculateTargetPath(item);
+                            await upsertItem(item);
+                            flog('info', `History match: ${item.originalName} — skipping extraction (last seen ${new Date(hist.processedAt).toLocaleDateString()})`);
+                            continue;
+                        }
+                    }
+                }
+
                 // Item needs processing — try to restore the full extracted text
                 // from SQLite before committing to re-extraction.  On resume,
                 // rowToBatchItem intentionally leaves extractedText undefined so
@@ -1176,6 +1211,20 @@ export class BatchManager {
                                     newPath: item.targetPath,
                                 }).catch(e => console.warn('[Index] update_location_by_path failed:', e));
                             }
+                        }
+                        // Persist to processed_history so future batches can skip
+                        // extraction for the same content (fire-and-forget).
+                        if (item.sha256) {
+                            recordProcessed({
+                                sha256:          item.sha256,
+                                filename:        item.originalName,
+                                sizeBytes:       item.size,
+                                suggestedTitle:  item.suggestedTitle,
+                                suggestedAuthor: item.suggestedAuthor,
+                                suggestedYear:   item.suggestedYear,
+                                targetPath:      item.targetPath,
+                                processedAt:     Date.now(),
+                            }).catch(e => logDebug(`recordProcessed failed: ${e}`));
                         }
                     } else {
                         item.status = 'error';
