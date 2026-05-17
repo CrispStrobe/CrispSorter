@@ -1,5 +1,6 @@
 pub mod asr;
 pub mod audio;
+pub mod batch_session;
 pub mod bg_ingest;
 pub mod images;
 /// Re-export the extracted crispcat workspace crate as `catalog` so existing
@@ -854,6 +855,10 @@ pub struct AppState {
     /// `None` only during the very brief window before setup completes;
     /// all `jobs_*` commands return an error if accessed before init.
     pub job_queue: Arc<std::sync::Mutex<Option<jobs::JobQueue>>>,
+    /// SQLite-backed batch session store. Replaces the single-JSON-blob
+    /// tauri-plugin-store approach with per-row writes.  `None` only during
+    /// the brief window before the setup hook runs.
+    pub batch_session_store: Arc<std::sync::Mutex<Option<batch_session::BatchSessionStore>>>,
     /// App data directory, set once in the Tauri setup hook.
     /// Used by drive_* commands and any future component that needs the
     /// data-dir without going through the index or job subsystems.
@@ -2309,6 +2314,17 @@ pub fn run() {
                         app_log!("error", "Failed to open job queue: {e}");
                     }
                 }
+                match batch_session::BatchSessionStore::open_or_create(&data_dir) {
+                    Ok(s) => {
+                        if let Ok(mut guard) = state.batch_session_store.lock() {
+                            *guard = Some(s);
+                        }
+                        app_log!("info", "Batch session store opened at {}/batch_session.db", data_dir.display());
+                    }
+                    Err(e) => {
+                        app_log!("error", "Failed to open batch session store: {e}");
+                    }
+                }
 
                 // P13.5 follow-up — load persisted IndexConfig from
                 // <data_dir>/index_config.json so `index_get_config`
@@ -2484,6 +2500,7 @@ pub fn run() {
             bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
             foreground_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             job_queue: Arc::new(std::sync::Mutex::new(None)),
+            batch_session_store: Arc::new(std::sync::Mutex::new(None)),
             data_dir: tokio::sync::Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
@@ -2649,6 +2666,13 @@ pub fn run() {
             jobs::tauri_commands::jobs_list_files,
             jobs::tauri_commands::jobs_remove_file,
             jobs::tauri_commands::jobs_remove_files_by_status,
+            batch_session::tauri_commands::batch_session_load,
+            batch_session::tauri_commands::batch_session_upsert_item,
+            batch_session::tauri_commands::batch_session_upsert_items_bulk,
+            batch_session::tauri_commands::batch_session_delete_items,
+            batch_session::tauri_commands::batch_session_clear,
+            batch_session::tauri_commands::batch_session_set_extracted_text,
+            batch_session::tauri_commands::batch_session_get_extracted_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
