@@ -360,6 +360,11 @@ export class BatchManager {
                 .filter((p): p is RRProvider => p !== null),
         ];
         let rrIdx = 0; // advances when a provider exhausts its retries
+        // Providers that failed with a hard error (non-transient: 401, 403,
+        // persistent connection failures) this run.  Skipped for all
+        // subsequent items so a broken API key doesn't slow down the whole
+        // batch by retrying 3× on every file.
+        const rrBroken = new Set<string>();
 
         flog('info', `processAll config: format=${parsingFormat} lang=${language} provider=${activeProviderId} model=${modelId} maxChars=${llmMaxChars} fallbacks=${rrProviders.length - 1}`);
 
@@ -808,6 +813,7 @@ export class BatchManager {
                             for (let off = 0; off < rrProviders.length; off++) {
                                 const i = (rrIdx + off) % rrProviders.length;
                                 const rr = rrProviders[i];
+                                if (rrBroken.has(rr.id)) continue; // hard failure this run
                                 if (llmClient.isProviderCoolingDown(rr.id)) {
                                     cooling.push(llmClient.cooldownUntil(rr.id));
                                     continue;
@@ -822,18 +828,24 @@ export class BatchManager {
                                     if (e?.name === 'RateLimitError') {
                                         flog('info', `Provider ${rr.id} 429 — advancing rrIdx, will retry it after cooldown.`);
                                     } else {
-                                        flog('warn', `Provider ${rr.id} failed — trying next fallback: ${e.message}`);
+                                        // Hard failure (401, 403, persistent connection error).
+                                        // Sideline this provider for the rest of the run so it
+                                        // doesn't waste 3 retries × every item.
+                                        rrBroken.add(rr.id);
+                                        flog('warn', `Provider ${rr.id} hard-failed — sidelined for this run: ${e.message}`);
                                     }
                                     // Move past this provider on the next pick.
                                     rrIdx = (i + 1) % rrProviders.length;
                                 }
                             }
                             // First sweep done.  If every provider was
-                            // cooling (no actual call was attempted), wait
-                            // for the soonest one to come back.  Skip the
-                            // second sweep when we tried a real call —
+                            // cooling or broken (no actual call was attempted),
+                            // wait for the soonest cooling one to come back.
+                            // Skip the second sweep when we tried a real call —
                             // failures already produced `lastErr` and
                             // a second sweep would just repeat them.
+                            const availableCount = rrProviders.filter(r => !rrBroken.has(r.id)).length;
+                            if (availableCount === 0) throw lastErr ?? new Error('All LLM providers hard-failed for this run');
                             if (cooling.length === rrProviders.length) {
                                 const soonest = Math.min(...cooling);
                                 const sleepMs = Math.max(200, soonest - Date.now() + 200);
