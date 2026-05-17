@@ -2,7 +2,8 @@
     import { onMount, onDestroy } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-    import { frontendLogs, type FrontendLogEntry } from '../log';
+    import { frontendLogs, type FrontendLogEntry, getLogVerbosity, setLogVerbosity, type LogLevel } from '../log';
+    import { saveSetting } from '../store';
     import { i18n } from '../i18n.svelte';
 
     interface LogEntry {
@@ -17,6 +18,13 @@
     let autoscroll = $state(true);
     let levelFilter = $state('all');
     let searchFilter = $state('');
+    /** Global log VERBOSITY (what gets PUSHED into the log store).
+     *  Distinct from `levelFilter` above which only controls what's
+     *  SHOWN — verbosity actually decides whether `info` / `debug`
+     *  entries are emitted at all.  Mirrors the Settings → General
+     *  → Log-Verbosity dropdown but reachable without leaving the
+     *  current screen. */
+    let verbosity = $state<LogLevel>(getLogVerbosity());
     let logContainer: HTMLElement | null = null;
     let unlisten: UnlistenFn | null = null;
     let unsubFe: (() => void) | null = null;
@@ -102,11 +110,27 @@
 <div class="log-panel">
     <div class="log-toolbar">
         <span class="log-title">{i18n.t.logs.title}</span>
-        <select bind:value={levelFilter} class="log-select">
+        <select bind:value={levelFilter} class="log-select" title={i18n.t.logs.filter_placeholder}>
             <option value="all">{i18n.t.logs.level_all}</option>
             <option value="info">{i18n.t.logs.level_info}</option>
             <option value="warn">{i18n.t.logs.level_warn}</option>
             <option value="error">{i18n.t.logs.level_error}</option>
+        </select>
+        <!-- Verbosity selector — controls what GETS LOGGED, not what's
+             shown.  Persists via tauri-plugin-store so a relaunch
+             keeps the user's choice.  No keyboard listener wired —
+             change is observed via `onchange` and propagates
+             immediately. -->
+        <select bind:value={verbosity} class="log-select"
+                onchange={async () => {
+                    setLogVerbosity(verbosity);
+                    try { await saveSetting('logVerbosity', verbosity); } catch {}
+                }}
+                title="Verbosity (silent / error / info / debug)">
+            <option value="silent">silent</option>
+            <option value="error">error</option>
+            <option value="info">info</option>
+            <option value="debug">debug</option>
         </select>
         <input type="text" bind:value={searchFilter} placeholder={i18n.t.logs.filter_placeholder} class="log-search" />
         <label class="log-autoscroll">

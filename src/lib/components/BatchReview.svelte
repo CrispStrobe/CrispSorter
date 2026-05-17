@@ -595,6 +595,17 @@
         // path was console-only and invisible from the in-app Logs.
         logInfo(`Sortieren clicked: mode=${mode}, items=${batchManager.items.length}`);
 
+        // In-flight guard moved here from the button's HTML `disabled`
+        // attribute.  A disabled button swallows clicks silently and
+        // the user has no way to see what's going on.  Re-clicking
+        // while a sort is already running now produces a clear log +
+        // toast instead of looking like a broken button.
+        if (batchManager.isExecuting) {
+            logWarn('Sortieren ignored — a sort is already in flight.  Wait or use Force-reset.');
+            showToast(i18n.t.batch.executing);
+            return;
+        }
+
         // Compact per-item summary (status histogram + accepted /
         // target counts). Goes through logDebug so it only fires when
         // the user has set Log-Verbosity=debug; the histogram alone
@@ -1075,9 +1086,34 @@
             
             <div class="dropdown-container">
                 <div class="split-btn-group">
+                    <!-- Sortieren button stays clickable even when zero
+                         items are accepted — `executeSorting` itself
+                         logs "Sortieren clicked …", computes the per-
+                         status histogram and surfaces a diagnostic
+                         toast ("Keine Elemente bereit (X ohne Zielpfad,
+                         Y mit ungeeignetem Status)") so the user
+                         sees WHY nothing got picked up.  Pre-fix the
+                         button was simply disabled with no hint at all
+                         when LLM auto-accept didn't fire (e.g. every
+                         response came back "Unknown Author").  Only
+                         the in-flight sort lock (`isExecuting`) still
+                         disables it. -->
+                    <!-- Button is NEVER disabled at the HTML level — that
+                         was the cause of "Sortieren does nothing, no
+                         log entries" reports: a disabled button swallows
+                         the click before any handler runs, so neither
+                         the diagnostic log nor a toast ever fires.  All
+                         gates (0 accepted, sort already in flight) are
+                         handled inside `executeSorting`, which always
+                         logs the click and shows an actionable toast. -->
                     <button class="action-btn rocket-btn small"
                             onclick={() => executeSorting('move')}
-                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted).length === 0}>
+                            title={(() => {
+                                const accepted = batchManager.items.filter(i => i.isAccepted).length;
+                                if (batchManager.isExecuting) return i18n.t.batch.executing;
+                                if (accepted === 0) return i18n.t.batch.no_items_ready;
+                                return `${accepted} / ${batchManager.items.length}`;
+                            })()}>
                         {#if batchManager.isExecuting}
                             <span class="loader-anim"><Loader2 size={16} /></span> {i18n.t.batch.executing}
                         {:else}
@@ -1086,7 +1122,6 @@
                     </button>
                     <button class="action-btn rocket-btn small split-caret"
                             onclick={() => showSortOptions = !showSortOptions}
-                            disabled={batchManager.isExecuting || batchManager.items.filter(i => i.isAccepted).length === 0}
                             aria-label="Sort Options">
                         <ChevronDown size={11} />
                     </button>
