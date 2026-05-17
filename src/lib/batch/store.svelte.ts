@@ -4,8 +4,11 @@ import { get, writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
-import { getSetting, saveSetting } from '../store';
-import { migrateFromJson } from '../batchStore';
+import { getSetting } from '../store';
+import {
+    loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch,
+    setExtractedText, migrateFromJson,
+} from '../batchStore';
 import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
@@ -97,7 +100,7 @@ export class BatchManager {
         if (this.items.some(i => norm(i.originalPath) === norm(path))) return; // skip duplicates (case-insensitive, cross-separator)
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
-        this.items.push({
+        const newItem: BatchItem = {
             id,
             originalPath: path,
             originalName: name,
@@ -105,25 +108,22 @@ export class BatchManager {
             status: 'queued',
             extension,
             modifiedAt: Date.now(),
-            // New items start UNaccepted. They auto-flip to accepted only
-            // once an Author is recognised (see `markReviewed`); files
-            // whose extraction never produces an Author stay unaccepted
-            // and require an explicit user click to be included in a sort.
             isAccepted: false,
             isIgnored: false
-        });
-        this.saveCurrentSession();
+        };
+        this.items.push(newItem);
+        upsertItem(newItem); // fire-and-forget
     }
 
     async removeItems(ids: string[]) {
         this.items = this.items.filter(i => !ids.includes(i.id));
-        await this.saveCurrentSession();
+        await deleteItems(ids);
     }
 
     async clear() {
         if (this.isProcessing) return;
         this.items = [];
-        await this.saveCurrentSession();
+        await clearBatch();
     }
 
     private lastStopAtMs = 0;
@@ -167,24 +167,28 @@ export class BatchManager {
         const targets = ids
             ? this.items.filter(i => ids.includes(i.id))
             : this.items;
+        const changed: BatchItem[] = [];
         for (const item of targets) {
             if (['review', 'error', 'unfinished', 'ready'].includes(item.status)) {
                 item.status = 'queued';
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
+                changed.push(item);
             }
         }
-        await this.saveCurrentSession();
+        if (changed.length > 0) await upsertItemsBulk(changed);
     }
 
     resetStuckItems() {
+        const changed: BatchItem[] = [];
         for (const item of this.items) {
             if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
                 item.status = 'queued';
                 item.statusDetail = undefined;
+                changed.push(item);
             }
         }
-        this.saveCurrentSession();
+        if (changed.length > 0) upsertItemsBulk(changed); // fire-and-forget
     }
 
     /** Nuclear escape hatch — when the graceful Stop path is wedged and
@@ -218,18 +222,21 @@ export class BatchManager {
         this.llmActive = 0;
         this.lastStopAtMs = 0;
         // 2. Lift stuck items.
+        const lifted: BatchItem[] = [];
         for (const item of this.items) {
             if (item.status === 'extracting' || item.status === 'analyzing' || item.status === 'unfinished') {
                 item.status = 'queued';
                 item.statusDetail = undefined;
                 item.errorMessage = undefined;
+                lifted.push(item);
             }
         }
         // 3. Persist so a re-launch doesn't restore the wedged shape.
-        this.saveCurrentSession();
+        if (lifted.length > 0) upsertItemsBulk(lifted); // fire-and-forget
     }
 
     async reextractItems(ids: string[], enforceOcr: boolean = false) {
+        const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
             if (item) {
@@ -237,12 +244,15 @@ export class BatchManager {
                 item.status = 'queued';
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
+                targets.push(item);
             }
         });
+        if (targets.length > 0) upsertItemsBulk(targets); // fire-and-forget
         await this.processAll({ enforceOcr, extractionOnly: true }, new Set(ids));
     }
 
     async reprocessItems(ids: string[], overrides?: ProcessOverrides) {
+        const targets: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
             if (item) {
@@ -250,17 +260,20 @@ export class BatchManager {
                 item.errorMessage = undefined;
                 item.statusDetail = undefined;
                 if (overrides?.enforceOcr) item.extractedText = undefined;
+                targets.push(item);
             }
         });
+        if (targets.length > 0) upsertItemsBulk(targets); // fire-and-forget
         await this.processAll(overrides, new Set(ids));
     }
 
     async setAcceptedItems(ids: string[], accepted: boolean) {
+        const changed: BatchItem[] = [];
         ids.forEach(id => {
             const item = this.items.find(i => i.id === id);
-            if (item) item.isAccepted = accepted;
+            if (item) { item.isAccepted = accepted; changed.push(item); }
         });
-        await this.saveCurrentSession();
+        if (changed.length > 0) await upsertItemsBulk(changed);
     }
 
     async processAll(overrides?: ProcessOverrides, onlyIds?: Set<string>) {
@@ -699,16 +712,8 @@ export class BatchManager {
                     flog('info',
                         `Extracted: ${item.originalName} -- ${extractedBytes.toLocaleString()} chars in ${extractMs} ms via ${tool}`
                     );
-                    // Fire-and-forget save: the single-writer chain in
-                    // saveCurrentSession serialises writes, so this
-                    // doesn't race with concurrent worker saves.  Not
-                    // awaited because awaiting it after every extract
-                    // serialises the extraction workers themselves —
-                    // 4 workers waiting on disk one-after-another
-                    // halved throughput in the latest run.  The chain
-                    // still guarantees a stale snapshot never lands
-                    // after a fresher one.
-                    this.saveCurrentSession();
+                    if (item.extractedText) setExtractedText(item.id, item.extractedText); // fire-and-forget full text
+                    upsertItem(item); // fire-and-forget
                     // Hand the freshly-extracted item to the LLM consumer.
                     if (!overrides?.extractionOnly && item.extractedText) {
                         queuePush(item);
@@ -729,7 +734,7 @@ export class BatchManager {
                     this.extractionActive = Math.max(0, this.extractionActive - 1);
                     this.extractionDone++;
                 }
-                await this.saveCurrentSession();
+                await upsertItem(item);
             }
             };
 
@@ -886,7 +891,7 @@ export class BatchManager {
                     this.llmActive = Math.max(0, this.llmActive - 1);
                     this.llmDone++;
                 }
-                await this.saveCurrentSession();
+                await upsertItem(item);
             }
             };
 
@@ -916,7 +921,7 @@ export class BatchManager {
             this.extractionActive = 0;
             this.llmActive = 0;
             flog('info', 'processAll finished');
-            await this.saveCurrentSession();
+            await upsertItemsBulk(this.items);
         }
         } catch (e) {
             // Outer-scope catch: any throw from the ~45 lines of
@@ -931,7 +936,7 @@ export class BatchManager {
             this.stopRequested = false;
             this.llmAbort = null;
             this.extractionAbort = null;
-            await this.saveCurrentSession();
+            await upsertItemsBulk(this.items);
             throw e;
         }
     }
@@ -981,7 +986,7 @@ export class BatchManager {
             item.isAccepted = false;
             flog('info', `Auto-unchecked '${item.originalName}' — Title or Author reverted to a sentinel.`);
         }
-        await this.saveCurrentSession();
+        await upsertItem(item);
     }
 
     private async calculateTargetPath(item: BatchItem) {
@@ -1024,73 +1029,6 @@ export class BatchManager {
         item.targetPath = await join(baseDir, ...parts);
     }
 
-    /** Single-writer chain so overlapping `saveCurrentSession` calls
-     *  can't race.  Without this, 121 rapid `addItem`s each fire a
-     *  save and the underlying `store.save()` writes can complete in
-     *  any order — an older 80-item snapshot can land AFTER a newer
-     *  121-item snapshot, silently truncating the on-disk batch.
-     *  Reported: "now you restarted this again and the files became
-     *  lost."  Every save now awaits the previous one, so the final
-     *  snapshot on disk is always the freshest. */
-    private _saveInFlight: Promise<void> = Promise.resolve();
-
-    async saveCurrentSession() {
-        // Capture the current items snapshot NOW (before any concurrent
-        // mutation can interleave), then chain the actual store write
-        // onto the existing in-flight save promise.  Returning the
-        // chain lets awaited callers (e.g. inside finallys) still
-        // block until the write commits.
-        //
-        // Strip `extractedText` from the persisted snapshot —
-        // potentially MB per item, blowing up the single-JSON-blob
-        // persistence model that tauri-plugin-store uses
-        // (every save rewrites the entire file).  Tradeoff: items
-        // resumed from a restart will need to re-extract.  Metadata
-        // (title/author/year/targetPath/isAccepted/status) IS still
-        // persisted, so the user's manual review work survives —
-        // only the extracted body is lost across restarts.
-        const snapshot = $state.snapshot(this.items).map((it: any) => {
-            // Keep a short preview only — needed so the UI can show
-            // "⚠ poor extraction" markers, but bounded so the
-            // saved JSON stays small.
-            if (it.extractedText && it.extractedText.length > 500) {
-                return { ...it, extractedText: it.extractedText.slice(0, 500) };
-            }
-            return it;
-        });
-        const itemCount = snapshot.length;
-        const next = this._saveInFlight.then(async () => {
-            const t0 = performance.now();
-            try {
-                await saveSetting('lastSession', {
-                    id: 'current',
-                    items: snapshot,
-                    timestamp: Date.now(),
-                });
-                const dt = Math.round(performance.now() - t0);
-                // Log every save so persistence loss is visible at the
-                // moment it happens.  At debug level so it doesn't
-                // flood at info; users investigating a loss will set
-                // verbosity to debug.
-                if (dt > 200) {
-                    flog('warn', `saveCurrentSession: ${itemCount} items took ${dt} ms — disk pressure may be backing up reactivity.`);
-                } else {
-                    flog('debug', `saveCurrentSession: persisted ${itemCount} items in ${dt} ms.`);
-                }
-            } catch (e: any) {
-                // Surface failures (previous behaviour swallowed them).
-                flog('error', `saveCurrentSession FAILED for ${itemCount} items: ${e?.message ?? e}`);
-                throw e;
-            }
-        });
-        // Single-writer chain: every subsequent save waits for this
-        // one's write to commit (or fail).  The catch is on the chain
-        // pointer only — the returned `next` still propagates errors
-        // to direct awaiters.
-        this._saveInFlight = next.catch(() => {/* poison-pill swallow on chain pointer only */});
-        return next;
-    }
-
     async resumeLastSession() {
         // One-shot migration from the legacy JSON blob into SQLite.
         // Fast no-op on every launch after the first (sentinel check).
@@ -1098,27 +1036,25 @@ export class BatchManager {
             const migrated = await migrateFromJson();
             if (migrated > 0) flog('info', `Migrated ${migrated} item(s) from lastSession JSON to SQLite.`);
         } catch (e: any) {
-            // Non-fatal: migration failure falls back to JSON load below.
-            flog('warn', `migrateFromJson failed (falling back to JSON): ${e?.message ?? e}`);
+            flog('warn', `migrateFromJson failed: ${e?.message ?? e}`);
         }
 
-        const last = await getSetting('lastSession');
-        if (last && (last as any).items) {
-            this.items = (last as any).items.map((item: any) => {
+        try {
+            const rows = await loadBatch();
+            this.items = rows.map((item: BatchItem) => {
                 if (item.status === 'extracting' || item.status === 'analyzing') {
-                    return { ...item, status: 'unfinished', statusDetail: undefined };
+                    return { ...item, status: 'unfinished' as const, statusDetail: undefined };
                 }
-                // Repair: a previous build's auto-accept rule only
-                // recognised the literal string "Unknown Author" and
-                // would mark items with "Unknown" / "n.n." / "?" /
-                // empty author as accepted (green check). Tighten on
-                // resume so existing sessions don't carry the bad
-                // accepts forward.
+                // Repair: old auto-accept rule was too loose, may have
+                // marked sentinel-author items as accepted.
                 if (item.isAccepted && isUnknownSentinel(item.suggestedAuthor)) {
                     return { ...item, isAccepted: false };
                 }
                 return item;
             });
+            if (this.items.length > 0) flog('info', `Resumed ${this.items.length} item(s) from SQLite.`);
+        } catch (e: any) {
+            flog('warn', `resumeLastSession: SQLite load failed: ${e?.message ?? e}`);
         }
     }
 
@@ -1190,6 +1126,7 @@ export class BatchManager {
             let errorCount = 0;
             let copiedFallback = 0;
             let locked = 0;
+            const changedItems: BatchItem[] = [];
 
             for (const [id, res] of Object.entries(results)) {
                 const item = this.items.find(i => i.id === id);
@@ -1221,10 +1158,11 @@ export class BatchManager {
                         else if (res.error === 'LOCKED') locked++;
                         else errorCount++;
                     }
+                    changedItems.push(item);
                 }
             }
 
-            await this.saveCurrentSession();
+            if (changedItems.length > 0) await upsertItemsBulk(changedItems);
             return { success: successCount, notFound, notWritable, error: errorCount, copiedFallback, locked, mode };
         } finally {
             this.isExecuting = false;
@@ -1236,7 +1174,8 @@ export class BatchManager {
         const session = saved[id];
         if (session?.items) {
             this.items = session.items;
-            await this.saveCurrentSession();
+            await clearBatch();
+            await upsertItemsBulk(this.items);
         }
     }
 
@@ -1258,7 +1197,8 @@ export class BatchManager {
             const items = JSON.parse(text) as BatchItem[];
             if (Array.isArray(items)) {
                 this.items = items;
-                await this.saveCurrentSession();
+                await clearBatch();
+                await upsertItemsBulk(this.items);
             }
         }
     }
@@ -1408,7 +1348,7 @@ export class BatchManager {
         if (members.length === 0) return;
         const next = !members[0].chapterIsEditedVolume;
         for (const m of members) m.chapterIsEditedVolume = next;
-        this.saveCurrentSession();
+        upsertItemsBulk(members); // fire-and-forget
     }
 
     /** After processAll completes, copy title/year from the representative
@@ -1458,7 +1398,7 @@ export class BatchManager {
                 item.isAccepted = true;
             }
         }
-        await this.saveCurrentSession();
+        await upsertItemsBulk(this.items);
     }
 }
 
