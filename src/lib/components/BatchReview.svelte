@@ -1,5 +1,6 @@
 <script lang="ts">
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
+    import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
     import { getSetting } from '../store';
     import { AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '../extractors';
@@ -92,7 +93,6 @@
         selectedItem.suggestedAuthor = detailAuthor;
         selectedItem.suggestedYear   = detailYear;
         await batchManager.recalculateTargetPath(selectedItem.id);
-        await batchManager.saveCurrentSession();
     }
 
     /** Enter on any of the three metadata inputs commits, Escape reverts. */
@@ -763,14 +763,18 @@
         showReportModal = false;
         if (choice === 'empty') {
             batchManager.items = [];
+            await clearBatch();
         } else if (choice === 'keep_problematic') {
+            const removedIds = batchManager.items.filter(i => i.status === 'done').map(i => i.id);
             batchManager.items = batchManager.items.filter(i => i.status !== 'done');
+            if (removedIds.length > 0) await deleteItems(removedIds);
         } else if (choice === 'remove_done') {
             // Remove successfully completed items; keep pending, errors, and copy-fallback that need attention
+            const removedIds = batchManager.items.filter(i => i.status === 'done' && i.errorMessage !== 'COPY_FALLBACK').map(i => i.id);
             batchManager.items = batchManager.items.filter(i => !(i.status === 'done' && i.errorMessage !== 'COPY_FALLBACK'));
+            if (removedIds.length > 0) await deleteItems(removedIds);
         }
-        // 'keep_all': do nothing — statuses are already updated (moved/copied stamped on statusDetail)
-        await batchManager.saveCurrentSession();
+        // 'keep_all': statuses already persisted by executeBatch
     }
 
     /// PLAN P6 4d — dump the current batch (items the user has loaded
@@ -859,6 +863,7 @@
         console.log('[BatchReview] checkAndUpdateSources called, total items:', batchManager.items.length);
         let missingCount = 0;
         let missingIds: string[] = [];
+        const changedItems: BatchItem[] = [];
         for (const item of batchManager.items) {
             console.log('[BatchReview] Checking:', item.originalName, '→', item.originalPath, '(status:', item.status, 'err:', item.errorMessage, ')');
             const exists = await stat(item.originalPath)
@@ -877,9 +882,10 @@
                     item.statusDetail = '❌ source deleted';
                     missingIds.push(item.id);
                 }
+                changedItems.push(item);
             }
         }
-        await batchManager.saveCurrentSession();
+        if (changedItems.length > 0) await upsertItemsBulk(changedItems);
         if (missingCount === 0) {
             showToast(i18n.t.batch.update_sources_ok);
         } else {
@@ -1437,7 +1443,7 @@
                                                 {/if}
                                             {/if}
                                         {:else if col.id === 'accepted'}
-                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; batchManager.saveCurrentSession(); }} title={i18n.t.batch.dupe_toggle_accept}>
+                                            <button class="ghost-toggle-btn" onclick={(e) => { e.stopPropagation(); item.isAccepted = !item.isAccepted; upsertItem(item); }} title={i18n.t.batch.dupe_toggle_accept}>
                                                 {#if item.isAccepted}
                                                     <Check size={16} style="color: #10b981;" />
                                                 {:else}
