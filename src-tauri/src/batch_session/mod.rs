@@ -259,6 +259,33 @@ impl BatchSessionStore {
             .context("reading extracted text")?;
         Ok(result)
     }
+
+    /// Return `true` if the one-shot JSON migration has already been applied.
+    /// Uses a sentinel row (`id = 'json_migration_done'`) in `batch_sessions`.
+    pub fn is_migrated(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM batch_sessions WHERE id = 'json_migration_done'",
+                [],
+                |r| r.get(0),
+            )
+            .context("checking migration sentinel")?;
+        Ok(count > 0)
+    }
+
+    /// Record that the one-shot JSON migration is done.
+    /// Idempotent — safe to call multiple times.
+    pub fn mark_migrated(&self) -> Result<()> {
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO batch_sessions (id, created_at, updated_at) VALUES ('json_migration_done', ?1, ?1)",
+            params![now],
+        )
+        .context("inserting migration sentinel")?;
+        Ok(())
+    }
 }
 
 // ── SQL helpers ───────────────────────────────────────────────────────────────
@@ -551,6 +578,17 @@ mod tests {
         let loaded = s2.load().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "persist-check");
+    }
+
+    #[test]
+    fn migration_sentinel_roundtrip() {
+        let (store, _dir) = make_store();
+        assert!(!store.is_migrated().unwrap());
+        store.mark_migrated().unwrap();
+        assert!(store.is_migrated().unwrap());
+        // idempotent
+        store.mark_migrated().unwrap();
+        assert!(store.is_migrated().unwrap());
     }
 
     #[test]

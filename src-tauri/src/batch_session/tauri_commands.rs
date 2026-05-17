@@ -110,3 +110,28 @@ pub async fn batch_session_get_extracted_text(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
+
+/// Return `true` if the one-shot JSON→SQLite migration has already run.
+#[tauri::command]
+pub async fn batch_session_is_migrated(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.is_migrated())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Record that the one-shot JSON→SQLite migration is done.
+/// Idempotent — safe to call on every startup after checking `is_migrated`.
+#[tauri::command]
+pub async fn batch_session_mark_migrated(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.mark_migrated())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
