@@ -18,10 +18,14 @@ interface BatchItemRow extends BatchItem {
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
 function batchItemToRow(item: BatchItem): BatchItemRow {
+    // Explicitly exclude extractedText from the IPC payload — it can be
+    // megabytes per item and Rust ignores it (stored separately via
+    // setExtractedText / extracted_texts table).  Spreading it caused
+    // upsertItemsBulk(135 items) to serialize 100MB+ over the IPC bridge,
+    // blocking the JS event loop and freezing the UI.
+    const { extractedText: _, ...rest } = item;
     return {
-        ...item,
-        // Store a bounded preview in the items table row.
-        // Full text is persisted separately via setExtractedText.
+        ...rest,
         extractedTextPreview: item.extractedText != null
             ? item.extractedText.slice(0, 500)
             : undefined,
@@ -29,15 +33,12 @@ function batchItemToRow(item: BatchItem): BatchItemRow {
 }
 
 function rowToBatchItem(row: BatchItemRow): BatchItem {
-    const { extractedTextPreview, ...rest } = row;
-    // On load, hydrate extractedText from the preview so the UI can show
-    // the "⚠ poor extraction" marker and the LLM consumer gets at least
-    // the first 500 chars.  The full body is lazy-loaded via getExtractedText
-    // when the LLM worker needs it (Slice 3 wires this).
-    return {
-        ...rest,
-        extractedText: extractedTextPreview ?? undefined,
-    };
+    // Drop the preview column — extractedText is intentionally not restored here.
+    // The extraction worker lazy-loads the full text from extracted_texts via
+    // getExtractedText() before deciding to re-extract, so resumed items get
+    // their full body back without re-running extraction.
+    const { extractedTextPreview: _, ...rest } = row;
+    return rest as BatchItem;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

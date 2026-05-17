@@ -1106,6 +1106,8 @@
         await saveSetting('conversionTimeoutSeconds', conversionTimeoutSeconds);
         await saveSetting('extractionWorkers', extractionWorkers);
         await saveSetting('llmWorkers', llmWorkers);
+        batchManager.extractionTargetWorkers = extractionWorkers;
+        batchManager.llmTargetWorkers = llmWorkers;
         await saveSetting('logVerbosity', logVerbosity);
         // Push the verbosity into the in-process flog filter so other
         // (non-Settings) code paths see the change immediately.

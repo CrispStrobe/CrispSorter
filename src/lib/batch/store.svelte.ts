@@ -7,7 +7,7 @@ import { join } from '@tauri-apps/api/path';
 import { getSetting } from '../store';
 import {
     loadBatch, upsertItem, upsertItemsBulk, deleteItems, clearBatch,
-    setExtractedText, migrateFromJson,
+    setExtractedText, getExtractedText, migrateFromJson,
 } from '../batchStore';
 import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
@@ -477,12 +477,27 @@ export class BatchManager {
                 const idx = nextIdx++;
                 if (idx >= this.items.length) break;
                 const item = this.items[idx];
-                if (!needsProcessing(item) || item.extractedText) {
-                    // Already-extracted items still go to the LLM
-                    // queue so the consumer covers re-runs.
-                    if (item.extractedText && !overrides?.extractionOnly) {
-                        queuePush(item);
+                if (!needsProcessing(item)) {
+                    if (item.extractedText && !overrides?.extractionOnly) queuePush(item);
+                    continue;
+                }
+                // Item needs processing — try to restore the full extracted text
+                // from SQLite before committing to re-extraction.  On resume,
+                // rowToBatchItem intentionally leaves extractedText undefined so
+                // items with stored text in the extracted_texts table skip the
+                // extraction phase and go straight to LLM with their full body.
+                if (!item.extractedText) {
+                    const stored = await getExtractedText(item.id);
+                    if (stored) {
+                        item.extractedText = stored;
+                        logDebug(`Restored ${stored.length} chars for ${item.originalName} from SQLite`);
                     }
+                }
+                if (item.extractedText) {
+                    item.status = overrides?.extractionOnly ? 'review' : 'queued';
+                    if (overrides?.extractionOnly) await this.calculateTargetPath(item);
+                    if (!overrides?.extractionOnly) queuePush(item);
+                    await upsertItem(item);
                     continue;
                 }
 
