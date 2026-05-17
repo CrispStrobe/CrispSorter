@@ -55,6 +55,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P5 — Future / planned
 
+- [ ] **Batch session persistence → SQLite** — *high priority*; reproduced twice 2026-05-17 as "we LOST all the files?!" + UI hangs at 53/196.  Root cause: full batch persisted as a single JSON blob in `settings.json` via tauri-plugin-store; every save rewrites the whole file (tens of MB when items carry `extractedText`).  Mitigations landed in `068f8f5`/`05123d9`/`e84ca88` (strip `extractedText` to 500 chars in persisted snapshot, single-writer chain, auto-lift stuck items) but the design is fundamentally wrong for the workload.  5-slice migration plan (schema → Rust commands → TS wrapper + JSON migration → wire BatchManager → stress test) spec'd in `handover-prompts/session-prompt-batch-sqlite-persistence.md` (~7 h total).
 - [ ] **Auto-process toggle on watch detection** — UX design pass complete (2026-05-16): per-folder three-mode dropdown (off / analyse / sort), opt-in initial scan, debounced queue, hourly file cap + daily cost cap, tray status surface, fail-soft error path.  6-slice implementation arc spec'd in `handover-prompts/session-prompt-auto-process-toggle.md` (~16 h total).
 - [ ] **PWA demo via File System Access API** — speculative
 
