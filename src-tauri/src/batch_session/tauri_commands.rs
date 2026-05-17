@@ -4,7 +4,7 @@
 /// blocked by a synchronous Mutex acquisition.
 use tauri::State;
 
-use super::{BatchItemRow, BatchSessionStore};
+use super::{BatchItemRow, BatchSessionStore, ProcessedHistoryRow};
 use crate::AppState;
 
 fn get_store(state: &AppState) -> Result<BatchSessionStore, String> {
@@ -131,6 +131,46 @@ pub async fn batch_session_mark_migrated(
 ) -> Result<(), String> {
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.mark_migrated())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Record a successfully-processed item in the persistent history table.
+/// Call after a file reaches 'done' status so future batches can skip it.
+#[tauri::command]
+pub async fn batch_session_record_processed(
+    state: State<'_, AppState>,
+    row: ProcessedHistoryRow,
+) -> Result<(), String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.record_processed(&row))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Look up a previously-processed item by SHA-256.
+/// Returns `null` when the hash has never been seen before.
+#[tauri::command]
+pub async fn batch_session_lookup_history(
+    state: State<'_, AppState>,
+    sha256: String,
+) -> Result<Option<ProcessedHistoryRow>, String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.lookup_history_by_sha256(&sha256))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Total number of distinct files in the processed history.
+#[tauri::command]
+pub async fn batch_session_history_count(
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let store = get_store(&state)?;
+    tokio::task::spawn_blocking(move || store.processed_history_count())
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())

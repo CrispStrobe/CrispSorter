@@ -2675,6 +2675,9 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_get_extracted_text,
             batch_session::tauri_commands::batch_session_is_migrated,
             batch_session::tauri_commands::batch_session_mark_migrated,
+            batch_session::tauri_commands::batch_session_record_processed,
+            batch_session::tauri_commands::batch_session_lookup_history,
+            batch_session::tauri_commands::batch_session_history_count,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

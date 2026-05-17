@@ -69,6 +69,23 @@ export interface BatchItem {
     /** When true, author propagation is suppressed for this group —
      *  chapters are from different authors (edited volume). */
     chapterIsEditedVolume?: boolean;
+
+    // Processed-history dedup (SHA-256 matched against processed_history table)
+    /** SHA-256 hex of the file content, computed on add. Used to detect
+     *  files already sorted in a previous batch so they can skip extraction. */
+    sha256?: string;
+    /** Populated when the file was found in the processed_history table.
+     *  Drives the "already sorted" badge and the skip-extraction fast-path. */
+    historyMatch?: {
+        suggestedTitle?: string;
+        suggestedAuthor?: string;
+        suggestedYear?: string;
+        targetPath?: string;
+        processedAt: number;
+    };
+    /** Set to true by the "re-process" action so the extraction worker
+     *  ignores the historyMatch and runs a fresh extraction pass. */
+    skipHistoryCheck?: boolean;
 }
 
 export interface Metadata {

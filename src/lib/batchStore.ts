@@ -82,6 +82,35 @@ export async function getExtractedText(itemId: string): Promise<string | null> {
     return invoke('batch_session_get_extracted_text', { itemId });
 }
 
+// ── Processed-history dedup ───────────────────────────────────────────────────
+
+export interface ProcessedHistoryRow {
+    sha256: string;
+    filename: string;
+    sizeBytes: number;
+    suggestedTitle?: string;
+    suggestedAuthor?: string;
+    suggestedYear?: string;
+    targetPath?: string;
+    processedAt: number;
+}
+
+/** Record a file that has been fully sorted (status = 'done') so future
+ *  batches can skip extraction for the same content.  Fire-and-forget safe. */
+export async function recordProcessed(row: ProcessedHistoryRow): Promise<void> {
+    return invoke('batch_session_record_processed', { row });
+}
+
+/** Look up a previous run by SHA-256.  Returns null when unseen. */
+export async function lookupHistory(sha256: string): Promise<ProcessedHistoryRow | null> {
+    return invoke('batch_session_lookup_history', { sha256 });
+}
+
+/** Total number of distinct hashes stored in the processed history. */
+export async function historyCount(): Promise<number> {
+    return invoke('batch_session_history_count');
+}
+
 // ── One-shot JSON → SQLite migration ─────────────────────────────────────────
 
 /** Migrate the legacy `lastSession` JSON blob from tauri-plugin-store into
