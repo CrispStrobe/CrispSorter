@@ -1677,8 +1677,39 @@
 
 <style>
     .batch-container { display: flex; flex-direction: column; height: 100%; background: #09090b; overflow: hidden; }
-    .toolbar { padding: 8px 16px; background: #18181b; border-bottom: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    .left-actions, .right-actions { display: flex; align-items: center; gap: 8px; }
+    /* Responsive top toolbar.  Reported: "if width is not very large,
+       Sortieren button has not enough room."  Pre-fix, the toolbar was
+       `display: flex` without `flex-wrap`, so on narrow widths the
+       button row overflowed the viewport and the rightmost actions
+       (Sortieren, dropdowns) got clipped.  Now both the outer toolbar
+       and the inner action groups wrap onto a second row when needed,
+       and the Sortieren/execute button refuses to shrink so its
+       label+chevron stay readable. */
+    .toolbar {
+        padding: 8px 16px;
+        background: #18181b;
+        border-bottom: 1px solid #27272a;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+    .left-actions, .right-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        row-gap: 8px;
+    }
+    /* Sortieren split-button (Rocket) is the user's primary action on
+       this screen — it must never shrink below its natural width.  The
+       parent `.right-actions` lets less-critical buttons (Find dupes,
+       Stop, Force-reset, Neu analysieren, Accept/Uncheck-all) wrap to
+       a second row first. */
+    .action-btn.rocket-btn { flex-shrink: 0; }
+    .dropdown-container { flex-shrink: 0; }
     
     .btn-group { display: flex; gap: 1px; background: #27272a; border-radius: 6px; overflow: hidden; border: 1px solid #27272a; }
     
