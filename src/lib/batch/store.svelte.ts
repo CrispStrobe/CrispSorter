@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 import { getSetting, saveSetting } from '../store';
+import { migrateFromJson } from '../batchStore';
 import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
@@ -1091,6 +1092,16 @@ export class BatchManager {
     }
 
     async resumeLastSession() {
+        // One-shot migration from the legacy JSON blob into SQLite.
+        // Fast no-op on every launch after the first (sentinel check).
+        try {
+            const migrated = await migrateFromJson();
+            if (migrated > 0) flog('info', `Migrated ${migrated} item(s) from lastSession JSON to SQLite.`);
+        } catch (e: any) {
+            // Non-fatal: migration failure falls back to JSON load below.
+            flog('warn', `migrateFromJson failed (falling back to JSON): ${e?.message ?? e}`);
+        }
+
         const last = await getSetting('lastSession');
         if (last && (last as any).items) {
             this.items = (last as any).items.map((item: any) => {
