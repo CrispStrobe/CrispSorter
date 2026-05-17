@@ -861,7 +861,7 @@ export class BatchManager {
             await Promise.all([extractAllDone, ...llmWorkers]);
 
             // P15b — propagate chapter representative metadata to group members.
-            if (!onlyIds) this.propagateChapterMetadata();
+            if (!onlyIds) await this.propagateChapterMetadata();
         } finally {
             this.isProcessing = false;
             this.stopRequested = false;
@@ -1299,8 +1299,15 @@ export class BatchManager {
 
     /** After processAll completes, copy title/year from the representative
      *  to all other chapter-group members. Author propagated only when
-     *  non-sentinel (monograph assumption; edited volumes need per-chapter). */
-    propagateChapterMetadata(): void {
+     *  non-sentinel (monograph assumption; edited volumes need per-chapter).
+     *
+     *  Also computes `targetPath` for each non-rep so Sortieren can pick
+     *  them up.  Reported: "Keine Elemente bereit … though we set green
+     *  checkmarks for a number of files."  Pre-fix, non-rep chapters
+     *  got metadata propagated but no targetPath, so executeBatch's
+     *  filter (`i.isAccepted && i.targetPath && SORTABLE.has(i.status)`)
+     *  silently dropped them. */
+    async propagateChapterMetadata(): Promise<void> {
         const reps = new Map<string, BatchItem>();
         for (const item of this.items) {
             if (item.chapterGroupId && item.isChapterRepresentative) {
@@ -1323,7 +1330,21 @@ export class BatchManager {
             if (item.status === 'queued' || item.status === 'unfinished') {
                 item.status = 'review';
             }
+            // Compute targetPath now that metadata is filled in — without
+            // this, Sortieren silently filters the non-rep chapter out
+            // because executeBatch's gate requires a non-empty targetPath.
+            await this.calculateTargetPath(item);
+            // Apply the same auto-accept rule as recalculateTargetPath:
+            // Title + Author non-sentinel → green check on; year is
+            // intentionally NOT required (per user: "year is not that
+            // important, unknown/empty year we could ignore").
+            const titleOk  = !isUnknownSentinel(item.suggestedTitle);
+            const authorOk = !isUnknownSentinel(item.suggestedAuthor);
+            if (titleOk && authorOk && !item.isAccepted) {
+                item.isAccepted = true;
+            }
         }
+        await this.saveCurrentSession();
     }
 }
 

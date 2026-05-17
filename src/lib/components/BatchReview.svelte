@@ -646,6 +646,17 @@
 
         if (!confirmed) return;
 
+        // Recover items that have isAccepted but a missing targetPath
+        // — common case is non-rep chapter items pre-fix, whose metadata
+        // was propagated from the rep but whose calculateTargetPath
+        // wasn't called.  Filling targetPath in-place here lets the
+        // batch ship without making the user re-analyse.
+        const missingTarget = accepted.filter(i => !i.targetPath);
+        if (missingTarget.length > 0) {
+            logInfo(`Recovering targetPath for ${missingTarget.length} accepted item(s) before executeBatch.`);
+            for (const i of missingTarget) await batchManager.recalculateTargetPath(i.id);
+        }
+
         logInfo(`Sortieren confirmed -- handing ${accepted.length} accepted item(s) to executeBatch(${mode})`);
         const sortStart = performance.now();
         const stats = await batchManager.executeBatch(mode, { skipNonPrimaryDupes: skipDuplicatesOnSort });
@@ -655,8 +666,21 @@
             lastExecutionStats = stats;
             showReportModal = true;
         } else {
-            logWarn(`Sortieren returned null after ${sortMs} ms -- executeBatch filtered out every item. Check earlier log lines for the reason.`);
-            showToast(i18n.t.batch.no_items_ready);
+            // Diagnose silently-dropped items: build a per-gate count so
+            // the toast tells the user WHY (no green check / no
+            // targetPath / wrong status) instead of the generic
+            // "Keine Elemente bereit" message that prompted the bug
+            // report.
+            const SORTABLE_STATES = new Set(['review', 'error', 'unfinished', 'queued']);
+            const green = accepted.length;
+            const noTarget = accepted.filter(i => !i.targetPath).length;
+            const wrongStatus = accepted.filter(i => i.targetPath && !SORTABLE_STATES.has(i.status)).length;
+            const reasonParts: string[] = [];
+            if (noTarget > 0)    reasonParts.push(`${noTarget} ohne Zielpfad`);
+            if (wrongStatus > 0) reasonParts.push(`${wrongStatus} mit ungeeignetem Status`);
+            const reason = reasonParts.length > 0 ? ` (${reasonParts.join(', ')})` : '';
+            logWarn(`Sortieren returned null after ${sortMs} ms -- ${green} green-checked but executeBatch filtered all out${reason}.`);
+            showToast(`${i18n.t.batch.no_items_ready}${reason}`);
         }
         // Optionally index sorted documents
         if (indexAfterSort && !mode.startsWith('script')) {
