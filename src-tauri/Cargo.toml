@@ -30,6 +30,15 @@ crisp-index-protocol = { path = "../crisp-index-protocol" }
 crisplens-protocol   = { path = "../crates/crisplens-protocol" }
 crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 
+# Document translation pipeline. The `crisp-docx` workspace is a
+# sibling checkout (../../crisp-docx). These path deps are
+# developer-local — when CI clones the repo standalone the build
+# will fail unless that sibling exists. If you need CI to ignore
+# them, gate the `translate` module behind a Cargo feature.
+crisp-docx-core = { path = "../../crisp-docx/crates/crisp-docx-core" }
+crisp-docx-llm  = { path = "../../crisp-docx/crates/crisp-docx-llm" }
+futures         = "0.3"
+
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

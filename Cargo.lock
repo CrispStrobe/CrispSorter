@@ -214,6 +214,9 @@ name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
 
 [[package]]
 name = "arc-swap"
@@ -1232,7 +1235,7 @@ dependencies = [
  "safetensors 0.7.0",
  "thiserror 2.0.18",
  "yoke 0.8.2",
- "zip",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -1781,6 +1784,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisp-docx-core"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.36.2",
+ "thiserror 1.0.69",
+ "zip 2.4.2",
+]
+
+[[package]]
+name = "crisp-docx-llm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "crisp-index-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1862,14 +1888,14 @@ dependencies = [
 
 [[package]]
 name = "crispembed"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "crispembed-sys",
 ]
 
 [[package]]
 name = "crispembed-sys"
-version = "0.3.2"
+version = "0.4.0"
 
 [[package]]
 name = "crisplens-protocol"
@@ -1892,6 +1918,8 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "crisp-docx-core",
+ "crisp-docx-llm",
  "crisp-index-protocol",
  "crispasr",
  "crispasr-sys",
@@ -1901,6 +1929,7 @@ dependencies = [
  "crisplens-protocol",
  "deunicode",
  "fastembed",
+ "futures",
  "futures-util",
  "hex",
  "hf-hub",
@@ -1949,7 +1978,7 @@ dependencies = [
  "tokio-util",
  "usls",
  "uuid 1.23.1",
- "zip",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -2934,6 +2963,17 @@ name = "derive-new"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8679,6 +8719,16 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
 version = "0.38.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
@@ -14182,6 +14232,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap 2.14.0",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
 ]
 
 [[package]]
