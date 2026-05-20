@@ -35,6 +35,16 @@ members  = [
     "crates/crispcat-cli",
     "crates/crisplens-protocol",
 ]
+# release.yml extracts sibling repos (CrispEmbed / CrispASR / crisp-docx)
+# under `_sibling/` so path deps in src-tauri/Cargo.toml resolve in CI.
+# crisp-docx-align uses `rust-version.workspace = true`; without this
+# exclude, cargo walks up from `_sibling/crisp-docx/crates/crisp-docx-align/`
+# past crisp-docx's own `[workspace]` and lands at THIS root, then fails
+# inheritance because CrispSorter's `[workspace.package]` doesn't define
+# rust-version. Excluding `_sibling` stops that walk at crisp-docx's
+# workspace root, which is what we want. No-op in dev where _sibling/
+# doesn't exist.
+exclude = ["_sibling"]
 
 # Lockfile lives at the workspace root (`Cargo.lock`). The previous
 # `src-tauri/Cargo.lock` is removed in the same change that introduces
