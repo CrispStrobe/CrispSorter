@@ -1,12 +1,16 @@
-# Design: Lite binaries + first-launch lib auto-download
+# Design: Lite + Full installer variants
 
 ## Status
 **Draft, no code yet.** Sketch for review.
 
+Supersedes an earlier draft that proposed runtime `libloading` of the
+native libs. That approach was rejected — see "Alternatives considered"
+below.
+
 ## Problem statement
 
-Today the release binaries for CrispSorter co-bundle CrispEmbed +
-CrispASR native libraries:
+Today the release binaries co-bundle CrispEmbed + CrispASR native
+libraries:
 
 | Platform | Bundle | Size | DLLs/dylibs |
 |---|---|---|---|
@@ -14,220 +18,230 @@ CrispASR native libraries:
 | Linux x86_64 | `.deb` | ~290 MB | bundled in `/usr/lib/crispsorter/` |
 | Windows x64 | portable `.zip` | ~310 MB | bundled next to `.exe` |
 
-Three pain points:
+Two pain points:
 
-1. **Bundle size**. ~290 MB is large for a desktop installer; ~80% of
+1. **Bundle size.** ~290 MB is large for a desktop installer; ~80% of
    it is CrispEmbed + CrispASR's ggml + backend libs.
+2. **Many users only want the cloud-LLM path** (translation /
+   summarisation via OpenAI / Anthropic / etc.) and never touch
+   offline NMT, alignment, or local embeddings. They pay the full
+   bundle cost for nothing.
 
-2. **Couples release cadence**. CrispSorter releases drag a frozen
-   snapshot of CrispEmbed + CrispASR. A bugfix in `crispembed` v0.2.7
-   needs a fresh CrispSorter release to reach users, even though
-   nothing in CrispSorter itself changed.
-
-3. **Windows installer is a dead end.** The NSIS / MSI installers
-   Tauri produces put DLLs at `<install>/resources/bin/` which the
-   Windows loader can't find. v0.2.0 ships a portable `.zip`
-   instead. Users wanting a "proper" install (Start menu entry,
-   uninstaller, signed installer) have no path.
+Out of scope here: the Windows MSI/NSIS DLL-placement bug. That is a
+separate WiX fix tracked elsewhere; v0.2.0's portable `.zip` is the
+tactical workaround in the meantime.
 
 ## Proposed solution
 
-A new **`lite`** Cargo feature that swaps the link-time linkage to
-CrispEmbed + CrispASR for **runtime dynamic loading via `libloading`**.
-The shipped binary becomes ~50 MB; on first launch (or when the user
-enables a feature that needs the libs), CrispSorter downloads the
-required dylibs/DLLs from each repo's GitHub release into the user's
-cache dir.
+Ship **two installer variants** per platform, picked at download time:
+
+| Variant | Size | Features available | GPU backend |
+|---|---|---|---|
+| `crispsorter-full-*` | ~290 MB | everything (cloud LLMs + offline embed/ASR/NMT/alignment) | one per platform — see "GPU backend axis" |
+| `crispsorter-lite-*` | ~50 MB  | cloud LLMs only | n/a |
+
+Lite is the same source tree built with a Cargo feature flag that
+**compiles out** the embed / ASR / alignment code paths. No runtime
+dynamic loading, no FFI surgery — the lite binary simply doesn't link
+or bundle the heavy libs, and the UI code that would call them is
+gated behind `#[cfg(feature = "native_ml")]` / equivalent JS feature
+checks.
+
+### GPU backend axis
+
+`crispembed-sys` and `crispasr-sys` already expose `vulkan`, `metal`,
+and `cuda` Cargo features. Today's `release.yml` picks one per
+platform:
+
+| Platform | Backend shipped today |
+|---|---|
+| macOS arm64 | Metal |
+| Windows x64 | Vulkan |
+| Linux x64   | Vulkan |
+
+Vulkan covers NVIDIA + AMD + Intel + most integrated GPUs on
+Linux/Windows; Metal covers everything on Apple Silicon. **The full
+variant keeps this 1-backend-per-platform choice.** It is *not* a
+fat bundle of CUDA + Vulkan + CPU — that would push the macOS-less
+platforms past 1 GB (CUDA runtime alone is ~700 MB with cuBLAS) and
+re-create the bundle-size problem this design is trying to fix.
+
+Trade-off accepted: NVIDIA users on Linux/Windows run Vulkan, not
+CUDA. For CrispSorter's workloads (text embeddings, small Whisper
+models, sentence-level NMT) Vulkan is within ~10-20% of CUDA on
+consumer cards — fine. Power users who want CUDA can build from
+source; if demand surfaces, we add a third variant per affected
+platform:
+
+```
+crispsorter-full-{macos-arm64, windows-x64, linux-x64}            ← today
+crispsorter-full-cuda-{windows-x64, linux-x64}                    ← future, if needed
+crispsorter-lite-{macos-arm64, windows-x64, linux-x64}            ← today
+```
+
+Each backend variant is its own Cargo feature combo, its own CI
+matrix row, and its own signed installer. No runtime probing, no
+lazy backend download. The whisper.cpp / llama.cpp release pages
+follow this same "many variants, user picks" pattern.
+
+ROCm (AMD on Linux) and SYCL (Intel) are not on the roadmap. AMD
+users get Vulkan, which works on RDNA cards.
+
+### What the user sees
+
+- Download page offers both: "Full (290 MB) — includes offline
+  translation and audio" / "Lite (50 MB) — cloud LLMs only".
+- A lite user who later wants offline features clicks **Settings →
+  Switch to full version**, which opens the full installer's download
+  URL. The Tauri auto-updater handles the swap; settings, caches,
+  history persist across the upgrade because the install ID and
+  config dir don't change.
+- A full user who wants to slim down can downgrade the same way
+  (less common, but supported).
 
 ### Architecture
 
 ```text
-                ┌────────────────────────────────┐
-                │ CrispSorter.exe (lite)         │
-                │ - no link-time crispembed*     │
-                │ - no link-time crispasr*       │
-                │ - imports libloading           │
-                └─────────────┬──────────────────┘
-                              │ at startup
-                              ▼
-        ┌───────────────────────────────────────────────────┐
-        │ libs/manager.rs                                   │
-        │ - cache dir resolution (per OS)                   │
-        │ - manifest of expected libs + version + sha256    │
-        │ - check filesystem; download missing/wrong-hash   │
-        │ - extract; place in cache dir                     │
-        │ - dlopen / LoadLibrary; resolve symbols           │
-        └───────────────────────────────────────────────────┘
-                              │
-                ┌─────────────┴──────────────┐
-                ▼                            ▼
-   ~/.cache/crispsorter/         %LOCALAPPDATA%/crispsorter/
-     libs/                         libs/
-       libcrispembed.0.2.6.dylib     crispembed-v0.2.6/
-       libcrispasr.0.5.7.dylib         crispembed.dll
-       libggml-*.dylib                 ggml-*.dll
-                                     crispasr-v0.5.7/
-                                       crispasr.dll
-                                       ...
+            ┌─────────────────────────────────────────┐
+            │ Cargo workspace                         │
+            │                                         │
+            │  ┌────────────┐    ┌────────────────┐  │
+            │  │ crispembed │    │ crispasr-sys   │  │
+            │  │   -sys     │    │                │  │
+            │  └─────┬──────┘    └────────┬───────┘  │
+            │        │ optional dep        │ optional │
+            │        ▼                     ▼          │
+            │  ┌─────────────────────────────────┐   │
+            │  │  src-tauri (#[cfg] gated)       │   │
+            │  │  feature = "native_ml"          │   │
+            │  └─────────────────────────────────┘   │
+            └─────────────────────────────────────────┘
+                     │                    │
+              build with                build with
+              --features native_ml      --no-default-features
+                     │                    │
+                     ▼                    ▼
+              crispsorter-full       crispsorter-lite
+              (~290 MB)              (~50 MB)
 ```
 
-### Cache layout
+### Cargo feature wiring
 
-Per-OS resolution via the `dirs` crate:
+`src-tauri/Cargo.toml`:
 
-| OS | Path |
-|---|---|
-| macOS | `~/Library/Caches/com.<user>.crispsorter/libs/` |
-| Linux | `~/.cache/crispsorter/libs/` |
-| Windows | `%LOCALAPPDATA%\crispsorter\libs\` |
-
-Inside, one subdirectory per upstream release tag:
-
-```text
-libs/
-├── crispembed-v0.2.6/
-│   ├── libcrispembed.0.2.6.dylib  (or .so / .dll)
-│   ├── libggml-base.dylib
-│   ├── libggml-cpu.dylib
-│   ├── libggml-metal.dylib  (macOS)
-│   ├── libggml-vulkan.so    (Linux)
-│   ├── ggml-vulkan.dll      (Windows)
-│   └── SHA256SUMS
-├── crispasr-v0.5.7/
-│   └── ...
-└── manifest.json
+```toml
+[features]
+default = ["native_ml"]
+native_ml = ["dep:crispembed-sys", "dep:crispasr-sys", "dep:crispalign"]
+# lite = no features; cloud LLMs always compiled in
 ```
 
-`manifest.json` records which versions the running binary expects:
+Call sites that touch the native libs are gated:
 
-```json
-{
-  "crispembed": { "version": "v0.2.6", "arch": "macos-arm64", "verified_at": "2026-05-20T11:30:00Z" },
-  "crispasr":   { "version": "v0.5.7", "arch": "macos-arm64", "verified_at": "2026-05-20T11:30:00Z" }
+```rust
+#[cfg(feature = "native_ml")]
+mod embed;
+#[cfg(feature = "native_ml")]
+mod asr;
+
+#[tauri::command]
+fn supports_offline_translate() -> bool {
+    cfg!(feature = "native_ml")
 }
 ```
 
-A schema-version field lets us migrate the cache on breaking changes.
+Frontend hides offline-only UI when `supports_offline_translate()`
+returns false. The cloud-LLM tabs render identically in both builds.
 
-### Download flow
+### CI
 
-1. **Resolve required versions.** Versions are hard-coded in the
-   binary at build time (from `Cargo.toml`'s `crispembed-sys`
-   version constraint). Released CrispSorter always knows what
-   versions it needs.
+`release.yml` matrix gains a `variant: [full, lite]` axis. Each
+existing platform target builds twice; assets are named
+`crispsorter-{full,lite}-{platform}.{ext}`. Both variants are signed
+and notarized through the same pipeline; nothing in the signing path
+changes because each artifact is a self-contained signed unit.
 
-2. **Check cache.** Read `manifest.json`, verify SHA256SUMS, confirm
-   the libs are present.
+### "Switch to full" flow
 
-3. **If anything missing/mismatched**, fall into the **download
-   flow**:
-   - GET the release asset URL from GitHub:
-     `https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.2.6/crispembed-macos-arm64.tar.gz`
-   - Verify the asset's published SHA256 against a hash we baked
-     into the binary at build time (prevents MITM / asset
-     substitution).
-   - Download with progress reporting (Tauri command emits
-     `libs://download/progress` events to a frontend modal).
-   - Verify the downloaded file's SHA256.
-   - Extract to the cache dir.
-   - Update `manifest.json`.
-
-4. **Load.** Use `libloading::Library::new(&cached_path)` to
-   `dlopen` / `LoadLibrary` each lib. Pass the handle into the
-   existing `crispembed-sys` / `crispasr-sys` shims (refactored
-   to take a Library handle instead of statically linking).
-
-5. **Symbol resolution.** Each `-sys` crate gains a
-   `LibraryFromHandle` constructor that pulls `crispembed_init`,
-   `crispembed_encode`, etc. out of the loaded library and stashes
-   them in a struct. Function call sites go from `unsafe { crispembed_init(...) }`
-   to `unsafe { (handle.encode)(...) }`.
-
-### Library version pinning
-
-CrispSorter's Cargo.toml pins both `crispembed-sys` and `crispasr-sys`
-to exact versions; the runtime check refuses to load mismatched
-libraries. This prevents "user upgraded their cached lib, CrispSorter
-crashes because the ABI moved" failure modes.
-
-When CrispSorter bumps to a newer sibling-lib version, the next
-launch sees the manifest mismatch and re-downloads.
-
-### UI: first-launch experience
-
-A modal appears on first launch (or whenever a feature is first
-activated that needs the libs):
+A Settings button in the lite build:
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│ Downloading native libraries (one-time)             │
-│                                                     │
-│ CrispSorter uses two optional native runtimes for   │
-│ embeddings and speech / translation. Downloading    │
-│ them now keeps the installer small.                 │
-│                                                     │
-│ [████████░░░░░░░░░░] crispembed v0.2.6  78 MB / 90 MB │
-│ [░░░░░░░░░░░░░░░░░░] crispasr   v0.5.7   0 MB / 145 MB │
-│                                                     │
-│ [Skip — translate via cloud LLMs only]    [Cancel]  │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│ This is CrispSorter Lite (50 MB)                        │
+│                                                         │
+│ Offline translation, speech transcription, and          │
+│ embeddings are not available. Switch to the full        │
+│ version (290 MB) to enable them.                        │
+│                                                         │
+│            [Download full version]                      │
+└─────────────────────────────────────────────────────────┘
 ```
 
-`Skip` is non-destructive — the user can use cloud LLM providers,
-just no offline NMT / alignment / embeddings. Re-trigger the
-download from Settings → Native libraries.
+The button opens the platform-appropriate full installer URL via the
+Tauri shell-open API. Tauri's built-in updater handles the cross-
+variant install if both share a bundle identifier (they do).
+Per-user data lives in the OS config dir under that bundle ID, so it
+survives the switch.
 
-### Implementation tasks (rough scope)
+### Implementation tasks
 
 | Task | Where | Effort |
 |---|---|---|
-| Add `lite` Cargo feature; gate the existing link-time path | `src-tauri/Cargo.toml` | ~1h |
-| `libs/manager.rs` — cache dir, manifest, sha256 check | new module | ~6h |
-| `libs/downloader.rs` — http + progress + extraction | new module | ~4h |
-| Refactor `crispembed-sys` to optionally use `libloading` | sibling crate | ~12h |
-| Refactor `crispasr-sys` to optionally use `libloading` | sibling crate | ~12h |
-| `libs_download_*` Tauri commands + progress events | `src-tauri/src/libs/` | ~3h |
-| `Settings → Native libraries` UI section | `src/lib/components/Settings.svelte` | ~4h |
-| First-launch modal | new component | ~3h |
-| Bake hash table into the binary at build time | `build.rs` | ~2h |
-| `release.yml`: build the `lite` variant alongside the bundled one | CI | ~3h |
-| Migration: existing v0.2.0 users' settings.json picks up the lite path on next launch | settings migration | ~2h |
-| **Total** | | **~52 hours / ~1.5 weeks** |
+| Add `native_ml` Cargo feature; gate existing imports | `src-tauri/Cargo.toml` + Rust modules | ~3h |
+| `#[cfg]`-gate Tauri commands; expose `supports_offline_translate` | `src-tauri/src/lib.rs` | ~2h |
+| Frontend feature-flag plumbing + hide offline UI | `src/lib/` | ~3h |
+| "Switch to full version" Settings panel | `src/lib/components/Settings.svelte` | ~2h |
+| `release.yml`: add `variant` matrix axis | `.github/workflows/release.yml` | ~3h |
+| Download-page README update with two-variant explanation | `README.md` | ~1h |
+| Smoke-test both variants end-to-end on macOS/Linux/Windows | manual | ~3h |
+| **Total** | | **~17 hours / ~2 days** |
 
 ### Open questions
 
-1. **Should `lite` be the default?** Pro: smaller installer, faster
-   download for users who only want cloud LLMs. Con: every first-launch
-   needs network access to be useful. *Recommendation: ship both
-   variants, default = bundled (status quo), lite is a separate
-   download for users who want it.*
+1. **Default download on the GitHub release page.** Recommendation:
+   list both, with Full as the recommended option. Lite gets a "for
+   cloud-only users" subtitle. Don't auto-detect — users are bad at
+   knowing in advance whether they'll want offline.
+2. **Linux packaging.** The `.deb` already declares its bundled libs;
+   the lite `.deb` simply omits them and shrinks its install size.
+   Same package name, different version metadata? Or two distinct
+   packages (`crispsorter` vs `crispsorter-lite`)? Recommendation:
+   two packages — apt doesn't gracefully handle "same name, different
+   contents".
+3. **Telemetry on which variant users pick.** None for v0.3.0; revisit
+   if the split is uneven enough that we should rethink the default.
 
-2. **What about users behind corporate proxies / air-gapped?**
-   The bundled variant remains available. Lite explicitly states
-   "needs internet for first launch."
+## Alternatives considered
 
-3. **Signed binaries?** If we eventually ship a code-signed Windows
-   installer with the lite binary, we'd still need to download
-   unsigned DLLs at runtime — which Windows SmartScreen / corporate
-   security will object to. Mitigation: pin DLL SHA256s in the
-   binary and refuse to load mismatches.
+**Runtime `libloading` + first-launch download of dylibs/DLLs.** Was
+the original draft of this doc. Rejected because (a) the proposed
+exact-version pinning made the "decoupled release cadence" benefit
+illusory — a sibling-lib bugfix still needs a CrispSorter rebuild to
+bump the pin, (b) macOS Library Validation refuses to `dlopen` dylibs
+not signed by the same Team ID, and disabling it weakens the app's
+hardened-runtime posture, (c) the `-sys` crate refactor to dual-mode
+(static link *or* `libloading` handle) is the long pole and doubles
+test surface for marginal benefit.
 
-4. **Library version drift between CrispSorter and the sibling
-   repos.** If a user uses CrispSorter at v0.2.0 but updates the
-   cache by hand, they might trigger an ABI mismatch. The manifest
-   check refuses. *Don't auto-update the cache silently.*
+**Sidecar processes** (CrispEmbed + CrispASR as standalone HTTP/stdio
+servers, spawned as Tauri sidecars, downloaded lazily). Architecturally
+cleaner — clean process isolation, libs upgrade independently, matches
+Ollama / language-server patterns — but ~1 week of work to refactor
+the existing FFI call sites into JSON-over-socket clients, and it
+postpones the installer-size win behind that refactor. Worth
+revisiting if we later want hot-swappable model backends or want
+CrispEmbed/CrispASR to be reusable outside CrispSorter; not the right
+trade today.
 
-5. **Should we publish the bundled-variant Windows installer once
-   the WiX fix lands?** Yes — bundled remains the user-friendly
-   default once the DLL placement is resolved (separate work).
+**Status quo + WiX fix only.** Cheapest option (~3h for the Windows
+installer fix, nothing else). Doesn't address bundle size or the
+cloud-only user's pain. Acceptable as a stopgap but not a destination.
 
-### Status
+## Status
 
-This is a Phase-2 design. Phase 1 (the v0.2.0 Windows portable .zip)
-is a tactical fix that gives Windows users a working binary today.
-Lite + auto-download replaces both the bundled variant and the
-portable variant once it lands.
+Phase 2 of the installer story. Phase 1 (v0.2.0 portable `.zip`) is
+shipped. This phase replaces both bundled and portable Windows
+artifacts with the full/lite split once the WiX MSI fix lands in
+parallel.
 
-If we proceed: spec lives in `docs/DESIGN-auto-download-libs.md`,
-implementation phase opens its own session (~1.5 weeks, single
-developer).
+If we proceed: ~2 days of work, single developer, single PR.
