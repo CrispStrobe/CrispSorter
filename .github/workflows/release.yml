@@ -483,11 +483,22 @@ jobs:
           $tag = "v$version"
           $target = "${{ matrix.rust_target }}"
 
-          # Locate the freshly built .exe. Workspace-root target/ first,
-          # src-tauri/target/ fallback (same dual-location logic the
-          # macOS/Linux post-steps use).
+          # Locate the freshly built .exe. The Windows matrix's
+          # tauri_args does NOT pass `--target x86_64-pc-windows-msvc`
+          # (same as Linux — cargo defaults to the host arch), so the
+          # exe lands at `target/release/crispsorter.exe`, not under a
+          # target-triple subdir. Check the no-triple paths first;
+          # keep the triple paths as a fallback in case tauri_args
+          # later adds `--target`. Both workspace-root and
+          # src-tauri/target/ are checked (same dual-location logic
+          # the macOS/Linux post-steps use).
           $exeDir = $null
-          foreach ($d in @("target/$target/release", "src-tauri/target/$target/release")) {
+          foreach ($d in @(
+            "target/release",
+            "src-tauri/target/release",
+            "target/$target/release",
+            "src-tauri/target/$target/release"
+          )) {
             if (Test-Path "$d/crispsorter.exe") { $exeDir = $d; break }
           }
           if (-not $exeDir) {
