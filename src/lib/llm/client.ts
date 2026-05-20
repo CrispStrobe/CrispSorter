@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { queryWebLLM, getWebLLMLoadedModel } from './webllm';
 import { queryORT, getORTLoadedModel } from './ort';
 import { flog } from '../log';
+import { resolveSecret } from '../secrets';
 
 export interface LLMProvider {
     id: string;
@@ -178,7 +179,9 @@ export class LLMClient {
         console.log(`[LLMClient] fetchModels for ${providerId}`);
         if (['mistralrs', 'webllm', 'ort'].includes(providerId)) return [];
 
-        const key = apiKey || this.keys[providerId];
+        // Sentinel-resolve so callers can pass either the raw key or a
+        // `@keyring/llm-provider:<id>` sentinel from settings.json.
+        const key = await resolveSecret(apiKey || this.keys[providerId]);
         const base = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         
         if (!base) {
@@ -269,7 +272,9 @@ export class LLMClient {
             }
         }
 
-        const key = apiKey || this.keys[providerId];
+        // Sentinel-resolve so callers can pass either the raw key or a
+        // `@keyring/llm-provider:<id>` sentinel from settings.json.
+        const key = await resolveSecret(apiKey || this.keys[providerId]);
         const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
 
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);

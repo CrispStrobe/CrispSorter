@@ -13,6 +13,7 @@ pub mod sync;
 pub mod index;
 pub mod jobs;
 pub mod migrations;
+pub mod secrets;
 pub mod translate;
 pub mod tts;
 pub mod volume;
@@ -2681,6 +2682,10 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            secrets::tauri_commands::secret_get,
+            secrets::tauri_commands::secret_set,
+            secrets::tauri_commands::secret_delete,
+            secrets::tauri_commands::secrets_bulk_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

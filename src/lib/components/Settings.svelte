@@ -1,6 +1,66 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
+    import {
+        resolveSecret,
+        bulkSetSecrets,
+        makeSentinel,
+        sentinelAccount,
+        llmProviderAccount,
+    } from '../secrets';
+
+    /**
+     * Walk a providers list, find any plain-text `apiKey` values (i.e.
+     * not already `@keyring/…` sentinels), move them into the OS
+     * keychain in a single bulk call, and return a new list with those
+     * fields rewritten to sentinels.
+     *
+     * Empty / sentinel / non-string apiKeys pass through unchanged.
+     * Returns `{ providers, migrated }` so the caller can decide
+     * whether to persist the rewritten list (the migration is only
+     * useful if we write the sentinels back to settings.json).
+     */
+    async function migrateProviderKeysToKeychain(
+        list: LLMProvider[]
+    ): Promise<{ providers: LLMProvider[]; migrated: number }> {
+        const toMigrate: Array<[string, string]> = [];
+        for (const p of list) {
+            const k = p.apiKey;
+            if (!k || sentinelAccount(k)) continue;
+            // Skip the well-known local-server sentinel strings that
+            // aren't real secrets: 'ollama', 'no-key', '', 'local'.
+            if (k === 'ollama' || k === 'no-key' || k === 'local') continue;
+            toMigrate.push([llmProviderAccount(p.id), k]);
+        }
+        if (toMigrate.length === 0) return { providers: list, migrated: 0 };
+        const stored = await bulkSetSecrets(toMigrate);
+        const storedSet = new Set(stored);
+        const next = list.map((p) => {
+            const account = llmProviderAccount(p.id);
+            if (storedSet.has(account)) {
+                return { ...p, apiKey: makeSentinel(account) };
+            }
+            return p;
+        });
+        return { providers: next, migrated: stored.length };
+    }
+
+    /**
+     * Resolve every provider's apiKey to its plain-text form, returning
+     * a map suitable for `llmClient.setKeys`. Sentinels go through the
+     * keychain; plain values pass through unchanged.
+     */
+    async function resolveAllApiKeys(
+        list: LLMProvider[]
+    ): Promise<Record<string, string>> {
+        const out: Record<string, string> = {};
+        await Promise.all(
+            list.map(async (p) => {
+                out[p.id] = await resolveSecret(p.apiKey);
+            })
+        );
+        return out;
+    }
     import { getSetting, saveSetting } from '../store';
     import { i18n, type Language } from '../i18n.svelte';
     import { getDefaultPrompt, batchManager } from '../batch/store.svelte';
@@ -755,7 +815,17 @@
                 const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
                 return saved ? { ...def, ...saved } : def;
             });
-            providers = merged;
+            // One-time migration: move any plain-text apiKey out of
+            // settings.json into the OS keychain, replace with a sentinel.
+            // Idempotent — entries already on sentinels are no-op.
+            const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(merged);
+            providers = migrated;
+            if (n > 0) {
+                // Persist the rewritten list so the plain keys never
+                // touch disk again from this point on.
+                await saveSetting('providers', $state.snapshot(providers));
+                console.log(`secrets: migrated ${n} provider API key(s) to OS keychain`);
+            }
         }
 
         activeProviderId = await getSetting('activeProviderId', 'ollama');
@@ -1084,6 +1154,15 @@
 
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
+        // If the user typed a fresh API key into a provider field, the
+        // bound state holds it in plain text. Migrate to keychain before
+        // it lands in settings.json.
+        const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(
+            $state.snapshot(providers)
+        );
+        if (n > 0) {
+            providers = migrated;
+        }
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('activeProviderId', activeProviderId);
         await saveSetting('exportPath', exportPath);
@@ -1164,7 +1243,7 @@
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
         await saveSetting('indexDataDir',       indexDataDir);
-        llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
+        llmClient.setKeys(await resolveAllApiKeys(providers));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
@@ -1629,7 +1708,7 @@
         console.log(`[Settings] Saving provider settings for: ${selectedProvider.name}`);
         await saveSetting('providers', $state.snapshot(providers));
         await saveSetting('activeProviderId', activeProviderId);
-        llmClient.setKeys(providers.reduce((acc, p) => ({ ...acc, [p.id]: p.apiKey }), {}));
+        llmClient.setKeys(await resolveAllApiKeys(providers));
         saveIndicator = true;
         setTimeout(() => saveIndicator = false, 2000);
     }
@@ -1665,7 +1744,8 @@
     async function handleRefreshModels() {
         loadingModels = true;
         try {
-            const models = await llmClient.fetchModels(selectedProvider.id, selectedProvider.apiKey, selectedProvider.baseUrl);
+            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
+            const models = await llmClient.fetchModels(selectedProvider.id, resolvedKey, selectedProvider.baseUrl);
             selectedProvider.models = models;
             if (models.length > 0 && !selectedProvider.selectedModel) {
                 selectedProvider.selectedModel = models[0];
@@ -1697,7 +1777,8 @@
         testResult = null;
         try {
             const prompt = "Reply with 'OK' and nothing else.";
-            const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, selectedProvider.apiKey);
+            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
+            const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, resolvedKey);
             testResult = { success: true, message: `Connected! Response: ${response}` };
         } catch (e: any) {
             testResult = { success: false, message: e.message };
@@ -2026,10 +2107,11 @@
                 }
 
                 const runs = [];
+                const resolvedKey = await resolveSecret(prov.apiKey);
                 for (let i = 0; i < benchRuns; i++) {
                     const start = Date.now();
                     try {
-                        const response = await llmClient.query(pid, model, prompt, prov.apiKey);
+                        const response = await llmClient.query(pid, model, prompt, resolvedKey);
                         const latency = Date.now() - start;
                         runs.push({ latencyMs: latency, response, tokensPerSec: Math.round((response.length / 4) / (latency / 1000)) });
                     } catch(e: any) {
