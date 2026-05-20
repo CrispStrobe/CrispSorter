@@ -14,7 +14,20 @@
     import { onMount, onDestroy } from 'svelte';
     import { FileText, Play, FolderOpen, AlertCircle, CheckCircle2, Loader2 } from 'lucide-svelte';
 
-    type ProviderKind = 'openai' | 'anthropic' | 'ollama' | 'groq';
+    type ProviderKind =
+        | 'openai'
+        | 'anthropic'
+        | 'ollama'
+        | 'groq'
+        | 'openrouter'
+        | 'together'
+        | 'cerebras'
+        | 'mistral'
+        | 'nebius'
+        | 'scaleway'
+        | 'poe'
+        | 'google'
+        | 'nmt';
 
     interface ProviderSpec {
         kind: ProviderKind;
@@ -77,10 +90,19 @@
     // ── Default model per provider ────────────────────────────────────
     function defaultModelFor(kind: ProviderKind): string {
         switch (kind) {
-            case 'openai': return 'gpt-4o-mini';
-            case 'anthropic': return 'claude-3-5-sonnet-20241022';
-            case 'ollama': return 'llama3.2';
-            case 'groq': return 'llama-3.3-70b-versatile';
+            case 'openai':     return 'gpt-4o-mini';
+            case 'anthropic':  return 'claude-3-5-sonnet-20241022';
+            case 'ollama':     return 'llama3.2';
+            case 'groq':       return 'llama-3.3-70b-versatile';
+            case 'openrouter': return 'meta-llama/llama-3.3-70b-instruct';
+            case 'together':   return 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
+            case 'cerebras':   return 'llama-3.3-70b';
+            case 'mistral':    return 'mistral-large-latest';
+            case 'nebius':     return 'meta-llama/Llama-3.3-70B-Instruct';
+            case 'scaleway':   return 'llama-3.3-70b-instruct';
+            case 'poe':        return 'GPT-4o-mini';
+            case 'google':     return 'gemini-2.0-flash';
+            case 'nmt':        return '';  // GGUF path entered as model
         }
     }
 
@@ -140,7 +162,11 @@
         const providers: ProviderSpec[] = [{
             kind: providerKind,
             model: providerModel,
-            api_key: providerKind === 'ollama' ? null : (providerApiKey || null),
+            // Local providers don't take an API key.
+            api_key:
+                providerKind === 'ollama' || providerKind === 'nmt'
+                    ? null
+                    : (providerApiKey || null),
             base_url: providerBaseUrl || null,
         }];
 
@@ -219,19 +245,37 @@
         <div class="field">
             <label for="t-provider">Provider</label>
             <select id="t-provider" bind:value={providerKind} onchange={onProviderChange}>
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="ollama">Ollama (local)</option>
-                <option value="groq">Groq</option>
+                <optgroup label="Cloud LLM">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="groq">Groq</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="together">Together</option>
+                    <option value="cerebras">Cerebras</option>
+                    <option value="mistral">Mistral</option>
+                    <option value="nebius">Nebius</option>
+                    <option value="scaleway">Scaleway</option>
+                    <option value="poe">Poe</option>
+                    <option value="google">Google (Gemini)</option>
+                </optgroup>
+                <optgroup label="Local / offline">
+                    <option value="ollama">Ollama (HTTP server)</option>
+                    <option value="nmt">CrispASR NMT (GGUF, offline)</option>
+                </optgroup>
             </select>
         </div>
 
         <div class="field">
-            <label for="t-model">Model</label>
-            <input id="t-model" type="text" bind:value={providerModel} />
+            <label for="t-model">
+                {providerKind === 'nmt' ? 'Model GGUF path' : 'Model'}
+            </label>
+            <input id="t-model" type="text" bind:value={providerModel}
+                placeholder={providerKind === 'nmt'
+                    ? '/path/to/m2m100-418m-q8_0.gguf'
+                    : ''} />
         </div>
 
-        {#if providerKind !== 'ollama'}
+        {#if providerKind !== 'ollama' && providerKind !== 'nmt'}
             <div class="field">
                 <label for="t-key">API key</label>
                 <input id="t-key" type="password" bind:value={providerApiKey} placeholder="(or leave blank to use env)" />
