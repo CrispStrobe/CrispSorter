@@ -1805,6 +1805,7 @@ name = "crisp-docx-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "crispasr",
  "futures",
  "reqwest 0.12.28",
  "serde",
@@ -1915,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.1.41"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
