@@ -2686,6 +2686,7 @@ pub fn run() {
             secrets::tauri_commands::secret_set,
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
+            secrets::tauri_commands::secrets_list_known,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

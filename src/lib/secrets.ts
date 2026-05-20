@@ -48,6 +48,21 @@ export async function bulkSetSecrets(items: Array<[string, string]>): Promise<st
     return await invoke<string[]>('secrets_bulk_set', { items });
 }
 
+/**
+ * Of `candidates`, return the subset that have a non-empty value
+ * stored in the keychain. Used by the Settings UI to render
+ * "which providers do I have keys for?" without iterating one-by-one.
+ *
+ * The candidates list is required because the OS keychain APIs don't
+ * cleanly support "enumerate everything under this service" (macOS
+ * would prompt the user for each row). Pass the known account names
+ * — e.g. every `llm-provider:<id>` for the providers the app knows
+ * about.
+ */
+export async function listKnownSecrets(candidates: string[]): Promise<string[]> {
+    return await invoke<string[]>('secrets_list_known', { accounts: candidates });
+}
+
 /** Make a sentinel for the given account. */
 export function makeSentinel(account: string): string {
     return `@keyring/${account}`;
