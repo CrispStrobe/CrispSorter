@@ -39,18 +39,20 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
             sidecar_name: llama-server-x86_64-pc-windows-msvc.exe
-            # P3.5 Phase 2 Windows enablement deferred to v0.1.39:
-            # Windows DLL resolution doesn't follow Tauri's
-            # `bundle.resources: ["bin/*"]` install layout (DLLs land
-            # at `<install>/resources/bin/` but the loader searches
-            # alongside the .exe). Needs either (a) a Rust startup
-            # `SetDllDirectoryW("resources/bin")` call before any
-            # libcrispembed/libcrispasr touch or (b) a custom WiX
-            # fragment that drops DLLs at the install root. Doing
-            # either before testing is the same trap that broke
-            # v0.1.37 on macOS arm64. Leave Windows feature-less
-            # this release, ship in v0.1.39 once tested.
-            tauri_args: ''
+            # v0.2.0 enables the same translate-align + translate-nmt
+            # features as macOS/Linux. Windows resolves co-located DLLs
+            # by searching alongside the .exe — so the post-bundle step
+            # below copies libcrispembed.dll + libcrispasr.dll + ggml*
+            # next to crispsorter.exe in `target/release/`, and the
+            # `windows-portable-zip` step zips that directory as the
+            # primary Windows release artifact. The NSIS installer
+            # tauri-action produces is broken (DLLs at
+            # resources/bin/ which the loader can't find), so we
+            # delete it from the release in the same post-step. Users
+            # download the portable .zip, unzip, run.
+            tauri_args: '--features crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
+            crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
+            crispembed_lib_asset: crispembed-windows-x86_64.zip
           - platform: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
@@ -422,6 +424,94 @@ jobs:
             exit 1
           fi
           ./scripts/bundle_linux_native_libs.sh "$DEB"
+
+      # ── Windows: build the portable .zip (DLLs next to .exe) ─────────
+      #
+      # Windows resolves DLLs by searching alongside the .exe (not via
+      # rpath like macOS, not via DT_RPATH like Linux). tauri-action's
+      # NSIS/MSI installer puts DLLs at `<install>/resources/bin/`
+      # which the loader can't find, so the bundled installers are
+      # broken when features are on. Workaround: skip the installers,
+      # zip up the unbundled `target/release/` directory with DLLs
+      # co-located. That zip is the primary Windows release artifact.
+      - name: Build portable .zip (Windows)
+        if: matrix.crispasr_lib_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $tag = "v$version"
+          $target = "${{ matrix.rust_target }}"
+
+          # Locate the freshly built .exe. Workspace-root target/ first,
+          # src-tauri/target/ fallback (same dual-location logic the
+          # macOS/Linux post-steps use).
+          $exeDir = $null
+          foreach ($d in @("target/$target/release", "src-tauri/target/$target/release")) {
+            if (Test-Path "$d/crispsorter.exe") { $exeDir = $d; break }
+          }
+          if (-not $exeDir) {
+            Write-Error "couldn't find crispsorter.exe under target/"
+            exit 1
+          }
+          Write-Host "exe dir: $exeDir"
+
+          # Stage the portable bundle: .exe, all DLLs that the
+          # CrispEmbed + CrispASR tarballs dropped into _sibling/,
+          # plus any DLLs the build placed alongside the .exe (link-
+          # time copies). Tauri's resources/ subtree (sidecars + assets)
+          # comes along too — the .exe references them by relative path.
+          $stage = "portable-stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "$exeDir/crispsorter.exe" $stage/
+
+          # DLLs that ended up next to the .exe at link time.
+          Get-ChildItem -Path $exeDir -Filter "*.dll" -File `
+            | Copy-Item -Destination $stage/ -Force -ErrorAction SilentlyContinue
+
+          # DLLs the lib tarballs unpacked into _sibling/. The build.rs
+          # of crispembed-sys / crispasr-sys also copies these alongside
+          # the .exe in some flows, but doing it again here is idempotent.
+          foreach ($srcDir in @(
+            "_sibling/CrispEmbed/build",
+            "_sibling/CrispASR/build-flutter-bundle"
+          )) {
+            if (Test-Path $srcDir) {
+              Get-ChildItem -Path $srcDir -Recurse -Filter "*.dll" -File `
+                | Copy-Item -Destination $stage/ -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          # The llama-server sidecar lives in resources/bin/ (Tauri's
+          # default external-bin layout) — keep it there in the
+          # portable zip so the app finds it the same way it would
+          # under an installed layout.
+          $resBin = "$exeDir/../resources/bin"
+          if (Test-Path $resBin) {
+            New-Item -ItemType Directory -Force -Path "$stage/resources/bin" | Out-Null
+            Copy-Item -Path "$resBin/*" -Destination "$stage/resources/bin/" -Force -Recurse
+          }
+
+          Write-Host "Portable contents:"
+          Get-ChildItem -Recurse $stage | Select-Object FullName | Format-Table -HideTableHeaders
+
+          $zip = "CrispSorter_${version}_x64-windows-portable.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          Write-Host "Created $zip ($(((Get-Item $zip).Length / 1MB).ToString('F1')) MB)"
+
+          # Delete the broken NSIS/MSI assets tauri-action uploaded to
+          # the draft release, then upload the portable .zip in their
+          # place. `--clobber` lets a retry of this step overwrite.
+          $assets = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>$null
+          foreach ($name in $assets) {
+            if ($name -match '\.exe$|\.msi$') {
+              Write-Host "Deleting broken installer asset: $name"
+              gh release delete-asset $tag $name --repo "${{ github.repository }}" -y
+            }
+          }
+          gh release upload $tag $zip --clobber --repo "${{ github.repository }}"
 
       - name: Re-upload patched assets over tauri-action's drafts
         if: matrix.crispasr_lib_asset != ''
