@@ -36,7 +36,10 @@ crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 # will fail unless that sibling exists. If you need CI to ignore
 # them, gate the `translate` module behind a Cargo feature.
 crisp-docx-core  = { path = "../../crisp-docx/crates/crisp-docx-core" }
-crisp-docx-llm   = { path = "../../crisp-docx/crates/crisp-docx-llm" }
+# Default-feature crisp-docx-llm has only the HTTP providers. The
+# `translate-nmt` Cargo feature below pulls in CrispASR for the
+# offline NMT (m2m100 / wmt21 / madlad / gemma4-e2b) provider.
+crisp-docx-llm   = { path = "../../crisp-docx/crates/crisp-docx-llm", default-features = false }
 # Alignment + format-transfer optional: only pulled in when the
 # `translate-align` Cargo feature is on (it pulls in CrispEmbed which
 # compiles the ggml C++ runtime — adds minutes to first build).
@@ -178,6 +181,13 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 # SimAlign over each paragraph's source ↔ translation pair and
 # redistributes the source runs' rPr onto the target text.
 translate-align = ["dep:crisp-docx-align", "crispembed"]
+
+# Offline NMT via CrispASR. Enables the `ProviderKind::Nmt` variant
+# in crisp-docx-llm — wraps `crispasr::Session::translate_text` over
+# a GGUF model (m2m100 / wmt21 / madlad / gemma4-e2b). Path-deps
+# CrispASR as a sibling checkout. The user picks the .gguf file in
+# the Translate tab's model field; no network needed for translation.
+translate-nmt   = ["crisp-docx-llm/nmt", "crispasr"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.

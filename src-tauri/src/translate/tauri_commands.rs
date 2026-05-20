@@ -36,6 +36,15 @@ fn provider_kind(s: &str) -> Result<ProviderKind, String> {
         "anthropic" => Ok(ProviderKind::Anthropic),
         "ollama" => Ok(ProviderKind::Ollama),
         "groq" => Ok(ProviderKind::Groq),
+        "openrouter" => Ok(ProviderKind::OpenRouter),
+        "together" => Ok(ProviderKind::Together),
+        "cerebras" => Ok(ProviderKind::Cerebras),
+        "mistral" => Ok(ProviderKind::Mistral),
+        "nebius" => Ok(ProviderKind::Nebius),
+        "scaleway" => Ok(ProviderKind::Scaleway),
+        "poe" => Ok(ProviderKind::Poe),
+        "google" => Ok(ProviderKind::Google),
+        "nmt" => Ok(ProviderKind::Nmt),
         other => Err(format!("unknown provider kind: {other}")),
     }
 }
