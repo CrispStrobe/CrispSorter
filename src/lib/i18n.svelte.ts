@@ -9,7 +9,8 @@ export const translations = {
             chat: 'Chat',
             catalog: 'Catalog',
             ingest: 'Ingest',
-            logs: 'Logs'
+            logs: 'Logs',
+            translate: 'Translate'
         },
         chat: {
             title: 'Chat',
@@ -761,7 +762,8 @@ export const translations = {
             chat: 'Chat',
             catalog: 'Kataloge',
             ingest: 'Einlesen',
-            logs: 'Logs'
+            logs: 'Logs',
+            translate: 'Übersetzen'
         },
         chat: {
             title: 'Chat',
