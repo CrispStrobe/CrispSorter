@@ -22,7 +22,13 @@ jobs:
             # ASR + GGUF embedder/reranker backends; the
             # libcrispasr.dylib / libcrispembed.dylib + ggml libs come
             # from each project's release asset (downloaded below).
-            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal,crispembed-metal'
+            # `translate-align` + `translate-nmt` enable the v0.2 docx
+            # translator's intra-paragraph format preservation (via
+            # crisp-docx-align over CrispEmbed) and the offline NMT
+            # backend (via crisp-docx-llm/nmt over CrispASR). Both add
+            # no new C++ — the embedder + ASR libs are already
+            # downloaded above for crispasr-metal / crispembed-metal.
+            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal,crispembed-metal,translate-align,translate-nmt'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -49,7 +55,10 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
             sidecar_name: llama-server-x86_64-unknown-linux-gnu
-            tauri_args: '--bundles deb --features crispasr-vulkan,crispembed-vulkan'
+            # Same translate features as macOS — see the comment there
+            # for what these enable. The crispembed + crispasr libs are
+            # already pulled in by the vulkan variants.
+            tauri_args: '--bundles deb --features crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
 
