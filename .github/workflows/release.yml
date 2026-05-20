@@ -85,6 +85,15 @@ jobs:
       # text_detect_language + Session::translate_text FFI surfaces
       # that the P13.5 audio + translation vertical depends on.
       CRISPASR_REF: v0.6.6
+      # crisp-docx is the docx-translation pipeline workspace. src-tauri
+      # has path deps to ../../crisp-docx/crates/{crisp-docx-core,
+      # crisp-docx-llm, crisp-docx-align}, so cargo metadata fails
+      # without the sibling checkout. No release tags yet — pin to the
+      # current origin/main SHA for reproducibility. Bump alongside
+      # CRISPEMBED_REF / CRISPASR_REF when the docx pipeline picks up
+      # a fix worth shipping.
+      CRISPDOCX_REPO: CrispStrobe/crisp-docx
+      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -104,6 +113,13 @@ jobs:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
           path: _sibling/CrispASR
+
+      - name: Check out sibling crisp-docx
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: _sibling/crisp-docx
 
       - name: Download libcrispasr bundle (Unix)
         if: matrix.crispasr_lib_asset != '' && runner.os != 'Windows'
@@ -195,9 +211,21 @@ jobs:
               r'path = \"../_sibling/CrispASR/\1\"',
               s,
           )
+          # crisp-docx path deps include the extra 'crates/' intermediate
+          # dir: ../../crisp-docx/crates/<sub>. Map them under _sibling/
+          # so the rewritten layout mirrors the on-disk dev checkout.
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"',
+              r'path = \"../_sibling/crisp-docx/crates/\1\"',
+              s,
+          )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
           print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
+          for marker in ('crisp-docx-core', 'crisp-docx-llm', 'crisp-docx-align'):
+              idx = s.find(marker)
+              if idx >= 0:
+                  print(s[idx:idx+200])
           "
 
       - name: Setup Node
@@ -596,6 +624,15 @@ jobs:
       # text_detect_language + Session::translate_text FFI surfaces
       # that the P13.5 audio + translation vertical depends on.
       CRISPASR_REF: v0.6.6
+      # crisp-docx is the docx-translation pipeline workspace. src-tauri
+      # has path deps to ../../crisp-docx/crates/{crisp-docx-core,
+      # crisp-docx-llm, crisp-docx-align}, so cargo metadata fails
+      # without the sibling checkout. No release tags yet — pin to the
+      # current origin/main SHA for reproducibility. Bump alongside
+      # CRISPEMBED_REF / CRISPASR_REF when the docx pipeline picks up
+      # a fix worth shipping.
+      CRISPDOCX_REPO: CrispStrobe/crisp-docx
+      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -615,6 +652,13 @@ jobs:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
           path: _sibling/CrispASR
+
+      - name: Check out sibling crisp-docx
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: _sibling/crisp-docx
 
       - name: Download libcrispasr bundle (Unix)
         if: matrix.crispasr_lib_asset != '' && runner.os != 'Windows'
@@ -706,9 +750,21 @@ jobs:
               r'path = \"../_sibling/CrispASR/\1\"',
               s,
           )
+          # crisp-docx path deps include the extra 'crates/' intermediate
+          # dir: ../../crisp-docx/crates/<sub>. Map them under _sibling/
+          # so the rewritten layout mirrors the on-disk dev checkout.
+          s = re.sub(
+              r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"',
+              r'path = \"../_sibling/crisp-docx/crates/\1\"',
+              s,
+          )
           p.write_text(s)
           print(s[s.find('[dependencies.crispembed]'):s.find('[dependencies.crispembed]')+200])
           print(s[s.find('[dependencies.crispasr]'):s.find('[dependencies.crispasr-sys]')+400])
+          for marker in ('crisp-docx-core', 'crisp-docx-llm', 'crisp-docx-align'):
+              idx = s.find(marker)
+              if idx >= 0:
+                  print(s[idx:idx+200])
           "
 
       - name: Setup Node
