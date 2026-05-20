@@ -70,7 +70,17 @@ jobs:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       # Pin to the release tag whose libcrispembed bundle the
       # workflow downloads below. Same rationale as CRISPASR_REF.
-      CRISPEMBED_REF: v0.2.6
+      # The CrispEmbed release-tag namespace and the internal
+      # `crispembed` crate version are NOT the same: v0.2.6 publishes
+      # crate v0.1.0; v0.3.2 publishes crate v0.3.2; v0.4.0 and later
+      # all publish crate v0.4.0. The crisp-docx-align sibling
+      # requires `crispembed = "^0.4"`, so REF must be >= v0.4.0 or
+      # cargo metadata fails with "failed to select a version for the
+      # requirement crispembed = \"^0.4\"". v0.6.0 is the latest stable
+      # tag at time of writing and ships the matching asset names
+      # (crispembed-{linux-x86_64,macos-arm64}.tar.gz +
+      # crispembed-windows-x86_64.zip).
+      CRISPEMBED_REF: v0.6.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
@@ -609,7 +619,17 @@ jobs:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
       # Pin to the release tag whose libcrispembed bundle the
       # workflow downloads below. Same rationale as CRISPASR_REF.
-      CRISPEMBED_REF: v0.2.6
+      # The CrispEmbed release-tag namespace and the internal
+      # `crispembed` crate version are NOT the same: v0.2.6 publishes
+      # crate v0.1.0; v0.3.2 publishes crate v0.3.2; v0.4.0 and later
+      # all publish crate v0.4.0. The crisp-docx-align sibling
+      # requires `crispembed = "^0.4"`, so REF must be >= v0.4.0 or
+      # cargo metadata fails with "failed to select a version for the
+      # requirement crispembed = \"^0.4\"". v0.6.0 is the latest stable
+      # tag at time of writing and ships the matching asset names
+      # (crispembed-{linux-x86_64,macos-arm64}.tar.gz +
+      # crispembed-windows-x86_64.zip).
+      CRISPEMBED_REF: v0.6.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
