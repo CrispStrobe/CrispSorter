@@ -11,11 +11,12 @@
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
-    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages } from 'lucide-svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
+    import Translate from '$lib/components/Translate.svelte';
 
-    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog'
+    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
     let showLogs = $state(false);
 
@@ -330,6 +331,11 @@
                 <Library size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.catalog}</span>{/if}
             </button>
+
+            <button class="nav-item" class:active={activeTab === 'translate'} onclick={() => activeTab = 'translate'} title={i18n.t.nav.translate}>
+                <Languages size={20} />
+                {#if !navCollapsed}<span>{i18n.t.nav.translate}</span>{/if}
+            </button>
         </div>
 
         <div class="nav-bottom">
@@ -446,6 +452,8 @@
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}
                 <IndexIngest />
+            {:else if activeTab === 'translate'}
+                <Translate />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />
