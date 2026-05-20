@@ -12,14 +12,17 @@ concurrency:
 
 env:
   # Sibling repos referenced by src-tauri/Cargo.toml as path deps:
-  #   ../../CrispEmbed/crispembed
-  #   ../../CrispASR/crispasr
+  #   ../../CrispEmbed/crispembed         (existing — embedder + ggml runtime)
+  #   ../../CrispASR/crispasr             (existing — ASR + translation)
+  #   ../../crisp-docx/crates/crisp-docx-{core,llm,align}  (new — docx surgery + LLM clients)
   # Checked out into repos/{name} so that, from repos/CrispSorter/src-tauri,
   # the relative path resolves correctly without any Cargo.toml rewrite.
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
   CRISPEMBED_REF: main
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: main
+  CRISP_DOCX_REPO: CrispStrobe/crisp-docx
+  CRISP_DOCX_REF: main
 
 jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
@@ -46,6 +49,17 @@ jobs:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
           path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        # crisp-docx-align's Cargo.toml has `crispembed = { path =
+        # "../../../CrispEmbed/crispembed" }`. From repos/crisp-docx/crates/
+        # crisp-docx-align that resolves to repos/CrispEmbed — which we
+        # already checked out above. No additional symlink needed.
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
 
       - uses: actions/setup-node@v4
         with:
