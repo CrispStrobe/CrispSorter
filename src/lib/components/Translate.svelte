@@ -12,7 +12,9 @@
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { onMount, onDestroy } from 'svelte';
-    import { FileText, Play, FolderOpen, AlertCircle, CheckCircle2, Loader2 } from 'lucide-svelte';
+    import { FileText, Play, FolderOpen, AlertCircle, CheckCircle2, Loader2, KeyRound } from 'lucide-svelte';
+    import { getSetting, saveSetting } from '../store';
+    import { getSecret, llmProviderAccount, sentinelAccount } from '../secrets';
 
     type ProviderKind =
         | 'openai'
@@ -71,10 +73,44 @@
     let progress = $state<TranslateProgress | null>(null);
     let result = $state<TranslateResult | null>(null);
     let errorMessage = $state('');
+    let startTime = $state<number | null>(null);
+    let elapsed = $state(0);
+    // True iff the OS keychain (or the providers list) carries a usable
+    // api key for the current providerKind. Resolved on every change.
+    let keyConfigured = $state(false);
+    // Hydrated from settings.json on mount — keeps the form sticky
+    // across app launches.
+    let settingsLoaded = $state(false);
 
     let progressUnsubscribe: UnlistenFn | null = null;
+    let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 
     onMount(async () => {
+        // Restore last-used form values. We don't restore the input
+        // path on purpose — that's session-scoped (the user picks fresh
+        // each time) and a stale path would silently confuse them.
+        const saved = await getSetting('translate', null) as {
+            sourceLang?: string;
+            targetLang?: string;
+            providerKind?: ProviderKind;
+            providerModel?: string;
+            providerBaseUrl?: string;
+            concurrency?: number;
+            preserveFormatting?: boolean;
+            alignModelPath?: string;
+        } | null;
+        if (saved) {
+            if (saved.sourceLang) sourceLang = saved.sourceLang;
+            if (saved.targetLang) targetLang = saved.targetLang;
+            if (saved.providerKind) providerKind = saved.providerKind;
+            if (saved.providerModel) providerModel = saved.providerModel;
+            if (saved.providerBaseUrl !== undefined) providerBaseUrl = saved.providerBaseUrl;
+            if (typeof saved.concurrency === 'number') concurrency = saved.concurrency;
+            if (typeof saved.preserveFormatting === 'boolean') preserveFormatting = saved.preserveFormatting;
+            if (saved.alignModelPath !== undefined) alignModelPath = saved.alignModelPath;
+        }
+        settingsLoaded = true;
+        await refreshKeyConfigured();
         progressUnsubscribe = await listen<TranslateProgress>(
             'translate://progress',
             (event) => {
@@ -85,7 +121,52 @@
 
     onDestroy(() => {
         progressUnsubscribe?.();
+        if (elapsedTimer) clearInterval(elapsedTimer);
     });
+
+    // Auto-save form state on change. Runs only after the onMount
+    // hydration so we don't immediately overwrite the persisted blob
+    // with the component's initial defaults.
+    $effect(() => {
+        if (!settingsLoaded) return;
+        const snapshot = {
+            sourceLang, targetLang, providerKind, providerModel,
+            providerBaseUrl, concurrency, preserveFormatting, alignModelPath,
+        };
+        // Fire-and-forget; the store auto-saves to disk.
+        saveSetting('translate', snapshot).catch((e) => {
+            console.warn('translate: failed to persist form state', e);
+        });
+    });
+
+    // Re-check key status whenever the provider changes.
+    $effect(() => {
+        void providerKind; // dep
+        void providerApiKey; // typing a new key flips status immediately
+        refreshKeyConfigured();
+    });
+
+    async function refreshKeyConfigured() {
+        // Local providers don't need keys.
+        if (providerKind === 'ollama' || providerKind === 'nmt') {
+            keyConfigured = true;
+            return;
+        }
+        // If the user typed something in the form field, that's what wins.
+        if (providerApiKey.trim().length > 0) {
+            keyConfigured = true;
+            return;
+        }
+        // Otherwise look in the keychain under the same account name
+        // the Settings tab uses for the broader app's LLM key store.
+        try {
+            const account = llmProviderAccount(providerKind);
+            const stored = await getSecret(account);
+            keyConfigured = !!(stored && stored.trim().length > 0);
+        } catch {
+            keyConfigured = false;
+        }
+    }
 
     // ── Default model per provider ────────────────────────────────────
     function defaultModelFor(kind: ProviderKind): string {
@@ -154,10 +235,24 @@
             errorMessage = 'Pick both input and output paths first.';
             return;
         }
+        if (providerKind === 'nmt' && !providerModel) {
+            errorMessage = 'NMT provider needs a path to a CrispASR-compatible GGUF model.';
+            return;
+        }
+        if (preserveFormatting && !alignModelPath) {
+            errorMessage = 'Preserve-formatting needs a path to an alignment encoder GGUF.';
+            return;
+        }
         errorMessage = '';
         result = null;
         progress = null;
         translating = true;
+        startTime = Date.now();
+        elapsed = 0;
+        if (elapsedTimer) clearInterval(elapsedTimer);
+        elapsedTimer = setInterval(() => {
+            if (startTime) elapsed = Math.floor((Date.now() - startTime) / 1000);
+        }, 500);
 
         const providers: ProviderSpec[] = [{
             kind: providerKind,
@@ -185,6 +280,10 @@
             errorMessage = String(e);
         } finally {
             translating = false;
+            if (elapsedTimer) {
+                clearInterval(elapsedTimer);
+                elapsedTimer = null;
+            }
         }
     }
 
@@ -243,7 +342,18 @@
 
         <!-- ── PROVIDER ─────────────────────────────────────────── -->
         <div class="field">
-            <label for="t-provider">Provider</label>
+            <label for="t-provider">
+                Provider
+                {#if keyConfigured}
+                    <span class="status-pill status-ok" title="Key configured (set in Settings)">
+                        <KeyRound size={11} /> ready
+                    </span>
+                {:else}
+                    <span class="status-pill status-warn" title="No API key for this provider — set one in Settings or enter it below.">
+                        no key
+                    </span>
+                {/if}
+            </label>
             <select id="t-provider" bind:value={providerKind} onchange={onProviderChange}>
                 <optgroup label="Cloud LLM">
                     <option value="openai">OpenAI</option>
@@ -348,6 +458,23 @@
             <Loader2 size={18} class="spin" />
             <div>
                 Paragraph {progress.paragraph_index} / {progress.total}
+                {#if elapsed > 0}
+                    <span class="stat">· {elapsed}s elapsed</span>
+                    {#if progress.paragraph_index > 0}
+                        <span class="stat">· {(progress.paragraph_index / elapsed).toFixed(1)} par/s</span>
+                        {#if progress.paragraph_index < progress.total}
+                            <span class="stat">
+                                · ETA {Math.max(
+                                    1,
+                                    Math.round(
+                                        (elapsed / progress.paragraph_index) *
+                                            (progress.total - progress.paragraph_index)
+                                    )
+                                )}s
+                            </span>
+                        {/if}
+                    {/if}
+                {/if}
                 <div class="progress-bar">
                     <div class="progress-fill" style:width="{(progress.paragraph_index / progress.total) * 100}%"></div>
                 </div>
@@ -502,6 +629,32 @@
     .banner.success{ background: rgba(80,180,80,0.08); border-left-color: #393; }
     .banner > div { flex: 1; }
     .hint { font-size: 0.85em; color: var(--text-muted, #888); margin-top: 0.2rem; }
+    .stat {
+        margin-left: 0.4rem;
+        font-size: 0.85em;
+        color: var(--text-muted, #888);
+        font-variant-numeric: tabular-nums;
+    }
+    .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.2rem;
+        margin-left: 0.4rem;
+        padding: 1px 6px;
+        border-radius: 10px;
+        font-size: 0.7em;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    .status-ok {
+        background: rgba(80, 180, 80, 0.15);
+        color: #2a7a2a;
+    }
+    .status-warn {
+        background: rgba(220, 160, 50, 0.15);
+        color: #8a5a00;
+    }
 
     .progress-bar {
         margin-top: 0.4rem;
