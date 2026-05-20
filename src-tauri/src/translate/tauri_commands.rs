@@ -86,6 +86,12 @@ pub struct TranslateProgress {
 /// docx.
 ///
 /// `concurrency` defaults to 4 if 0.
+///
+/// When `preserve_formatting` is `true`, intra-paragraph runs (bold,
+/// italic, rStyle) are mapped from source to target via word
+/// alignment using the multilingual encoder at `align_model_path`.
+/// This requires the binary to be built with `--features translate-align`;
+/// otherwise the flag is rejected with an error.
 #[tauri::command]
 pub async fn translate_docx(
     app: tauri::AppHandle,
@@ -95,6 +101,8 @@ pub async fn translate_docx(
     target_lang: String,
     providers: Vec<ProviderSpec>,
     concurrency: Option<usize>,
+    preserve_formatting: Option<bool>,
+    align_model_path: Option<String>,
 ) -> Result<TranslateResult, String> {
     use tauri::Emitter;
 
@@ -102,6 +110,12 @@ pub async fn translate_docx(
     let in_path = PathBuf::from(&input);
     let out_path = PathBuf::from(&output);
     let conc = concurrency.unwrap_or(4).max(1);
+    let preserve_formatting = preserve_formatting.unwrap_or(false);
+
+    if preserve_formatting {
+        #[cfg(not(feature = "translate-align"))]
+        return Err("preserve_formatting requires the binary to be built with --features translate-align".into());
+    }
 
     let mut pkg = crisp_docx_core::open(&in_path).map_err(|e| e.to_string())?;
     let paragraphs =
@@ -154,8 +168,29 @@ pub async fn translate_docx(
         }
     }
 
-    crisp_docx_core::replace_paragraph_texts(&mut pkg, &new_texts)
-        .map_err(|e| e.to_string())?;
+    #[cfg(feature = "translate-align")]
+    if preserve_formatting {
+        let model_path = align_model_path
+            .as_deref()
+            .ok_or_else(|| "preserve_formatting requires align_model_path".to_string())?;
+        write_back_with_alignment(
+            &mut pkg,
+            &paragraphs,
+            &new_texts,
+            model_path,
+        )
+        .map_err(|e| format!("format-preserving write-back: {e}"))?;
+    } else {
+        crisp_docx_core::replace_paragraph_texts(&mut pkg, &new_texts)
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(feature = "translate-align"))]
+    {
+        let _ = align_model_path; // unused without the feature
+        crisp_docx_core::replace_paragraph_texts(&mut pkg, &new_texts)
+            .map_err(|e| e.to_string())?;
+    }
+
     crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
 
     Ok(TranslateResult {
@@ -163,6 +198,101 @@ pub async fn translate_docx(
         succeeded,
         failed,
     })
+}
+
+/// Re-runs the alignment-driven format transfer on top of the
+/// already-translated paragraph texts and writes them back at run
+/// granularity, carrying each source run's rPr through to the target.
+#[cfg(feature = "translate-align")]
+fn write_back_with_alignment(
+    pkg: &mut crisp_docx_core::Package,
+    src_texts: &[String],
+    translations: &[String],
+    model_path: &str,
+) -> Result<(), String> {
+    use crisp_docx_align::{align_texts, transfer_format_via_words, SourceRun, Strategy};
+    use crisp_docx_core::{ParagraphInfo, Run as CoreRun};
+    use crispembed::CrispEmbed;
+
+    let mut model = CrispEmbed::new(model_path, 4)
+        .map_err(|e| format!("loading align model {model_path}: {e}"))?;
+
+    let src_paragraphs = crisp_docx_core::extract_paragraph_runs(pkg)
+        .map_err(|e| e.to_string())?;
+    if src_paragraphs.len() != src_texts.len() {
+        return Err(format!(
+            "paragraph-count mismatch (text={}, runs={})",
+            src_texts.len(),
+            src_paragraphs.len()
+        ));
+    }
+
+    let mut new_paragraphs: Vec<ParagraphInfo> = Vec::with_capacity(src_paragraphs.len());
+    for (i, info) in src_paragraphs.iter().enumerate() {
+        let translation = translations.get(i).cloned().unwrap_or_default();
+        let src_text = info.full_text();
+        if src_text.trim().is_empty() || translation.trim().is_empty() {
+            new_paragraphs.push(info.clone());
+            continue;
+        }
+
+        let source_runs: Vec<SourceRun<Option<Vec<u8>>>> = info
+            .runs
+            .iter()
+            .map(|r| SourceRun {
+                text: r.text.clone(),
+                format_id: r.rpr_xml.clone(),
+            })
+            .collect();
+
+        let alignment = align_texts(
+            &mut model,
+            &src_text,
+            &translation,
+            Strategy::Itermax { min_sim: 0.3 },
+        )
+        .map_err(|e| format!("aligning paragraph {i}: {e}"))?;
+        let target_runs =
+            transfer_format_via_words(&source_runs, &translation, &alignment.word_edges, None);
+
+        // Carry every source-paragraph footnote ref through to the last
+        // target run (deterministic; finer placement is a future-task).
+        let mut footnote_refs_all: Vec<Vec<u8>> = info
+            .runs
+            .iter()
+            .flat_map(|r| r.footnote_refs.clone())
+            .collect();
+
+        let mut runs: Vec<CoreRun> = target_runs
+            .into_iter()
+            .map(|tr| CoreRun {
+                text: tr.text,
+                rpr_xml: tr.format_id,
+                footnote_refs: Vec::new(),
+            })
+            .collect();
+        if !footnote_refs_all.is_empty() {
+            if let Some(last) = runs.last_mut() {
+                last.footnote_refs.append(&mut footnote_refs_all);
+            } else {
+                runs.push(CoreRun {
+                    text: String::new(),
+                    rpr_xml: None,
+                    footnote_refs: footnote_refs_all,
+                });
+            }
+        }
+
+        new_paragraphs.push(ParagraphInfo {
+            ppr_xml: info.ppr_xml.clone(),
+            runs,
+            leading_bookmark_starts: info.leading_bookmark_starts.clone(),
+            trailing_bookmark_ends: info.trailing_bookmark_ends.clone(),
+        });
+    }
+
+    crisp_docx_core::replace_paragraph_runs(pkg, &new_paragraphs)
+        .map_err(|e| e.to_string())
 }
 
 /// Summary returned from `translate_docx`.

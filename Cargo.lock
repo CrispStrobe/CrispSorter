@@ -1784,6 +1784,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisp-docx-align"
+version = "0.1.0"
+dependencies = [
+ "crispembed",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "crisp-docx-core"
 version = "0.1.0"
 dependencies = [
@@ -1918,6 +1926,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
+ "crisp-docx-align",
  "crisp-docx-core",
  "crisp-docx-llm",
  "crisp-index-protocol",

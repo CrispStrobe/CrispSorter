@@ -45,6 +45,11 @@
     let providerApiKey = $state('');
     let providerBaseUrl = $state('');
     let concurrency = $state(4);
+    // v0.2: preserve intra-paragraph runs (bold/italic) via word alignment.
+    // Off by default. When on, requires a multilingual encoder GGUF + the
+    // backend to be built with --features translate-align.
+    let preserveFormatting = $state(false);
+    let alignModelPath = $state('');
 
     // ── Runtime state ─────────────────────────────────────────────────
     let paragraphs = $state<string[]>([]);
@@ -147,12 +152,23 @@
                 targetLang,
                 providers,
                 concurrency,
+                preserveFormatting,
+                alignModelPath: preserveFormatting ? (alignModelPath || null) : null,
             });
         } catch (e) {
             errorMessage = String(e);
         } finally {
             translating = false;
         }
+    }
+
+    async function pickAlignModel() {
+        const path = await openDialog({
+            multiple: false,
+            directory: false,
+            filters: [{ name: 'GGUF models', extensions: ['gguf'] }],
+        });
+        if (typeof path === 'string') alignModelPath = path;
     }
 </script>
 
@@ -231,6 +247,34 @@
             <label for="t-conc">Concurrency</label>
             <input id="t-conc" type="number" min="1" max="32" bind:value={concurrency} />
         </div>
+
+        <!-- ── FORMAT PRESERVATION (v0.2) ───────────────────────── -->
+        <div class="field span-2">
+            <label>
+                <input type="checkbox" bind:checked={preserveFormatting} />
+                Preserve intra-paragraph formatting (bold / italic)
+                <span class="badge">v0.2 — requires <code>translate-align</code> build</span>
+            </label>
+        </div>
+
+        {#if preserveFormatting}
+            <div class="field span-2">
+                <label for="t-align">Alignment encoder GGUF</label>
+                <div class="path-row">
+                    <input id="t-align" type="text" bind:value={alignModelPath}
+                        placeholder="Path to a multilingual encoder GGUF (e.g. paraphrase-multilingual-MiniLM-L12-v2.gguf)" />
+                    <button onclick={pickAlignModel} title="Browse">
+                        <FolderOpen size={16} />
+                    </button>
+                </div>
+                <p class="hint">
+                    Per-paragraph: aligns source ↔ translated words via the
+                    encoder, then maps each source run's rPr onto the matching
+                    target word range. Adds ~50ms / paragraph on a typical
+                    multilingual MiniLM model.
+                </p>
+            </div>
+        {/if}
     </div>
 
     <div class="actions">
@@ -340,7 +384,22 @@
         font-size: 0.85em;
         color: var(--text-muted, #666);
     }
-    .field input, .field select {
+    .field.span-2 {
+        grid-column: 1 / -1;
+    }
+    .field input[type="checkbox"] {
+        margin-right: 0.4rem;
+    }
+    .badge {
+        display: inline-block;
+        padding: 1px 5px;
+        background: var(--bg-subtle, #f0f0f0);
+        color: var(--text-muted, #666);
+        border-radius: 3px;
+        font-size: 0.75em;
+        margin-left: 0.4rem;
+    }
+    .field input:not([type="checkbox"]), .field select {
         padding: 0.4rem 0.5rem;
         border: 1px solid var(--border, #ccc);
         border-radius: 4px;
