@@ -35,9 +35,15 @@ crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 # developer-local — when CI clones the repo standalone the build
 # will fail unless that sibling exists. If you need CI to ignore
 # them, gate the `translate` module behind a Cargo feature.
-crisp-docx-core = { path = "../../crisp-docx/crates/crisp-docx-core" }
-crisp-docx-llm  = { path = "../../crisp-docx/crates/crisp-docx-llm" }
-futures         = "0.3"
+crisp-docx-core  = { path = "../../crisp-docx/crates/crisp-docx-core" }
+crisp-docx-llm   = { path = "../../crisp-docx/crates/crisp-docx-llm" }
+# Alignment + format-transfer optional: only pulled in when the
+# `translate-align` Cargo feature is on (it pulls in CrispEmbed which
+# compiles the ggml C++ runtime — adds minutes to first build).
+crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features = ["crispembed"], optional = true }
+# (crispembed itself is declared as `[dependencies.crispembed]` lower
+# down — already optional, shared with the legacy embedder feature.)
+futures          = "0.3"
 
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -165,6 +171,13 @@ crispembed        = ["dep:crispembed", "dep:crispembed-sys"]
 crispembed-vulkan = ["crispembed", "crispembed/vulkan", "crispembed-sys/vulkan"]
 crispembed-metal  = ["crispembed", "crispembed/metal", "crispembed-sys/metal"]
 crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
+
+# Translate-pipeline format-preservation. Pulls in crisp-docx-align +
+# CrispEmbed (the multilingual encoder) so the `translate_docx` Tauri
+# command can take a `preserve_formatting=true` option that runs
+# SimAlign over each paragraph's source ↔ translation pair and
+# redistributes the source runs' rPr onto the target text.
+translate-align = ["dep:crisp-docx-align", "crispembed"]
 
 # ── CrispASR (optional, on-device ASR — Whisper / Qwen3-ASR / FastConformer)
 # Mirrors the crispembed feature pattern: pick exactly one backend sub-feature.
