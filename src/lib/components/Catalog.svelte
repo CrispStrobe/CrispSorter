@@ -278,11 +278,13 @@
         importedCount = 0;
         try {
             const { batchManager } = await import('$lib/batch/store.svelte');
-            for (const e of browsingEntries) {
-                const name = e.path.split(/[\\/]/).pop() || e.path;
-                batchManager.addItem(e.path, name, e.size);
-                importedCount++;
-            }
+            const entriesToImport = browsingEntries.map(e => ({
+                path: e.path,
+                name: e.path.split(/[\\/]/).pop() || e.path,
+                size: e.size
+            }));
+            await batchManager.addItemsBulk(entriesToImport);
+            importedCount = entriesToImport.length;
             flog('info', `Imported ${importedCount} entries from catalog ${browsing}`);
         } catch (e: any) {
             error = `import_to_batch: ${e}`;

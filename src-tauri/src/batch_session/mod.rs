@@ -751,3 +751,7 @@ mod tests {
         assert_eq!(store.processed_history_count().unwrap(), 1);
     }
 }
+
+
+#[cfg(test)]
+pub mod bulk_tests;

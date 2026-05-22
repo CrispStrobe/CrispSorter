@@ -22,11 +22,14 @@ fn get_store(state: &AppState) -> Result<BatchSessionStore, String> {
 pub async fn batch_session_load(
     state: State<'_, AppState>,
 ) -> Result<Vec<BatchItemRow>, String> {
+    crate::app_log!("info", "Loading batch items from SQLite...");
     let store = get_store(&state)?;
-    tokio::task::spawn_blocking(move || store.load())
+    let items = tokio::task::spawn_blocking(move || store.load())
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::app_log!("info", "Loaded {} items from SQLite.", items.len());
+    Ok(items)
 }
 
 /// Upsert a single item (insert or update all mutable columns).
@@ -50,6 +53,9 @@ pub async fn batch_session_upsert_items_bulk(
     state: State<'_, AppState>,
     items: Vec<BatchItemRow>,
 ) -> Result<(), String> {
+    if items.len() > 100 {
+        crate::app_log!("info", "Bulk upserting {} items to SQLite...", items.len());
+    }
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.upsert_items_bulk(&items))
         .await
@@ -63,11 +69,15 @@ pub async fn batch_session_delete_items(
     state: State<'_, AppState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
+    crate::app_log!("info", "Deleting {} items from SQLite batch...", ids.len());
+    let count = ids.len();
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.delete_items(&ids))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::app_log!("info", "Deleted {} items from SQLite.", count);
+    Ok(())
 }
 
 /// Delete all items for the current session.
@@ -75,11 +85,14 @@ pub async fn batch_session_delete_items(
 pub async fn batch_session_clear(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    crate::app_log!("info", "Clearing all items from SQLite batch...");
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.clear())
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::app_log!("info", "SQLite batch cleared.");
+    Ok(())
 }
 
 /// Persist the full extracted text for an item.

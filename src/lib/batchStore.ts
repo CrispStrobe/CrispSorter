@@ -1,3 +1,4 @@
+import { flog } from './log';
 // TypeScript wrapper around the SQLite batch session Tauri commands.
 // Replaces saveSetting('lastSession', …) / getSetting('lastSession') calls.
 // See handover-prompts/session-prompt-batch-sqlite-persistence.md for the
@@ -58,16 +59,36 @@ export async function upsertItem(item: BatchItem): Promise<void> {
  *  Use for bulk status updates (resetToQueued, setAcceptedItems, etc.) to
  *  avoid N separate IPC round-trips. */
 export async function upsertItemsBulk(items: BatchItem[]): Promise<void> {
-    return invoke('batch_session_upsert_items_bulk', { items: items.map(batchItemToRow) });
+    if (items.length === 0) return;
+    if (items.length > 100) flog('info', 'Bulk upserting ' + items.length + ' items to SQLite...');
+    
+    // Chunking to avoid hitting IPC payload limits or timeouts.
+    // 500 items per chunk is a safe balance for performance vs payload size.
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+        const chunk = items.slice(i, i + CHUNK_SIZE);
+        if (items.length > CHUNK_SIZE) {
+            flog('info', '  Upserting chunk ' + (Math.floor(i / CHUNK_SIZE) + 1) + ' of ' + Math.ceil(items.length / CHUNK_SIZE) + '...');
+        }
+        await invoke('batch_session_upsert_items_bulk', { items: chunk.map(batchItemToRow) });
+    }
 }
 
 /** Delete items by their ids. */
 export async function deleteItems(ids: string[]): Promise<void> {
-    return invoke('batch_session_delete_items', { ids });
+    if (ids.length === 0) return;
+    if (ids.length > 100) flog('info', 'Deleting ' + ids.length + ' items from SQLite...');
+    
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+        const chunk = ids.slice(i, i + CHUNK_SIZE);
+        await invoke('batch_session_delete_items', { ids: chunk });
+    }
 }
 
 /** Delete all items for the current session. */
 export async function clearBatch(): Promise<void> {
+    flog('info', 'Sending batch_session_clear command to Rust...');
     return invoke('batch_session_clear');
 }
 
