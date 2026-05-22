@@ -30,7 +30,12 @@ echo "Building..."
 cd "$SCRIPT_DIR"
 npm run tauri build -- --bundles app 2>&1 || true   # build .app only, skip broken DMG bundler
 
-# 4. Build DMG with create-dmg
+# 4. Bundle native libs into the .app
+APP="$BUNDLE_DIR/macos/CrispSorter.app"
+echo "Bundling native libs..."
+"$SCRIPT_DIR/scripts/bundle_macos_native_libs.sh" "$APP"
+
+# 5. Build DMG with create-dmg
 APP="$BUNDLE_DIR/macos/CrispSorter.app"
 DMG_DIR="$BUNDLE_DIR/dmg"
 DMG_NAME="CrispSorter_${RAW_VERSION}_aarch64.dmg"
@@ -62,7 +67,7 @@ create-dmg \
     "$APP"
 echo "DMG built: $DMG"
 
-# 5. Collect artifacts
+# 6. Collect artifacts
 ARTIFACTS=("$DMG")
 
 # .app.tar.gz (updater artifact, if present)
@@ -74,11 +79,11 @@ fi
 echo "Artifacts:"
 for f in "${ARTIFACTS[@]}"; do echo "  - $f"; done
 
-# 6. Detect repo from git remote
+# 7. Detect repo from git remote
 REPO=$(git -C "$SCRIPT_DIR" remote get-url origin | sed 's|.*github.com[:/]\(.*\)\.git|\1|; s|.*github.com[:/]\(.*\)|\1|')
 echo "Target repo: $REPO"
 
-# 7. Create/update GitHub release and upload
+# 8. Create/update GitHub release and upload
 echo "Releasing $VERSION to GitHub..."
 gh release create "$VERSION" --repo "$REPO" --title "CrispSorter $VERSION" \
     --notes "Automated release for version $VERSION" 2>/dev/null || true
