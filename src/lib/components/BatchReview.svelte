@@ -292,7 +292,7 @@
                         // dispatch when the batch item is processed.
                         extensions: [...MULTIMODAL_EXTENSIONS]
                     }).then(entries => {
-                        entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+                        batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
                     }).catch(e => console.error('[BatchReview] scan_folder error for dropped path:', path, e));
                 });
             });
@@ -340,7 +340,7 @@
                     folderPath: path,
                     extensions: [...MULTIMODAL_EXTENSIONS]
                 }).catch(() => []);
-                entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+                batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
             }
         }
     }
@@ -353,7 +353,7 @@
                 // Multimodal: pick up audio/video alongside docs+images.
                 extensions: [...MULTIMODAL_EXTENSIONS]
             });
-            entries.forEach(e => batchManager.addItem(e.path, e.path.split(/[\\/]/).pop() || '', e.size));
+            batchManager.addItemsBulk(entries.map(e => ({ path: e.path, name: e.path.split(/[\\/]/).pop() || '', size: e.size })));
         }
     }
 

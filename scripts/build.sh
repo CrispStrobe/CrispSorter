@@ -32,6 +32,12 @@ SRC_TAURI="$REPO_ROOT/src-tauri"
 BUILD_DIR="$REPO_ROOT/build"
 TARGET_VOLUME="${CRISPSORTER_TARGET_VOLUME:-<external-volume>/code/crispsorter-target}"
 
+# Belt-and-suspenders: explicitly set CARGO_TARGET_DIR to the external volume
+# so even tools bypassing the target/ symlink stay off the boot drive.
+if [ -n "$TARGET_VOLUME" ]; then
+  export CARGO_TARGET_DIR="$TARGET_VOLUME"
+fi
+
 # ── Flag parsing ────────────────────────────────────────────────────────
 RELEASE=0
 DO_CHECK=0

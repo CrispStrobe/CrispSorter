@@ -99,6 +99,7 @@ export class BatchManager {
     addItem(path: string, name: string, size: number) {
         const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
         if (this.items.some(i => norm(i.originalPath) === norm(path))) return; // skip duplicates (case-insensitive, cross-separator)
+        flog('info', 'Adding item: ' + name);
         const id = crypto.randomUUID();
         const extension = name.split('.').pop() || '';
         const newItem: BatchItem = {
@@ -116,15 +117,64 @@ export class BatchManager {
         upsertItem(newItem); // fire-and-forget
     }
 
+    async addItemsBulk(entries: { path: string, name: string, size: number }[]) {
+        const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+        const existingPaths = new Set(this.items.map(i => norm(i.originalPath)));
+        const newItems: BatchItem[] = [];
+        
+        for (const e of entries) {
+            if (existingPaths.has(norm(e.path))) continue;
+            const id = crypto.randomUUID();
+            const extension = e.name.split('.').pop() || '';
+            const newItem: BatchItem = {
+                id,
+                originalPath: e.path,
+                originalName: e.name,
+                size: e.size,
+                status: 'queued',
+                extension,
+                modifiedAt: Date.now(),
+                isAccepted: false,
+                isIgnored: false
+            };
+            newItems.push(newItem);
+            existingPaths.add(norm(e.path));
+        }
+
+        if (newItems.length === 0) return;
+        
+        flog('info', 'Adding ' + newItems.length + ' item(s) to batch...');
+        this.items.push(...newItems);
+        try {
+            await upsertItemsBulk(newItems);
+            flog('info', 'Added ' + newItems.length + ' item(s) to SQLite.');
+        } catch (e: any) {
+            flog('error', 'Failed to add items to SQLite: ' + (e.message || e));
+        }
+    }
+
     async removeItems(ids: string[]) {
+        flog('info', 'Removing ' + ids.length + ' item(s) from batch...');
         this.items = this.items.filter(i => !ids.includes(i.id));
-        await deleteItems(ids);
+        try {
+            await deleteItems(ids);
+            flog('info', 'Removed ' + ids.length + ' item(s) from SQLite.');
+        } catch (e: any) {
+            flog('error', 'Failed to remove items from SQLite: ' + (e.message || e));
+        }
     }
 
     async clear() {
         if (this.isProcessing) return;
+        const count = this.items.length;
+        flog('info', 'Clearing batch (' + count + ' items)...');
         this.items = [];
-        await clearBatch();
+        try {
+            await clearBatch();
+            flog('info', 'Batch cleared in SQLite.');
+        } catch (e: any) {
+            flog('error', 'Failed to clear batch in SQLite: ' + (e.message || e));
+        }
     }
 
     private lastStopAtMs = 0;
@@ -1091,19 +1141,24 @@ export class BatchManager {
         item.targetPath = await join(baseDir, ...parts);
     }
 
-    async resumeLastSession() {
+        async resumeLastSession() {
         // One-shot migration from the legacy JSON blob into SQLite.
         // Fast no-op on every launch after the first (sentinel check).
         try {
+            flog('info', 'Checking for legacy JSON session migration...');
             const migrated = await migrateFromJson();
-            if (migrated > 0) flog('info', `Migrated ${migrated} item(s) from lastSession JSON to SQLite.`);
+            if (migrated > 0) flog('info', 'Migrated ' + migrated + ' item(s) from lastSession JSON to SQLite.');
         } catch (e: any) {
-            flog('warn', `migrateFromJson failed: ${e?.message ?? e}`);
+            flog('warn', 'migrateFromJson failed: ' + (e?.message ?? e));
         }
 
         try {
+            flog('info', 'Loading batch from SQLite...');
             const rows = await loadBatch();
-            this.items = rows.map((item: BatchItem) => {
+            this.items = rows.map((item: BatchItem, index: number) => {
+                if (index > 0 && index % 1000 === 0) {
+                    flog('info', 'Loading progress: ' + index + ' items...');
+                }
                 if (item.status === 'extracting' || item.status === 'analyzing') {
                     return { ...item, status: 'unfinished' as const, statusDetail: undefined };
                 }
@@ -1114,9 +1169,13 @@ export class BatchManager {
                 }
                 return item;
             });
-            if (this.items.length > 0) flog('info', `Resumed ${this.items.length} item(s) from SQLite.`);
+            if (this.items.length > 0) {
+                flog('info', 'Resumed ' + this.items.length + ' item(s) from SQLite.');
+            } else {
+                flog('info', 'No items in SQLite batch.');
+            }
         } catch (e: any) {
-            flog('warn', `resumeLastSession: SQLite load failed: ${e?.message ?? e}`);
+            flog('warn', 'resumeLastSession: SQLite load failed: ' + (e?.message ?? e));
         }
     }
 
@@ -1475,6 +1534,21 @@ export class BatchManager {
             }
         }
         await upsertItemsBulk(this.items);
+    }
+
+    /** Test helper to verify bulk addition logic. */
+    async _testBulkAdd(count: number) {
+        const entries = [];
+        for (let i = 0; i < count; i++) {
+            entries.push({
+                path: `/test/file-${i}.pdf`,
+                name: `file-${i}.pdf`,
+                size: 1000
+            });
+        }
+        flog('info', `[TEST] Starting bulk add of ${count} items...`);
+        await this.addItemsBulk(entries);
+        flog('info', `[TEST] Bulk add of ${count} items finished. Store has ${this.items.length} items.`);
     }
 }
 
