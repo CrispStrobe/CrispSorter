@@ -32,11 +32,6 @@ SRC_TAURI="$REPO_ROOT/src-tauri"
 BUILD_DIR="$REPO_ROOT/build"
 TARGET_VOLUME="${CRISPSORTER_TARGET_VOLUME:-<external-volume>/code/crispsorter-target}"
 
-# Belt-and-suspenders: explicitly set CARGO_TARGET_DIR to the external volume
-# so even tools bypassing the target/ symlink stay off the boot drive.
-if [ -n "$TARGET_VOLUME" ]; then
-  export CARGO_TARGET_DIR="$TARGET_VOLUME"
-fi
 
 # ── Flag parsing ────────────────────────────────────────────────────────
 RELEASE=0
@@ -143,11 +138,11 @@ if [ "$DO_BACKEND" = "1" ]; then
     echo "[build] cargo tauri build (.app + .dmg + …)"
     ( cd "$REPO_ROOT" && npm run tauri -- build )
   elif [ "$RELEASE" = "1" ]; then
-    echo "[build] cargo build --release --bin tauri-app"
-    ( cd "$SRC_TAURI" && cargo build --release --bin tauri-app )
+    echo "[build] cargo build --release --bin crispsorter"
+    ( cd "$SRC_TAURI" && cargo build --release --bin crispsorter )
   else
-    echo "[build] cargo build --bin tauri-app"
-    ( cd "$SRC_TAURI" && cargo build --bin tauri-app )
+    echo "[build] cargo build --bin crispsorter"
+    ( cd "$SRC_TAURI" && cargo build --bin crispsorter )
   fi
 fi
 
@@ -157,9 +152,9 @@ echo "[build] done."
 binary_path=""
 if [ "$DO_BACKEND" = "1" ]; then
   if [ "$RELEASE" = "1" ]; then
-    binary_path="$REPO_ROOT/target/release/tauri-app"
+    binary_path="$REPO_ROOT/target/release/crispsorter"
   else
-    binary_path="$REPO_ROOT/target/debug/tauri-app"
+    binary_path="$REPO_ROOT/target/debug/crispsorter"
   fi
   if [ -e "$binary_path" ]; then
     size_mb=$(du -m "$binary_path" 2>/dev/null | cut -f1)
@@ -177,4 +172,4 @@ echo "  npm run tauri dev                      # live dev (vite + cargo, hot rel
 if [ -n "$binary_path" ] && [ "$RELEASE" = "1" ]; then
   echo "  $binary_path                           # release binary, uses static build/"
 fi
-echo "  $REPO_ROOT/target/debug/tauri-app version    # CLI mode (no GUI)"
+echo "  $REPO_ROOT/target/debug/crispsorter version    # CLI mode (no GUI)"
