@@ -3,13 +3,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Ensure builds run on the external volume if available
-TARGET_VOLUME="${CRISPSORTER_TARGET_VOLUME:-<external-volume>/code/crispsorter-target}"
-VOLUME_PARENT=$(dirname "$TARGET_VOLUME")
-if [[ -d "$VOLUME_PARENT" ]]; then
-    echo "Using external target directory: $TARGET_VOLUME"
-    export CARGO_TARGET_DIR="$TARGET_VOLUME"
-fi
 
 # target/ moved to the workspace root with the crisp-index-server
 # integration (commit 7326771); fall back to the legacy path so this
