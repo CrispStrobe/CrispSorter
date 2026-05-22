@@ -241,10 +241,25 @@ process_wrapper "crispasr" "$CRISPASR_BUILD_DIR" \
   "libcrispasr.dylib" "crispasr,whisper" \
   "libcrispasr.1.dylib libwhisper.dylib"
 
-# CrispEmbed — no SOVERSION, no aliases needed.
+# CrispEmbed — needs SOVERSION 0 alias (libcrispembed.0.dylib) because the
+# binary records @rpath/libcrispembed.0.dylib via LC_LOAD_DYLIB.
 process_wrapper "crispembed" "$CRISPEMBED_BUILD_DIR" \
   "libcrispembed.dylib" "crispembed" \
-  ""
+  "libcrispembed.0.dylib"
+
+# ── Clean main binary RPATHs ──────────────────────────────────────────
+# Find the main executable (Tauri puts it in Contents/MacOS/productName)
+# and strip the absolute build-time RPATHs.
+MAIN_BIN="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -perm +111 | head -1)"
+if [[ -n "$MAIN_BIN" ]]; then
+  echo "==> Cleaning RPATHs for main binary: $(basename "$MAIN_BIN")"
+  canonicalise_loader_rpath "$MAIN_BIN"
+  # canonicalise_loader_rpath adds @loader_path/. which is correct for
+  # libs in Frameworks, but for the main bin in MacOS/ we also want
+  # @loader_path/../Frameworks (it likely already has it from the
+  # build, but re-asserting it doesn't hurt).
+  install_name_tool -add_rpath "@loader_path/../Frameworks" "$MAIN_BIN" 2>/dev/null || true
+fi
 
 # ── Re-codesign ──────────────────────────────────────────────────────────
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
