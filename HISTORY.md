@@ -1049,7 +1049,7 @@ two share `/root/cloudworker_state/<catalog-db>` via SQLite WAL).
 
 **Live verification against the production VPS**
 
-  - cb-api.service deployed to `<VPS_IP_REDACTED>:7869` (loopback);
+  - cb-api.service deployed on the production VPS (loopback port 7869);
     SSH tunnel for the cargo run.
   - All 3 env-gated live tests pass:
     `cb_sync_live_health_round_trip`,
