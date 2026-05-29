@@ -26,6 +26,7 @@ pub mod config_persist;
 pub mod migrations;
 pub mod schema;
 pub mod search;
+pub mod snippet;
 pub mod tauri_commands;
 pub mod translate_commands;
 
@@ -44,6 +45,7 @@ pub use location::{FileLocation, RetrievalCost};
 pub use reranker::{Reranker, RerankerHandle, RerankerModel};
 pub use schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
 pub use search::SearchEngine;
+pub use snippet::{highlight_snippet, SNIPPET_WINDOW};
 
 use anyhow::Result;
 use async_trait::async_trait;

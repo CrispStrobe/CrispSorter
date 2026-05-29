@@ -200,6 +200,61 @@ enum Command {
         #[command(subcommand)]
         cmd: SyncCmd,
     },
+    /// Unified search — one verb over the local index AND the configured
+    /// cloud-backup (cb-api) corpus, RRF-merged and badged by source.
+    ///
+    /// By default the federated leg is ON whenever a cloud-backup URL is
+    /// configured, pull is enabled, and a token is stored; otherwise it
+    /// degrades to a local-only search.  `--local-only` / `--cloud-only`
+    /// force one leg.  Filters that exist on both backends (`--ext`,
+    /// `--lang`, `--folder-prefix`, `--year-min/max`, `--url-domain`,
+    /// `--tag`) are applied to whichever legs run.
+    Search {
+        /// Query text.
+        query: String,
+        /// Override the app data directory.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Maximum hits to return (after RRF merge).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Search only the local index (skip cb-api even if configured).
+        #[arg(long, conflicts_with = "cloud_only")]
+        local_only: bool,
+        /// Search only the cb-api corpus (skip the local index).
+        #[arg(long)]
+        cloud_only: bool,
+        /// Restrict to one or more file extensions (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        ext: Vec<String>,
+        /// Source-language filter (ISO 639-1, e.g. `en` / `de`).
+        #[arg(long)]
+        lang: Option<String>,
+        /// Folder-prefix match against `parent_dir`.
+        #[arg(long, value_name = "PATH")]
+        folder_prefix: Option<String>,
+        /// Author substring match (cb-api leg only).
+        #[arg(long)]
+        author: Option<String>,
+        /// Year range filters.
+        #[arg(long)]
+        year_min: Option<i32>,
+        #[arg(long)]
+        year_max: Option<i32>,
+        /// v106 — substring match against the source `url` column.
+        #[arg(long, value_name = "DOMAIN")]
+        url_domain: Option<String>,
+        /// v107 — element-of match on the `tags` list.
+        #[arg(long, value_name = "TAG")]
+        tag: Option<String>,
+        /// Collection-id filter (cb-api leg only); repeatable / comma-list.
+        #[arg(long, value_delimiter = ',')]
+        collection_ids: Vec<String>,
+        /// Run server-side embedding on the cb-api leg so the hybrid search
+        /// adds a vector ranking signal alongside FTS.
+        #[arg(long)]
+        embed_text: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -966,6 +1021,15 @@ pub fn run() -> ExitCode {
         Command::Chat { cmd } => cmd_chat(cli.format, cmd),
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
+        Command::Search {
+            query, data_dir, limit, local_only, cloud_only, ext, lang,
+            folder_prefix, author, year_min, year_max, url_domain, tag,
+            collection_ids, embed_text,
+        } => cmd_search(
+            cli.format, data_dir, query, limit, local_only, cloud_only, ext, lang,
+            folder_prefix, author, year_min, year_max, url_domain, tag,
+            collection_ids, embed_text,
+        ),
         Command::Completion { shell } => {
             use clap::CommandFactory;
             use clap_complete::generate;
@@ -3752,6 +3816,326 @@ async fn cmd_cloud_backup_admin(
     Ok(())
 }
 
+// ── Unified `search` verb ────────────────────────────────────────────────
+
+/// Map a local `SearchResult` (rank `i`, 0-based) to a `FederatedHit`,
+/// highlighting the snippet around the query.  Pure — unit-tested below.
+fn local_result_to_federated(
+    i: usize,
+    r: crate::index::SearchResult,
+    q: &str,
+) -> crate::sync::cloud_backup::FederatedHit {
+    use crate::index::{highlight_snippet, SNIPPET_WINDOW};
+    crate::sync::cloud_backup::FederatedHit {
+        id: format!("local:{}", r.doc_id),
+        source: "local".into(),
+        score: r.score,
+        rrf_rank: i + 1,
+        filename: r.filename.clone(),
+        path: Some(r.location_uri.clone()),
+        ext: r.ext.clone(),
+        title: r.title.clone(),
+        author: r.author.clone(),
+        year: r.year,
+        language: r.language.clone(),
+        sha256: if r.source_hash.is_empty() { None } else { Some(r.source_hash.clone()) },
+        size_bytes: None,
+        snippet: highlight_snippet(&r.snippet, q, SNIPPET_WINDOW),
+        location_uri: Some(r.location_uri),
+        url: r.url,
+        tags: if r.tags.is_empty() { None } else { Some(r.tags) },
+    }
+}
+
+/// Map a cb-api v2 `HybridSearchHit` (rank `i`, 0-based) to a `FederatedHit`,
+/// building a highlighted snippet from the row's `full_text`.  Pure.
+fn hybrid_hit_to_federated(
+    i: usize,
+    h: crate::sync::cloud_backup::HybridSearchHit,
+    q: &str,
+) -> crate::sync::cloud_backup::FederatedHit {
+    use crate::index::{highlight_snippet, SNIPPET_WINDOW};
+    crate::sync::cloud_backup::FederatedHit {
+        id: format!("cloud_backup:{}", h.sha256),
+        source: "cloud_backup".into(),
+        score: h.score,
+        rrf_rank: i + 1,
+        filename: h.filename,
+        path: h.path,
+        ext: h.ext,
+        title: h.title,
+        author: h.author,
+        year: h.year,
+        language: h.language,
+        sha256: Some(h.sha256),
+        size_bytes: h.size_bytes,
+        snippet: h
+            .full_text
+            .as_deref()
+            .and_then(|t| highlight_snippet(t, q, SNIPPET_WINDOW)),
+        location_uri: None,
+        url: h.url,
+        tags: h.tags,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_search(
+    out: OutFormat,
+    data_dir: Option<PathBuf>,
+    query: String,
+    limit: usize,
+    local_only: bool,
+    cloud_only: bool,
+    ext: Vec<String>,
+    lang: Option<String>,
+    folder_prefix: Option<String>,
+    author: Option<String>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+    url_domain: Option<String>,
+    tag: Option<String>,
+    collection_ids: Vec<String>,
+    embed_text: bool,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(data_dir)?;
+    if !data_dir.exists() {
+        return Err(format!(
+            "data dir not found: {} — run the GUI once to initialise the index",
+            data_dir.display()
+        ));
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    rt.block_on(cmd_search_async(
+        out, &data_dir, query, limit, local_only, cloud_only, ext, lang,
+        folder_prefix, author, year_min, year_max, url_domain, tag,
+        collection_ids, embed_text,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_search_async(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    query: String,
+    limit: usize,
+    local_only: bool,
+    cloud_only: bool,
+    ext: Vec<String>,
+    lang: Option<String>,
+    folder_prefix: Option<String>,
+    author: Option<String>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+    url_domain: Option<String>,
+    tag: Option<String>,
+    collection_ids: Vec<String>,
+    embed_text: bool,
+) -> Result<(), String> {
+    use crate::sync::cloud_backup::FederatedHit;
+    use crate::sync::tauri_commands::rrf_merge;
+
+    let q = query.trim().to_owned();
+    if q.is_empty() {
+        return Err("search query is empty".into());
+    }
+    let limit = limit.clamp(1, 500);
+
+    let cfg = crate::index::config_persist::load(data_dir);
+
+    // Normalise the extension list once; shared by both legs.
+    let normalised_ext: Vec<String> = ext
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    // Decide which legs run.  Default: local always on; cloud on when the
+    // backend is configured + pull-enabled + a token is stored.
+    let cb_url = cfg.cloud_backup_url.clone().unwrap_or_default();
+    let cb_token = if cb_url.is_empty() {
+        String::new()
+    } else {
+        crate::sync::secret::get_token_for_url(&cb_url)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    };
+    let cloud_configured =
+        !cb_url.is_empty() && !cb_token.is_empty() && cfg.cloud_backup_pull_manifests_enabled;
+    let want_local = !cloud_only;
+    let want_cloud = if local_only {
+        false
+    } else if cloud_only {
+        true
+    } else {
+        cloud_configured
+    };
+
+    let mut lists: Vec<Vec<FederatedHit>> = Vec::new();
+    let mut errors: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+
+    // ── Local leg ────────────────────────────────────────────────────────
+    if want_local {
+        let fts_dir = data_dir.join("fts");
+        if !fts_dir.exists() {
+            errors.insert("local", "FTS index not found — ingest some files first".into());
+        } else {
+            let filters = crate::index::SearchFilters {
+                owner_id: None,
+                language: lang.clone(),
+                year_min,
+                year_max,
+                tags: vec![],
+                prefer_translated_lang: None,
+                ext: normalised_ext.clone(),
+                source_hash_prefix: None,
+                parent_dir_prefix: folder_prefix.clone(),
+                audio_duration_min_seconds: None,
+                audio_duration_max_seconds: None,
+                image_camera_make: None,
+                image_camera_model: None,
+                colbert_rerank: false,
+                url_domain: url_domain.clone(),
+                tag: tag.clone(),
+            };
+            let leg: Result<Vec<FederatedHit>, String> = async {
+                let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
+                    .map_err(|e| e.to_string())?;
+                let hits = fts
+                    .search(&q, &filters, limit.saturating_mul(4))
+                    .map_err(|e| e.to_string())?;
+                let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+                let extra_sql = filters.to_lance_sql();
+                let meta: std::collections::HashMap<String, crate::index::SearchResult> = li
+                    .fetch_search_results_by_ids_filtered(&ids, extra_sql.as_deref())
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| (r.doc_id.clone(), r))
+                    .collect();
+                // Preserve BM25 order from the FTS pass; drop rows the Lance
+                // scalar filters removed.
+                let rows: Vec<crate::index::SearchResult> = hits
+                    .iter()
+                    .filter_map(|h| meta.get(&h.doc_id).cloned())
+                    .take(limit)
+                    .collect();
+                Ok(rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, r)| local_result_to_federated(i, r, &q))
+                    .collect())
+            }
+            .await;
+            match leg {
+                Ok(fed) => lists.push(fed),
+                Err(e) => { errors.insert("local", e); }
+            }
+        }
+    }
+
+    // ── Cloud-backup leg (v2 hybrid: supports --tag / --url-domain and
+    //    echoes url + tags back) ──────────────────────────────────────────
+    if want_cloud {
+        if cb_url.is_empty() {
+            errors.insert("cloud_backup", "not configured".into());
+        } else if cb_token.is_empty() {
+            errors.insert("cloud_backup", "no API token stored".into());
+        } else {
+            use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
+            let leg: Result<Vec<FederatedHit>, String> = async {
+                let client = crate::sync::cloud_backup::CloudBackupClient::new(&cb_url, &cb_token)
+                    .map_err(|e| e.to_string())?;
+                let filters = HybridSearchFilters {
+                    ext: normalised_ext.clone(),
+                    owner_ids: vec![],
+                    languages: lang.iter().cloned().collect(),
+                    parent_dir_prefix: folder_prefix.clone(),
+                    author: author.clone(),
+                    year_min,
+                    year_max,
+                    indexed_after_ms: None,
+                    collection_ids: collection_ids.clone(),
+                    require_bytes_local: false,
+                    url_domain: url_domain.clone(),
+                    tag: tag.clone(),
+                };
+                let req = HybridSearchRequest {
+                    q: Some(q.as_str()),
+                    vec: None,
+                    embed_text: if embed_text { Some(q.as_str()) } else { None },
+                    embed_model: None,
+                    filters,
+                    limit,
+                    rrf_k: 60,
+                };
+                let resp = client.v2_search(&req).await.map_err(|e| e.to_string())?;
+                Ok(resp
+                    .rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, h)| hybrid_hit_to_federated(i, h, &q))
+                    .collect())
+            }
+            .await;
+            match leg {
+                Ok(fed) => lists.push(fed),
+                Err(e) => { errors.insert("cloud_backup", e); }
+            }
+        }
+    }
+
+    let merged = rrf_merge(lists, limit);
+
+    match out {
+        OutFormat::Json => {
+            let errs: serde_json::Map<String, serde_json::Value> = errors
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.into()))
+                .collect();
+            println!("{}", serde_json::json!({
+                "rows":   merged,
+                "errors": errs,
+            }));
+        }
+        OutFormat::Text => {
+            for (k, v) in &errors {
+                eprintln!("[{k}] error: {v}");
+            }
+            if merged.is_empty() {
+                println!("no results");
+            } else {
+                for h in &merged {
+                    let name = h.title.as_deref()
+                        .or(h.filename.as_deref())
+                        .unwrap_or("?");
+                    println!("[{}] {name}  (score {:.4})", h.source, h.score);
+                    if let Some(ref u) = h.url {
+                        println!("   url:   {u}");
+                    }
+                    if let Some(ref t) = h.tags {
+                        if !t.is_empty() {
+                            println!("   tags:  [{}]", t.join(", "));
+                        }
+                    }
+                    if let Some(ref s) = h.snippet {
+                        println!("   {s}");
+                    }
+                }
+                eprintln!("{} result(s)", merged.len());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn cmd_cloud_backup_federated(
     out: OutFormat,
     data_dir: &std::path::Path,
@@ -3837,6 +4221,9 @@ async fn cmd_cloud_backup_federated(
                                             snippet: if r.snippet.is_empty() { None }
                                                      else { Some(r.snippet) },
                                             location_uri: Some(r.location_uri),
+                                            url: r.url.clone(),
+                                            tags: if r.tags.is_empty() { None }
+                                                  else { Some(r.tags.clone()) },
                                         })
                                         .collect();
                                     lists.push(fed);
@@ -3886,6 +4273,8 @@ async fn cmd_cloud_backup_federated(
                                     size_bytes: Some(h.size_bytes),
                                     snippet: h.full_text.map(|t| t.chars().take(300).collect()),
                                     location_uri: None,
+                                    url: h.url,
+                                    tags: if h.tags.is_empty() { None } else { Some(h.tags) },
                                 })
                                 .collect();
                             lists.push(fed);
@@ -3927,6 +4316,8 @@ async fn cmd_cloud_backup_federated(
                         size_bytes: None,
                         snippet: h.description,
                         location_uri: None,
+                        url: None,
+                        tags: None,
                     })
                     .collect();
                 lists.push(fed);
@@ -6238,6 +6629,98 @@ fn chrono_like(epoch_secs: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Unified `search` verb — FederatedHit mapping ─────────────────
+
+    fn mk_local_result() -> crate::index::SearchResult {
+        crate::index::SearchResult {
+            doc_id: "doc-1".into(),
+            location_uri: "file:///x/schimmel.md".into(),
+            owner_id: String::new(),
+            title: Some("Schimmelpilzgifte".into()),
+            author: None,
+            year: Some(2021),
+            filename: Some("schimmel.md".into()),
+            ext: Some("md".into()),
+            language: Some("de".into()),
+            snippet: "Stiftung Warentest hat Schimmelpilz-Gifte gefunden.".into(),
+            score: 0.42,
+            chunk_index: 0,
+            metadata_json: None,
+            catalog_source: None,
+            volume_id: None,
+            indexed_at: 0,
+            source_hash: "abc123".into(),
+            text_translated: None,
+            text_translated_lang: None,
+            url: Some("https://www.spiegel.de/wirtschaft/x".into()),
+            tags: vec!["pocket-import".into()],
+        }
+    }
+
+    #[test]
+    fn local_result_maps_to_federated_with_url_tags_and_highlight() {
+        let fed = local_result_to_federated(0, mk_local_result(), "schimmelpilz");
+        assert_eq!(fed.source, "local");
+        assert_eq!(fed.id, "local:doc-1");
+        assert_eq!(fed.rrf_rank, 1);
+        assert_eq!(fed.url.as_deref(), Some("https://www.spiegel.de/wirtschaft/x"));
+        assert_eq!(fed.tags.as_deref(), Some(&["pocket-import".to_string()][..]));
+        assert_eq!(fed.sha256.as_deref(), Some("abc123"));
+        let snip = fed.snippet.expect("snippet");
+        assert!(snip.contains("<mark>Schimmelpilz</mark>"), "got: {snip}");
+    }
+
+    #[test]
+    fn hybrid_hit_maps_to_federated_with_url_tags_and_highlight() {
+        let h = crate::sync::cloud_backup::HybridSearchHit {
+            doc_id: "d".into(),
+            sha256: "deadbeef".into(),
+            owner_id: "o".into(),
+            path: Some("/a/b.md".into()),
+            filename: Some("b.md".into()),
+            ext: Some("md".into()),
+            parent_dir: Some("/a".into()),
+            language: Some("de".into()),
+            title: Some("T".into()),
+            author: None,
+            year: Some(2020),
+            size_bytes: Some(123),
+            mtime_unix: None,
+            indexed_at: 0,
+            full_text: Some("a long body mentioning schimmelpilz somewhere".into()),
+            score: 0.9,
+            score_text: None,
+            score_vector: None,
+            collection_id: Some("wallabag".into()),
+            url: Some("https://example.com/x".into()),
+            tags: Some(vec!["pocket-import".into()]),
+        };
+        let fed = hybrid_hit_to_federated(2, h, "schimmelpilz");
+        assert_eq!(fed.source, "cloud_backup");
+        assert_eq!(fed.id, "cloud_backup:deadbeef");
+        assert_eq!(fed.rrf_rank, 3);
+        assert_eq!(fed.url.as_deref(), Some("https://example.com/x"));
+        assert_eq!(fed.tags.as_deref(), Some(&["pocket-import".to_string()][..]));
+        let snip = fed.snippet.expect("snippet");
+        assert!(snip.contains("<mark>schimmelpilz</mark>"), "got: {snip}");
+    }
+
+    #[test]
+    fn hybrid_hit_without_body_has_no_snippet() {
+        let h = crate::sync::cloud_backup::HybridSearchHit {
+            doc_id: "d".into(), sha256: "s".into(), owner_id: "o".into(),
+            path: None, filename: None, ext: None, parent_dir: None,
+            language: None, title: None, author: None, year: None,
+            size_bytes: None, mtime_unix: None, indexed_at: 0,
+            full_text: None, score: 0.1, score_text: None, score_vector: None,
+            collection_id: None, url: None, tags: None,
+        };
+        let fed = hybrid_hit_to_federated(0, h, "q");
+        assert!(fed.snippet.is_none());
+        assert!(fed.url.is_none());
+        assert!(fed.tags.is_none());
+    }
 
     // ── P13.7 Step 6 — search CLI filter helpers ─────────────────────
 

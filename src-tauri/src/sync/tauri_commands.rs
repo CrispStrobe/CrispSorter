@@ -1354,6 +1354,8 @@ pub async fn sync_federated_search(
                         size_bytes: None,
                         snippet: if r.snippet.is_empty() { None } else { Some(r.snippet) },
                         location_uri: Some(r.location_uri),
+                        url: r.url,
+                        tags: if r.tags.is_empty() { None } else { Some(r.tags) },
                     }
                 }).collect();
                 (fed, None)
@@ -1393,6 +1395,8 @@ pub async fn sync_federated_search(
                         size_bytes: Some(h.size_bytes),
                         snippet: h.full_text.map(|t| t.chars().take(300).collect()),
                         location_uri: None,
+                        url: h.url,
+                        tags: if h.tags.is_empty() { None } else { Some(h.tags) },
                     }
                 }).collect();
                 (fed, None)
@@ -1439,6 +1443,8 @@ pub async fn sync_federated_search(
                         size_bytes: None,
                         snippet: h.description,
                         location_uri: None,
+                        url: None,
+                        tags: None,
                     }
                 }).collect();
                 (fed, None)
@@ -1623,6 +1629,7 @@ mod tests {
             sha256: sha.map(|s| s.to_owned()),
             size_bytes: None, snippet: None,
             location_uri: None,
+            url: None, tags: None,
         }
     }
 
