@@ -289,6 +289,16 @@ pub struct SearchResult {
     /// ISO 639-1 target language of `text_translated`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_translated_lang: Option<String>,
+    /// v106 — source URL provenance, read from the `url` column (markdown
+    /// frontmatter `url:`, PDF `/URL`, EPUB `dc:source`, …).  `None` for rows
+    /// ingested before v106 or without a source URL.  Surfaced so the
+    /// frontend / unified `search` verb can render an "Open original" link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// v107 — structured tag list, read from the `tags` `List<Utf8>` column.
+    /// Empty for rows with no tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.

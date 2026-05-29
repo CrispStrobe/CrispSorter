@@ -772,6 +772,8 @@ mod tests {
                 source_hash: String::new(),
                 text_translated: None,
                 text_translated_lang: None,
+                url: None,
+                tags: vec![],
             })
             .collect()
     }
@@ -803,6 +805,8 @@ mod tests {
                 source_hash: String::new(),
                 text_translated: None,
                 text_translated_lang: None,
+                url: None,
+                tags: vec![],
             });
         }
         vec.push(SearchResult {
@@ -825,6 +829,8 @@ mod tests {
             source_hash: String::new(),
             text_translated: None,
             text_translated_lang: None,
+            url: None,
+            tags: vec![],
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);
@@ -931,6 +937,8 @@ mod tests {
             source_hash: String::new(),
             text_translated: translated.map(|s| s.to_string()),
             text_translated_lang: lang.map(|s| s.to_string()),
+            url: None,
+            tags: vec![],
         }
     }
 
@@ -1113,7 +1121,7 @@ mod tests {
                 score: 0.5, chunk_index: 0, metadata_json: None,
                 catalog_source: None, volume_id: None, indexed_at: 0,
                 source_hash: String::new(), text_translated: None,
-                text_translated_lang: None },
+                text_translated_lang: None, url: None, tags: vec![] },
         ];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = false; // flag off → no-op
@@ -1143,7 +1151,7 @@ mod tests {
                 score: 0.5, chunk_index: 0, metadata_json: None,
                 catalog_source: None, volume_id: None, indexed_at: 0,
                 source_hash: String::new(), text_translated: None,
-                text_translated_lang: None },
+                text_translated_lang: None, url: None, tags: vec![] },
         ];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = true; // flag ON but no embedder
