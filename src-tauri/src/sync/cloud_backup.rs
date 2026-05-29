@@ -1892,6 +1892,81 @@ mod tests {
         m.assert_async().await;
     }
 
+    // ── v107: tags wire round-trip ───────────────────────────────────
+
+    #[tokio::test]
+    async fn manifest_push_includes_tags_in_body() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("POST", PUSH_PATH)
+            .match_body(Matcher::PartialJsonString(
+                r#"{"rows":[{"tags":["pocket-import","de"]}]}"#.into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"accepted":1}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let mut row = sample_row("t");
+        row.tags = vec!["pocket-import".into(), "de".into()];
+        let resp = cli.manifest_push(&[row]).await.unwrap();
+        assert_eq!(resp.accepted, 1);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_pull_deserializes_tags_field() {
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "rows": [{
+                "path":"/x.md","size_bytes":42,
+                "sha256":"a","mtime_unix":1.0,"owner_id":"o",
+                "filename":"x.md","ext":"md","parent_dir":"/",
+                "indexed_at":123,
+                "tags":["pocket-import","de"]
+            }],
+            "max_indexed_at": 123,
+            "has_more": false
+        }"#;
+        let m = server.mock("GET", Matcher::Regex(format!("^{}", PULL_PATH)))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.manifest_pull_with_options(0, 10, false).await.unwrap();
+        assert_eq!(resp.rows[0].tags, vec!["pocket-import", "de"]);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_pull_tags_default_to_empty_vec_when_absent() {
+        // A pre-v107 cb-api response (or any row without a tags
+        // field) deserialises with tags == Vec::new(), not an error.
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "rows": [{
+                "path":"/x.md","size_bytes":42,
+                "sha256":"a","mtime_unix":1.0,"owner_id":"o",
+                "filename":"x.md","ext":"md","parent_dir":"/",
+                "indexed_at":123
+            }],
+            "max_indexed_at": 123,
+            "has_more": false
+        }"#;
+        let m = server.mock("GET", Matcher::Regex(format!("^{}", PULL_PATH)))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.manifest_pull_with_options(0, 10, false).await.unwrap();
+        assert!(resp.rows[0].tags.is_empty());
+        m.assert_async().await;
+    }
+
     #[tokio::test]
     async fn search_hit_deserializes_url_field() {
         let mut server = Server::new_async().await;
