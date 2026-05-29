@@ -380,6 +380,10 @@ enum CloudBackupCmd {
         /// VPS via `download-file`.
         #[arg(long = "bytes-local")]
         bytes_local: bool,
+        /// v106 — substring match against the `url` column.  Mirrors
+        /// the local `index search --url-domain` flag.
+        #[arg(long = "url-domain", value_name = "DOMAIN")]
+        url_domain: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
@@ -3103,7 +3107,7 @@ async fn cmd_sync_cloud_backup(
         CloudBackupCmd::HybridSearch {
             q, embed_text, embed_model, ext, lang, folder_prefix,
             author, collection_ids, year_min, year_max,
-            bytes_local, limit,
+            bytes_local, url_domain, limit,
         } => {
             use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
             let filters = HybridSearchFilters {
@@ -3117,6 +3121,7 @@ async fn cmd_sync_cloud_backup(
                 indexed_after_ms: None,
                 collection_ids: collection_ids.clone(),
                 require_bytes_local: bytes_local,
+                url_domain: url_domain.clone(),
             };
             let req = HybridSearchRequest {
                 q: q.as_deref(),

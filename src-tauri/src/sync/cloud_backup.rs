@@ -444,6 +444,12 @@ pub struct HybridSearchFilters {
     pub collection_ids: Vec<String>,
     #[serde(default)]
     pub require_bytes_local: bool,
+    /// v106 — substring match against the `url` column server-side.
+    /// Mirrors `SearchFilters.url_domain` so a CLI user gets the same
+    /// `--url-domain` semantics whether they search locally or
+    /// federated.  None == no filter; pre-v106 rows are excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
