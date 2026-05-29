@@ -1890,6 +1890,7 @@ async fn cmd_index_async(
                     image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
                     multivec_packed: None,
                     multivec_n_tokens: None,
+                    url: None,
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
@@ -2290,6 +2291,7 @@ async fn cmd_index_async(
                 image_iso:              extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
                 multivec_packed: None,
                 multivec_n_tokens: None,
+                url: None,
             };
             let stats = pipeline.reingest_document(raw)
                 .await.map_err(|e| format!("reingest: {e:#}"))?;
@@ -2474,6 +2476,7 @@ async fn cmd_index_async(
                     image_iso: None,
                     multivec_packed: None,
                     multivec_n_tokens: None,
+                    url: None,
                 };
 
                 if pipeline.ingest_document(raw.clone()).await.is_ok() {
@@ -2714,6 +2717,7 @@ async fn cmd_sync_cloud_backup(
                     full_text: c.full_text.clone(),
                     collection_id: c.collection_id.clone(),
                     archived_in: None,
+                    url: None,
                 });
                 if rows.len() >= limit { break; }
             }
@@ -2885,6 +2889,10 @@ async fn cmd_sync_cloud_backup(
                     image_iso: None,
                     multivec_packed: None,
                     multivec_n_tokens: None,
+                    // v106 — Carry url from the pulled row into the
+                    // local L1 chunk so `crispsorter index search`
+                    // can filter by source URL.
+                    url: r.url.clone(),
                 }
             }).collect();
             let applied = chunks.len();
@@ -3487,6 +3495,7 @@ async fn cmd_sync_cloud_backup(
                             full_text:   None,
                             collection_id: None,
                             archived_in: r.archived_in,
+                            url:         None,
                         }
                     })
                     .collect();

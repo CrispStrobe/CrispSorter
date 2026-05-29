@@ -164,6 +164,7 @@ pub async fn sync_pull(
                 image_iso: None,
                 multivec_packed: None,
                 multivec_n_tokens: None,
+                url: None,
             }
         })
         .collect();
@@ -418,6 +419,7 @@ pub async fn sync_cb_manifest_push(
             full_text: c.full_text.clone(),
             collection_id: c.collection_id.clone(),
             archived_in: None,
+            url: None,
         });
         if rows.len() >= limit { break; }
     }
@@ -548,6 +550,7 @@ pub async fn sync_cb_manifest_pull(
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         }
     }).collect();
 
@@ -1183,6 +1186,7 @@ pub async fn sync_cb_import_from_manifest_db(
                 parent_dir:  p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
                 language: None, title: None, author: None, year: None,
                 full_text: None, collection_id: None, archived_in: r.5,
+                url: None,
             }
         }).collect();
 

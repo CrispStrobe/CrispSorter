@@ -453,6 +453,7 @@ mod tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         }
     }
 

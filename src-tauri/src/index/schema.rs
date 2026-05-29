@@ -120,6 +120,13 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // Both NULL for models without a ColBERT head (all non-BGE-M3 models).
         Field::new("multivec_packed", DataType::LargeBinary, true),
         Field::new("multivec_n_tokens", DataType::Int16, true),
+        // v106 — Original source URL the document came from.  Populated
+        // from YAML frontmatter (`url:`) by the markdown extractor,
+        // from XMP `/URL` for browser-saved PDFs, and from `dc:source`
+        // for EPUB / DOCX captures.  NULL for local-only files that
+        // never had a source URL.  Added on existing tables by the
+        // `AddUrlColumn` migration in `index/migrations.rs`.
+        Field::new("url", DataType::Utf8, true),
     ]))
 }
 
@@ -209,6 +216,12 @@ pub struct DocumentChunk {
     pub multivec_packed: Option<Vec<u8>>,
     #[serde(skip)]
     pub multivec_n_tokens: Option<i16>,
+
+    // v106 — Original source URL the document came from (YAML
+    // frontmatter `url:`, PDF /URL, EPUB dc:source, etc.).  NULL
+    // for files with no provenance URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// Lightweight search result returned to the frontend.

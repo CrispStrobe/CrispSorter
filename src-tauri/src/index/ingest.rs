@@ -148,6 +148,14 @@ pub struct RawDocument {
     pub multivec_packed: Option<Vec<u8>>,
     /// Stage Z — number of token vectors in `multivec_packed`.
     pub multivec_n_tokens: Option<i16>,
+
+    /// v106 — Original source URL the document came from.  Populated
+    /// by the markdown extractor from YAML frontmatter (`url:`), by
+    /// the PDF extractor from XMP `/URL`, by the EPUB extractor from
+    /// `<dc:source>`.  Forwarded into `DocumentChunk.url` so the
+    /// LanceDB writer persists it as a first-class column.  `None`
+    /// for files with no provenance URL.
+    pub url: Option<String>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -500,6 +508,7 @@ impl IngestPipeline {
                     image_iso: None,
                     multivec_packed: None,
                     multivec_n_tokens: None,
+                    url: None,
                 }
             })
             .collect();
@@ -617,6 +626,7 @@ impl IngestPipeline {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -768,6 +778,9 @@ fn build_doc_chunk(
         // Stage AD — ColBERT per-token vectors, packed as LE f32 bytes.
         multivec_packed,
         multivec_n_tokens,
+        // v106 — Source URL carried from RawDocument (extractor lifted
+        // it from YAML frontmatter / XMP / dc:source).
+        url: raw.url.clone(),
     }
 }
 
@@ -842,6 +855,7 @@ mod tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         }
     }
 

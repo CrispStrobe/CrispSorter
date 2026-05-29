@@ -92,6 +92,12 @@ pub struct ManifestRow {
     /// HTTP round-trip.  Normal bg_ingest pushes leave this `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_in: Option<i64>,
+    /// v106 — Original source URL the document came from (YAML
+    /// frontmatter `url:`, PDF /URL, EPUB dc:source).  Server stores
+    /// it on `file_references.url`; FTS5 indexes it so domain queries
+    /// hit.  None for files with no provenance URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl ManifestRow {
@@ -137,6 +143,7 @@ impl ManifestRow {
             full_text:  if raw.full_text.is_empty() { None } else { Some(raw.full_text.clone()) },
             collection_id,
             archived_in: None,
+            url:        raw.url.clone(),
         }
     }
 }
@@ -186,6 +193,9 @@ pub struct PullRow {
     /// cache write.
     #[serde(default)]
     pub collection_id: Option<String>,
+    /// v106 — Original source URL (round-tripped from manifest_push).
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// One row returned by `/api/search`.  Same payload shape as
@@ -212,6 +222,10 @@ pub struct SearchHit {
     pub full_text:  Option<String>,
     pub indexed_at: i64,
     pub score:      f32,
+    /// v106 — Original source URL (mirrors PullRow.url so ingest is
+    /// symmetric across the pull and search flows).
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1696,6 +1710,7 @@ mod tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert_eq!(row.sha256, "abc");
@@ -1737,6 +1752,7 @@ mod tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert!(row.full_text.is_none(), "empty body should map to None on wire");
@@ -1760,6 +1776,7 @@ mod tests {
             year: None,
             collection_id: None,
             archived_in: None,
+            url: None,
         }
     }
 }
@@ -1821,6 +1838,7 @@ mod live_tests {
             full_text: None,
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push");
@@ -1870,6 +1888,7 @@ mod live_tests {
             full_text: Some(body.clone()),
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push with full_text");
@@ -1944,6 +1963,7 @@ mod live_tests {
             full_text: Some(body.clone()),
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&push_row))
             .await
@@ -2037,6 +2057,7 @@ mod live_tests {
             full_text: None,
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push prelude");
@@ -2119,6 +2140,7 @@ mod live_tests {
             full_text: Some(body.clone()),
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push");
@@ -2271,6 +2293,7 @@ mod live_tests {
             full_text: Some(format!("outbox sentinel {unique}")),
             collection_id: None,
             archived_in: None,
+            url: None,
         };
         let payload = serde_json::to_string(&row).expect("serialise row");
 

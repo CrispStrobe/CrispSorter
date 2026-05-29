@@ -177,6 +177,7 @@ pub fn ocr_via_ocrs(path: &Path) -> Result<ExtractedDocument> {
         translated_to_lang: None,
         audio: None,
         image_exif: None,
+        source_url: None,
     })
 }
 
