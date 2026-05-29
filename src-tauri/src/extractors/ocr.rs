@@ -95,6 +95,7 @@ pub fn ocr_via_tesseract(path: &Path) -> Result<ExtractedDocument> {
         audio: None,
         image_exif: None,
         source_url: None,
+        tags: vec![],
     })
 }
 

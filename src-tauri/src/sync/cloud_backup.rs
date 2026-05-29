@@ -98,6 +98,12 @@ pub struct ManifestRow {
     /// hit.  None for files with no provenance URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// v107 — Tag list lifted from YAML frontmatter (`tags: [...]`),
+    /// EPUB `<dc:subject>`, DOCX keywords, etc.  Server stores as
+    /// JSON-encoded text in `file_references.tags`.  Empty Vec / None
+    /// both treated as "no tags".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl ManifestRow {
@@ -144,6 +150,13 @@ impl ManifestRow {
             collection_id,
             archived_in: None,
             url:        raw.url.clone(),
+            // v107 — also lift any non-routing-marker tag (the
+            // `collection:` prefix is reserved above for shard
+            // routing and shouldn't surface as a user-visible tag).
+            tags:       raw.tags.iter()
+                .filter(|t| !t.starts_with("collection:"))
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -196,6 +209,11 @@ pub struct PullRow {
     /// v106 — Original source URL (round-tripped from manifest_push).
     #[serde(default)]
     pub url: Option<String>,
+    /// v107 — Tags echoed back from `file_references.tags`.
+    /// Server decoded the JSON-encoded column into a list; empty
+    /// vec or absent both mean "no tags".
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// One row returned by `/api/search`.  Same payload shape as
@@ -226,6 +244,9 @@ pub struct SearchHit {
     /// symmetric across the pull and search flows).
     #[serde(default)]
     pub url: Option<String>,
+    /// v107 — Tags decoded from `file_references.tags` JSON.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1783,6 +1804,7 @@ mod tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         }
     }
 
@@ -1958,6 +1980,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push");
@@ -2008,6 +2031,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&row)).await
             .expect("manifest_push with full_text");
@@ -2083,6 +2107,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         let pushed = cli.manifest_push(std::slice::from_ref(&push_row))
             .await
@@ -2177,6 +2202,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push prelude");
@@ -2260,6 +2286,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         cli.manifest_push(std::slice::from_ref(&manifest_row))
             .await.expect("manifest_push");
@@ -2413,6 +2440,7 @@ mod live_tests {
             collection_id: None,
             archived_in: None,
             url: None,
+            tags: vec![],
         };
         let payload = serde_json::to_string(&row).expect("serialise row");
 

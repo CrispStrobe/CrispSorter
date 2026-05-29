@@ -119,6 +119,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         audio: audio_meta,
         image_exif: None,
         source_url: None,
+        tags: vec![],
     })
 }
 
