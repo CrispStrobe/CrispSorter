@@ -368,6 +368,14 @@ pub struct SearchFilters {
     /// url and are simply excluded when the filter is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_domain: Option<String>,
+    /// v107 — element-of match on the `tags` list (Arrow `List<Utf8>`).
+    /// Translates to `array_has(tags, '<value>')` on Lance's
+    /// DataFusion SQL.  Mirrors `HybridSearchFilters.tag` on the
+    /// cb-api side so a user gets the same semantics whether they
+    /// search local or federated.  Pre-v107 rows have NULL tags
+    /// and drop out when this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 impl SearchFilters {
@@ -444,6 +452,15 @@ impl SearchFilters {
             parts.push(format!(
                 "url LIKE '%{}%'",
                 dom.replace('\'', "''")
+            ));
+        }
+        if let Some(ref t) = self.tag {
+            // Element-of match on the Lance List<Utf8> tags column
+            // via DataFusion's `array_has`.  Pre-v107 rows have NULL
+            // tags and don't match.
+            parts.push(format!(
+                "array_has(tags, '{}')",
+                t.replace('\'', "''")
             ));
         }
         if !parts.is_empty() {
@@ -832,6 +849,44 @@ mod tests {
     fn filters_sql_url_domain_omitted_when_none() {
         let f = SearchFilters::default();
         assert!(f.to_lance_sql().is_none());
+    }
+
+    #[test]
+    fn filters_sql_tag_emits_array_has() {
+        let f = SearchFilters {
+            tag: Some("pocket-import".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("array_has(tags, 'pocket-import')"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_tag_escapes_single_quotes() {
+        let f = SearchFilters {
+            tag: Some("o'malley's blog".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("array_has(tags, 'o''malley''s blog')"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_tag_combines_with_url_domain() {
+        let f = SearchFilters {
+            tag: Some("research".to_string()),
+            url_domain: Some("arxiv.org".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("url LIKE '%arxiv.org%'"), "sql = {sql}");
+        assert!(sql.contains("array_has(tags, 'research')"), "sql = {sql}");
     }
 
     #[test]

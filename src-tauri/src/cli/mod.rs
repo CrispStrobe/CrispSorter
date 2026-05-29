@@ -1324,6 +1324,12 @@ enum IndexCmd {
         /// have NULL url and are excluded when this filter is active.
         #[arg(long, value_name = "DOMAIN")]
         url_domain: Option<String>,
+        /// v107 — element-of match on the `tags` list (Arrow
+        /// List<Utf8>).  `--tag pocket-import` returns only rows
+        /// where the tag appears in the list.  Pre-v107 rows with
+        /// no tags drop out.
+        #[arg(long, value_name = "TAG")]
+        tag: Option<String>,
         /// Stage AE — run ColBERT MaxSim re-ranking on the top-K
         /// candidates before any cross-encoder reranker fires.
         /// Only fires when the loaded embedder has a ColBERT head
@@ -1596,6 +1602,7 @@ async fn cmd_index_async(
             image_camera_make,
             image_camera_model,
             url_domain,
+            tag,
             colbert,
         } => {
             let fts_dir = data_dir.join("fts");
@@ -1651,6 +1658,7 @@ async fn cmd_index_async(
                 image_camera_model,
                 colbert_rerank: colbert,
                 url_domain,
+                tag,
             };
 
             // FTS pass.  An empty query is rejected to keep the
