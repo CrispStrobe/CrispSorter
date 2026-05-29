@@ -686,3 +686,60 @@ availability (e.g. `waitress`, `cheroot`):
 `# type: ignore[import-untyped, unused-ignore]`.  Avoids platform-
 specific `if sys.platform == ...:` guards in source code and avoids a
 Linux-only mypy CI lane.
+
+---
+
+## Local index & search
+
+### `chunk_index = 0` is required for local search visibility
+
+The local LanceDB query helpers in
+`src-tauri/src/index/local_index.rs` filter their representative-row
+SELECT with `chunk_index = 0` — see `fetch_by_doc_ids` and
+`fetch_by_doc_ids_filtered`.  The comment block at the top of
+`schema.rs` says "L1 metadata + L3 representative rows use
+`chunk_index <= 0`", which is *almost* right — but the actual
+filter is `= 0`, not `<= 0`.  So a row ingested with
+`chunk_index = -1` lives in LanceDB, gets indexed by Tantivy,
+returns hits at the FTS layer — and then vanishes in the
+metadata-join phase of `crispsorter index search`, producing the
+mysterious "0 result(s)" with a non-empty FTS hit set.
+
+**Rule:** any DocumentChunk that needs to be findable via
+`crispsorter index search` (or browseable in Übersicht) must use
+`chunk_index: 0, chunk_total: 1`.  Reserve `-1` only for rows that
+are *intentionally* invisible to local search (none today; the
+original use case turned out to be a foot-gun).
+
+Got bit by this during the v107 follow-on work for L1-aware local
+search: pulled cb-api rows ingested with `chunk_index = -1` (matching
+the "manifest-only" convention).  Tantivy reported `num_docs = 30`;
+`crispsorter index search` returned 0 of them.  Switched the pull
+path to `chunk_index = 0, chunk_total = 1` and search worked
+immediately.  See `cli/mod.rs` around the
+`CloudBackupCmd::Pull` handler for the live example.
+
+### `cargo build` on this workspace takes 3–9 min cold, 1–3 min warm
+
+The default Rust dev build of `crispsorter` pulls in a non-trivial
+chunk of the Tauri + LanceDB + Tantivy + Arrow stack.  Plan around
+it when iterating on something that requires a recompile to test
+manually — e.g. don't do six small edits and rebuild between each;
+batch the edits, rebuild once.  Use `cargo check --package
+crispsorter` (~30 s warm) to catch type errors mid-edit; only build
+the binary when you actually need to exercise behavior.
+
+### `crispsorter sync cloud-backup pull` writes BOTH LanceDB and Tantivy
+
+The Pull command's chunk-ingest path is two-write: each pulled L1
+chunk goes into the local LanceDB documents table via
+`local.ingest_batch`, AND each chunk with `full_text` populated
+gets added to the local Tantivy FTS via a delete-then-add by doc_id.
+Soft-fails on the Tantivy side so a write-protected `fts/` dir
+doesn't break the pull.  Emits `[sync] indexed N L1 row(s) into
+local Tantivy` on success.
+
+Without the Tantivy write, pulled rows would live in LanceDB but
+not be findable via `crispsorter index search`, defeating the
+offline-search story.  See `cli/mod.rs` around the
+`CloudBackupCmd::Pull` arm.
