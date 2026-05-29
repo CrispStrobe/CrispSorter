@@ -1779,6 +1779,119 @@ mod tests {
             url: None,
         }
     }
+
+    // ── v106: url wire round-trip ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn manifest_push_includes_url_in_body() {
+        let mut server = Server::new_async().await;
+        // Body matcher asserts the JSON we POST contains url:"...".
+        let m = server.mock("POST", PUSH_PATH)
+            .match_body(Matcher::PartialJsonString(
+                r#"{"rows":[{"url":"https://example.org/foo"}]}"#.into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"accepted":1}"#)
+            .create_async()
+            .await;
+
+        let cli = client_for(&server);
+        let mut row = sample_row("u");
+        row.url = Some("https://example.org/foo".into());
+        let resp = cli.manifest_push(&[row]).await.unwrap();
+        assert_eq!(resp.accepted, 1);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_pull_deserializes_url_field() {
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "rows": [{
+                "path":"/x.md","size_bytes":42,
+                "sha256":"a","mtime_unix":1.0,"owner_id":"o",
+                "filename":"x.md","ext":"md","parent_dir":"/",
+                "language":null,"title":null,"author":null,"year":null,
+                "full_text":"body","indexed_at":123,"archived_in":null,
+                "collection_id":"wallabag",
+                "url":"https://example.org/source"
+            }],
+            "max_indexed_at": 123,
+            "has_more": false
+        }"#;
+        let m = server.mock("GET", Matcher::Regex(format!("^{}", PULL_PATH)))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.manifest_pull_with_options(0, 10, true).await.unwrap();
+        assert_eq!(resp.rows.len(), 1);
+        assert_eq!(
+            resp.rows[0].url.as_deref(),
+            Some("https://example.org/source")
+        );
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_pull_legacy_response_without_url_still_parses() {
+        // Old cb-api deployments don't emit the url field. Default to
+        // None so a mixed-version client/server can still sync.
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "rows": [{
+                "path":"/x.md","size_bytes":42,
+                "sha256":"a","mtime_unix":1.0,"owner_id":"o",
+                "filename":"x.md","ext":"md","parent_dir":"/",
+                "indexed_at":123
+            }],
+            "max_indexed_at": 123,
+            "has_more": false
+        }"#;
+        let m = server.mock("GET", Matcher::Regex(format!("^{}", PULL_PATH)))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.manifest_pull_with_options(0, 10, false).await.unwrap();
+        assert_eq!(resp.rows.len(), 1);
+        assert_eq!(resp.rows[0].url, None);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn search_hit_deserializes_url_field() {
+        let mut server = Server::new_async().await;
+        let body = r#"{
+            "rows": [{
+                "path":"/x.md","size_bytes":42,
+                "sha256":"a","mtime_unix":1.0,"owner_id":"o",
+                "filename":"x.md","ext":"md","parent_dir":"/",
+                "indexed_at":123,"score":3.14,
+                "url":"https://example.org/hit"
+            }],
+            "total": 1
+        }"#;
+        let m = server.mock("GET", Matcher::Regex(format!("^{}", SEARCH_PATH)))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.search("query", 5).await.unwrap();
+        assert_eq!(resp.rows.len(), 1);
+        assert_eq!(
+            resp.rows[0].url.as_deref(),
+            Some("https://example.org/hit")
+        );
+        m.assert_async().await;
+    }
 }
 
 // ── Env-gated live tests against a real cloud-backup VPS ────────────────
