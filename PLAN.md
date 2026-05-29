@@ -80,4 +80,107 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ---
 
+## UX gaps after v107 — the wallabag corpus is searchable end-to-end, but only via the federated CLI
+
+A fresh-eye review surfaced one big asymmetry: we built the
+infrastructure (storage tiers, schema, wire, scripts, tests) all the
+way through but the *desktop UX on top of it* lags meaningfully
+behind.  The verification proved it — `crispsorter index search`
+errors with `FTS index not found` on freshly pulled wallabag rows
+because pulled L1 chunks (manifest-only, chunk_index = -1, no
+embeddings) don't go through the extract-and-embed pipeline that
+populates Tantivy.  So the user can pull 50 K articles into the
+local LanceDB, see them in the file's bytes, but can't actually
+search them locally — only via the federated CLI against the live
+cb-api tunnel.
+
+This roadmap closes that gap, in priority order.
+
+### Tier 1 — the gaps that actually matter
+
+- [ ] **L1-aware local search** (the most-painful single fix).
+  When `sync cloud-backup pull` writes pulled rows to LanceDB via
+  `LocalIndex::ingest_batch`, also write each L1 row to Tantivy
+  with `(filename, title, url, tags, full_text)` as fields.  After
+  this lands, `crispsorter index search "schimmelpilz"` against
+  the pulled wallabag corpus returns hits offline, no federated
+  flag needed.  Implementation sketch: extend
+  `LocalIndex::ingest_batch` (or add `ingest_l1_into_fts`) to
+  detect `chunk.chunk_index == -1 && chunk.full_text.is_some()`
+  and call into the existing `FtsIndex::index_document` path.
+  Test: the verify script that today errors with "FTS index not
+  found" passes.  **~half a day.**
+
+- [ ] **Unified `crispsorter search` verb.**  Today there are three
+  search verbs:
+    * `crispsorter index search` (local L3 only)
+    * `crispsorter sync cloud-backup search` (cb-api FTS5)
+    * `crispsorter sync cloud-backup hybrid-search` (cb-api Lance hybrid)
+
+  A user shouldn't have to know which one to invoke for which
+  corpus.  Add a top-level `crispsorter search "query"` that:
+  (1) always queries local; (2) if `cloud_backup_url` is
+  configured AND reachable, also queries cb-api; (3) RRF-merges
+  the two result sets; (4) badges each hit with its source.  The
+  RRF + federated wiring already exists for
+  `cmd_cloud_backup_federated`; this is mostly the CLI-arg
+  plumbing + a flag inversion (federated is now the default,
+  `--local-only` opts out).  **~few hours.**
+
+- [ ] **Click-to-open-source + snippets in search results.**
+  Search results today render full body text and a title — a wall
+  of text.  Two changes flip it to "search engine"-feeling:
+    1. Add a `snippet: Option<String>` field to `SearchHit` /
+       `HybridSearchHit` populated with a ~300-char window around
+       the matched term, term-highlighted with `<mark>` tags.
+       Either compute server-side (BM25 has the matched positions)
+       or client-side from `full_text`.
+    2. Frontend (`src/lib/components/SearchResult.svelte` or
+       wherever the result row renders) treats `url` as the
+       primary action — click → `tauri::api::shell::open` to the
+       default browser.
+  Together with #1, pulled wallabag rows become a genuinely
+  useful local search corpus.  **~few hours.**
+
+### Tier 2 — smaller gaps worth closing soon
+
+- [ ] **`--tag` flag on local `crispsorter index search`** (today
+  the federated `sync cloud-backup hybrid-search` has `--tag`; the
+  local doesn't — pure asymmetry left over from the v107 rollout).
+  `SearchFilters` already has the field shape; just add the CLI
+  arg + emit `array_has(tags, '<value>')` on Lance.  **~15 min.**
+- [ ] **Tag-cloud sidebar in Übersicht.**  Now that tags is a
+  structured `List<Utf8>`, surfacing it as a clickable filter is
+  a small Svelte addition.  Hover for count, click to filter,
+  persists in URL.
+- [ ] **Server-side embeddings shipped with pulls** so the local
+  embedder doesn't have to re-run.  Today: cb-api computes vectors
+  via fastembed, CrispSorter computes them again via ONNX/GGUF.
+  Same model = same vector; ship it via the wire so pulled rows
+  are vector-searchable locally without an embed pass.  Requires
+  embedding-model name reconciliation between the two stores.
+- [ ] **`/api/search` returns a `snippet` field**, not the full
+  body.  Today the route streams 50-100 KB per hit; a snippet API
+  cuts that by 100×.
+- [ ] **`tags` on cb-api `/api/v2/index/search` payload echo for
+  url + tags is done; still missing** a similar pass for v1
+  `/api/search`'s wire shape (`SearchHit` already carries url +
+  tags but they're at the wire level only — the FTS5 SELECT may
+  not surface tags).  Audit + close.
+
+### Tier 3 — cool but probably overkill until someone asks
+
+- [ ] **Cross-corpus deduplication by canonical URL** — same
+  article saved twice (wallabag import + manual "papers" folder)
+  produces two rows with different sha256s but the same `url`.
+  Detect, offer to fold.
+- [ ] **LLM-suggested topical clustering** for read-later corpora
+  with no real author metadata — auto-build a folder hierarchy by
+  topic so the "sort into Author/Year/Title" workflow has
+  something to render.
+- [ ] **Vector embeddings for the wallabag bodies** — once #1
+  lands, the natural next step is semantic search ("articles about
+  how schools handle bullying") via the existing embedder backed
+  by cb-api's chunks-and-bodies storage.
+
 (For per-version changelog and shipped phase specs, see [HISTORY.md](HISTORY.md).)
