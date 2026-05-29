@@ -471,6 +471,11 @@ pub struct HybridSearchFilters {
     /// federated.  None == no filter; pre-v106 rows are excluded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_domain: Option<String>,
+    /// v107 — exact-match against any element of the `tags` list.
+    /// Translates server-side to `array_has(tags, '<value>')` on the
+    /// Lance `List<Utf8>` tags column.  None == no filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -527,6 +532,16 @@ pub struct HybridSearchHit {
     /// research task / corpus.
     #[serde(default)]
     pub collection_id: Option<String>,
+    /// v106 — Source URL provenance.  Echoed back from
+    /// `documents.url` so a federated hit can render an "Open
+    /// original" link without a second round-trip.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// v107 — Structured tag list.  None means "no tags"; empty Vec
+    /// is also valid.  Decoded server-side from the Lance
+    /// `List<Utf8>` column.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
