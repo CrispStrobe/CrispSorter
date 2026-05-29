@@ -1311,6 +1311,12 @@ enum IndexCmd {
         image_camera_make: Option<String>,
         #[arg(long, value_name = "MODEL")]
         image_camera_model: Option<String>,
+        /// v106 — substring match against the `url` column.  Catches
+        /// rows whose source URL contains this fragment (typically a
+        /// domain, e.g. `--url-domain spiegel.de`).  Pre-v106 rows
+        /// have NULL url and are excluded when this filter is active.
+        #[arg(long, value_name = "DOMAIN")]
+        url_domain: Option<String>,
         /// Stage AE — run ColBERT MaxSim re-ranking on the top-K
         /// candidates before any cross-encoder reranker fires.
         /// Only fires when the loaded embedder has a ColBERT head
@@ -1582,6 +1588,7 @@ async fn cmd_index_async(
             audio_duration_max,
             image_camera_make,
             image_camera_model,
+            url_domain,
             colbert,
         } => {
             let fts_dir = data_dir.join("fts");
@@ -1636,6 +1643,7 @@ async fn cmd_index_async(
                 image_camera_make,
                 image_camera_model,
                 colbert_rerank: colbert,
+                url_domain,
             };
 
             // FTS pass.  An empty query is rejected to keep the
