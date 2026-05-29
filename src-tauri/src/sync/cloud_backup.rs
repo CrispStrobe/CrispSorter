@@ -281,6 +281,15 @@ pub struct FederatedHit {
     pub snippet: Option<String>,
     /// `location_uri` for local hits (e.g. `file:///…`); empty for remote.
     pub location_uri: Option<String>,
+    /// v106 — source URL provenance, echoed so a federated hit can render an
+    /// "Open original" link without a second round-trip.  `None` for backends
+    /// that don't carry it (CrispLens) or rows ingested pre-v106.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// v107 — structured tag list.  `None` means "no tags carried"; an empty
+    /// `Vec` is also valid (a row known to have zero tags).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Stage T — admin key management wire types.

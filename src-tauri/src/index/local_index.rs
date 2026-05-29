@@ -14,7 +14,7 @@ use arrow_array::{
     Float32Array,
 };
 use arrow_array::{
-    Array, FixedSizeListArray, Int16Array, Int32Array, LargeBinaryArray, RecordBatch,
+    Array, FixedSizeListArray, Int16Array, Int32Array, LargeBinaryArray, ListArray, RecordBatch,
     StringArray, TimestampMillisecondArray,
 };
 use arrow_schema::Schema;
@@ -390,6 +390,7 @@ impl LocalIndex {
             let source_hash_col = str_col_opt(batch, "source_hash");
             let text_translated_col = str_col_opt(batch, "text_translated");
             let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
+            let url_col = str_col_opt(batch, "url");
 
             for i in 0..n {
                 if sparse_col.is_null(i) {
@@ -448,6 +449,8 @@ impl LocalIndex {
                     source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
                     text_translated: str_col_val_opt(&text_translated_col, i),
                     text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
+                    url: str_col_val_opt(&url_col, i),
+                    tags: list_str_col_val(batch, "tags", i),
                 };
                 let doc_id = result.doc_id.clone();
                 let is_better = match best.get(&doc_id) {
@@ -1774,6 +1777,7 @@ pub fn batches_to_search_results_with_scores(
         // for the longer doc comment on null-tolerance for pre-v100 rows.
         let text_translated_col = str_col_opt(batch, "text_translated");
         let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
+        let url_col = str_col_opt(batch, "url");
 
         for i in 0..n {
             let doc_id = str_val(doc_id_col, i);
@@ -1818,6 +1822,8 @@ pub fn batches_to_search_results_with_scores(
                 source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
                 text_translated: str_col_val_opt(&text_translated_col, i),
                 text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
+                url: str_col_val_opt(&url_col, i),
+                tags: list_str_col_val(batch, "tags", i),
             });
         }
     }
@@ -2049,6 +2055,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
         // returns None so existing rows just appear untranslated.
         let text_translated_col = str_col_opt(batch, "text_translated");
         let text_translated_lang_col = str_col_opt(batch, "text_translated_lang");
+        let url_col = str_col_opt(batch, "url");
 
         // LanceDB appends a `_distance` column for vector queries.
         let score_col = f32_col_opt(batch, "_distance");
@@ -2100,6 +2107,8 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 source_hash: str_col_val_opt(&source_hash_col, i).unwrap_or_default(),
                 text_translated: str_col_val_opt(&text_translated_col, i),
                 text_translated_lang: str_col_val_opt(&text_translated_lang_col, i),
+                url: str_col_val_opt(&url_col, i),
+                tags: list_str_col_val(batch, "tags", i),
             });
         }
     }
@@ -2168,6 +2177,22 @@ fn str_col_opt<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray
         .column_by_name(name)?
         .as_any()
         .downcast_ref::<StringArray>()
+}
+
+/// Read row `i` of a `List<Utf8>` column into a `Vec<String>`.  Returns an
+/// empty Vec for a null row, an absent column, or a column that isn't a Utf8
+/// list — so callers can treat "no tags" and "old schema" identically.
+fn list_str_col_val(batch: &RecordBatch, name: &str, i: usize) -> Vec<String> {
+    let Some(col) = batch.column_by_name(name) else { return vec![] };
+    let Some(arr) = col.as_any().downcast_ref::<ListArray>() else { return vec![] };
+    if arr.is_null(i) {
+        return vec![];
+    }
+    let values = arr.value(i);
+    let Some(strs) = values.as_any().downcast_ref::<StringArray>() else { return vec![] };
+    (0..strs.len())
+        .filter_map(|j| if strs.is_null(j) { None } else { Some(strs.value(j).to_owned()) })
+        .collect()
 }
 
 fn i32_col<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int32Array> {
@@ -2671,6 +2696,8 @@ mod query_documents_tests {
             source_hash: String::new(),
             text_translated: None,
             text_translated_lang: None,
+            url: None,
+            tags: vec![],
         }
     }
 
@@ -3126,6 +3153,7 @@ mod push_candidate_tests {
             metadata_json: None, catalog_source: None, volume_id: None,
             indexed_at: 0, source_hash: String::new(),
             text_translated: None, text_translated_lang: None,
+            url: None, tags: vec![],
         }
     }
 

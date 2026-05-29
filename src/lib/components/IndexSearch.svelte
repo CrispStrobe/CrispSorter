@@ -1,6 +1,6 @@
 <script lang="ts">
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-    import { openPath } from '@tauri-apps/plugin-opener';
+    import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { readTextFile } from '@tauri-apps/plugin-fs';
     import { save } from '@tauri-apps/plugin-dialog';
     import { onMount } from 'svelte';
@@ -9,7 +9,7 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe
     } from 'lucide-svelte';
 
     // Strip path → bare catalog filename for the badge label.
@@ -58,6 +58,11 @@
         // show the existing column without re-invoking m2m100.
         text_translated?:      string;
         text_translated_lang?: string;
+        // v106/v107 — source URL provenance + structured tags, surfaced so
+        // the row can render an "Open original" link and tag chips.  Absent
+        // for local-only files that never had a source URL / tags.
+        url?:                  string;
+        tags?:                 string[];
     }
 
     // P13.5 on-demand translation surface — per-result state tracking
@@ -660,6 +665,17 @@
         }
     }
 
+    async function openOriginal(url: string) {
+        // Opens the source URL (wallabag/pocket provenance, browser-saved
+        // PDFs, …) in the default browser via the opener plugin.
+        try {
+            await openUrl(url);
+        } catch (e) {
+            console.error('[IndexSearch] openUrl failed:', e, 'url:', url);
+            error = `Konnte Quelle nicht öffnen: ${url}`;
+        }
+    }
+
     function highlightSnippet(text: string, q: string): string {
         if (!text) return '';
         const words = q.trim()
@@ -890,6 +906,13 @@
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
+                            {#if r.url}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); openOriginal(r.url!); }}
+                                    title="Original öffnen (Open original): {r.url}">
+                                    <Globe size={13} />
+                                </button>
+                            {/if}
                             {#if group.chunks.length > 1}
                                 {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
                             {/if}

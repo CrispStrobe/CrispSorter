@@ -207,6 +207,9 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // metadata-only references.
         text_translated: None,
         text_translated_lang: None,
+        // Catalog hits carry no source-URL provenance or tags.
+        url: None,
+        tags: vec![],
     }
 }
 
