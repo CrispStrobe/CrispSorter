@@ -473,6 +473,7 @@ pub async fn index_ingest_path(
         image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
         multivec_packed: None,
         multivec_n_tokens: None,
+        url: None,
     };
 
     let lock = state.index.lock().await;
@@ -545,6 +546,7 @@ pub async fn index_ingest_document(
         image_iso: None,
         multivec_packed: None,
         multivec_n_tokens: None,
+        url: None,
     };
 
     use tauri::Emitter;
@@ -686,6 +688,7 @@ pub async fn index_ingest_document(
             image_iso: raw.image_iso,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -799,6 +802,7 @@ pub async fn index_ingest_batch(
                 image_iso: None,
                 multivec_packed: None,
                 multivec_n_tokens: None,
+                url: None,
             })
             .collect();
 
@@ -887,6 +891,7 @@ pub async fn index_ingest_batch(
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
@@ -1675,6 +1680,7 @@ pub async fn index_audio_promote_l3(
         image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
         multivec_packed: None,
         multivec_n_tokens: None,
+        url: None,
     };
 
     pipeline
@@ -1808,6 +1814,7 @@ pub async fn index_image_promote_l3(
         image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
         multivec_packed: None,
         multivec_n_tokens: None,
+        url: None,
     };
 
     pipeline
@@ -3041,6 +3048,7 @@ async fn promote_path(
         image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
         multivec_packed: None,
         multivec_n_tokens: None,
+        url: None,
     };
 
     // Delete the existing L1 row before re-ingesting.

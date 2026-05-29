@@ -118,6 +118,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         translated_to_lang: None,
         audio: audio_meta,
         image_exif: None,
+        source_url: None,
     })
 }
 

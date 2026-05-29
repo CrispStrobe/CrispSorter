@@ -92,6 +92,14 @@ pub struct ExtractedDocument {
     /// block is unparseable or absent (common after re-saves
     /// through phone galleries / Telegram).
     pub image_exif: Option<crate::images::exif::ExifSummary>,
+
+    /// v106 — Original source URL the document came from.  Populated
+    /// by the markdown extractor's YAML-frontmatter pass (`url:` key)
+    /// and, in time, by other extractors that can recover provenance
+    /// (PDF `/URL` in XMP, EPUB `<dc:source>`, browser-saved HTML).
+    /// `None` for files with no source URL.  bg_ingest copies this
+    /// into `RawDocument.url` which lands on `DocumentChunk.url`.
+    pub source_url: Option<String>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -356,6 +364,7 @@ pub fn extract_text_from_path_with_opts(
                     translated_to_lang: None,
                     audio: None,
                     image_exif,
+                    source_url: None,
                 });
             }
 
@@ -436,6 +445,7 @@ pub fn extract_text_from_path_with_opts(
                         translated_to_lang: None,
                         audio: audio_meta,
                         image_exif: None,
+                        source_url: None,
                     })
                 }
                 #[cfg(not(feature = "crispasr"))]

@@ -46,6 +46,7 @@ pub fn all() -> Vec<Box<dyn Migration>> {
         Box::new(RebuildFtsForBodyTranslated),
         Box::new(NullifyTranslationOnSubChunks),
         Box::new(AddColbertMultivec),
+        Box::new(AddUrlColumn),
     ]
 }
 
@@ -881,6 +882,7 @@ mod tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         };
         local.ingest_batch(&[make_chunk(0), make_chunk(1)]).await.expect("ingest");
 
@@ -989,6 +991,53 @@ impl Migration for AddColbertMultivec {
             .await
             .context("adding multivec columns (v105)")?;
         eprintln!("[index] v105 migration applied — added multivec_packed + multivec_n_tokens");
+        Ok(())
+    }
+}
+
+/// **v106** — Add the `url` Utf8 column (nullable) for original source
+/// URL provenance.  Populated by the markdown extractor from YAML
+/// frontmatter (`url:`), by the PDF extractor from XMP `/URL`, and by
+/// the EPUB extractor from `dc:source`.  Mirrors the cb-api
+/// `file_references.url` column added in the same release so URLs
+/// round-trip through `sync cloud-backup pull` with no protocol
+/// gymnastics.  Idempotent: skips when the column is already present.
+pub struct AddUrlColumn;
+
+#[async_trait]
+impl Migration for AddUrlColumn {
+    fn version(&self) -> u32 {
+        106
+    }
+    fn name(&self) -> &str {
+        "add url column (source provenance)"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v106 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v106 migration")?;
+
+        if schema.field_with_name("url").is_ok() {
+            eprintln!("[index] v106 migration skipped — url column already present");
+            return Ok(());
+        }
+
+        let url_field = arrow_schema::Field::new("url", arrow_schema::DataType::Utf8, true);
+        let col_schema = Arc::new(arrow_schema::Schema::new(vec![url_field]));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding url column (v106)")?;
+        eprintln!("[index] v106 migration applied — added url column");
         Ok(())
     }
 }

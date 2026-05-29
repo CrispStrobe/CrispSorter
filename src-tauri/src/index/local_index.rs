@@ -1957,6 +1957,10 @@ fn chunks_to_record_batch(
         .iter()
         .map(|c| c.multivec_n_tokens)
         .collect();
+    // v106 — `url` column.  Nullable; rows without source-URL
+    // provenance (most local-disk files) pass through as nulls.
+    let urls: arrow_array::StringArray =
+        chunks.iter().map(|c| c.url.as_deref()).collect();
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -2002,6 +2006,7 @@ fn chunks_to_record_batch(
             Arc::new(image_isos),
             Arc::new(multivec_packed_col),
             Arc::new(multivec_n_tokens_col),
+            Arc::new(urls),
         ],
     )
     .context("building RecordBatch")?;
@@ -2883,6 +2888,7 @@ mod push_candidate_tests {
             image_iso: None,
             multivec_packed: None,
             multivec_n_tokens: None,
+            url: None,
         }
     }
 
