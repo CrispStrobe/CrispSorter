@@ -360,6 +360,14 @@ pub struct SearchFilters {
     /// `multivec_packed` data).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub colbert_rerank: bool,
+    /// v106 — substring match against the `url` column.  A user-typed
+    /// `--url-domain spiegel.de` becomes `url LIKE '%spiegel.de%'`,
+    /// which catches `https://www.spiegel.de/...` AND any URL where
+    /// the domain appears as a substring (handles subdomains
+    /// transparently).  `None` == no filter; pre-v106 rows have NULL
+    /// url and are simply excluded when the filter is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_domain: Option<String>,
 }
 
 impl SearchFilters {
@@ -427,6 +435,15 @@ impl SearchFilters {
             parts.push(format!(
                 "image_camera_model LIKE '%{}%'",
                 model.replace('\'', "''")
+            ));
+        }
+        if let Some(ref dom) = self.url_domain {
+            // Substring match against url.  Pre-v106 rows have NULL
+            // url and won't match (intended — the filter narrows to
+            // rows with provenance).
+            parts.push(format!(
+                "url LIKE '%{}%'",
+                dom.replace('\'', "''")
             ));
         }
         if !parts.is_empty() {
@@ -781,6 +798,56 @@ mod tests {
             sql.contains("image_camera_model LIKE '%O''Brien camera%'"),
             "sql = {sql}"
         );
+    }
+
+    // ── v106 — url_domain filter ──────────────────────────────────
+
+    #[test]
+    fn filters_sql_url_domain_emits_substring_like() {
+        let f = SearchFilters {
+            url_domain: Some("spiegel.de".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("url LIKE '%spiegel.de%'"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_url_domain_escapes_single_quotes() {
+        let f = SearchFilters {
+            url_domain: Some("o'brien.example".to_string()),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(
+            sql.contains("url LIKE '%o''brien.example%'"),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn filters_sql_url_domain_omitted_when_none() {
+        let f = SearchFilters::default();
+        assert!(f.to_lance_sql().is_none());
+    }
+
+    #[test]
+    fn filters_sql_url_domain_combines_with_other_filters() {
+        let f = SearchFilters {
+            url_domain: Some("github.com".to_string()),
+            ext: vec!["md".to_string()],
+            year_min: Some(2024),
+            ..Default::default()
+        };
+        let sql = f.to_lance_sql().unwrap();
+        assert!(sql.contains("url LIKE '%github.com%'"), "sql = {sql}");
+        assert!(sql.contains("ext IN ('md')"), "sql = {sql}");
+        assert!(sql.contains("year >= 2024"), "sql = {sql}");
+        // Single AND-joined predicate string
+        assert!(sql.matches(" AND ").count() >= 2, "sql = {sql}");
     }
 
     #[test]
