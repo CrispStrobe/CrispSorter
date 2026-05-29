@@ -2886,8 +2886,15 @@ async fn cmd_sync_cloud_backup(
                     embedding: None,
                     embedding_sparse: None,
                     embedding_model: None,
-                    chunk_index: -1,
-                    chunk_total: 0,
+                    // chunk_index = 0 so the row is treated as a
+                    // representative chunk by the local search
+                    // helpers (`fetch_by_doc_ids` filters on
+                    // chunk_index = 0).  Using -1 marked the row as
+                    // L1-manifest-only and made it invisible to
+                    // local search, defeating the offline-search
+                    // story we want for pulled wallabag rows.
+                    chunk_index: 0,
+                    chunk_total: 1,
                     chunk_start_char: None,
                     chunk_end_char: None,
                     indexed_at: now_ms,
@@ -2924,6 +2931,54 @@ async fn cmd_sync_cloud_backup(
             }).collect();
             let applied = chunks.len();
             local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+
+            // v107 follow-up — also write each L1 chunk's metadata +
+            // body into Tantivy so `crispsorter index search`
+            // returns these rows offline.  Without this, pulled
+            // wallabag rows live in LanceDB but the local search
+            // verb errors with "FTS index not found" because the
+            // hybrid path expects L3 chunks from the extract-and-
+            // embed pipeline.  Soft-fails so a pull doesn't break
+            // when the FTS dir is unwritable for some reason.
+            let fts_dir = data_dir.join("fts");
+            if let Ok(fts) = crate::index::FtsIndex::open_or_create(&fts_dir) {
+                if let Ok(mut writer) = fts.writer() {
+                    let mut wrote = 0usize;
+                    for c in &chunks {
+                        let body = c.full_text.as_deref().unwrap_or("");
+                        if body.is_empty() {
+                            continue;
+                        }
+                        let title = c.title.as_deref().unwrap_or("");
+                        let language = c.language.as_deref().unwrap_or("");
+                        let owner = c.owner_id.as_str();
+                        let heading_join = c.headings_text.as_deref().unwrap_or("");
+                        // Delete any prior entry for this doc_id so
+                        // re-pulls don't double-index.  Soft-fail.
+                        let _ = fts.delete_document(&mut writer, &c.doc_id);
+                        if fts.add_document(
+                            &mut writer,
+                            crate::index::fts_index::TantivyInput {
+                                doc_id: &c.doc_id,
+                                owner_id: owner,
+                                language,
+                                title,
+                                headings: heading_join,
+                                body,
+                                body_translated: c.text_translated.as_deref(),
+                            },
+                        ).is_ok() {
+                            wrote += 1;
+                        }
+                    }
+                    if let Err(e) = writer.commit() {
+                        eprintln!("[sync] FTS commit failed: {e}");
+                    } else if wrote > 0 {
+                        eprintln!("[sync] indexed {wrote} L1 row(s) into local Tantivy");
+                    }
+                }
+            }
+
             mgr.set_state("cb_last_manifest_pull_ts", &resp.max_indexed_at.to_string())
                 .map_err(|e| e.to_string())?;
             match out {
