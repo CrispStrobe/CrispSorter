@@ -420,6 +420,7 @@ pub async fn sync_cb_manifest_push(
             collection_id: c.collection_id.clone(),
             archived_in: None,
             url: None,
+            tags: vec![],
         });
         if rows.len() >= limit { break; }
     }
@@ -1187,6 +1188,7 @@ pub async fn sync_cb_import_from_manifest_db(
                 language: None, title: None, author: None, year: None,
                 full_text: None, collection_id: None, archived_in: r.5,
                 url: None,
+                tags: vec![],
             }
         }).collect();
 

@@ -2730,6 +2730,7 @@ async fn cmd_sync_cloud_backup(
                     collection_id: c.collection_id.clone(),
                     archived_in: None,
                     url: None,
+                    tags: vec![],
                 });
                 if rows.len() >= limit { break; }
             }
@@ -2880,7 +2881,10 @@ async fn cmd_sync_cloud_backup(
                     chunk_end_char: None,
                     indexed_at: now_ms,
                     source_hash: r.sha256.clone(),
-                    tags: vec![],
+                    // v107 — carry tags from the pulled row into the
+                    // local DocumentChunk.tags column (already a
+                    // List<Utf8> in the LanceDB schema).
+                    tags: r.tags.clone(),
                     metadata_json: Some(format!(
                         r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
                         r.indexed_at
@@ -3509,6 +3513,7 @@ async fn cmd_sync_cloud_backup(
                             collection_id: None,
                             archived_in: r.archived_in,
                             url:         None,
+                            tags: vec![],
                         }
                     })
                     .collect();

@@ -100,6 +100,14 @@ pub struct ExtractedDocument {
     /// `None` for files with no source URL.  bg_ingest copies this
     /// into `RawDocument.url` which lands on `DocumentChunk.url`.
     pub source_url: Option<String>,
+
+    /// v107 — Tags lifted from YAML frontmatter (`tags: [...]`),
+    /// EPUB `<dc:subject>`, DOCX keywords, etc.  Empty `Vec` means
+    /// "no tags".  bg_ingest folds these into `RawDocument.tags`
+    /// (already used for the existing `collection:<id>` routing
+    /// markers) so they survive into both `DocumentChunk.tags` and
+    /// the cb-api wire's `ManifestRow.tags`.
+    pub tags: Vec<String>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -365,6 +373,7 @@ pub fn extract_text_from_path_with_opts(
                     audio: None,
                     image_exif,
                     source_url: None,
+                    tags: vec![],
                 });
             }
 
@@ -446,6 +455,7 @@ pub fn extract_text_from_path_with_opts(
                         audio: audio_meta,
                         image_exif: None,
                         source_url: None,
+                        tags: vec![],
                     })
                 }
                 #[cfg(not(feature = "crispasr"))]

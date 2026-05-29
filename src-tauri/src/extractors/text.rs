@@ -51,6 +51,13 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         None
     };
 
+    // v107 — YAML-frontmatter tags extraction (parallel to url).
+    let tags = if is_md {
+        extract_frontmatter_tags(&full_text)
+    } else {
+        Vec::new()
+    };
+
     Ok(ExtractedDocument {
         full_text,
         headings,
@@ -61,6 +68,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         audio: None,
         image_exif: None,
         source_url,
+        tags,
     })
 }
 
@@ -71,6 +79,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
 /// ---
 /// title: "..."
 /// url: "https://example.org/..."
+/// tags: ["pocket-import", "de"]
 /// ---
 /// ```
 ///
@@ -80,22 +89,8 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
 /// endings; and returns `None` for any non-conforming input (no
 /// frontmatter, missing `url:`, empty value, etc.).
 fn extract_frontmatter_url(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    // Must start with `---` followed by a newline.
-    let after_start = if bytes.starts_with(b"---\n") {
-        4
-    } else if bytes.starts_with(b"---\r\n") {
-        5
-    } else {
-        return None;
-    };
-    let rest = &text[after_start..];
-    // Find the closing `---` line.
-    let end = rest
-        .find("\n---\n")
-        .or_else(|| rest.find("\n---\r\n"))?;
-    let frontmatter = &rest[..end];
-    for line in frontmatter.lines() {
+    let fm = locate_frontmatter(text)?;
+    for line in fm.lines() {
         let line = line.trim_end_matches('\r');
         let trimmed = line.trim_start();
         if !trimmed.starts_with("url:") {
@@ -105,27 +100,196 @@ fn extract_frontmatter_url(text: &str) -> Option<String> {
         if value.is_empty() {
             return None;
         }
-        // Strip matched surrounding quotes.
-        let unquoted = if (value.starts_with('"')
-            && value.ends_with('"')
-            && value.len() >= 2)
-            || (value.starts_with('\'')
-                && value.ends_with('\'')
-                && value.len() >= 2)
-        {
-            &value[1..value.len() - 1]
-        } else {
-            value
-        };
-        return Some(unquoted.to_string());
+        return Some(unquote(value));
     }
     None
+}
+
+/// v107 — Lift the `tags: [...]` array from YAML frontmatter.
+/// Handles the wallabag-export shape (`tags: ["pocket-import", "de"]`)
+/// + the YAML block-list shape:
+///
+/// ```yaml
+/// tags:
+///   - pocket-import
+///   - de
+/// ```
+///
+/// Returns an empty `Vec` when frontmatter exists but has no `tags:`
+/// key, or when the value isn't a list.  No new dep — same
+/// hand-parse pattern as the url helper above.
+pub(crate) fn extract_frontmatter_tags(text: &str) -> Vec<String> {
+    let Some(fm) = locate_frontmatter(text) else {
+        return Vec::new();
+    };
+    let mut iter = fm.lines().peekable();
+    while let Some(line_raw) = iter.next() {
+        let line = line_raw.trim_end_matches('\r');
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("tags:") {
+            continue;
+        }
+        let value = trimmed["tags:".len()..].trim();
+        // Flow form: tags: ["a", "b"]
+        if value.starts_with('[') && value.ends_with(']') && value.len() >= 2 {
+            return parse_flow_list(&value[1..value.len() - 1]);
+        }
+        // Block form: tags:\n  - a\n  - b
+        if value.is_empty() {
+            let mut out: Vec<String> = Vec::new();
+            while let Some(next_raw) = iter.peek() {
+                let next = next_raw.trim_end_matches('\r');
+                let nt = next.trim_start();
+                // Stop at the next top-level key (no leading `-`).
+                if !nt.starts_with('-') {
+                    break;
+                }
+                let item = nt.trim_start_matches('-').trim();
+                if !item.is_empty() {
+                    out.push(unquote(item));
+                }
+                iter.next();
+            }
+            return out;
+        }
+        // Anything else (bare scalar, weird shape): treat as a
+        // single-element list with the unquoted value.
+        return vec![unquote(value)];
+    }
+    Vec::new()
+}
+
+/// Find the inclusive byte slice of the YAML frontmatter (without
+/// the `---` markers).  Returns None when no frontmatter is present.
+fn locate_frontmatter(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let after_start = if bytes.starts_with(b"---\n") {
+        4
+    } else if bytes.starts_with(b"---\r\n") {
+        5
+    } else {
+        return None;
+    };
+    let rest = &text[after_start..];
+    let end = rest
+        .find("\n---\n")
+        .or_else(|| rest.find("\n---\r\n"))?;
+    Some(&rest[..end])
+}
+
+/// Strip matched surrounding double / single quotes (one level).
+fn unquote(value: &str) -> String {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// Parse a flow-list body like `"a", "b", c` into individual items.
+/// Handles quoted + bare entries; strips whitespace.
+fn parse_flow_list(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let mut in_quote: Option<char> = None;
+    for ch in body.chars() {
+        if let Some(q) = in_quote {
+            if ch == q {
+                in_quote = None;
+            } else {
+                buf.push(ch);
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            in_quote = Some(ch);
+            continue;
+        }
+        if ch == ',' {
+            let t = buf.trim().to_string();
+            if !t.is_empty() {
+                out.push(t);
+            }
+            buf.clear();
+            continue;
+        }
+        buf.push(ch);
+    }
+    let t = buf.trim().to_string();
+    if !t.is_empty() {
+        out.push(t);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ── v107: tags extraction ─────────────────────────────────────
+
+    #[test]
+    fn frontmatter_tags_flow_list() {
+        let body = "---\ntags: [\"pocket-import\", \"de\"]\n---\n";
+        assert_eq!(
+            extract_frontmatter_tags(body),
+            vec!["pocket-import", "de"]
+        );
+    }
+
+    #[test]
+    fn frontmatter_tags_unquoted_flow_list() {
+        let body = "---\ntags: [pocket-import, de]\n---\n";
+        assert_eq!(
+            extract_frontmatter_tags(body),
+            vec!["pocket-import", "de"]
+        );
+    }
+
+    #[test]
+    fn frontmatter_tags_block_form() {
+        let body = "---\ntags:\n  - pocket-import\n  - de\nlanguage: en\n---\n";
+        assert_eq!(
+            extract_frontmatter_tags(body),
+            vec!["pocket-import", "de"]
+        );
+    }
+
+    #[test]
+    fn frontmatter_tags_missing_returns_empty() {
+        assert!(extract_frontmatter_tags("# no frontmatter\n").is_empty());
+        assert!(extract_frontmatter_tags("---\ntitle: \"X\"\n---\n").is_empty());
+        assert!(extract_frontmatter_tags("---\ntags: []\n---\n").is_empty());
+    }
+
+    #[test]
+    fn frontmatter_tags_with_unicode() {
+        let body = "---\ntags: [\"中文\", \"🏷️\"]\n---\n";
+        assert_eq!(
+            extract_frontmatter_tags(body),
+            vec!["中文", "🏷️"]
+        );
+    }
+
+    #[test]
+    fn extractor_populates_tags_from_wallabag_md() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().join("art.md");
+        std::fs::write(
+            &p,
+            b"---\ntitle: \"X\"\nurl: \"https://x.example\"\n\
+              tags: [\"pocket-import\", \"de\"]\n\
+              ---\nBody.\n",
+        )
+        .unwrap();
+        let d = extract(&p).unwrap();
+        assert_eq!(d.tags, vec!["pocket-import", "de"]);
+        assert_eq!(d.source_url.as_deref(), Some("https://x.example"));
+    }
 
     #[test]
     fn frontmatter_lifts_double_quoted_url() {

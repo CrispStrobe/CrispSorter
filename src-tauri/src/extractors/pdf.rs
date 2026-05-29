@@ -40,6 +40,9 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         audio: None,
         image_exif: None,
         source_url,
+        // v107 — PDF tag lift not implemented yet (would require XMP
+        // dc:subject parse).  Empty Vec keeps the wire happy.
+        tags: vec![],
     })
 }
 

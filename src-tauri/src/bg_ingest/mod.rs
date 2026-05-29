@@ -702,7 +702,11 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 source_hash,
                 location_uri,
                 owner_id: owner,
-                tags: Vec::new(),
+                // v107 — lift tags the extractor pulled out of YAML
+                // frontmatter / EPUB dc:subject / etc.  Empty Vec
+                // when the extractor didn't find any, matching the
+                // pre-v107 default.
+                tags: extracted.tags.clone(),
                 mtime_unix,
                 file_size,
                 volume_id,
@@ -732,7 +736,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
                 multivec_packed: None,
                 multivec_n_tokens: None,
-                url: None,
+                // v106 — lift the source URL the markdown extractor
+                // pulled out of YAML frontmatter (or future PDF /
+                // EPUB extractors).
+                url: extracted.source_url.clone(),
             };
             // P13.7 Stage F + N — capture the wire-shape snapshot
             // BEFORE ingest_document consumes `raw`.  If the auto-
