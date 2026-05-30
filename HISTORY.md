@@ -9,6 +9,87 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-22 — Batch session persistence → SQLite (fixes data-loss + UI-hang at scale)
+
+Replaced the batch-session persistence layer — the entire batch stored as a
+single JSON blob in `settings.json` via `tauri-plugin-store` — with a
+transactional SQLite store. Fixes two reproducible live-session bugs: "we LOST
+all the files?!" on restart (out-of-order blob writes clobbering newer state)
+and UI hangs mid-batch (megabyte JSON rewrites on every save starving the UI
+thread). Full original spec: `handover-prompts/session-prompt-batch-sqlite-persistence.md`.
+
+### Slice 1 — SQLite store (`06e0282`)
+
+`src-tauri/src/batch_session/mod.rs` — `BatchSessionStore` over `rusqlite`
+(WAL + `synchronous = NORMAL`, the `index/skeleton.rs` pattern). `batch_items`
+(one row per item, the hot path) + `extracted_texts` (full body, off the hot
+path) + `batch_sessions` (migration sentinel). Seven Tauri commands
+(`tauri_commands.rs`): load / upsert_item / upsert_items_bulk (single
+`Transaction`) / delete_items / clear / set/get_extracted_text. Connection held
+in `AppState` behind a `Mutex`. Unit tests for roundtrip + bulk + idempotent open.
+
+### Slice 2 — TS wrapper + JSON→SQLite migration (`722cf67`)
+
+`src/lib/batchStore.ts` wraps the commands; `migrateFromJson()` reads the old
+`lastSession` blob, bulk-upserts, and marks done via a sentinel row in
+`batch_sessions` (idempotent; JSON kept as a one-release backup).
+
+### Slice 3 — wire BatchManager + lazy text (`5ac6d67`)
+
+`saveCurrentSession`/`_saveInFlight` deleted; ~20 call sites in
+`batch/store.svelte.ts` now write only the touched row(s) via
+`upsertItem` / `upsertItemsBulk`. `resumeLastSession` → `loadBatch()`. Full
+`extractedText` is stripped from the IPC payload and lazy-loaded from SQLite on
+resume so a 135-item batch doesn't serialize 100 MB+ across the bridge.
+
+### Processed-history dedup (`44b0c9e`) + tests (`00e9962`)
+
+Beyond the original spec: a processed-history table records previously-sorted
+files (`record_processed` / `lookup_history` / `history_count`) so re-adding a
+file already sorted skips extraction. `bulk_tests.rs` adds large-set bulk
+upsert/delete + interleaved upsert/clear. **15 `batch_session` unit tests green.**
+
+## Session log — 2026-05-29 — Search-UX Tier 1 + local `--tag` (v0.3.0): L1-aware local search, unified `search` verb, highlighted snippets + open-original
+
+Closed the entire "Tier 1 — the gaps that actually matter" roadmap that the
+wallabag end-to-end verification surfaced (PLAN.md), plus the Tier 2 local
+`--tag` asymmetry. Released as **v0.3.0** (`RELEASE_NOTES_v0.3.0.md`).
+
+### L1-aware local search (`75a7cd9`)
+
+The central gap: `crispsorter index search` errored with *"FTS index not
+found"* on freshly pulled rows because pulled L1 chunks skipped the
+extract-and-embed pipeline that populates Tantivy. `sync cloud-backup pull` now
+writes each pulled L1 chunk into the local Tantivy FTS in the same pass it
+writes to LanceDB — delete-then-add by `doc_id` so re-pulls don't double-index,
+soft-failing if the FTS dir is unwritable, printing `[sync] indexed N L1 row(s)
+into local Tantivy` on success. Pulled rows use `chunk_index = 0,
+chunk_total = 1` (not the manifest-only `-1`, which `fetch_by_doc_ids` filters
+out — see LEARNINGS.md).
+
+### `--tag` on local `index search` (`c6c43c9`)
+
+`crispsorter index search --tag pocket-import` emits
+`array_has(tags, 'pocket-import')` into LanceDB scalar SQL, matching the
+federated `hybrid-search` flag.
+
+### Unified `search` verb + snippets + open-original (`cffea60`, v0.3.0)
+
+- Top-level `crispsorter search "query"` queries local AND (when cb-api is
+  configured + pull-enabled + token stored) the cb-api v2 hybrid path,
+  RRF-merged and badged by source. `--local-only` / `--cloud-only` force a
+  single leg. Shared filters (`--ext`, `--lang`, `--folder-prefix`,
+  `--year-min/max`, `--url-domain`, `--tag`) apply to whichever legs run; the
+  cb-api leg pushes tag/url down and echoes `url`+`tags` back.
+- `index/snippet.rs`: `highlight_snippet` — HTML-escaped, Unicode-safe
+  ~300-char window centred on the first query-term match, `<mark>`-wrapped
+  (216-line module).
+- `FederatedHit` + `SearchResult` gain `url` + `tags`; LanceDB result builders
+  read both (new `list_str_col_val` reader for the `List<Utf8>` tags column).
+- `IndexSearch.svelte`: "Open original" globe button → `openUrl(r.url)`.
+- Fixed the stale migration test (`all()` now yields v100..=v106 after the v106
+  url column landed). Version bump 0.2.1 → 0.3.0.
+
 ## Session log — 2026-05-16 — Stages AB–AE + cloud-backup streaming fix (skeleton-hint persistence, audio-LID auto-resolve, ColBERT multi-vector + MaxSim, RAM-flat uploads)
 
 Five additive landings on top of the O–AA bundle.  All tests green at end:
