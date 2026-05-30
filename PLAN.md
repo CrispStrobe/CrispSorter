@@ -126,13 +126,14 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   (count-weighted clickable chips, built so the search-results view
   can reuse it) mounted behind a default-off "Tags" toggle in
   `IndexIngest.svelte`.  Tests: `tag_facets_counts_and_skips_markers`
-  + `tag_filter_is_and_semantics` green.  Also mounted on the **local
-  search-results pane** (`IndexSearch.svelte`) — same `TagCloud`,
-  default-hidden, facets computed client-side from the hits on screen
-  (per-document counts), AND-narrows the displayed groups.  *Follow-up:*
-  URL persistence of the selected tags; carrying `tags` on the
-  federated `FederatedHit` wire so the cloud also covers cloud/CrispLens
-  hits (today the federated pane has no tags column).
+  + `tag_filter_is_and_semantics` green.  Also mounted on **both** the local
+  search-results pane and the **federated pane** (`IndexSearch.svelte`) —
+  same `TagCloud`, default-hidden, facets computed client-side from the
+  hits on screen (per-document/per-hit counts), AND-narrows the displayed
+  results.  The federated wire (`FederatedHit`) already carried `tags`
+  for local + cloud_backup hits (CrispLens carries none), so that pane
+  needed zero Rust changes.  *Follow-up:* URL/settings persistence of the
+  selected tags across launches.
 - [ ] **Server-side embeddings shipped with pulls** so the local
   embedder doesn't have to re-run.  Today: cb-api computes vectors
   via fastembed, CrispSorter computes them again via ONNX/GGUF.
