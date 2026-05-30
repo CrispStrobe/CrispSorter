@@ -9,8 +9,9 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag
     } from 'lucide-svelte';
+    import TagCloud from './TagCloud.svelte';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -531,6 +532,45 @@
             .sort((a, b) => b.best.score - a.best.score);
     });
 
+    // ── Tier 2 tag cloud on the local results pane ──────────────────────────────
+    // Opt-in (default-hidden) and computed entirely client-side from the hits
+    // already on screen — no backend round-trip. Reuses the same TagCloud
+    // component as the Übersicht browse. Counts are per-document.
+    let showSearchTagCloud = $state(false);
+    let searchTags = $state<Set<string>>(new Set());
+
+    const searchTagFacets = $derived.by(() => {
+        const counts = new Map<string, number>();
+        for (const g of grouped) {
+            const docTags = new Set<string>();
+            for (const c of g.chunks)
+                for (const t of (c.tags ?? []))
+                    if (t && !t.startsWith('collection:')) docTags.add(t);
+            for (const t of docTags) counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
+        return Array.from(counts.entries())
+            .map(([tag, count]) => ({ tag, count }))
+            .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+    });
+
+    // Groups narrowed by the AND tag selection — a document survives only if
+    // its hits collectively carry every selected tag.
+    const displayedGroups = $derived.by(() => {
+        if (searchTags.size === 0) return grouped;
+        return grouped.filter((g) => {
+            const docTags = new Set<string>();
+            for (const c of g.chunks) for (const t of (c.tags ?? [])) docTags.add(t);
+            for (const sel of searchTags) if (!docTags.has(sel)) return false;
+            return true;
+        });
+    });
+
+    function toggleSearchTag(tag: string) {
+        const next = new Set(searchTags);
+        if (next.has(tag)) next.delete(tag); else next.add(tag);
+        searchTags = next;
+    }
+
     // ── Search ─────────────────────────────────────────────────────────────────
 
     async function runSearch() {
@@ -544,6 +584,9 @@
         // been translated yet (the Map key is doc_id:chunk_index
         // which can collide across queries).
         clearTranslations();
+        // Drop any tag-cloud narrowing from the previous result set; the new
+        // hits have their own tag distribution.
+        searchTags = new Set();
         try {
             results = await invoke<SearchResult[]>('index_search', {
                 query: query.trim(),
@@ -858,9 +901,36 @@
             </div>
 
         {:else}
-            <div class="result-count">{grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer</div>
+            <div class="result-count">
+                {#if searchTags.size > 0}
+                    {displayedGroups.length} / {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                {:else}
+                    {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                {/if}
+                {#if searchTagFacets.length > 0}
+                    <button
+                        class="tagcloud-toggle"
+                        class:active={showSearchTagCloud}
+                        onclick={() => showSearchTagCloud = !showSearchTagCloud}
+                        title="Tag-Wolke ein-/ausblenden"
+                    >
+                        <Tag size={11} /> Tags{#if searchTags.size > 0} ({searchTags.size}){/if}
+                    </button>
+                {/if}
+            </div>
 
-            {#each grouped as group (group.doc_id)}
+            {#if showSearchTagCloud && searchTagFacets.length > 0}
+                <div class="search-tagcloud-wrap">
+                    <TagCloud
+                        facets={searchTagFacets}
+                        selected={searchTags}
+                        ontoggle={toggleSearchTag}
+                        onclear={() => searchTags = new Set()}
+                    />
+                </div>
+            {/if}
+
+            {#each displayedGroups as group (group.doc_id)}
                 {@const r = group.best}
                 <div class="result-card">
                     <!-- Doc header -->
@@ -1514,7 +1584,15 @@
     .state-msg.error { color: #f87171; }
     .state-hint { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #52525b; }
     .hint-sub { font-size: 0.8rem; color: #3f3f46; }
-    .result-count { font-size: 0.75rem; color: #71717a; }
+    .result-count { font-size: 0.75rem; color: #71717a; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .tagcloud-toggle {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 2px 8px; border: 1px solid #3f3f46; border-radius: 999px;
+        background: #27272a; color: #d4d4d8; cursor: pointer; font-size: 0.72rem;
+    }
+    .tagcloud-toggle:hover { background: #3f3f46; }
+    .tagcloud-toggle.active { background: #1d4ed8; border-color: #2563eb; color: #fff; }
+    .search-tagcloud-wrap { margin: 6px 0 4px; }
 
     .result-card {
         background: #18181b; border: 1px solid #27272a; border-radius: 8px; overflow: hidden;
