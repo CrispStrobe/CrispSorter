@@ -743,3 +743,38 @@ Without the Tantivy write, pulled rows would live in LanceDB but
 not be findable via `crispsorter index search`, defeating the
 offline-search story.  See `cli/mod.rs` around the
 `CloudBackupCmd::Pull` arm.
+
+### `#[serde(default = "…")]` does NOT feed `#[derive(Default)]`
+
+`PageSpec` carries `#[serde(default = "default_page_limit")]` (→ 200)
+on its `limit` field, but `PageSpec::default()` still yields
+`limit: 0` — the serde attribute only supplies a value when a field is
+*absent during deserialization*; Rust's derived `Default` ignores it
+entirely and uses `u32::default()`.  `query_documents` then clamps
+`limit` to `[1, 1000]`, so a `PageSpec::default()` page returns exactly
+**one** row.
+
+This burned ~two 19-minute build cycles chasing a phantom
+"`array_has` drops rows from the tag-filtered browse" bug: `count_rows`
+(no limit) reported the correct count while the scanner page returned a
+single row.  `array_has` + the `lance::Scanner` filter/order/limit
+pipeline were fine all along — the test built its page via
+`PageSpec::default()`.  The real frontend always sends
+`page: { limit: 200, … }`, so the app path was never affected.
+
+**Rule:** in tests/back-end callers, construct `PageSpec { limit: N,
+cursor: None }` explicitly; never trust `PageSpec::default()` to carry
+the serde default.  (Same trap applies to any struct that mixes
+`#[serde(default = "…")]` with `#[derive(Default)]`.)  If a single-row
+result smells wrong, check the page limit before suspecting the query
+engine.
+
+### The crispsorter target dir can live on a slow external volume
+
+On this machine the Cargo target dir resolves to
+`<external-volume>/code/crispsorter-target` — a cold `cargo test`
+build of the `crispsorter` lib took **~19 min**.  Budget for it: batch
+all edits, run ONE build, and make probe tests *comprehensive* (test
+every hypothesis in a single binary) rather than iterating one
+spelling/stage per build.  `cargo check` is still the fast
+inner-loop for type errors.

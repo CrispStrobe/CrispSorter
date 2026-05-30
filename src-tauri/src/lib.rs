@@ -2616,6 +2616,7 @@ pub fn run() {
             index::tauri_commands::index_stats,
             index::tauri_commands::index_list_documents,
             index::tauri_commands::index_query_documents,
+            index::tauri_commands::index_tag_facets,
             index::tauri_commands::index_delete_document,
             index::tauri_commands::index_audio_promote_l3,
             index::tauri_commands::index_image_promote_l3,

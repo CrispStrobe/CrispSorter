@@ -1166,6 +1166,69 @@ impl LocalIndex {
         })
     }
 
+    /// Tag-cloud facets (Tier 2) — count how many documents under `filter`
+    /// carry each distinct tag, sorted by count descending (ties broken by
+    /// tag ascending), capped at `limit` entries.
+    ///
+    /// The count deliberately ignores `filter.tags` itself — a faceted
+    /// browse shows the *available* tags within the current non-tag filter
+    /// so the user can keep narrowing; counting against the already-applied
+    /// tag selection would shrink every other tag to its co-occurrence with
+    /// the selection and is the usual faceted-search foot-gun.
+    ///
+    /// `collection:<id>` routing markers are skipped — they're internal
+    /// (cb-api collection routing), not user-facing tags.
+    pub async fn tag_facets(
+        &self,
+        filter: &super::schema::DocumentFilter,
+        limit: usize,
+    ) -> Result<Vec<super::schema::TagFacet>> {
+        use super::schema::TagFacet;
+        use std::collections::HashMap;
+
+        // Apply the whole filter EXCEPT its own tag selection.
+        let mut facet_filter = filter.clone();
+        facet_filter.tags = Vec::new();
+        let pred = filter_to_sql(&facet_filter);
+
+        // Project only the tags column to minimise transfer; the safety cap
+        // mirrors folder_children (200k metadata rows).
+        let base = self.table.query();
+        let q = match pred.as_deref() {
+            Some(p) => base.only_if(p),
+            None => base,
+        };
+        let batches: Vec<RecordBatch> = q
+            .select(lancedb::query::Select::Columns(vec!["tags".to_owned()]))
+            .limit(200_000)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for batch in &batches {
+            for i in 0..batch.num_rows() {
+                for tag in list_str_col_val(batch, "tags", i) {
+                    if tag.is_empty() || tag.starts_with("collection:") {
+                        continue;
+                    }
+                    *counts.entry(tag).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut facets: Vec<TagFacet> = counts
+            .into_iter()
+            .map(|(tag, count)| TagFacet { tag, count })
+            .collect();
+        // Most-used first; stable tiebreak on the tag so the cloud order is
+        // deterministic across calls.
+        facets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+        facets.truncate(limit.clamp(1, 5000));
+        Ok(facets)
+    }
+
     /// PLAN P9 step 4 — enumerate the immediate subdirectories of `parent`.
     ///
     /// Returns one [`FolderChild`] per unique path component that immediately
@@ -2535,6 +2598,13 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
             .collect();
         parts.push(format!("volume_id IN ({})", lits.join(", ")));
     }
+    // Tag-cloud filter (Tier 2). AND semantics: the row must carry every
+    // selected tag, so each tag emits its own `array_has` clause. `tags`
+    // is a `List<Utf8>` column, so this is the same predicate shape the
+    // federated v2 path pushes to cb-api.
+    for tag in f.tags.iter().filter(|t| !t.is_empty()) {
+        parts.push(format!("array_has(tags, '{}')", tag.replace('\'', "''")));
+    }
 
     Some(parts.join(" AND "))
 }
@@ -2974,6 +3044,99 @@ mod push_candidate_tests {
         let chunk0 = cand.iter().find(|c| c.chunk_index == 0).unwrap();
         assert_eq!(chunk0.embedding, vec![0.1f32, 0.2, 0.3, 0.4]);
         assert_eq!(chunk0.model_id.as_deref(), Some("bge"));
+    }
+
+    /// Tier 2 tag-cloud — `tag_facets` counts distinct tags, skips
+    /// `collection:` routing markers + empty tags, and sorts by count
+    /// desc (tie broken by tag asc).
+    #[tokio::test(flavor = "current_thread")]
+    async fn tag_facets_counts_and_skips_markers() {
+        use crate::index::schema::DocumentFilter;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        let with_tags = |doc: &str, tags: &[&str]| {
+            let mut c = mk(doc, -1, 100, Some("body"), None, None);
+            c.tags = tags.iter().map(|s| s.to_string()).collect();
+            c
+        };
+        local.ingest_batch(&[
+            with_tags("a", &["rust", "pocket-import"]),
+            with_tags("b", &["rust"]),
+            with_tags("c", &["pocket-import", "collection:wallabag"]),
+            with_tags("d", &[]),
+        ]).await.unwrap();
+
+        let facets = local
+            .tag_facets(&DocumentFilter::default(), 100)
+            .await
+            .unwrap();
+
+        // collection: marker + the empty-tags doc contribute nothing.
+        assert_eq!(facets.len(), 2, "unexpected facet set: {facets:?}");
+        // Both at count 2; tie broken by tag asc → pocket-import before rust.
+        assert_eq!(facets[0].tag, "pocket-import");
+        assert_eq!(facets[0].count, 2);
+        assert_eq!(facets[1].tag, "rust");
+        assert_eq!(facets[1].count, 2);
+        assert!(
+            !facets.iter().any(|f| f.tag.starts_with("collection:")),
+            "collection: marker leaked into the tag cloud"
+        );
+    }
+
+    /// Tier 2 tag-cloud — selecting tags narrows the browse with AND
+    /// semantics (`array_has` per tag).
+    #[tokio::test(flavor = "current_thread")]
+    async fn tag_filter_is_and_semantics() {
+        use crate::index::schema::{DocumentFilter, SortSpec, PageSpec};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local = LocalIndex::open_or_create(tmp.path(), 4).await.unwrap();
+
+        let with_tags = |doc: &str, tags: &[&str]| {
+            let mut c = mk(doc, -1, 100, Some("body"), None, None);
+            c.tags = tags.iter().map(|s| s.to_string()).collect();
+            c
+        };
+        local.ingest_batch(&[
+            with_tags("a", &["rust", "pocket-import"]),
+            with_tags("b", &["rust"]),
+            with_tags("c", &["pocket-import"]),
+        ]).await.unwrap();
+
+        let query = |tags: Vec<&str>| {
+            let filter = DocumentFilter {
+                tags: tags.into_iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            };
+            let local = &local;
+            async move {
+                // NB: PageSpec::default() yields limit=0 (the
+                // serde-`default` attribute only feeds deserialization,
+                // not Rust's Default), which query_documents clamps to 1.
+                // Pass an explicit page size so all matches come back.
+                let page = PageSpec { limit: 200, cursor: None };
+                local
+                    .query_documents(&filter, SortSpec::default(), page)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Single tag: a + b carry "rust".
+        let page = query(vec!["rust"]).await;
+        let mut ids: Vec<&str> = page.rows.iter().map(|r| r.doc_id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(page.total_estimate, 2);
+
+        // Two tags AND: only "a" carries both.
+        let page = query(vec!["rust", "pocket-import"]).await;
+        let ids: Vec<&str> = page.rows.iter().map(|r| r.doc_id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
+        assert_eq!(page.total_estimate, 1);
     }
 
     /// Stage P — purge_to_size: index already within cap → no-op.

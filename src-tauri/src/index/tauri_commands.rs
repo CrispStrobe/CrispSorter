@@ -314,6 +314,32 @@ pub async fn index_query_documents(
         .map_err(|e| e.to_string())
 }
 
+/// Tag-cloud facets for the Übersicht sidebar (Tier 2). Returns the
+/// distinct tags present under `filter` (ignoring its own `tags`
+/// selection) with per-tag document counts, sorted by count descending
+/// and capped at `limit`. Empty `Vec` when the index is disabled or the
+/// local backend isn't initialised yet — same silent-empty contract as
+/// `index_query_documents`, since the sidebar polls this on every chip
+/// change and during boot.
+#[tauri::command]
+pub async fn index_tag_facets(
+    state: State<'_, AppState>,
+    filter: super::schema::DocumentFilter,
+    limit: usize,
+) -> Result<Vec<super::schema::TagFacet>, String> {
+    let lock = state.index.lock().await;
+    let local = match (lock.config.enabled, lock.local.as_ref()) {
+        (false, _) | (true, None) => return Ok(vec![]),
+        (true, Some(l)) => l.clone(),
+    };
+    drop(lock);
+
+    local
+        .tag_facets(&filter, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// PLAN P9 step 4 — return the immediate subdirectories of `parent` with
 /// their subtree doc counts. Used by the folder-tree pane in Übersicht.
 ///
