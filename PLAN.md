@@ -140,14 +140,20 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   Same model = same vector; ship it via the wire so pulled rows
   are vector-searchable locally without an embed pass.  Requires
   embedding-model name reconciliation between the two stores.
-- [ ] **`/api/search` returns a `snippet` field**, not the full
-  body.  Today the route streams 50-100 KB per hit; a snippet API
-  cuts that by 100×.
-- [ ] **`tags` on cb-api `/api/v2/index/search` payload echo for
-  url + tags is done; still missing** a similar pass for v1
-  `/api/search`'s wire shape (`SearchHit` already carries url +
-  tags but they're at the wire level only — the FTS5 SELECT may
-  not surface tags).  Audit + close.
+- [x] **`/api/search` returns a `snippet` field** — ✅ DONE
+  (cloud-backup `feat/api-search-snippet`).  `SearchHit.snippet` is a
+  match-centred `<mark>`-highlighted window (FTS5 `snippet()` on the
+  SQLite path; `_make_snippet` window on the Lance path).
+  `?include_full_text=false` omits the body for the ~100× payload cut,
+  defaulting true so the L1-ingest-from-hit flow is unaffected.  Tests:
+  2 e2e + 5 unit; full non-live suite 210 green.  *Follow-up:* update
+  the CrispSorter federated client to request `include_full_text=false`
+  + render `snippet` instead of truncating `full_text` client-side.
+- [x] **v1 `/api/search` url + tags audit** — ✅ DONE (already shipped).
+  Both the Lance and SQLite SELECTs in `/api/search` already pull
+  `fr.url` + `fr.tags` and decode them onto `SearchHit`; the stale
+  "FTS5 SELECT may not surface tags" note predated that fix.  Confirmed
+  during the snippet work.
 
 ### Tier 3 — cool but probably overkill until someone asks
 
