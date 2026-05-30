@@ -43,6 +43,7 @@
 - `crisp+cb-archive://` URI scheme for cloud-backup archived files
 - `crisp+drive://` URI scheme for any registered CloudDrive
 - macOS arm64 packaging: `scripts/bundle_macos_native_libs.sh` co-bundles dylibs + ggml backends + homebrew transitives into `.app/Contents/Frameworks/`
+- **Search-UX Tier 1 + local `--tag` (v0.3.0)** — L1-aware local search (`sync cloud-backup pull` writes each pulled L1 row into local Tantivy, so a pulled corpus is findable offline via `index search`); unified top-level `crispsorter search "query"` that queries local + cb-api v2 hybrid, RRF-merged and source-badged (`--local-only` / `--cloud-only` to force a leg; shared `--ext`/`--lang`/`--folder-prefix`/`--year-min/max`/`--url-domain`/`--tag` filters); `<mark>`-highlighted ~300-char snippets (`index/snippet.rs::highlight_snippet`) + "Open original" globe button on hits carrying a `url`; `--tag` on local `index search` (`array_has(tags, …)`). Pulled rows ingest with `chunk_index = 0, chunk_total = 1`. See [HISTORY.md](HISTORY.md) 2026-05-29 + `RELEASE_NOTES_v0.3.0.md`.
 - P16 docx translation (Translate tab, v0.2.0): end-to-end `.docx` → `.docx` LLM translation via the [`crisp-docx`](https://github.com/CrispStrobe/crisp-docx) sibling workspace. 12 cloud LLM providers (OpenAI / Anthropic / Ollama / Groq / OpenRouter / Together / Cerebras / Mistral / Nebius / Scaleway / Poe / Google) + offline NMT via CrispASR (m2m100 / wmt21 / madlad / gemma4-e2b under `--features translate-nmt`); opt-in intra-paragraph format preservation via SimAlign + CrispEmbed under `--features translate-align`. Streams `translate://progress` events, persists form state, shows provider key status. **OS-keychain credential storage** for all LLM API keys with one-time migration out of plaintext `settings.json`. macOS arm64 + Linux release binaries ship with both `translate-align` and `translate-nmt` enabled; Windows release stays feature-less pending the deferred DLL-layout work.
 
 Run `cargo test --workspace --lib` for the exact Rust unit-test count.
@@ -61,7 +62,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P5 — Future / planned
 
-- [ ] **Batch session persistence → SQLite** — *high priority*; reproduced twice 2026-05-17 as "we LOST all the files?!" + UI hangs at 53/196.  Root cause: full batch persisted as a single JSON blob in `settings.json` via tauri-plugin-store; every save rewrites the whole file (tens of MB when items carry `extractedText`).  Mitigations landed in `068f8f5`/`05123d9`/`e84ca88` (strip `extractedText` to 500 chars in persisted snapshot, single-writer chain, auto-lift stuck items) but the design is fundamentally wrong for the workload.  5-slice migration plan (schema → Rust commands → TS wrapper + JSON migration → wire BatchManager → stress test) spec'd in `handover-prompts/session-prompt-batch-sqlite-persistence.md` (~7 h total).
+- [x] **Batch session persistence → SQLite** — ✅ SHIPPED (commits `06e0282` → `00e9962`).  Fixed the "we LOST all the files?!" data-loss + UI-hang-at-53/196 bugs by replacing the single JSON-blob-in-`settings.json` persistence with a transactional SQLite store (`src-tauri/src/batch_session/`, one row per item, WAL, bulk upserts).  All 5 slices landed plus extras the handover prompt didn't spec (processed-history dedup → skip re-extraction of previously-sorted files: `record_processed`/`lookup_history`/`history_count`; full `extractedText` stripped from the IPC payload + lazy-loaded from SQLite on resume).  15 `batch_session` unit tests green (roundtrip, bulk 100+, interleaved upsert/clear, migration sentinel, processed-history).  See [HISTORY.md](HISTORY.md) + `handover-prompts/session-prompt-batch-sqlite-persistence.md` for the original spec.
 - [ ] **Auto-process toggle on watch detection** — UX design pass complete (2026-05-16): per-folder three-mode dropdown (off / analyse / sort), opt-in initial scan, debounced queue, hourly file cap + daily cost cap, tray status surface, fail-soft error path.  6-slice implementation arc spec'd in `handover-prompts/session-prompt-auto-process-toggle.md` (~16 h total).
 - [ ] **PWA demo via File System Access API** — speculative
 
@@ -96,59 +97,26 @@ cb-api tunnel.
 
 This roadmap closes that gap, in priority order.
 
-### Tier 1 — the gaps that actually matter
+### Tier 1 — ✅ SHIPPED in v0.3.0 (2026-05-29)
 
-- [ ] **L1-aware local search** (the most-painful single fix).
-  When `sync cloud-backup pull` writes pulled rows to LanceDB via
-  `LocalIndex::ingest_batch`, also write each L1 row to Tantivy
-  with `(filename, title, url, tags, full_text)` as fields.  After
-  this lands, `crispsorter index search "schimmelpilz"` against
-  the pulled wallabag corpus returns hits offline, no federated
-  flag needed.  Implementation sketch: extend
-  `LocalIndex::ingest_batch` (or add `ingest_l1_into_fts`) to
-  detect `chunk.chunk_index == -1 && chunk.full_text.is_some()`
-  and call into the existing `FtsIndex::index_document` path.
-  Test: the verify script that today errors with "FTS index not
-  found" passes.  **~half a day.**
+All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
+2026-05-29 session log + `RELEASE_NOTES_v0.3.0.md`.
 
-- [ ] **Unified `crispsorter search` verb.**  Today there are three
-  search verbs:
-    * `crispsorter index search` (local L3 only)
-    * `crispsorter sync cloud-backup search` (cb-api FTS5)
-    * `crispsorter sync cloud-backup hybrid-search` (cb-api Lance hybrid)
-
-  A user shouldn't have to know which one to invoke for which
-  corpus.  Add a top-level `crispsorter search "query"` that:
-  (1) always queries local; (2) if `cloud_backup_url` is
-  configured AND reachable, also queries cb-api; (3) RRF-merges
-  the two result sets; (4) badges each hit with its source.  The
-  RRF + federated wiring already exists for
-  `cmd_cloud_backup_federated`; this is mostly the CLI-arg
-  plumbing + a flag inversion (federated is now the default,
-  `--local-only` opts out).  **~few hours.**
-
-- [ ] **Click-to-open-source + snippets in search results.**
-  Search results today render full body text and a title — a wall
-  of text.  Two changes flip it to "search engine"-feeling:
-    1. Add a `snippet: Option<String>` field to `SearchHit` /
-       `HybridSearchHit` populated with a ~300-char window around
-       the matched term, term-highlighted with `<mark>` tags.
-       Either compute server-side (BM25 has the matched positions)
-       or client-side from `full_text`.
-    2. Frontend (`src/lib/components/SearchResult.svelte` or
-       wherever the result row renders) treats `url` as the
-       primary action — click → `tauri::api::shell::open` to the
-       default browser.
-  Together with #1, pulled wallabag rows become a genuinely
-  useful local search corpus.  **~few hours.**
+- [x] **L1-aware local search** — `sync cloud-backup pull` writes each
+  pulled L1 chunk into local Tantivy in the same pass it writes
+  LanceDB (delete-then-add by `doc_id`, soft-fails on unwritable FTS).
+  Pulled rows ingest with `chunk_index = 0, chunk_total = 1`.
+- [x] **Unified `crispsorter search` verb** — local + cb-api v2 hybrid,
+  RRF-merged, source-badged; `--local-only` / `--cloud-only`; shared
+  filters push down on the cb-api leg.
+- [x] **Click-to-open-source + snippets** — `index/snippet.rs::highlight_snippet`
+  (`<mark>`-wrapped ~300-char window) + "Open original" globe button in
+  `IndexSearch.svelte`.
 
 ### Tier 2 — smaller gaps worth closing soon
 
-- [ ] **`--tag` flag on local `crispsorter index search`** (today
-  the federated `sync cloud-backup hybrid-search` has `--tag`; the
-  local doesn't — pure asymmetry left over from the v107 rollout).
-  `SearchFilters` already has the field shape; just add the CLI
-  arg + emit `array_has(tags, '<value>')` on Lance.  **~15 min.**
+- [x] **`--tag` flag on local `crispsorter index search`** — shipped
+  in v0.3.0; emits `array_has(tags, '<value>')` on Lance.
 - [ ] **Tag-cloud sidebar in Übersicht.**  Now that tags is a
   structured `List<Utf8>`, surfacing it as a clickable filter is
   a small Svelte addition.  Hover for count, click to filter,
