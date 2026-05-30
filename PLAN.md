@@ -149,10 +149,18 @@ This roadmap closes that gap, in priority order.
   local doesn't — pure asymmetry left over from the v107 rollout).
   `SearchFilters` already has the field shape; just add the CLI
   arg + emit `array_has(tags, '<value>')` on Lance.  **~15 min.**
-- [ ] **Tag-cloud sidebar in Übersicht.**  Now that tags is a
-  structured `List<Utf8>`, surfacing it as a clickable filter is
-  a small Svelte addition.  Hover for count, click to filter,
-  persists in URL.
+- [x] **Tag-cloud sidebar in Übersicht.** ✅ SHIPPED — opt-in
+  (default-hidden) tag cloud in the Übersicht browse.  Backend:
+  `DocumentFilter.tags` (AND semantics → `array_has(tags,'…')` per
+  tag in `filter_to_sql`), `LocalIndex::tag_facets` + `index_tag_facets`
+  command (counts ignore the filter's own tag selection; skips
+  `collection:` markers).  Frontend: reusable `TagCloud.svelte`
+  (count-weighted clickable chips, built so the search-results view
+  can reuse it) mounted behind a default-off "Tags" toggle in
+  `IndexIngest.svelte`.  Tests: `tag_facets_counts_and_skips_markers`
+  + `tag_filter_is_and_semantics` green.  *Follow-up:* URL persistence
+  of the selected tags; optionally mount the same `TagCloud` in the
+  search-results view.
 - [ ] **Server-side embeddings shipped with pulls** so the local
   embedder doesn't have to re-run.  Today: cb-api computes vectors
   via fastembed, CrispSorter computes them again via ONNX/GGUF.

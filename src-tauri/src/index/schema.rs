@@ -533,6 +533,11 @@ pub struct DocumentFilter {
     /// Volume awareness (P7.6) — drop hits whose `metadata_json.volume_id`
     /// isn't in this allowlist. `None` = volume filter disabled.
     pub volume_ids: Option<Vec<String>>,
+    /// Tag-cloud filter (Tier 2) — keep only rows whose `tags` `List<Utf8>`
+    /// column contains *every* listed tag (AND semantics, narrowing).
+    /// Empty = no tag filter. Each tag emits an `array_has(tags, '…')`
+    /// predicate.
+    pub tags: Vec<String>,
 }
 
 /// Sort column for `index_query_documents`. Matches a real LanceDB
@@ -622,6 +627,19 @@ pub struct DocumentPage {
     /// `count_rows(filter_sql)` — a single scalar query against the
     /// same predicate, so it's cheap (no row materialisation).
     pub total_estimate: u64,
+}
+
+/// One entry in the tag-cloud (`index_tag_facets`) — a distinct tag value
+/// and how many documents under the current filter carry it. Sorted by
+/// `count` descending so the UI can render the most-used tags first or
+/// size them in a cloud. The facet count deliberately ignores the
+/// filter's *own* `tags` selection (standard faceted-browse behaviour:
+/// a dimension doesn't constrain its own counts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagFacet {
+    pub tag: String,
+    pub count: u64,
 }
 
 /// One node in the lazy-loaded folder tree (`index_folder_children`).

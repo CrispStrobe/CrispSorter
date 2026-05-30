@@ -12,10 +12,11 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2, Eye, RotateCcw, CloudDownload, Images
+        Columns2, Eye, RotateCcw, CloudDownload, Images, Tag
     } from 'lucide-svelte';
     import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
+    import TagCloud from './TagCloud.svelte';
     import CafCatalog from './Catalog.svelte';
     import Duplicates from './Duplicates.svelte';
     import { logInfo, logWarn, logError } from '$lib/log';
@@ -144,6 +145,13 @@
      *  Empty string = no filter. Matched against the resolved local path
      *  (after stripping any `crisp+local://` scheme prefix). */
     let contentsFolder = $state<string>('');
+    // Tier 2 tag-cloud — opt-in sidebar, hidden by default. `contentsTags`
+    // is the AND-combined selection pushed into the DocumentFilter; the
+    // facet list is fetched on demand only while the cloud is visible.
+    let contentsTags = $state<Set<string>>(new Set());
+    let showTagCloud = $state(false);
+    let tagFacets = $state<{ tag: string; count: number }[]>([]);
+    let tagFacetsLoading = $state(false);
     let indexStats  = $state<{ total_rows: number; doc_count: number; chunk_count: number } | null>(null);
     let selectedDocIds = $state<Set<string>>(new Set());
     let deletingIds = $state<Set<string>>(new Set());
@@ -1571,7 +1579,45 @@
         if (contentsExt.size > 0) f.ext = [...contentsExt];
         if (contentsLevel !== 'all') f.level = contentsLevel;
         if (contentsQuery.trim()) f.nameSubstring = contentsQuery.trim();
+        if (contentsTags.size > 0) f.tags = [...contentsTags];
         return f;
+    }
+
+    /** Fetch the tag cloud for the current (non-tag) filter. Only called
+     *  while the sidebar is visible — keeps the scan off the hot path when
+     *  the user never opens it. The backend already ignores `filter.tags`
+     *  so the counts reflect what's still selectable. */
+    async function loadTagFacets() {
+        if (!showTagCloud) return;
+        tagFacetsLoading = true;
+        try {
+            tagFacets = await invoke<{ tag: string; count: number }[]>('index_tag_facets', {
+                filter: buildDocumentFilter(),
+                limit: 200,
+            });
+        } catch (e: any) {
+            logError(`Übersicht: tag facets failed -- ${String(e?.message ?? e ?? '')}`);
+            tagFacets = [];
+        } finally {
+            tagFacetsLoading = false;
+        }
+    }
+
+    /** Toggle a tag in the AND-selection, then reload both the document
+     *  page and the facet counts. */
+    function toggleTag(tag: string) {
+        const next = new Set(contentsTags);
+        if (next.has(tag)) next.delete(tag); else next.add(tag);
+        contentsTags = next;
+        // loadContents refreshes the facet counts on completion (single
+        // funnel), so no separate loadTagFacets call here.
+        loadContents(false);
+    }
+
+    /** Show/hide the cloud; fetch facets lazily on first reveal. */
+    function toggleTagCloud() {
+        showTagCloud = !showTagCloud;
+        if (showTagCloud && tagFacets.length === 0) loadTagFacets();
     }
 
     function buildSortSpec() {
@@ -1606,6 +1652,9 @@
             contents = applyClientFilters(_allContents);
             totalEstimate = page?.totalEstimate ?? 0;
             nextCursor = page?.nextCursor ?? null;
+            // Keep the tag cloud counts in sync with the current filter
+            // (only while it's visible; cheap no-op otherwise).
+            if (!append && showTagCloud) loadTagFacets();
         } catch (e: any) {
             const msg = String(e?.message ?? e ?? '');
             // Don't flood the log when the index isn't ready yet; one
@@ -3711,7 +3760,30 @@
                 <option value="has_year">Jahr</option>
                 <option value="has_all">Alle</option>
             </select>
+
+            <!-- Tag-cloud toggle — hidden by default, opt-in. -->
+            <button
+                class="chip"
+                class:active={showTagCloud}
+                onclick={toggleTagCloud}
+                title="Tag-Wolke ein-/ausblenden"
+                style="margin-left:8px;"
+            >
+                <Tag size={11} /> Tags{#if contentsTags.size > 0} ({contentsTags.size}){/if}
+            </button>
         </div>
+
+        {#if showTagCloud}
+            <div class="tag-cloud-wrap">
+                <TagCloud
+                    facets={tagFacets}
+                    selected={contentsTags}
+                    loading={tagFacetsLoading}
+                    ontoggle={toggleTag}
+                    onclear={() => { contentsTags = new Set(); loadContents(false); }}
+                />
+            </div>
+        {/if}
 
         {#if indexStats}
             <div class="index-stats-bar">
@@ -4141,6 +4213,7 @@
     .level-hint-inline { font-size: 0.72rem; color: #52525b; padding: 6px 16px 0; }
 
     .filter-bar { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; flex-wrap: wrap; }
+    .tag-cloud-wrap { padding: 8px 16px 0; }
     .filter-label { font-size: 0.72rem; color: #71717a; font-weight: 600; }
     .chip {
         background: #18181b; border: 1px solid #27272a; color: #a1a1aa;
