@@ -221,7 +221,7 @@ verification + scoping for the next 4 PLAN items:
     deployed VPS — the cb-api service was running the older code.
 
 - **Production cb-api deploy + post-deploy live verification (2026-05-16)**
-  - rsync of `cloud-backup/api/` → `root@<VPS_IP>:<cb-api-dir>/api/`
+  - rsync of `cloud-backup/api/` → `root@<vps-host>:<cb-api-dir>/api/`
     (7 files: admin/app/db/embed/extract/files/lance.py; pre-deploy
     backup at `/tmp/cb-api-pre-20260516T175946/`).
   - `systemctl restart cb-api` → active in <3 s; clean journal.
@@ -247,13 +247,13 @@ verification + scoping for the next 4 PLAN items:
   conversion (2026-05-16)** — extends the cb-api deploy to also
   enable the worker-side extraction loop.
   - **Backup-first**: `/tmp/vps-worker-pre-20260516T181056/` holds
-    the pre-deploy systemd unit + `/etc/vps-worker.env`.
+    the pre-deploy systemd unit + `<vps-worker-env>`.
   - **rsync** of `cloud-backup/vps_worker.py` + `env_loader.py` over
     `/root/internxt-python/{vps_worker,env_loader}.py` — turns out
     the same file was already there (md5 match); only metadata
     changed.  Confirmed `from api.extract import ExtractionWorker`
     import works via the `PYTHONPATH=<cb-api-dir>` added to
-    `/etc/vps-worker.env`.
+    `<vps-worker-env>`.
   - **Up-stream a production-tested fix discovered on the VPS**:
     `api/extract.py` had two local divergences from `origin/main`
     — sending the `local_path` form field (CrispLens needs it for
@@ -276,7 +276,7 @@ verification + scoping for the next 4 PLAN items:
     now returns `worker_db_found:true` with zeros (queue empty),
     proving the cb-api ↔ vps-worker SQLite handshake works.
   - **Stage V worker still partially blocked**: `CB_CRISPLENS_URL`
-    + `CB_CRISPLENS_SESSION` not yet set in `/etc/vps-worker.env`
+    + `CB_CRISPLENS_SESSION` not yet set in `<vps-worker-env>`
     (image path can't fire); CrispASR binary not installed
     (`which crispasr` empty — audio path graceful-no-ops).
     Image-extraction live test requires populating those two env
@@ -460,7 +460,7 @@ shipped during this stretch.
   - rsync of `cloud-backup/vps_worker.py` + `env_loader.py` to
     `/root/internxt-python/`; metadata-only change (md5-identical
     files were already there).  `PYTHONPATH=<cb-api-dir>`
-    added to `/etc/vps-worker.env` so `from api.extract import
+    added to `<vps-worker-env>` so `from api.extract import
     ExtractionWorker` resolves.
   - **Converted `<cb-api-dir>/` into a proper git checkout**
     tracking `origin/main`.  Used in-place `git init` + remote add +
@@ -508,9 +508,9 @@ shipped during this stretch.
     aliases `file_hash → sha256`, and the `extract_one()` UPDATE
     probes `PRAGMA table_info` to pick `file_hash` vs `sha256`.
     Back-compat fallback for hypothetical single-table DBs.
-  - Required env addition: `CB_API_STORAGE_ROOT=/mnt/akademie_storage/cb_api_blobs`
-    + `CB_API_DB_PATH=/root/cloudworker_state/<catalog-db>`
-    in `/etc/vps-worker.env` so the worker resolves
+  - Required env addition: `CB_API_STORAGE_ROOT=<storage-root>/cb_api_blobs`
+    + `CB_API_DB_PATH=<catalog-volume>/cloudworker_state/<catalog-db>`
+    in `<vps-worker-env>` so the worker resolves
     `local_blob_path` → absolute and finds the cb-api SQLite.
   - End-to-end result: **11 image+text blobs drained in ~30 s**.
     Test 8×8 red PNG returned `face_count=0` (correctly, no faces);
@@ -544,11 +544,11 @@ shipped during this stretch.
     `pending_extractions` row has `started_at`/`done_at` set,
     `error IS NULL`.
 
-- **Final `/etc/vps-worker.env` env-var inventory** (7 cb-api-side
+- **Final `<vps-worker-env>` env-var inventory** (7 cb-api-side
   vars now wired for the Stage U/V chain):
   - `PYTHONPATH=<cb-api-dir>`
-  - `CB_API_DB_PATH=/root/cloudworker_state/<catalog-db>`
-  - `CB_API_STORAGE_ROOT=/mnt/akademie_storage/cb_api_blobs`
+  - `CB_API_DB_PATH=<catalog-volume>/cloudworker_state/<catalog-db>`
+  - `CB_API_STORAGE_ROOT=<storage-root>/cb_api_blobs`
   - `CB_CRISPLENS_URL=http://127.0.0.1:7865`
   - `CB_CRISPLENS_SESSION=session=<token>` (rotate before
     `expires=1781540418` ≈ 30-day window)
@@ -644,7 +644,7 @@ suite.
 ### Stage T — cb-api key minting from the GUI (2026-05-15)
 
 - **Server-side admin token** minted via `python -m api.admin mint-admin`;
-  stored in `/etc/cb-api.env` as `CB_API_ADMIN_TOKEN`.
+  stored in `<cb-api-env>` as `CB_API_ADMIN_TOKEN`.
 - **`POST /api/admin/keys/mint`** + `revoke` + `list` routes gated on the
   admin token.
 - **Settings UI**: collapsible "Admin — API key management" sub-section; user
@@ -828,7 +828,7 @@ After this batch:
 ### Stage E — byte upload + download (`/api/files/by-hash/<sha>`)
 
   - `api/files.py`: content-addressed sharded storage under
-    `CB_API_STORAGE_ROOT` (default `/mnt/akademie_storage/cb_api_blobs`).
+    `CB_API_STORAGE_ROOT` (default `<storage-root>/cb_api_blobs`).
     Layout: `<root>/<sha[:2]>/<sha[2:4]>/<sha>` — caps any single
     dir to ≤ 16k entries even at millions of blobs.  Atomic
     `.partial` → `os.replace()` semantics; concurrent reader
@@ -931,8 +931,8 @@ After this batch:
     triggering N parallel `from_pretrained` calls.
   - `requirements.txt`: `fastembed >= 0.4.0`, `onnxruntime
     >= 1.18.0`.  Production: set
-    `XDG_CACHE_HOME=/mnt/akademie_storage/.fastembed_cache`
-    in `/etc/cb-api.env` so the ~500MB bge-m3 weights land on
+    `XDG_CACHE_HOME=<storage-root>/.fastembed_cache`
+    in `<cb-api-env>` so the ~500MB bge-m3 weights land on
     the storage box, not the small root disk.
   - Rust: `CloudBackupClient::embed_query` /
     `embed_models`.  120s timeout on `embed_query` (first
@@ -1016,7 +1016,7 @@ a brand-new FastAPI module to the sibling `../cloud-backup` repo and
 extends CrispSorter's P11 SyncManager to talk to it over HTTP.
 Live-verified against the production VPS (deployed
 `cb-api.service` alongside the existing `vps-worker.service`; the
-two share `/root/cloudworker_state/<catalog-db>` via SQLite WAL).
+two share `<catalog-volume>/cloudworker_state/<catalog-db>` via SQLite WAL).
 
 ### What landed
 
@@ -1059,7 +1059,7 @@ two share `/root/cloudworker_state/<catalog-db>` via SQLite WAL).
     reverse proxy).  `Wants=vps-worker.service` rather than
     `Requires=` so an unrelated vps-worker failure doesn't take
     the HTTP API down.
-  - `deploy/etc/cb-api.env.example` — mode-600 env-file
+  - the cb-api env-file template (`<cb-api-env>.example`) — mode-600 env-file
     template with `CB_API_DB_PATH` + `CRISP_CB_SHARED_OWNERS`.
   - `requirements.txt` gains `fastapi`, `uvicorn`, `bcrypt`,
     `httpx` (TestClient dep).
@@ -1588,7 +1588,7 @@ See PLAN.md "P13.5 follow-ups" for the full list.  Highlights:
 
 Continuation of the same working session as the entry below.
 Closes Tier 2 of P13 against the user's live CrispLens server at
-`https://<crisplens-host>` (FastAPI v2 production instance).
+`<crisplens-host>` (FastAPI v2 production instance).
 
 | Commit | Slice | Headline |
 |--------|-------|----------|
@@ -1615,7 +1615,7 @@ CRISPLENS_PASSWORD=… crispsorter images crisplens login --user <U>
 Then the rest of the demo runs without dialog interruptions.
 Doesn't affect production users (they don't rebuild the binary).
 
-### Live demo against https://<crisplens-host>
+### Live demo against <crisplens-host>
 
 * B4 status (offline simulation):
   ```
@@ -1704,8 +1704,8 @@ fix.  Total now 311 in `tauri-app` lib (was 232 baseline).
 
 `docs/P13_Bilder_integration.md` was written before the CrispLens
 HTTP routes were inspected.  When B1 work started against the
-real server (`/Users/<user>/code/CrispLens` source +
-`https://<crisplens-host>` live instance) the protocol-types
+real server (`<crisplens-dir>` source +
+`<crisplens-host>` live instance) the protocol-types
 sketch turned out to be **aspirational across the board**.  The
 deviations were uniform between v2 (FastAPI) and v4 (Express):
 
@@ -1731,17 +1731,17 @@ The spec's risk register required: "Token storage — JSON config
 leaks credentials on backup / cloud-sync.  Use Keychain / DPAPI /
 secret-service; never write token to `tauri-plugin-store` JSON".
 
-Verified end-to-end against `https://<crisplens-host>` with the
-`<admin-user>` credentials in `/Users/<user>/code/.env`:
+Verified end-to-end against `<crisplens-host>` with the
+admin credentials in `<local-env>`:
 
 ```
-$ crispsorter images crisplens set-url 'https://<crisplens-host>' --enable
+$ crispsorter images crisplens set-url '<crisplens-host>' --enable
 $ CRISPLENS_PASSWORD=… crispsorter images crisplens login --user <admin-user>
   → "logged in as <admin-user> (admin)"
-$ security find-generic-password -s "CrispSorter.CrispLens" -a "https://<crisplens-host>"
+$ security find-generic-password -s "CrispSorter.CrispLens" -a "<crisplens-host>"
   → entry exists in macOS Keychain
 $ cat <data_dir>/crisplens.settings.json
-  → { "backend":"crisplens", "url":"https://<crisplens-host>", … }
+  → { "backend":"crisplens", "url":"<crisplens-host>", … }
     (no token / no cookie / no password — credential-free)
 $ crispsorter images crisplens logout
   → server-side cookie invalidated + Keychain entry wiped

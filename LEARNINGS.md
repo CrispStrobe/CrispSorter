@@ -87,7 +87,7 @@ rewritten.
 Cargo resolves ALL path deps (even optional ones) during `cargo metadata`, so if the sibling repo
 doesn't have the Rust crate, the build fails even when the `crispembed` feature is not enabled.
 
-**Local dev fix:** A minimal stub crate lives at `/Users/<user>/code/CrispEmbed/crispembed/`.
+**Local dev fix:** A minimal stub crate lives at `<crispembed-dir>`.
 **CI fix:** The release workflow checks out `CrispStrobe/CrispEmbed` and rewrites the Cargo.toml path.
 
 In CI/release, both repos live inside `$GITHUB_WORKSPACE`. A Python regex rewrites the path dep
@@ -283,7 +283,7 @@ only fully shareable with hf-hub-using tools — fastembed will re-download
 into its own subtree under the chosen dir.
 
 **The default eats your boot drive on macOS.** `<data_dir>/models/`
-resolves to `~/Library/Application Support/com.<user>.crispsorter/models/`
+resolves to `~/Library/Application Support/com.crispstrobe.crispsorter/models/`
 which lives on the boot volume. Five embedder model variants run ~5-10 GB;
 add a few rerankers + ASR models and you're routinely over 15 GB. Users
 with tight boot drives should set the cache dir to an external volume on
@@ -805,3 +805,19 @@ all edits, run ONE build, and make probe tests *comprehensive* (test
 every hypothesis in a single binary) rather than iterating one
 spelling/stage per build.  `cargo check` is still the fast
 inner-loop for type errors.
+
+### Bucket bulk corpora across `collection_id` — never one giant collection
+
+The cb-api backend shards its Lance index by `collection_id` (a collection
+routes to a single shard for topical locality, falling back to a content-hash
+prefix when unset).  That means a **5-figure corpus pushed under one
+`collection_id` collapses onto one hotspot shard** — a multi-minute first FTS
+build, no fanout parallelism.  Bucket it instead: `SyncManager`'s `partition.rs`
+(Stage N) already assigns volume-proportional `<root>/<group>/<k>`
+sub-collection-ids so a corpus spreads across many shards.  Route bulk ingests
+through that path; don't hand-set a single `ManifestRow.collection_id` for a
+large set.  Wire-wise nothing changes — `collection_id` flows through
+`ManifestRow`/`PullRow`/`HybridSearchHit` either way, and the server's search
+fanout is topology-aware (skips empty shards, narrows to the queried
+collection's shards) so a well-bucketed corpus searches fast.  Server-side
+detail lives in the cloud-backup repo.

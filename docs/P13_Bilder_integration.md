@@ -479,7 +479,7 @@ We're implementing P13 Bilder vertical in CrispSorter.  Plan lives at
 docs/P13_Bilder_integration.md (read it end-to-end first).
 
 The CrispLens project that Tier 2 talks to is cloned at
-/Users/<user>/code/CrispLens — use its
+<crisplens-dir> — use its
 electron-app-v4/server/routes/*.js as the authoritative endpoint
 reference.
 
@@ -496,9 +496,9 @@ appendix first; the "semantic" wording is aspirational) or B3
 The protocol-types sketch in [the `crisplens-protocol` section
 above](#crisplens-protocol-crate-workspace) was written before the
 live CrispLens routes were inspected.  When B1 work started against
-the real source (`/Users/<user>/code/CrispLens`,
+the real source (`<crisplens-dir>`,
 `routers/*.py` for v2 + `electron-app-v4/server/routes/*.js` for
-v4) and the live production server at `https://<crisplens-host>`,
+v4) and the live production server at `<crisplens-host>`,
 the sketch turned out to be **uniformly aspirational** — divergent
 from BOTH v2 and v4 in the same direction.
 
