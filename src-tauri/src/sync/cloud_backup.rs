@@ -35,6 +35,18 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Deserialize a `tags` list tolerating an explicit JSON `null`.  cb-api
+/// emits `"tags": null` for a row with no tags (its Pydantic model is
+/// `Optional[List[str]]`), and a bare `#[serde(default)]` only covers an
+/// *absent* key — an explicit `null` would otherwise fail the whole row's
+/// deserialization.  Maps `null`/absent → empty `Vec`.
+fn de_tags_null_as_empty<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(de)?.unwrap_or_default())
+}
+
 const PUSH_PATH: &str = "/api/manifest/push";
 const PULL_PATH: &str = "/api/manifest/pull";
 const EMBED_PUSH_PATH: &str = "/api/index/push-embeddings";
@@ -102,7 +114,7 @@ pub struct ManifestRow {
     /// EPUB `<dc:subject>`, DOCX keywords, etc.  Server stores as
     /// JSON-encoded text in `file_references.tags`.  Empty Vec / None
     /// both treated as "no tags".
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "de_tags_null_as_empty", skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
 
@@ -212,7 +224,7 @@ pub struct PullRow {
     /// v107 — Tags echoed back from `file_references.tags`.
     /// Server decoded the JSON-encoded column into a list; empty
     /// vec or absent both mean "no tags".
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_tags_null_as_empty")]
     pub tags: Vec<String>,
 }
 
@@ -245,7 +257,7 @@ pub struct SearchHit {
     #[serde(default)]
     pub url: Option<String>,
     /// v107 — Tags decoded from `file_references.tags` JSON.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_tags_null_as_empty")]
     pub tags: Vec<String>,
     /// Server-computed snippet — a match-centred `<mark>`-highlighted
     /// window of the body.  Populated when the hit has a body; lets a
@@ -1459,6 +1471,22 @@ mod tests {
             Some("… in <mark>hello</mark> world …"),
         );
         m.assert_async().await;   // fails if include_full_text=false wasn't sent
+    }
+
+    #[test]
+    fn search_hit_deserialises_explicit_null_tags() {
+        // cb-api emits `"tags": null` for a row with no tags; the row must
+        // still deserialise (regression — a bare #[serde(default)] fails on
+        // an explicit null, which broke live federated searches that hit a
+        // tagless row).
+        let json = r#"{"rows":[
+            {"path":"/a.txt","size_bytes":1,"sha256":"a","mtime_unix":0.0,
+             "owner_id":"o","filename":"a.txt","ext":"txt","parent_dir":"/",
+             "indexed_at":0,"score":1.0,"tags":null,"url":null}
+        ],"total":1}"#;
+        let resp: SearchResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.rows[0].tags.is_empty());
+        assert_eq!(resp.rows[0].url, None);
     }
 
     #[tokio::test]
