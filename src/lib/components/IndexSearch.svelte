@@ -158,12 +158,50 @@
         size_bytes?: number | null;
         snippet?: string | null;
         location_uri?: string | null;
+        // v106/v107 — already populated by the Rust federated builders for
+        // local + cloud_backup hits (CrispLens carries neither).
+        url?: string | null;
+        tags?: string[] | null;
     }
     let fedBackends     = $state<string[]>(['local', 'cloud_backup', 'crisplens']);
     let fedResults      = $state<FederatedHit[]>([]);
     let fedLoading      = $state(false);
     let fedSearched     = $state(false);
     let fedErrors       = $state<Record<string, string>>({});
+
+    // Tier 2 tag cloud on the federated pane — same opt-in, client-side
+    // pattern as the local pane. Tags ride the FederatedHit wire for local
+    // + cloud_backup hits (CrispLens carries none). Per-hit counts.
+    let showFedTagCloud = $state(false);
+    let fedTags = $state<Set<string>>(new Set());
+
+    const fedTagFacets = $derived.by(() => {
+        const counts = new Map<string, number>();
+        for (const h of fedResults) {
+            const seen = new Set<string>();
+            for (const t of (h.tags ?? []))
+                if (t && !t.startsWith('collection:')) seen.add(t);
+            for (const t of seen) counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
+        return Array.from(counts.entries())
+            .map(([tag, count]) => ({ tag, count }))
+            .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+    });
+
+    const displayedFedResults = $derived.by(() => {
+        if (fedTags.size === 0) return fedResults;
+        return fedResults.filter((h) => {
+            const t = new Set(h.tags ?? []);
+            for (const sel of fedTags) if (!t.has(sel)) return false;
+            return true;
+        });
+    });
+
+    function toggleFedTag(tag: string) {
+        const next = new Set(fedTags);
+        if (next.has(tag)) next.delete(tag); else next.add(tag);
+        fedTags = next;
+    }
 
     const SOURCE_ICON: Record<string, string> = {
         local: '💾',
@@ -178,6 +216,7 @@
         fedSearched = true;
         fedResults  = [];
         fedErrors   = {};
+        fedTags     = new Set();
         try {
             const r = await invoke<{ hits: FederatedHit[]; errors: Record<string, string> }>(
                 'sync_federated_search',
@@ -1304,7 +1343,19 @@
             <header class="remote-header">
                 <strong>🔀 Federated results</strong>
                 {#if fedLoading}<Loader2 size={14} class="spin" />{/if}
-                <span class="remote-meta">{fedResults.length} hit(s) across {fedBackends.join(', ')}</span>
+                <span class="remote-meta">
+                    {#if fedTags.size > 0}{displayedFedResults.length} / {/if}{fedResults.length} hit(s) across {fedBackends.join(', ')}
+                </span>
+                {#if fedTagFacets.length > 0}
+                    <button
+                        class="tagcloud-toggle"
+                        class:active={showFedTagCloud}
+                        onclick={() => showFedTagCloud = !showFedTagCloud}
+                        title="Tag-Wolke ein-/ausblenden"
+                    >
+                        <Tag size={11} /> Tags{#if fedTags.size > 0} ({fedTags.size}){/if}
+                    </button>
+                {/if}
                 <!-- backend filter checkboxes -->
                 <span class="fed-toggles">
                     {#each ['local', 'cloud_backup', 'crisplens'] as b}
@@ -1325,11 +1376,21 @@
             {#each Object.entries(fedErrors) as [k, v]}
                 <p class="error">[{k}] {v}</p>
             {/each}
+            {#if showFedTagCloud && fedTagFacets.length > 0}
+                <div class="search-tagcloud-wrap">
+                    <TagCloud
+                        facets={fedTagFacets}
+                        selected={fedTags}
+                        ontoggle={toggleFedTag}
+                        onclear={() => fedTags = new Set()}
+                    />
+                </div>
+            {/if}
             {#if fedResults.length === 0 && !fedLoading}
                 <p class="hint">No federated results — run a search or enable more backends.</p>
             {:else}
                 <ul class="remote-list">
-                    {#each fedResults as hit (hit.id)}
+                    {#each displayedFedResults as hit (hit.id)}
                         <li>
                             <div class="remote-row">
                                 <div class="remote-meta-row">
