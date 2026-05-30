@@ -146,9 +146,14 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   SQLite path; `_make_snippet` window on the Lance path).
   `?include_full_text=false` omits the body for the ~100× payload cut,
   defaulting true so the L1-ingest-from-hit flow is unaffected.  Tests:
-  2 e2e + 5 unit; full non-live suite 210 green.  *Follow-up:* update
-  the CrispSorter federated client to request `include_full_text=false`
-  + render `snippet` instead of truncating `full_text` client-side.
+  2 e2e + 5 unit; full non-live suite 210 green.  **Live-verified on the
+  production VPS (Lance path).**  Client side (CrispSorter) now closes the
+  loop: `CloudBackupClient::search` takes an `include_full_text` flag —
+  the federated legs (GUI `sync_federated_search` + CLI) request
+  `false` and render the server `snippet` (strip `<mark>`, re-highlight
+  via the XSS-safe `highlightSnippet`); `sync_cb_search` keeps `true`
+  (its hits feed L1 ingest).  `cloud_backup` wire tests 39 green; npm
+  check clean.
 - [x] **v1 `/api/search` url + tags audit** — ✅ DONE (already shipped).
   Both the Lance and SQLite SELECTs in `/api/search` already pull
   `fr.url` + `fr.tags` and decode them onto `SearchHit`; the stale

@@ -3061,7 +3061,8 @@ async fn cmd_sync_cloud_backup(
         }
 
         CloudBackupCmd::Search { query, limit } => {
-            let resp = client.search(&query, limit.clamp(1, 500))
+            // Display command — request the lean payload (snippet, no body).
+            let resp = client.search(&query, limit.clamp(1, 500), false)
                 .await.map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
@@ -3083,6 +3084,12 @@ async fn cmd_sync_cloud_backup(
                                 "  [{:>6.3}] {:<60.60}  {}",
                                 h.score, title, h.path
                             );
+                            // Strip the server's <mark> tags for plain-text
+                            // terminal output.
+                            if let Some(snip) = h.snippet.as_deref() {
+                                let plain = snip.replace("<mark>", "").replace("</mark>", "");
+                                println!("           {}", plain.trim());
+                            }
                         }
                     }
                 }
@@ -4252,12 +4259,18 @@ async fn cmd_cloud_backup_federated(
             match crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) {
                 Err(e) => { errors.insert("cloud_backup", e.to_string()); }
                 Ok(cli) => {
-                    match cli.search(&q, limit).await {
+                    // Display-only federated leg — lean payload + server snippet
+                    // (fall back to truncating full_text for older servers).
+                    match cli.search(&q, limit, false).await {
                         Err(e) => { errors.insert("cloud_backup", e.to_string()); }
                         Ok(resp) => {
                             let fed: Vec<FederatedHit> = resp.rows.into_iter()
                                 .enumerate()
-                                .map(|(i, h)| FederatedHit {
+                                .map(|(i, h)| {
+                                    let snippet = h.snippet.clone().or_else(|| {
+                                        h.full_text.as_ref().map(|t| t.chars().take(300).collect())
+                                    });
+                                    FederatedHit {
                                     id: format!("cloud_backup:{}", h.sha256),
                                     source: "cloud_backup".into(),
                                     score: h.score,
@@ -4271,11 +4284,11 @@ async fn cmd_cloud_backup_federated(
                                     language: h.language,
                                     sha256: Some(h.sha256),
                                     size_bytes: Some(h.size_bytes),
-                                    snippet: h.full_text.map(|t| t.chars().take(300).collect()),
+                                    snippet,
                                     location_uri: None,
                                     url: h.url,
                                     tags: if h.tags.is_empty() { None } else { Some(h.tags) },
-                                })
+                                }})
                                 .collect();
                             lists.push(fed);
                         }
