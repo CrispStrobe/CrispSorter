@@ -769,6 +769,33 @@ the serde default.  (Same trap applies to any struct that mixes
 result smells wrong, check the page limit before suspecting the query
 engine.
 
+### `#[serde(default)]` does NOT cover an explicit `null` on the wire
+
+`#[serde(default)]` supplies a value only when a key is **absent**.  When
+the key is present with an explicit `null`, serde still tries to
+deserialize `null` into the target type — and for a non-`Option` like
+`Vec<String>` that **fails the whole struct**.  cb-api's Pydantic models
+emit `Optional[List[str]]` → `"tags": null` for a row with no tags, so
+`cloud_backup::SearchHit { #[serde(default)] tags: Vec<String> }` parsed
+fine for tagged rows but blew up the *entire* federated response the
+moment one tagless row appeared ("search: parse body").  Local-only and
+mock tests never caught it — only a live search over the wallabag corpus
+(one untagged article) tripped it.
+
+**Fix:** a tolerant deserializer that maps `null`/absent → default:
+```rust
+fn de_tags_null_as_empty<'de, D>(de: D) -> Result<Vec<String>, D::Error>
+where D: serde::Deserializer<'de> {
+    Ok(Option::<Vec<String>>::deserialize(de)?.unwrap_or_default())
+}
+// #[serde(default, deserialize_with = "de_tags_null_as_empty")]
+```
+Apply it to every non-`Option` field that a `null`-emitting backend can
+send (here: `ManifestRow`/`PullRow`/`SearchHit::tags`).  Rule of thumb:
+if the producer's schema says `Optional[...]` but the Rust side isn't
+`Option<...>`, you need this — `#[serde(default)]` alone is a latent
+"one bad row poisons the batch" bug.
+
 ### The crispsorter target dir can live on a slow external volume
 
 On this machine the Cargo target dir resolves to
