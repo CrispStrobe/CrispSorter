@@ -1407,7 +1407,11 @@
                                     <div class="remote-path">{hit.path}</div>
                                 {/if}
                                 {#if hit.snippet}
-                                    <div class="remote-snippet">{hit.snippet.slice(0, 240)}{hit.snippet.length > 240 ? '…' : ''}</div>
+                                    <!-- The cb-api snippet may carry server-side
+                                         <mark> tags; strip them and re-highlight
+                                         client-side via the XSS-safe path
+                                         (highlightSnippet HTML-escapes first). -->
+                                    <div class="remote-snippet">{@html highlightSnippet(hit.snippet.replace(/<\/?mark>/g, ''), query)}</div>
                                 {/if}
                             </div>
                         </li>

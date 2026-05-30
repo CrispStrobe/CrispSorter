@@ -839,7 +839,9 @@ pub async fn sync_cb_search(
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let cli = make_cb_client(&state).await?;
-    let resp = cli.search(&q, limit.unwrap_or(50).clamp(1, 500))
+    // include_full_text=true: this command's hits can be lifted straight
+    // into the local L1 store, where the body is the ingest payload.
+    let resp = cli.search(&q, limit.unwrap_or(50).clamp(1, 500), true)
         .await.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "rows":  resp.rows,
@@ -1375,10 +1377,16 @@ pub async fn sync_federated_search(
             Ok(c)  => c,
             Err(e) => return (Vec::new(), Some(format!("cloud_backup: client error: {e}"))),
         };
-        match cli.search(&q, limit).await {
+        // Federated search is display-only — request the lean payload and
+        // render the server-computed snippet (fall back to a client-side
+        // truncation of full_text for older servers that don't send one).
+        match cli.search(&q, limit, false).await {
             Err(e) => (Vec::new(), Some(format!("cloud_backup: {e}"))),
             Ok(resp) => {
                 let fed: Vec<FederatedHit> = resp.rows.into_iter().enumerate().map(|(i, h)| {
+                    let snippet = h.snippet.clone().or_else(|| {
+                        h.full_text.as_ref().map(|t| t.chars().take(300).collect())
+                    });
                     FederatedHit {
                         id: format!("cloud_backup:{}", h.sha256),
                         source: "cloud_backup".into(),
@@ -1393,7 +1401,7 @@ pub async fn sync_federated_search(
                         language: h.language,
                         sha256: Some(h.sha256),
                         size_bytes: Some(h.size_bytes),
-                        snippet: h.full_text.map(|t| t.chars().take(300).collect()),
+                        snippet,
                         location_uri: None,
                         url: h.url,
                         tags: if h.tags.is_empty() { None } else { Some(h.tags) },

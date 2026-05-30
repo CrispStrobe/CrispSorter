@@ -247,6 +247,12 @@ pub struct SearchHit {
     /// v107 — Tags decoded from `file_references.tags` JSON.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Server-computed snippet — a match-centred `<mark>`-highlighted
+    /// window of the body.  Populated when the hit has a body; lets a
+    /// display client render a result row without the full `full_text`
+    /// (pair with `include_full_text=false` to drop the body off the wire).
+    #[serde(default)]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1037,7 +1043,17 @@ impl CloudBackupClient {
         Ok(())
     }
 
-    pub async fn search(&self, q: &str, limit: usize) -> Result<SearchResponse> {
+    /// `include_full_text=false` tells the server to omit the heavy
+    /// `full_text` body from each hit and rely on the `snippet` field —
+    /// the ~100x payload cut for display-only callers.  Pass `true` when
+    /// the result will be lifted into the local L1 store (the body is the
+    /// ingest payload there).
+    pub async fn search(
+        &self,
+        q: &str,
+        limit: usize,
+        include_full_text: bool,
+    ) -> Result<SearchResponse> {
         // Percent-encode the query — unlike the embedding vec
         // (numeric-only), user input here can contain `&` / `#` /
         // spaces / etc that break a naive query string.
@@ -1052,8 +1068,8 @@ impl CloudBackupClient {
             })
             .collect();
         let url = format!(
-            "{}{}?q={}&limit={}",
-            self.base_url, SEARCH_PATH, encoded_q, limit
+            "{}{}?q={}&limit={}&include_full_text={}",
+            self.base_url, SEARCH_PATH, encoded_q, limit, include_full_text
         );
         let resp = self.client
             .get(url)
@@ -1406,12 +1422,43 @@ mod tests {
             .create_async()
             .await;
         let cli = client_for(&server);
-        let resp = cli.search("hello", 50).await.unwrap();
+        let resp = cli.search("hello", 50, true).await.unwrap();
         assert_eq!(resp.total, 1);
         assert_eq!(resp.rows[0].path, "/a.txt");
         assert_eq!(resp.rows[0].full_text.as_deref(), Some("hello world"));
         assert!((resp.rows[0].score - 2.5).abs() < 1e-6);
         m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn search_lean_sends_include_full_text_false_and_parses_snippet() {
+        // Display callers pass include_full_text=false; the server then
+        // omits full_text and ships a `snippet` instead.  Assert both the
+        // outbound flag and that the new field deserialises.
+        let mut server = Server::new_async().await;
+        let body = r#"
+            {"rows":[
+                {"path":"/a.txt","size_bytes":10,"sha256":"a",
+                 "mtime_unix":1.0,"owner_id":"o","filename":"a.txt",
+                 "ext":"txt","parent_dir":"/","full_text":null,
+                 "snippet":"… in <mark>hello</mark> world …",
+                 "indexed_at":100,"score":2.5}
+            ],"total":1}
+        "#;
+        let m = server.mock("GET", SEARCH_PATH)
+            .match_query(Matcher::Regex("include_full_text=false".into()))
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let resp = cli.search("hello", 50, false).await.unwrap();
+        assert_eq!(resp.rows[0].full_text, None);
+        assert_eq!(
+            resp.rows[0].snippet.as_deref(),
+            Some("… in <mark>hello</mark> world …"),
+        );
+        m.assert_async().await;   // fails if include_full_text=false wasn't sent
     }
 
     #[tokio::test]
@@ -1425,7 +1472,7 @@ mod tests {
             .create_async()
             .await;
         let cli = client_for(&server);
-        let _ = cli.search(r#"foo "bar""#, 10).await.unwrap();
+        let _ = cli.search(r#"foo "bar""#, 10, true).await.unwrap();
         m.assert_async().await;
     }
 
@@ -1439,7 +1486,7 @@ mod tests {
             .create_async()
             .await;
         let cli = client_for(&server);
-        let err = cli.search("\"", 10).await.unwrap_err();
+        let err = cli.search("\"", 10, true).await.unwrap_err();
         assert!(format!("{err}").contains("HTTP 400"));
         m.assert_async().await;
     }
@@ -2011,7 +2058,7 @@ mod tests {
             .create_async()
             .await;
         let cli = client_for(&server);
-        let resp = cli.search("query", 5).await.unwrap();
+        let resp = cli.search("query", 5, true).await.unwrap();
         assert_eq!(resp.rows.len(), 1);
         assert_eq!(
             resp.rows[0].url.as_deref(),
@@ -2136,7 +2183,7 @@ mod live_tests {
             .expect("manifest_push with full_text");
         assert!(pushed.accepted >= 1);
 
-        let hits = cli.search(&token, 50).await.expect("search");
+        let hits = cli.search(&token, 50, true).await.expect("search");
         let found = hits.rows.iter().find(|h| h.sha256 == sha);
         assert!(
             found.is_some(),
@@ -2217,7 +2264,7 @@ mod live_tests {
         // This is the "search CrispSorter files on cloud-backup"
         // claim: a row pushed from one client surfaces by body text
         // for any client with a key in the same owner scope.
-        let hits = cli.search(&unique_token, 50).await.expect("search");
+        let hits = cli.search(&unique_token, 50, true).await.expect("search");
         let found = hits.rows.iter().find(|h| h.sha256 == sha);
         assert!(
             found.is_some(),
