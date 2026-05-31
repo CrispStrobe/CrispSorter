@@ -821,3 +821,12 @@ large set.  Wire-wise nothing changes — `collection_id` flows through
 fanout is topology-aware (skips empty shards, narrows to the queried
 collection's shards) so a well-bucketed corpus searches fast.  Server-side
 detail lives in the cloud-backup repo.
+
+**Storage tiering (server-side, for consistency):** the cb-api keeps a hot/cold
+split — the *searchable index* (extracted text + FTS + vectors) lives on
+**low-latency block storage** because that's the query hot path, while the raw
+file **bytes** (the bulk) live on cheap object/bulk storage and are read only on
+download.  The searchable index is only ~10–15 % of a corpus (text, not raw
+bytes), so it stays cheap to host on fast storage even at multi-TB scale; that's
+what keeps federated search fast.  An index on a network filesystem is the
+classic trap — capacity fits via mmap, but every read is a network round-trip.
