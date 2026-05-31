@@ -80,7 +80,7 @@ if [[ ${#SHARED_LIBS[@]} -gt 0 ]]; then
     # cargo() wrapper documented in the README under "Shared cargo
     # target-dir on an external volume":
     #   1. honour $CARGO_TARGET_DIR if the caller already set it,
-    #   2. otherwise route to <external-volume>/code/cargo-target/<reponame>
+    #   2. otherwise route to /Volumes/External/code/cargo-target/<reponame>
     #      when the external volume is mounted (saves boot-disk space),
     #   3. otherwise fall back to $PROJECT_ROOT/target/ (cargo default).
     #
@@ -90,8 +90,8 @@ if [[ ${#SHARED_LIBS[@]} -gt 0 ]]; then
     # FailedToLoad-libcrispembed at launch.
     if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
         TARGET_DIR="$CARGO_TARGET_DIR"
-    elif [[ -d <external-volume> ]]; then
-        TARGET_DIR="<external-volume>/code/cargo-target/$(basename "$PROJECT_ROOT")"
+    elif [[ -d /Volumes/External ]]; then
+        TARGET_DIR="/Volumes/External/code/cargo-target/$(basename "$PROJECT_ROOT")"
     else
         TARGET_DIR="$PROJECT_ROOT/target"
     fi

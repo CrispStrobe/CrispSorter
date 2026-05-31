@@ -75,7 +75,7 @@ fn resolve_model_dir() -> PathBuf {
     // user's "external SSD with all models" pattern just works.
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home)
-            .join("Library/Application Support/com.<user>.crispsorter/models/ocrs");
+            .join("Library/Application Support/com.crispstrobe.crispsorter/models/ocrs");
     }
     PathBuf::from("./ocrs-models")
 }

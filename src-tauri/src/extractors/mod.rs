@@ -623,7 +623,7 @@ fn run_batch_translation(
 fn batch_translate_cache_dir() -> std::path::PathBuf {
     let base = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .map(|h| h.join("Library/Application Support/com.<user>.crispsorter"))
+        .map(|h| h.join("Library/Application Support/com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/crispsorter"));
     let dir = base.join("models");
     let _ = std::fs::create_dir_all(&dir);
@@ -633,7 +633,7 @@ fn batch_translate_cache_dir() -> std::path::PathBuf {
 fn batch_translate_cache_dir() -> std::path::PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(std::path::PathBuf::from)
-        .map(|a| a.join("com.<user>.crispsorter"))
+        .map(|a| a.join("com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| std::path::PathBuf::from("C:\\Temp\\crispsorter"));
     let dir = base.join("models");
     let _ = std::fs::create_dir_all(&dir);
@@ -648,7 +648,7 @@ fn batch_translate_cache_dir() -> std::path::PathBuf {
                 .map(std::path::PathBuf::from)
                 .map(|h| h.join(".local/share"))
         })
-        .map(|d| d.join("com.<user>.crispsorter"))
+        .map(|d| d.join("com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp/crispsorter"));
     let dir = base.join("models");
     let _ = std::fs::create_dir_all(&dir);

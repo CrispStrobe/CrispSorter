@@ -15,7 +15,7 @@
 #
 # Env:
 #   CRISPSORTER_TARGET_VOLUME — where target/ should symlink to.
-#                               Default: <external-volume>/code/crispsorter-target
+#                               Default: /Volumes/External/code/crispsorter-target
 #                               Set to "" to skip the symlink check entirely
 #                               (cargo writes to a real local target/ instead).
 #
@@ -30,7 +30,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_TAURI="$REPO_ROOT/src-tauri"
 BUILD_DIR="$REPO_ROOT/build"
-TARGET_VOLUME="${CRISPSORTER_TARGET_VOLUME:-<external-volume>/code/crispsorter-target}"
+TARGET_VOLUME="${CRISPSORTER_TARGET_VOLUME:-/Volumes/External/code/crispsorter-target}"
 
 
 # ── Flag parsing ────────────────────────────────────────────────────────

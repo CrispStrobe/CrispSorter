@@ -350,14 +350,14 @@ async fn mt_cache_dir(state: &State<'_, AppState>) -> Result<PathBuf> {
 fn default_app_data_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|h| h.join("Library/Application Support/com.<user>.crispsorter"))
+        .map(|h| h.join("Library/Application Support/com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| PathBuf::from("/tmp/crispsorter"))
 }
 #[cfg(target_os = "windows")]
 fn default_app_data_dir() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
-        .map(|a| a.join("com.<user>.crispsorter"))
+        .map(|a| a.join("com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| PathBuf::from("C:\\Temp\\crispsorter"))
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -369,7 +369,7 @@ fn default_app_data_dir() -> PathBuf {
                 .map(PathBuf::from)
                 .map(|h| h.join(".local/share"))
         })
-        .map(|d| d.join("com.<user>.crispsorter"))
+        .map(|d| d.join("com.crispstrobe.crispsorter"))
         .unwrap_or_else(|| PathBuf::from("/tmp/crispsorter"))
 }
 

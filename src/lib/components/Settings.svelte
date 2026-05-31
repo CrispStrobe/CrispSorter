@@ -3136,7 +3136,7 @@
 
             <!-- P13.7 Step 5 — cloud-backup HTTP sync.  Talks to a
                  FastAPI module on a VPS that owns the same
-                 <catalog-db> vps_worker.py manages.  URL +
+                 catalog DB vps_worker.py manages.  URL +
                  toggles live in IndexConfig (JSON-safe); API key
                  goes to the OS keychain via sync_cb_set_token. -->
             <div class="section-card">

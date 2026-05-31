@@ -27,7 +27,7 @@ src-tauri/target
 src-tauri/gen
 src-tauri/bin
 
-# Local per-repo cargo config — points target-dir at <external-volume> so
+# Local per-repo cargo config — points target-dir at /Volumes/External so
 # tauri-cli child processes also land artifacts on the SSD (the ~/.zshenv
 # `cargo()` wrapper only catches interactive shell invocations). Paths
 # inside are absolute and machine-specific, so don't ship.

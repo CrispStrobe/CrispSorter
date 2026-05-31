@@ -204,14 +204,14 @@ fn default_asr_cache_dir() -> std::path::PathBuf {
         {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|h| h.join("Library/Application Support/com.<user>.crispsorter"))
+                .map(|h| h.join("Library/Application Support/com.crispstrobe.crispsorter"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/crispsorter"))
         }
         #[cfg(target_os = "windows")]
         {
             std::env::var_os("APPDATA")
                 .map(PathBuf::from)
-                .map(|a| a.join("com.<user>.crispsorter"))
+                .map(|a| a.join("com.crispstrobe.crispsorter"))
                 .unwrap_or_else(|| PathBuf::from("C:\\Temp\\crispsorter"))
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -223,7 +223,7 @@ fn default_asr_cache_dir() -> std::path::PathBuf {
                         .map(PathBuf::from)
                         .map(|h| h.join(".local/share"))
                 })
-                .map(|d| d.join("com.<user>.crispsorter"))
+                .map(|d| d.join("com.crispstrobe.crispsorter"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/crispsorter"))
         }
     };

@@ -1078,13 +1078,13 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let pdf_extract_ok = true;
     // Check if the default embedder model (BGE-M3) is already cached.
     let model_cache = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.<user>.crispsorter/models"))
+        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
         .unwrap_or_default();
     let embedder_cached = model_cache.exists() &&
         std::fs::read_dir(&model_cache).map(|d| d.count() > 0).unwrap_or(false);
     let lance_dir = std::env::var_os("HOME").map(|h| {
         std::path::PathBuf::from(h)
-            .join("Library/Application Support/com.<user>.crispsorter/lance")
+            .join("Library/Application Support/com.crispstrobe.crispsorter/lance")
     });
     match out {
         OutFormat::Json => {
@@ -1532,14 +1532,14 @@ fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
             .ok_or_else(|| "$HOME not set".to_string())?;
         return Ok(home
             .join("Library/Application Support")
-            .join("com.<user>.crispsorter"));
+            .join("com.crispstrobe.crispsorter"));
     }
     #[cfg(target_os = "windows")]
     {
         let appdata = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .ok_or_else(|| "%APPDATA% not set".to_string())?;
-        return Ok(appdata.join("com.<user>.crispsorter"));
+        return Ok(appdata.join("com.crispstrobe.crispsorter"));
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -1550,7 +1550,7 @@ fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
                     .join(".local/share")
             });
-        return Ok(base.join("com.<user>.crispsorter"));
+        return Ok(base.join("com.crispstrobe.crispsorter"));
     }
 }
 

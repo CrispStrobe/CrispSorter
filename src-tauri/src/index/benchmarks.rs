@@ -60,7 +60,7 @@ async fn benchmark_models() {
 async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
     // Use the actual app data dir path to share the model cache.
     let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-        .join("Library/Application Support/com.<user>.crispsorter/models");
+        .join("Library/Application Support/com.crispstrobe.crispsorter/models");
     let data_dir = TempDir::new()?;
 
     // 1. Initialisation
@@ -277,7 +277,7 @@ async fn embedding_quality_metrics() {
     ];
 
     let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-        .join("Library/Application Support/com.<user>.crispsorter/models");
+        .join("Library/Application Support/com.crispstrobe.crispsorter/models");
 
     // All Octen variants now support dynamic batch (INT4 batch=1 causal-mask was
     // fixed by patching dim_value=1 → dim_param='batch' in the ONNX value_info proto).
