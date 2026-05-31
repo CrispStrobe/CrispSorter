@@ -822,11 +822,11 @@ fanout is topology-aware (skips empty shards, narrows to the queried
 collection's shards) so a well-bucketed corpus searches fast.  Server-side
 detail lives in the cloud-backup repo.
 
-**Storage tiering (server-side, for consistency):** the cb-api keeps a hot/cold
-split — the *searchable index* (extracted text + FTS + vectors) lives on
-**low-latency block storage** because that's the query hot path, while the raw
-file **bytes** (the bulk) live on cheap object/bulk storage and are read only on
-download.  The searchable index is only ~10–15 % of a corpus (text, not raw
-bytes), so it stays cheap to host on fast storage even at multi-TB scale; that's
-what keeps federated search fast.  An index on a network filesystem is the
-classic trap — capacity fits via mmap, but every read is a network round-trip.
+**FTS freshness (server-side, for consistency):** the cb-api search index is a
+LanceDB FTS index. A LanceDB FTS index does **not** auto-update on writes, and a
+**stale** index (e.g. after a compaction that rewrites data fragments) silently
+degrades to a full-table-scan per query — the single biggest server-side search
+footgun. The cb-api rebuilds the FTS index after compaction/bulk-ingest; if
+federated search ever feels suddenly slow, a stale FTS index is the first
+suspect (server-side detail in the cloud-backup repo). Storage placement of the
+index is *not* the lever — a live inverted index reads only small postings.
