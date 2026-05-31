@@ -822,6 +822,18 @@ fanout is topology-aware (skips empty shards, narrows to the queried
 collection's shards) so a well-bucketed corpus searches fast.  Server-side
 detail lives in the cloud-backup repo.
 
+**Scope federated search to LEAF bucket ids for the fast server path.** The
+cb-api resolves an *exact* (leaf) `collection_id` like `<root>/<k>` straight to
+its one shard with no index scan; a bare *parent* id like `<root>` is correct
+but forces the server to scan every shard's collection set to find the buckets
+(a multi-second cost over network storage at scale).  So when the federated
+client (`sync cloud-backup hybrid-search --collection-ids …` /
+`SyncManager`'s search push-down) knows the concrete `<root>/<k>` ids a corpus
+was bucketed into, pass those rather than the parent — same results, far less
+server latency.  The leaf ids are exactly what `partition.rs` emits at ingest,
+so they're already available client-side.  (Server fix: cloud-backup
+`target_prefixes` deterministic leaf-routing, 2026-05-31.)
+
 **FTS freshness (server-side, for consistency):** the cb-api search index is a
 LanceDB FTS index. A LanceDB FTS index does **not** auto-update on writes, and a
 **stale** index (e.g. after a compaction that rewrites data fragments) silently

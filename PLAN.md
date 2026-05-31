@@ -135,11 +135,17 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   needed zero Rust changes.  *Follow-up:* URL/settings persistence of the
   selected tags across launches.
 - [ ] **Server-side embeddings shipped with pulls** so the local
-  embedder doesn't have to re-run.  Today: cb-api computes vectors
-  via fastembed, CrispSorter computes them again via ONNX/GGUF.
-  Same model = same vector; ship it via the wire so pulled rows
-  are vector-searchable locally without an embed pass.  Requires
-  embedding-model name reconciliation between the two stores.
+  embedder doesn't have to re-run.  ⚠️ **Blocked upstream:** a
+  2026-05-31 live audit found the cb-api `documents.embedding`
+  column is **NULL across the corpus** — the server vector arm is
+  dormant and `/api/v2/index/search` runs FTS-only
+  (`used_vector:false`).  So today cb-api does *not* compute/store
+  vectors for the bulk corpus; the prerequisite is a server-side
+  embed-backfill (tracked in the cloud-backup PLAN).  Once vectors
+  exist server-side: ship them via the wire so pulled rows are
+  vector-searchable locally without a re-embed pass.  Requires
+  embedding-model-name reconciliation between the two stores
+  (same model = same vector).
 - [x] **`/api/search` returns a `snippet` field** — ✅ DONE
   (cloud-backup `feat/api-search-snippet`).  `SearchHit.snippet` is a
   match-centred `<mark>`-highlighted window (FTS5 `snippet()` on the
@@ -173,6 +179,8 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 - [ ] **Vector embeddings for the wallabag bodies** — once #1
   lands, the natural next step is semantic search ("articles about
   how schools handle bullying") via the existing embedder backed
-  by cb-api's chunks-and-bodies storage.
+  by cb-api's chunks-and-bodies storage.  (Same upstream blocker as
+  Tier 2 above: the cb-api `embedding` column is currently
+  unpopulated — confirmed live 2026-05-31.)
 
 (For per-version changelog and shipped phase specs, see [HISTORY.md](HISTORY.md).)

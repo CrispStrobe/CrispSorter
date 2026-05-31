@@ -9,6 +9,41 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-05-31 — Cross-stack live audit: cb-api scoped-search fix + scaling review
+
+A live end-to-end audit of the production cloud-backup deployment that backs the
+federated search legs.  Verdict: the stack is **functionally sound** — manifest
+push / byte upload / download round-trips, owner-scoping, Stage W body-store, and
+FTS are all live and correct — but the server-side scoped-search path had an
+algorithmic cost that made collection scoping pointless, and there are clear
+scaling gaps to track.
+
+Fixes landed in the **cloud-backup** repo (server side; CrispSorter wire
+unchanged):
+
+- **Deterministic leaf-routing fast path** — a federated query scoped to an
+  exact `<collection>/<k>` id now resolves to its one shard with no
+  all-shard metadata scan (measured ~1.76 s → ~0.009 s).  CrispSorter clients
+  should scope to the **leaf** bucket ids `partition.rs` already emits (not the
+  bare parent) to hit it — see LEARNINGS "Scope federated search to LEAF bucket
+  ids".
+- **`shards_queried` telemetry** corrected (was reporting total shard count).
+- **`file_references(file_hash)` indexed** — removes an O(n²) join / bulk-update
+  cost that matters as the catalog grows.
+- Drained shard dirs pruned (cold topology refresh ~2.1 s → ~1.2 s).
+
+Scaling review (toward a multi-TB corpus): the metadata-only catalog scales on a
+modest WAL-safe block volume; blobs + Lance index are capacity-bound on the bulk
+share (size it for corpus + bodies + index + vectors together); search latency
+scales **only** with leaf-scoping plus a right-sized host (the live HTTP floor is
+currently host-contention, not the search path — in-process scoped search is
+~0.2 s).  Two functional gaps remain open: **server-side embeddings are
+unpopulated** (the cb-api vector arm is dormant → `/api/v2/index/search` is
+FTS-only; blocks PLAN Tier 2 "ship vectors with pulls" and Tier 3 "semantic
+search over the read-later corpus"), and true positional phrase matching still
+needs a positional FTS index.  Full server-side detail in the cloud-backup
+repo's HISTORY/LEARNINGS/PLAN (2026-05-31).
+
 ## Session log — 2026-05-22 — Batch session persistence → SQLite (fixes data-loss + UI-hang at scale)
 
 Replaced the batch-session persistence layer — the entire batch stored as a
