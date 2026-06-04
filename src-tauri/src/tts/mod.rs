@@ -68,6 +68,25 @@ pub async fn spawn_speak(text: &str) -> Result<Child> {
         c
     };
 
+    // On Android/iOS, native TTS is accessed via platform APIs (JNI /
+    // objc2), not subprocess spawning.  For now, echo the text to
+    // /dev/null — the real implementation will call Android's
+    // TextToSpeech or iOS's AVSpeechSynthesizer via the mobile_fs
+    // bridge.  TODO: wire native mobile TTS.
+    #[cfg(target_os = "android")]
+    let mut cmd = {
+        let mut c = Command::new("echo");
+        c.arg(text).stdout(Stdio::null()).stderr(Stdio::null());
+        c
+    };
+
+    #[cfg(target_os = "ios")]
+    let mut cmd = {
+        let mut c = Command::new("echo");
+        c.arg(text).stdout(Stdio::null()).stderr(Stdio::null());
+        c
+    };
+
     let mut child = cmd.spawn().context("TTS: failed to spawn native synth")?;
 
     if let Some(mut stdin) = child.stdin.take() {

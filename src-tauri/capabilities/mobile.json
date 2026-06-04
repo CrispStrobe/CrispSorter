@@ -12,6 +12,8 @@
     "dialog:allow-ask",
     "dialog:allow-confirm",
     "store:default",
+    "shell:default",
+    "process:default",
     "fs:default",
     "fs:read-all",
     "fs:write-all",
