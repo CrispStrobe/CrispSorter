@@ -866,8 +866,32 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PROTOC: /usr/bin/protoc
+      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+      CRISPEMBED_REF: v0.6.0
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      CRISPASR_REF: v0.6.6
+      CRISPDOCX_REPO: CrispStrobe/crisp-docx
+      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
     steps:
       - uses: actions/checkout@v4
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: _sibling/CrispEmbed
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+      - name: Check out sibling crisp-docx
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: _sibling/crisp-docx
 
       - name: Install system deps
         run: |
@@ -938,8 +962,33 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-14
+    env:
+      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+      CRISPEMBED_REF: v0.6.0
+      CRISPASR_REPO: CrispStrobe/CrispASR
+      CRISPASR_REF: v0.6.6
+      CRISPDOCX_REPO: CrispStrobe/crisp-docx
+      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
     steps:
       - uses: actions/checkout@v4
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: _sibling/CrispEmbed
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+      - name: Check out sibling crisp-docx
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: _sibling/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
         with:
