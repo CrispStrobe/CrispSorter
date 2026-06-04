@@ -893,6 +893,18 @@ jobs:
           ref: ${{ env.CRISPDOCX_REF }}
           path: _sibling/crisp-docx
 
+      - name: Rewrite sibling path deps for CI layout
+        run: |
+          python3 -c "
+          import re, pathlib
+          p = pathlib.Path('src-tauri/Cargo.toml')
+          s = p.read_text()
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
+          p.write_text(s)
+          "
+
       - name: Install system deps
         run: |
           sudo apt-get update -qq
@@ -1000,6 +1012,18 @@ jobs:
 
       - name: Install npm deps
         run: npm ci
+
+      - name: Rewrite sibling path deps for CI layout
+        run: |
+          python3 -c "
+          import re, pathlib
+          p = pathlib.Path('src-tauri/Cargo.toml')
+          s = p.read_text()
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
+          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
+          p.write_text(s)
+          "
 
       - name: Install protoc
         run: brew install protobuf
