@@ -58,12 +58,10 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 ### P3.5 — CrispEmbed / CrispASR bundling
 
 - [ ] **Phase 2 — Linux + Windows** (~8-12 h, separate session) — RPATH / DLL colocation; each platform needs 1-2 release iterations. Opening prompt: `handover-prompts/session-prompt-crispembed-ci-matrix.md` (local-only — see .gitignore).
-- [ ] **Phase 3 — mobile** (UN-DEFERRED, 2026-06-04) — Extends the existing CrispSorter Tauri 2 app to Android/iOS. Both CrispEmbed and CrispASR already have `build-ios.sh` (xcframework + Metal) and `build-android.sh` (NDK + Vulkan). Flutter FFI packages published (`crispembed` v0.3.0, `crispasr` v0.5.15). Sibling apps prove the pattern: CrisperWeaver, CrispCalc, CrispCloud all run on iOS+Android with FFI native libs.
-  - **Approach**: Tauri mobile within the existing repo (not a separate Flutter app). Desktop-only code (sidecar spawning, folder watcher, `tauri-plugin-shell`, `tauri-plugin-process`, `mistralrs`) gated behind `--features desktop`. Mobile uses cloud LLM providers only for the batch sort workflow. On-device ASR/embedding optional (whisper-base 244 MB, all-MiniLM-L6-v2 90 MB).
-  - **Scope**: Sort files within a user-selected folder (e.g. Downloads) on your phone — scan → extract text → cloud LLM metadata → Author/Year/Title sort → move into subfolders.
-  - **Remaining work**: Responsive UI (BatchReview card layout for mobile); Android SAF file access (reuse CrispCloud's `SAFHandler.kt`); iOS security-scoped bookmarks; native lib bundling into APK `jniLibs/` / xcframework.  OpenSSL cross-compilation solved via `openssl = { features = ["vendored"] }` — compiles from source for any target.
-  - **Done** (2026-06-04): `tauri android init` generated; `Cargo.toml` desktop feature flag; `build.rs` mobile skip; `lib.rs` conditional compilation; `capabilities/mobile.json`; `+page.svelte` responsive bottom-tab layout; JDK 17 + NDK 26.3 on `/mnt/volume1`.
-  - **Key files modified**: `Cargo.toml` (`desktop` feature flag), `build.rs` (skip rpath on mobile), `lib.rs` (`#[cfg(feature = "desktop")]` on sidecars/watcher/tts/mistralrs), `capabilities/mobile.json` (no shell/process), `tauri.conf.json` (removed fixed window size).
+- [x] **Phase 3 — mobile** ✅ SHIPPED v0.4.0 (2026-06-04).  Full feature parity on Android aarch64 + iOS.  Desktop-only code behind `--features desktop`; vendored OpenSSL; lance-linalg Android patch; responsive UI; CI jobs for APK + IPA.  See [HISTORY.md](HISTORY.md) 2026-06-04 session log.
+  - [ ] **Android SAF handler** — port CrispCloud's `SAFHandler.kt` for Downloads folder access via `DocumentsContract`.
+  - [ ] **iOS security-scoped bookmarks** — Swift bridge for persistent folder access via `startAccessingSecurityScopedResource()`.
+  - [ ] **Native lib bundling** — CrispEmbed/CrispASR `.so` into APK `jniLibs/arm64-v8a/`; xcframework into iOS Xcode project.  Build scripts exist in both sibling repos (`build-android.sh`, `build-ios.sh`).
 
 ### P5 — Future / planned
 

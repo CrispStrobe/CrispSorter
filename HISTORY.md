@@ -9,6 +9,64 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-04 — Phase 3: Android + iOS mobile support (v0.4.0)
+
+Extended CrispSorter to Android (aarch64) and iOS via Tauri 2 mobile targets.
+The entire Rust workspace — LanceDB, Tantivy, fastembed, ort, OpenSSL,
+pdf-extract, OCR, rusqlite — cross-compiles for `aarch64-linux-android` with
+100% feature parity.  Zero features removed; the mobile build carries the
+same index, search, batch sort, sync, and translation pipelines as desktop.
+
+### Architecture decisions
+
+- **Tauri mobile, not a separate Flutter app.** The user asked to keep it as
+  one project.  The `#[cfg_attr(mobile, tauri::mobile_entry_point)]` was
+  already in `lib.rs`; Tauri 2 plugins are all mobile-compatible.
+- **`desktop` feature flag** gates code that fundamentally can't run on
+  mobile: subprocess spawning (sidecars for Ollama/llama.cpp/MLX, TTS via
+  `say`/`espeak`), `notify` folder watcher (no inotify on Android), and
+  `mistralrs` (local LLM inference via the sidecar model).
+- **Vendored OpenSSL** (`openssl = { features = ["vendored"] }`) — the ML
+  stack (fastembed → ort → ureq → native-tls, hf-hub, lancedb) pulls
+  `openssl-sys` transitively.  Vendoring compiles OpenSSL from source for
+  any cross-compilation target.
+- **lance-linalg Android patch** (`patches/lance-linalg/`) — upstream's
+  `build.rs` checks `target_os == "linux"` for aarch64 NEON but doesn't
+  match `"android"`.  One-line fix: `target_os == "linux" || target_os ==
+  "android"`.
+- **Platform-scoped capabilities** — `default.json` carries `shell:default` +
+  `process:default` scoped to `["linux", "macOS", "windows"]`; `mobile.json`
+  omits them, scoped to `["iOS", "android"]`.
+
+### Changes landed
+
+| File | Change |
+|---|---|
+| `Cargo.toml` (workspace) | `[patch.crates-io]` lance-linalg Android fix |
+| `src-tauri/Cargo.toml` | `desktop` feature flag; vendored OpenSSL; optional deps for notify, shell, process, mistralrs |
+| `src-tauri/build.rs` | Skip rpath emission on Android/iOS |
+| `src-tauri/src/lib.rs` | `#[cfg(feature = "desktop")]` on 12+ commands, `AppState` fields, plugin registration; dual `generate_handler!` (desktop full / mobile trimmed) |
+| `src-tauri/src/bg_ingest/mod.rs` | Watcher references gated behind desktop |
+| `src-tauri/capabilities/default.json` | `"platforms": ["linux", "macOS", "windows"]` |
+| `src-tauri/capabilities/mobile.json` | New — no shell/process, scoped to `$APPDATA` + `$DOWNLOAD` |
+| `src-tauri/tauri.conf.json` | Removed hardcoded 1280×800; added `iOS.minimumSystemVersion` |
+| `src/routes/+page.svelte` | Mobile bottom tab bar; responsive CSS breakpoints |
+| `src/lib/components/BatchReview.svelte` | Stacked layout on mobile, touch-sized buttons |
+| `src/lib/components/Settings.svelte` | Horizontal scrollable tab bar on phone |
+| `src/lib/components/Chat.svelte` | Hidden sidebar on phone |
+| `src/lib/components/IndexIngest.svelte` | Scrollable tabs on phone |
+| `src/lib/components/Translate.svelte` | Tighter padding on phone |
+| `.github/workflows/release.yml` | `release-android` + `release-ios` CI jobs |
+
+### Verification
+
+- `cargo check --target aarch64-linux-android` — zero errors, 16 pre-existing warnings
+- SvelteKit frontend builds clean for mobile
+- `tauri android init` generated full Gradle project
+- Build environment: JDK 17 (Temurin) + NDK 26.3 + protoc 28.3 on local ext4 volume
+
+---
+
 ## Session log — 2026-05-31 — Cross-stack live audit: cb-api scoped-search fix + scaling review
 
 A live end-to-end audit of the production cloud-backup deployment that backs the

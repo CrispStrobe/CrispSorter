@@ -18,6 +18,7 @@ pub mod translate;
 #[cfg(feature = "desktop")]
 pub mod tts;
 pub mod volume;
+pub mod mobile_fs;
 #[cfg(feature = "desktop")]
 pub mod watcher;
 
@@ -2723,6 +2724,13 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            mobile_fs::tauri_commands::mobile_fs_list_folder,
+            mobile_fs::tauri_commands::mobile_fs_read_file,
+            mobile_fs::tauri_commands::mobile_fs_move_file,
+            mobile_fs::tauri_commands::mobile_fs_create_dir,
+            mobile_fs::tauri_commands::mobile_fs_delete,
+            mobile_fs::tauri_commands::mobile_fs_start_access,
+            mobile_fs::tauri_commands::mobile_fs_stop_access,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
             #[cfg(not(feature = "desktop"))]
@@ -2892,6 +2900,13 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            mobile_fs::tauri_commands::mobile_fs_list_folder,
+            mobile_fs::tauri_commands::mobile_fs_read_file,
+            mobile_fs::tauri_commands::mobile_fs_move_file,
+            mobile_fs::tauri_commands::mobile_fs_create_dir,
+            mobile_fs::tauri_commands::mobile_fs_delete,
+            mobile_fs::tauri_commands::mobile_fs_start_access,
+            mobile_fs::tauri_commands::mobile_fs_stop_access,
         ] }
         })
         .run(tauri::generate_context!())
