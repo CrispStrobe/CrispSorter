@@ -44,9 +44,13 @@ fn main() {
     //     executable. Windows needs no rpath; DLLs are looked up next to
     //     the .exe.
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    for var in ["DEP_CRISPASR_LIB_DIR", "DEP_CRISPEMBED_LIB_DIR"] {
-        if let Ok(build_dir) = env::var(var) {
-            emit_rpath_for(&target_os, Path::new(&build_dir));
+    // Mobile targets (Android / iOS) don't use rpath — native libs are
+    // bundled into the APK (jniLibs/) or linked statically via xcframework.
+    if target_os != "android" && target_os != "ios" {
+        for var in ["DEP_CRISPASR_LIB_DIR", "DEP_CRISPEMBED_LIB_DIR"] {
+            if let Ok(build_dir) = env::var(var) {
+                emit_rpath_for(&target_os, Path::new(&build_dir));
+            }
         }
     }
 

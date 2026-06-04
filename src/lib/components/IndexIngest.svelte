@@ -4913,4 +4913,9 @@
         margin-top: 4px;
         display: flex; align-items: center; gap: 6px;
     }
+
+    @media (max-width: 767px) {
+        .tab-bar { padding: 8px 8px 0; overflow-x: auto; }
+        .tab { padding: 6px 10px; font-size: 0.75rem; white-space: nowrap; }
+    }
 </style>

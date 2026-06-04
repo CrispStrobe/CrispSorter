@@ -1,9 +1,9 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window — shared across desktop and mobile",
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Capability for the mobile app — no shell/process, scoped filesystem",
   "windows": ["main"],
-  "platforms": ["linux", "macOS", "windows"],
+  "platforms": ["iOS", "android"],
   "permissions": [
     "core:default",
     "opener:default",
@@ -13,8 +13,6 @@
     "dialog:allow-confirm",
     "store:default",
     "fs:default",
-    "shell:default",
-    "process:default",
     "fs:read-all",
     "fs:write-all",
     {
@@ -28,7 +26,7 @@
     },
     {
       "identifier": "fs:scope",
-      "allow": [{ "path": "$HOME/**" }, { "path": "/" }, { "path": "/**" }]
+      "allow": [{ "path": "$APPDATA/**" }, { "path": "$DOWNLOAD/**" }]
     }
   ]
 }

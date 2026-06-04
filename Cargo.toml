@@ -69,5 +69,12 @@ repository = "https://github.com/CrispStrobe/CrispSorter"
 # Cargo requires `[profile.*]` tables to live at the workspace root; placing
 # them in `src-tauri/Cargo.toml` emits the "profiles for the non root package
 # will be ignored" warning on every build.
+# ── Patch: lance-linalg Android support ─────────────────────────────────────
+# lance-linalg 2.0.0's build.rs doesn't handle target_os = "android" for
+# aarch64 NEON kernels. This local patch adds the missing arm.
+# Remove once https://github.com/lancedb/lance/pull/XXXX lands upstream.
+[patch.crates-io]
+lance-linalg = { path = "patches/lance-linalg" }
+
 [profile.dev.package."*"]
 debug = 0

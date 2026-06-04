@@ -2039,4 +2039,25 @@
         animation: fadeInUp 0.2s ease-out;
     }
     @keyframes fadeInUp { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+    /* ── Responsive: phone (<768px) ────────────────────────────────── */
+    @media (max-width: 767px) {
+        .toolbar { padding: 6px 8px; gap: 6px; }
+        .search-box { min-width: 0; flex-basis: 100%; order: -1; }
+        .main-split { flex-direction: column; }
+        .detail-pane { width: 100%; max-height: 50vh; border-left: none; border-top: 1px solid #1e293b; }
+        .dense-table th, .dense-table td { padding: 4px 6px; font-size: 0.75rem; }
+        /* Hide less-important columns on small screens */
+        .dense-table th:nth-child(n+5), .dense-table td:nth-child(n+5) { display: none; }
+        .filter-bar { flex-wrap: wrap; gap: 8px; padding: 6px 8px; }
+        .modal-content, .info-modal { width: 95vw; }
+        .status-footer { padding: 4px 8px; font-size: 0.65rem; }
+        .action-btn { padding: 6px 8px; font-size: 0.75rem; }
+    }
+
+    /* ── Responsive: tablet (768-1024px) ───────────────────────────── */
+    @media (min-width: 768px) and (max-width: 1024px) {
+        .detail-pane { width: 280px; }
+        .search-box { min-width: 160px; }
+    }
 </style>

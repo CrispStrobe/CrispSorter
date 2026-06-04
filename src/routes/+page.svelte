@@ -465,6 +465,25 @@
             </div>
         {/if}
     </main>
+
+    <!-- Mobile bottom tab bar — visible only on small screens -->
+    <nav class="mobile-nav">
+        <button class="mobile-tab" class:active={activeTab === 'batch'} onclick={() => activeTab = 'batch'}>
+            <ListChecks size={20} /><span>{i18n.t.nav.batch}</span>
+        </button>
+        <button class="mobile-tab" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>
+            <MessageSquare size={20} /><span>{i18n.t.nav.chat}</span>
+        </button>
+        <button class="mobile-tab" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'}>
+            <Library size={20} /><span>{i18n.t.nav.catalog}</span>
+        </button>
+        <button class="mobile-tab" class:active={activeTab === 'translate'} onclick={() => activeTab = 'translate'}>
+            <Languages size={20} /><span>{i18n.t.nav.translate}</span>
+        </button>
+        <button class="mobile-tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
+            <SettingsIcon size={20} /><span>{i18n.t.nav.settings}</span>
+        </button>
+    </nav>
 </div>
 
 <style>
@@ -620,5 +639,68 @@
     @keyframes pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.35; }
+    }
+
+    /* ── Mobile bottom tab bar ─────────────────────────────────────── */
+    .mobile-nav {
+        display: none;
+    }
+
+    .mobile-tab {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 6px 0;
+        border: none;
+        background: transparent;
+        color: #71717a;
+        cursor: pointer;
+        font-size: 0.625rem;
+        font-weight: 500;
+        flex: 1;
+        min-width: 0;
+    }
+    .mobile-tab.active {
+        color: #3b82f6;
+    }
+
+    /* ── Responsive: phone (<768px) ────────────────────────────────── */
+    @media (max-width: 767px) {
+        .app-shell {
+            flex-direction: column;
+        }
+        .main-nav {
+            display: none;
+        }
+        .mobile-nav {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            background: #18181b;
+            border-top: 1px solid #27272a;
+            padding: 4px 0;
+            padding-bottom: env(safe-area-inset-bottom, 4px);
+            flex-shrink: 0;
+        }
+        .main-content {
+            flex: 1;
+            min-height: 0;
+        }
+        .log-drawer {
+            height: 160px;
+        }
+    }
+
+    /* ── Responsive: tablet (768-1024px) ───────────────────────────── */
+    @media (min-width: 768px) and (max-width: 1024px) {
+        .main-nav {
+            width: 64px;
+        }
+        .main-nav .logo-text,
+        .main-nav .nav-item span,
+        .main-nav .collapse-toggle {
+            display: none;
+        }
     }
 </style>

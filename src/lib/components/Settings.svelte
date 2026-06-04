@@ -4336,4 +4336,27 @@
     .cb-admin-panel .btn-danger:disabled { color: #a1a1aa; }
     .btn-danger { background: #7f1d1d; border-color: #991b1b; color: #fafafa; }
     .btn-danger:hover:not(:disabled) { background: #991b1b; }
+
+    /* ── Responsive: phone (<768px) ────────────────────────────────── */
+    @media (max-width: 767px) {
+        .settings-container { flex-direction: column; }
+        .sidebar { width: 100%; max-height: 48px; flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none; border-bottom: 1px solid #27272a; }
+        .sidebar-scrollable { display: flex; flex-direction: row; padding: 0; overflow-x: auto; }
+        .sidebar h2 { display: none; }
+        .sidebar-divider { display: none; }
+        .sidebar-footer { display: none; }
+        .provider-list { flex-direction: row; }
+        .provider-btn { white-space: nowrap; padding: 8px 12px; font-size: 0.75rem; }
+        .provider-btn.active { border-left: none; border-bottom: 2px solid #3b82f6; }
+        .content { padding: 16px; }
+        .form-group { max-width: 100%; }
+        .input-with-action { flex-direction: column; }
+        .info-grid { grid-template-columns: 1fr; gap: 8px; }
+    }
+
+    /* ── Responsive: tablet (768-1024px) ───────────────────────────── */
+    @media (min-width: 768px) and (max-width: 1024px) {
+        .sidebar { width: 160px; }
+        .content { padding: 20px 24px; }
+    }
 </style>

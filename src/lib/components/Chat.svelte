@@ -601,4 +601,12 @@
     .asr-error { padding: 6px 16px; background: #7f1d1d33; color: #fca5a5; font-size: 0.75rem; border-bottom: 1px solid #7f1d1d; }
     :global(.spin) { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+    @media (max-width: 767px) {
+        .chat-sidebar { display: none; }
+        .chat-sidebar.collapsed { display: none; }
+        .chat-header { height: 48px; padding: 0 12px; }
+        .chat-header h2 { font-size: 0.875rem; }
+        .context-stats { display: none; }
+    }
 </style>
