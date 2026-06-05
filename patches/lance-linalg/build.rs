@@ -34,11 +34,11 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
 
-    if target_arch == "aarch64" && target_os == "macos" {
-        // Build a version with NEON
+    if target_arch == "aarch64" && (target_os == "macos" || target_os == "ios") {
+        // Build a version with NEON (Apple Silicon — macOS + iOS)
         build_f16_with_flags("neon", &["-mtune=apple-m1"]).unwrap();
     } else if target_arch == "aarch64" && (target_os == "linux" || target_os == "android") {
-        // Build a version with NEON (also covers Android aarch64)
+        // Build a version with NEON (Linux + Android aarch64)
         build_f16_with_flags("neon", &["-march=armv8.2-a+fp16"]).unwrap();
     } else if target_arch == "x86_64" {
         // Build a version with AVX512
