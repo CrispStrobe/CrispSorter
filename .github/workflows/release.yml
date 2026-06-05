@@ -1052,10 +1052,12 @@ jobs:
             echo "No APPLE_DEVELOPMENT_TEAM — building unsigned .app"
             npx tauri ios build 2>&1 || true
             # If tauri ios build failed due to signing, try xcodebuild directly
-            XCWS="src-tauri/gen/apple/crispsorter.xcodeproj/project.xcworkspace"
-            if [ -d "$XCWS" ]; then
+            XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
+            if [ -d "$XCPROJ" ]; then
+              # List available schemes to find the right one
+              xcodebuild -project "$XCPROJ" -list 2>/dev/null || true
               xcodebuild \
-                -workspace "$XCWS" \
+                -project "$XCPROJ" \
                 -scheme crispsorter_iOS \
                 -sdk iphoneos \
                 -configuration Release \
