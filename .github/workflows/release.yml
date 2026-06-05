@@ -1041,11 +1041,17 @@ jobs:
       - name: Build iOS
         env:
           PROTOC: /opt/homebrew/bin/protoc
-        run: npx tauri ios build --export-method app-store-connect || true
-        # `|| true` — iOS code-signing requires an Apple Developer Team
-        # provisioning profile. CI will produce the .app but signing may
-        # fail without the team identity. The unsigned .app is still
-        # useful for simulator testing.
+        env:
+          PROTOC: /opt/homebrew/bin/protoc
+        run: |
+          if [ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
+            npx tauri ios build --export-method app-store-connect
+          else
+            # No signing identity — build unsigned .app for sideloading.
+            # xcodebuild needs CODE_SIGNING_ALLOWED=NO to skip codesign.
+            echo "No APPLE_DEVELOPMENT_TEAM — building unsigned .app"
+            npx tauri ios build -- CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" || true
+          fi
 
       - name: Upload IPA to release
         env:
@@ -1060,7 +1066,15 @@ jobs:
             gh release upload "${TAG}" "$IPA" --clobber
             echo "✓ Uploaded $(basename $IPA)"
           else
-            echo "⚠ No IPA found (signing may require Apple Developer Team)"
+            # No signed IPA — look for unsigned .app and tar it
+            APP=$(find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null | head -1)
+            if [ -n "$APP" ]; then
+              tar czf CrispSorter-ios-unsigned.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
+              gh release upload "${TAG}" CrispSorter-ios-unsigned.app.tar.gz --clobber
+              echo "✓ Uploaded unsigned .app (sideload via AltStore/Xcode)"
+            else
+              echo "⚠ No IPA or .app found"
+            fi
           fi
 
   # Publish the draft once the 3 required platforms finish (success OR failure).
