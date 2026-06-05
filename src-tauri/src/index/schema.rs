@@ -642,6 +642,25 @@ pub struct TagFacet {
     pub count: u64,
 }
 
+/// One group of documents sharing the same canonical URL (cross-corpus dedup).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlDuplicateGroup {
+    pub url: String,
+    pub count: u32,
+    pub items: Vec<UrlDuplicateItem>,
+}
+
+/// One document within a URL duplicate group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlDuplicateItem {
+    pub doc_id: String,
+    pub location_uri: String,
+    pub title: Option<String>,
+    pub indexed_at: Option<i64>,
+}
+
 /// One node in the lazy-loaded folder tree (`index_folder_children`).
 ///
 /// `doc_count` is the total number of documents in the entire subtree rooted at

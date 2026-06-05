@@ -340,6 +340,27 @@ pub async fn index_tag_facets(
         .map_err(|e| e.to_string())
 }
 
+/// Cross-corpus deduplication by canonical URL.  Returns groups of ≥2
+/// documents sharing the same `url` — e.g. the same article ingested via
+/// a wallabag import and a manual folder.
+#[tauri::command]
+pub async fn index_url_duplicates(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<super::schema::UrlDuplicateGroup>, String> {
+    let lock = state.index.lock().await;
+    let local = match (lock.config.enabled, lock.local.as_ref()) {
+        (false, _) | (true, None) => return Ok(vec![]),
+        (true, Some(l)) => l.clone(),
+    };
+    drop(lock);
+
+    local
+        .url_duplicates(limit.unwrap_or(200))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// PLAN P9 step 4 — return the immediate subdirectories of `parent` with
 /// their subtree doc counts. Used by the folder-tree pane in Übersicht.
 ///

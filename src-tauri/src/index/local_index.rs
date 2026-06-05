@@ -1229,6 +1229,97 @@ impl LocalIndex {
         Ok(facets)
     }
 
+    /// Cross-corpus deduplication by canonical URL (PLAN Tier 3).
+    ///
+    /// Finds documents that share the same `url` but have different `doc_id`s —
+    /// e.g. the same article ingested via both a wallabag import and a manual
+    /// "papers" folder.  Returns groups of ≥2 items sorted by group size
+    /// descending.  Each group contains lightweight metadata (doc_id, url,
+    /// location_uri, title, indexed_at) for the frontend to render a dedup UI.
+    pub async fn url_duplicates(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<super::schema::UrlDuplicateGroup>> {
+        use std::collections::HashMap;
+
+        // Fetch url + doc_id + location_uri + title + indexed_at for all
+        // document-level rows that have a non-null url.
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index <= 0 AND url IS NOT NULL AND url != ''")
+            .select(lancedb::query::Select::Columns(vec![
+                "doc_id".to_owned(),
+                "url".to_owned(),
+                "location_uri".to_owned(),
+                "title".to_owned(),
+                "indexed_at".to_owned(),
+            ]))
+            .limit(200_000)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Group by url client-side (LanceDB doesn't support GROUP BY).
+        let mut by_url: HashMap<String, Vec<super::schema::UrlDuplicateItem>> = HashMap::new();
+
+        for batch in &batches {
+            let url_col = batch
+                .column_by_name("url")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let doc_id_col = batch
+                .column_by_name("doc_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let loc_col = batch
+                .column_by_name("location_uri")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let title_col = batch
+                .column_by_name("title")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let ts_col = batch
+                .column_by_name("indexed_at")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>());
+
+            let (url_col, doc_id_col) = match (url_col, doc_id_col) {
+                (Some(u), Some(d)) => (u, d),
+                _ => continue,
+            };
+
+            for i in 0..batch.num_rows() {
+                let url = match url_col.is_valid(i).then(|| url_col.value(i)) {
+                    Some(u) if !u.is_empty() => u.to_string(),
+                    _ => continue,
+                };
+                let doc_id = doc_id_col.is_valid(i).then(|| doc_id_col.value(i).to_string()).unwrap_or_default();
+                let location = loc_col.and_then(|c| c.is_valid(i).then(|| c.value(i).to_string())).unwrap_or_default();
+                let title = title_col.and_then(|c| c.is_valid(i).then(|| c.value(i).to_string()));
+                let indexed_at = ts_col.and_then(|c| c.is_valid(i).then(|| c.value(i)));
+
+                by_url.entry(url).or_default().push(super::schema::UrlDuplicateItem {
+                    doc_id,
+                    location_uri: location,
+                    title,
+                    indexed_at,
+                });
+            }
+        }
+
+        // Keep only groups with ≥2 items, sort largest first.
+        let mut groups: Vec<super::schema::UrlDuplicateGroup> = by_url
+            .into_iter()
+            .filter(|(_, items)| items.len() >= 2)
+            .map(|(url, items)| super::schema::UrlDuplicateGroup {
+                url,
+                count: items.len() as u32,
+                items,
+            })
+            .collect();
+        groups.sort_by(|a, b| b.count.cmp(&a.count));
+        groups.truncate(limit.clamp(1, 1000));
+        Ok(groups)
+    }
+
     /// PLAN P9 step 4 — enumerate the immediate subdirectories of `parent`.
     ///
     /// Returns one [`FolderChild`] per unique path component that immediately
