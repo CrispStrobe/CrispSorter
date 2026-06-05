@@ -1046,9 +1046,27 @@ jobs:
             npx tauri ios build --export-method app-store-connect
           else
             # No signing identity — build unsigned .app for sideloading.
-            # xcodebuild needs CODE_SIGNING_ALLOWED=NO to skip codesign.
+            # Tauri CLI doesn't support --no-codesign, so we call
+            # xcodebuild directly with CODE_SIGNING_ALLOWED=NO.
+            # This matches the CrisperWeaver/CrispCalc pattern.
             echo "No APPLE_DEVELOPMENT_TEAM — building unsigned .app"
-            npx tauri ios build -- CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" || true
+            npx tauri ios build 2>&1 || true
+            # If tauri ios build failed due to signing, try xcodebuild directly
+            XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
+            if [ -d "$XCPROJ" ]; then
+              xcodebuild \
+                -project "$XCPROJ" \
+                -scheme crispsorter_iOS \
+                -sdk iphoneos \
+                -configuration Release \
+                CODE_SIGNING_ALLOWED=NO \
+                CODE_SIGN_IDENTITY="" \
+                CODE_SIGN_ENTITLEMENTS="" \
+                DEVELOPMENT_TEAM="" \
+                build \
+                CONFIGURATION_BUILD_DIR="$(pwd)/ios-build" \
+                || echo "xcodebuild also failed"
+            fi
           fi
 
       - name: Upload IPA to release
@@ -1065,7 +1083,7 @@ jobs:
             echo "✓ Uploaded $(basename $IPA)"
           else
             # No signed IPA — look for unsigned .app and tar it
-            APP=$(find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null | head -1)
+            APP=$(find ios-build src-tauri/gen/apple -name "*.app" -type d 2>/dev/null | head -1)
             if [ -n "$APP" ]; then
               tar czf CrispSorter-ios-unsigned.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
               gh release upload "${TAG}" CrispSorter-ios-unsigned.app.tar.gz --clobber
