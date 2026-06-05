@@ -1038,37 +1038,33 @@ jobs:
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
 
-      - name: Build iOS
+      - name: Build iOS Rust lib
+        env:
+          PROTOC: /opt/homebrew/bin/protoc
+        run: |
+          # Compile the Rust library for iOS device (aarch64).
+          # This is the heavy step — cross-compiles the full workspace.
+          cargo build \
+            --package crispsorter \
+            --target aarch64-apple-ios \
+            --lib \
+            --release
+          echo "✓ Rust lib compiled for aarch64-apple-ios"
+          ls -lh target/aarch64-apple-ios/release/libtauri_app_lib.a 2>/dev/null || true
+
+      - name: Build iOS app
         env:
           PROTOC: /opt/homebrew/bin/protoc
         run: |
           if [ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
             npx tauri ios build --export-method app-store-connect
           else
-            # No signing identity — build unsigned .app for sideloading.
-            # Tauri CLI doesn't support --no-codesign, so we call
-            # xcodebuild directly with CODE_SIGNING_ALLOWED=NO.
-            # This matches the CrisperWeaver/CrispCalc pattern.
-            echo "No APPLE_DEVELOPMENT_TEAM — building unsigned .app"
+            # No signing identity — try tauri ios build (it may fail on
+            # codesign but the Rust lib is already compiled above).
+            echo "No APPLE_DEVELOPMENT_TEAM — attempting unsigned build"
             npx tauri ios build 2>&1 || true
-            # If tauri ios build failed due to signing, try xcodebuild directly
-            XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
-            if [ -d "$XCPROJ" ]; then
-              # List available schemes to find the right one
-              xcodebuild -project "$XCPROJ" -list 2>/dev/null || true
-              xcodebuild \
-                -project "$XCPROJ" \
-                -scheme crispsorter_iOS \
-                -sdk iphoneos \
-                -configuration Release \
-                CODE_SIGNING_ALLOWED=NO \
-                CODE_SIGN_IDENTITY="" \
-                CODE_SIGN_ENTITLEMENTS="" \
-                DEVELOPMENT_TEAM="" \
-                build \
-                CONFIGURATION_BUILD_DIR="$(pwd)/ios-build" \
-                || echo "xcodebuild also failed"
-            fi
+            # Find whatever .app was produced (even partially)
+            find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null
           fi
 
       - name: Upload IPA to release
