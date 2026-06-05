@@ -134,8 +134,97 @@ fn extension_of(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default()
 }
 
+/// Run SLANet table structure detection on a single image file.
+///
+/// Returns an HTML table string with cell bounding boxes.  The caller
+/// can combine this with SVTR recognition results to populate cell
+/// text.  Returns `None` if no table is detected.
+#[cfg(feature = "paddle-ocr")]
+pub fn detect_table_structure(path: &Path) -> Result<Option<String>> {
+    use usls::{models::Model, Config, Device, Image};
+    use usls::models::vision::SLANet;
+
+    let config = Config::slanet_lcnet_v2_mobile_ch()
+        .with_device_all(Device::Cpu(0))
+        .with_num_dry_run_all(0)
+        .commit()
+        .context("loading SLANet table detection model")?;
+    let mut slanet = SLANet::new(config)
+        .context("initialising SLANet table detector")?;
+
+    let img = Image::try_read(path)
+        .with_context(|| format!("loading image for table detection: {}", path.display()))?;
+    let images = vec![img];
+
+    let results = slanet
+        .forward(&images)
+        .context("SLANet table detection failed")?;
+
+    // SLANet returns HTML table tokens (<table>, <tr>, <td>, etc.)
+    // and keypoints for cell bounding boxes.
+    for y in &results {
+        if y.texts.is_empty() {
+            continue;
+        }
+        let html: String = y.texts.iter().map(|t| t.text().to_string()).collect::<Vec<_>>().join("");
+        if html.contains("<table>") {
+            return Ok(Some(html));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Run full OCR with table structure detection.
+///
+/// First runs DB+SVTR for text extraction, then SLANet for table
+/// structure.  If a table is detected, the output includes the HTML
+/// table structure appended after the plain text.
+#[cfg(feature = "paddle-ocr")]
+pub fn ocr_with_tables(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocument> {
+    let mut doc = ocr_via_paddle(path, rec_lang)?;
+
+    // Try table detection — non-fatal if it fails (some images
+    // have text but no tables).
+    match detect_table_structure(path) {
+        Ok(Some(html_table)) => {
+            if !doc.full_text.is_empty() {
+                doc.full_text.push_str("\n\n");
+            }
+            doc.full_text.push_str("<!-- table structure -->\n");
+            doc.full_text.push_str(&html_table);
+        }
+        Ok(None) => {} // No table detected
+        Err(e) => {
+            tracing::warn!("SLANet table detection failed (non-fatal): {e}");
+        }
+    }
+
+    Ok(doc)
+}
+
+/// True when SLANet table detection is available.
+pub fn is_slanet_available() -> bool {
+    #[cfg(feature = "paddle-ocr")]
+    return true;
+    #[cfg(not(feature = "paddle-ocr"))]
+    return false;
+}
+
 /// Stub for non-paddle-ocr builds.
 #[cfg(not(feature = "paddle-ocr"))]
 pub fn ocr_via_paddle(_path: &Path, _rec_lang: OcrRecLang) -> Result<ExtractedDocument> {
+    anyhow::bail!("PaddleOCR Tier 3 is not compiled in (build with --features paddle-ocr)");
+}
+
+/// Stub for non-paddle-ocr builds.
+#[cfg(not(feature = "paddle-ocr"))]
+pub fn ocr_with_tables(_path: &Path, _rec_lang: OcrRecLang) -> Result<ExtractedDocument> {
+    anyhow::bail!("PaddleOCR Tier 3 is not compiled in (build with --features paddle-ocr)");
+}
+
+/// Stub for non-paddle-ocr builds.
+#[cfg(not(feature = "paddle-ocr"))]
+pub fn detect_table_structure(_path: &Path) -> Result<Option<String>> {
     anyhow::bail!("PaddleOCR Tier 3 is not compiled in (build with --features paddle-ocr)");
 }

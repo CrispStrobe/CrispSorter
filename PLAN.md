@@ -71,7 +71,7 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 ### P7.8 — OCR Tier 3 polish + Tier 4
 
-- [ ] **SLANet table extraction** on top of Tier 3 PaddleOCR — adds structured table output for invoices / bank statements / grids.  The `usls` crate already hosts a SLANet model.  ~3-5 h.  *Handover prompt ready:* `handover-prompts/session-prompt-slanet-table-extraction.md` (210 lines; design questions resolved, step-by-step plan).
+- [x] **SLANet table extraction** — ✅ SHIPPED (2026-06-05). `detect_table_structure()` + `ocr_with_tables()` in `ocr_paddle.rs`. Uses `usls::SLANet` with `slanet_lcnet_v2_mobile_ch` model (~50 MB).  Returns HTML table skeleton (`<table><tr><td>...`) appended to OCR text. Gated behind same `paddle-ocr` feature.  Frontend rendering of table structure pending.
 - [ ] **Tier 4 — VLM OCR** (~1 wk, 3-4 focused sessions) — `deepseek-ocr.rs`-style via Candle (not ort). DeepSeek-OCR / PaddleOCR-VL, Q4_K–Q8_0 quantisation, 4.7-9 GB models, macOS Metal target.  *Handover prompt ready:* `handover-prompts/session-prompt-tier4-vlm-ocr.md` (226 lines; full multi-session arc).
 
 ### P8.2 — CLI polish remaining
