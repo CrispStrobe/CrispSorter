@@ -1038,20 +1038,6 @@ jobs:
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
 
-      - name: Build iOS Rust lib
-        env:
-          PROTOC: /opt/homebrew/bin/protoc
-        run: |
-          # Compile the Rust library for iOS device (aarch64).
-          # This is the heavy step — cross-compiles the full workspace.
-          cargo build \
-            --package crispsorter \
-            --target aarch64-apple-ios \
-            --lib \
-            --release
-          echo "✓ Rust lib compiled for aarch64-apple-ios"
-          ls -lh target/aarch64-apple-ios/release/libtauri_app_lib.a 2>/dev/null || true
-
       - name: Build iOS app
         env:
           PROTOC: /opt/homebrew/bin/protoc
@@ -1059,12 +1045,42 @@ jobs:
           if [ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
             npx tauri ios build --export-method app-store-connect
           else
-            # No signing identity — try tauri ios build (it may fail on
-            # codesign but the Rust lib is already compiled above).
-            echo "No APPLE_DEVELOPMENT_TEAM — attempting unsigned build"
+            echo "No APPLE_DEVELOPMENT_TEAM — building unsigned"
+            # First attempt: let tauri ios build try (it will fail on signing)
             npx tauri ios build 2>&1 || true
-            # Find whatever .app was produced (even partially)
-            find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null
+
+            # Fix the broken workspace file that tauri ios init generates
+            XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
+            WS_DIR="$XCPROJ/project.xcworkspace"
+            mkdir -p "$WS_DIR"
+            cat > "$WS_DIR/contents.xcworkspacedata" << 'WSEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Workspace version="1.0">
+            <FileRef location="self:"/>
+          </Workspace>
+          WSEOF
+
+            # Now build with xcodebuild directly, unsigned
+            if [ -d "$XCPROJ" ]; then
+              echo "=== Available schemes ==="
+              xcodebuild -project "$XCPROJ" -list 2>&1 || true
+              echo "=== Building unsigned .app ==="
+              xcodebuild \
+                -project "$XCPROJ" \
+                -scheme crispsorter_iOS \
+                -sdk iphoneos \
+                -configuration Release \
+                CODE_SIGNING_ALLOWED=NO \
+                CODE_SIGN_IDENTITY="" \
+                CODE_SIGN_ENTITLEMENTS="" \
+                DEVELOPMENT_TEAM="" \
+                build \
+                CONFIGURATION_BUILD_DIR="$(pwd)/ios-build" \
+                2>&1 | tail -20
+              echo "=== Build dir contents ==="
+              find ios-build -name "*.app" -type d 2>/dev/null || echo "no .app found"
+              find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null || echo "no .app in gen/apple"
+            fi
           fi
 
       - name: Upload IPA to release
