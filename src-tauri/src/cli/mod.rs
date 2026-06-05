@@ -1517,6 +1517,14 @@ enum IndexCmd {
         #[arg(long, default_value = "")]
         owner_id: String,
     },
+    /// Find documents sharing the same source URL (cross-corpus dedup).
+    /// Detects when the same article was ingested from multiple sources
+    /// (e.g. wallabag import + manual folder).
+    UrlDuplicates {
+        /// Maximum duplicate groups to show.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -2595,6 +2603,34 @@ async fn cmd_index_async(
                 OutFormat::Text => println!(
                     "l1-only scan done — scanned {total_scanned}, written {total_written}, enqueued {total_enqueued}"
                 ),
+            }
+        }
+        IndexCmd::UrlDuplicates { limit } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let groups = local.url_duplicates(limit).await.map_err(|e| e.to_string())?;
+            if groups.is_empty() {
+                match out_format {
+                    OutFormat::Json => println!("[]"),
+                    OutFormat::Text => println!("No URL duplicates found."),
+                }
+            } else {
+                match out_format {
+                    OutFormat::Json => {
+                        println!("{}", serde_json::to_string_pretty(&groups).unwrap_or_default());
+                    }
+                    OutFormat::Text => {
+                        println!("{} duplicate groups:\n", groups.len());
+                        for g in &groups {
+                            println!("  {} ({} copies)", g.url, g.count);
+                            for item in &g.items {
+                                println!("    - {} ({})", item.title.as_deref().unwrap_or("untitled"), item.location_uri);
+                            }
+                            println!();
+                        }
+                    }
+                }
             }
         }
     }
