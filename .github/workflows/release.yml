@@ -1041,8 +1041,6 @@ jobs:
       - name: Build iOS
         env:
           PROTOC: /opt/homebrew/bin/protoc
-        env:
-          PROTOC: /opt/homebrew/bin/protoc
         run: |
           if [ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
             npx tauri ios build --export-method app-store-connect
