@@ -12,7 +12,7 @@
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
-        Columns2, Eye, RotateCcw, CloudDownload, Images, Tag
+        Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
     import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
     import IndexSearch from './IndexSearch.svelte';
@@ -106,6 +106,24 @@
     let driveDialogDepth  = $state<number | null>(null);
     let driveScanning     = $state(false);
     let driveScanResult   = $state<string>('');
+
+    // ── URL duplicate detection ───────────────────────────────────────────
+    interface UrlDupItem { docId: string; locationUri: string; title: string | null; indexedAt: number | null; }
+    interface UrlDupGroup { url: string; count: number; items: UrlDupItem[]; }
+    let urlDupGroups = $state<UrlDupGroup[]>([]);
+    let urlDupLoading = $state(false);
+    let urlDupError = $state('');
+    async function loadUrlDuplicates() {
+        urlDupLoading = true;
+        urlDupError = '';
+        try {
+            urlDupGroups = await invoke<UrlDupGroup[]>('index_url_duplicates', { limit: 200 });
+        } catch (e: any) {
+            urlDupError = String(e?.message ?? e);
+        } finally {
+            urlDupLoading = false;
+        }
+    }
 
     // Inline "create / edit drive" form.  When `driveEditId` is set we're
     // editing the existing drive with that id (calls drive_update); when
@@ -3673,6 +3691,33 @@
 
     <!-- ══════════════════ ÜBERSICHT (catalog contents) ══════════════════ -->
     {#if activeTab === 'overview'}
+        <!-- URL duplicate detection panel -->
+        {#if urlDupGroups.length > 0 || urlDupLoading || urlDupError}
+            <div style="padding: 8px 16px; background: #0f172a; border-bottom: 1px solid #1e293b; font-size: 0.8125rem;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <AlertTriangle size={14} style="color: #f59e0b;" />
+                    <strong style="color: #fbbf24;">URL Duplicates</strong>
+                    <span style="color: #71717a; font-size: 0.75rem;">{urlDupGroups.length} groups</span>
+                </div>
+                {#if urlDupError}
+                    <div style="color: #f87171; font-size: 0.75rem;">{urlDupError}</div>
+                {/if}
+                {#each urlDupGroups.slice(0, 10) as group}
+                    <div style="background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 6px 10px; margin-bottom: 4px;">
+                        <div style="font-size: 0.7rem; color: #60a5fa; word-break: break-all; margin-bottom: 4px;">{group.url}</div>
+                        {#each group.items as item}
+                            <div style="font-size: 0.7rem; color: #94a3b8; font-family: monospace; padding-left: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                {item.title ?? item.locationUri}
+                            </div>
+                        {/each}
+                    </div>
+                {/each}
+                {#if urlDupGroups.length > 10}
+                    <div style="color: #71717a; font-size: 0.7rem;">… and {urlDupGroups.length - 10} more groups</div>
+                {/if}
+            </div>
+        {/if}
+
         <div class="contents-toolbar">
             <div class="query-input-wrap" style="flex:1">
                 <Search size={14} style="color:#71717a;" />
@@ -3682,6 +3727,11 @@
             <button class="tb-btn" onclick={() => loadContents(false)} disabled={contentsLoading}>
                 {#if contentsLoading}<Loader2 size={13} class="spin" />{:else}<RefreshCw size={13} />{/if}
                 Aktualisieren
+            </button>
+            <button class="tb-btn" onclick={loadUrlDuplicates} disabled={urlDupLoading}
+                title="Find documents with the same source URL (cross-corpus dedup)">
+                {#if urlDupLoading}<Loader2 size={13} class="spin" />{:else}<AlertTriangle size={13} />{/if}
+                URL-Duplikate
             </button>
         </div>
 
