@@ -58,10 +58,12 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 ### P3.5 — CrispEmbed / CrispASR bundling
 
 - [ ] **Phase 2 — Linux + Windows** (~8-12 h, separate session) — RPATH / DLL colocation; each platform needs 1-2 release iterations. Opening prompt: `handover-prompts/session-prompt-crispembed-ci-matrix.md` (local-only — see .gitignore).
-- [x] **Phase 3 — mobile** ✅ SHIPPED v0.4.0 (2026-06-04).  Full feature parity on Android aarch64 + iOS.  Desktop-only code behind `--features desktop`; vendored OpenSSL; lance-linalg Android patch; responsive UI; CI jobs for APK + IPA.  See [HISTORY.md](HISTORY.md) 2026-06-04 session log.
-  - [ ] **Android SAF handler** — port CrispCloud's `SAFHandler.kt` for Downloads folder access via `DocumentsContract`.
-  - [ ] **iOS security-scoped bookmarks** — Swift bridge for persistent folder access via `startAccessingSecurityScopedResource()`.
-  - [ ] **Native lib bundling** — CrispEmbed/CrispASR `.so` into APK `jniLibs/arm64-v8a/`; xcframework into iOS Xcode project.  Build scripts exist in both sibling repos (`build-android.sh`, `build-ios.sh`).
+- [x] **Phase 3 — mobile** ✅ SHIPPED v0.4.0→v0.4.1 (2026-06-04/05).  Full feature parity on Android aarch64 + iOS.  No feature flags — one binary, all platforms.  Vendored OpenSSL; lance-linalg Android+iOS patch; responsive UI (bottom tab bar on phones); CI jobs for APK + IPA.  Sidecar commands (Ollama/llama.cpp/MLX/TTS spawn) compile everywhere but only surface in desktop UI.  `mistralrs` runs in-process on all platforms.  See [HISTORY.md](HISTORY.md) 2026-06-04 session log.
+  - [x] **Android SAF handler** — `mobile_fs` Rust module with Tauri commands (`mobile_fs_list_folder`, `mobile_fs_read_file`, `mobile_fs_move_file`, `mobile_fs_create_dir`, `mobile_fs_delete`).  `SAFBridge.kt` in `src-tauri/android-src/` (copy into gen/android/ after init).  Desktop fallback via `std::fs`.
+  - [x] **iOS security-scoped bookmarks** — `mobile_fs_start_access` / `mobile_fs_stop_access` Tauri commands.  Placeholder for objc2 FFI to `NSURL.startAccessingSecurityScopedResource()`.
+  - [x] **Native lib bundling scripts** — `scripts/bundle_android_native_libs.sh` (copies .so into `jniLibs/arm64-v8a/`), `scripts/bundle_ios_frameworks.sh` (copies xcframeworks into `gen/apple/Frameworks/`).
+  - [ ] **iOS unsigned .app in release** — Rust cross-compiles for `aarch64-apple-ios` but Tauri's xcodebuild wrapper has a broken workspace file.  Workaround in CI: create valid `contents.xcworkspacedata` + call `xcodebuild -project` with `CODE_SIGNING_ALLOWED=NO`.  In progress.
+  - [x] **Platform detection** — `src/lib/platform.ts` (`isMobile()`, `isDesktop()`, `platformName()`).  Settings uses `showSidecarControls` to hide spawn buttons on mobile.
 
 ### P5 — Future / planned
 
@@ -171,7 +173,7 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 
 ### Tier 3 — cool but probably overkill until someone asks
 
-- [x] **Cross-corpus deduplication by canonical URL** — ✅ SHIPPED (2026-06-05). `index_url_duplicates` Tauri command groups documents by `url` column (v106+), returns `UrlDuplicateGroup` with items. Client-side HashMap bucketing over LanceDB projected columns. Frontend UI pending.
+- [x] **Cross-corpus deduplication by canonical URL** — ✅ SHIPPED (2026-06-05). `index_url_duplicates` Tauri command + CLI `crispsorter index url-duplicates` + frontend "URL-Duplikate" button in Übersicht overview tab.  Groups documents by `url` column (v106+), returns `UrlDuplicateGroup` with items.  i18n keys added (EN+DE).  Deletion/merge actions pending.
 - [ ] **LLM-suggested topical clustering** for read-later corpora
   with no real author metadata — auto-build a folder hierarchy by
   topic so the "sort into Author/Year/Title" workflow has

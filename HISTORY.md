@@ -58,12 +58,53 @@ same index, search, batch sort, sync, and translation pipelines as desktop.
 | `src/lib/components/Translate.svelte` | Tighter padding on phone |
 | `.github/workflows/release.yml` | `release-android` + `release-ios` CI jobs |
 
+### Follow-up (2026-06-05) — feature-flag removal + additional features
+
+The `desktop` feature flag was **removed entirely** in a follow-up refactor.
+One binary compiles on all platforms.  Sidecar commands (Ollama, llama.cpp,
+MLX, TTS spawn) remain compiled everywhere; the UI simply doesn't render
+the start/stop buttons on mobile (`showSidecarControls` flag via
+`platform.ts:isDesktop()`).  `mistralrs` runs in-process on all platforms.
+
+Additional features shipped in this session:
+
+- **Cross-corpus URL deduplication** (PLAN Tier 3) — `index_url_duplicates`
+  Tauri command + CLI `crispsorter index url-duplicates` + frontend
+  "URL-Duplikate" button in Übersicht overview.  Groups documents by the `url`
+  column, returns `UrlDuplicateGroup { url, count, items }`.  i18n (EN+DE).
+- **SLANet table structure detection** (P7.8 Tier 3+) —
+  `detect_table_structure()` + `ocr_with_tables()` in `ocr_paddle.rs`.
+  Uses `usls::SLANet` with `slanet_lcnet_v2_mobile_ch` model.  Returns HTML
+  table skeleton appended to OCR text.
+- **mobile_fs module** — Tauri commands for Android SAF + iOS security-scoped
+  bookmarks (`mobile_fs_list_folder`, `_read_file`, `_move_file`, `_create_dir`,
+  `_delete`, `_start_access`, `_stop_access`).  `SAFBridge.kt` for Android
+  ContentResolver.  Desktop fallback via `std::fs`.
+- **Native lib bundling scripts** — `scripts/bundle_android_native_libs.sh`
+  (copies `.so` into `jniLibs/`) + `scripts/bundle_ios_frameworks.sh`
+  (copies xcframeworks for Xcode).
+- **Platform detection** — `src/lib/platform.ts` (`isMobile()`, `isDesktop()`,
+  `platformName()`).
+- **release.yml** — `release-android` + `release-ios` CI jobs.  Android APK
+  builds and uploads successfully.  iOS Rust cross-compiles but the unsigned
+  `.app` packaging is still in progress (Tauri workspace file workaround).
+
+### Releases
+
+- **v0.4.0** — Android APK (331 MB) + macOS arm64 DMG + Linux deb + Windows
+  portable zip + macOS tar.  5 release assets.
+- **v0.4.1** — Same 5 assets + lance-linalg iOS patch + URL dedup + SLANet.
+  iOS unsigned `.app` not yet in release (xcodebuild workspace issue being
+  resolved).
+
 ### Verification
 
 - `cargo check --target aarch64-linux-android` — zero errors, 16 pre-existing warnings
+- `cargo check --target aarch64-apple-ios` — zero errors (Rust cross-compiles; xcodebuild packaging in progress)
 - SvelteKit frontend builds clean for mobile
 - `tauri android init` generated full Gradle project
-- Build environment: JDK 17 (Temurin) + NDK 26.3 + protoc 28.3 on local ext4 volume
+- Android APK built locally (280 MB unsigned) and in CI (331 MB)
+- Build environment: JDK 17 (Temurin) + NDK 26.3 + protoc 28.3 on `/mnt/volume1` (ext4)
 
 ---
 
