@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
+    import { isDesktop } from '../platform';
     import {
         resolveSecret,
         bulkSetSecrets,
@@ -135,6 +136,8 @@
 
     // MLX is Apple Silicon only — hide on Windows/Linux
     const isMacOS = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
+    // Sidecar controls (Start/Stop Ollama, llama.cpp, MLX) only shown on desktop
+    const showSidecarControls = isDesktop();
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
     let selectedProviderId = $state('global');
