@@ -171,10 +171,7 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 
 ### Tier 3 — cool but probably overkill until someone asks
 
-- [ ] **Cross-corpus deduplication by canonical URL** — same
-  article saved twice (wallabag import + manual "papers" folder)
-  produces two rows with different sha256s but the same `url`.
-  Detect, offer to fold.
+- [x] **Cross-corpus deduplication by canonical URL** — ✅ SHIPPED (2026-06-05). `index_url_duplicates` Tauri command groups documents by `url` column (v106+), returns `UrlDuplicateGroup` with items. Client-side HashMap bucketing over LanceDB projected columns. Frontend UI pending.
 - [ ] **LLM-suggested topical clustering** for read-later corpora
   with no real author metadata — auto-build a folder hierarchy by
   topic so the "sort into Author/Year/Title" workflow has
