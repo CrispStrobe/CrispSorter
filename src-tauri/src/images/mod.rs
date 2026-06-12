@@ -24,11 +24,13 @@
 
 pub mod crisplens;
 pub mod exif;
+pub mod face;
 pub mod local;
 pub mod phash;
 pub mod tauri_commands;
 pub mod thumbnail;
 pub mod types;
+pub mod vit_embed;
 
 use anyhow::Result;
 use async_trait::async_trait;

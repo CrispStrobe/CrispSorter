@@ -33,7 +33,10 @@ use std::path::Path;
 
 pub mod audio;
 pub mod html;
+pub mod layout;
+pub mod math_ocr;
 pub mod ocr;
+pub mod ocr_crispembed;
 pub mod ocr_ocrs;
 pub mod ocr_paddle;
 pub mod pdf;
@@ -145,8 +148,8 @@ pub fn supported(ext: &str) -> bool {
 /// Which OCR tier to try, in descending quality order.
 ///
 /// `Auto` = try the best available tier at runtime:
-///   Tier 3 (PaddleOCR) if compiled in → Tier 2 (ocrs) if models present →
-///   Tier 1 (Tesseract) if installed → nothing.
+///   Tier 4 (CrispEmbed) if compiled in → Tier 3 (PaddleOCR) →
+///   Tier 2 (ocrs) → Tier 1 (Tesseract) → nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OcrTier {
     /// Pick the best available tier automatically.
@@ -158,6 +161,9 @@ pub enum OcrTier {
     Tier2,
     /// Tier 3 — PaddleOCR via usls (requires `paddle-ocr` feature).
     Tier3,
+    /// Tier 4 — CrispEmbed GGUF OCR (Surya/Qwen2.5-VL/DBNet+TrOCR,
+    /// requires `crispembed` feature).
+    Tier4,
 }
 
 /// Which recognition language model to use for PaddleOCR Tier 3.
@@ -378,9 +384,33 @@ pub fn extract_text_from_path_with_opts(
             }
 
             // L3 + OCR enabled: tier ladder.
+            // P17.2 — CrispEmbed Tier 4 at the top when compiled in.
+            let want_tier4 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier4);
             let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
             let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
-            let mut doc = if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+            let mut doc = if want_tier4 && ocr_crispembed::is_crispembed_ocr_available() {
+                match ocr_crispembed::ocr_via_crispembed(path) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        // Fall through to lower tiers.
+                        if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+                            ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang)
+                                .or_else(|_| {
+                                    if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                                        ocr_ocrs::ocr_via_ocrs(path)
+                                    } else {
+                                        ocr::ocr_via_tesseract(path)
+                                    }
+                                })?
+                        } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                            ocr_ocrs::ocr_via_ocrs(path)
+                                .or_else(|_| ocr::ocr_via_tesseract(path))?
+                        } else {
+                            ocr::ocr_via_tesseract(path)?
+                        }
+                    }
+                }
+            } else if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
                 match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
                     Ok(d) => d,
                     Err(_) => {

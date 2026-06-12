@@ -5,6 +5,7 @@ pub mod hf_prefetch;
 pub mod ingest;
 pub mod l2_metadata;
 pub mod local_index;
+pub mod omni_embed;
 pub mod reranker;
 pub mod skeleton;
 pub mod task_failure;

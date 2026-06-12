@@ -4,6 +4,43 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## CrispEmbed integration (P17)
+
+### CrispEmbed structs are `Send` but not `Sync`
+
+All CrispEmbed types (`CrispEmbed`, `CrispFace`, `MathOcr`, `OcrPipeline`,
+`CrispVit`, `CrispLayout`) wrap a raw C context pointer and implement `Send`
+but not `Sync`.  That means you can move them between threads but NOT share
+references across threads.  The integration pattern used throughout P17 is:
+
+```rust
+static INSTANCE: OnceLock<Mutex<crispembed::SomeType>> = OnceLock::new();
+```
+
+`OnceLock` handles lazy init; `Mutex` serialises access.  This trades
+concurrency for zero repeated model-load overhead.  If throughput matters
+(e.g. batch ingest), create per-thread instances instead.
+
+### GGUF-only models need `None` in `to_model_spec()`
+
+When adding `EmbedderModel` variants that have no ONNX path (only GGUF via
+CrispEmbed), they must return `None` from `to_model_spec()` AND have an
+entry in `gguf_registry_name()`.  The init path in `Embedder::new()` checks
+`backend == Gguf` first, then `is_native()`, then `to_model_spec()` — if a
+GGUF-only model falls through to the ONNX path it will fail with a confusing
+"no model spec" error.
+
+### EU AI Act: face detection vs recognition
+
+Face **detection** (is there a face? where?) is fine.  Face **recognition**
+(who is it? face embeddings for person matching) falls under biometric
+identification and triggers high-risk classification.  P17.4 deliberately
+exposes only `detect_faces` / `count_faces` — no `recognize_faces`, no
+`encode_face`, no face embeddings.  The CrispEmbed API supports recognition
+but we don't call it.
+
+---
+
 ## Build & CI
 
 ### `notify` event handlers run on a non-tokio thread

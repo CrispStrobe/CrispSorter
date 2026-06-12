@@ -9,6 +9,45 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-12 — P17 CrispEmbed deep integration (7 modules)
+
+Wired every major CrispEmbed capability into CrispSorter behind
+`--features crispembed` (Metal/Vulkan/CUDA sub-features for GPU).
+
+**New modules** (all cfg-gated, graceful stubs when feature is off):
+
+- **P17.1 `extractors/layout.rs`** — RT-DETRv2 document layout detection
+  (17 region types).  Pre-pass for OCR routing: text regions → OCR,
+  formula regions → math OCR, figures → skip.  Reading-order sort.
+- **P17.2 `extractors/ocr_crispembed.rs`** — New "Tier 4" OCR via
+  `crispembed::OcrPipeline`.  Surya-OCR-2 (91 languages) + Qwen2.5-VL
+  (German support) + DBNet/TrOCR.  Wired as highest-priority tier in the
+  existing dispatch ladder (`OcrTier::Tier4`).
+- **P17.3 `extractors/math_ocr.rs`** — Formula → LaTeX via
+  PP-FormulaNet-L (printed, 181M) / PosFormer (handwritten).  Standalone
+  image recognition + layout-integrated crop-and-recognize pipeline.
+- **P17.4 `images/face.rs`** — Face detection only (YuNet 0.2 MB /
+  SCRFD): presence + bounding box + confidence.  **No biometric
+  recognition** (no embeddings, no person matching) — EU AI Act
+  compliant.
+- **P17.5 `index/omni_embed.rs`** — BidirLM-Omni shared 2048-D
+  embedding space for text + audio + image.  Enables cross-modal search:
+  "photo of sunset" → image hits.  Text, batch-text, audio, image, and
+  text+image encoding paths.
+- **P17.6 `index/embedder.rs`** — 5 new GGUF-only `EmbedderModel`
+  variants: `Gemma3Embed2B` (2048d), `ModernBertBase` (768d),
+  `ModernBertLarge` (1024d), `DebertaV2Xlarge` (1536d), `NomicBertMoe`
+  (768d, 8-expert).  Full registry entries (dims, max_tokens, display
+  names, GGUF spec, serde strings, download sizes).
+- **P17.7 `images/vit_embed.rs`** — SigLIP/CLIP image embedding for
+  visual similarity search.  Works across crops, formats, resolutions.
+
+**Tests**: 35 new unit tests + existing 625 all green (660 total, 0
+failures).  Each module also has `#[ignore]`-gated live tests for
+real-model validation.
+
+---
+
 ## Session log — 2026-06-04 — Phase 3: Android + iOS mobile support (v0.4.0)
 
 Extended CrispSorter to Android (aarch64) and iOS via Tauri 2 mobile targets.

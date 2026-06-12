@@ -80,9 +80,76 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 
 - [ ] **`cargo install crispsorter`** for the Tauri-app binary — needs binstall recipe + signing (macOS Developer ID, Windows Authenticode). `cargo install --path crates/crispcat-cli` already ships. ~2-4 h once a signing identity is in hand.  *Handover prompt ready:* `handover-prompts/session-prompt-cargo-install-signed.md` (354 lines; covers Apple notarisation + Authenticode + crates.io flow + the `if: always()` release-pipeline fix).
 
-### CrispEmbed — leverage unused capabilities
+### P17 — CrispEmbed deep integration
 
-- [ ] **Omnimodal cross-modal search** (`encode_audio` / `encode_image`, ~2 sessions) — BidirLM-Omni encodes text, audio, and images into a shared 2048-d space. Unlocks: type "photo of a sunset" → image hits without OCR; type "podcast about Bosnia" → audio hits without transcription.  *Handover prompt ready:* `handover-prompts/session-prompt-omnimodal-cross-modal-search.md` (399 lines; 9 design questions resolved, schema v106 spec, sidecar-embedder pattern, Rust-port spec for the HF image processor).
+CrispEmbed has grown well beyond dense text embedding.  This phase
+wires every useful capability into CrispSorter: layout-aware
+extraction, multi-engine OCR, math OCR, face detection/recognition,
+cross-modal omnimodal embeddings, decoder-model embeddings, and
+standalone ViT image search.  All gated behind `--features crispembed`
+(or the Metal/Vulkan/CUDA sub-features).  Each item ships with unit
+tests (mock/stub, run in CI) **and** live tests (`#[ignore]`, require
+GGUF models on disk).
+
+- [ ] **P17.1 — Layout-aware PDF extraction** (`CrispLayout`,
+  RT-DETRv2) — Pre-pass on scanned/complex PDF pages: detect 17
+  region types (text, title, table, figure, formula, header, footer,
+  caption, etc.).  Route text regions to OCR, skip figures, flag
+  tables for structured extraction, send formula regions to math OCR.
+  New module `src-tauri/src/extractors/layout.rs`.  Improves chunking
+  quality by isolating semantic regions before text extraction.
+
+- [ ] **P17.2 — CrispEmbed OCR engines** (Surya-OCR-2 + Qwen2.5-VL +
+  DBNet/TrOCR) — New "Tier 4" OCR via `crispembed::OcrPipeline`.
+  Surya text detection (91 languages, EfficientViT) replaces the
+  PaddleOCR detection stage.  Qwen2.5-VL adds German support for
+  recognition.  DBNet+TrOCR as a lightweight GGUF-only alternative
+  (no ORT dependency).  Plugs into the existing tier dispatch in
+  `extractors/mod.rs` as the highest-priority tier when the
+  `crispembed` feature is active.  New module
+  `src-tauri/src/extractors/ocr_crispembed.rs`.
+
+- [ ] **P17.3 — Math OCR** (`crispembed::MathOcr`) — Detect formula
+  regions via P17.1 layout detection, then OCR each to LaTeX via
+  PP-FormulaNet-L (printed, 181M params) or PosFormer (handwritten).
+  LaTeX injected into `full_text` wrapped in `$…$` delimiters so
+  downstream LLMs and search understand it.  New module
+  `src-tauri/src/extractors/math_ocr.rs`.
+
+- [ ] **P17.4 — Face detection (presence + location only)**
+  (`CrispFace`, YuNet 0.2 MB / SCRFD) — Detects WHETHER and WHERE
+  faces appear in an image (bounding box + confidence).  **No biometric
+  recognition** (no face embeddings, no person matching, no identity
+  inference) — EU AI Act compliance.  Use cases: "this photo has 3
+  faces", auto-crop thumbnails, filter to "photos with people".
+  New module `src-tauri/src/images/face.rs` + Tauri command
+  `detect_faces` / `count_faces`.
+
+- [ ] **P17.5 — BidirLM-Omni cross-modal embeddings** — Shared
+  2048-D embedding space for text, audio, and images.  New
+  `embedding_omni` FixedSizeList<Float32, 2048> column in LanceDB
+  (schema migration v108).  New RRF channel in `search.rs` that
+  mixes omni-vector cosine with existing FTS + dense + sparse.
+  Unlocks: "photo of sunset" → image hits without OCR; "podcast
+  about Bosnia" → audio hits without transcription.  New module
+  `src-tauri/src/index/omni_embed.rs`.  Extends the earlier
+  omnimodal handover prompt.
+
+- [ ] **P17.6 — Decoder embeddings** (Qwen3-Embedding, Gemma3-
+  Embedding via GGUF) — Add `EmbedderModel` registry entries for
+  decoder-based models already supported by CrispEmbed (last-token
+  pooling, SwiGLU, RoPE).  Lighter than ORT path (quantizable to
+  Q4_K, no ONNX runtime).  Updates to `embedder.rs` model enum +
+  GGUF spec table.
+
+- [ ] **P17.7 — Standalone ViT image embeddings** (`CrispVit`,
+  SigLIP/CLIP) — Encode images into a shared text-image vector
+  space for visual similarity search.  New `embedding_vit`
+  FixedSizeList column (schema migration v109).  Enables "find
+  similar images" without perceptual hashing — works across
+  different crops, formats, and resolutions.  New module
+  `src-tauri/src/images/vit_embed.rs` + Tauri command
+  `embed_image_vit`.
 
 ---
 

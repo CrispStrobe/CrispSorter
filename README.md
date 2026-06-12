@@ -20,7 +20,7 @@ Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 | Format | Extraction method |
 |---|---|
 | PDF (digital) | pdfjs-dist (JS) or pdf-extract (native Rust) |
-| PDF (scanned) | OCR — three tiers: PaddleOCR, ocrs (pure Rust), Tesseract |
+| PDF (scanned) | OCR — four tiers: CrispEmbed GGUF (Surya/Qwen2.5-VL), PaddleOCR, ocrs (pure Rust), Tesseract |
 | DOCX / Word | mammoth.js |
 | EPUB | @lingo-reader/epub-parser (DRM detection via META-INF/encryption.xml) |
 | TXT / Markdown | direct UTF-8 |
@@ -50,10 +50,16 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 
 ## Features
 
-- **Three-tier OCR** (in quality order):
+- **Four-tier OCR** (in quality order):
+  - **Tier 4 — CrispEmbed GGUF** (`--features crispembed`): Surya-OCR-2 text detection (91 languages) + Qwen2.5-VL recognition (German support) + DBNet/TrOCR lightweight alternative; all-GGUF, no ORT dependency
   - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
   - **Tier 2 — ocrs**: pure Rust, zero system install, Latin-script (EN/DE/FR/…)
   - **Tier 1 — Tesseract**: shell-out for users with the system install
+- **Layout-aware extraction** (`--features crispembed`): RT-DETRv2 document layout detection (17 region types — text, title, table, figure, formula, etc.) as a pre-pass before OCR; routes text regions to OCR, formula regions to math OCR, skips figures
+- **Math OCR** (`--features crispembed`): formula → LaTeX via PP-FormulaNet-L (printed) or PosFormer (handwritten); integrates with layout detection to auto-detect formula regions
+- **Cross-modal search** (`--features crispembed`): BidirLM-Omni shared 2048-D embedding space for text, audio, and images; type "photo of sunset" → image hits without OCR, "podcast about Bosnia" → audio hits without transcription
+- **ViT image embeddings** (`--features crispembed`): SigLIP/CLIP visual similarity search — "find similar images" works across different crops, formats, and resolutions
+- **Face detection** (`--features crispembed`): YuNet (0.2 MB) detects presence + location of faces in photos (bounding box + confidence only — no biometric recognition, EU AI Act compliant)
 - **Batch operations** — multi-select, bulk re-analyse with different models, bulk accept/reject, **content-confirmed duplicate detection** (size → SHA-256), **book-chapter grouping** (ISBN-13 prefix detection — De Gruyter, Brill, Mohr Siebeck, etc.; only the representative file goes through the LLM, metadata propagates to siblings), edited-volume toggle
 - **Robust ingest at scale**: 300 s extraction timeout, L2 fallback row when extraction fails (title/author still searchable), automatic DRM detection (EPUB ADEPT/FairPlay), classified failure reasons (timeout / DRM / corrupt / unsupported / password) with retryable-vs-permanent semantics, N-worker parallel pool, retry-on-fail UI button
 - **Session persistence** — auto-save and resume; full session history; durable SQLite job queue

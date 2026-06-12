@@ -158,6 +158,29 @@ pub enum EmbedderModel {
     GteBaseEnV15,
     /// Alibaba-NLP/gte-large-en-v1.5 — 1024d, 8192 ctx, English.
     GteLargeEnV15,
+
+    // ── P17.6: GGUF-only decoder-based embedding models ──────────────────
+    // These require --features crispembed (GGUF backend only, no ONNX).
+    // Lighter than the ORT path: quantizable to Q4_K, no ONNX Runtime dep.
+
+    /// Gemma3-Embedding 2B via CrispEmbed GGUF — 2048d, 8192 ctx.
+    /// Decoder with GeGLU, last-token pooling.  GGUF-only.
+    Gemma3Embed2B,
+
+    /// ModernBERT-base via CrispEmbed GGUF — 768d, 8192 ctx.
+    /// Pre-LN encoder, GeGLU, per-layer rotary theta.  GGUF-only.
+    ModernBertBase,
+
+    /// ModernBERT-large via CrispEmbed GGUF — 1024d, 8192 ctx.
+    ModernBertLarge,
+
+    /// DeBERTa-v2-xlarge via CrispEmbed GGUF — 1536d, 512 ctx.
+    /// Disentangled attention.  GGUF-only.
+    DebertaV2Xlarge,
+
+    /// NomicBERT MoE via CrispEmbed GGUF — 768d, 8192 ctx.
+    /// 8-expert top-2 routing, SwiGLU, RoPE.  GGUF-only.
+    NomicBertMoe,
 }
 
 impl EmbedderModel {
@@ -220,6 +243,12 @@ impl EmbedderModel {
             EmbedderModel::EmbeddingGemma300M => "EmbeddingGemma 300M (2k ctx, 768d, Multilingual)",
             EmbedderModel::GteBaseEnV15 => "GTE Base en v1.5 (8k ctx, 768d, English)",
             EmbedderModel::GteLargeEnV15 => "GTE Large en v1.5 (8k ctx, 1024d, English)",
+            // P17.6 — GGUF-only decoder models
+            EmbedderModel::Gemma3Embed2B => "Gemma3-Embedding 2B GGUF (8k ctx, 2048d)",
+            EmbedderModel::ModernBertBase => "ModernBERT-base GGUF (8k ctx, 768d)",
+            EmbedderModel::ModernBertLarge => "ModernBERT-large GGUF (8k ctx, 1024d)",
+            EmbedderModel::DebertaV2Xlarge => "DeBERTa-v2-xlarge GGUF (512 ctx, 1536d)",
+            EmbedderModel::NomicBertMoe => "NomicBERT-MoE GGUF (8k ctx, 768d, 8-expert)",
         }
     }
 
@@ -235,10 +264,16 @@ impl EmbedderModel {
             | EmbedderModel::BgeBaseEnV15
             | EmbedderModel::MultilingualE5Base
             | EmbedderModel::EmbeddingGemma300M
-            | EmbedderModel::GteBaseEnV15 => 768,
+            | EmbedderModel::GteBaseEnV15
+            | EmbedderModel::ModernBertBase
+            | EmbedderModel::NomicBertMoe => 768,
+            // P17.6 — DeBERTa-v2-xlarge: 1536d
+            EmbedderModel::DebertaV2Xlarge => 1536,
+            // P17.6 — Gemma3-Embedding 2B: 2048d
+            EmbedderModel::Gemma3Embed2B => 2048,
             // 1024d models hit the fall-through below:
             // BgeM3, MultilingualE5Large, BgeLargeEnV15, MxbaiEmbedLargeV1,
-            // GteLargeEnV15, all PIXIE/Snowflake/Jina-v3/v5-Small/Qwen3/Octen variants.
+            // GteLargeEnV15, ModernBertLarge, all PIXIE/Snowflake/Jina-v3/v5-Small/Qwen3/Octen variants.
             _ => 1024,
         }
     }
@@ -287,6 +322,12 @@ impl EmbedderModel {
             | EmbedderModel::GteLargeEnV15 => 8192,
             // 2k-context Gemma encoder
             EmbedderModel::EmbeddingGemma300M => 2048,
+            // P17.6 — GGUF-only models
+            EmbedderModel::Gemma3Embed2B
+            | EmbedderModel::ModernBertBase
+            | EmbedderModel::ModernBertLarge
+            | EmbedderModel::NomicBertMoe => 8192,
+            EmbedderModel::DebertaV2Xlarge => 512,
         }
     }
 
@@ -336,6 +377,12 @@ impl EmbedderModel {
             EmbedderModel::EmbeddingGemma300M => 1200,
             EmbedderModel::GteBaseEnV15 => 440,
             EmbedderModel::GteLargeEnV15 => 1300,
+            // P17.6 — GGUF-only models (Q8_0 sizes from HF repos)
+            EmbedderModel::Gemma3Embed2B => 2600,
+            EmbedderModel::ModernBertBase => 440,
+            EmbedderModel::ModernBertLarge => 1300,
+            EmbedderModel::DebertaV2Xlarge => 1800,
+            EmbedderModel::NomicBertMoe => 900,
         }
     }
 
@@ -416,8 +463,12 @@ impl EmbedderModel {
             EmbeddingGemma300M => "embeddinggemma-300m",
             GteBaseEnV15 => "gte-base-en-v1.5",
             GteLargeEnV15 => "gte-large-en-v1.5",
-            // Models below only have GGUF (CrispEmbed) — no ONNX variant in
-            // the EmbedderModel enum yet, so they're handled by the wildcard.
+            // P17.6 — GGUF-only decoder/encoder models
+            Gemma3Embed2B => "gemma3-embed-2b",
+            ModernBertBase => "modernbert-base",
+            ModernBertLarge => "modernbert-large",
+            DebertaV2Xlarge => "deberta-v2-xlarge",
+            NomicBertMoe => "nomic-bert-moe",
             _ => return None,
         })
     }
@@ -676,7 +727,13 @@ impl EmbedderModel {
             | EmbedderModel::AllMiniLmL6V2
             | EmbedderModel::EmbeddingGemma300M
             | EmbedderModel::GteBaseEnV15
-            | EmbedderModel::GteLargeEnV15 => None,
+            | EmbedderModel::GteLargeEnV15
+            // P17.6 — GGUF-only models: no ONNX spec, handled via CrispEmbed backend.
+            | EmbedderModel::Gemma3Embed2B
+            | EmbedderModel::ModernBertBase
+            | EmbedderModel::ModernBertLarge
+            | EmbedderModel::DebertaV2Xlarge
+            | EmbedderModel::NomicBertMoe => None,
         }
     }
 
@@ -2725,6 +2782,12 @@ mod tests {
             (EmbedderModel::EmbeddingGemma300M, "embedding-gemma300-m"),
             (EmbedderModel::GteBaseEnV15, "gte-base-en-v15"),
             (EmbedderModel::GteLargeEnV15, "gte-large-en-v15"),
+            // P17.6 — GGUF-only decoder models
+            (EmbedderModel::Gemma3Embed2B, "gemma3-embed2-b"),
+            (EmbedderModel::ModernBertBase, "modern-bert-base"),
+            (EmbedderModel::ModernBertLarge, "modern-bert-large"),
+            (EmbedderModel::DebertaV2Xlarge, "deberta-v2-xlarge"),
+            (EmbedderModel::NomicBertMoe, "nomic-bert-moe"),
         ];
         for (variant, expected) in cases {
             let s = serde_json::to_string(variant).unwrap();
