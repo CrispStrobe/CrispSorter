@@ -597,8 +597,10 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 if let Some(data_dir) = app_state.data_dir.lock().await.clone() {
                     if let Ok(map) = crate::sync::partition::PartitionMap::open(&data_dir) {
                         let watch_roots: Vec<std::path::PathBuf> = {
-                            let w = app_state.watcher.lock().await;
-                            w.list().into_iter().map(std::path::PathBuf::from).collect()
+                            #[cfg(feature = "desktop")]
+                            { let w = app_state.watcher.lock().await; w.list().into_iter().map(std::path::PathBuf::from).collect() }
+                            #[cfg(not(feature = "desktop"))]
+                            { Vec::new() }
                         };
                         let file_path = std::path::PathBuf::from(
                             crate::images::tauri_commands::location_uri_to_local_path(&row.path)

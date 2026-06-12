@@ -15,16 +15,15 @@ pub mod jobs;
 pub mod migrations;
 pub mod secrets;
 pub mod translate;
-
+#[cfg(feature = "desktop")]
 pub mod tts;
 pub mod volume;
-pub mod mobile_fs;
-
+#[cfg(feature = "desktop")]
 pub mod watcher;
 
 /// Speak `text` aloud via the platform's native TTS synth.
 ///
-
+#[cfg(feature = "desktop")]
 /// Replaces any in-flight utterance — calling `tts_speak` twice in a row
 /// kills the first synth and starts the second. The Rust handler returns
 /// as soon as the synth process is spawned; speaking happens in the
@@ -55,7 +54,7 @@ async fn tts_speak(
     Ok(())
 }
 
-
+#[cfg(feature = "desktop")]
 /// Start watching `folder` recursively. Idempotent — adding the same
 /// folder twice does not create a duplicate watcher.
 #[tauri::command]
@@ -69,7 +68,7 @@ async fn watch_start(
     watcher::start(&mut guard, app, path).map_err(|e| format!("watch_start failed: {e:#}"))
 }
 
-
+#[cfg(feature = "desktop")]
 /// Stop watching a single folder. Returns true if a watcher was
 /// actually removed; false when the folder wasn't being watched
 /// (idempotent — frontend can call this without checking first).
@@ -83,7 +82,7 @@ async fn watch_stop_one(
     Ok(watcher::stop_one(&mut guard, &path))
 }
 
-
+#[cfg(feature = "desktop")]
 /// Stop all active watchers. No-op when none are running.
 #[tauri::command]
 async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -92,7 +91,7 @@ async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String>
     Ok(())
 }
 
-
+#[cfg(feature = "desktop")]
 /// Returns all currently watched folders (sorted, canonical paths).
 #[tauri::command]
 async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
@@ -574,7 +573,7 @@ async fn catalog_metadata(path: String) -> Result<CafMetadataDto, String> {
     })
 }
 
-
+#[cfg(feature = "desktop")]
 /// Stop any in-flight TTS utterance. No-op when nothing is speaking.
 #[tauri::command]
 async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
@@ -696,7 +695,7 @@ async fn asr_transcribe(
 }
 
 use futures_util::StreamExt;
-
+#[cfg(feature = "desktop")]
 use mistralrs::{
     best_device, initialize_logging, GgufModelBuilder, IsqType, Model, PagedAttentionMetaBuilder,
     RequestBuilder, TextMessageRole, TextMessages,
@@ -831,29 +830,29 @@ struct DownloadProgress {
 
 // Global state to hold the high-level Model instance and current model path
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
-
+#[cfg(feature = "desktop")]
 use tokio::process::Child as TokioChild;
 
 pub struct AppState {
-    
+    #[cfg(feature = "desktop")]
     model: Mutex<Option<Arc<Model>>>,
-    
+    #[cfg(feature = "desktop")]
     current_model_path: Mutex<Option<String>>,
-    
+    #[cfg(feature = "desktop")]
     sidecar_process: Mutex<Option<TokioChild>>,
-    
+    #[cfg(feature = "desktop")]
     mlx_process: Mutex<Option<TokioChild>>,
-    
+    #[cfg(feature = "desktop")]
     ollama_process: Mutex<Option<TokioChild>>,
     pub index: Mutex<index::IndexState>,
     /// Speech-to-text handle. Lazy-loaded on first `asr_transcribe` call.
     /// `None` until the user invokes voice input; `Some` thereafter.
     pub asr: Mutex<Option<asr::AsrHandle>>,
-    
+    #[cfg(feature = "desktop")]
     /// Currently-speaking TTS child process, if any. Held so `tts_stop`
     /// can kill it mid-utterance.
     pub tts_process: Mutex<Option<TokioChild>>,
-    
+    #[cfg(feature = "desktop")]
     /// Folder-watcher state. Single watched directory for v1; the
     /// `notify::RecommendedWatcher` lives inside the state and gets
     /// dropped when the user changes folders or stops watching.
@@ -876,7 +875,7 @@ pub struct AppState {
 // These spawn OS-level processes (llama.cpp, MLX, Ollama) which are
 // unavailable on mobile.  Gated behind `feature = "desktop"`.
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn start_llamacpp_sidecar(
     state: tauri::State<'_, AppState>,
@@ -1042,7 +1041,7 @@ async fn start_llamacpp_sidecar(
     Ok("Sidecar starting".to_string())
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut sidecar_lock = state.sidecar_process.lock().await;
@@ -1053,7 +1052,7 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
     Ok(())
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn start_mlx_server(
     state: tauri::State<'_, AppState>,
@@ -1171,7 +1170,7 @@ async fn start_mlx_server(
     Ok(format!("MLX server starting on port {}", port))
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 fn get_mlx_cache_dir() -> String {
     std::env::var("HF_HUB_CACHE")
@@ -1182,7 +1181,7 @@ fn get_mlx_cache_dir() -> String {
         })
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 fn check_mlx_models_cached(repo_ids: Vec<String>) -> Vec<bool> {
     let hub_dir = std::path::PathBuf::from(get_mlx_cache_dir());
@@ -1195,7 +1194,7 @@ fn check_mlx_models_cached(repo_ids: Vec<String>) -> Vec<bool> {
         .collect()
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     let dir_name = format!("models--{}", repo_id.replace('/', "--"));
@@ -1208,7 +1207,7 @@ async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     }
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn start_ollama(
     state: tauri::State<'_, AppState>,
@@ -1301,7 +1300,7 @@ async fn start_ollama(
     Ok("Ollama starting".to_string())
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut ollama_lock = state.ollama_process.lock().await;
@@ -1312,7 +1311,7 @@ async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut mlx_lock = state.mlx_process.lock().await;
@@ -2143,7 +2142,7 @@ async fn download_file(
     Ok(())
 }
 
-
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn run_mistralrs_query(
     state: tauri::State<'_, AppState>,
@@ -2301,16 +2300,21 @@ async fn run_mistralrs_query(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    
+    #[cfg(feature = "desktop")]
     initialize_logging();
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_store::Builder::new().build());
+    #[cfg(feature = "desktop")]
+    {
+        builder = builder
+            .plugin(tauri_plugin_shell::init())
+            .plugin(tauri_plugin_process::init());
+    }
+    builder
         .setup(|app| {
             // Store global handle so app_log!() works from any thread.
             if let Ok(mut h) = APP_HANDLE.lock() {
@@ -2510,21 +2514,21 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState {
-            
+            #[cfg(feature = "desktop")]
             model: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             current_model_path: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             sidecar_process: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             mlx_process: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             ollama_process: Mutex::new(None),
             index: Mutex::new(index::IndexState::disabled()),
             asr: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             tts_process: Mutex::new(None),
-            
+            #[cfg(feature = "desktop")]
             watcher: Mutex::new(watcher::WatcherState::new()),
             bg_ingest: Arc::new(Mutex::new(bg_ingest::BackgroundIngest::new())),
             foreground_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -2532,7 +2536,11 @@ pub fn run() {
             batch_session_store: Arc::new(std::sync::Mutex::new(None)),
             data_dir: tokio::sync::Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            // Desktop-only commands are gated behind `feature = "desktop"`.
+            // Mobile builds register only the common set.
+            #[cfg(feature = "desktop")]
+            { tauri::generate_handler![
             get_logs,
             frontend_log,
             execute_batch,
@@ -2644,7 +2652,6 @@ pub fn run() {
             index::tauri_commands::index_list_documents,
             index::tauri_commands::index_query_documents,
             index::tauri_commands::index_tag_facets,
-            index::tauri_commands::index_url_duplicates,
             index::tauri_commands::index_delete_document,
             index::tauri_commands::index_audio_promote_l3,
             index::tauri_commands::index_image_promote_l3,
@@ -2716,15 +2723,177 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
-            mobile_fs::tauri_commands::mobile_fs_list_folder,
-            mobile_fs::tauri_commands::mobile_fs_read_file,
-            mobile_fs::tauri_commands::mobile_fs_move_file,
-            mobile_fs::tauri_commands::mobile_fs_create_dir,
-            mobile_fs::tauri_commands::mobile_fs_delete,
-            mobile_fs::tauri_commands::mobile_fs_start_access,
-            mobile_fs::tauri_commands::mobile_fs_stop_access,
-        ]
-        )
+        ] }
+            // ── Mobile build: same commands minus desktop-only sidecars ────
+            #[cfg(not(feature = "desktop"))]
+            { tauri::generate_handler![
+            get_logs,
+            frontend_log,
+            execute_batch,
+            scan_folder,
+            download_file,
+            delete_files,
+            extract_pdf_native,
+            extract_pdf_metadata,
+            get_app_data_dir,
+            index::tauri_commands::index_search,
+            index::translate_commands::translate_text,
+            index::tauri_commands::index_ingest_document,
+            index::tauri_commands::index_ingest_batch,
+            index::tauri_commands::index_ingest_l1,
+            index::tauri_commands::index_promote_l2,
+            index::tauri_commands::index_import_caf,
+            index::tauri_commands::index_export_caf,
+            index::tauri_commands::index_export_cidx,
+            index::tauri_commands::index_open_cidx,
+            sync::tauri_commands::sync_status,
+            sync::tauri_commands::sync_push,
+            sync::tauri_commands::sync_pull,
+            sync::tauri_commands::sync_enqueue,
+            sync::tauri_commands::sync_clear_failed,
+            sync::tauri_commands::sync_cb_status,
+            sync::tauri_commands::sync_cb_set_token,
+            sync::tauri_commands::sync_cb_clear_token,
+            sync::tauri_commands::sync_cb_manifest_push,
+            sync::tauri_commands::sync_cb_manifest_pull,
+            sync::tauri_commands::sync_cb_embeddings_push,
+            sync::tauri_commands::sync_cb_search,
+            sync::tauri_commands::sync_cb_upload_file,
+            sync::tauri_commands::sync_cb_download_file,
+            sync::tauri_commands::sync_cb_drain,
+            sync::tauri_commands::sync_cb_embed_query,
+            sync::tauri_commands::sync_cb_embed_models,
+            sync::tauri_commands::sync_cb_v2_search,
+            sync::tauri_commands::sync_cb_partition,
+            sync::tauri_commands::sync_status_all,
+            sync::tauri_commands::sync_cb_backup_shards,
+            sync::tauri_commands::sync_cb_import_from_manifest_db,
+            sync::tauri_commands::sync_federated_search,
+            sync::tauri_commands::sync_cb_admin_mint,
+            sync::tauri_commands::sync_cb_admin_revoke,
+            sync::tauri_commands::sync_cb_admin_list_keys,
+            sync::tauri_commands::sync_cb_extract_status,
+            sync::tauri_commands::sync_skeleton_search,
+            drives::tauri_commands::drive_list,
+            drives::tauri_commands::drive_create,
+            drives::tauri_commands::drive_update,
+            drives::tauri_commands::drive_delete,
+            drives::tauri_commands::drive_list_dir,
+            drives::tauri_commands::drive_stat,
+            images::tauri_commands::images_list,
+            images::tauri_commands::images_default_extensions,
+            images::tauri_commands::images_thumbnail,
+            images::tauri_commands::images_exif,
+            images::tauri_commands::images_duplicates,
+            images::tauri_commands::images_near_duplicates,
+            images::crisplens::tauri_commands::images_crisplens_settings_get,
+            images::crisplens::tauri_commands::images_crisplens_settings_set,
+            images::crisplens::tauri_commands::images_crisplens_session_status,
+            images::crisplens::tauri_commands::images_crisplens_login,
+            images::crisplens::tauri_commands::images_crisplens_logout,
+            images::crisplens::tauri_commands::images_crisplens_status,
+            images::crisplens::tauri_commands::images_crisplens_watchfolders,
+            images::crisplens::tauri_commands::images_crisplens_people,
+            images::crisplens::tauri_commands::images_crisplens_image_faces,
+            images::crisplens::tauri_commands::images_crisplens_search,
+            images::crisplens::tauri_commands::images_crisplens_image_by_hash,
+            images::crisplens::tauri_commands::images_crisplens_image_by_local_path,
+            images::crisplens::tauri_commands::images_crisplens_image_push,
+            index::tauri_commands::index_ingest_cb_manifest,
+            index::tauri_commands::index_promote_cb_archive,
+            index::tauri_commands::index_lookup_cb_file,
+            index::tauri_commands::index_ingest_drive_manifest,
+            index::tauri_commands::index_promote_drive_archive,
+            index::tauri_commands::index_mount_cidx,
+            index::tauri_commands::index_unmount_cidx,
+            index::tauri_commands::index_query_cidx_documents,
+            index::tauri_commands::index_list_failed_extractions,
+            index::tauri_commands::index_retry_all_failed,
+            index::tauri_commands::index_ingest_path,
+            index::tauri_commands::index_update_location,
+            index::tauri_commands::index_update_location_by_path,
+            index::tauri_commands::index_retry_extraction,
+            index::tauri_commands::index_build_ivf_pq,
+            index::tauri_commands::index_build_scalar_index,
+            index::tauri_commands::index_list_mounted_volumes,
+            index::tauri_commands::index_volume_id_for_path,
+            index::tauri_commands::index_folder_children,
+            index::tauri_commands::index_queue_depth,
+            index::tauri_commands::index_get_config,
+            index::tauri_commands::index_set_config,
+            index::tauri_commands::index_init,
+            index::tauri_commands::index_is_ready,
+            index::tauri_commands::index_stats,
+            index::tauri_commands::index_list_documents,
+            index::tauri_commands::index_query_documents,
+            index::tauri_commands::index_tag_facets,
+            index::tauri_commands::index_delete_document,
+            index::tauri_commands::index_audio_promote_l3,
+            index::tauri_commands::index_image_promote_l3,
+            index::tauri_commands::index_capabilities,
+            index::tauri_commands::index_model_download_mb,
+            index::tauri_commands::embedder_registry_list,
+            index::tauri_commands::embedder_download_registry_model,
+            index::tauri_commands::index_benchmark_embedder,
+            asr_transcribe,
+            audio_extract_text,
+            audio_metadata,
+            volume_list_mounted,
+            file_sha256,
+            catalog_load_caf,
+            catalog_save_caf,
+            catalog_scan_dir,
+            catalog_metadata,
+            catalog_find_duplicates,
+            catalog_generate_deletion_script,
+            catalog_set_active,
+            catalog_search,
+            catalog_active_list,
+            catalog_export_sorted,
+            bg_ingest_start,
+            bg_ingest_status,
+            bg_ingest_pause,
+            bg_ingest_resume,
+            bg_ingest_cancel,
+            bg_ingest_clear,
+            bg_ingest_set_ocr,
+            jobs::tauri_commands::jobs_create,
+            jobs::tauri_commands::jobs_list,
+            jobs::tauri_commands::jobs_get,
+            jobs::tauri_commands::jobs_set_status,
+            jobs::tauri_commands::jobs_delete,
+            jobs::tauri_commands::jobs_add_files,
+            jobs::tauri_commands::jobs_claim_batch,
+            jobs::tauri_commands::jobs_mark_done,
+            jobs::tauri_commands::jobs_mark_error,
+            jobs::tauri_commands::jobs_mark_skipped,
+            jobs::tauri_commands::jobs_set_doc_id,
+            jobs::tauri_commands::jobs_reclaim,
+            jobs::tauri_commands::jobs_pending_count,
+            jobs::tauri_commands::jobs_list_files,
+            jobs::tauri_commands::jobs_remove_file,
+            jobs::tauri_commands::jobs_remove_files_by_status,
+            batch_session::tauri_commands::batch_session_load,
+            batch_session::tauri_commands::batch_session_upsert_item,
+            batch_session::tauri_commands::batch_session_upsert_items_bulk,
+            batch_session::tauri_commands::batch_session_delete_items,
+            batch_session::tauri_commands::batch_session_clear,
+            batch_session::tauri_commands::batch_session_set_extracted_text,
+            batch_session::tauri_commands::batch_session_get_extracted_text,
+            batch_session::tauri_commands::batch_session_is_migrated,
+            batch_session::tauri_commands::batch_session_mark_migrated,
+            batch_session::tauri_commands::batch_session_record_processed,
+            batch_session::tauri_commands::batch_session_lookup_history,
+            batch_session::tauri_commands::batch_session_history_count,
+            translate::tauri_commands::translate_dry_run,
+            translate::tauri_commands::translate_docx,
+            secrets::tauri_commands::secret_get,
+            secrets::tauri_commands::secret_set,
+            secrets::tauri_commands::secret_delete,
+            secrets::tauri_commands::secrets_bulk_set,
+            secrets::tauri_commands::secrets_list_known,
+        ] }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
