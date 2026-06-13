@@ -23,6 +23,14 @@ env:
   CRISPASR_REF: main
   CRISP_DOCX_REPO: CrispStrobe/crisp-docx
   CRISP_DOCX_REF: main
+  # Cargo network resilience. The license scan runs `cargo metadata` (via
+  # cargo-license) which intermittently hits crates.io-index TLS flakes
+  # ("SSL_read: SSL_ERROR_SYSCALL" — the known cargo HTTP/2 multiplexing bug):
+  # that silently drops the Rust crates from licenses.json and trips the
+  # non-trivial-count assertion. Retry hard + disable HTTP/2 multiplexing.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
@@ -82,7 +90,18 @@ jobs:
 
       - name: Regenerate licenses.json
         working-directory: repos/CrispSorter
-        run: npm run licenses:gen
+        run: |
+          # Warm the crates.io index with retries first, so the cargo-license
+          # `cargo metadata` inside generate-licenses.js doesn't drop the Rust
+          # crates on a transient index flake (which would fail the
+          # non-trivial-count assertion below). cargo-license is already
+          # installed by the earlier step.
+          for i in 1 2 3 4 5; do
+            (cd src-tauri && cargo metadata --format-version 1 >/dev/null 2>&1) && break
+            echo "cargo metadata warm-up attempt $i failed; retrying in $((i*5))s…"
+            sleep $((i*5))
+          done
+          npm run licenses:gen
 
       - name: Assert license list is non-trivial
         # Sanity check so we don't silently ship an empty list if the scan

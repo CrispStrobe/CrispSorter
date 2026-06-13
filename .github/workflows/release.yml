@@ -28,7 +28,13 @@ jobs:
             # backend (via crisp-docx-llm/nmt over CrispASR). Both add
             # no new C++ — the embedder + ASR libs are already
             # downloaded above for crispasr-metal / crispembed-metal.
-            tauri_args: '--target aarch64-apple-darwin --features crispasr-metal,crispembed-metal,translate-align,translate-nmt'
+            # `desktop` is REQUIRED: P17 gated tauri-plugin-shell (+ notify,
+            # process, mistralrs, native-tls) behind it, but default = [].
+            # Without it the shell plugin isn't compiled and the
+            # capabilities/default.json `shell:default` permission fails to
+            # resolve in build.rs ("shell:default not found") — which is what
+            # broke every v0.5.0 desktop build and published an empty release.
+            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -50,7 +56,7 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
+            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
           - platform: ubuntu-24.04
@@ -60,7 +66,7 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
+            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
 

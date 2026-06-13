@@ -151,6 +151,48 @@ GGUF models on disk).
   `src-tauri/src/images/vit_embed.rs` + Tauri command
   `embed_image_vit`.
 
+### P18 — cb-api semantic search: model selection, license compliance, CI/release fixes (2026-06-13)
+
+Work toward populating cb-api's dormant `documents.embedding` (NULL
+corpus-wide → `/api/v2/index/search` is FTS-only) so the wallabag corpus
+becomes semantically searchable, plus the compliance + pipeline fixes
+that surfaced along the way.
+
+- [ ] **cb-api server-side embedding backfill (PIXIE-Rune-v1.0).** Empirical
+  CrispEmbed-C++ benchmark on the real DE/EN wallabag corpus (M1 clean +
+  VPS) picked **PIXIE-Rune-v1.0** (XLM-R, Apache-2.0, 1024d) over Octen-0.6B
+  / bge-m3 / arctic-v2: best German+English self-retrieval (MRR@10 0.83) AND
+  ~3× faster than the 0.6B decoder, lowest RAM, no schema change. Plan:
+  `crispembed-server` sidecar (PIXIE-Rune GGUF, loopback) on the VPS + rewire
+  cb-api `api/embed.py::embed_text` to it (same engine as the client →
+  vector parity), + a resumable `scripts/backfill_embeddings.py`
+  (`merge_insert` writeback). Staged on the VPS; **activation deferred until
+  the box has RAM/CPU headroom** (it was OOM/contended during this session).
+- [ ] **Model license-consent gate — re-apply against current `main`.** A
+  license audit (written up in the private `crisp-repos`) found **5
+  restrictive models downloadable with no consent prompt** (Jina
+  v3/v5-small/v5-nano + jina-reranker-v2 = CC-BY-NC; EmbeddingGemma = Gemma
+  Terms). A gate was implemented (`index::license_consent` + `license()` /
+  `ensure_license_consent()` on `EmbedderModel`/`RerankerModel`, enforced in
+  `Embedder::new` + `Reranker::load` + `embedder_download_registry_model`,
+  CLI `--accept-license`, GUI dialog) — but on a **stale checkout**; needs
+  re-applying against current `main` + a `cargo` build verification.
+- [x] **CI license-scan hardened** against transient crates.io-index TLS
+  flakes (`SSL_ERROR_SYSCALL`): `CARGO_NET_RETRY` + `CARGO_HTTP_MULTIPLEXING=false`
+  + index warm-up retry before `licenses:gen`. The non-trivial-count
+  assertion was silently tripping when `cargo metadata` flaked.
+- [x] **Release build fixed — `desktop` feature missing.** P17 gated
+  `tauri-plugin-shell` (+ notify/process/mistralrs/native-tls) behind the
+  `desktop` feature (`default = []`), but `release.yml`'s desktop builds
+  didn't pass `desktop`, so `capabilities/default.json`'s `shell:default`
+  failed to resolve in `build.rs` → **every v0.5.0 desktop build failed and
+  an empty release was published** (the `if: always()` publish gotcha). All
+  three desktop `tauri_args` now include `desktop`.
+- [ ] **Re-release v0.5.0.** The published `v0.5.0` (Latest) has **zero
+  assets**. Delete it + the tag and re-tag once the `desktop`-feature fix is
+  on `main` to trigger a clean build. Consider tightening the `if: always()`
+  publish gate so a failed matrix can't publish an empty release again.
+
 ---
 
 ## UX gaps after v107 — the wallabag corpus is searchable end-to-end, but only via the federated CLI
