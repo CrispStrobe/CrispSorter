@@ -86,7 +86,7 @@ jobs:
       # tag at time of writing and ships the matching asset names
       # (crispembed-{linux-x86_64,macos-arm64}.tar.gz +
       # crispembed-windows-x86_64.zip).
-      CRISPEMBED_REF: v0.6.0
+      CRISPEMBED_REF: v0.8.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
@@ -646,7 +646,7 @@ jobs:
       # tag at time of writing and ships the matching asset names
       # (crispembed-{linux-x86_64,macos-arm64}.tar.gz +
       # crispembed-windows-x86_64.zip).
-      CRISPEMBED_REF: v0.6.0
+      CRISPEMBED_REF: v0.8.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       # Pin the CrispASR ref to the release tag whose libcrispasr
       # bundle we're consuming below. Keeps source-side cargo metadata
@@ -873,7 +873,7 @@ jobs:
     env:
       PROTOC: /usr/bin/protoc
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: v0.6.0
+      CRISPEMBED_REF: v0.8.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       CRISPASR_REF: v0.6.6
       CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -986,7 +986,7 @@ jobs:
     runs-on: macos-14
     env:
       CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: v0.6.0
+      CRISPEMBED_REF: v0.8.0
       CRISPASR_REPO: CrispStrobe/CrispASR
       CRISPASR_REF: v0.6.6
       CRISPDOCX_REPO: CrispStrobe/crisp-docx
