@@ -108,6 +108,9 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         "embedding-gemma300-m" | "embeddinggemma-300m" => {
             ModelLicense::Restricted("Gemma Terms of Use")
         }
+        // GLiNER NER (index::ner) — the German-tuned LFM model ships under the
+        // LFM Open License v1.0 (restricted); the DeBERTa GGUF is Apache-2.0.
+        "sauerkraut-gliner-lfm" => ModelLicense::Restricted("LFM Open License v1.0"),
         _ => ModelLicense::Permissive,
     }
 }
@@ -141,6 +144,8 @@ mod tests {
         assert!(license_for_registry_name("jina-v5-nano").requires_consent());
         assert!(license_for_registry_name("jina-reranker-v2-base-multilingual").requires_consent());
         assert!(license_for_registry_name("embedding-gemma300-m").requires_consent());
+        assert!(license_for_registry_name("sauerkraut-gliner-lfm").requires_consent());
+        assert!(!license_for_registry_name("gliner-deberta").requires_consent());
         assert!(!license_for_registry_name("bge-m3").requires_consent());
         assert!(!license_for_registry_name("pixie-rune-v1").requires_consent());
     }

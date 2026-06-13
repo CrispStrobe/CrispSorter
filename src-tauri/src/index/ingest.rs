@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 use super::embedder::{chunk_text, Embedder};
 use super::fts_index::{FtsIndex, TantivyInput};
 use super::local_index::LocalIndex;
+use super::ner::NerHandle;
 use super::schema::DocumentChunk;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -204,6 +205,12 @@ pub struct IngestPipeline {
     /// L3 ingest checks this and errors clearly if not present.
     pub embedder: Option<Arc<Mutex<Embedder>>>,
     pub config: IngestConfig,
+    /// P19 — optional GLiNER NER handle.  When set (via [`Self::with_ner`]),
+    /// `ingest_documents_batch` runs NER once per document on its `full_text`
+    /// and merges the resulting `"<label>:<text>"` entity tags into the
+    /// document's `tags` before rows are built.  `None` = NER disabled
+    /// (ingest behaviour unchanged).
+    ner: Option<NerHandle>,
     /// Channel to the single background writer task.
     writer_tx: tokio::sync::mpsc::Sender<WriterJob>,
     /// Jobs submitted to the writer but not yet completed (queued + in-flight).
@@ -284,9 +291,18 @@ impl IngestPipeline {
             vector,
             embedder,
             config,
+            ner: None,
             writer_tx,
             pending,
         }
+    }
+
+    /// Attach a GLiNER NER handle (P19). Builder so the existing
+    /// `IngestPipeline::new` call sites stay unchanged; only the paths that
+    /// opt into NER call this. `None` is a no-op.
+    pub fn with_ner(mut self, ner: Option<NerHandle>) -> Self {
+        self.ner = ner;
+        self
     }
 
     /// Number of write jobs currently queued or in flight.
@@ -343,10 +359,25 @@ impl IngestPipeline {
     /// The resulting chunks are submitted to the background writer task, which
     /// serialises all LanceDB + Tantivy mutations so concurrent callers never
     /// race on the indexes. Callers await the result via a oneshot channel.
-    pub async fn ingest_documents_batch(&self, raws: Vec<RawDocument>) -> Result<IngestStats> {
+    pub async fn ingest_documents_batch(&self, mut raws: Vec<RawDocument>) -> Result<IngestStats> {
         if raws.is_empty() {
             return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0 });
         }
+
+        // ── P19 NER phase ───────────────────────────────────────────────
+        // Run GLiNER once per document on the (truncated) full_text and merge
+        // the resulting entity tags into raw.tags BEFORE chunk rows are built,
+        // so every chunk of a doc carries the same entity tags (chunk_index
+        // convention).  No-op when NER is disabled or the feature is off.
+        if let Some(ner) = &self.ner {
+            for raw in raws.iter_mut() {
+                let entity_tags = ner.extract_tags(&raw.full_text).await;
+                if !entity_tags.is_empty() {
+                    merge_tags(&mut raw.tags, entity_tags);
+                }
+            }
+        }
+
         let embedder = self.embedder.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Embedding (L3) is disabled. Switch the index config to \
@@ -669,6 +700,19 @@ pub fn doc_id_for(raw: &RawDocument) -> String {
     raw.source_hash.clone()
 }
 
+/// P19 — merge NER entity tags into a document's existing tags, deduping
+/// case-insensitively while preserving order (existing tags first, then new
+/// entity tags in score order). Keeps the first-seen casing.
+pub(crate) fn merge_tags(tags: &mut Vec<String>, new_tags: Vec<String>) {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+    for t in new_tags {
+        if seen.insert(t.to_lowercase()) {
+            tags.push(t);
+        }
+    }
+}
+
 /// Build the unique row `id` = hash(doc_id + ":" + chunk_index).
 /// Avoids accidental collisions when the same document is re-chunked.
 pub fn chunk_row_id(doc_id: &str, chunk_index: i32) -> String {
@@ -952,6 +996,28 @@ mod tests {
         // Verify first f32
         let first = f32::from_le_bytes(bytes[0..4].try_into().unwrap());
         assert!((first - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn merge_tags_dedups_case_insensitively_preserving_order() {
+        let mut tags = vec!["theology".to_owned(), "person:Obama".to_owned()];
+        merge_tags(
+            &mut tags,
+            vec![
+                "person:obama".to_owned(),  // dup of existing (case-insensitive)
+                "org:United Nations".to_owned(),
+                "loc:Hawaii".to_owned(),
+            ],
+        );
+        assert_eq!(
+            tags,
+            vec![
+                "theology".to_owned(),
+                "person:Obama".to_owned(),
+                "org:United Nations".to_owned(),
+                "loc:Hawaii".to_owned(),
+            ]
+        );
     }
 
     #[test]

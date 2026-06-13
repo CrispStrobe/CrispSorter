@@ -301,6 +301,15 @@
     let indexUseEmbedderAsReranker = $state<boolean>(false);
     /** Stage Z — alternate reranker for CJK/Arabic/Cyrillic queries. */
     let indexRerankerModelMultilingual = $state<string>('');
+    // P19 — GLiNER named-entity recognition (opt-in, GGUF-only via CrispEmbed).
+    // `indexNerModel` holds the serde kebab-case string directly (sent verbatim
+    // to the Rust `NerModel` enum). Labels are a newline/comma-separated textarea.
+    let indexNerEnabled     = $state<boolean>(false);
+    let indexNerModel       = $state<string>('sauerkraut-gliner-lfm');
+    let indexNerLabels      = $state<string>('');
+    let indexNerThreshold   = $state<number>(0.5);
+    let indexNerMaxEntities = $state<number>(30);
+    let indexNerMaxChars    = $state<number>(8000);
     // Empty = use default ({data_dir}/models). Override is shared by
     // ONNX (fastembed/OrtPath) AND GGUF (CrispEmbed embedder + reranker)
     // downloads, so one setting controls every model weight on disk.
@@ -476,6 +485,24 @@
             });
             if (!ok) {
                 if (which === 'main') indexRerankerModel = ''; else indexRerankerModelMultilingual = '';
+                return;
+            }
+            await recordModelLicenseConsent(key);
+        }
+    }
+    /** P19 — NER model dropdown: the German-tuned Sauerkraut-GLiNER model
+     *  ships under the LFM Open License v1.0 (restricted). Confirm + record
+     *  consent on selection; revert to the permissive DeBERTa model if
+     *  declined (the Rust gate would otherwise hard-error at load time). */
+    async function handleNerModelChange(e: Event) {
+        const sel = e.target as HTMLSelectElement;
+        const key = 'sauerkraut-gliner-lfm';
+        if (sel.value === 'sauerkraut-gliner-lfm' && !acceptedModelLicenses.has(key)) {
+            const ok = await ask(i18n.t.settings.index.ner_license_confirm, {
+                title: 'License confirmation — LFM Open License v1.0', kind: 'warning'
+            });
+            if (!ok) {
+                indexNerModel = 'gliner-deberta';
                 return;
             }
             await recordModelLicenseConsent(key);
@@ -963,6 +990,12 @@
         indexRerankerModelMultilingual = await getSetting('indexRerankerModelMultilingual', '') as any;
         indexRerankerTopN  = await getSetting('indexRerankerTopN', 50) as number;
         indexUseEmbedderAsReranker = await getSetting('indexUseEmbedderAsReranker', false) as boolean;
+        indexNerEnabled     = await getSetting('indexNerEnabled', false) as boolean;
+        indexNerModel       = await getSetting('indexNerModel', 'sauerkraut-gliner-lfm') as string;
+        indexNerLabels      = await getSetting('indexNerLabels', '') as string;
+        indexNerThreshold   = await getSetting('indexNerThreshold', 0.5) as number;
+        indexNerMaxEntities = await getSetting('indexNerMaxEntities', 30) as number;
+        indexNerMaxChars    = await getSetting('indexNerMaxChars', 8000) as number;
         indexModelCacheDir = await getSetting('indexModelCacheDir', '');
         indexMatryoshkaDim = await getSetting('indexMatryoshkaDim', 0) as number;
         indexTranslateTo   = await getSetting('indexTranslateTo', 'none') as string;
@@ -1276,6 +1309,12 @@
         await saveSetting('indexRerankerModelMultilingual', indexRerankerModelMultilingual);
         await saveSetting('indexRerankerTopN',  indexRerankerTopN);
         await saveSetting('indexUseEmbedderAsReranker', indexUseEmbedderAsReranker);
+        await saveSetting('indexNerEnabled',     indexNerEnabled);
+        await saveSetting('indexNerModel',       indexNerModel);
+        await saveSetting('indexNerLabels',      indexNerLabels);
+        await saveSetting('indexNerThreshold',   indexNerThreshold);
+        await saveSetting('indexNerMaxEntities', indexNerMaxEntities);
+        await saveSetting('indexNerMaxChars',    indexNerMaxChars);
         await saveSetting('indexModelCacheDir', indexModelCacheDir);
         await saveSetting('indexMatryoshkaDim', indexMatryoshkaDim);
         await saveSetting('indexTranslateTo',   indexTranslateTo);
@@ -1424,6 +1463,17 @@
                     reranker_model_multilingual: rerankerToRust(indexRerankerModelMultilingual),
                     rerank_top_n:     Number(indexRerankerTopN) || 50,
                     use_embedder_as_reranker: indexUseEmbedderAsReranker,
+                    // P19 — GLiNER NER. Labels textarea is split on commas /
+                    // newlines into the Rust `Vec<String>` (empty = backend
+                    // default label set). `ner_model` is the serde kebab-case
+                    // string for the `NerModel` enum.
+                    ner_enabled:      indexNerEnabled,
+                    ner_model:        indexNerModel,
+                    ner_labels:       indexNerLabels
+                        .split(/[\n,]+/).map((s) => s.trim()).filter(Boolean),
+                    ner_threshold:    Number(indexNerThreshold) || 0.5,
+                    ner_max_entities: Number(indexNerMaxEntities) || 0,
+                    ner_max_chars:    Number(indexNerMaxChars) || 0,
                     model_cache_dir:  indexModelCacheDir.trim() || null,
                     matryoshka_dim:   (indexEmbedderBackend === 'gguf' && Number(indexMatryoshkaDim) > 0)
                         ? Number(indexMatryoshkaDim)
@@ -3579,6 +3629,49 @@
                     <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
                 </select>
                 <p class="hint" style="margin-top:6px;">{i18n.t.settings.index.reranker_multilingual_hint}</p>
+            </div>
+
+            <!-- P19 — GLiNER named-entity recognition (GGUF-only via CrispEmbed) -->
+            <div class="section-card">
+                <label for="index-ner-enabled" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input id="index-ner-enabled" type="checkbox"
+                        bind:checked={indexNerEnabled}
+                        disabled={!crispEmbedCompiledIn} />
+                    <Cpu size={16} /> <span>{i18n.t.settings.index.ner_enabled}</span>
+                </label>
+                {#if !crispEmbedCompiledIn}
+                    <p class="hint">{i18n.t.settings.index.ner_requires_crispembed}</p>
+                {:else}
+                    <p class="hint">{i18n.t.settings.index.ner_enabled_hint}</p>
+                {/if}
+                {#if indexNerEnabled && crispEmbedCompiledIn}
+                    <label for="index-ner-model" style="margin-top:10px;">{i18n.t.settings.index.ner_model}</label>
+                    <select id="index-ner-model" bind:value={indexNerModel}
+                        onchange={handleNerModelChange} class="styled-select">
+                        <option value="sauerkraut-gliner-lfm">{i18n.t.settings.index.ner_model_sauerkraut}</option>
+                        <option value="gliner-deberta">{i18n.t.settings.index.ner_model_deberta}</option>
+                    </select>
+
+                    <label for="index-ner-labels" style="margin-top:10px;">{i18n.t.settings.index.ner_labels}</label>
+                    <textarea id="index-ner-labels" rows="2" bind:value={indexNerLabels}
+                        placeholder={i18n.t.settings.index.ner_labels_placeholder}></textarea>
+                    <p class="hint">{i18n.t.settings.index.ner_labels_hint}</p>
+
+                    <label for="index-ner-threshold" style="margin-top:10px;">
+                        {i18n.t.settings.index.ner_threshold} ({Number(indexNerThreshold).toFixed(2)})
+                    </label>
+                    <input id="index-ner-threshold" type="range" min="0" max="1" step="0.05"
+                        bind:value={indexNerThreshold} style="width:100%;" />
+
+                    <label for="index-ner-max-entities" style="margin-top:10px;">{i18n.t.settings.index.ner_max_entities}</label>
+                    <input id="index-ner-max-entities" type="number" min="0" max="200" step="5"
+                        bind:value={indexNerMaxEntities} />
+
+                    <label for="index-ner-max-chars" style="margin-top:10px;">{i18n.t.settings.index.ner_max_chars}</label>
+                    <input id="index-ner-max-chars" type="number" min="0" step="1000"
+                        bind:value={indexNerMaxChars} />
+                    <p class="hint">{i18n.t.settings.index.ner_hint}</p>
+                {/if}
             </div>
 
             <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->

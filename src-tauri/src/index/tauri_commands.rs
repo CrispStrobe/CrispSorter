@@ -2641,6 +2641,11 @@ pub async fn init_index(
         .reranker_model_multilingual
         .map(|m| super::RerankerHandle::new(m, models_dir.clone()));
 
+    // P19 — GLiNER NER handle: cheap to construct (no I/O until first
+    // extraction). `None` when `ner_enabled = false`.
+    let ner_handle: Option<super::NerHandle> =
+        super::ner::handle_from_config(&config, models_dir.clone());
+
     match config.backend_type {
         BackendType::Remote => {
             let url = config
@@ -2746,12 +2751,15 @@ pub async fn init_index(
                 engine_inner = engine_inner.with_multilingual_reranker(h.clone(), config.rerank_top_n);
             }
             let engine = Arc::new(engine_inner);
-            let pipeline = Arc::new(IngestPipeline::new(
-                fts.clone(),
-                local.clone(),
-                embedder_arc.clone(),
-                IngestConfig::default(),
-            ));
+            let pipeline = Arc::new(
+                IngestPipeline::new(
+                    fts.clone(),
+                    local.clone(),
+                    embedder_arc.clone(),
+                    IngestConfig::default(),
+                )
+                .with_ner(ner_handle.clone()),
+            );
             let backend: Arc<dyn IndexBackend> = local.clone();
 
             emit!("done", "Index bereit", 100);

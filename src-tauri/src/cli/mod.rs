@@ -1921,12 +1921,18 @@ async fn cmd_index_async(
                 .await.map_err(|e| e.to_string())?;
             let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
                 .map_err(|e| e.to_string())?;
+            // P19 — honour the persisted NER config (off by default).
+            let ner = crate::index::ner::handle_from_config(
+                &crate::index::config_persist::load(&data_dir),
+                data_dir.join("models"),
+            );
             let pipeline = IngestPipeline::new(
                 std::sync::Arc::new(fts),
                 std::sync::Arc::new(local),
                 Some(embedder_arc),
                 IngestConfig::default(),
-            );
+            )
+            .with_ner(ner);
 
             // Collect all files.
             let mut files: Vec<std::path::PathBuf> = Vec::new();
@@ -2332,6 +2338,8 @@ async fn cmd_index_async(
                 crate::index::embedder::EmbedderDevice::Cuda  => ED::Cuda,
                 crate::index::embedder::EmbedderDevice::Metal => ED::Metal,
             };
+            // P19 — NER honours the same persisted config as the embedder.
+            let ner = crate::index::ner::handle_from_config(&cfg, cache_dir.clone());
             let embedder_config = EmbedderConfig::new(cfg.embedder_model, device, cache_dir);
             eprintln!("loading embedder for L3 reingest…");
             let embedder = crate::index::embedder::Embedder::new(embedder_config)
@@ -2344,7 +2352,8 @@ async fn cmd_index_async(
                 std::sync::Arc::new(local),
                 Some(embedder_arc),
                 IngestConfig::default(),
-            );
+            )
+            .with_ner(ner);
 
             // Build the RawDocument from the extraction.  Mirrors
             // index_audio_promote_l3's shape so audio_*/image_* L2

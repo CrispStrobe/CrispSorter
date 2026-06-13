@@ -200,19 +200,25 @@ rerank / `MathOcr` / `OcrPipeline` / `CrispVit` / `CrispLayout` / `CrispFace` /
 omni image+text). An API-surface diff of CrispEmbed **v0.8.0** vs CrispSorter's
 call sites leaves these gaps, in priority order:
 
-- [ ] **⭐ GLiNER NER → entity tags + facets** (`crispembed::CrispNER`). The one
-  genuinely-new v0.8.0 capability CrispSorter doesn't touch. Zero-shot
-  `extract(text, labels, threshold) -> [NerEntity{text,label,start,end,score}]`.
-  Run at index time over extracted body → write entities as **namespaced tags**
-  (`person:…`, `org:…`, `loc:…`, `date:…`) so the **existing tag-cloud sidebar +
-  `array_has(tags,…)` filters + `index search --tag`** light up as entity facets
-  with **zero schema change**. Unlocks faceted search/sort by entity and
-  cheaper-than-LLM metadata for batch-sort. Ready GGUF models:
-  `cstr/sauerkraut-gliner-lfm-GGUF` (German-tuned) + `cstr/gliner-deberta-GGUF`.
-  **Must route the NER model through the new `index::license_consent` gate**
-  (check each GLiNER model's license). Opt-in (`IndexConfig.ner_*`), lazy-loaded
-  like `RerankerHandle`. *Handover prompt:*
-  `handover-prompts/session-prompt-gliner-ner-integration.md`.
+- [x] **⭐ GLiNER NER → entity tags + facets** (`crispembed::CrispNER`). ✅ SHIPPED
+  (2026-06-13). New `index::ner` module — `NerModel` enum
+  (`sauerkraut-gliner-lfm` German-tuned default + `gliner-deberta` Apache-2.0
+  alt), `NerHandle` cheap-clone lazy-loader mirroring `RerankerHandle` (GGUF
+  download via hf-hub, license gate at load, soft-fail to empty tags,
+  `crispembed`-gated no-op stub otherwise). At index time
+  `ingest_documents_batch` runs NER once per document on the (truncated)
+  `full_text` and merges deduped/capped `"<label>:<text>"` tags
+  (`person:…`/`org:…`/`loc:…`/`date:…`) into `RawDocument.tags` before rows are
+  built — so the existing tag-cloud sidebar, `array_has(tags,…)` filter,
+  `index search --tag`, and federated `--tag` light up with **zero schema
+  change**. Opt-in via `IndexConfig.ner_{enabled,model,labels,threshold,
+  max_entities,max_chars}` (default off). Sauerkraut-LFM (LFM Open License
+  v1.0) routed through `index::license_consent` (restricted → consent
+  required); DeBERTa is permissive. Settings panel (toggle / model / labels /
+  threshold / caps) + DE/EN i18n + license-consent dialog; opt-in
+  `TagCloud groupEntities` view groups namespaced tags by label prefix. CLI
+  `index ingest` + L3-reingest honour the persisted NER config. See
+  [HISTORY.md](HISTORY.md) 2026-06-13 session log.
 - [ ] **Finish audio cross-modal search.** `encode_audio` is wired but barely
   used (1 call site). The omni goal — "podcast about Bosnia" → audio hits
   without transcription — needs audio embeddings actually indexed into the omni

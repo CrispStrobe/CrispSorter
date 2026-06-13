@@ -16,12 +16,20 @@
         facets = [],
         selected = new Set<string>(),
         loading = false,
+        groupEntities = false,
         ontoggle,
         onclear,
     }: {
         facets?: TagFacet[];
         selected?: Set<string>;
         loading?: boolean;
+        /**
+         * P19 — when true, tags shaped like `"<label>:<text>"` (the GLiNER
+         * NER entity tags) are grouped under a per-label header into an
+         * "Entities" view; plain tags keep the flat cloud above. Default
+         * false leaves the original behaviour untouched.
+         */
+        groupEntities?: boolean;
         ontoggle: (tag: string) => void;
         onclear?: () => void;
     } = $props();
@@ -33,6 +41,32 @@
         // 0.80rem … 1.15rem across the count range (sqrt softens outliers).
         const t = Math.sqrt(count) / Math.sqrt(maxCount);
         return 0.8 + t * 0.35;
+    }
+
+    interface FacetGroup { label: string; facets: TagFacet[]; }
+
+    // Plain (non-namespaced) tags shown in the flat cloud.
+    let plainFacets = $derived(
+        groupEntities ? facets.filter((f) => !f.tag.includes(':')) : facets,
+    );
+    // Namespaced entity tags, bucketed by the prefix before the first ':'.
+    let entityGroups = $derived.by((): FacetGroup[] => {
+        if (!groupEntities) return [];
+        const buckets = new Map<string, TagFacet[]>();
+        for (const f of facets) {
+            const i = f.tag.indexOf(':');
+            if (i <= 0) continue;
+            const label = f.tag.slice(0, i);
+            (buckets.get(label) ?? buckets.set(label, []).get(label)!).push(f);
+        }
+        return [...buckets.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([label, fs]) => ({ label, facets: fs }));
+    });
+    // Strip the `label:` prefix for display; the toggle value stays the full tag.
+    function entityText(tag: string): string {
+        const i = tag.indexOf(':');
+        return i >= 0 ? tag.slice(i + 1) : tag;
     }
 </script>
 
@@ -47,7 +81,7 @@
                 <X size={11} /> {selected.size}
             </button>
         {/if}
-        {#each facets as f (f.tag)}
+        {#each plainFacets as f (f.tag)}
             <button
                 class="tc-chip"
                 class:active={selected.has(f.tag)}
@@ -60,6 +94,24 @@
         {/each}
     {/if}
 </div>
+{#if groupEntities && entityGroups.length > 0}
+    {#each entityGroups as g (g.label)}
+        <div class="tc-group-label">{g.label}</div>
+        <div class="tag-cloud">
+            {#each g.facets as f (f.tag)}
+                <button
+                    class="tc-chip"
+                    class:active={selected.has(f.tag)}
+                    style="font-size:{weight(f.count)}rem"
+                    onclick={() => ontoggle(f.tag)}
+                    title="{f.tag} — {f.count.toLocaleString()} Dokument(e)"
+                >
+                    {entityText(f.tag)}<span class="tc-count">{f.count.toLocaleString()}</span>
+                </button>
+            {/each}
+        </div>
+    {/each}
+{/if}
 
 <style>
     .tag-cloud {
@@ -107,6 +159,14 @@
         gap: 5px;
         color: #71717a;
         font-size: 0.82rem;
+    }
+    .tc-group-label {
+        margin: 8px 2px 2px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #71717a;
     }
     :global(.spin) { animation: tc-spin 1s linear infinite; }
     @keyframes tc-spin { to { transform: rotate(360deg); } }

@@ -9,6 +9,65 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-13 — P19 ⭐ GLiNER NER → entity tags + facets
+
+Wired CrispEmbed v0.8.0's zero-shot named-entity recognition
+(`crispembed::CrispNER`, GLiNER) through the ingest pipeline so the catalog
+auto-extracts people / organizations / places / dates / … from document text
+and exposes them as faceted, searchable entity **tags** — with **zero schema
+migration** (they land in the existing `tags` column, lighting up the
+tag-cloud sidebar, `array_has(tags,…)` filter, `index search --tag`, and the
+federated `--tag` path for free).
+
+**New module `src-tauri/src/index/ner.rs`** (mirrors `index::reranker`):
+
+- `NerModel` enum — `SauerkrautGlinerLfm` (German-tuned LFM2.5-350M, default)
+  + `GlinerDeberta` (DeBERTa-v3, English/multilingual, Apache-2.0). serde
+  kebab-case; `display_name` / `gguf_spec` / `license` / `consent_key` /
+  `ensure_license_consent`.
+- `Ner` — GGUF load via `crispembed::CrispNER::new` behind the `crispembed`
+  feature; a zero-field stub that errors on `load` otherwise.
+- `NerHandle { model, labels, threshold, max_entities, max_chars, cache_dir,
+  slot: Arc<Mutex<Option<Ner>>> }` — cheap-clone, lazy-loads the GGUF on first
+  `extract_tags` (hf-hub download, license gate), soft-fails to empty tags.
+  `extract_tags` truncates `full_text` to `max_chars` on a char boundary, runs
+  the model, then builds `"<label>:<text>"` tags: drop below `threshold`,
+  dedup `(label, text)` case-insensitively, keep top-`max_entities` by score
+  (Q6 anti-explosion). `label_to_prefix` maps the curated label set to compact
+  prefixes (`organization`→`org`, `location`→`loc`, `phone number`→`phone`, …).
+- No-op (`Vec::new`) on builds without `crispembed`, so ingest stays
+  byte-identical to today when the feature is off.
+
+**License gate** — `index::license_consent::license_for_registry_name` now maps
+`sauerkraut-gliner-lfm` → `Restricted("LFM Open License v1.0")` (consent
+required); `gliner-deberta` stays permissive. The model is gated at
+`Ner::load` exactly like `Reranker::load`.
+
+**Ingest** — `IngestPipeline` gained an `Option<NerHandle>` (via a `with_ner`
+builder, so the existing `IngestPipeline::new` call sites are untouched).
+`ingest_documents_batch` runs NER once per document and merges the entity tags
+into `raw.tags` (case-insensitive dedup, order-preserving) **before** chunk
+rows are built — so every chunk of a doc carries the same entity tags
+(chunk_index convention).
+
+**Config** — `IndexConfig.ner_{enabled,model,labels,threshold,max_entities,
+max_chars}` with serde defaults (off; `sauerkraut-gliner-lfm`; curated label
+set; 0.5; 30; 8000 chars). Threaded into the GUI init path and the CLI
+`index ingest` + L3-reingest paths via `ner::handle_from_config`.
+
+**Frontend** — Settings panel (toggle / model dropdown / labels textarea /
+threshold slider / entity + char caps), gated on `crispEmbedCompiledIn`,
+reusing the P18 consent dialog for the restricted Sauerkraut model; DE/EN
+i18n. `TagCloud.svelte` gained an opt-in `groupEntities` view that buckets
+namespaced tags under per-label headers (default off → existing behaviour).
+
+**Tests** — 13 `ner` unit tests (serde strings, license split, gguf spec,
+label→prefix mapping, threshold/dedup/cap/empty, char-boundary truncation,
+empty-input + feature-off no-op) + `merge_tags` dedup test in `ingest` +
+license-consent registry test. `npm run check`: 0 errors.
+
+---
+
 ## Session log — 2026-06-12 — P17 CrispEmbed deep integration (7 modules)
 
 Wired every major CrispEmbed capability into CrispSorter behind

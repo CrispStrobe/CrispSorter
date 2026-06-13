@@ -6,6 +6,7 @@ pub mod ingest;
 pub mod license_consent;
 pub mod l2_metadata;
 pub mod local_index;
+pub mod ner;
 pub mod omni_embed;
 pub mod reranker;
 pub mod skeleton;
@@ -44,6 +45,7 @@ pub use fts_index::FtsIndex;
 pub use ingest::{IngestConfig, IngestPipeline, IngestStats, RawDocument};
 pub use local_index::LocalIndex;
 pub use location::{FileLocation, RetrievalCost};
+pub use ner::{NerHandle, NerModel};
 pub use reranker::{Reranker, RerankerHandle, RerankerModel};
 pub use schema::{build_schema, DocumentChunk, SearchFilters, SearchResult};
 pub use search::SearchEngine;
@@ -232,6 +234,36 @@ pub struct IndexConfig {
     /// for users who haven't / won't download a separate model.
     #[serde(default)]
     pub use_embedder_as_reranker: bool,
+
+    // ── P19 — GLiNER named-entity recognition (index::ner) ──────────────
+    /// Master switch for index-time NER.  When `true`, each document's
+    /// `full_text` runs through the GLiNER model once (truncated to
+    /// [`Self::ner_max_chars`]) and the resulting `"<label>:<text>"` entity
+    /// tags are merged into the document's `tags` column.  Default `false`
+    /// (opt-in) — NER adds per-doc latency.  GGUF-only via CrispEmbed; a
+    /// no-op on builds without the `crispembed` feature.
+    #[serde(default)]
+    pub ner_enabled: bool,
+    /// Which GLiNER model to use.  `None` falls back to
+    /// [`NerModel::default`] (`sauerkraut-gliner-lfm`, German-tuned) when
+    /// [`Self::ner_enabled`] is on.
+    #[serde(default)]
+    pub ner_model: Option<NerModel>,
+    /// Zero-shot entity labels to extract.  Empty = [`ner::default_labels`].
+    #[serde(default)]
+    pub ner_labels: Vec<String>,
+    /// Confidence threshold in `[0, 1]`; entities below this score are
+    /// dropped.  Default 0.5.
+    #[serde(default = "default_ner_threshold")]
+    pub ner_threshold: f32,
+    /// Cap on entity tags kept per document (top-N by score after dedup;
+    /// 0 = unlimited).  Default 30 — prevents tag explosion.
+    #[serde(default = "default_ner_max_entities")]
+    pub ner_max_entities: usize,
+    /// Truncate `full_text` to this many bytes before extraction (latency
+    /// cap; 0 = no truncation).  Default 8000.
+    #[serde(default = "default_ner_max_chars")]
+    pub ner_max_chars: usize,
     /// P13.6 — master switch for audio + video extraction.  When
     /// `false`, bg_ingest skips audio/video extensions entirely
     /// (L1 metadata-only path).  When `true`, the audio extractor
@@ -441,6 +473,21 @@ fn default_rerank_top_n() -> usize {
     50
 }
 
+/// P19 — default GLiNER confidence threshold (Q6).
+fn default_ner_threshold() -> f32 {
+    0.5
+}
+
+/// P19 — default cap on entity tags per document (Q6).
+fn default_ner_max_entities() -> usize {
+    30
+}
+
+/// P19 — default `full_text` truncation before NER (Q5).
+fn default_ner_max_chars() -> usize {
+    8000
+}
+
 /// P13.6 — audio extraction is on by default on feature-enabled builds.
 /// The runtime dispatcher's `is_audio_extraction_available()` gate
 /// also fires for feature-disabled builds, so a `true` default here
@@ -524,6 +571,12 @@ impl Default for IndexConfig {
             reranker_model: None,
             reranker_model_multilingual: None,
             rerank_top_n: default_rerank_top_n(),
+            ner_enabled: false,
+            ner_model: None,
+            ner_labels: Vec::new(),
+            ner_threshold: default_ner_threshold(),
+            ner_max_entities: default_ner_max_entities(),
+            ner_max_chars: default_ner_max_chars(),
             model_cache_dir: None,
             matryoshka_dim: None,
             translate_to: None,
