@@ -70,6 +70,28 @@ impl RerankerModel {
         }
     }
 
+    /// License class for the consent gate (`index::license_consent`).
+    pub fn license(&self) -> crate::index::license_consent::ModelLicense {
+        use crate::index::license_consent::ModelLicense::*;
+        match self {
+            RerankerModel::JinaRerankerV2BaseMultilingual => NonCommercial("CC-BY-NC-4.0"),
+            _ => Permissive,
+        }
+    }
+
+    /// Consent key (matches `gguf_registry_name()`); empty when permissive.
+    pub fn consent_key(&self) -> &'static str {
+        match self {
+            RerankerModel::JinaRerankerV2BaseMultilingual => "jina-reranker-v2-base-multilingual",
+            _ => "",
+        }
+    }
+
+    /// Gate: errors unless permissive or consent is on record.
+    pub fn ensure_license_consent(&self) -> Result<()> {
+        crate::index::license_consent::ensure(self.display_name(), self.consent_key(), self.license())
+    }
+
     /// HuggingFace repo id and filename in the `cstr/<name>-GGUF` registry.
     /// The base file uses `<name>.gguf` (no `-q8_0` suffix) — matches the
     /// CrispEmbed `model_mgr.cpp` registry line for each of these three
@@ -112,6 +134,8 @@ impl Reranker {
     /// import confined to `index::embedder`.
     #[cfg(feature = "crispembed")]
     pub async fn load(model: RerankerModel, cache_dir: &Path) -> Result<Self> {
+        // License-consent gate before any download (CC-BY-NC reranker).
+        model.ensure_license_consent()?;
         let spec = model.gguf_spec();
         let path = ensure_reranker_on_disk(&spec, cache_dir).await?;
         println!("[reranker] Loading GGUF: {}", path.display());

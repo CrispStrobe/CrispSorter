@@ -442,12 +442,45 @@
         'mxbai_embed_large_v1', 'nomic_embed_text_v15', 'all_mini_lm_l6_v2',
     ]);
 
-    /** Models with a non-commercial license. Selecting one prompts a
-     *  confirmation dialog; declining persists the model id in
-     *  `nonCommercialDeclined` and disables that <option> permanently
-     *  (until cleared). */
-    const NON_COMMERCIAL_MODELS = new Set(['jina_nano']);
+    /** GUI model keys whose license requires explicit consent before
+     *  download/use — non-commercial (CC-BY-NC: the Jina retrieval models)
+     *  or use-restricted (Gemma Terms: EmbeddingGemma). Selecting one prompts
+     *  a confirmation dialog; declining persists the key in
+     *  `nonCommercialDeclined` and disables that <option> until cleared.
+     *  Confirming records consent with the backend (so the Rust download gate
+     *  in `index::license_consent` lets it through). */
+    const NON_COMMERCIAL_MODELS = new Set(['jina_nano', 'jina_small', 'embedding_gemma_300m']);
     let nonCommercialDeclined = $state<Set<string>>(new Set());
+    /** Backend consent keys (= `indexEmbedderToRust(...)`) the user has
+     *  accepted; persisted and replayed to the backend on startup so search /
+     *  ingest don't hit the consent gate after a one-time confirmation. */
+    let acceptedModelLicenses = $state<Set<string>>(new Set());
+
+    /** Record consent for a backend model key: tell the Rust gate + persist. */
+    async function recordModelLicenseConsent(key: string) {
+        if (!key || acceptedModelLicenses.has(key)) return;
+        acceptedModelLicenses = new Set([...acceptedModelLicenses, key]);
+        await saveSetting('acceptedModelLicenses', Array.from(acceptedModelLicenses));
+        try { await invoke('embedder_accept_model_license', { keys: [key] }); } catch { /* backend not wired yet */ }
+    }
+
+    /** Reranker dropdowns: the Jina v2 reranker is CC-BY-NC. Confirm + record
+     *  consent on selection; revert to "off" if declined (the Rust gate would
+     *  otherwise hard-error at score time). */
+    async function handleRerankerChange(e: Event, which: 'main' | 'multi') {
+        const sel = e.target as HTMLSelectElement;
+        const key = 'jina-reranker-v2-base-multilingual';
+        if (sel.value === 'jina_v2_multi' && !acceptedModelLicenses.has(key)) {
+            const ok = await ask(i18n.t.settings.index.non_commercial_confirm, {
+                title: 'License confirmation — CC-BY-NC-4.0', kind: 'warning'
+            });
+            if (!ok) {
+                if (which === 'main') indexRerankerModel = ''; else indexRerankerModelMultilingual = '';
+                return;
+            }
+            await recordModelLicenseConsent(key);
+        }
+    }
     function supportsGguf(uiModel: string): boolean {
         return GGUF_CAPABLE_MODELS.has(uiModel);
     }
@@ -517,10 +550,26 @@
     }
 
     async function downloadRegistryModel(name: string) {
+        // License-consent gate: ask the backend whether this registry model
+        // needs consent; if so, confirm before downloading and pass acceptance.
+        let accepted = acceptedModelLicenses.has(name);
+        if (!accepted) {
+            let lic: string | null = null;
+            try { lic = await invoke<string | null>('embedder_model_license', { name }); } catch { lic = null; }
+            if (lic) {
+                const ok = await ask(i18n.t.settings.index.non_commercial_confirm, {
+                    title: `License confirmation — ${lic}`,
+                    kind: 'warning'
+                });
+                if (!ok) { registryDownloadMsg = 'Download cancelled (license not accepted).'; return; }
+                await recordModelLicenseConsent(name);
+                accepted = true;
+            }
+        }
         registryDownloadBusy = name;
         registryDownloadMsg  = '';
         try {
-            await invoke('embedder_download_registry_model', { name });
+            await invoke('embedder_download_registry_model', { name, acceptLicense: accepted });
             // Refresh the registry list so `cached` flags update.
             embedderRegistry = await invoke<EmbedderRegistryEntry[]>('embedder_registry_list');
             registryDownloadMsg = 'Downloaded.';
@@ -576,7 +625,9 @@
                 sel.value = indexEmbedderModel;
                 return;
             }
-            // Confirmed — clear any prior decline so the suffix goes away.
+            // Confirmed — record consent with the backend (so the Rust gate
+            // lets search/ingest download+use it) and clear any prior decline.
+            await recordModelLicenseConsent(indexEmbedderToRust(val));
             if (nonCommercialDeclined.has(val)) {
                 const next = new Set(nonCommercialDeclined);
                 next.delete(val);
@@ -942,6 +993,13 @@
         activeCatalogId    = await getSetting('activeCatalogId', null);
         const declinedArr  = (await getSetting('nonCommercialDeclined', [])) as string[];
         nonCommercialDeclined = new Set(declinedArr ?? []);
+        const acceptedArr  = (await getSetting('acceptedModelLicenses', [])) as string[];
+        acceptedModelLicenses = new Set(acceptedArr ?? []);
+        // Replay accepted licenses to the backend gate so previously-confirmed
+        // restrictive models keep working without re-prompting this session.
+        if (acceptedModelLicenses.size > 0) {
+            try { await invoke('embedder_accept_model_license', { keys: Array.from(acceptedModelLicenses) }); } catch { /* backend not wired yet */ }
+        }
         // Sync saved config into the backend
         try {
             await invoke('index_get_config').then(() => {}).catch(() => {});
@@ -3472,7 +3530,7 @@
             <!-- Reranker (cross-encoder, GGUF-only via CrispEmbed) -->
             <div class="section-card">
                 <label for="index-reranker-select"><Cpu size={16} /> {i18n.t.settings.index.reranker_model}</label>
-                <select id="index-reranker-select" bind:value={indexRerankerModel} class="styled-select">
+                <select id="index-reranker-select" bind:value={indexRerankerModel} onchange={(e) => handleRerankerChange(e, 'main')} class="styled-select">
                     <option value="">{i18n.t.settings.index.reranker_off}</option>
                     <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
                     <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
@@ -3514,7 +3572,7 @@
                 <label for="index-reranker-multi-select">
                     <Cpu size={16} /> {i18n.t.settings.index.reranker_multilingual_label}
                 </label>
-                <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} class="styled-select">
+                <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} onchange={(e) => handleRerankerChange(e, 'multi')} class="styled-select">
                     <option value="">{i18n.t.settings.index.reranker_off}</option>
                     <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
                     <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>

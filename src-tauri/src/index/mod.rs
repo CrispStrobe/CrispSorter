@@ -3,6 +3,7 @@ pub mod fts_index;
 pub mod fts_query;
 pub mod hf_prefetch;
 pub mod ingest;
+pub mod license_consent;
 pub mod l2_metadata;
 pub mod local_index;
 pub mod omni_embed;

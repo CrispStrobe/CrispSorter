@@ -62,6 +62,11 @@ struct Cli {
     /// collided with `catalog scan --out PATH`.
     #[arg(long = "format", short = 'f', value_enum, default_value_t = OutFormat::Json, global = true)]
     format: OutFormat,
+    /// Accept the licenses of non-commercial (CC-BY-NC) and use-restricted
+    /// (Gemma) models for downloads/use this run. Required to fetch e.g.
+    /// jina-v3 / jina-v5 / jina-reranker-v2 / embeddinggemma.
+    #[arg(long = "accept-license", global = true, default_value_t = false)]
+    accept_license: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -1000,6 +1005,12 @@ pub fn run() -> ExitCode {
             return if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS };
         }
     };
+
+    // Global `--accept-license`: accept all restrictive model licenses for
+    // this process so downloads/use don't hard-error on the consent gate.
+    if cli.accept_license {
+        crate::index::license_consent::accept_all();
+    }
 
     let result: Result<(), String> = match cli.command {
         Command::Version => cmd_version(cli.format),
@@ -2611,12 +2622,12 @@ async fn cmd_index_async(
                 .map_err(|e| e.to_string())?;
             let groups = local.url_duplicates(limit).await.map_err(|e| e.to_string())?;
             if groups.is_empty() {
-                match out_format {
+                match out {
                     OutFormat::Json => println!("[]"),
                     OutFormat::Text => println!("No URL duplicates found."),
                 }
             } else {
-                match out_format {
+                match out {
                     OutFormat::Json => {
                         println!("{}", serde_json::to_string_pretty(&groups).unwrap_or_default());
                     }

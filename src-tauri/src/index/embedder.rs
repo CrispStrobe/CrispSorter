@@ -252,6 +252,41 @@ impl EmbedderModel {
         }
     }
 
+    /// SPDX-ish license class for this model's weights. Drives the
+    /// download/use consent gate (see `index::license_consent`).
+    pub fn license(&self) -> crate::index::license_consent::ModelLicense {
+        use crate::index::license_consent::ModelLicense::*;
+        match self {
+            // Jina v3 + v5 retrieval heads are CC-BY-NC-4.0 (non-commercial).
+            EmbedderModel::JinaV3 | EmbedderModel::JinaV5Small | EmbedderModel::JinaV5Nano => {
+                NonCommercial("CC-BY-NC-4.0")
+            }
+            // EmbeddingGemma ships under Google's Gemma Terms of Use.
+            EmbedderModel::EmbeddingGemma300M => Restricted("Gemma Terms of Use"),
+            _ => Permissive,
+        }
+    }
+
+    /// Stable consent key (matches `gguf_registry_name()` / the GUI's
+    /// `indexEmbedderToRust` mapping) so GUI/CLI acceptance lines up with the
+    /// gate. Empty for permissive models (no consent needed).
+    pub fn consent_key(&self) -> &'static str {
+        match self {
+            EmbedderModel::JinaV3 => "jina-v3",
+            EmbedderModel::JinaV5Small => "jina-v5-small",
+            EmbedderModel::JinaV5Nano => "jina-v5-nano",
+            EmbedderModel::EmbeddingGemma300M => "embedding-gemma300-m",
+            _ => "",
+        }
+    }
+
+    /// Gate: errors unless this model's license is permissive or consent is on
+    /// record (env `CRISPSORTER_ACCEPT_MODEL_LICENSE`, CLI `--accept-license`,
+    /// or GUI confirmation).
+    pub fn ensure_license_consent(&self) -> Result<()> {
+        crate::index::license_consent::ensure(self.display_name(), self.consent_key(), self.license())
+    }
+
     pub fn dims(&self) -> usize {
         match self {
             EmbedderModel::MultilingualMiniLm
@@ -2065,6 +2100,14 @@ pub struct Embedder {
 
 impl Embedder {
     pub async fn new(config: EmbedderConfig) -> Result<Self> {
+        // License-consent gate — refuse non-commercial / use-restricted models
+        // unless the operator accepted the license. Single choke point for every
+        // backend below (GGUF/CrispEmbed, ONNX/fastembed, OrtPath, direct-HF),
+        // including the registry-driven load-by-name path.
+        match config.model_name_override.as_deref() {
+            Some(name) => crate::index::license_consent::ensure_for_registry_name(name)?,
+            None => config.model.ensure_license_consent()?,
+        }
         let eps = config.device.execution_providers();
         crate::app_log!(
             "info",

@@ -2396,7 +2396,14 @@ pub fn embedder_registry_list(state: State<'_, AppState>) -> Vec<EmbedderRegistr
 pub async fn embedder_download_registry_model(
     state: State<'_, AppState>,
     name: String,
+    accept_license: Option<bool>,
 ) -> Result<String, String> {
+    // License-consent gate: record acceptance if the GUI confirmed, then refuse
+    // the download when a restrictive (CC-BY-NC / Gemma) model lacks consent.
+    if accept_license.unwrap_or(false) {
+        crate::index::license_consent::accept(&name);
+    }
+    crate::index::license_consent::ensure_for_registry_name(&name).map_err(|e| e.to_string())?;
     #[cfg(feature = "crispembed")]
     {
         use std::path::PathBuf;
@@ -2430,6 +2437,27 @@ pub async fn embedder_download_registry_model(
     {
         let _ = (state, name);
         Err("crispembed feature not enabled".into())
+    }
+}
+
+// ── Model license consent ───────────────────────────────────────────────────
+
+/// Returns the license label if a model (by registry/consent key) requires
+/// explicit consent before download/use, else `None`. Lets the GUI decide
+/// whether to show the confirmation dialog for any model — not a hardcoded list.
+#[tauri::command]
+pub fn embedder_model_license(name: String) -> Option<String> {
+    let lic = crate::index::license_consent::license_for_registry_name(&name);
+    lic.requires_consent().then(|| lic.label().to_string())
+}
+
+/// Record consent for one or more restrictive models (by registry/consent key).
+/// Called by the GUI after the user confirms the license dialog, and replayed
+/// on startup from the persisted accepted-list so search/ingest don't re-prompt.
+#[tauri::command]
+pub fn embedder_accept_model_license(keys: Vec<String>) {
+    for k in keys {
+        crate::index::license_consent::accept(&k);
     }
 }
 
