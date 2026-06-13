@@ -193,6 +193,38 @@ that surfaced along the way.
   on `main` to trigger a clean build. Consider tightening the `if: always()`
   publish gate so a failed matrix can't publish an empty release again.
 
+### P19 — Further CrispEmbed v0.8.0 integration (the not-yet-wired capabilities)
+
+P17 already wired most of CrispEmbed's surface (dense / sparse / ColBERT /
+rerank / `MathOcr` / `OcrPipeline` / `CrispVit` / `CrispLayout` / `CrispFace` /
+omni image+text). An API-surface diff of CrispEmbed **v0.8.0** vs CrispSorter's
+call sites leaves these gaps, in priority order:
+
+- [ ] **⭐ GLiNER NER → entity tags + facets** (`crispembed::CrispNER`). The one
+  genuinely-new v0.8.0 capability CrispSorter doesn't touch. Zero-shot
+  `extract(text, labels, threshold) -> [NerEntity{text,label,start,end,score}]`.
+  Run at index time over extracted body → write entities as **namespaced tags**
+  (`person:…`, `org:…`, `loc:…`, `date:…`) so the **existing tag-cloud sidebar +
+  `array_has(tags,…)` filters + `index search --tag`** light up as entity facets
+  with **zero schema change**. Unlocks faceted search/sort by entity and
+  cheaper-than-LLM metadata for batch-sort. Ready GGUF models:
+  `cstr/sauerkraut-gliner-lfm-GGUF` (German-tuned) + `cstr/gliner-deberta-GGUF`.
+  **Must route the NER model through the new `index::license_consent` gate**
+  (check each GLiNER model's license). Opt-in (`IndexConfig.ner_*`), lazy-loaded
+  like `RerankerHandle`. *Handover prompt:*
+  `handover-prompts/session-prompt-gliner-ner-integration.md`.
+- [ ] **Finish audio cross-modal search.** `encode_audio` is wired but barely
+  used (1 call site). The omni goal — "podcast about Bosnia" → audio hits
+  without transcription — needs audio embeddings actually indexed into the omni
+  vector space + surfaced in search. Likely completing a partial wiring, not a
+  new build.
+- [ ] **Expose all OCR Tier-4 variants.** `OcrPipeline` is integrated; v0.8.0
+  added GOT-OCR2 / Nanonets-OCR / GLM-OCR / InternVL2 ports. Confirm each is
+  selectable in the OCR backend registry/UI (low effort — registry entries) for
+  more language/quality coverage.
+- [ ] **(Minor)** `rerank_biencoder` as a fast/cheap reranking option alongside
+  the cross-encoder; `encode_tokens` for token-level match highlighting.
+
 ---
 
 ## UX gaps after v107 — the wallabag corpus is searchable end-to-end, but only via the federated CLI
