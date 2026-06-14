@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Flip the built draft to the PUBLIC Latest release. Leave OFF to only build/test (e.g. exercise the crispembed compile) and keep the draft unpublished.'
+        type: boolean
+        default: false
 
 jobs:
   release-required:
@@ -1119,7 +1124,12 @@ jobs:
   # Mobile jobs (Android/iOS) also don't block — they may need extra setup.
   publish:
     needs: [release-required, release-android, release-ios]
-    if: always()
+    # Run on real tag-push releases (regardless of matrix outcome, hence
+    # always()), but on a manual workflow_dispatch ONLY when the operator
+    # explicitly set publish=true. A bare dispatch (publish=false) builds
+    # everything for compile coverage and leaves the draft unpublished —
+    # so it can't republish a release as Latest by accident.
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
