@@ -254,6 +254,29 @@ settings surface; pipeline logic lives in CrispEmbed C++.
   panel incl. the per-stage **stage builder** (add/remove/reorder; per-stage
   engine + cleanup + params + gate) + DE/EN i18n. Tesseract recogniser
   defaults to `tesseract-eng`. See [HISTORY.md](HISTORY.md) 2026-06-15.
+- [x] **⭐ Multi-page + layout pipeline** ✅ SHIPPED (2026-06-15). Three slices
+  over a shared page-sourcing spine (`extractors/page_source.rs`):
+  - **Slice 1 — multi-page TIFF.** `rasterize_pages` splits a multi-frame TIFF
+    into per-frame temp PNGs (pure-Rust `tiff` crate; Gray8/RGB8/RGBA8); single
+    frame → original path (zero-copy). The image arm loops pages, OCRs each via
+    `ocr_image_page`, joins with a form-feed `PAGE_SEPARATOR`.
+  - **Slice 2 — PDF rasterization.** `rasterize_pdf` (cargo feature `pdf-render`,
+    PDFium bound at runtime via `pdfium-render`; co-located lib → system lib)
+    renders each page at ~200 DPI → PNG. The empty-text-PDF arm rasterizes +
+    per-page OCRs, falling back to the legacy whole-file tesseract shell-out
+    when no rasterizer is present.
+  - **Slice 3 — layout-aware reading order.** Optional pass (`OcrPipelineConfig
+    .layout`): CrispEmbed RT-DETRv2 (`extractors/layout.rs`) detects regions,
+    orders them top-to-bottom / left-to-right (column-aware), then OCRs each in
+    reading order — text→engine, formula→math OCR, figure/table skipped,
+    header/footer optionally dropped (`drop_headers_footers`). `layout_threshold`
+    knob. Process-wide cached detector (`LAYOUT_DET`). Falls back to whole-page
+    OCR when no regions are found. Settings panel + DE/EN i18n. Needs
+    `crispembed`; off by default.
+- [ ] **Gap — multi-page release wiring.** Per-platform `libpdfium` bundling in
+  the release CI matrix + a live PDF→raster→OCR E2E test (today `pdf-render` is
+  a dev/opt-in feature, validated by the `cargo check --features
+  desktop,pdf-render` build only).
 - [ ] **Gap — CLI parity.** The CLI `index ingest` honours the persisted
   pipeline config, but there's no flag-driven "OCR this file with engine X +
   pre-processors Y + post-processors Z" command for ad-hoc use. (CrispEmbed's

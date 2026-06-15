@@ -191,6 +191,11 @@
     // Advanced per-stage builder: when on, the user composes explicit stages
     // (full tweakability) instead of the simple toggles above.
     let ocrPipelineAdvanced = $state(false);
+    // P20 slice 3 — layout-aware reading-order pass (RT-DETRv2 region detect →
+    // column-aware reading order → per-region OCR; formulas → math OCR).
+    let ocrPipelineLayout     = $state(false);
+    let ocrPipelineLayoutThr  = $state(0.25);
+    let ocrPipelineDropHF     = $state(false);
     type OcrStage = {
         source_type: string; engine: string; det_model: string; rec_model: string;
         cleanup: { enabled: boolean; deskew: boolean; crop_borders: boolean; whiten_background: boolean;
@@ -243,6 +248,10 @@
             nafnet_model:    null,
             punct_model:     ocrPipelinePunct.trim() || null,
             stages,
+            layout:              ocrPipelineLayout,
+            layout_model:        null,
+            layout_threshold:    Number(ocrPipelineLayoutThr) || 0.25,
+            drop_headers_footers: ocrPipelineDropHF,
         };
     }
     let authorSortEnabled = $state(false);
@@ -1001,6 +1010,9 @@
         ocrPipelineAdvanced = await getSetting('ocrPipelineAdvanced', false) as boolean;
         ocrStages           = await getSetting('ocrStages', []) as OcrStage[];
         ocrPipelinePunct    = await getSetting('ocrPipelinePunct', '') as string;
+        ocrPipelineLayout    = await getSetting('ocrPipelineLayout', false) as boolean;
+        ocrPipelineLayoutThr = await getSetting('ocrPipelineLayoutThr', 0.25) as number;
+        ocrPipelineDropHF    = await getSetting('ocrPipelineDropHF', false) as boolean;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1358,6 +1370,9 @@
         await saveSetting('ocrPipelineAdvanced', ocrPipelineAdvanced);
         await saveSetting('ocrStages',           $state.snapshot(ocrStages));
         await saveSetting('ocrPipelinePunct',    ocrPipelinePunct);
+        await saveSetting('ocrPipelineLayout',    ocrPipelineLayout);
+        await saveSetting('ocrPipelineLayoutThr', ocrPipelineLayoutThr);
+        await saveSetting('ocrPipelineDropHF',    ocrPipelineDropHF);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2550,6 +2565,28 @@
                     <input id="ocr-pipeline-punct" type="text" bind:value={ocrPipelinePunct}
                         placeholder={i18n.t.settings.ocr_pipeline_punct_ph} />
                     <p class="hint">{i18n.t.settings.ocr_pipeline_punct_hint}</p>
+
+                    <!-- P20 slice 3 — layout-aware reading order -->
+                    <div style="margin-top:14px; border-top:1px solid #27272a; padding-top:10px;">
+                        <div class="checkbox-group">
+                            <input id="ocr-pipeline-layout" type="checkbox" bind:checked={ocrPipelineLayout} />
+                            <label for="ocr-pipeline-layout"><strong>{i18n.t.settings.ocr_pipeline_layout}</strong></label>
+                        </div>
+                        <p class="hint">{i18n.t.settings.ocr_pipeline_layout_hint}</p>
+                        {#if ocrPipelineLayout}
+                            <div class="field-row" style="margin-top:6px;">
+                                <label for="ocr-pipeline-layout-thr" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                    {i18n.t.settings.ocr_pipeline_layout_threshold} ({Number(ocrPipelineLayoutThr).toFixed(2)})
+                                </label>
+                                <input id="ocr-pipeline-layout-thr" type="range" min="0.05" max="0.9" step="0.05"
+                                    bind:value={ocrPipelineLayoutThr} style="flex:1; max-width:200px;" />
+                            </div>
+                            <div class="checkbox-group" style="margin-top:4px;">
+                                <input id="ocr-pipeline-drophf" type="checkbox" bind:checked={ocrPipelineDropHF} />
+                                <label for="ocr-pipeline-drophf">{i18n.t.settings.ocr_pipeline_drop_hf}</label>
+                            </div>
+                        {/if}
+                    </div>
 
                     <!-- Advanced per-stage builder -->
                     <div style="margin-top:14px; border-top:1px solid #27272a; padding-top:10px;">

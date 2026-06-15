@@ -225,6 +225,25 @@ pub struct OcrPipelineConfig {
     /// accept-gate, grouped into per-source-type chains in order.
     #[serde(default)]
     pub stages: Vec<OcrStageSpec>,
+    /// P20 slice 3 — run a **layout-aware** reading-order pass before OCR.
+    /// Detects semantic regions (text/title/caption/formula/figure/table/
+    /// header/footer) with CrispEmbed's RT-DETRv2 (`layout.rs`), orders them
+    /// top-to-bottom / left-to-right (column-aware), then OCRs each region in
+    /// reading order: text→engine, formula→math OCR, figure/table skipped.
+    /// Fixes multi-column reading order the bare line detector can't. Off by
+    /// default (extra model load + per-region OCR). Needs `crispembed`.
+    #[serde(default)]
+    pub layout: bool,
+    /// Layout detection model registry name (`None` → `rt-detrv2-layout`).
+    #[serde(default)]
+    pub layout_model: Option<String>,
+    /// Layout region confidence threshold (0–1; 0.25 is a good default).
+    #[serde(default = "default_layout_threshold")]
+    pub layout_threshold: f32,
+    /// Drop `Header`/`Footer` regions from the layout pass (running headers,
+    /// page numbers) so they don't pollute the body text.
+    #[serde(default)]
+    pub drop_headers_footers: bool,
 }
 
 /// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
@@ -329,6 +348,9 @@ fn default_ocr_min_chars() -> i32 {
 fn default_ocr_min_confidence() -> f32 {
     0.5
 }
+fn default_layout_threshold() -> f32 {
+    0.25
+}
 
 impl Default for OcrPipelineConfig {
     fn default() -> Self {
@@ -344,6 +366,10 @@ impl Default for OcrPipelineConfig {
             nafnet_model: None,
             punct_model: None,
             stages: Vec::new(),
+            layout: false,
+            layout_model: None,
+            layout_threshold: default_layout_threshold(),
+            drop_headers_footers: false,
         }
     }
 }
@@ -513,7 +539,148 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
 /// Tesseract). Returns the doc with `full_text` set; the caller sets `ext`/
 /// `image_exif` across all pages. Factored out of the image dispatch arm so the
 /// multi-page loop can call it per page.
+/// Process-wide cached layout detector. The RT-DETRv2 model load is heavy, so
+/// it's loaded once on first use and reused across pages (mirrors `OCR_ORCH` in
+/// `ocr_crispembed`). First-config wins, like the OCR orchestrator cache.
+static LAYOUT_DET: std::sync::OnceLock<std::sync::Mutex<layout::LayoutDetector>> =
+    std::sync::OnceLock::new();
+
+fn cached_layout_detector(
+    model: &str,
+) -> Result<&'static std::sync::Mutex<layout::LayoutDetector>> {
+    if let Some(m) = LAYOUT_DET.get() {
+        return Ok(m);
+    }
+    let det = layout::LayoutDetector::load(model, 0)?;
+    // A racing thread may have initialised it first; either way return the live one.
+    let _ = LAYOUT_DET.set(std::sync::Mutex::new(det));
+    Ok(LAYOUT_DET.get().expect("layout detector just set"))
+}
+
+/// OCR a single page image. When the layout pass is enabled, regions are
+/// detected, ordered, and OCR'd individually (column-aware reading order);
+/// otherwise the whole page goes through the smart pipeline / tier ladder.
 fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    if opts.ocr_pipeline.enabled && opts.ocr_pipeline.layout && layout::is_layout_available() {
+        match ocr_with_layout(path, opts) {
+            Ok(doc) => return Ok(doc),
+            Err(e) => eprintln!(
+                "[ocr] layout pass failed ({e:#}); falling back to whole-page OCR"
+            ),
+        }
+    }
+    ocr_one_image(path, opts)
+}
+
+/// Layout-aware OCR: detect semantic regions, order them in reading order, OCR
+/// each region by type (text→engine, formula→math OCR, figure/table skipped,
+/// header/footer optionally dropped), and concatenate. Falls back (via the
+/// caller) to whole-page OCR when no regions are found.
+fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    use layout::RegionKind;
+
+    let cfg = &opts.ocr_pipeline;
+    let model = cfg.layout_model.as_deref().unwrap_or("rt-detrv2-layout");
+    let det_guard = cached_layout_detector(model)?;
+    let det = det_guard.lock().map_err(|_| anyhow::anyhow!("layout detector mutex poisoned"))?;
+    let regions = det.detect(path, cfg.layout_threshold)?; // already in reading order
+    if regions.is_empty() {
+        anyhow::bail!("layout detector found no regions");
+    }
+
+    // RGB8 up front: crops are then RGB (math OCR expects RGB; PNG re-encode is
+    // RGB), and `crop_imm(...).to_image()` yields an `RgbImage`.
+    let page = image::open(path)
+        .with_context(|| format!("opening page image {}", path.display()))?
+        .to_rgb8();
+    let (pw, ph) = (page.width(), page.height());
+
+    let mut parts: Vec<String> = Vec::new();
+    for r in &regions {
+        match &r.kind {
+            RegionKind::Header | RegionKind::Footer if cfg.drop_headers_footers => continue,
+            // Non-text regions carry no body text to recognize.
+            RegionKind::Figure | RegionKind::Table | RegionKind::Other(_) => continue,
+            _ => {}
+        }
+
+        // Clamp the box to the page and crop. Skip degenerate boxes.
+        let x1 = r.x1.max(0.0).min(pw as f32) as u32;
+        let y1 = r.y1.max(0.0).min(ph as f32) as u32;
+        let x2 = r.x2.max(0.0).min(pw as f32) as u32;
+        let y2 = r.y2.max(0.0).min(ph as f32) as u32;
+        if x2 <= x1 || y2 <= y1 {
+            continue;
+        }
+        let crop = image::imageops::crop_imm(&page, x1, y1, x2 - x1, y2 - y1).to_image();
+
+        if r.kind.is_formula() {
+            // Route formulas to math OCR (LaTeX) when available; else fall
+            // through to plain text OCR so nothing is silently dropped.
+            if math_ocr::is_math_ocr_available() {
+                match math_ocr::recognize_formula_from_pixels(
+                    crop.as_raw(),
+                    crop.width() as i32,
+                    crop.height() as i32,
+                ) {
+                    Ok(Some(tex)) if !tex.trim().is_empty() => {
+                        parts.push(tex.trim().to_string());
+                        continue;
+                    }
+                    _ => {} // fall through to text OCR
+                }
+            }
+        }
+
+        // Write the crop to a temp PNG and OCR it as a normal page (no layout
+        // recursion — the engine does its own line detection within the region).
+        let tmp = tempfile::Builder::new()
+            .prefix("ocr_region_")
+            .suffix(".png")
+            .tempfile()
+            .context("temp file for layout region")?;
+        image::DynamicImage::ImageRgb8(crop)
+            .save(tmp.path())
+            .context("saving layout region crop")?;
+        match ocr_one_image(tmp.path(), opts) {
+            Ok(d) => {
+                let t = d.full_text.trim();
+                if !t.is_empty() {
+                    parts.push(t.to_string());
+                }
+            }
+            Err(e) => eprintln!(
+                "[ocr] layout region {:?} OCR failed: {e:#}",
+                r.kind
+            ),
+        }
+    }
+
+    if parts.is_empty() {
+        anyhow::bail!("layout pass recognized no text in any region");
+    }
+    Ok(ExtractedDocument {
+        full_text: parts.join("\n\n"),
+        headings: Vec::new(),
+        ext: path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default(),
+        language: None,
+        translated_text: None,
+        translated_to_lang: None,
+        audio: None,
+        image_exif: None,
+        source_url: None,
+        tags: vec![],
+    })
+}
+
+/// OCR a single image through the smart pipeline (when enabled) then the legacy
+/// tier ladder. This is the whole-page / per-region engine path with **no**
+/// layout pass (so `ocr_with_layout` can call it per region without recursion).
+fn ocr_one_image(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
     // Smart pipeline first (source-type cleanup + denoise + accept-gate).
     if opts.ocr_pipeline.enabled && ocr_crispembed::is_crispembed_ocr_available() {
         match ocr_crispembed::ocr_via_pipeline(path, &opts.ocr_pipeline) {
@@ -1004,6 +1171,35 @@ mod ocr_pipeline_tests {
         assert!((c.min_confidence - 0.5).abs() < 1e-6);
         assert!(c.stages.is_empty(), "empty stages → simple mode");
         assert!(c.punct_model.is_none());
+        // P20 slice 3 — layout pass off by default, safe thresholds.
+        assert!(!c.layout, "layout pass off by default");
+        assert!(c.layout_model.is_none());
+        assert!((c.layout_threshold - 0.25).abs() < 1e-6);
+        assert!(!c.drop_headers_footers);
+    }
+
+    #[test]
+    fn ocr_pipeline_layout_serde() {
+        // Layout fields round-trip and fill defaults from partial JSON.
+        let mut c = OcrPipelineConfig::default();
+        c.enabled = true;
+        c.layout = true;
+        c.layout_model = Some("rt-detrv2-layout".into());
+        c.layout_threshold = 0.4;
+        c.drop_headers_footers = true;
+        let back: OcrPipelineConfig =
+            serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert!(back.layout && back.drop_headers_footers);
+        assert_eq!(back.layout_model.as_deref(), Some("rt-detrv2-layout"));
+        assert!((back.layout_threshold - 0.4).abs() < 1e-6);
+
+        // Omitted layout fields → off / default threshold.
+        let partial: OcrPipelineConfig =
+            serde_json::from_str(r#"{"enabled":true,"layout":true}"#).unwrap();
+        assert!(partial.layout);
+        assert!(!partial.drop_headers_footers);
+        assert!((partial.layout_threshold - 0.25).abs() < 1e-6);
+        assert!(partial.layout_model.is_none());
     }
 
     #[test]
