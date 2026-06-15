@@ -185,8 +185,49 @@
     let ocrPipelineDenoise  = $state(false);
     let ocrPipelineMinChars = $state(8);
     let ocrPipelineMinConf  = $state(0.5);
+    // Advanced per-stage builder: when on, the user composes explicit stages
+    // (full tweakability) instead of the simple toggles above.
+    let ocrPipelineAdvanced = $state(false);
+    type OcrStage = {
+        source_type: string; engine: string; det_model: string; rec_model: string;
+        cleanup: { enabled: boolean; deskew: boolean; crop_borders: boolean; whiten_background: boolean;
+                   binarize: boolean; binarize_method: number; sauvola_k: number; sauvola_window: number;
+                   morph_kernel: number; border_threshold: number; deskew_max_angle: number; denoise: boolean };
+        det_prob_threshold: number; det_box_threshold: number; det_target_short: number;
+        vlm_max_tokens: number; vlm_prompt: string; min_chars: number; min_confidence: number;
+    };
+    let ocrStages = $state<OcrStage[]>([]);
+    function newOcrStage(): OcrStage {
+        return {
+            source_type: 'auto', engine: 'dbnet_trocr', det_model: '', rec_model: '',
+            cleanup: { enabled: true, deskew: true, crop_borders: true, whiten_background: true,
+                       binarize: false, binarize_method: 0, sauvola_k: 0.2, sauvola_window: 25,
+                       morph_kernel: 51, border_threshold: 0.15, deskew_max_angle: 15.0, denoise: false },
+            det_prob_threshold: 0.3, det_box_threshold: 0.5, det_target_short: 736,
+            vlm_max_tokens: 0, vlm_prompt: '', min_chars: 8, min_confidence: 0.5,
+        };
+    }
+    function addOcrStage()         { ocrStages = [...ocrStages, newOcrStage()]; }
+    function removeOcrStage(i: number) { ocrStages = ocrStages.filter((_, j) => j !== i); }
+    function moveOcrStage(i: number, dir: -1 | 1) {
+        const j = i + dir; if (j < 0 || j >= ocrStages.length) return;
+        const a = [...ocrStages]; [a[i], a[j]] = [a[j], a[i]]; ocrStages = a;
+    }
+    function isVlmEngine(e: string) { return e !== 'dbnet_trocr' && e !== 'surya' && e !== 'tesseract'; }
     /** Build the OcrPipelineConfig payload (snake_case = Rust serde field names). */
     function ocrPipelineConfig() {
+        const stages = (ocrPipelineAdvanced ? ocrStages : []).map((s) => ({
+            source_type: s.source_type, engine: s.engine,
+            det_model: s.det_model.trim() || null, rec_model: s.rec_model.trim() || null,
+            cleanup: { ...s.cleanup },
+            det_prob_threshold: Number(s.det_prob_threshold) || 0.3,
+            det_box_threshold:  Number(s.det_box_threshold) || 0.5,
+            det_target_short:   Number(s.det_target_short) || 736,
+            vlm_max_tokens:     Number(s.vlm_max_tokens) || 0,
+            vlm_prompt:         s.vlm_prompt,
+            min_chars:          Number(s.min_chars) || 0,
+            min_confidence:     Number(s.min_confidence) || 0,
+        }));
         return {
             enabled:         ocrPipelineEnabled,
             router:          ocrPipelineRouter,
@@ -196,6 +237,8 @@
             min_confidence:  Number(ocrPipelineMinConf) || 0.5,
             det_model:       null,
             rec_model:       null,
+            nafnet_model:    null,
+            stages,
         };
     }
     let authorSortEnabled = $state(false);
@@ -951,6 +994,8 @@
         ocrPipelineDenoise  = await getSetting('ocrPipelineDenoise', false) as boolean;
         ocrPipelineMinChars = await getSetting('ocrPipelineMinChars', 8) as number;
         ocrPipelineMinConf  = await getSetting('ocrPipelineMinConf', 0.5) as number;
+        ocrPipelineAdvanced = await getSetting('ocrPipelineAdvanced', false) as boolean;
+        ocrStages           = await getSetting('ocrStages', []) as OcrStage[];
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1305,6 +1350,8 @@
         await saveSetting('ocrPipelineDenoise',  ocrPipelineDenoise);
         await saveSetting('ocrPipelineMinChars', ocrPipelineMinChars);
         await saveSetting('ocrPipelineMinConf',  ocrPipelineMinConf);
+        await saveSetting('ocrPipelineAdvanced', ocrPipelineAdvanced);
+        await saveSetting('ocrStages',           $state.snapshot(ocrStages));
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2492,6 +2539,86 @@
                             bind:value={ocrPipelineMinConf} style="flex:1; max-width:200px;" />
                     </div>
                     <p class="hint">{i18n.t.settings.ocr_pipeline_gate_hint}</p>
+
+                    <!-- Advanced per-stage builder -->
+                    <div style="margin-top:14px; border-top:1px solid #27272a; padding-top:10px;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" bind:checked={ocrPipelineAdvanced} />
+                            <span><strong>{i18n.t.settings.ocr_pipeline_advanced}</strong></span>
+                        </label>
+                        <p class="hint">{i18n.t.settings.ocr_pipeline_advanced_hint}</p>
+
+                        {#if ocrPipelineAdvanced}
+                            {#each ocrStages as stage, i (i)}
+                                <div class="section-card" style="background:#1c1c1f; margin-top:8px; padding:10px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <strong style="font-size:0.85rem;">{i18n.t.settings.ocr_pipeline_stage} {i + 1}</strong>
+                                        <div style="display:flex; gap:4px;">
+                                            <button class="action-btn small" onclick={() => moveOcrStage(i, -1)} disabled={i === 0} title="↑">↑</button>
+                                            <button class="action-btn small" onclick={() => moveOcrStage(i, 1)} disabled={i === ocrStages.length - 1} title="↓">↓</button>
+                                            <button class="action-btn small" onclick={() => removeOcrStage(i)} title="✕">✕</button>
+                                        </div>
+                                    </div>
+                                    <div class="field-row" style="gap:8px; flex-wrap:wrap;">
+                                        <label style="font-size:0.78rem; color:#a1a1aa;">{i18n.t.settings.ocr_pipeline_source}
+                                            <select bind:value={stage.source_type} style="margin-left:4px;">
+                                                <option value="auto">auto</option>
+                                                <option value="screenshot">screenshot</option>
+                                                <option value="scanned_doc">scanned doc</option>
+                                                <option value="photo">photo</option>
+                                            </select>
+                                        </label>
+                                        <label style="font-size:0.78rem; color:#a1a1aa;">{i18n.t.settings.ocr_pipeline_engine}
+                                            <select bind:value={stage.engine} style="margin-left:4px;">
+                                                <option value="dbnet_trocr">DBNet + TrOCR</option>
+                                                <option value="surya">Surya</option>
+                                                <option value="tesseract">Tesseract LSTM (DBNet + Tesseract)</option>
+                                                <option value="got">GOT-OCR2</option>
+                                                <option value="glm">GLM-OCR</option>
+                                                <option value="qwen2vl">Qwen2.5-VL</option>
+                                                <option value="internvl2">InternVL2</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                    <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
+                                        <input type="text" bind:value={stage.det_model} style="flex:1; min-width:140px;"
+                                            placeholder={isVlmEngine(stage.engine) ? i18n.t.settings.ocr_pipeline_model_ph : i18n.t.settings.ocr_pipeline_det_ph} />
+                                        {#if !isVlmEngine(stage.engine)}
+                                            <input type="text" bind:value={stage.rec_model} style="flex:1; min-width:140px;"
+                                                placeholder={i18n.t.settings.ocr_pipeline_rec_ph} />
+                                        {/if}
+                                    </div>
+                                    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; font-size:0.78rem; color:#d4d4d8;">
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.enabled} /> {i18n.t.settings.ocr_pipeline_clean_short}</label>
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.deskew} /> deskew</label>
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.crop_borders} /> crop</label>
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.whiten_background} /> whiten</label>
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.binarize} /> binarize</label>
+                                        <label><input type="checkbox" bind:checked={stage.cleanup.denoise} /> NAFNet</label>
+                                    </div>
+                                    {#if isVlmEngine(stage.engine)}
+                                        <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px;">
+                                            <label style="font-size:0.78rem; color:#a1a1aa;">max tokens
+                                                <input type="number" min="0" step="64" bind:value={stage.vlm_max_tokens} style="width:80px; margin-left:4px;" /></label>
+                                            <input type="text" bind:value={stage.vlm_prompt} style="flex:1; min-width:160px;" placeholder={i18n.t.settings.ocr_pipeline_prompt_ph} />
+                                        </div>
+                                    {:else}
+                                        <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px; font-size:0.78rem; color:#a1a1aa;">
+                                            <label>prob<input type="number" min="0" max="1" step="0.05" bind:value={stage.det_prob_threshold} style="width:70px; margin-left:4px;" /></label>
+                                            <label>box<input type="number" min="0" max="1" step="0.05" bind:value={stage.det_box_threshold} style="width:70px; margin-left:4px;" /></label>
+                                            <label>short side<input type="number" min="64" step="32" bind:value={stage.det_target_short} style="width:80px; margin-left:4px;" /></label>
+                                        </div>
+                                    {/if}
+                                    <div class="field-row" style="gap:8px; flex-wrap:wrap; margin-top:6px; font-size:0.78rem; color:#a1a1aa;">
+                                        <label>{i18n.t.settings.ocr_pipeline_min_chars}<input type="number" min="0" bind:value={stage.min_chars} style="width:70px; margin-left:4px;" /></label>
+                                        <label>min conf<input type="number" min="0" max="1" step="0.05" bind:value={stage.min_confidence} style="width:70px; margin-left:4px;" /></label>
+                                    </div>
+                                </div>
+                            {/each}
+                            <button class="action-btn small" style="margin-top:8px;" onclick={addOcrStage}>+ {i18n.t.settings.ocr_pipeline_add_stage}</button>
+                            <p class="hint">{i18n.t.settings.ocr_pipeline_stage_hint}</p>
+                        {/if}
+                    </div>
                 {/if}
             </div>
 

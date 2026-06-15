@@ -204,32 +204,7 @@ pub fn ocr_via_pipeline(
 ) -> Result<ExtractedDocument> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
-    let orch = OCR_ORCH.get_or_init(|| {
-        let det_name = cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL);
-        let rec_name = cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL);
-        let det = crispembed::CrispEmbed::resolve_model(det_name, Some(true))
-            .unwrap_or_else(|_| det_name.to_string());
-        let rec = crispembed::CrispEmbed::resolve_model(rec_name, Some(true))
-            .unwrap_or_else(|_| rec_name.to_string());
-        // Resolve NAFNet only when tier-2 denoise is requested.
-        let nafnet: Option<String> = if cfg.denoise {
-            crispembed::CrispEmbed::resolve_model(NAFNET_MODEL, Some(true)).ok()
-        } else {
-            None
-        };
-        let p = crispembed::CrispOcrPipeline::new(
-            &det,
-            &rec,
-            nafnet.as_deref(),
-            cfg.router,
-            cfg.cleanup_enabled,
-            cfg.min_chars,
-            cfg.min_confidence,
-            0,
-        )
-        .expect("CrispEmbed OCR pipeline (orchestrator) init failed");
-        Mutex::new(p)
-    });
+    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
 
     let mut guard = orch
         .lock()
@@ -254,6 +229,113 @@ pub fn ocr_via_pipeline(
         source_url: None,
         tags: vec![],
     })
+}
+
+/// Default single-shot model registry name for a VLM engine string.
+#[cfg(feature = "crispembed")]
+fn vlm_default_model(engine: &str) -> &'static str {
+    match engine {
+        "glm" => "glm-ocr",
+        "got" => "got-ocr2",
+        "internvl2" => "internvl2-ocr",
+        _ => "qwen2vl-ocr",
+    }
+}
+
+/// Resolve a model registry name to a cached/downloaded GGUF path (best-effort).
+#[cfg(feature = "crispembed")]
+fn resolve(name: &str) -> String {
+    crispembed::CrispEmbed::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
+}
+
+/// Build the orchestrator: the explicit per-stage builder when `cfg.stages` is
+/// non-empty (full tweakability), else the flat simple-mode pipeline.
+#[cfg(feature = "crispembed")]
+fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
+    use super::{engine_id, source_type_id};
+    if cfg.stages.is_empty() {
+        // Simple mode (slice-A flat config).
+        let det = resolve(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL));
+        let rec = resolve(cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL));
+        let nafnet = if cfg.denoise {
+            crispembed::CrispEmbed::resolve_model(
+                cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
+                Some(true),
+            )
+            .ok()
+        } else {
+            None
+        };
+        return crispembed::CrispOcrPipeline::new(
+            &det,
+            &rec,
+            nafnet.as_deref(),
+            cfg.router,
+            cfg.cleanup_enabled,
+            cfg.min_chars,
+            cfg.min_confidence,
+            0,
+        )
+        .expect("CrispEmbed OCR pipeline init failed");
+    }
+
+    // Advanced mode: explicit per-stage chains.
+    let nafnet = crispembed::CrispEmbed::resolve_model(
+        cfg.nafnet_model.as_deref().unwrap_or(NAFNET_MODEL),
+        Some(true),
+    )
+    .ok();
+    let specs: Vec<crispembed::OcrStageSpec> = cfg
+        .stages
+        .iter()
+        .map(|s| {
+            let eid = engine_id(&s.engine);
+            // dbnet_trocr(0) / surya(1) / tesseract(6) need det+rec; VLMs use a
+            // single model. Tesseract's recogniser defaults to a tesseract GGUF.
+            let (model_a, model_b) = if eid == 0 || eid == 1 || eid == 6 {
+                let rec_default = if eid == 6 { "tesseract-lstm" } else { DEFAULT_REC_MODEL };
+                (
+                    resolve(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL)),
+                    resolve(s.rec_model.as_deref().unwrap_or(rec_default)),
+                )
+            } else {
+                let m = s
+                    .det_model
+                    .clone()
+                    .unwrap_or_else(|| vlm_default_model(&s.engine).to_string());
+                (resolve(&m), String::new())
+            };
+            crispembed::OcrStageSpec {
+                source_type: source_type_id(&s.source_type),
+                engine: eid,
+                model_a,
+                model_b,
+                cleanup: crispembed::OcrCleanupSpec {
+                    enabled: s.cleanup.enabled,
+                    deskew: s.cleanup.deskew,
+                    crop_borders: s.cleanup.crop_borders,
+                    whiten_background: s.cleanup.whiten_background,
+                    binarize: s.cleanup.binarize,
+                    binarize_method: s.cleanup.binarize_method,
+                    sauvola_k: s.cleanup.sauvola_k,
+                    sauvola_window: s.cleanup.sauvola_window,
+                    morph_kernel: s.cleanup.morph_kernel,
+                    border_threshold: s.cleanup.border_threshold,
+                    deskew_max_angle: s.cleanup.deskew_max_angle,
+                    denoise: s.cleanup.denoise,
+                },
+                det_prob_threshold: s.det_prob_threshold,
+                det_box_threshold: s.det_box_threshold,
+                det_target_short: s.det_target_short,
+                vlm_max_tokens: s.vlm_max_tokens,
+                vlm_prompt: s.vlm_prompt.clone(),
+                min_chars: s.min_chars,
+                min_confidence: s.min_confidence,
+            }
+        })
+        .collect();
+    crispembed::CrispOcrPipeline::from_stages(cfg.router, nafnet.as_deref(), &specs, 0)
+        .expect("CrispEmbed OCR per-stage pipeline init failed")
 }
 
 #[cfg(not(feature = "crispembed"))]

@@ -211,7 +211,109 @@ pub struct OcrPipelineConfig {
     /// Recognition model registry name (`None` → `qwen2vl-ocr`).
     #[serde(default)]
     pub rec_model: Option<String>,
+    /// NAFNet denoise GGUF registry name (`None` → `nafnet-denoise`).
+    #[serde(default)]
+    pub nafnet_model: Option<String>,
+    /// Full per-stage builder. When non-empty, the pipeline is built from these
+    /// explicit stages (full tweakability) instead of the flat fields above —
+    /// each stage picks an engine + models + cleanup recipe + engine params +
+    /// accept-gate, grouped into per-source-type chains in order.
+    #[serde(default)]
+    pub stages: Vec<OcrStageSpec>,
 }
+
+/// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OcrCleanupSpec {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub deskew: bool,
+    #[serde(default = "default_true")]
+    pub crop_borders: bool,
+    #[serde(default = "default_true")]
+    pub whiten_background: bool,
+    #[serde(default)]
+    pub binarize: bool,
+    #[serde(default)]
+    pub binarize_method: i32, // 0=Otsu 1=Sauvola
+    #[serde(default = "default_sauvola_k")]
+    pub sauvola_k: f32,
+    #[serde(default = "default_sauvola_window")]
+    pub sauvola_window: i32,
+    #[serde(default = "default_morph_kernel")]
+    pub morph_kernel: i32,
+    #[serde(default = "default_border_threshold")]
+    pub border_threshold: f32,
+    #[serde(default = "default_deskew_max_angle")]
+    pub deskew_max_angle: f32,
+    #[serde(default)]
+    pub denoise: bool, // NAFNet tier-2
+}
+
+fn default_sauvola_k() -> f32 { 0.2 }
+fn default_sauvola_window() -> i32 { 25 }
+fn default_morph_kernel() -> i32 { 51 }
+fn default_border_threshold() -> f32 { 0.15 }
+fn default_deskew_max_angle() -> f32 { 15.0 }
+
+impl Default for OcrCleanupSpec {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            deskew: true,
+            crop_borders: true,
+            whiten_background: true,
+            binarize: false,
+            binarize_method: 0,
+            sauvola_k: 0.2,
+            sauvola_window: 25,
+            morph_kernel: 51,
+            border_threshold: 0.15,
+            deskew_max_angle: 15.0,
+            denoise: false,
+        }
+    }
+}
+
+/// One fully-specified pipeline stage (full per-stage builder).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OcrStageSpec {
+    /// `auto` | `screenshot` | `scanned_doc` | `photo`.
+    #[serde(default = "default_source_type")]
+    pub source_type: String,
+    /// `dbnet_trocr` | `surya` | `got` | `glm` | `qwen2vl` | `internvl2`.
+    #[serde(default = "default_engine")]
+    pub engine: String,
+    /// Detection / single model registry name.
+    #[serde(default)]
+    pub det_model: Option<String>,
+    /// Recognition model (dbnet_trocr / surya).
+    #[serde(default)]
+    pub rec_model: Option<String>,
+    #[serde(default)]
+    pub cleanup: OcrCleanupSpec,
+    #[serde(default = "default_det_prob")]
+    pub det_prob_threshold: f32,
+    #[serde(default = "default_det_box")]
+    pub det_box_threshold: f32,
+    #[serde(default = "default_det_short")]
+    pub det_target_short: i32,
+    #[serde(default)]
+    pub vlm_max_tokens: i32,
+    #[serde(default)]
+    pub vlm_prompt: String,
+    #[serde(default = "default_ocr_min_chars")]
+    pub min_chars: i32,
+    #[serde(default = "default_ocr_min_confidence")]
+    pub min_confidence: f32,
+}
+
+fn default_source_type() -> String { "auto".to_string() }
+fn default_engine() -> String { "dbnet_trocr".to_string() }
+fn default_det_prob() -> f32 { 0.3 }
+fn default_det_box() -> f32 { 0.5 }
+fn default_det_short() -> i32 { 736 }
 
 fn default_true() -> bool {
     true
@@ -234,7 +336,32 @@ impl Default for OcrPipelineConfig {
             min_confidence: default_ocr_min_confidence(),
             det_model: None,
             rec_model: None,
+            nafnet_model: None,
+            stages: Vec::new(),
         }
+    }
+}
+
+/// Map an engine string to the C builder's engine id.
+fn engine_id(name: &str) -> i32 {
+    match name {
+        "surya" => 1,
+        "got" => 2,
+        "glm" => 3,
+        "qwen2vl" => 4,
+        "internvl2" => 5,
+        "tesseract" => 6,
+        _ => 0, // dbnet_trocr
+    }
+}
+
+/// Map a source-type string to the C builder's source-type id.
+fn source_type_id(name: &str) -> i32 {
+    match name {
+        "screenshot" => 1,
+        "scanned_doc" => 2,
+        "photo" => 3,
+        _ => 0, // auto
     }
 }
 
