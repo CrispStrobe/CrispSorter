@@ -273,20 +273,35 @@ settings surface; pipeline logic lives in CrispEmbed C++.
     knob. Process-wide cached detector (`LAYOUT_DET`). Falls back to whole-page
     OCR when no regions are found. Settings panel + DE/EN i18n. Needs
     `crispembed`; off by default.
-- [ ] **Gap — multi-page release wiring.** Per-platform `libpdfium` bundling in
-  the release CI matrix + a live PDF→raster→OCR E2E test (today `pdf-render` is
-  a dev/opt-in feature, validated by the `cargo check --features
-  desktop,pdf-render` build only).
-- [ ] **Gap — CLI parity.** The CLI `index ingest` honours the persisted
-  pipeline config, but there's no flag-driven "OCR this file with engine X +
-  pre-processors Y + post-processors Z" command for ad-hoc use. (CrispEmbed's
-  `crispembed --ocr-pipeline` is the lower-level lever; see its PLAN gap.)
-- [ ] **Gap — tests.** Need CrispSorter unit tests for `OcrPipelineConfig`
-  serde, `engine_id`/`source_type_id` mapping, and `build_pipeline`
-  simple-vs-advanced selection; plus one opt-in **live E2E** (download
-  `tesseract-eng`, OCR a rendered line through the pipeline, assert spaced
-  truecased text). The live `crispembed-metal` path validates in CI on the
-  v0.10.1 re-pin.
+- [x] **Multi-page release wiring** ✅ (2026-06-15). `pdf-render` is now in the
+  release build features (all 3 native platforms); a per-platform `libpdfium`
+  (bblanchon/pdfium-binaries `latest`) is staged into `src-tauri/bin/` →
+  bundled via the existing `bin/*` resource glob into `resources/bin/`.
+  `rasterize_pdf` searches the standard bundle locations relative to the exe
+  (exe dir, `resources/bin`, macOS `../Resources/...`/`../Frameworks`, `../lib`)
+  then the system lib. The PDF arm degrades gracefully (legacy tesseract
+  fallback) if the lib is absent, so a bundling miss is a soft-fail. Live test
+  `page_source::pdf_rasterize_live` (`$CS_TEST_PDF`, `--features pdf-render`).
+  ⚠️ The actual bundle placement + runtime load is validated by a release CI
+  run (cannot be checked locally); the soft-fall-back bounds the risk.
+- [x] **CLI parity** ✅ (2026-06-15). New top-level `crispsorter ocr <FILE>`
+  command: ad-hoc OCR of a single image/PDF, printing recognized text
+  (`-f json` envelope or `-f text`). Flags map onto the full pipeline —
+  primary `--engine` (dbnet_trocr / surya / tesseract / got / glm / qwen2vl /
+  internvl2) + `--det-model`/`--rec-model`, pre-processors `--cleanup`
+  (on/off), `--denoise` (+`--nafnet-model`), `--layout` (+`--layout-threshold`,
+  `--drop-headers-footers`), post-processor `--punct-model`, accept-gate
+  `--min-chars`/`--min-confidence`, and `--source-type` routing. dbnet_trocr
+  uses simple mode; other engines build a single explicit stage so the choice
+  takes effect. Forces OCR on text-layer PDFs (`ocr_pdf_min_chars = usize::MAX`).
+  `cli/mod.rs::cmd_ocr`. (CrispEmbed's `crispembed --ocr-pipeline` is the
+  lower-level C++ lever.)
+- [x] **Tests** ✅ (2026-06-15). `engine_id`/`source_type_id` mapping +
+  `OcrPipelineConfig` serde (incl. layout fields) + `OcrCleanupSpec` defaults
+  are covered in `extractors::ocr_pipeline_tests`; opt-in live E2E
+  `ocr_crispembed::ocr_pipeline_live_simple` / `_tesseract_stage` +
+  `page_source::pdf_rasterize_live` exercise the FFI / engine / raster paths.
+  The live `crispembed-metal` path validates in CI on the v0.10.1 re-pin.
 
 ---
 

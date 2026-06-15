@@ -115,13 +115,30 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
 pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
     use pdfium_render::prelude::*;
 
-    // Bind PDFium: prefer a libpdfium co-located with the executable (the
-    // release layout), else the system-installed library.
+    // Bind PDFium: prefer a libpdfium shipped with the app, else the
+    // system-installed library. We stage libpdfium into `bin/` (a bundled
+    // resource → `resources/bin/`, alongside the llama-server sidecar), so the
+    // candidate dirs cover every platform's bundle layout relative to the exe:
+    //   - the exe dir itself (Windows portable .zip lays DLLs next to the .exe)
+    //   - `resources/bin` under the exe (Linux .deb / generic)
+    //   - `../Resources/resources/bin` + `../Frameworks` (macOS .app)
+    //   - `../lib` (FHS-style installs)
     let bindings = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.to_string_lossy().into_owned()))
+        .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
         .and_then(|dir| {
-            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
+            let candidates = [
+                dir.clone(),
+                dir.join("resources").join("bin"),
+                dir.join("..").join("Resources").join("resources").join("bin"),
+                dir.join("..").join("Frameworks"),
+                dir.join("..").join("Resources"),
+                dir.join("..").join("lib"),
+            ];
+            candidates.iter().find_map(|d| {
+                let name = Pdfium::pdfium_platform_library_name_at_path(d.as_path());
+                Pdfium::bind_to_library(name).ok()
+            })
         })
         .or_else(|| Pdfium::bind_to_system_library().ok())
         .context("no libpdfium found (install it or use the bundled release lib)")?;
@@ -187,6 +204,28 @@ mod tests {
         let pages = PageImages::single(p);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages.paths()[0], p);
+    }
+
+    /// Live: rasterize a real PDF (path via `$CS_TEST_PDF`) and assert every
+    /// page renders to a decodable PNG. Skips cleanly when the env var is unset
+    /// (matches the cb-api live-test convention). Needs the `pdf-render` feature
+    /// + a libpdfium on the system / next to the test binary.
+    #[cfg(feature = "pdf-render")]
+    #[test]
+    #[ignore] // cargo test --features pdf-render pdf_rasterize_live -- --ignored
+    fn pdf_rasterize_live() {
+        let Ok(pdf) = std::env::var("CS_TEST_PDF") else {
+            eprintln!("CS_TEST_PDF unset; skipping live PDF rasterize test");
+            return;
+        };
+        let pages = rasterize_pdf(Path::new(&pdf)).expect("rasterize PDF");
+        assert!(!pages.is_empty(), "PDF produced ≥1 page");
+        for p in pages.paths() {
+            assert!(p.exists(), "page image written: {}", p.display());
+            let img = image::open(p).expect("page PNG decodes");
+            assert!(img.width() > 0 && img.height() > 0, "non-empty page bitmap");
+        }
+        println!("rasterized {} page(s) from {pdf}", pages.len());
     }
 
     #[test]

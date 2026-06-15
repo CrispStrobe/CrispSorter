@@ -39,13 +39,19 @@ jobs:
             # capabilities/default.json `shell:default` permission fails to
             # resolve in build.rs ("shell:default not found") — which is what
             # broke every v0.5.0 desktop build and published an empty release.
-            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt'
+            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
             # auto-discovers.
             crispasr_lib_asset: libcrispasr-macos-arm64.tar.gz
             crispembed_lib_asset: crispembed-macos-arm64.tar.gz
+            # libpdfium for the `pdf-render` feature (scanned-PDF → page
+            # rasterization). Staged into src-tauri/bin/ → bundled as a
+            # resource. bblanchon/pdfium-binaries asset + the path of the
+            # shared lib inside the tarball.
+            pdfium_asset: pdfium-mac-arm64.tgz
+            pdfium_lib_glob: 'lib/libpdfium.dylib'
           - platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             llama_asset: llama-b8340-bin-win-vulkan-x64.zip
@@ -61,9 +67,11 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
+            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
+            pdfium_asset: pdfium-win-x64.tgz
+            pdfium_lib_glob: 'bin/pdfium.dll'
           - platform: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
@@ -71,9 +79,11 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt'
+            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
+            pdfium_asset: pdfium-linux-x64.tgz
+            pdfium_lib_glob: 'lib/libpdfium.so'
 
     runs-on: ${{ matrix.platform }}
 
@@ -211,6 +221,38 @@ jobs:
           Expand-Archive -Path crispembed-libs.zip -DestinationPath _sibling/CrispEmbed/build -Force
           Write-Host "Extracted libs:"
           Get-ChildItem _sibling/CrispEmbed/build -Include "*.dll","*.lib" -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+
+      # libpdfium for the `pdf-render` feature. Staged into src-tauri/bin/ so
+      # Tauri's `bin/*` resource glob bundles it into resources/bin/ (same path
+      # the llama-server sidecar uses); rasterize_pdf() searches that location
+      # relative to the exe at runtime. The PDF arm degrades gracefully if the
+      # lib is missing/unloadable (falls back to the legacy tesseract path), so
+      # a bundling miss is a soft-fail, not a broken release. Skipped on the
+      # macOS-Intel optional job (no pdfium_asset set).
+      - name: Download libpdfium (Unix)
+        if: matrix.pdfium_asset != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/${{ matrix.pdfium_asset }}"
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o pdfium.tgz
+          mkdir -p _pdfium src-tauri/bin
+          tar -xzf pdfium.tgz -C _pdfium
+          cp "_pdfium/${{ matrix.pdfium_lib_glob }}" src-tauri/bin/
+          ls -la src-tauri/bin/
+
+      - name: Download libpdfium (Windows)
+        if: matrix.pdfium_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/${{ matrix.pdfium_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile pdfium.tgz
+          New-Item -ItemType Directory -Force -Path _pdfium, src-tauri/bin | Out-Null
+          tar -xzf pdfium.tgz -C _pdfium
+          Copy-Item "_pdfium/${{ matrix.pdfium_lib_glob }}" src-tauri/bin/ -Force
+          Get-ChildItem src-tauri/bin/
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash
@@ -771,6 +813,38 @@ jobs:
           Expand-Archive -Path crispembed-libs.zip -DestinationPath _sibling/CrispEmbed/build -Force
           Write-Host "Extracted libs:"
           Get-ChildItem _sibling/CrispEmbed/build -Include "*.dll","*.lib" -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+
+      # libpdfium for the `pdf-render` feature. Staged into src-tauri/bin/ so
+      # Tauri's `bin/*` resource glob bundles it into resources/bin/ (same path
+      # the llama-server sidecar uses); rasterize_pdf() searches that location
+      # relative to the exe at runtime. The PDF arm degrades gracefully if the
+      # lib is missing/unloadable (falls back to the legacy tesseract path), so
+      # a bundling miss is a soft-fail, not a broken release. Skipped on the
+      # macOS-Intel optional job (no pdfium_asset set).
+      - name: Download libpdfium (Unix)
+        if: matrix.pdfium_asset != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/bblanchon/pdfium-binaries/releases/latest/download/${{ matrix.pdfium_asset }}"
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o pdfium.tgz
+          mkdir -p _pdfium src-tauri/bin
+          tar -xzf pdfium.tgz -C _pdfium
+          cp "_pdfium/${{ matrix.pdfium_lib_glob }}" src-tauri/bin/
+          ls -la src-tauri/bin/
+
+      - name: Download libpdfium (Windows)
+        if: matrix.pdfium_asset != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/${{ matrix.pdfium_asset }}"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile pdfium.tgz
+          New-Item -ItemType Directory -Force -Path _pdfium, src-tauri/bin | Out-Null
+          tar -xzf pdfium.tgz -C _pdfium
+          Copy-Item "_pdfium/${{ matrix.pdfium_lib_glob }}" src-tauri/bin/ -Force
+          Get-ChildItem src-tauri/bin/
 
       - name: Rewrite sibling path deps for CI layout
         shell: bash

@@ -44,7 +44,7 @@ use std::process::ExitCode;
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync",
+    "sync", "ocr",
     "manpage", "completion", "help", "--help", "-h",
 ];
 
@@ -159,6 +159,62 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: IndexCmd,
+    },
+    /// Ad-hoc OCR — run the configurable OCR pipeline on a single image or
+    /// PDF and print the recognized text. Picks a primary engine + optional
+    /// pre-processors (cleanup / NAFNet denoise / layout reading-order) +
+    /// optional post-processor (punctuation/spacing/truecasing restore).
+    /// Requires the `crispembed` feature; without it the legacy Rust tier
+    /// ladder (ocrs / Paddle / Tesseract) handles the file instead.
+    Ocr {
+        /// Image (png/jpg/tiff/…) or PDF to OCR.
+        file: PathBuf,
+        /// Primary OCR engine.
+        #[arg(long, default_value = "dbnet_trocr",
+              value_parser = ["dbnet_trocr", "surya", "tesseract", "got", "glm", "qwen2vl", "internvl2"])]
+        engine: String,
+        /// Source-type routing hint. `auto` classifies the image; an explicit
+        /// type pins the cleanup+engine recipe and disables reclassification.
+        #[arg(long, default_value = "auto",
+              value_parser = ["auto", "screenshot", "scanned_doc", "photo"])]
+        source_type: String,
+        /// Detection model registry name (dbnet_trocr / surya / tesseract).
+        /// Default per engine (`dbnet-det`).
+        #[arg(long)]
+        det_model: Option<String>,
+        /// Recognition model registry name (dbnet_trocr / surya / tesseract).
+        /// Default per engine (`qwen2vl-ocr`, or `tesseract-eng` for tesseract).
+        #[arg(long)]
+        rec_model: Option<String>,
+        /// Pre-processor: classical scan cleanup (deskew / crop / whiten).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        cleanup: bool,
+        /// Pre-processor: learned NAFNet denoise (downloads ~30 MB on first use).
+        #[arg(long)]
+        denoise: bool,
+        /// NAFNet model registry name (`None` → `nafnet-denoise`).
+        #[arg(long)]
+        nafnet_model: Option<String>,
+        /// Pre-processor: layout-aware reading order (RT-DETRv2 regions →
+        /// column-aware order → per-region OCR; formulas → math OCR).
+        #[arg(long)]
+        layout: bool,
+        /// Layout region confidence threshold (0–1).
+        #[arg(long, default_value_t = 0.25)]
+        layout_threshold: f32,
+        /// Drop running headers/footers in the layout pass.
+        #[arg(long)]
+        drop_headers_footers: bool,
+        /// Post-processor: punctuation/spacing/truecasing restore model
+        /// (FireRedPunc / PCS / fullstop-punc). Empty = off.
+        #[arg(long)]
+        punct_model: Option<String>,
+        /// Accept-gate: minimum recognized chars before chain escalation.
+        #[arg(long, default_value_t = 8)]
+        min_chars: i32,
+        /// Accept-gate: minimum mean region confidence (0 = ignore).
+        #[arg(long, default_value_t = 0.5)]
+        min_confidence: f32,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -1050,6 +1106,15 @@ pub fn run() -> ExitCode {
             Ok(())
         }
         Command::Manpage { out } => cmd_manpage(out),
+        Command::Ocr {
+            file, engine, source_type, det_model, rec_model, cleanup, denoise,
+            nafnet_model, layout, layout_threshold, drop_headers_footers,
+            punct_model, min_chars, min_confidence,
+        } => cmd_ocr(
+            cli.format, file, engine, source_type, det_model, rec_model, cleanup,
+            denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
+            punct_model, min_chars, min_confidence,
+        ),
     };
 
     match result {
@@ -1059,6 +1124,105 @@ pub fn run() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// ── ad-hoc OCR ───────────────────────────────────────────────────────────────
+
+/// Run the configurable OCR pipeline on a single file and print the text.
+#[allow(clippy::too_many_arguments)]
+fn cmd_ocr(
+    out: OutFormat,
+    file: PathBuf,
+    engine: String,
+    source_type: String,
+    det_model: Option<String>,
+    rec_model: Option<String>,
+    cleanup: bool,
+    denoise: bool,
+    nafnet_model: Option<String>,
+    layout: bool,
+    layout_threshold: f32,
+    drop_headers_footers: bool,
+    punct_model: Option<String>,
+    min_chars: i32,
+    min_confidence: f32,
+) -> Result<(), String> {
+    use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
+
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+
+    // dbnet_trocr (the default engine) uses the well-trodden simple mode; any
+    // other engine needs an explicit single stage so its choice takes effect.
+    let stages = if engine == "dbnet_trocr" {
+        Vec::new()
+    } else {
+        vec![OcrStageSpec {
+            source_type: source_type.clone(),
+            engine: engine.clone(),
+            det_model: det_model.clone(),
+            rec_model: rec_model.clone(),
+            cleanup: OcrCleanupSpec { enabled: cleanup, denoise, ..Default::default() },
+            det_prob_threshold: 0.3,
+            det_box_threshold: 0.5,
+            det_target_short: 736,
+            vlm_max_tokens: 0,
+            vlm_prompt: String::new(),
+            min_chars,
+            min_confidence,
+        }]
+    };
+
+    let cfg = OcrPipelineConfig {
+        enabled: true,
+        // Pin the requested source type (no reclassification) unless `auto`.
+        router: source_type == "auto",
+        cleanup_enabled: cleanup,
+        denoise,
+        min_chars,
+        min_confidence,
+        det_model,
+        rec_model,
+        nafnet_model,
+        punct_model: punct_model.filter(|s| !s.trim().is_empty()),
+        stages,
+        layout,
+        layout_model: None,
+        layout_threshold,
+        drop_headers_footers,
+    };
+
+    let opts = ExtractOptions {
+        try_ocr: true,
+        // Force OCR even when a PDF already has a text layer — this is an
+        // explicit "OCR this file" request, not the ingest heuristic.
+        ocr_pdf_min_chars: usize::MAX,
+        ocr_pipeline: cfg,
+        ..Default::default()
+    };
+
+    let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
+        .map_err(|e| format!("OCR failed: {e:#}"))?;
+
+    match out {
+        OutFormat::Json => {
+            let payload = serde_json::json!({
+                "file": file.display().to_string(),
+                "engine": engine,
+                "chars": doc.full_text.chars().count(),
+                "text": doc.full_text,
+            });
+            println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        }
+        OutFormat::Text => {
+            print!("{}", doc.full_text);
+            if !doc.full_text.ends_with('\n') {
+                println!();
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── version + doctor ────────────────────────────────────────────────────────
