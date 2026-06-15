@@ -315,12 +315,14 @@ settings surface; pipeline logic lives in CrispEmbed C++.
   (multi-page aware via `ocr_render_pages`). text + **hOCR + ALTO** work under
   the `crispembed` feature; rendering stays in C++ per "keep it all in cpp".
   Live test `ocr_render::hocr_render_live`.
-- [ ] **Gap — searchable PDF.** `crispembed::ocr_render` returns
-  `Option<String>`, which truncates a binary PDF at the first NUL — PDF output
-  is gated with a clear error. Needs a size-aware (`Vec<u8>`) binding over
-  `ocr_render.h`'s `output_size` API (upstream, CrispEmbed side). Multi-page
-  hOCR/ALTO currently concatenates per-page documents; single-document
-  multi-page would use the lower-level `add_page` binding (also upstream).
+- [x] **Searchable PDF + single-document multi-page** ✅ (2026-06-15). Bound the
+  lower-level `ocr_render.h` API in Rust (CrispEmbed `35a484b`:
+  `crispembed::ocr_render_pages` over `create/begin/add_page*/end/output_size`)
+  — binary-safe (PDF via `output_size` → `Vec<u8>`) and multi-page (one document
+  across all pages). CrispSorter `render_structured` now uses it for hOCR / ALTO
+  / **PDF**; PDF un-gated, multi-page no longer concatenated. Live tests
+  `ocr_render::hocr_render_live` + `pdf_render_live`. No C++ changes (symbols
+  were already `extern "C"`).
 - [ ] **Future — cc_detect + classical_preproc.** CrispEmbed landed a
   model-free CC line detector + adaptive-Otsu/deskew/despeckle classical
   preproc. They integrate as orchestrator detector/cleanup options once the

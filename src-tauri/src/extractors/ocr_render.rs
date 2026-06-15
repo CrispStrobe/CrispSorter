@@ -6,13 +6,11 @@
 //!
 //! ## Status (prepared 2026-06-15)
 //!
-//! Plain `Text` is produced here in Rust. **hOCR / ALTO** route to CrispEmbed's
-//! C++ `ocr_render` renderer via `crispembed::ocr_render` (we keep rendering in
-//! C++ per the "keep it all in cpp" directive). **Searchable PDF** is gated: the
-//! current `crispembed::ocr_render` returns `Option<String>`, which truncates a
-//! binary PDF at the first NUL byte — PDF needs a size-aware (`Vec<u8>`) binding
-//! over `ocr_render.h`'s `output_size` API (tracked follow-up). Without the
-//! `crispembed` feature, all structured formats return a clear error.
+//! Plain `Text` is produced here in Rust. **hOCR / ALTO / searchable PDF** route
+//! to CrispEmbed's C++ renderers via `crispembed::ocr_render_pages` (we keep
+//! rendering in C++ per the "keep it all in cpp" directive) — multi-page (one
+//! document across all pages) and binary-safe (PDF via `output_size`). Without
+//! the `crispembed` feature, all structured formats return a clear error.
 //!
 //! Everything else (region extraction via
 //! [`super::ocr_crispembed::ocr_regions_via_pipeline`], the page-mapping, the
@@ -155,62 +153,53 @@ fn render_text(pages: &[RenderPage]) -> String {
     out
 }
 
-/// Structured rendering (hOCR / ALTO) via CrispEmbed's `ocr_render`.
-///
+/// Structured / searchable rendering (hOCR / ALTO / PDF) via CrispEmbed's
+/// lower-level `ocr_render_pages` binding — **multi-page** (one document
+/// spanning all pages) and **binary-safe** (searchable PDF via `output_size`).
 /// Each [`RenderPage`]'s regions map to `crispembed::OcrRegion` (same
-/// box+text+confidence shape) and render via the one-shot `crispembed::ocr_render`.
-/// Multi-page docs render one document per page and concatenate (single-document
-/// multi-page output would need the lower-level `add_page` API). Searchable PDF
-/// is gated — see module docs.
+/// box+text+confidence shape; one-word lines at region granularity).
 #[cfg(feature = "crispembed")]
 fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat) -> Result<Vec<u8>> {
-    if matches!(fmt, OcrOutputFormat::Pdf) {
-        anyhow::bail!(
-            "searchable-PDF output isn't available via the current Rust binding: \
-             `crispembed::ocr_render` returns Option<String>, which truncates the \
-             binary PDF at the first NUL. It needs a size-aware (Vec<u8>) binding \
-             over ocr_render.h's output_size API. hOCR / ALTO / text work today."
-        );
-    }
     let fmt_str = match fmt {
         OcrOutputFormat::Hocr => "hocr",
         OcrOutputFormat::Alto => "alto",
-        _ => unreachable!("Text handled by render(); Pdf handled above"),
+        OcrOutputFormat::Pdf => "pdf",
+        OcrOutputFormat::Text => "text", // (render() routes Text away; total for safety)
     };
-    let mut out = String::new();
-    let mut rendered_pages = 0usize;
-    for (i, page) in pages.iter().enumerate() {
-        if page.regions.is_empty() {
-            continue;
-        }
-        let regions: Vec<crispembed::OcrRegion> = page
-            .regions
-            .iter()
-            .map(|r| crispembed::OcrRegion {
-                text: r.text.clone(),
-                x: r.x,
-                y: r.y,
-                w: r.w,
-                h: r.h,
-                confidence: r.confidence,
-            })
-            .collect();
-        let doc = crispembed::ocr_render(&regions, page.page_width, page.page_height, fmt_str)
-            .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render returned null (page {})", i + 1))?;
-        if rendered_pages > 0 {
-            out.push('\n');
-        }
-        out.push_str(&doc);
-        rendered_pages += 1;
-    }
-    if rendered_pages > 1 {
-        eprintln!(
-            "[ocr_render] {rendered_pages} pages rendered as concatenated {fmt_str} \
-             documents; single-document multi-page output needs the lower-level \
-             ocr_render add_page binding (follow-up)."
-        );
-    }
-    Ok(out.into_bytes())
+    // Convert to crispembed regions, keeping the per-page Vecs alive for the
+    // duration of the `ocr_render_pages` call (the inputs borrow them).
+    let page_regions: Vec<Vec<crispembed::OcrRegion>> = pages
+        .iter()
+        .map(|p| {
+            p.regions
+                .iter()
+                .map(|r| crispembed::OcrRegion {
+                    text: r.text.clone(),
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    confidence: r.confidence,
+                })
+                .collect()
+        })
+        .collect();
+    let inputs: Vec<crispembed::OcrRenderPageInput> = pages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| crispembed::OcrRenderPageInput {
+            regions: &page_regions[i],
+            page_width: p.page_width,
+            page_height: p.page_height,
+            image_path: if p.image_path.is_empty() {
+                None
+            } else {
+                Some(p.image_path.as_str())
+            },
+        })
+        .collect();
+    crispembed::ocr_render_pages(&inputs, fmt_str)
+        .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render_pages returned None ({fmt_str})"))
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -286,17 +275,9 @@ mod tests {
         }
     }
 
-    // With crispembed, PDF stays gated (binary truncation) with a clear reason.
-    #[cfg(feature = "crispembed")]
-    #[test]
-    fn pdf_gated_with_crispembed() {
-        let page = RenderPage::from_regions(vec![region("x", 0.0, 0.0)], 100, 100, "/tmp/x.png");
-        let err = render(&[page], OcrOutputFormat::Pdf).unwrap_err().to_string();
-        assert!(err.contains("PDF") || err.contains("Pdf"), "explains PDF gating: {err}");
-    }
-
-    // Live: drive the real CrispEmbed renderer (no OCR models needed — just the
-    // `ocr_render` binding + a linked libcrispembed). Validates hOCR structure.
+    // Live: drive the real CrispEmbed renderers (no OCR models needed — just the
+    // `ocr_render_pages` binding + a linked libcrispembed). Validates hOCR
+    // structure, multi-page (one document), and binary PDF.
     #[cfg(feature = "crispembed")]
     #[test]
     #[ignore] // cargo test --features crispembed-metal hocr_render_live -- --ignored
@@ -315,5 +296,16 @@ mod tests {
             .expect("utf8");
         assert!(s.contains("ocr_page") || s.contains("ocrx_word"), "hOCR markup: {s}");
         assert!(s.contains("Hello"), "recognized text present: {s}");
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal pdf_render_live -- --ignored
+    fn pdf_render_live() {
+        // Two pages → one searchable PDF (binary; %PDF- header, NUL-safe).
+        let p = || RenderPage::from_regions(vec![region("Page text", 10.0, 20.0)], 600, 800, "");
+        let bytes = render(&[p(), p()], OcrOutputFormat::Pdf).expect("pdf render");
+        assert!(bytes.starts_with(b"%PDF-"), "PDF magic header");
+        assert!(bytes.len() > 100, "non-trivial PDF: {} bytes", bytes.len());
     }
 }
