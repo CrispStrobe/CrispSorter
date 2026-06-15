@@ -214,6 +214,10 @@ pub struct OcrPipelineConfig {
     /// NAFNet denoise GGUF registry name (`None` → `nafnet-denoise`).
     #[serde(default)]
     pub nafnet_model: Option<String>,
+    /// Optional post-OCR punctuation/spacing/truecasing restorer (FireRedPunc /
+    /// PCS / fullstop-punc) applied to the joined text. `None`/empty = off.
+    #[serde(default)]
+    pub punct_model: Option<String>,
     /// Full per-stage builder. When non-empty, the pipeline is built from these
     /// explicit stages (full tweakability) instead of the flat fields above —
     /// each stage picks an engine + models + cleanup recipe + engine params +
@@ -337,6 +341,7 @@ impl Default for OcrPipelineConfig {
             det_model: None,
             rec_model: None,
             nafnet_model: None,
+            punct_model: None,
             stages: Vec::new(),
         }
     }

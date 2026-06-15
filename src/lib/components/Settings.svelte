@@ -185,6 +185,9 @@
     let ocrPipelineDenoise  = $state(false);
     let ocrPipelineMinChars = $state(8);
     let ocrPipelineMinConf  = $state(0.5);
+    // Optional post-OCR punctuation/spacing/truecasing restorer (FireRedPunc /
+    // PCS / fullstop-punc) — model name or GGUF path; empty = off.
+    let ocrPipelinePunct    = $state('');
     // Advanced per-stage builder: when on, the user composes explicit stages
     // (full tweakability) instead of the simple toggles above.
     let ocrPipelineAdvanced = $state(false);
@@ -238,6 +241,7 @@
             det_model:       null,
             rec_model:       null,
             nafnet_model:    null,
+            punct_model:     ocrPipelinePunct.trim() || null,
             stages,
         };
     }
@@ -996,6 +1000,7 @@
         ocrPipelineMinConf  = await getSetting('ocrPipelineMinConf', 0.5) as number;
         ocrPipelineAdvanced = await getSetting('ocrPipelineAdvanced', false) as boolean;
         ocrStages           = await getSetting('ocrStages', []) as OcrStage[];
+        ocrPipelinePunct    = await getSetting('ocrPipelinePunct', '') as string;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1352,6 +1357,7 @@
         await saveSetting('ocrPipelineMinConf',  ocrPipelineMinConf);
         await saveSetting('ocrPipelineAdvanced', ocrPipelineAdvanced);
         await saveSetting('ocrStages',           $state.snapshot(ocrStages));
+        await saveSetting('ocrPipelinePunct',    ocrPipelinePunct);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2539,6 +2545,11 @@
                             bind:value={ocrPipelineMinConf} style="flex:1; max-width:200px;" />
                     </div>
                     <p class="hint">{i18n.t.settings.ocr_pipeline_gate_hint}</p>
+
+                    <label for="ocr-pipeline-punct" style="margin-top:10px;">{i18n.t.settings.ocr_pipeline_punct}</label>
+                    <input id="ocr-pipeline-punct" type="text" bind:value={ocrPipelinePunct}
+                        placeholder={i18n.t.settings.ocr_pipeline_punct_ph} />
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_punct_hint}</p>
 
                     <!-- Advanced per-stage builder -->
                     <div style="margin-top:14px; border-top:1px solid #27272a; padding-top:10px;">

@@ -253,6 +253,12 @@ fn resolve(name: &str) -> String {
 #[cfg(feature = "crispembed")]
 fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
     use super::{engine_id, source_type_id};
+    // Optional post-OCR punctuation/spacing/truecasing restorer (resolved once).
+    let punct: Option<String> = cfg
+        .punct_model
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(resolve);
     if cfg.stages.is_empty() {
         // Simple mode (slice-A flat config).
         let det = resolve(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL));
@@ -274,6 +280,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             cfg.cleanup_enabled,
             cfg.min_chars,
             cfg.min_confidence,
+            punct.as_deref(),
             0,
         )
         .expect("CrispEmbed OCR pipeline init failed");
@@ -334,7 +341,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             }
         })
         .collect();
-    crispembed::CrispOcrPipeline::from_stages(cfg.router, nafnet.as_deref(), &specs, 0)
+    crispembed::CrispOcrPipeline::from_stages(cfg.router, nafnet.as_deref(), punct.as_deref(), &specs, 0)
         .expect("CrispEmbed OCR per-stage pipeline init failed")
 }
 
