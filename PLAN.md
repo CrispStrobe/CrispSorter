@@ -302,19 +302,25 @@ settings surface; pipeline logic lives in CrispEmbed C++.
   `ocr_crispembed::ocr_pipeline_live_simple` / `_tesseract_stage` +
   `page_source::pdf_rasterize_live` exercise the FFI / engine / raster paths.
   The live `crispembed-metal` path validates in CI on the v0.10.1 re-pin.
-- [~] **OCR structured/searchable output (`ocr_render`)** — *prepared*
-  (2026-06-15). CrispEmbed shipped the renderers + a one-shot
-  `crispembed_ocr_render` C API (text/hOCR/ALTO/PDF) and registered the punct
-  models (closes the earlier punct-registry follow-up). CrispSorter is wired up
-  to the binding boundary: `extractors/ocr_render.rs` (`OcrOutputFormat`,
-  `OcrRegion`, `RenderPage`, Rust text renderer,
-  `render()`/`structured_render_available()`),
+- [x] **OCR structured/searchable output (`ocr_render`)** ✅ hOCR/ALTO SHIPPED
+  (2026-06-15). CrispEmbed shipped the renderers + `crispembed::ocr_render`
+  Rust binding (+ registered punct models, closing that follow-up); I fixed an
+  upstream compile blocker in the binding (undefined `OcrRegion` → alias of
+  `OcrResult`; missing `libc` dep — CrispEmbed `848071a`) and adapted to the new
+  `CrispOcrPipeline::new` vlm params. CrispSorter wiring:
+  `extractors/ocr_render.rs` (`OcrOutputFormat`, `OcrRegion`, `RenderPage`, Rust
+  text renderer + `render_structured` → `crispembed::ocr_render`),
   `ocr_crispembed::ocr_regions_via_pipeline` (box+text+confidence from the
-  cached orchestrator), and `ocr --render text|hocr|alto|pdf [--out F]`. `text`
-  works today; hOCR/ALTO/PDF fail fast pending a thin **Rust binding** over the
-  C API — the only remaining step (spec in
-  `handover-prompts/session-prompt-ocr-render-binding.md`). Rendering stays in
-  C++ per "keep it all in cpp".
+  cached orchestrator), and `ocr --render text|hocr|alto|pdf [--out F]`
+  (multi-page aware via `ocr_render_pages`). text + **hOCR + ALTO** work under
+  the `crispembed` feature; rendering stays in C++ per "keep it all in cpp".
+  Live test `ocr_render::hocr_render_live`.
+- [ ] **Gap — searchable PDF.** `crispembed::ocr_render` returns
+  `Option<String>`, which truncates a binary PDF at the first NUL — PDF output
+  is gated with a clear error. Needs a size-aware (`Vec<u8>`) binding over
+  `ocr_render.h`'s `output_size` API (upstream, CrispEmbed side). Multi-page
+  hOCR/ALTO currently concatenates per-page documents; single-document
+  multi-page would use the lower-level `add_page` binding (also upstream).
 - [ ] **Future — cc_detect + classical_preproc.** CrispEmbed landed a
   model-free CC line detector + adaptive-Otsu/deskew/despeckle classical
   preproc. They integrate as orchestrator detector/cleanup options once the

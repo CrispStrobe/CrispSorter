@@ -319,6 +319,8 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             cfg.cleanup_enabled,
             cfg.min_chars,
             cfg.min_confidence,
+            None, // vlm_model — simple mode uses det+rec (DBNet+TrOCR), no VLM
+            0,    // vlm_engine — dbnet_trocr
             punct.as_deref(),
             0,
         )
