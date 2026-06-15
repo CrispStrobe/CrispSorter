@@ -176,6 +176,28 @@
     let ocrEnabled = $state(false);
     let ocrTier    = $state<'auto' | 'tier1' | 'tier2' | 'tier3'>('auto');
     let ocrRecLang = $state<'auto' | 'latin' | 'cjk'>('auto');
+    // Smart OCR pipeline (C++ orchestrator: source-type routing + per-stage
+    // image cleanup [classical + NAFNet denoise] + accept-gate escalation).
+    // Off by default → legacy tier ladder. GGUF-only via CrispEmbed.
+    let ocrPipelineEnabled  = $state(false);
+    let ocrPipelineRouter   = $state(true);
+    let ocrPipelineCleanup  = $state(true);
+    let ocrPipelineDenoise  = $state(false);
+    let ocrPipelineMinChars = $state(8);
+    let ocrPipelineMinConf  = $state(0.5);
+    /** Build the OcrPipelineConfig payload (snake_case = Rust serde field names). */
+    function ocrPipelineConfig() {
+        return {
+            enabled:         ocrPipelineEnabled,
+            router:          ocrPipelineRouter,
+            cleanup_enabled: ocrPipelineCleanup,
+            denoise:         ocrPipelineDenoise,
+            min_chars:       Number(ocrPipelineMinChars) || 8,
+            min_confidence:  Number(ocrPipelineMinConf) || 0.5,
+            det_model:       null,
+            rec_model:       null,
+        };
+    }
     let authorSortEnabled = $state(false);
     let noThinking = $state(true);
     let pdfBackend = $state<'js' | 'rust'>('js');
@@ -923,6 +945,13 @@
         ocrTier    = await getSetting('ocrTier', 'auto') as 'auto' | 'tier1' | 'tier2' | 'tier3';
         ocrRecLang = await getSetting('ocrRecLang', 'auto') as 'auto' | 'latin' | 'cjk';
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
+        ocrPipelineEnabled  = await getSetting('ocrPipelineEnabled', false) as boolean;
+        ocrPipelineRouter   = await getSetting('ocrPipelineRouter', true) as boolean;
+        ocrPipelineCleanup  = await getSetting('ocrPipelineCleanup', true) as boolean;
+        ocrPipelineDenoise  = await getSetting('ocrPipelineDenoise', false) as boolean;
+        ocrPipelineMinChars = await getSetting('ocrPipelineMinChars', 8) as number;
+        ocrPipelineMinConf  = await getSetting('ocrPipelineMinConf', 0.5) as number;
+        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
         autoSpeakReplies = await getSetting('autoSpeakReplies', false);
@@ -1270,6 +1299,13 @@
         await saveSetting('ocrEnabled', ocrEnabled);
         await saveSetting('ocrTier', ocrTier);
         await saveSetting('ocrRecLang', ocrRecLang);
+        await saveSetting('ocrPipelineEnabled',  ocrPipelineEnabled);
+        await saveSetting('ocrPipelineRouter',   ocrPipelineRouter);
+        await saveSetting('ocrPipelineCleanup',  ocrPipelineCleanup);
+        await saveSetting('ocrPipelineDenoise',  ocrPipelineDenoise);
+        await saveSetting('ocrPipelineMinChars', ocrPipelineMinChars);
+        await saveSetting('ocrPipelineMinConf',  ocrPipelineMinConf);
+        invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
         await saveSetting('authorSortEnabled', authorSortEnabled);
@@ -2411,6 +2447,52 @@
                     <button class:active={pdfBackend === 'rust'} class="toggle-btn" onclick={() => pdfBackend = 'rust'}>{i18n.t.settings.pdf_engine_rust}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.pdf_engine_hint}</p>
+            </div>
+
+            <!-- Smart OCR Pipeline (C++ orchestrator: cleanup + NAFNet + routing) -->
+            <div class="section-card">
+                <label for="ocr-pipeline-enabled" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input id="ocr-pipeline-enabled" type="checkbox"
+                        bind:checked={ocrPipelineEnabled}
+                        disabled={!crispEmbedCompiledIn} />
+                    <Scan size={16} /> <span><strong>{i18n.t.settings.ocr_pipeline_enabled}</strong></span>
+                </label>
+                {#if !crispEmbedCompiledIn}
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_requires_crispembed}</p>
+                {:else}
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_hint}</p>
+                {/if}
+                {#if ocrPipelineEnabled && crispEmbedCompiledIn}
+                    <div class="checkbox-group" style="margin-top:8px;">
+                        <input id="ocr-pipeline-router" type="checkbox" bind:checked={ocrPipelineRouter} />
+                        <label for="ocr-pipeline-router">{i18n.t.settings.ocr_pipeline_router}</label>
+                    </div>
+                    <div class="checkbox-group" style="margin-top:4px;">
+                        <input id="ocr-pipeline-cleanup" type="checkbox" bind:checked={ocrPipelineCleanup} />
+                        <label for="ocr-pipeline-cleanup">{i18n.t.settings.ocr_pipeline_cleanup}</label>
+                    </div>
+                    <div class="checkbox-group" style="margin-top:4px;">
+                        <input id="ocr-pipeline-denoise" type="checkbox" bind:checked={ocrPipelineDenoise} />
+                        <label for="ocr-pipeline-denoise">{i18n.t.settings.ocr_pipeline_denoise}</label>
+                    </div>
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_denoise_hint}</p>
+
+                    <div class="field-row" style="margin-top:8px;">
+                        <label for="ocr-pipeline-minchars" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                            {i18n.t.settings.ocr_pipeline_min_chars}
+                        </label>
+                        <input id="ocr-pipeline-minchars" type="number" min="0" max="200" step="1"
+                            bind:value={ocrPipelineMinChars} style="max-width:90px;" />
+                    </div>
+                    <div class="field-row" style="margin-top:6px;">
+                        <label for="ocr-pipeline-minconf" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                            {i18n.t.settings.ocr_pipeline_min_conf} ({Number(ocrPipelineMinConf).toFixed(2)})
+                        </label>
+                        <input id="ocr-pipeline-minconf" type="range" min="0" max="1" step="0.05"
+                            bind:value={ocrPipelineMinConf} style="flex:1; max-width:200px;" />
+                    </div>
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_gate_hint}</p>
+                {/if}
             </div>
 
             <!-- OCR (Tesseract) -->

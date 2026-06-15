@@ -420,6 +420,19 @@ async fn bg_ingest_set_ocr(
     Ok(())
 }
 
+/// Set the smart OCR-pipeline config (C++ orchestrator: cleanup + NAFNet +
+/// source-type routing + accept-gate). Called from Settings.svelte's OCR
+/// Pipeline panel. The `config` deserialises into `OcrPipelineConfig`.
+#[tauri::command]
+async fn bg_ingest_set_ocr_pipeline(
+    state: tauri::State<'_, AppState>,
+    config: crate::extractors::OcrPipelineConfig,
+) -> Result<(), String> {
+    let mut bg = state.bg_ingest.lock().await;
+    bg.ocr_pipeline = config;
+    Ok(())
+}
+
 /// Export the LanceDB documents table to a .caf file (PLAN P6 4d).
 ///
 /// Walks the documents table once (whole-doc rows only, `chunk_index =
@@ -2690,6 +2703,7 @@ pub fn run() {
             bg_ingest_cancel,
             bg_ingest_clear,
             bg_ingest_set_ocr,
+            bg_ingest_set_ocr_pipeline,
             jobs::tauri_commands::jobs_create,
             jobs::tauri_commands::jobs_list,
             jobs::tauri_commands::jobs_get,
@@ -2861,6 +2875,7 @@ pub fn run() {
             bg_ingest_cancel,
             bg_ingest_clear,
             bg_ingest_set_ocr,
+            bg_ingest_set_ocr_pipeline,
             jobs::tauri_commands::jobs_create,
             jobs::tauri_commands::jobs_list,
             jobs::tauri_commands::jobs_get,

@@ -131,6 +131,11 @@ pub struct BackgroundIngest {
     /// PaddleOCR recognition language model.
     /// "auto" | "latin" | "cjk"
     pub ocr_rec_lang: String,
+    /// Smart OCR pipeline (C++ orchestrator) config. When
+    /// `ocr_pipeline.enabled` is true, image OCR routes through the
+    /// CrispEmbed pipeline (cleanup + NAFNet + routing + accept-gate)
+    /// instead of the legacy tier ladder. Default disabled.
+    pub ocr_pipeline: crate::extractors::OcrPipelineConfig,
 }
 
 impl Default for BackgroundIngest {
@@ -148,6 +153,7 @@ impl Default for BackgroundIngest {
             ocr_enabled: false,
             ocr_tier: "auto".to_owned(),
             ocr_rec_lang: "auto".to_owned(),
+            ocr_pipeline: crate::extractors::OcrPipelineConfig::default(),
         }
     }
 }
@@ -348,7 +354,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let thin = !g.config.local_extraction_enabled;
         (push, thin, g.config.local_skeleton_only)
     };
-    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level) = {
+    let (pipeline, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg) = {
         let g = app_state.index.lock().await;
         if !g.config.enabled {
             return Err("Index is disabled in settings".into());
@@ -389,7 +395,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         let ocr_enabled = bg.ocr_enabled;
         let ocr_tier_str = bg.ocr_tier.clone();
         let ocr_rec_lang_str = bg.ocr_rec_lang.clone();
-        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level)
+        let ocr_pipeline_cfg = bg.ocr_pipeline.clone();
+        (pipe, local, ocr_enabled, ocr_tier_str, ocr_rec_lang_str, translate_to, audio_extraction_enabled, ingest_audio_level, image_extraction_enabled, ingest_image_level, ocr_pipeline_cfg)
     };
     let ocr_tier = match ocr_tier_str.as_str() {
         "tier1" => crate::extractors::OcrTier::Tier1,
@@ -669,6 +676,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         ingest_audio_level: ingest_audio_level.clone(),
         image_extraction_enabled,
         ingest_image_level: ingest_image_level.clone(),
+        ocr_pipeline: ocr_pipeline_cfg.clone(),
     };
     let extract_fut = tokio::task::spawn_blocking({
         let p = p.clone();

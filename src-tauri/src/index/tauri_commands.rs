@@ -1787,6 +1787,9 @@ pub async fn index_image_promote_l3(
         ingest_audio_level: "l3".to_string(),
         image_extraction_enabled: true,
         ingest_image_level: "l3".to_string(),
+        // Manual re-OCR uses the legacy ladder; the smart pipeline applies in
+        // bg_ingest where the persisted config is available.
+        ocr_pipeline: crate::extractors::OcrPipelineConfig::default(),
     };
     let extracted = {
         let p = path.clone();

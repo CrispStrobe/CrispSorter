@@ -178,6 +178,66 @@ pub enum OcrRecLang {
     Cjk,
 }
 
+/// Configuration for the C++ OCR pipeline orchestrator (CrispEmbed
+/// `CrispOcrPipeline`): source-type routing + per-stage image cleanup
+/// (classical + NAFNet) + accept-gate escalation. When
+/// [`Self::enabled`] is false the extractor uses the legacy Rust tier
+/// ladder unchanged. Mirrors the flat `crispembed_ocr_pipeline_params`
+/// C struct so it threads straight through.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OcrPipelineConfig {
+    /// Master switch. `false` (default) → legacy Rust tier ladder.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Classify the image (screenshot / scanned-doc / photo) and route to
+    /// the matching cleanup+engine recipe.
+    #[serde(default = "default_true")]
+    pub router: bool,
+    /// Run per-stage scan cleanup (deskew/crop/whiten/binarize) before OCR.
+    #[serde(default = "default_true")]
+    pub cleanup_enabled: bool,
+    /// Enable the learned NAFNet tier-2 denoise (downloads ~30 MB on first use).
+    #[serde(default)]
+    pub denoise: bool,
+    /// Accept-gate: minimum recognized characters before escalating.
+    #[serde(default = "default_ocr_min_chars")]
+    pub min_chars: i32,
+    /// Accept-gate: minimum mean region confidence (0 = ignore).
+    #[serde(default = "default_ocr_min_confidence")]
+    pub min_confidence: f32,
+    /// Detection model registry name (`None` → `surya-det`).
+    #[serde(default)]
+    pub det_model: Option<String>,
+    /// Recognition model registry name (`None` → `qwen2vl-ocr`).
+    #[serde(default)]
+    pub rec_model: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_ocr_min_chars() -> i32 {
+    8
+}
+fn default_ocr_min_confidence() -> f32 {
+    0.5
+}
+
+impl Default for OcrPipelineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            router: true,
+            cleanup_enabled: true,
+            denoise: false,
+            min_chars: default_ocr_min_chars(),
+            min_confidence: default_ocr_min_confidence(),
+            det_model: None,
+            rec_model: None,
+        }
+    }
+}
+
 /// PLAN P7.8 + P13.5 Phase 7 options for the extractor dispatcher.
 ///
 /// `Copy` was dropped when [`Self::text_lid_model`] (a `PathBuf`)
@@ -247,6 +307,10 @@ pub struct ExtractOptions {
     /// pre-P13.7 behaviour for legacy callers.  bg_ingest reads
     /// this from `IndexConfig.image_extraction_enabled`.
     pub image_extraction_enabled: bool,
+    /// OCR pipeline orchestrator config (C++ cleanup + routing + accept-gate).
+    /// When `enabled` is false the legacy Rust tier ladder runs unchanged.
+    /// bg_ingest fills this from the persisted OCR-pipeline settings.
+    pub ocr_pipeline: OcrPipelineConfig,
     /// P13.7 Step 1 — how deeply to ingest images.  `"l1"`
     /// short-circuits the extractor entirely; `"l2"` runs the
     /// kamadak-exif probe but skips OCR; `"l3"` (default) runs
@@ -276,6 +340,8 @@ impl Default for ExtractOptions {
             // P13.7 default — image extraction ON, L3 full pipeline.
             image_extraction_enabled: true,
             ingest_image_level: "l3".to_string(),
+            // OCR pipeline orchestrator off by default → legacy ladder.
+            ocr_pipeline: OcrPipelineConfig::default(),
         }
     }
 }
@@ -303,6 +369,7 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
             // P13.7 — image side parallel defaults.
             image_extraction_enabled: true,
             ingest_image_level: "l3".to_string(),
+            ocr_pipeline: OcrPipelineConfig::default(),
         },
     )
 }
@@ -383,7 +450,28 @@ pub fn extract_text_from_path_with_opts(
                 });
             }
 
-            // L3 + OCR enabled: tier ladder.
+            // L3 + OCR enabled.
+            //
+            // Smart pipeline (C++ orchestrator): when enabled, route to the
+            // CrispEmbed pipeline (source-type cleanup + NAFNet denoise +
+            // accept-gate). On failure (e.g. models unavailable) fall through
+            // to the legacy Rust tier ladder below.
+            if opts.ocr_pipeline.enabled && ocr_crispembed::is_crispembed_ocr_available() {
+                match ocr_crispembed::ocr_via_pipeline(path, &opts.ocr_pipeline) {
+                    Ok(mut doc) => {
+                        doc.ext = ext.clone();
+                        doc.image_exif = image_exif;
+                        return Ok(doc);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[ocr] smart pipeline failed ({e:#}); falling back to tier ladder"
+                        );
+                    }
+                }
+            }
+
+            // Legacy tier ladder.
             // P17.2 — CrispEmbed Tier 4 at the top when compiled in.
             let want_tier4 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier4);
             let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);

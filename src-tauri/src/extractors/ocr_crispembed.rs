@@ -182,6 +182,91 @@ pub fn ocr_via_crispembed_custom(
     ))
 }
 
+/// NAFNet denoise GGUF registry name (`cstr/nafnet-sidd-GGUF`, MIT, ~30 MB).
+#[cfg(feature = "crispembed")]
+const NAFNET_MODEL: &str = "nafnet-denoise";
+
+/// Process-global lazy-loaded OCR pipeline orchestrator (cleanup + routing +
+/// accept-gate). Like [`OCR_PIPELINE`], cached behind a `Mutex` (not `Sync`)
+/// so the models stay loaded across documents. The first call's config wins
+/// for the process; changing OCR-pipeline settings takes effect on index
+/// re-init (same lazy-once contract as the embedder/reranker).
+#[cfg(feature = "crispembed")]
+static OCR_ORCH: std::sync::OnceLock<Mutex<crispembed::CrispOcrPipeline>> =
+    std::sync::OnceLock::new();
+
+/// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
+/// cleanup + NAFNet denoise + accept-gate escalation) on an image.
+#[cfg(feature = "crispembed")]
+pub fn ocr_via_pipeline(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Result<ExtractedDocument> {
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
+
+    let orch = OCR_ORCH.get_or_init(|| {
+        let det_name = cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL);
+        let rec_name = cfg.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL);
+        let det = crispembed::CrispEmbed::resolve_model(det_name, Some(true))
+            .unwrap_or_else(|_| det_name.to_string());
+        let rec = crispembed::CrispEmbed::resolve_model(rec_name, Some(true))
+            .unwrap_or_else(|_| rec_name.to_string());
+        // Resolve NAFNet only when tier-2 denoise is requested.
+        let nafnet: Option<String> = if cfg.denoise {
+            crispembed::CrispEmbed::resolve_model(NAFNET_MODEL, Some(true)).ok()
+        } else {
+            None
+        };
+        let p = crispembed::CrispOcrPipeline::new(
+            &det,
+            &rec,
+            nafnet.as_deref(),
+            cfg.router,
+            cfg.cleanup_enabled,
+            cfg.min_chars,
+            cfg.min_confidence,
+            0,
+        )
+        .expect("CrispEmbed OCR pipeline (orchestrator) init failed");
+        Mutex::new(p)
+    });
+
+    let mut guard = orch
+        .lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let res = guard
+        .run(path_str)
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+
+    Ok(ExtractedDocument {
+        full_text: res.full_text,
+        headings: Vec::new(),
+        ext: path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase(),
+        language: None,
+        translated_text: None,
+        translated_to_lang: None,
+        audio: None,
+        image_exif: None,
+        source_url: None,
+        tags: vec![],
+    })
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn ocr_via_pipeline(
+    path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Result<ExtractedDocument> {
+    Err(anyhow::anyhow!(
+        "CrispEmbed OCR pipeline requires --features crispembed; skipped {}",
+        path.display()
+    ))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
