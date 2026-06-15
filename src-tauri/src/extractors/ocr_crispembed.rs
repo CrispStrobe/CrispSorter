@@ -231,6 +231,45 @@ pub fn ocr_via_pipeline(
     })
 }
 
+/// Run the OCR pipeline and return the per-region results (box + text +
+/// confidence) instead of just the joined text. This is the input the
+/// `ocr_render` structured/searchable renderers need (hOCR / ALTO / PDF).
+/// Uses the same cached orchestrator as [`ocr_via_pipeline`].
+#[cfg(feature = "crispembed")]
+pub fn ocr_regions_via_pipeline(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Result<Vec<super::ocr_render::OcrRegion>> {
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
+    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
+    let mut guard = orch
+        .lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let res = guard
+        .run(path_str)
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+    Ok(res
+        .regions
+        .into_iter()
+        .map(|r| super::ocr_render::OcrRegion {
+            text: r.text,
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            confidence: r.confidence,
+        })
+        .collect())
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn ocr_regions_via_pipeline(
+    _path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Result<Vec<super::ocr_render::OcrRegion>> {
+    anyhow::bail!("OCR region extraction requires the `crispembed` cargo feature")
+}
+
 /// Default single-shot model registry name for a VLM engine string.
 #[cfg(feature = "crispembed")]
 fn vlm_default_model(engine: &str) -> &'static str {

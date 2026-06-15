@@ -39,6 +39,7 @@ pub mod ocr;
 pub mod ocr_crispembed;
 pub mod ocr_ocrs;
 pub mod ocr_paddle;
+pub mod ocr_render;
 pub mod page_source;
 pub mod pdf;
 pub mod text;

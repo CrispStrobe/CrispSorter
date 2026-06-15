@@ -302,6 +302,25 @@ settings surface; pipeline logic lives in CrispEmbed C++.
   `ocr_crispembed::ocr_pipeline_live_simple` / `_tesseract_stage` +
   `page_source::pdf_rasterize_live` exercise the FFI / engine / raster paths.
   The live `crispembed-metal` path validates in CI on the v0.10.1 re-pin.
+- [~] **OCR structured/searchable output (`ocr_render`)** — *prepared*
+  (2026-06-15). CrispEmbed shipped the renderers + a one-shot
+  `crispembed_ocr_render` C API (text/hOCR/ALTO/PDF) and registered the punct
+  models (closes the earlier punct-registry follow-up). CrispSorter is wired up
+  to the binding boundary: `extractors/ocr_render.rs` (`OcrOutputFormat`,
+  `OcrRegion`, `RenderPage`, Rust text renderer,
+  `render()`/`structured_render_available()`),
+  `ocr_crispembed::ocr_regions_via_pipeline` (box+text+confidence from the
+  cached orchestrator), and `ocr --render text|hocr|alto|pdf [--out F]`. `text`
+  works today; hOCR/ALTO/PDF fail fast pending a thin **Rust binding** over the
+  C API — the only remaining step (spec in
+  `handover-prompts/session-prompt-ocr-render-binding.md`). Rendering stays in
+  C++ per "keep it all in cpp".
+- [ ] **Future — cc_detect + classical_preproc.** CrispEmbed landed a
+  model-free CC line detector + adaptive-Otsu/deskew/despeckle classical
+  preproc. They integrate as orchestrator detector/cleanup options once the
+  parallel agent wires them into the orchestrator; CrispSorter then exposes them
+  via the existing `OcrPipelineConfig` surface (detector choice / cleanup
+  methods) with minimal new code.
 
 ---
 

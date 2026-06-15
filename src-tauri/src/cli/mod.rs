@@ -215,6 +215,17 @@ enum Command {
         /// Accept-gate: minimum mean region confidence (0 = ignore).
         #[arg(long, default_value_t = 0.5)]
         min_confidence: f32,
+        /// Output format. `text` (default) prints plain text. `hocr` / `alto` /
+        /// `pdf` produce structured / searchable output via CrispEmbed's
+        /// `ocr_render` (region boxes + invisible text layer). Named `--render`
+        /// to avoid the global `-f/--format` (json/text) envelope flag.
+        #[arg(long = "render", default_value = "text",
+              value_parser = ["text", "hocr", "alto", "pdf"])]
+        render: String,
+        /// Write the rendered output to this file instead of stdout. Required
+        /// for `--render pdf` (binary). Defaults to a sensible extension.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -1109,11 +1120,11 @@ pub fn run() -> ExitCode {
         Command::Ocr {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence,
+            punct_model, min_chars, min_confidence, render, out,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence,
+            punct_model, min_chars, min_confidence, render, out,
         ),
     };
 
@@ -1128,10 +1139,11 @@ pub fn run() -> ExitCode {
 
 // ── ad-hoc OCR ───────────────────────────────────────────────────────────────
 
-/// Run the configurable OCR pipeline on a single file and print the text.
+/// Run the configurable OCR pipeline on a single file and print/write the
+/// result in the chosen render format (text / hOCR / ALTO / searchable PDF).
 #[allow(clippy::too_many_arguments)]
 fn cmd_ocr(
-    out: OutFormat,
+    global_fmt: OutFormat,
     file: PathBuf,
     engine: String,
     source_type: String,
@@ -1146,7 +1158,10 @@ fn cmd_ocr(
     punct_model: Option<String>,
     min_chars: i32,
     min_confidence: f32,
+    render: String,
+    out_path: Option<PathBuf>,
 ) -> Result<(), String> {
+    use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
 
     if !file.exists() {
@@ -1193,33 +1208,81 @@ fn cmd_ocr(
         drop_headers_footers,
     };
 
-    let opts = ExtractOptions {
-        try_ocr: true,
-        // Force OCR even when a PDF already has a text layer — this is an
-        // explicit "OCR this file" request, not the ingest heuristic.
-        ocr_pdf_min_chars: usize::MAX,
-        ocr_pipeline: cfg,
-        ..Default::default()
-    };
+    let fmt = OcrOutputFormat::from_name(&render)
+        .ok_or_else(|| format!("unknown --render format: {render}"))?;
 
-    let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
-        .map_err(|e| format!("OCR failed: {e:#}"))?;
+    // Structured / searchable formats (hOCR / ALTO / PDF) go through
+    // CrispEmbed's `ocr_render`. Fail fast (before running OCR) when that
+    // binding isn't wired yet — the renderer returns the actionable message.
+    if fmt.needs_render_binding() && !crate::extractors::ocr_render::structured_render_available() {
+        crate::extractors::ocr_render::render(&[], fmt)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))?;
+        return Ok(()); // unreachable: render(&[], structured) always errors here
+    }
 
-    match out {
-        OutFormat::Json => {
-            let payload = serde_json::json!({
-                "file": file.display().to_string(),
-                "engine": engine,
-                "chars": doc.full_text.chars().count(),
-                "text": doc.full_text,
-            });
-            println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    // Plain text: the existing whole-file path (multi-page aware, punct applied).
+    if fmt == OcrOutputFormat::Text {
+        let opts = ExtractOptions {
+            try_ocr: true,
+            // Force OCR even when a PDF already has a text layer — this is an
+            // explicit "OCR this file" request, not the ingest heuristic.
+            ocr_pdf_min_chars: usize::MAX,
+            ocr_pipeline: cfg,
+            ..Default::default()
+        };
+        let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
+            .map_err(|e| format!("OCR failed: {e:#}"))?;
+        if let Some(p) = &out_path {
+            std::fs::write(p, doc.full_text.as_bytes())
+                .map_err(|e| format!("writing {}: {e}", p.display()))?;
+            return Ok(());
         }
-        OutFormat::Text => {
-            print!("{}", doc.full_text);
-            if !doc.full_text.ends_with('\n') {
-                println!();
+        return match global_fmt {
+            OutFormat::Json => {
+                let payload = serde_json::json!({
+                    "file": file.display().to_string(),
+                    "engine": engine,
+                    "render": render,
+                    "chars": doc.full_text.chars().count(),
+                    "text": doc.full_text,
+                });
+                println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                Ok(())
             }
+            OutFormat::Text => {
+                print!("{}", doc.full_text);
+                if !doc.full_text.ends_with('\n') {
+                    println!();
+                }
+                Ok(())
+            }
+        };
+    }
+
+    // Structured / searchable: region-level OCR → ocr_render (reachable once
+    // `structured_render_available()` is true; the data path is wired now).
+    let regions = crate::extractors::ocr_crispembed::ocr_regions_via_pipeline(&file, &cfg)
+        .map_err(|e| format!("OCR failed: {e:#}"))?;
+    let (w, h) = image::image_dimensions(&file).unwrap_or((0, 0));
+    let page = crate::extractors::ocr_render::RenderPage::from_regions(
+        regions,
+        w as i32,
+        h as i32,
+        file.display().to_string(),
+    );
+    let bytes = crate::extractors::ocr_render::render(&[page], fmt)
+        .map_err(|e| format!("render failed: {e:#}"))?;
+    match &out_path {
+        Some(p) => std::fs::write(p, &bytes)
+            .map_err(|e| format!("writing {}: {e}", p.display()))?,
+        None if fmt.is_binary() => {
+            return Err(format!(
+                "--render {render} produces binary output; pass --out <FILE>"
+            ))
+        }
+        None => {
+            print!("{}", String::from_utf8_lossy(&bytes));
         }
     }
     Ok(())
