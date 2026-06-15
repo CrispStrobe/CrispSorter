@@ -906,6 +906,96 @@ fn batch_translate_cache_dir() -> std::path::PathBuf {
 }
 
 #[cfg(test)]
+mod ocr_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn engine_id_maps_all_engines() {
+        assert_eq!(engine_id("dbnet_trocr"), 0);
+        assert_eq!(engine_id("surya"), 1);
+        assert_eq!(engine_id("got"), 2);
+        assert_eq!(engine_id("glm"), 3);
+        assert_eq!(engine_id("qwen2vl"), 4);
+        assert_eq!(engine_id("internvl2"), 5);
+        assert_eq!(engine_id("tesseract"), 6);
+        // Unknown falls back to dbnet_trocr.
+        assert_eq!(engine_id("nonsense"), 0);
+    }
+
+    #[test]
+    fn source_type_id_maps_all_types() {
+        assert_eq!(source_type_id("auto"), 0);
+        assert_eq!(source_type_id("screenshot"), 1);
+        assert_eq!(source_type_id("scanned_doc"), 2);
+        assert_eq!(source_type_id("photo"), 3);
+        assert_eq!(source_type_id("???"), 0);
+    }
+
+    #[test]
+    fn ocr_pipeline_config_defaults_are_off_and_safe() {
+        let c = OcrPipelineConfig::default();
+        assert!(!c.enabled, "pipeline off by default → legacy ladder");
+        assert!(c.router);
+        assert!(c.cleanup_enabled);
+        assert!(!c.denoise);
+        assert_eq!(c.min_chars, 8);
+        assert!((c.min_confidence - 0.5).abs() < 1e-6);
+        assert!(c.stages.is_empty(), "empty stages → simple mode");
+        assert!(c.punct_model.is_none());
+    }
+
+    #[test]
+    fn ocr_pipeline_config_serde_round_trip_and_partial() {
+        // Full round-trip preserves every field.
+        let mut c = OcrPipelineConfig::default();
+        c.enabled = true;
+        c.denoise = true;
+        c.punct_model = Some("fireredpunc".into());
+        c.stages.push(OcrStageSpec {
+            source_type: "scanned_doc".into(),
+            engine: "tesseract".into(),
+            det_model: Some("dbnet-det".into()),
+            rec_model: Some("tesseract-eng".into()),
+            cleanup: OcrCleanupSpec { binarize: true, ..Default::default() },
+            det_prob_threshold: 0.4,
+            det_box_threshold: 0.6,
+            det_target_short: 960,
+            vlm_max_tokens: 0,
+            vlm_prompt: String::new(),
+            min_chars: 12,
+            min_confidence: 0.7,
+        });
+        let json = serde_json::to_string(&c).unwrap();
+        let back: OcrPipelineConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.enabled && back.denoise);
+        assert_eq!(back.punct_model.as_deref(), Some("fireredpunc"));
+        assert_eq!(back.stages.len(), 1);
+        assert_eq!(back.stages[0].engine, "tesseract");
+        assert!(back.stages[0].cleanup.binarize);
+        assert_eq!(back.stages[0].det_target_short, 960);
+
+        // Partial JSON (frontend may omit fields) fills serde defaults.
+        let partial: OcrPipelineConfig =
+            serde_json::from_str(r#"{"enabled":true,"stages":[{"engine":"got"}]}"#).unwrap();
+        assert!(partial.enabled);
+        assert!(partial.router, "router defaults true when omitted");
+        assert_eq!(partial.stages[0].engine, "got");
+        assert_eq!(partial.stages[0].source_type, "auto", "stage defaults applied");
+        assert_eq!(partial.stages[0].min_chars, 8);
+        assert!((partial.stages[0].det_prob_threshold - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ocr_cleanup_spec_defaults() {
+        let p = OcrCleanupSpec::default();
+        assert!(p.enabled && p.deskew && p.crop_borders && p.whiten_background);
+        assert!(!p.binarize && !p.denoise);
+        assert!((p.sauvola_k - 0.2).abs() < 1e-6);
+        assert_eq!(p.sauvola_window, 25);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -425,4 +425,67 @@ mod tests {
         let doc = result.expect("custom pipeline should not crash");
         println!("OCR text length: {}", doc.full_text.len());
     }
+
+    /// Live E2E for the C++ orchestrator path (`ocr_via_pipeline`): exercises
+    /// the full FFI — config marshalling, build_pipeline (simple mode), the
+    /// orchestrator run, and result mapping — end to end. Downloads dbnet-det +
+    /// the recognizer on first run. Text accuracy is validated separately via
+    /// the CrispEmbed CLI (`--ocr-pipeline`); this guards the Rust↔C++ wiring.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal ocr_pipeline_live -- --ignored
+    fn ocr_pipeline_live_simple() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img_path = tmp.path().join("page.png");
+        // High-contrast synthetic page (not real glyphs — accuracy is the CLI's
+        // job; here we assert the pipeline runs end-to-end without crashing).
+        let mut img = image::RgbImage::from_pixel(400, 120, image::Rgb([255, 255, 255]));
+        for y in 40..70 {
+            for x in 20..380 {
+                if (x / 14) % 2 == 0 {
+                    img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                }
+            }
+        }
+        img.save(&img_path).unwrap();
+
+        let cfg = super::super::OcrPipelineConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let doc = ocr_via_pipeline(&img_path, &cfg)
+            .expect("orchestrator pipeline should run end-to-end without crashing");
+        println!("pipeline full_text len: {}", doc.full_text.len());
+    }
+
+    /// Live E2E for the per-stage builder (`from_stages`) with a Tesseract
+    /// stage: validates the advanced config path + the tesseract engine wiring.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore]
+    fn ocr_pipeline_live_tesseract_stage() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let img_path = tmp.path().join("page.png");
+        let img = image::RgbImage::from_pixel(400, 120, image::Rgb([255, 255, 255]));
+        img.save(&img_path).unwrap();
+
+        let mut cfg = super::super::OcrPipelineConfig { enabled: true, ..Default::default() };
+        cfg.stages.push(super::super::OcrStageSpec {
+            source_type: "auto".into(),
+            engine: "tesseract".into(),
+            det_model: Some("dbnet-det".into()),
+            rec_model: Some("tesseract-eng".into()),
+            cleanup: Default::default(),
+            det_prob_threshold: 0.3,
+            det_box_threshold: 0.5,
+            det_target_short: 736,
+            vlm_max_tokens: 0,
+            vlm_prompt: String::new(),
+            min_chars: 1,
+            min_confidence: 0.0,
+        });
+        let doc = ocr_via_pipeline(&img_path, &cfg)
+            .expect("tesseract-stage pipeline should run without crashing");
+        println!("tesseract pipeline full_text len: {}", doc.full_text.len());
+    }
 }
