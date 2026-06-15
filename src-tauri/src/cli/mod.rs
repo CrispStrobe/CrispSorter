@@ -230,6 +230,16 @@ enum Command {
         /// OutputIntent). Only affects `--render pdf`; ignored otherwise.
         #[arg(long)]
         pdfa: bool,
+        /// Pre-processor: super-resolve low-resolution pages (PAN 4×) before
+        /// OCR — helps small scans / screenshots / faxes. Needs `crispembed`.
+        #[arg(long)]
+        sr: bool,
+        /// Super-resolution model registry name (default `pan-x4`).
+        #[arg(long)]
+        sr_model: Option<String>,
+        /// Only super-resolve pages whose short side is ≤ this many pixels.
+        #[arg(long, default_value_t = 1200)]
+        sr_max_px: i32,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -1125,10 +1135,12 @@ pub fn run() -> ExitCode {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
+            sr, sr_model, sr_max_px,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
+            sr, sr_model, sr_max_px,
         ),
     };
 
@@ -1165,6 +1177,9 @@ fn cmd_ocr(
     render: String,
     out_path: Option<PathBuf>,
     pdfa: bool,
+    sr: bool,
+    sr_model: Option<String>,
+    sr_max_px: i32,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
@@ -1211,6 +1226,9 @@ fn cmd_ocr(
         layout_model: None,
         layout_threshold,
         drop_headers_footers,
+        sr,
+        sr_model,
+        sr_max_short_side: sr_max_px,
     };
 
     let fmt = OcrOutputFormat::from_name(&render)

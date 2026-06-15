@@ -245,6 +245,20 @@ pub struct OcrPipelineConfig {
     /// page numbers) so they don't pollute the body text.
     #[serde(default)]
     pub drop_headers_footers: bool,
+    /// P20 #2 — pre-OCR **super-resolution** for low-resolution pages. When on,
+    /// a page whose short side is ≤ [`Self::sr_max_short_side`] px is upscaled
+    /// (CrispEmbed `CrispPanSr`, PAN 4×) before OCR — helps small scans,
+    /// screenshots, and faxes. The SR compute is in C++; off by default. Needs
+    /// `crispembed`.
+    #[serde(default)]
+    pub sr: bool,
+    /// Super-resolution model registry name (`None` → `pan-x4`).
+    #[serde(default)]
+    pub sr_model: Option<String>,
+    /// Only super-resolve when the page's short side is ≤ this many pixels
+    /// (above it, OCR is fine and 4× SR would just waste memory).
+    #[serde(default = "default_sr_max_short_side")]
+    pub sr_max_short_side: i32,
 }
 
 /// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
@@ -352,6 +366,9 @@ fn default_ocr_min_confidence() -> f32 {
 fn default_layout_threshold() -> f32 {
     0.25
 }
+fn default_sr_max_short_side() -> i32 {
+    1200
+}
 
 impl Default for OcrPipelineConfig {
     fn default() -> Self {
@@ -371,6 +388,9 @@ impl Default for OcrPipelineConfig {
             layout_model: None,
             layout_threshold: default_layout_threshold(),
             drop_headers_footers: false,
+            sr: false,
+            sr_model: None,
+            sr_max_short_side: default_sr_max_short_side(),
         }
     }
 }
@@ -562,6 +582,15 @@ fn cached_layout_detector(
 /// detected, ordered, and OCR'd individually (column-aware reading order);
 /// otherwise the whole page goes through the smart pipeline / tier ladder.
 fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    // Optional pre-OCR super-resolution: upscale low-res pages (PAN 4×) before
+    // recognition. The temp file is held in `_sr` for the rest of this call.
+    let _sr = if opts.ocr_pipeline.enabled && opts.ocr_pipeline.sr {
+        ocr_crispembed::super_resolve_page(path, &opts.ocr_pipeline)
+    } else {
+        None
+    };
+    let path: &Path = _sr.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
+
     if opts.ocr_pipeline.enabled && opts.ocr_pipeline.layout && layout::is_layout_available() {
         match ocr_with_layout(path, opts) {
             Ok(doc) => return Ok(doc),
@@ -1177,6 +1206,10 @@ mod ocr_pipeline_tests {
         assert!(c.layout_model.is_none());
         assert!((c.layout_threshold - 0.25).abs() < 1e-6);
         assert!(!c.drop_headers_footers);
+        // P20 #2 — super-resolution off by default, sane threshold.
+        assert!(!c.sr, "SR off by default");
+        assert!(c.sr_model.is_none());
+        assert_eq!(c.sr_max_short_side, 1200);
     }
 
     #[test]

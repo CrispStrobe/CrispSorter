@@ -34,6 +34,59 @@ pub fn is_crispembed_ocr_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
+/// Process-global PAN super-resolution engine (low-DPI pre-OCR upscale).
+/// `None` once an init attempt fails (e.g. model unavailable) so we don't retry.
+#[cfg(feature = "crispembed")]
+static PAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispPanSr>>> =
+    std::sync::OnceLock::new();
+
+/// Super-resolve a low-resolution page image before OCR (PAN 4×). Returns an
+/// upscaled temp PNG (the `NamedTempFile` keeps it alive — keep the tuple in
+/// scope for the OCR call) or `None` when SR is off, the page is already large
+/// enough, or SR is unavailable/fails. The SR compute runs in C++ (`CrispPanSr`).
+#[cfg(feature = "crispembed")]
+pub fn super_resolve_page(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    if !cfg.sr {
+        return None;
+    }
+    let img = image::open(path).ok()?;
+    let (w, h) = (img.width(), img.height());
+    // Only upscale genuinely low-res pages; above the threshold OCR is fine and
+    // a 4× blow-up just wastes memory.
+    if w.min(h) as i32 > cfg.sr_max_short_side {
+        return None;
+    }
+    let model = cfg.sr_model.as_deref().filter(|s| !s.is_empty()).unwrap_or("pan-x4");
+    let engine = PAN_SR
+        .get_or_init(|| crispembed::CrispPanSr::new(&resolve(model), 0).ok().map(Mutex::new))
+        .as_ref()?;
+    let rgb = img.to_rgb8();
+    let (out, ow, oh) = {
+        let mut guard = engine.lock().ok()?;
+        guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
+    };
+    let up = image::RgbImage::from_raw(ow as u32, oh as u32, out)?;
+    let tmp = tempfile::Builder::new()
+        .prefix("ocr_sr_")
+        .suffix(".png")
+        .tempfile()
+        .ok()?;
+    image::DynamicImage::ImageRgb8(up).save(tmp.path()).ok()?;
+    let p = tmp.path().to_path_buf();
+    Some((tmp, p))
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn super_resolve_page(
+    _path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    None
+}
+
 /// Run CrispEmbed OCR on an image file.
 ///
 /// Returns an `ExtractedDocument` with the concatenated recognized text
