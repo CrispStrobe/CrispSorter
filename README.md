@@ -121,6 +121,7 @@ crispsorter ocr paper.pdf --render alto --out paper.xml
 crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf  # searchable PDF (binary → needs --out)
 crispsorter ocr paper.pdf --render pdf --pdfa --out paper-archival.pdf  # PDF/A-2b (archival: XMP + sRGB OutputIntent)
 crispsorter ocr photo.jpg --layout --drop-headers-footers          # layout-aware reading order
+crispsorter ocr lowres-scan.png --sr                               # super-resolve (PAN 4×) low-res pages before OCR
 #   engines: dbnet_trocr|surya|tesseract|got|glm|qwen2vl|internvl2
 #   --render: text(default)|hocr|alto|pdf   ·  full flag list: crispsorter ocr --help
 crispsorter index search "karl barth"                  # BM25 FTS

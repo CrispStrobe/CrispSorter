@@ -65,6 +65,15 @@ first use). The router's defaults: scanned-doc binarizes, photo denoises.
 model (FireRedPunc / PCS). Useful for engines (e.g. Tesseract-LSTM) whose raw
 output needs cleanup.
 
+## Super-resolution (low-res pages)
+
+`--sr` upscales a page whose short side is ≤ `--sr-max-px` (default 1200) **4×**
+via CrispEmbed's PAN engine (`pan-x4`, 0.5 MB) *before* OCR — a real recognition
+win on small scans, screenshots, and faxes. It pairs with the PDF DPI profiling
+(a low-DPI page is detected, then super-resolved); the SR compute is in C++,
+CrispSorter only decides when to invoke it. Larger pages skip SR (OCR is fine and
+4× would waste memory). `ocr_crispembed::super_resolve_page` (cached engine).
+
 ## Multi-page
 
 `extractors/page_source.rs` turns a document into one image per page:
