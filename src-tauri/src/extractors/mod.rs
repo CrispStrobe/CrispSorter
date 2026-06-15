@@ -39,6 +39,7 @@ pub mod ocr;
 pub mod ocr_crispembed;
 pub mod ocr_ocrs;
 pub mod ocr_paddle;
+pub mod page_source;
 pub mod pdf;
 pub mod text;
 pub mod text_lid;
@@ -506,6 +507,62 @@ pub fn extract_text_from_path(path: &Path) -> Result<ExtractedDocument> {
     )
 }
 
+/// Run OCR on a single page image. Uses the smart C++ pipeline (when
+/// `opts.ocr_pipeline.enabled` and CrispEmbed is available), else the legacy
+/// Rust tier ladder (Tier4 CrispEmbed → Tier3 Paddle → Tier2 ocrs → Tier1
+/// Tesseract). Returns the doc with `full_text` set; the caller sets `ext`/
+/// `image_exif` across all pages. Factored out of the image dispatch arm so the
+/// multi-page loop can call it per page.
+fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+    // Smart pipeline first (source-type cleanup + denoise + accept-gate).
+    if opts.ocr_pipeline.enabled && ocr_crispembed::is_crispembed_ocr_available() {
+        match ocr_crispembed::ocr_via_pipeline(path, &opts.ocr_pipeline) {
+            Ok(doc) => return Ok(doc),
+            Err(e) => eprintln!("[ocr] smart pipeline failed ({e:#}); falling back to tier ladder"),
+        }
+    }
+    // Legacy tier ladder — CrispEmbed Tier 4 at the top when compiled in.
+    let want_tier4 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier4);
+    let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
+    let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
+    let doc = if want_tier4 && ocr_crispembed::is_crispembed_ocr_available() {
+        match ocr_crispembed::ocr_via_crispembed(path) {
+            Ok(d) => d,
+            Err(_) => {
+                if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+                    ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang).or_else(|_| {
+                        if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                            ocr_ocrs::ocr_via_ocrs(path)
+                        } else {
+                            ocr::ocr_via_tesseract(path)
+                        }
+                    })?
+                } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                    ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
+                } else {
+                    ocr::ocr_via_tesseract(path)?
+                }
+            }
+        }
+    } else if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
+        match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
+            Ok(d) => d,
+            Err(_) => {
+                if want_tier2 && ocr_ocrs::is_ocrs_available() {
+                    ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
+                } else {
+                    ocr::ocr_via_tesseract(path)?
+                }
+            }
+        }
+    } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
+        ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
+    } else {
+        ocr::ocr_via_tesseract(path)?
+    };
+    Ok(doc)
+}
+
 /// Variant that takes the OCR opt-in. Calling sites in bg_ingest +
 /// CLI thread the user's catalog-level setting through here.
 pub fn extract_text_from_path_with_opts(
@@ -582,74 +639,48 @@ pub fn extract_text_from_path_with_opts(
                 });
             }
 
-            // L3 + OCR enabled.
-            //
-            // Smart pipeline (C++ orchestrator): when enabled, route to the
-            // CrispEmbed pipeline (source-type cleanup + NAFNet denoise +
-            // accept-gate). On failure (e.g. models unavailable) fall through
-            // to the legacy Rust tier ladder below.
-            if opts.ocr_pipeline.enabled && ocr_crispembed::is_crispembed_ocr_available() {
-                match ocr_crispembed::ocr_via_pipeline(path, &opts.ocr_pipeline) {
-                    Ok(mut doc) => {
-                        doc.ext = ext.clone();
-                        doc.image_exif = image_exif;
-                        return Ok(doc);
+            // L3 + OCR enabled — multi-page aware.
+            // Decode the file into per-page images (multi-frame TIFF → N pages;
+            // single-page formats → the original path), OCR each page through
+            // the same pipeline/ladder, and concatenate with page separators.
+            let pages = page_source::rasterize_pages(path, &ext).unwrap_or_else(|e| {
+                eprintln!("[ocr] page-source failed ({e:#}); treating as single page");
+                page_source::PageImages::single(path)
+            });
+            let mut full_text = String::new();
+            let mut any_ok = false;
+            let mut last_err: Option<anyhow::Error> = None;
+            for (i, page_path) in pages.paths().iter().enumerate() {
+                match ocr_image_page(page_path, &opts) {
+                    Ok(d) => {
+                        if any_ok {
+                            full_text.push_str(page_source::PAGE_SEPARATOR);
+                        }
+                        full_text.push_str(d.full_text.trim_end_matches('\n'));
+                        any_ok = true;
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[ocr] smart pipeline failed ({e:#}); falling back to tier ladder"
-                        );
+                        eprintln!("[ocr] page {}/{} failed: {e:#}", i + 1, pages.len());
+                        last_err = Some(e);
                     }
                 }
             }
-
-            // Legacy tier ladder.
-            // P17.2 — CrispEmbed Tier 4 at the top when compiled in.
-            let want_tier4 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier4);
-            let want_tier3 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier3);
-            let want_tier2 = matches!(opts.ocr_tier, OcrTier::Auto | OcrTier::Tier2);
-            let mut doc = if want_tier4 && ocr_crispembed::is_crispembed_ocr_available() {
-                match ocr_crispembed::ocr_via_crispembed(path) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        // Fall through to lower tiers.
-                        if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-                            ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang)
-                                .or_else(|_| {
-                                    if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                                        ocr_ocrs::ocr_via_ocrs(path)
-                                    } else {
-                                        ocr::ocr_via_tesseract(path)
-                                    }
-                                })?
-                        } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                            ocr_ocrs::ocr_via_ocrs(path)
-                                .or_else(|_| ocr::ocr_via_tesseract(path))?
-                        } else {
-                            ocr::ocr_via_tesseract(path)?
-                        }
-                    }
-                }
-            } else if want_tier3 && ocr_paddle::is_paddle_ocr_available() {
-                match ocr_paddle::ocr_via_paddle(path, opts.ocr_rec_lang) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                            ocr_ocrs::ocr_via_ocrs(path)
-                                .or_else(|_| ocr::ocr_via_tesseract(path))?
-                        } else {
-                            ocr::ocr_via_tesseract(path)?
-                        }
-                    }
-                }
-            } else if want_tier2 && ocr_ocrs::is_ocrs_available() {
-                ocr_ocrs::ocr_via_ocrs(path).or_else(|_| ocr::ocr_via_tesseract(path))?
-            } else {
-                ocr::ocr_via_tesseract(path)?
-            };
-            doc.ext = ext.clone();
-            doc.image_exif = image_exif;
-            Ok(doc)
+            if !any_ok {
+                return Err(last_err
+                    .unwrap_or_else(|| anyhow::anyhow!("OCR produced no pages for {}", path.display())));
+            }
+            Ok(ExtractedDocument {
+                full_text,
+                headings: Vec::new(),
+                ext: ext.clone(),
+                language: None,
+                translated_text: None,
+                translated_to_lang: None,
+                audio: None,
+                image_exif,
+                source_url: None,
+                tags: vec![],
+            })
         }
         e if audio::AUDIO_EXTS.contains(&e) => {
             // P13.5 slice B / P13.6 Step 7c — audio / video.
