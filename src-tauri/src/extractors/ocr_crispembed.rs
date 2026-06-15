@@ -382,8 +382,16 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             }
         })
         .collect();
-    crispembed::CrispOcrPipeline::from_stages(cfg.router, nafnet.as_deref(), punct.as_deref(), &specs, 0)
-        .expect("CrispEmbed OCR per-stage pipeline init failed")
+    // sr_model = None for now (text-SR pre-processor is wired in P20 #2).
+    crispembed::CrispOcrPipeline::from_stages(
+        cfg.router,
+        nafnet.as_deref(),
+        None,
+        punct.as_deref(),
+        &specs,
+        0,
+    )
+    .expect("CrispEmbed OCR per-stage pipeline init failed")
 }
 
 #[cfg(not(feature = "crispembed"))]

@@ -148,11 +148,20 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
         .load_pdf_from_file(path, None)
         .with_context(|| format!("loading PDF {}", path.display()))?;
 
-    let cfg = PdfRenderConfig::new().set_target_width(1654); // ~200 DPI on A4 width
     let tmp = tempfile::tempdir().context("temp dir for PDF pages")?;
     let mut paths: Vec<PathBuf> = Vec::new();
+    let path_str = path.to_string_lossy();
 
     for (i, page) in doc.pages().iter().enumerate() {
+        // Pick an OCR-optimal render DPI per page: profile the page's embedded
+        // raster resolution (crispembed) and clamp to the OCR-useful range,
+        // falling back to ~200 DPI. Render pixel-width = page width (points)
+        // × DPI / 72. This avoids upsampling a low-res scan into a huge image
+        // and avoids losing detail on a high-res one (vs the old fixed 1654 px).
+        let dpi = ocr_render_dpi(&path_str, i as i32);
+        let w_points = page.width().value; // PdfPoints, 1/72"
+        let target_w = ((w_points * dpi / 72.0).round() as i32).clamp(800, 6000);
+        let cfg = PdfRenderConfig::new().set_target_width(target_w);
         let bitmap = page
             .render_with_config(&cfg)
             .with_context(|| format!("rendering PDF page {i}"))?;
@@ -177,6 +186,24 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
 #[cfg(not(feature = "pdf-render"))]
 pub fn rasterize_pdf(_path: &Path) -> Result<PageImages> {
     anyhow::bail!("PDF rasterization requires the `pdf-render` cargo feature")
+}
+
+/// Choose an OCR render DPI for a PDF page. With `crispembed`, profile the
+/// page's mean embedded-image DPI (`crispembed::pdf_page_dpi`) and clamp to the
+/// OCR-useful range [150, 400] — rendering above the source DPI just
+/// interpolates (no real gain), below loses detail. Falls back to ~200 DPI when
+/// the page has no raster images (vector/text PDF) or profiling fails.
+#[cfg(all(feature = "pdf-render", feature = "crispembed"))]
+fn ocr_render_dpi(path_str: &str, page: i32) -> f32 {
+    match crispembed::pdf_page_dpi(path_str, page) {
+        Ok((dpi, n)) if n > 0 && dpi >= 72.0 => dpi.clamp(150.0, 400.0),
+        _ => 200.0,
+    }
+}
+
+#[cfg(all(feature = "pdf-render", not(feature = "crispembed")))]
+fn ocr_render_dpi(_path_str: &str, _page: i32) -> f32 {
+    200.0
 }
 
 /// Page separator inserted between concatenated pages of a multi-page doc.
