@@ -120,10 +120,11 @@ impl RenderPage {
 /// `Text` is produced in Rust now. `Hocr`/`Alto`/`Pdf` route to CrispEmbed's
 /// `ocr_render` C module — pending its Rust binding (see module docs), so they
 /// return a clear, actionable error until that binding lands.
-pub fn render(pages: &[RenderPage], fmt: OcrOutputFormat) -> Result<Vec<u8>> {
+/// `pdfa` enables PDF/A-2b archival output (only affects `Pdf`; ignored else).
+pub fn render(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> Result<Vec<u8>> {
     match fmt {
         OcrOutputFormat::Text => Ok(render_text(pages).into_bytes()),
-        _ => render_structured(pages, fmt),
+        _ => render_structured(pages, fmt, pdfa),
     }
 }
 
@@ -159,7 +160,7 @@ fn render_text(pages: &[RenderPage]) -> String {
 /// Each [`RenderPage`]'s regions map to `crispembed::OcrRegion` (same
 /// box+text+confidence shape; one-word lines at region granularity).
 #[cfg(feature = "crispembed")]
-fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat) -> Result<Vec<u8>> {
+fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat, pdfa: bool) -> Result<Vec<u8>> {
     let fmt_str = match fmt {
         OcrOutputFormat::Hocr => "hocr",
         OcrOutputFormat::Alto => "alto",
@@ -198,12 +199,12 @@ fn render_structured(pages: &[RenderPage], fmt: OcrOutputFormat) -> Result<Vec<u
             },
         })
         .collect();
-    crispembed::ocr_render_pages(&inputs, fmt_str)
+    crispembed::ocr_render_pages(&inputs, fmt_str, pdfa)
         .ok_or_else(|| anyhow::anyhow!("crispembed::ocr_render_pages returned None ({fmt_str})"))
 }
 
 #[cfg(not(feature = "crispembed"))]
-fn render_structured(_pages: &[RenderPage], fmt: OcrOutputFormat) -> Result<Vec<u8>> {
+fn render_structured(_pages: &[RenderPage], fmt: OcrOutputFormat, _pdfa: bool) -> Result<Vec<u8>> {
     anyhow::bail!(
         "{:?} output needs CrispEmbed's `ocr_render` renderer — rebuild with the \
          `crispembed` feature (e.g. --features crispembed-metal). `--render text` \
@@ -252,7 +253,7 @@ mod tests {
             "",
         );
         let page2 = RenderPage::from_regions(vec![region("Second page", 0.0, 0.0)], 600, 800, "");
-        let out = String::from_utf8(render(&[page1, page2], OcrOutputFormat::Text).unwrap()).unwrap();
+        let out = String::from_utf8(render(&[page1, page2], OcrOutputFormat::Text, false).unwrap()).unwrap();
         assert_eq!(out, "Hello\nworld\u{000C}Second page");
     }
 
@@ -269,7 +270,7 @@ mod tests {
         assert!(!structured_render_available());
         let page = RenderPage::from_regions(vec![region("x", 0.0, 0.0)], 100, 100, "/tmp/x.png");
         for fmt in [OcrOutputFormat::Hocr, OcrOutputFormat::Alto, OcrOutputFormat::Pdf] {
-            let err = render(&[page.clone()], fmt).unwrap_err().to_string();
+            let err = render(&[page.clone()], fmt, false).unwrap_err().to_string();
             assert!(err.contains("ocr_render"), "names the renderer: {err}");
             assert!(err.contains("crispembed"), "names the feature to enable: {err}");
         }
@@ -292,7 +293,7 @@ mod tests {
             800,
             "",
         );
-        let s = String::from_utf8(render(&[page], OcrOutputFormat::Hocr).expect("hocr render"))
+        let s = String::from_utf8(render(&[page], OcrOutputFormat::Hocr, false).expect("hocr render"))
             .expect("utf8");
         assert!(s.contains("ocr_page") || s.contains("ocrx_word"), "hOCR markup: {s}");
         assert!(s.contains("Hello"), "recognized text present: {s}");
@@ -304,8 +305,16 @@ mod tests {
     fn pdf_render_live() {
         // Two pages → one searchable PDF (binary; %PDF- header, NUL-safe).
         let p = || RenderPage::from_regions(vec![region("Page text", 10.0, 20.0)], 600, 800, "");
-        let bytes = render(&[p(), p()], OcrOutputFormat::Pdf).expect("pdf render");
+        let bytes = render(&[p(), p()], OcrOutputFormat::Pdf, false).expect("pdf render");
         assert!(bytes.starts_with(b"%PDF-"), "PDF magic header");
         assert!(bytes.len() > 100, "non-trivial PDF: {} bytes", bytes.len());
+
+        // PDF/A-2b variant carries the conformance XMP metadata + is larger.
+        let pdfa = render(&[p()], OcrOutputFormat::Pdf, true).expect("pdf/a render");
+        assert!(pdfa.starts_with(b"%PDF-"), "PDF/A magic header");
+        assert!(
+            pdfa.windows(7).any(|w| w == b"pdfaid:"),
+            "PDF/A-2b declares pdfaid conformance"
+        );
     }
 }

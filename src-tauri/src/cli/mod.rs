@@ -226,6 +226,10 @@ enum Command {
         /// for `--render pdf` (binary). Defaults to a sensible extension.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
+        /// Emit a PDF/A-2b archival PDF (XMP conformance metadata + sRGB
+        /// OutputIntent). Only affects `--render pdf`; ignored otherwise.
+        #[arg(long)]
+        pdfa: bool,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -1120,11 +1124,11 @@ pub fn run() -> ExitCode {
         Command::Ocr {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out,
+            punct_model, min_chars, min_confidence, render, out, pdfa,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out,
+            punct_model, min_chars, min_confidence, render, out, pdfa,
         ),
     };
 
@@ -1160,6 +1164,7 @@ fn cmd_ocr(
     min_confidence: f32,
     render: String,
     out_path: Option<PathBuf>,
+    pdfa: bool,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
@@ -1215,7 +1220,7 @@ fn cmd_ocr(
     // CrispEmbed's `ocr_render`. Fail fast (before running OCR) when that
     // binding isn't wired yet — the renderer returns the actionable message.
     if fmt.needs_render_binding() && !crate::extractors::ocr_render::structured_render_available() {
-        crate::extractors::ocr_render::render(&[], fmt)
+        crate::extractors::ocr_render::render(&[], fmt, false)
             .map(|_| ())
             .map_err(|e| format!("{e:#}"))?;
         return Ok(()); // unreachable: render(&[], structured) always errors here
@@ -1269,7 +1274,7 @@ fn cmd_ocr(
         .unwrap_or("")
         .to_ascii_lowercase();
     let pages = ocr_render_pages(&file, &ext, &cfg)?;
-    let bytes = crate::extractors::ocr_render::render(&pages, fmt)
+    let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
         .map_err(|e| format!("render failed: {e:#}"))?;
     match &out_path {
         Some(p) => std::fs::write(p, &bytes)

@@ -85,7 +85,8 @@ Region boxes + text + confidence flow into CrispEmbed's `ocr_render` renderers
 - `hocr` — hOCR XHTML (`ocr_page`/`ocr_line`/`ocrx_word` + bounding boxes).
 - `alto` — ALTO 3.1 XML.
 - `pdf` — **searchable PDF**: the page image with an invisible, positioned text
-  layer (select/copy/search works).
+  layer (select/copy/search works). Add `--pdfa` for **PDF/A-2b** archival
+  output (XMP conformance metadata + sRGB OutputIntent).
 
 Rendering stays in C++ (the "keep it in cpp" rule) — CrispSorter does not
 reimplement hOCR/ALTO/PDF in Rust.
@@ -101,6 +102,7 @@ crispsorter ocr scan.png --engine tesseract --source-type scanned_doc \
 crispsorter ocr paper.pdf --render hocr                # → stdout
 crispsorter ocr paper.pdf --render alto --out paper.xml
 crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf   # binary → --out required
+crispsorter ocr paper.pdf --render pdf --pdfa --out paper-archival.pdf   # PDF/A-2b archival
 crispsorter ocr photo.jpg --layout --drop-headers-footers
 crispsorter ocr --help                                 # full flag list
 ```
