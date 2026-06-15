@@ -107,6 +107,61 @@ fn tiff_pages(path: &Path) -> Result<PageImages> {
     Ok(PageImages { paths, _tmp: Some(tmp) })
 }
 
+/// Rasterize a PDF into one PNG per page (for scanned / image-only PDFs).
+/// Requires the `pdf-render` feature (PDFium, bound at runtime). Returns an
+/// error when the feature is off or no libpdfium is available — the caller
+/// then keeps its text-layer / legacy fallback.
+#[cfg(feature = "pdf-render")]
+pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
+    use pdfium_render::prelude::*;
+
+    // Bind PDFium: prefer a libpdfium co-located with the executable (the
+    // release layout), else the system-installed library.
+    let bindings = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.to_string_lossy().into_owned()))
+        .and_then(|dir| {
+            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&dir)).ok()
+        })
+        .or_else(|| Pdfium::bind_to_system_library().ok())
+        .context("no libpdfium found (install it or use the bundled release lib)")?;
+    let pdfium = Pdfium::new(bindings);
+
+    let doc = pdfium
+        .load_pdf_from_file(path, None)
+        .with_context(|| format!("loading PDF {}", path.display()))?;
+
+    let cfg = PdfRenderConfig::new().set_target_width(1654); // ~200 DPI on A4 width
+    let tmp = tempfile::tempdir().context("temp dir for PDF pages")?;
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    for (i, page) in doc.pages().iter().enumerate() {
+        let bitmap = page
+            .render_with_config(&cfg)
+            .with_context(|| format!("rendering PDF page {i}"))?;
+        let w = bitmap.width() as u32;
+        let h = bitmap.height() as u32;
+        // RGBA bytes are version-independent of pdfium-render's `image` dep.
+        let rgba = bitmap.as_rgba_bytes();
+        let img = image::RgbaImage::from_raw(w, h, rgba)
+            .ok_or_else(|| anyhow::anyhow!("PDF page {i}: bad bitmap buffer"))?;
+        let out = tmp.path().join(format!("page_{i}.png"));
+        image::DynamicImage::ImageRgba8(img)
+            .save(&out)
+            .with_context(|| format!("saving PDF page {i}"))?;
+        paths.push(out);
+    }
+    if paths.is_empty() {
+        anyhow::bail!("PDF has no renderable pages: {}", path.display());
+    }
+    Ok(PageImages { paths, _tmp: Some(tmp) })
+}
+
+#[cfg(not(feature = "pdf-render"))]
+pub fn rasterize_pdf(_path: &Path) -> Result<PageImages> {
+    anyhow::bail!("PDF rasterization requires the `pdf-render` cargo feature")
+}
+
 /// Page separator inserted between concatenated pages of a multi-page doc.
 /// Form feed (U+000C) is the conventional page break and survives FTS/tantivy
 /// tokenization as whitespace.

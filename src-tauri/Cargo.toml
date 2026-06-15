@@ -141,6 +141,11 @@ image = "0.25.10"
 # Pure-Rust multi-page TIFF decode (page-sourcing for multi-page document OCR).
 # Same version the `image` crate uses transitively, so no duplicate.
 tiff = "0.9"
+# PDF page rasterization for scanned/image PDFs (page-sourcing). Binds PDFium
+# at runtime via libloading — compiles without the lib; degrades gracefully if
+# absent. Optional (the `pdf-render` feature); the release build bundles a
+# per-platform libpdfium next to the binary.
+pdfium-render = { version = "0.8", optional = true }
 # P13/A4 — perceptual hashing for the near-duplicate image view.
 # Active fork (qarmin/img_hash) of the original abonander/img_hash.
 # Default features only — `fast_image_resize` is a 2-3x speedup but
@@ -185,6 +190,9 @@ default = []
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
 desktop = ["dep:notify", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls"]
+# PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
+# per-platform libpdfium at runtime; bundled by the release build.
+pdf-render        = ["dep:pdfium-render"]
 # PLAN P7.8 Tier 3 — PaddleOCR text detection + recognition via usls + ort.
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]

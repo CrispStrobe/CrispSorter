@@ -583,11 +583,42 @@ pub fn extract_text_from_path_with_opts(
             if opts.try_ocr
                 && doc.full_text.trim().chars().count() < opts.ocr_pdf_min_chars
             {
-                if let Ok(mut ocr) = ocr::ocr_via_tesseract(path) {
-                    ocr.ext = ext.clone();
-                    Ok(ocr)
-                } else {
-                    Ok(doc)
+                // Rasterize each page (pdf-render / PDFium) and OCR it through
+                // the same pipeline/ladder as images, concatenating with page
+                // separators. Falls back to the legacy whole-file tesseract
+                // shell-out when no rasterizer is available.
+                match page_source::rasterize_pdf(path) {
+                    Ok(pages) if !pages.is_empty() => {
+                        let mut full_text = String::new();
+                        let mut any_ok = false;
+                        for (i, page_path) in pages.paths().iter().enumerate() {
+                            match ocr_image_page(page_path, &opts) {
+                                Ok(d) => {
+                                    if any_ok {
+                                        full_text.push_str(page_source::PAGE_SEPARATOR);
+                                    }
+                                    full_text.push_str(d.full_text.trim_end_matches('\n'));
+                                    any_ok = true;
+                                }
+                                Err(e) => eprintln!(
+                                    "[ocr] PDF page {}/{} failed: {e:#}", i + 1, pages.len()
+                                ),
+                            }
+                        }
+                        if any_ok {
+                            doc.full_text = full_text;
+                        }
+                        Ok(doc)
+                    }
+                    _ => {
+                        // No rasterizer (feature off / no libpdfium) → legacy.
+                        if let Ok(mut ocr) = ocr::ocr_via_tesseract(path) {
+                            ocr.ext = ext.clone();
+                            Ok(ocr)
+                        } else {
+                            Ok(doc)
+                        }
+                    }
                 }
             } else {
                 Ok(doc)
