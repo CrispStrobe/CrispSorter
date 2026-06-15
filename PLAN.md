@@ -231,6 +231,40 @@ call sites leaves these gaps, in priority order:
 - [ ] **(Minor)** `rerank_biencoder` as a fast/cheap reranking option alongside
   the cross-encoder; `encode_tokens` for token-level match highlighting.
 
+### P20 — Configurable OCR pipeline (cleanup + engines + post-process)
+
+A user-tweakable, C++-primary OCR pipeline driven by CrispEmbed's
+`ocr_orchestrator` (see CrispEmbed PLAN). CrispSorter is the thin caller +
+settings surface; pipeline logic lives in CrispEmbed C++.
+
+- [x] **⭐ Configurable OCR pipeline + full per-stage builder** ✅ SHIPPED
+  (2026-06-15, CRISPEMBED_REF v0.10.1). `IndexConfig`-adjacent
+  `OcrPipelineConfig` (in `bg_ingest`, via `bg_ingest_set_ocr_pipeline`):
+  master toggle, source-type **router** (screenshot / scanned-doc / photo),
+  per-stage **cleanup** (deskew / crop / whiten / binarize+Sauvola + NAFNet
+  denoise), engine choice, **engine params** (DBNet prob/box/short-side; VLM
+  prompt/max-tokens), text-yield + confidence **accept-gate** with chain
+  **escalation**, and an optional **post-OCR punct/spacing restore**
+  (FireRedPunc / PCS). Engines: DBNet+TrOCR, Surya, **Tesseract LSTM**,
+  GOT-OCR2, GLM-OCR, Qwen2.5-VL, InternVL2. Two modes: *simple* (flat toggles
+  → `CrispOcrPipeline::new`) and *advanced* (`stages[]` → `from_stages`); empty
+  `stages` = simple, backward-compatible. Default OFF → legacy Rust tier
+  ladder unchanged. `extractors/ocr_crispembed::ocr_via_pipeline` +
+  `build_pipeline`; `extractors/mod.rs` dispatch; Settings "Smart OCR Pipeline"
+  panel incl. the per-stage **stage builder** (add/remove/reorder; per-stage
+  engine + cleanup + params + gate) + DE/EN i18n. Tesseract recogniser
+  defaults to `tesseract-eng`. See [HISTORY.md](HISTORY.md) 2026-06-15.
+- [ ] **Gap — CLI parity.** The CLI `index ingest` honours the persisted
+  pipeline config, but there's no flag-driven "OCR this file with engine X +
+  pre-processors Y + post-processors Z" command for ad-hoc use. (CrispEmbed's
+  `crispembed --ocr-pipeline` is the lower-level lever; see its PLAN gap.)
+- [ ] **Gap — tests.** Need CrispSorter unit tests for `OcrPipelineConfig`
+  serde, `engine_id`/`source_type_id` mapping, and `build_pipeline`
+  simple-vs-advanced selection; plus one opt-in **live E2E** (download
+  `tesseract-eng`, OCR a rendered line through the pipeline, assert spaced
+  truecased text). The live `crispembed-metal` path validates in CI on the
+  v0.10.1 re-pin.
+
 ---
 
 ## UX gaps after v107 — the wallabag corpus is searchable end-to-end, but only via the federated CLI
