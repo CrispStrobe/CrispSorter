@@ -20,7 +20,8 @@ Successor to BiblioForge and ZotBiblioForge — no Python, no cloud required.
 | Format | Extraction method |
 |---|---|
 | PDF (digital) | pdfjs-dist (JS) or pdf-extract (native Rust) |
-| PDF (scanned) | OCR — four tiers: CrispEmbed GGUF (Surya/Qwen2.5-VL), PaddleOCR, ocrs (pure Rust), Tesseract |
+| PDF (scanned) | [Smart OCR pipeline](docs/ocr-workflow.md) — per-page rasterize (PDFium) → cleanup → engine → accept-gate; or the legacy 4-tier ladder (CrispEmbed GGUF / PaddleOCR / ocrs / Tesseract) |
+| Image (PNG/JPG/TIFF) | Smart OCR pipeline; multi-frame TIFF split per page; output as text / hOCR / ALTO / searchable PDF |
 | DOCX / Word | mammoth.js |
 | EPUB | @lingo-reader/epub-parser (DRM detection via META-INF/encryption.xml) |
 | TXT / Markdown | direct UTF-8 |
@@ -55,6 +56,8 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
   - **Tier 3 — PaddleOCR** (`--features paddle-ocr`): multilingual incl. CJK, ONNXRuntime via the existing ort dep, ~60 MB models auto-download; CJK/Latin model selection per document
   - **Tier 2 — ocrs**: pure Rust, zero system install, Latin-script (EN/DE/FR/…)
   - **Tier 1 — Tesseract**: shell-out for users with the system install
+- **Smart OCR pipeline** (`--features crispembed`, opt-in) — a configurable orchestrator that runs **image cleanup → OCR engine → quality accept-gate → escalation**, with a source-type **router** (screenshot / scanned-doc / photo) picking the recipe per image. Per-stage cleanup (deskew / crop / whiten / Otsu+Sauvola binarize + learned **NAFNet** denoise); 7 selectable engines (DBNet+TrOCR, Surya, **Tesseract-LSTM**, GOT-OCR2, GLM-OCR, Qwen2.5-VL, InternVL2); optional post-OCR **punctuation/spacing/truecasing** restore (FireRedPunc / PCS); and an optional **layout-aware reading-order** pass (column-aware). All rendering/ML stays in C++ (CrispEmbed). Full per-stage builder + master toggle in **Settings → Smart OCR Pipeline**, or drive it ad-hoc from the CLI (`crispsorter ocr`, below). See [docs/ocr-workflow.md](docs/ocr-workflow.md).
+- **Multi-page + structured output** (`--features crispembed`) — multi-frame **TIFF** and scanned **PDF** (`--features pdf-render`, PDFium) are rasterized to one image per page and OCR'd in reading order. Results render to plain text, **hOCR**, **ALTO 3.1**, or a **searchable PDF** (original image + invisible positioned text layer) via CrispEmbed's `ocr_render` — `crispsorter ocr <file> --render hocr|alto|pdf`.
 - **Layout-aware extraction** (`--features crispembed`): RT-DETRv2 document layout detection (17 region types — text, title, table, figure, formula, etc.) as a pre-pass before OCR; routes text regions to OCR, formula regions to math OCR, skips figures
 - **Math OCR** (`--features crispembed`): formula → LaTeX via PP-FormulaNet-L (printed) or PosFormer (handwritten); integrates with layout detection to auto-detect formula regions
 - **Cross-modal search** (`--features crispembed`): BidirLM-Omni shared 2048-D embedding space for text, audio, and images; type "photo of sunset" → image hits without OCR, "podcast about Bosnia" → audio hits without transcription
@@ -107,6 +110,18 @@ crispsorter doctor                                     # OCR engines, embedder c
 crispsorter index init --model bge-m3 --device metal   # download embedder weights
 crispsorter index ingest /path/to/docs                 # full extraction + embedding pipeline
 crispsorter index stats                                # docs / chunks / fts-docs counts
+
+# Ad-hoc OCR (needs --features crispembed) — run the smart pipeline on one file.
+# Primary engine + optional pre-processors + optional post-processor + output format:
+crispsorter ocr scan.pdf                               # plain text to stdout
+crispsorter ocr scan.png --engine tesseract --source-type scanned_doc \
+    --denoise --punct-model fireredpunc                # cleanup+denoise → Tesseract-LSTM → punctuation restore
+crispsorter ocr paper.pdf --render hocr                # hOCR (XHTML + word boxes)
+crispsorter ocr paper.pdf --render alto --out paper.xml
+crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf  # searchable PDF (binary → needs --out)
+crispsorter ocr photo.jpg --layout --drop-headers-footers          # layout-aware reading order
+#   engines: dbnet_trocr|surya|tesseract|got|glm|qwen2vl|internvl2
+#   --render: text(default)|hocr|alto|pdf   ·  full flag list: crispsorter ocr --help
 crispsorter index search "karl barth"                  # BM25 FTS
 
 # Richer search (P13.7) — cloud-backup parity filter set

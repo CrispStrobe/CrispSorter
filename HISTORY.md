@@ -9,6 +9,36 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-15 — P20 ⭐ Smart OCR pipeline → multi-page + structured/searchable output
+
+Built the configurable OCR pipeline end-to-end (CrispSorter Rust caller +
+CrispEmbed C++ engines/renderers) and shipped it. The workflow is documented in
+[docs/ocr-workflow.md](docs/ocr-workflow.md) + the README OCR features.
+
+- **Smart pipeline** — source-type router (screenshot/scanned-doc/photo) →
+  per-stage cleanup (deskew/crop/whiten/binarize + NAFNet denoise) → engine →
+  text-yield+confidence accept-gate → chain escalation, with an optional
+  post-OCR punctuation restore (FireRedPunc/PCS). 7 engines (DBNet+TrOCR, Surya,
+  Tesseract-LSTM, GOT-OCR2, GLM-OCR, Qwen2.5-VL, InternVL2). Master toggle +
+  full per-stage builder in Settings; `OcrPipelineConfig` threaded via
+  `bg_ingest_set_ocr_pipeline`.
+- **Multi-page** — `page_source` splits multi-frame TIFF (pure-Rust `tiff`) and
+  rasterizes scanned PDF (PDFium, `--features pdf-render`, libpdfium bundled in
+  releases) to one image per page; OCR'd in order, joined by form-feed.
+- **Layout-aware reading order** — optional RT-DETRv2 pass: regions → column
+  order → per-region OCR (text→engine, formula→math-OCR, figure/table skipped,
+  header/footer optionally dropped).
+- **Structured / searchable output** — `crispsorter ocr <file> --render
+  text|hocr|alto|pdf` via CrispEmbed's `ocr_render_pages` (multi-page +
+  binary-safe searchable PDF). Rendering kept in C++.
+- **Ad-hoc CLI** — `crispsorter ocr` exposes the whole pipeline (engine +
+  pre/post-processors + render format) for one-off use.
+- **Cross-repo** — depends on **CrispEmbed v0.11.0** (renderers, classical
+  preproc tier, dewarp, Arabic Qari-OCR, `ocr_render_pages` binding); fixed an
+  upstream compile blocker (`OcrRegion` alias + `libc` dep) and the
+  windows-cuda release CI "No CUDA toolset found". `CRISPEMBED_REF` → v0.11.0.
+  Live-validated: `ocr_render::{hocr,pdf}_render_live` green against the real lib.
+
 ## Session log — 2026-06-13 — P19 ⭐ GLiNER NER → entity tags + facets
 
 Wired CrispEmbed v0.8.0's zero-shot named-entity recognition
