@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use super::ExtractedDocument;
 
 /// Default detection model (Surya-OCR-2, EfficientViT, 91 languages).
-const DEFAULT_DET_MODEL: &str = "surya-det";
+const DEFAULT_DET_MODEL: &str = "dbnet-det";
 /// Default recognition model (Qwen2.5-VL, German support).
 const DEFAULT_REC_MODEL: &str = "qwen2vl-ocr";
 
