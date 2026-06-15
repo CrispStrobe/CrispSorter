@@ -293,7 +293,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             // dbnet_trocr(0) / surya(1) / tesseract(6) need det+rec; VLMs use a
             // single model. Tesseract's recogniser defaults to a tesseract GGUF.
             let (model_a, model_b) = if eid == 0 || eid == 1 || eid == 6 {
-                let rec_default = if eid == 6 { "tesseract-lstm" } else { DEFAULT_REC_MODEL };
+                let rec_default = if eid == 6 { "tesseract-eng" } else { DEFAULT_REC_MODEL };
                 (
                     resolve(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL)),
                     resolve(s.rec_model.as_deref().unwrap_or(rec_default)),
