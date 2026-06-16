@@ -44,7 +44,7 @@ use std::process::ExitCode;
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie",
+    "sync", "ocr", "kie", "table",
     "manpage", "completion", "help", "--help", "-h",
 ];
 
@@ -278,6 +278,21 @@ enum Command {
         /// Override the app data directory (for the model cache + config).
         #[arg(long)]
         data_dir: Option<PathBuf>,
+    },
+    /// Table structure recognition — parse a table image into HTML (rule-based
+    /// line detection + per-cell OCR), or just report its grid dimensions.
+    Table {
+        /// Table image to parse (PNG/JPG/…).
+        file: PathBuf,
+        /// Recognition model for cell text (default: the pipeline recogniser).
+        #[arg(long)]
+        ocr_model: Option<String>,
+        /// Only detect the grid (rows × cols) — no OCR.
+        #[arg(long)]
+        grid: bool,
+        /// Write the HTML to this file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
     /// Emit shell-completion scripts to stdout.
     Completion {
@@ -1183,6 +1198,9 @@ pub fn run() -> ExitCode {
         Command::Kie { file, labels, threshold, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, data_dir)
         }
+        Command::Table { file, ocr_model, grid, out } => {
+            cmd_table(cli.format, file, ocr_model, grid, out)
+        }
     };
 
     match result {
@@ -1422,6 +1440,45 @@ fn cmd_kie(
             for (l, v, s) in &fields {
                 println!("{l}\t{v}\t{s:.3}");
             }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a table image into HTML (or report its grid dimensions).
+fn cmd_table(
+    out: OutFormat,
+    file: PathBuf,
+    ocr_model: Option<String>,
+    grid: bool,
+    out_path: Option<PathBuf>,
+) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+    if grid {
+        let (rows, cols) = crate::extractors::ocr_crispembed::table_grid(&file)
+            .map_err(|e| format!("grid detection failed: {e:#}"))?;
+        match out {
+            OutFormat::Json => println!(
+                "{}",
+                serde_json::json!({"file": file.display().to_string(), "rows": rows, "cols": cols})
+            ),
+            OutFormat::Text => println!("{rows}x{cols}"),
+        }
+        return Ok(());
+    }
+    let html = crate::extractors::ocr_crispembed::table_to_html(&file, ocr_model.as_deref())
+        .map_err(|e| format!("table parse failed: {e:#}"))?;
+    if let Some(p) = &out_path {
+        std::fs::write(p, html.as_bytes()).map_err(|e| format!("writing {}: {e}", p.display()))?;
+    } else {
+        match out {
+            OutFormat::Json => println!(
+                "{}",
+                serde_json::json!({"file": file.display().to_string(), "html": html})
+            ),
+            OutFormat::Text => println!("{html}"),
         }
     }
     Ok(())

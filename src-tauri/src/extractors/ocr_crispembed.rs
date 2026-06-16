@@ -221,6 +221,43 @@ pub fn cc_detect_regions(_path: &Path) -> Vec<super::layout::LayoutRegion> {
     vec![]
 }
 
+/// Parse a table image into an HTML `<table>` (rule-based structure + per-cell
+/// OCR via `ocr_model`, default the pipeline recogniser).
+#[cfg(feature = "crispembed")]
+pub fn table_to_html(path: &Path, ocr_model: Option<&str>) -> Result<String> {
+    let gray = image::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .to_luma8();
+    let (w, h) = (gray.width(), gray.height());
+    let model = resolve(ocr_model.unwrap_or(DEFAULT_REC_MODEL));
+    let parser = crispembed::CrispTableParse::new(&model, 0)
+        .map_err(|e| anyhow::anyhow!("table parser init: {e}"))?;
+    parser
+        .to_html(gray.as_raw(), w as i32, h as i32)
+        .ok_or_else(|| anyhow::anyhow!("table parse produced no HTML"))
+}
+
+/// Detect a table's grid dimensions (rows, cols) without OCR.
+#[cfg(feature = "crispembed")]
+pub fn table_grid(path: &Path) -> Result<(i32, i32)> {
+    let gray = image::open(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .to_luma8();
+    let (w, h) = (gray.width(), gray.height());
+    crispembed::CrispTableParse::detect_grid(gray.as_raw(), w as i32, h as i32)
+        .ok_or_else(|| anyhow::anyhow!("no table grid detected"))
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn table_to_html(_path: &Path, _ocr_model: Option<&str>) -> Result<String> {
+    anyhow::bail!("table parsing requires the `crispembed` cargo feature")
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn table_grid(_path: &Path) -> Result<(i32, i32)> {
+    anyhow::bail!("table grid detection requires the `crispembed` cargo feature")
+}
+
 /// Run CrispEmbed OCR on an image file.
 ///
 /// Returns an `ExtractedDocument` with the concatenated recognized text

@@ -130,6 +130,10 @@ crispsorter kie receipt.png --labels "total,date,vendor,tax"       # OCR + zero-
 crispsorter kie invoice.pdf  --labels "invoice number,due date,amount" -f json
 #   The same labels under Settings → NER also tag documents at ingest, so the
 #   fields become searchable (e.g. `total:€42.50`). See docs/ocr-workflow.md.
+
+# Table structure recognition — parse a table image into HTML (rule-based + per-cell OCR).
+crispsorter table invoice-table.png                                # → HTML <table>
+crispsorter table receipt.png --grid                               # just rows × cols (no OCR)
 #   engines: dbnet_trocr|surya|tesseract|got|glm|qwen2vl|internvl2
 #   --render: text(default)|hocr|alto|pdf   ·  full flag list: crispsorter ocr --help
 crispsorter index search "karl barth"                  # BM25 FTS
