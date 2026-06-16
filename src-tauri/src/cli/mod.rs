@@ -283,6 +283,13 @@ enum Command {
         /// NER confidence threshold (0–1).
         #[arg(long, default_value_t = 0.5)]
         threshold: f32,
+        /// Use **layout-aware** LiLT extraction (OCR + LiLT token classification,
+        /// better on dense forms) instead of flat-text GLiNER NER.
+        #[arg(long)]
+        lilt: bool,
+        /// LiLT model registry name (default `lilt-funsd`). Implies --lilt.
+        #[arg(long)]
+        lilt_model: Option<String>,
         /// Override the app data directory (for the model cache + config).
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -1205,8 +1212,8 @@ pub fn run() -> ExitCode {
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, dewarp_engine,
         ),
-        Command::Kie { file, labels, threshold, data_dir } => {
-            cmd_kie(cli.format, file, labels, threshold, data_dir)
+        Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
+            cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
         }
         Command::Table { file, ocr_model, grid, out } => {
             cmd_table(cli.format, file, ocr_model, grid, out)
@@ -1401,41 +1408,48 @@ fn cmd_kie(
     file: PathBuf,
     labels: Vec<String>,
     threshold: f32,
+    lilt: bool,
+    lilt_model: Option<String>,
     data_dir: Option<PathBuf>,
 ) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
     }
-    let data_dir = resolve_data_dir(data_dir)?;
-    let cfg = crate::index::config_persist::load(&data_dir);
-    let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
-    let model = cfg.ner_model.unwrap_or_default();
 
-    // OCR / extract the document text (force OCR even on text-layer PDFs).
-    let opts = crate::extractors::ExtractOptions {
-        try_ocr: true,
-        ocr_pdf_min_chars: usize::MAX,
-        ..Default::default()
+    // Layout-aware path: OCR + LiLT token classification on the image directly.
+    let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
+        crate::extractors::ocr_crispembed::kie_extract_lilt(
+            &file,
+            &labels,
+            threshold,
+            lilt_model.as_deref(),
+        )
+        .map_err(|e| format!("LiLT KIE failed: {e:#}"))?
+    } else {
+        // Flat-text GLiNER path: OCR → NER over the extracted text.
+        let data_dir = resolve_data_dir(data_dir)?;
+        let cfg = crate::index::config_persist::load(&data_dir);
+        let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
+        let model = cfg.ner_model.unwrap_or_default();
+        let opts = crate::extractors::ExtractOptions {
+            try_ocr: true,
+            ocr_pdf_min_chars: usize::MAX,
+            ..Default::default()
+        };
+        let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
+            .map_err(|e| format!("extract failed: {e:#}"))?;
+        if doc.full_text.trim().is_empty() {
+            return Err("no text extracted from document".into());
+        }
+        let handle = crate::index::ner::NerHandle::new(
+            model, labels, threshold, 0, 200_000, cache_dir,
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime: {e}"))?;
+        rt.block_on(handle.extract_fields(&doc.full_text))
     };
-    let doc = crate::extractors::extract_text_from_path_with_opts(&file, opts)
-        .map_err(|e| format!("extract failed: {e:#}"))?;
-    if doc.full_text.trim().is_empty() {
-        return Err("no text extracted from document".into());
-    }
-
-    let handle = crate::index::ner::NerHandle::new(
-        model,
-        labels,
-        threshold,
-        0,         // max_entities: unlimited
-        200_000,   // max_chars cap
-        cache_dir,
-    );
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("tokio runtime: {e}"))?;
-    let fields = rt.block_on(handle.extract_fields(&doc.full_text));
 
     match out {
         OutFormat::Json => {

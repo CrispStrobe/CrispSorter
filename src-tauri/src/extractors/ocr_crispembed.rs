@@ -269,6 +269,39 @@ pub fn table_grid(path: &Path) -> Result<(i32, i32)> {
         .ok_or_else(|| anyhow::anyhow!("no table grid detected"))
 }
 
+/// Layout-aware KIE via LiLT: OCR the image + run LiLT token classification to
+/// extract `labels` → `(label, value, score)`. Uses the high-level CrispKie
+/// pipeline (OCR det+rec done internally).
+#[cfg(feature = "crispembed")]
+pub fn kie_extract_lilt(
+    image_path: &Path,
+    labels: &[String],
+    threshold: f32,
+    lilt_model: Option<&str>,
+) -> Result<Vec<(String, String, f32)>> {
+    let img = image_path.to_str().context("image path not UTF-8")?;
+    let det = resolve(DEFAULT_DET_MODEL);
+    let rec = resolve(DEFAULT_REC_MODEL);
+    let lilt = resolve(lilt_model.unwrap_or("lilt-funsd"));
+    let kie = crispembed::CrispKie::new_lilt(&det, &rec, "", &lilt, 0)
+        .map_err(|e| anyhow::anyhow!("LiLT KIE init: {e}"))?;
+    let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    let fields = kie
+        .extract(img, &label_refs, threshold)
+        .map_err(|e| anyhow::anyhow!("LiLT KIE extract: {e}"))?;
+    Ok(fields.into_iter().map(|f| (f.label, f.value, f.score)).collect())
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn kie_extract_lilt(
+    _image_path: &Path,
+    _labels: &[String],
+    _threshold: f32,
+    _lilt_model: Option<&str>,
+) -> Result<Vec<(String, String, f32)>> {
+    anyhow::bail!("LiLT KIE requires the `crispembed` cargo feature")
+}
+
 #[cfg(not(feature = "crispembed"))]
 pub fn table_to_html(_path: &Path, _ocr_model: Option<&str>) -> Result<String> {
     anyhow::bail!("table parsing requires the `crispembed` cargo feature")

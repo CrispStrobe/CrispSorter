@@ -128,6 +128,7 @@ crispsorter ocr book-photo.jpg --dewarp --restore --sr --sr-engine esrgan  # ful
 # Key-information extraction (KIE) — pull structured fields from a document.
 crispsorter kie receipt.png --labels "total,date,vendor,tax"       # OCR + zero-shot NER → label·value·score
 crispsorter kie invoice.pdf  --labels "invoice number,due date,amount" -f json
+crispsorter kie form.png --labels "name,date,total" --lilt              # layout-aware (LiLT) extraction
 #   The same labels under Settings → NER also tag documents at ingest, so the
 #   fields become searchable (e.g. `total:€42.50`). See docs/ocr-workflow.md.
 
