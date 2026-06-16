@@ -259,6 +259,28 @@ pub struct OcrPipelineConfig {
     /// (above it, OCR is fine and 4× SR would just waste memory).
     #[serde(default = "default_sr_max_short_side")]
     pub sr_max_short_side: i32,
+    /// P20 #10 — super-resolution engine: `pan` (4×, default), `esrgan`
+    /// (Real-ESRGAN, real-world blur/noise/compression), `safmn` (lightweight).
+    #[serde(default = "default_sr_engine")]
+    pub sr_engine: String,
+    /// P20 #9 — pre-OCR **restoration** (denoise + deblur) via Restormer. Helps
+    /// noisy / motion- or defocus-blurred scans (the deblur the NAFNet denoise
+    /// tier can't do). Applied before super-resolution. Off by default. Needs
+    /// `crispembed`.
+    #[serde(default)]
+    pub restore: bool,
+    /// Restoration model registry name (`None` → `restormer-denoise`).
+    #[serde(default)]
+    pub restore_model: Option<String>,
+    /// P20 #11 — pre-OCR **dewarping** (straighten curved/warped text lines) via
+    /// CrispEmbed's cubic-baseline dewarp. Helps photos of pages / book spines.
+    /// Off by default. Needs `crispembed`.
+    #[serde(default)]
+    pub dewarp: bool,
+}
+
+fn default_sr_engine() -> String {
+    "pan".to_string()
 }
 
 /// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
@@ -391,6 +413,10 @@ impl Default for OcrPipelineConfig {
             sr: false,
             sr_model: None,
             sr_max_short_side: default_sr_max_short_side(),
+            sr_engine: default_sr_engine(),
+            restore: false,
+            restore_model: None,
+            dewarp: false,
         }
     }
 }
@@ -582,13 +608,16 @@ fn cached_layout_detector(
 /// detected, ordered, and OCR'd individually (column-aware reading order);
 /// otherwise the whole page goes through the smart pipeline / tier ladder.
 fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
-    // Optional pre-OCR super-resolution: upscale low-res pages (PAN 4×) before
-    // recognition. The temp file is held in `_sr` for the rest of this call.
-    let _sr = if opts.ocr_pipeline.enabled && opts.ocr_pipeline.sr {
-        ocr_crispembed::super_resolve_page(path, &opts.ocr_pipeline)
-    } else {
-        None
-    };
+    // Optional pre-OCR image-restoration chain (each step writes a temp image
+    // the next reads): dewarp (straighten) → restore (denoise+deblur) →
+    // super-resolve (upscale low-res). The temp files are held in the guards
+    // for the rest of this call; `path` walks forward to the latest output.
+    let en = opts.ocr_pipeline.enabled;
+    let _dw = if en { ocr_crispembed::dewarp_page(path, &opts.ocr_pipeline) } else { None };
+    let path: &Path = _dw.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
+    let _rs = if en { ocr_crispembed::restore_page(path, &opts.ocr_pipeline) } else { None };
+    let path: &Path = _rs.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
+    let _sr = if en { ocr_crispembed::super_resolve_page(path, &opts.ocr_pipeline) } else { None };
     let path: &Path = _sr.as_ref().map(|(_, p)| p.as_path()).unwrap_or(path);
 
     if opts.ocr_pipeline.enabled && opts.ocr_pipeline.layout && layout::is_layout_available() {
@@ -1210,6 +1239,32 @@ mod ocr_pipeline_tests {
         assert!(!c.sr, "SR off by default");
         assert!(c.sr_model.is_none());
         assert_eq!(c.sr_max_short_side, 1200);
+        // P20 #9/#10/#11 — restore + dewarp off; default SR engine = pan.
+        assert_eq!(c.sr_engine, "pan");
+        assert!(!c.restore && !c.dewarp, "restore + dewarp off by default");
+        assert!(c.restore_model.is_none());
+    }
+
+    #[test]
+    fn restoration_fields_serde() {
+        // Partial JSON fills the restoration defaults.
+        let c: OcrPipelineConfig =
+            serde_json::from_str(r#"{"enabled":true,"restore":true,"dewarp":true}"#).unwrap();
+        assert!(c.restore && c.dewarp);
+        assert_eq!(c.sr_engine, "pan", "sr_engine defaults when omitted");
+        assert!(c.restore_model.is_none());
+        // Full round-trip preserves the engine choice.
+        let mut full = OcrPipelineConfig::default();
+        full.sr = true;
+        full.sr_engine = "esrgan".into();
+        full.restore = true;
+        full.restore_model = Some("restormer-denoise".into());
+        full.dewarp = true;
+        let back: OcrPipelineConfig =
+            serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back.sr_engine, "esrgan");
+        assert!(back.restore && back.dewarp);
+        assert_eq!(back.restore_model.as_deref(), Some("restormer-denoise"));
     }
 
     #[test]

@@ -34,16 +34,73 @@ pub fn is_crispembed_ocr_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
-/// Process-global PAN super-resolution engine (low-DPI pre-OCR upscale).
-/// `None` once an init attempt fails (e.g. model unavailable) so we don't retry.
+// ── Pre-OCR image-restoration engines (cached; `None` once init fails) ──
 #[cfg(feature = "crispembed")]
 static PAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispPanSr>>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static ESRGAN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispEsrganSr>>> =
+    std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static SAFMN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSafmnSr>>> =
+    std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static RESTORMER: std::sync::OnceLock<Option<Mutex<crispembed::CrispRestormer>>> =
+    std::sync::OnceLock::new();
 
-/// Super-resolve a low-resolution page image before OCR (PAN 4×). Returns an
-/// upscaled temp PNG (the `NamedTempFile` keeps it alive — keep the tuple in
-/// scope for the OCR call) or `None` when SR is off, the page is already large
-/// enough, or SR is unavailable/fails. The SR compute runs in C++ (`CrispPanSr`).
+/// Save an RGB buffer to a temp PNG and return it + its path (held alive).
+#[cfg(feature = "crispembed")]
+fn save_rgb_temp(
+    prefix: &str,
+    w: u32,
+    h: u32,
+    rgb: Vec<u8>,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    let img = image::RgbImage::from_raw(w, h, rgb)?;
+    let tmp = tempfile::Builder::new().prefix(prefix).suffix(".png").tempfile().ok()?;
+    image::DynamicImage::ImageRgb8(img).save(tmp.path()).ok()?;
+    let p = tmp.path().to_path_buf();
+    Some((tmp, p))
+}
+
+/// Run the selected SR engine (`pan` / `esrgan` / `safmn`) on an RGB buffer.
+#[cfg(feature = "crispembed")]
+fn run_sr(
+    engine: &str,
+    model: Option<&str>,
+    rgb: &[u8],
+    w: i32,
+    h: i32,
+) -> Option<(Vec<u8>, i32, i32)> {
+    match engine {
+        "esrgan" => {
+            let m = resolve(model.unwrap_or("esrgan-x4"));
+            let e = ESRGAN_SR
+                .get_or_init(|| crispembed::CrispEsrganSr::new(m, 0).map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h)
+        }
+        "safmn" => {
+            let m = resolve(model.unwrap_or("safmn-x4"));
+            let e = SAFMN_SR
+                .get_or_init(|| crispembed::CrispSafmnSr::new(m, 0).map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h)
+        }
+        _ => {
+            let m = resolve(model.unwrap_or("pan-x4"));
+            let e = PAN_SR
+                .get_or_init(|| crispembed::CrispPanSr::new(&m, 0).ok().map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+        }
+    }
+}
+
+/// Super-resolve a low-resolution page before OCR. Engine is configurable
+/// (`cfg.sr_engine`: pan / esrgan / safmn). Returns an upscaled temp PNG (keep
+/// the tuple in scope for the OCR call) or `None` when off / already large /
+/// unavailable. The SR compute runs in C++.
 #[cfg(feature = "crispembed")]
 pub fn super_resolve_page(
     path: &Path,
@@ -54,33 +111,79 @@ pub fn super_resolve_page(
     }
     let img = image::open(path).ok()?;
     let (w, h) = (img.width(), img.height());
-    // Only upscale genuinely low-res pages; above the threshold OCR is fine and
-    // a 4× blow-up just wastes memory.
+    // Only upscale genuinely low-res pages; above the threshold a 4× blow-up
+    // just wastes memory.
     if w.min(h) as i32 > cfg.sr_max_short_side {
         return None;
     }
-    let model = cfg.sr_model.as_deref().filter(|s| !s.is_empty()).unwrap_or("pan-x4");
-    let engine = PAN_SR
-        .get_or_init(|| crispembed::CrispPanSr::new(&resolve(model), 0).ok().map(Mutex::new))
-        .as_ref()?;
     let rgb = img.to_rgb8();
-    let (out, ow, oh) = {
-        let mut guard = engine.lock().ok()?;
+    let model = cfg.sr_model.as_deref().filter(|s| !s.is_empty());
+    let (out, ow, oh) = run_sr(&cfg.sr_engine, model, rgb.as_raw(), w as i32, h as i32)?;
+    save_rgb_temp("ocr_sr_", ow as u32, oh as u32, out)
+}
+
+/// Restore (denoise + deblur) a page before OCR via Restormer. Same dimensions
+/// out; helps noisy / blurred scans the classical+NAFNet tiers can't. `None`
+/// when off / unavailable.
+#[cfg(feature = "crispembed")]
+pub fn restore_page(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    if !cfg.restore {
+        return None;
+    }
+    let rgb = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let model = cfg.restore_model.as_deref().filter(|s| !s.is_empty()).unwrap_or("restormer-denoise");
+    let eng = RESTORMER
+        .get_or_init(|| crispembed::CrispRestormer::new(&resolve(model), 0).ok().map(Mutex::new))
+        .as_ref()?;
+    let out = {
+        let guard = eng.lock().ok()?;
         guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
     };
-    let up = image::RgbImage::from_raw(ow as u32, oh as u32, out)?;
-    let tmp = tempfile::Builder::new()
-        .prefix("ocr_sr_")
-        .suffix(".png")
-        .tempfile()
-        .ok()?;
-    image::DynamicImage::ImageRgb8(up).save(tmp.path()).ok()?;
+    save_rgb_temp("ocr_restore_", w, h, out)
+}
+
+/// Dewarp (straighten curved/warped text lines) a page before OCR. Grayscale
+/// in/out; `None` when off / unavailable / too few text lines to fit a baseline.
+#[cfg(feature = "crispembed")]
+pub fn dewarp_page(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    if !cfg.dewarp {
+        return None;
+    }
+    let gray = image::open(path).ok()?.to_luma8();
+    let (w, h) = (gray.width(), gray.height());
+    let (out, ow, oh) = crispembed::dewarp(gray.as_raw(), w as i32, h as i32).ok()?;
+    let img = image::GrayImage::from_raw(ow as u32, oh as u32, out)?;
+    let tmp = tempfile::Builder::new().prefix("ocr_dewarp_").suffix(".png").tempfile().ok()?;
+    image::DynamicImage::ImageLuma8(img).save(tmp.path()).ok()?;
     let p = tmp.path().to_path_buf();
     Some((tmp, p))
 }
 
 #[cfg(not(feature = "crispembed"))]
 pub fn super_resolve_page(
+    _path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    None
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn restore_page(
+    _path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
+    None
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn dewarp_page(
     _path: &Path,
     _cfg: &super::OcrPipelineConfig,
 ) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
@@ -589,5 +692,81 @@ mod tests {
         let doc = ocr_via_pipeline(&img_path, &cfg)
             .expect("tesseract-stage pipeline should run without crashing");
         println!("tesseract pipeline full_text len: {}", doc.full_text.len());
+    }
+
+    // ── Restoration pre-processors (#9 restore / #10 SR engine / #11 dewarp) ──
+
+    /// Write a small high-contrast synthetic page (text-ish stripes).
+    fn synth_page(dir: &std::path::Path, name: &str, w: u32, h: u32) -> std::path::PathBuf {
+        let mut img = image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
+        for y in 0..h {
+            for x in 0..w {
+                if (y / 4) % 2 == 0 && (x / 3) % 2 == 0 {
+                    img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let p = dir.join(name);
+        img.save(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn restoration_helpers_off_by_default_return_none() {
+        // With a default (all-off) config the pre-processors are no-ops, in both
+        // crispembed and stub builds.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "x.png", 64, 64);
+        let cfg = super::super::OcrPipelineConfig::default();
+        assert!(restore_page(&p, &cfg).is_none());
+        assert!(super_resolve_page(&p, &cfg).is_none());
+        assert!(dewarp_page(&p, &cfg).is_none());
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal restore_live -- --ignored
+    fn restore_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "noisy.png", 96, 64);
+        let cfg = super::super::OcrPipelineConfig { restore: true, ..Default::default() };
+        let (_g, out) = restore_page(&p, &cfg).expect("Restormer should restore");
+        let img = image::open(&out).expect("restored image decodes");
+        assert_eq!((img.width(), img.height()), (96, 64), "Restormer keeps dimensions");
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal sr_engines_live -- --ignored
+    fn sr_engines_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "low.png", 64, 48);
+        for engine in ["pan", "esrgan", "safmn"] {
+            let cfg = super::super::OcrPipelineConfig {
+                sr: true,
+                sr_engine: engine.into(),
+                sr_max_short_side: 10_000, // force SR regardless of size
+                ..Default::default()
+            };
+            let (_g, out) = super_resolve_page(&p, &cfg)
+                .unwrap_or_else(|| panic!("{engine} SR should upscale"));
+            let img = image::open(&out).expect("SR image decodes");
+            assert!(img.width() > 64, "{engine}: upscaled wider ({})", img.width());
+        }
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal dewarp_live -- --ignored
+    fn dewarp_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "warp.png", 256, 128);
+        let cfg = super::super::OcrPipelineConfig { dewarp: true, ..Default::default() };
+        // Dewarp may return None on a synthetic page (too few real text lines);
+        // the contract is "runs without panicking, output decodes if produced".
+        if let Some((_g, out)) = dewarp_page(&p, &cfg) {
+            let img = image::open(&out).expect("dewarped image decodes");
+            assert!(img.width() > 0 && img.height() > 0);
+        }
     }
 }

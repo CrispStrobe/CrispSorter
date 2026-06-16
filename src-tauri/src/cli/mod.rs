@@ -240,6 +240,21 @@ enum Command {
         /// Only super-resolve pages whose short side is ≤ this many pixels.
         #[arg(long, default_value_t = 1200)]
         sr_max_px: i32,
+        /// Super-resolution engine: `pan` (4×, default), `esrgan` (real-world
+        /// blur/noise), `safmn` (lightweight).
+        #[arg(long, default_value = "pan", value_parser = ["pan", "esrgan", "safmn"])]
+        sr_engine: String,
+        /// Pre-processor: restore (denoise + deblur) the page via Restormer
+        /// before OCR — helps noisy / blurred scans. Needs `crispembed`.
+        #[arg(long)]
+        restore: bool,
+        /// Restoration model registry name (default `restormer-denoise`).
+        #[arg(long)]
+        restore_model: Option<String>,
+        /// Pre-processor: dewarp (straighten curved/warped text) the page
+        /// before OCR — helps photos of pages / book spines.
+        #[arg(long)]
+        dewarp: bool,
     },
     /// Key-information extraction — pull structured fields from a document.
     /// OCRs the file, then runs zero-shot NER for the given field labels →
@@ -1154,12 +1169,12 @@ pub fn run() -> ExitCode {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
-            sr, sr_model, sr_max_px,
+            sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
-            sr, sr_model, sr_max_px,
+            sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
         ),
         Command::Kie { file, labels, threshold, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, data_dir)
@@ -1202,6 +1217,10 @@ fn cmd_ocr(
     sr: bool,
     sr_model: Option<String>,
     sr_max_px: i32,
+    sr_engine: String,
+    restore: bool,
+    restore_model: Option<String>,
+    dewarp: bool,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
@@ -1251,6 +1270,10 @@ fn cmd_ocr(
         sr,
         sr_model,
         sr_max_short_side: sr_max_px,
+        sr_engine,
+        restore,
+        restore_model,
+        dewarp,
     };
 
     let fmt = OcrOutputFormat::from_name(&render)
