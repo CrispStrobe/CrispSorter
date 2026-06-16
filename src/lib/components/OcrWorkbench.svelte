@@ -261,7 +261,7 @@
                         <div class="region-row" class:low={r.confidence < threshold} class:sel={selected === i}>
                             <button class="conf" title={i18n.t.ocrwb.confidence} onclick={() => selected = i}>{(r.confidence * 100).toFixed(0)}</button>
                             <div class="region-body">
-                                {#if r.char_conf.length}
+                                {#if r.char_conf.length > 0 && r.char_conf.length === [...r.orig].length}
                                     <!-- Per-character confidence: tint chars the recognizer was unsure
                                          about (aligned to the original OCR text, a "where to look" guide). -->
                                     <div class="charview" title={i18n.t.ocrwb.charconf_hint}>

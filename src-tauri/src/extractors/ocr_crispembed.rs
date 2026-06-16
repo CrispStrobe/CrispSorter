@@ -1206,40 +1206,88 @@ mod tests {
         }
     }
 
-    /// Tesseract-LSTM exposes per-character confidence — exercise the path that
-    /// should surface char_conf through `ocr_regions_detailed`. Needs the
-    /// tesseract GGUF (downloads). char_conf presence depends on CrispEmbed's
-    /// orchestrator wiring, so it's logged via the shape check above; here we
-    /// just assert the tesseract stage runs and yields valid confidences.
+    /// Run one OCR engine through a **fresh** pipeline (not the cached
+    /// `OCR_ORCH`, so engines can be tested back-to-back in one process) and
+    /// return its regions with per-char confidence. Models auto-download.
     #[cfg(feature = "crispembed")]
-    #[test]
-    #[ignore] // cargo test --features crispembed-metal ocr_tesseract_charconf_live -- --ignored
-    fn ocr_tesseract_charconf_live() {
+    fn run_engine_fresh(p: &std::path::Path, engine: &str) -> Vec<super::RegionConf> {
         use super::super::{OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
-        let tmp = tempfile::TempDir::new().unwrap();
-        let p = synth_page(tmp.path(), "tess.png", 320, 96);
         let cfg = OcrPipelineConfig {
             enabled: true,
             stages: vec![OcrStageSpec {
                 source_type: "auto".into(),
-                engine: "tesseract".into(),
+                engine: engine.into(),
                 det_model: None,
                 rec_model: None,
                 cleanup: OcrCleanupSpec::default(),
                 det_prob_threshold: 0.3,
                 det_box_threshold: 0.5,
                 det_target_short: 736,
-                vlm_max_tokens: 0,
+                vlm_max_tokens: 64,
                 vlm_prompt: String::new(),
                 min_chars: 0,
                 min_confidence: 0.0,
             }],
             ..Default::default()
         };
-        let regions = super::ocr_regions_detailed(&p, &cfg).expect("tesseract OCR runs");
-        for r in &regions {
-            assert!((0.0..=1.0).contains(&r.confidence));
-            assert!(r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)));
+        let mut pipe = super::build_pipeline(&cfg);
+        let res = pipe.run(p.to_str().unwrap()).expect("pipeline run");
+        res.regions
+            .into_iter()
+            .map(|r| super::RegionConf {
+                text: r.text,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                confidence: super::effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len()),
+                char_conf: r.char_conf,
+            })
+            .collect()
+    }
+
+    /// Test the per-char/recognition-confidence path for every pipeline engine.
+    /// Asserts each engine runs and every confidence is a valid probability;
+    /// char_conf is engine-dependent (tesseract → per-char; VLMs → per-token;
+    /// TrOCR-based dbnet/surya → none) so only validity-when-present is checked
+    /// (synthetic pages aren't guaranteed to recognize text).
+
+    /// Small document engines — modest model downloads, run locally.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal ocr_engines_charconf_small_live -- --ignored
+    fn ocr_engines_charconf_small_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "small.png", 320, 96);
+        for engine in ["dbnet_trocr", "surya", "tesseract"] {
+            let regions = run_engine_fresh(&p, engine);
+            for r in &regions {
+                assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");
+                assert!(
+                    r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)),
+                    "{engine}: char_conf values are valid probabilities"
+                );
+            }
+        }
+    }
+
+    /// VLM engines — multi-GB downloads; run on a GPU host (e.g. Kaggle), not in
+    /// the local fast suite. Per-token confidences (counts differ from chars).
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal ocr_engines_charconf_vlm_live -- --ignored
+    fn ocr_engines_charconf_vlm_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "vlm.png", 320, 96);
+        for engine in ["got", "glm", "qwen2vl", "internvl2"] {
+            let regions = run_engine_fresh(&p, engine);
+            for r in &regions {
+                assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");
+                assert!(
+                    r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)),
+                    "{engine}: token confidences are valid probabilities"
+                );
+            }
         }
     }
 }
