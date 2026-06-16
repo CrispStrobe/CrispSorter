@@ -675,6 +675,18 @@ pub struct RegionConf {
     pub char_conf: Vec<f32>,
 }
 
+/// Pick the confidence to surface for a region: prefer **recognition**
+/// confidence (mean per-char softmax) when the engine exposes per-char data,
+/// else fall back to the detection score (usually ~1.0 and useless for
+/// proofreading). Pure helper, kept ungated so it's unit-testable.
+pub fn effective_confidence(detection: f32, rec: f32, char_conf_len: usize) -> f32 {
+    if char_conf_len > 0 && rec > 0.0 {
+        rec
+    } else {
+        detection
+    }
+}
+
 /// Like [`ocr_regions_via_pipeline`] but also returns per-character confidence
 /// (PARSeq / Tesseract-LSTM expose it; VLM engines don't → empty).
 #[cfg(feature = "crispembed")]
@@ -694,13 +706,7 @@ pub fn ocr_regions_detailed(
         .regions
         .into_iter()
         .map(|r| {
-            // Prefer recognition confidence when available — detection score is
-            // usually ~1.0 and useless for proofreading.
-            let confidence = if !r.char_conf.is_empty() && r.rec_confidence > 0.0 {
-                r.rec_confidence
-            } else {
-                r.confidence
-            };
+            let confidence = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
             RegionConf {
                 text: r.text,
                 x: r.x,
@@ -1145,6 +1151,95 @@ mod tests {
         if let Some((_g, out)) = dewarp_page(&p, &cfg) {
             let img = image::open(&out).expect("dewarped image decodes");
             assert!(img.width() > 0 && img.height() > 0);
+        }
+    }
+
+    // ── Per-character confidence selection (workbench) ──
+
+    #[test]
+    fn effective_confidence_prefers_recognition_when_charconf_present() {
+        // char_conf present + rec > 0 → use recognition confidence.
+        assert_eq!(super::effective_confidence(0.99, 0.42, 5), 0.42);
+        // no char_conf → fall back to detection score.
+        assert_eq!(super::effective_confidence(0.99, 0.42, 0), 0.99);
+        // char_conf present but rec is 0 (engine reported none) → detection.
+        assert_eq!(super::effective_confidence(0.88, 0.0, 3), 0.88);
+    }
+
+    #[test]
+    fn cleaned_page_image_none_on_missing_file() {
+        // Graceful in both crispembed + stub builds (image::open fails → None).
+        let missing = std::path::Path::new("/no/such/workbench/page.png");
+        assert!(super::cleaned_page_image(missing).is_none());
+    }
+
+    /// Classical scan cleanup needs NO model download — runs whenever CrispEmbed
+    /// is linked. Produces a stable cleaned PNG for the workbench compare.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal cleaned_page_image_live -- --ignored
+    fn cleaned_page_image_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "scan.png", 200, 120);
+        let out = super::cleaned_page_image(&p).expect("cleanup should produce an image");
+        let img = image::open(&out).expect("cleaned image decodes");
+        assert!(img.width() > 0 && img.height() > 0);
+    }
+
+    /// Detailed regions: box + text + per-character confidence. Needs det+rec
+    /// models (downloads on first run). char_conf is engine-dependent (PARSeq /
+    /// Tesseract expose it; the default DBNet+TrOCR may not) → only shape-checked.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal ocr_regions_detailed_live -- --ignored
+    fn ocr_regions_detailed_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "text.png", 320, 96);
+        let cfg = super::super::OcrPipelineConfig { enabled: true, ..Default::default() };
+        let regions = super::ocr_regions_detailed(&p, &cfg).expect("detailed OCR runs");
+        for r in &regions {
+            assert!(r.confidence >= 0.0 && r.confidence <= 1.0, "confidence in [0,1]");
+            // char_conf is either empty or roughly aligned to the text length.
+            if !r.char_conf.is_empty() {
+                assert!(r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)));
+            }
+        }
+    }
+
+    /// Tesseract-LSTM exposes per-character confidence — exercise the path that
+    /// should surface char_conf through `ocr_regions_detailed`. Needs the
+    /// tesseract GGUF (downloads). char_conf presence depends on CrispEmbed's
+    /// orchestrator wiring, so it's logged via the shape check above; here we
+    /// just assert the tesseract stage runs and yields valid confidences.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore] // cargo test --features crispembed-metal ocr_tesseract_charconf_live -- --ignored
+    fn ocr_tesseract_charconf_live() {
+        use super::super::{OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "tess.png", 320, 96);
+        let cfg = OcrPipelineConfig {
+            enabled: true,
+            stages: vec![OcrStageSpec {
+                source_type: "auto".into(),
+                engine: "tesseract".into(),
+                det_model: None,
+                rec_model: None,
+                cleanup: OcrCleanupSpec::default(),
+                det_prob_threshold: 0.3,
+                det_box_threshold: 0.5,
+                det_target_short: 736,
+                vlm_max_tokens: 0,
+                vlm_prompt: String::new(),
+                min_chars: 0,
+                min_confidence: 0.0,
+            }],
+            ..Default::default()
+        };
+        let regions = super::ocr_regions_detailed(&p, &cfg).expect("tesseract OCR runs");
+        for r in &regions {
+            assert!((0.0..=1.0).contains(&r.confidence));
+            assert!(r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)));
         }
     }
 }

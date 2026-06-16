@@ -4101,3 +4101,44 @@ pub async fn ocr_workbench_reingest(
         .await
         .map_err(|e| format!("workbench re-ingest failed: {e:#}"))
 }
+
+#[cfg(test)]
+mod workbench_tests {
+    use super::{OcrRegionDto, ocr_doc_open};
+
+    #[test]
+    fn ocr_region_dto_char_conf_defaults_empty() {
+        // Export payloads / older clients may omit char_conf — must deserialize.
+        let r: OcrRegionDto = serde_json::from_str(
+            r#"{"text":"abc","x":1.0,"y":2.0,"w":3.0,"h":4.0,"confidence":0.5}"#,
+        )
+        .expect("deserializes without char_conf");
+        assert!(r.char_conf.is_empty());
+        assert_eq!(r.text, "abc");
+
+        // ...and round-trips when present.
+        let r2: OcrRegionDto = serde_json::from_str(
+            r#"{"text":"x","x":0,"y":0,"w":1,"h":1,"confidence":0.9,"char_conf":[0.1,0.95]}"#,
+        )
+        .expect("deserializes with char_conf");
+        assert_eq!(r2.char_conf, vec![0.1, 0.95]);
+        let json = serde_json::to_string(&r2).unwrap();
+        assert!(json.contains("char_conf"));
+    }
+
+    #[tokio::test]
+    async fn ocr_doc_open_single_image_is_one_page() {
+        // A single image needs no rasterization → returned as its own one page.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("scan.png");
+        image::RgbImage::new(80, 40).save(&p).unwrap();
+        let res = ocr_doc_open(p.display().to_string())
+            .await
+            .expect("opens a single image");
+        assert_eq!(res.count, 1);
+        assert_eq!(res.pages.len(), 1);
+        // (path may be canonicalized, e.g. /var → /private/var on macOS)
+        assert!(res.pages[0].ends_with("scan.png"), "got {}", res.pages[0]);
+        assert!(std::path::Path::new(&res.pages[0]).exists());
+    }
+}
