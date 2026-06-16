@@ -142,6 +142,28 @@ and on PDFs whose text layer is empty, when image extraction is at level **L3**
 (`Settings → Multimodal processing`). The persisted Smart OCR Pipeline config is
 honored; otherwise the legacy tier ladder runs.
 
+## Key-information extraction (KIE)
+
+Pull **structured fields** (total, date, vendor, invoice number, …) out of
+documents — built on the OCR pipeline + zero-shot NER (GLiNER), so no new model:
+
+- **At ingest (searchable metadata)** — `Settings → NER` label list is zero-shot.
+  Add document-field labels and each becomes a searchable **`field:value` tag**
+  on the document (e.g. `total:€42.50`, `vendor:Acme`). Same machinery as the
+  P19 entity tagging — just point it at the fields you care about.
+- **Ad-hoc CLI** — `crispsorter kie <file> --labels "total,date,vendor"
+  [--threshold 0.5]` OCRs the file and prints the extracted fields
+  (`label · value · score`) as JSON or text. Reuses the persisted NER model.
+
+```bash
+crispsorter kie receipt.png --labels "total,date,vendor,tax"
+crispsorter kie invoice.pdf --labels "invoice number,due date,amount" -f json
+```
+
+This is **flat-text** KIE (GLiNER over the OCR text). Genuinely **layout-aware**
+extraction (CrispEmbed's LiLT — uses word positions, better on dense forms) is a
+future upgrade; the lower-level `crispembed_lilt_*` API exists for it.
+
 ## Feature flags
 
 | Flag | Enables |

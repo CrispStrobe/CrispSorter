@@ -329,6 +329,38 @@ impl NerHandle {
         build_entity_tags(ents, self.threshold, self.max_entities)
     }
 
+    /// Run NER over `text` and return the structured fields `(label, value,
+    /// score)` above the threshold, sorted by score — for ad-hoc key-info
+    /// extraction (the `kie` CLI). Unlike [`Self::extract_tags`] (which returns
+    /// merge-ready `label:text` strings) this keeps label/value/score separate.
+    /// Empty on empty input, load failure, or a build without `crispembed`.
+    pub async fn extract_fields(&self, text: &str) -> Vec<(String, String, f32)> {
+        if text.trim().is_empty() || self.labels.is_empty() {
+            return vec![];
+        }
+        let truncated = self.truncate(text);
+        let mut guard = self.slot.lock().await;
+        if guard.is_none() {
+            match Ner::load(self.model, &self.cache_dir).await {
+                Ok(n) => *guard = Some(n),
+                Err(e) => {
+                    eprintln!("[ner] load failed, no KIE fields: {e:#}");
+                    return vec![];
+                }
+            }
+        }
+        let n = guard.as_mut().unwrap();
+        let label_refs: Vec<&str> = self.labels.iter().map(|s| s.as_str()).collect();
+        let mut ents = n.extract(truncated, &label_refs, self.threshold);
+        ents.retain(|e| e.score >= self.threshold && !e.text.trim().is_empty());
+        ents.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        ents.into_iter().map(|e| (e.label, e.text, e.score)).collect()
+    }
+
     /// Truncate `text` to at most `max_chars` bytes on a char boundary.
     fn truncate<'a>(&self, text: &'a str) -> &'a str {
         if self.max_chars == 0 || text.len() <= self.max_chars {

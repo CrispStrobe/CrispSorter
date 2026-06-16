@@ -122,6 +122,12 @@ crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf  # searchable
 crispsorter ocr paper.pdf --render pdf --pdfa --out paper-archival.pdf  # PDF/A-2b (archival: XMP + sRGB OutputIntent)
 crispsorter ocr photo.jpg --layout --drop-headers-footers          # layout-aware reading order
 crispsorter ocr lowres-scan.png --sr                               # super-resolve (PAN 4×) low-res pages before OCR
+
+# Key-information extraction (KIE) — pull structured fields from a document.
+crispsorter kie receipt.png --labels "total,date,vendor,tax"       # OCR + zero-shot NER → label·value·score
+crispsorter kie invoice.pdf  --labels "invoice number,due date,amount" -f json
+#   The same labels under Settings → NER also tag documents at ingest, so the
+#   fields become searchable (e.g. `total:€42.50`). See docs/ocr-workflow.md.
 #   engines: dbnet_trocr|surya|tesseract|got|glm|qwen2vl|internvl2
 #   --render: text(default)|hocr|alto|pdf   ·  full flag list: crispsorter ocr --help
 crispsorter index search "karl barth"                  # BM25 FTS
