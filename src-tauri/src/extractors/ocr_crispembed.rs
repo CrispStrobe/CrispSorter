@@ -832,10 +832,15 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         .iter()
         .map(|s| {
             let eid = engine_id(&s.engine);
-            // dbnet_trocr(0) / surya(1) / tesseract(6) need det+rec; VLMs use a
-            // single model. Tesseract's recogniser defaults to a tesseract GGUF.
-            let (model_a, model_b) = if eid == 0 || eid == 1 || eid == 6 {
-                let rec_default = if eid == 6 { "tesseract-eng" } else { DEFAULT_REC_MODEL };
+            // dbnet_trocr(0) / surya(1) / tesseract(6) / parseq(7) need det+rec;
+            // VLMs use a single model. Tesseract recogniser defaults to a
+            // tesseract GGUF, PARSeq to the parseq scene-text GGUF.
+            let (model_a, model_b) = if eid == 0 || eid == 1 || eid == 6 || eid == 7 {
+                let rec_default = match eid {
+                    6 => "tesseract-eng",
+                    7 => "parseq",
+                    _ => DEFAULT_REC_MODEL,
+                };
                 (
                     resolve(s.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL)),
                     resolve(s.rec_model.as_deref().unwrap_or(rec_default)),
@@ -1259,7 +1264,9 @@ mod tests {
     fn ocr_engines_charconf_small_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "small.png", 320, 96);
-        for engine in ["dbnet_trocr", "surya", "tesseract"] {
+        // parseq (24 MB) is small enough to run locally alongside the others;
+        // it's the one engine here that yields per-character (1:1) confidence.
+        for engine in ["dbnet_trocr", "surya", "tesseract", "parseq"] {
             let regions = run_engine_fresh(&p, engine);
             for r in &regions {
                 assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");

@@ -2784,6 +2784,7 @@
                                                 <option value="dbnet_trocr">DBNet + TrOCR</option>
                                                 <option value="surya">Surya</option>
                                                 <option value="tesseract">Tesseract LSTM (DBNet + Tesseract)</option>
+                                                <option value="parseq">PARSeq (DBNet + scene-text · per-char confidence)</option>
                                                 <option value="got">GOT-OCR2</option>
                                                 <option value="glm">GLM-OCR</option>
                                                 <option value="qwen2vl">Qwen2.5-VL</option>

@@ -496,6 +496,7 @@ fn engine_id(name: &str) -> i32 {
         "qwen2vl" => 4,
         "internvl2" => 5,
         "tesseract" => 6,
+        "parseq" => 7, // DBNet detect + PARSeq recognize (per-char confidence)
         _ => 0, // dbnet_trocr
     }
 }
