@@ -190,6 +190,37 @@ pub fn dewarp_page(
     None
 }
 
+/// Detect text-line regions with the model-free connected-components detector
+/// (`crispembed::cc_detect`) — zero-download, GPU-free. Returns boxes as
+/// `Text` layout regions (cc_detect has no semantic typing) in raw order; the
+/// caller sorts into reading order.
+#[cfg(feature = "crispembed")]
+pub fn cc_detect_regions(path: &Path) -> Vec<super::layout::LayoutRegion> {
+    use super::layout::{LayoutRegion, RegionKind};
+    let gray = match image::open(path) {
+        Ok(i) => i.to_luma8(),
+        Err(_) => return vec![],
+    };
+    let (w, h) = (gray.width(), gray.height());
+    crispembed::cc_detect(gray.as_raw(), w as i32, h as i32)
+        .into_iter()
+        .map(|r| LayoutRegion {
+            x1: r.x,
+            y1: r.y,
+            x2: r.x + r.w,
+            y2: r.y + r.h,
+            score: r.confidence,
+            kind: RegionKind::Text,
+            label_name: "text".to_string(),
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn cc_detect_regions(_path: &Path) -> Vec<super::layout::LayoutRegion> {
+    vec![]
+}
+
 /// Run CrispEmbed OCR on an image file.
 ///
 /// Returns an `ExtractedDocument` with the concatenated recognized text

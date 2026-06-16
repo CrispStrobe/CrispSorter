@@ -199,6 +199,10 @@ enum Command {
         /// column-aware order → per-region OCR; formulas → math OCR).
         #[arg(long)]
         layout: bool,
+        /// Layout region source: `rtdetr` (RT-DETRv2 semantic, default) or `cc`
+        /// (model-free connected-components text-line detector, zero-download).
+        #[arg(long, default_value = "rtdetr", value_parser = ["rtdetr", "cc"])]
+        layout_engine: String,
         /// Layout region confidence threshold (0–1).
         #[arg(long, default_value_t = 0.25)]
         layout_threshold: f32,
@@ -1167,12 +1171,12 @@ pub fn run() -> ExitCode {
         Command::Manpage { out } => cmd_manpage(out),
         Command::Ocr {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
-            nafnet_model, layout, layout_threshold, drop_headers_footers,
+            nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
-            denoise, nafnet_model, layout, layout_threshold, drop_headers_footers,
+            denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
         ),
@@ -1206,6 +1210,7 @@ fn cmd_ocr(
     denoise: bool,
     nafnet_model: Option<String>,
     layout: bool,
+    layout_engine: String,
     layout_threshold: f32,
     drop_headers_footers: bool,
     punct_model: Option<String>,
@@ -1265,6 +1270,7 @@ fn cmd_ocr(
         stages,
         layout,
         layout_model: None,
+        layout_engine,
         layout_threshold,
         drop_headers_footers,
         sr,

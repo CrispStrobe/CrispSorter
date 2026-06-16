@@ -238,6 +238,13 @@ pub struct OcrPipelineConfig {
     /// Layout detection model registry name (`None` → `rt-detrv2-layout`).
     #[serde(default)]
     pub layout_model: Option<String>,
+    /// P20 #12 — region source for the layout pass: `rtdetr` (RT-DETRv2
+    /// semantic regions, default) or `cc` (CrispEmbed connected-components
+    /// text-line detector — **model-free, zero-download, GPU-free**). `cc`
+    /// detects plain text lines (no formula/figure typing); good when no
+    /// layout model is available or for a fast reading-order pass.
+    #[serde(default = "default_layout_engine")]
+    pub layout_engine: String,
     /// Layout region confidence threshold (0–1; 0.25 is a good default).
     #[serde(default = "default_layout_threshold")]
     pub layout_threshold: f32,
@@ -281,6 +288,9 @@ pub struct OcrPipelineConfig {
 
 fn default_sr_engine() -> String {
     "pan".to_string()
+}
+fn default_layout_engine() -> String {
+    "rtdetr".to_string()
 }
 
 /// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
@@ -408,6 +418,7 @@ impl Default for OcrPipelineConfig {
             stages: Vec::new(),
             layout: false,
             layout_model: None,
+            layout_engine: default_layout_engine(),
             layout_threshold: default_layout_threshold(),
             drop_headers_footers: false,
             sr: false,
@@ -639,12 +650,27 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
     use layout::RegionKind;
 
     let cfg = &opts.ocr_pipeline;
-    let model = cfg.layout_model.as_deref().unwrap_or("rt-detrv2-layout");
-    let det_guard = cached_layout_detector(model)?;
-    let det = det_guard.lock().map_err(|_| anyhow::anyhow!("layout detector mutex poisoned"))?;
-    let regions = det.detect(path, cfg.layout_threshold)?; // already in reading order
+    // Region source: model-free connected-components detector (`cc`) or the
+    // RT-DETRv2 semantic layout model (default).
+    let regions = if cfg.layout_engine == "cc" {
+        let mut r = ocr_crispembed::cc_detect_regions(path);
+        // cc_detect returns raw order; sort top-to-bottom / left-to-right.
+        r.sort_by(|a, b| {
+            a.y1.partial_cmp(&b.y1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        r
+    } else {
+        let model = cfg.layout_model.as_deref().unwrap_or("rt-detrv2-layout");
+        let det_guard = cached_layout_detector(model)?;
+        let det = det_guard
+            .lock()
+            .map_err(|_| anyhow::anyhow!("layout detector mutex poisoned"))?;
+        det.detect(path, cfg.layout_threshold)? // already in reading order
+    };
     if regions.is_empty() {
-        anyhow::bail!("layout detector found no regions");
+        anyhow::bail!("layout pass found no regions");
     }
 
     // RGB8 up front: crops are then RGB (math OCR expects RGB; PNG re-encode is
@@ -1243,6 +1269,8 @@ mod ocr_pipeline_tests {
         assert_eq!(c.sr_engine, "pan");
         assert!(!c.restore && !c.dewarp, "restore + dewarp off by default");
         assert!(c.restore_model.is_none());
+        // P20 #12 — layout region source defaults to rtdetr.
+        assert_eq!(c.layout_engine, "rtdetr");
     }
 
     #[test]

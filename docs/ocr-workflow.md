@@ -23,8 +23,8 @@ file (image / PDF / TIFF)
   ├─ engine (detect+recognize) . one of 7 engines (see below)
   ├─ accept-gate ............... enough chars + mean confidence? → accept, else escalate to the next stage
   │                              (a "chain" is an ordered list of stages per source type)
-  ├─ layout pass (optional) .... RT-DETRv2 regions → column-aware reading order → OCR each region
-  │                              text→engine, formula→math-OCR, figure/table skipped, header/footer optional
+  ├─ layout pass (optional) .... regions (RT-DETRv2 semantic, or `cc` model-free CC detector) →
+  │                              column-aware reading order → OCR each; figure/table skipped, header/footer optional
   └─ post-process (optional) ... punctuation / spacing / truecasing restore (FireRedPunc / PCS)
   ▼
 pages joined (form-feed separator) → text  ·  or rendered to hOCR / ALTO / searchable PDF

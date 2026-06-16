@@ -195,6 +195,7 @@
     // column-aware reading order → per-region OCR; formulas → math OCR).
     let ocrPipelineLayout     = $state(false);
     let ocrPipelineLayoutThr  = $state(0.25);
+    let ocrPipelineLayoutEngine = $state('rtdetr');
     let ocrPipelineDropHF     = $state(false);
     // P20 #2 — pre-OCR super-resolution for low-res pages (PAN 4×).
     let ocrPipelineSr         = $state(false);
@@ -262,6 +263,7 @@
             sr_model:            null,
             sr_max_short_side:   Number(ocrPipelineSrMaxPx) || 1200,
             layout:              ocrPipelineLayout,
+            layout_engine:       ocrPipelineLayoutEngine,
             layout_model:        null,
             layout_threshold:    Number(ocrPipelineLayoutThr) || 0.25,
             drop_headers_footers: ocrPipelineDropHF,
@@ -1025,6 +1027,7 @@
         ocrPipelinePunct    = await getSetting('ocrPipelinePunct', '') as string;
         ocrPipelineLayout    = await getSetting('ocrPipelineLayout', false) as boolean;
         ocrPipelineLayoutThr = await getSetting('ocrPipelineLayoutThr', 0.25) as number;
+        ocrPipelineLayoutEngine = await getSetting('ocrPipelineLayoutEngine', 'rtdetr') as string;
         ocrPipelineDropHF    = await getSetting('ocrPipelineDropHF', false) as boolean;
         ocrPipelineSr        = await getSetting('ocrPipelineSr', false) as boolean;
         ocrPipelineSrMaxPx   = await getSetting('ocrPipelineSrMaxPx', 1200) as number;
@@ -1390,6 +1393,7 @@
         await saveSetting('ocrPipelinePunct',    ocrPipelinePunct);
         await saveSetting('ocrPipelineLayout',    ocrPipelineLayout);
         await saveSetting('ocrPipelineLayoutThr', ocrPipelineLayoutThr);
+        await saveSetting('ocrPipelineLayoutEngine', ocrPipelineLayoutEngine);
         await saveSetting('ocrPipelineDropHF',    ocrPipelineDropHF);
         await saveSetting('ocrPipelineSr',        ocrPipelineSr);
         await saveSetting('ocrPipelineSrMaxPx',   ocrPipelineSrMaxPx);
@@ -2632,6 +2636,15 @@
                         </div>
                         <p class="hint">{i18n.t.settings.ocr_pipeline_layout_hint}</p>
                         {#if ocrPipelineLayout}
+                            <div class="field-row" style="margin-top:6px;">
+                                <label for="ocr-pipeline-layout-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                    {i18n.t.settings.ocr_pipeline_layout_engine}
+                                    <select id="ocr-pipeline-layout-engine" bind:value={ocrPipelineLayoutEngine} style="margin-left:4px;">
+                                        <option value="rtdetr">RT-DETRv2 (semantic)</option>
+                                        <option value="cc">Connected-components (model-free)</option>
+                                    </select>
+                                </label>
+                            </div>
                             <div class="field-row" style="margin-top:6px;">
                                 <label for="ocr-pipeline-layout-thr" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                     {i18n.t.settings.ocr_pipeline_layout_threshold} ({Number(ocrPipelineLayoutThr).toFixed(2)})
