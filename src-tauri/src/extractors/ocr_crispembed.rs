@@ -50,6 +50,15 @@ static RESTORMER: std::sync::OnceLock<Option<Mutex<crispembed::CrispRestormer>>>
 #[cfg(feature = "crispembed")]
 static SCUNET: std::sync::OnceLock<Option<Mutex<crispembed::CrispScunet>>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static HAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispHatSr>>> =
+    std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static TBSRN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispTbsrnSr>>> =
+    std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static INSTRUCTIR: std::sync::OnceLock<Option<Mutex<crispembed::CrispInstructIR>>> =
+    std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
 #[cfg(feature = "crispembed")]
@@ -66,7 +75,23 @@ fn save_rgb_temp(
     Some((tmp, p))
 }
 
-/// Run the selected SR engine (`pan` / `esrgan` / `safmn`) on an RGB buffer.
+/// Map an InstructIR task name to its model task index (mirrors
+/// `instructir.h`'s `INSTRUCTIR_*` enum). Unknown → denoise (0).
+#[cfg(feature = "crispembed")]
+fn instructir_task_id(task: &str) -> i32 {
+    match task {
+        "deblur" => 1,
+        "dehaze" => 2,
+        "derain" => 3,
+        "super_resolution" => 4,
+        "low_light" => 5,
+        "enhance" => 6,
+        _ => 0, // denoise
+    }
+}
+
+/// Run the selected SR engine (`pan` / `esrgan` / `safmn` / `hat` / `tbsrn`) on
+/// an RGB buffer.
 #[cfg(feature = "crispembed")]
 fn run_sr(
     engine: &str,
@@ -89,6 +114,22 @@ fn run_sr(
                 .get_or_init(|| crispembed::CrispSafmnSr::new(m, 0).map(Mutex::new))
                 .as_ref()?;
             e.lock().ok()?.process(rgb, w, h)
+        }
+        "hat" => {
+            // HAT — Hybrid Attention Transformer, SOTA 4× SR (CVPR 2023).
+            let m = resolve(model.unwrap_or("hat-sr-x4"));
+            let e = HAT_SR
+                .get_or_init(|| crispembed::CrispHatSr::new(&m, 0).ok().map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+        }
+        "tbsrn" => {
+            // TBSRN — text-line scene-text SR (tiny, PaddleOCR Telescope).
+            let m = resolve(model.unwrap_or("tbsrn-telescope"));
+            let e = TBSRN_SR
+                .get_or_init(|| crispembed::CrispTbsrnSr::new(&m, 0).ok().map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h).ok()
         }
         _ => {
             let m = resolve(model.unwrap_or("pan-x4"));
@@ -125,9 +166,10 @@ pub fn super_resolve_page(
     save_rgb_temp("ocr_sr_", ow as u32, oh as u32, out)
 }
 
-/// Restore (denoise + deblur) a page before OCR via Restormer. Same dimensions
-/// out; helps noisy / blurred scans the classical+NAFNet tiers can't. `None`
-/// when off / unavailable.
+/// Restore a page before OCR. Engine is configurable (`cfg.restore_engine`:
+/// `restormer` denoise+deblur, `scunet` denoise, or `instructir` all-in-one
+/// task-driven via `cfg.restore_task`). Same dimensions out; helps noisy /
+/// blurred scans the classical+NAFNet tiers can't. `None` when off / unavailable.
 #[cfg(feature = "crispembed")]
 pub fn restore_page(
     path: &Path,
@@ -146,6 +188,17 @@ pub fn restore_page(
                 .get_or_init(|| crispembed::CrispScunet::new(m, 0).map(Mutex::new))
                 .as_ref()?;
             let (o, _ow, _oh) = eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32)?;
+            o
+        }
+        "instructir" => {
+            // InstructIR — all-in-one task-driven restoration (same dims out).
+            let m = resolve(model.unwrap_or("instructir"));
+            let task = instructir_task_id(&cfg.restore_task);
+            let eng = INSTRUCTIR
+                .get_or_init(|| crispembed::CrispInstructIR::new(&m, 0).map(Mutex::new))
+                .as_ref()?;
+            let (o, _ow, _oh) =
+                eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32, task)?;
             o
         }
         _ => {
@@ -859,11 +912,54 @@ mod tests {
 
     #[cfg(feature = "crispembed")]
     #[test]
+    #[ignore] // cargo test --features crispembed-metal restore_engines_live -- --ignored
+    fn restore_engines_live() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = synth_page(tmp.path(), "noisy.png", 96, 64);
+        // SCUNet denoise + InstructIR (each of its 7 tasks) — all same-dims out.
+        for (engine, task) in [
+            ("scunet", "denoise"),
+            ("instructir", "denoise"),
+            ("instructir", "deblur"),
+            ("instructir", "low_light"),
+            ("instructir", "enhance"),
+        ] {
+            let cfg = super::super::OcrPipelineConfig {
+                restore: true,
+                restore_engine: engine.into(),
+                restore_task: task.into(),
+                ..Default::default()
+            };
+            let (_g, out) = restore_page(&p, &cfg)
+                .unwrap_or_else(|| panic!("{engine}/{task} should restore"));
+            let img = image::open(&out).expect("restored image decodes");
+            assert_eq!((img.width(), img.height()), (96, 64), "{engine}: keeps dimensions");
+        }
+    }
+
+    #[test]
+    fn instructir_task_ids_match_enum() {
+        // Mirrors instructir.h INSTRUCTIR_* ordering.
+        #[cfg(feature = "crispembed")]
+        {
+            assert_eq!(instructir_task_id("denoise"), 0);
+            assert_eq!(instructir_task_id("deblur"), 1);
+            assert_eq!(instructir_task_id("dehaze"), 2);
+            assert_eq!(instructir_task_id("derain"), 3);
+            assert_eq!(instructir_task_id("super_resolution"), 4);
+            assert_eq!(instructir_task_id("low_light"), 5);
+            assert_eq!(instructir_task_id("enhance"), 6);
+            assert_eq!(instructir_task_id("bogus"), 0, "unknown falls back to denoise");
+        }
+    }
+
+    #[cfg(feature = "crispembed")]
+    #[test]
     #[ignore] // cargo test --features crispembed-metal sr_engines_live -- --ignored
     fn sr_engines_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "low.png", 64, 48);
-        for engine in ["pan", "esrgan", "safmn"] {
+        for engine in ["pan", "esrgan", "safmn", "hat", "tbsrn"] {
             let cfg = super::super::OcrPipelineConfig {
                 sr: true,
                 sr_engine: engine.into(),

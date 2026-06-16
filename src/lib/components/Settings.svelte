@@ -203,6 +203,7 @@
     let ocrPipelineSrEngine   = $state('pan');
     let ocrPipelineRestore    = $state(false);
     let ocrPipelineRestoreEngine = $state('restormer');
+    let ocrPipelineRestoreTask = $state('denoise');
     let ocrPipelineDewarp     = $state(false);
     let ocrPipelineDewarpEngine  = $state('basic');
     type OcrStage = {
@@ -261,6 +262,7 @@
             sr_engine:           ocrPipelineSrEngine,
             restore:             ocrPipelineRestore,
             restore_engine:      ocrPipelineRestoreEngine,
+            restore_task:        ocrPipelineRestoreTask,
             restore_model:       null,
             dewarp:              ocrPipelineDewarp,
             dewarp_engine:       ocrPipelineDewarpEngine,
@@ -1038,6 +1040,7 @@
         ocrPipelineSrEngine  = await getSetting('ocrPipelineSrEngine', 'pan') as string;
         ocrPipelineRestore   = await getSetting('ocrPipelineRestore', false) as boolean;
         ocrPipelineRestoreEngine = await getSetting('ocrPipelineRestoreEngine', 'restormer') as string;
+        ocrPipelineRestoreTask = await getSetting('ocrPipelineRestoreTask', 'denoise') as string;
         ocrPipelineDewarp    = await getSetting('ocrPipelineDewarp', false) as boolean;
         ocrPipelineDewarpEngine  = await getSetting('ocrPipelineDewarpEngine', 'basic') as string;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
@@ -1406,6 +1409,7 @@
         await saveSetting('ocrPipelineSrEngine',  ocrPipelineSrEngine);
         await saveSetting('ocrPipelineRestore',   ocrPipelineRestore);
         await saveSetting('ocrPipelineRestoreEngine', ocrPipelineRestoreEngine);
+        await saveSetting('ocrPipelineRestoreTask', ocrPipelineRestoreTask);
         await saveSetting('ocrPipelineDewarp',    ocrPipelineDewarp);
         await saveSetting('ocrPipelineDewarpEngine',  ocrPipelineDewarpEngine);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
@@ -2607,9 +2611,26 @@
                                 <select id="ocr-pipeline-restore-engine" bind:value={ocrPipelineRestoreEngine} style="margin-left:4px;">
                                     <option value="restormer">Restormer (deblur)</option>
                                     <option value="scunet">SCUNet (denoise)</option>
+                                    <option value="instructir">InstructIR (all-in-one)</option>
                                 </select>
                             </label>
                         </div>
+                        {#if ocrPipelineRestoreEngine === 'instructir'}
+                            <div class="field-row" style="margin-top:4px;">
+                                <label for="ocr-pipeline-restore-task" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                    {i18n.t.settings.ocr_pipeline_restore_task}
+                                    <select id="ocr-pipeline-restore-task" bind:value={ocrPipelineRestoreTask} style="margin-left:4px;">
+                                        <option value="denoise">Denoise</option>
+                                        <option value="deblur">Deblur</option>
+                                        <option value="dehaze">Dehaze</option>
+                                        <option value="derain">Derain</option>
+                                        <option value="super_resolution">Super-resolution</option>
+                                        <option value="low_light">Low-light</option>
+                                        <option value="enhance">Enhance</option>
+                                    </select>
+                                </label>
+                            </div>
+                        {/if}
                     {/if}
 
                     <div class="checkbox-group" style="margin-top:4px;">
@@ -2625,6 +2646,8 @@
                                     <option value="pan">PAN (4×, fast)</option>
                                     <option value="esrgan">Real-ESRGAN (blur/noise)</option>
                                     <option value="safmn">SAFMN (lightweight)</option>
+                                    <option value="hat">HAT (4×, SOTA quality)</option>
+                                    <option value="tbsrn">TBSRN (text-line, tiny)</option>
                                 </select>
                             </label>
                         </div>

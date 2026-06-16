@@ -279,10 +279,16 @@ pub struct OcrPipelineConfig {
     /// Restoration model registry name (`None` → engine default).
     #[serde(default)]
     pub restore_model: Option<String>,
-    /// Restoration engine: `restormer` (denoise + deblur, default) or `scunet`
-    /// (Swin-Conv-UNet denoise — higher quality on real-world noise).
+    /// Restoration engine: `restormer` (denoise + deblur, default), `scunet`
+    /// (Swin-Conv-UNet denoise — higher quality on real-world noise), or
+    /// `instructir` (all-in-one task-driven restoration — see `restore_task`).
     #[serde(default = "default_restore_engine")]
     pub restore_engine: String,
+    /// InstructIR task when `restore_engine == "instructir"`: `denoise`,
+    /// `deblur`, `dehaze`, `derain`, `super_resolution`, `low_light`, `enhance`.
+    /// Ignored by the other restore engines.
+    #[serde(default = "default_restore_task")]
+    pub restore_task: String,
     /// Dewarp engine: `basic` (cubic-baseline, default) or `tps` (thin-plate-
     /// spline spatial transformer — learned localizer, stronger on curved pages).
     #[serde(default = "default_dewarp_engine")]
@@ -302,6 +308,9 @@ fn default_layout_engine() -> String {
 }
 fn default_restore_engine() -> String {
     "restormer".to_string()
+}
+fn default_restore_task() -> String {
+    "denoise".to_string()
 }
 fn default_dewarp_engine() -> String {
     "basic".to_string()
@@ -442,6 +451,7 @@ impl Default for OcrPipelineConfig {
             restore: false,
             restore_model: None,
             restore_engine: default_restore_engine(),
+            restore_task: default_restore_task(),
             dewarp: false,
             dewarp_engine: default_dewarp_engine(),
         }

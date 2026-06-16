@@ -246,7 +246,7 @@ enum Command {
         sr_max_px: i32,
         /// Super-resolution engine: `pan` (4×, default), `esrgan` (real-world
         /// blur/noise), `safmn` (lightweight).
-        #[arg(long, default_value = "pan", value_parser = ["pan", "esrgan", "safmn"])]
+        #[arg(long, default_value = "pan", value_parser = ["pan", "esrgan", "safmn", "hat", "tbsrn"])]
         sr_engine: String,
         /// Pre-processor: restore (denoise + deblur) the page via Restormer
         /// before OCR — helps noisy / blurred scans. Needs `crispembed`.
@@ -259,10 +259,15 @@ enum Command {
         /// before OCR — helps photos of pages / book spines.
         #[arg(long)]
         dewarp: bool,
-        /// Restoration engine: `restormer` (denoise+deblur, default) or
-        /// `scunet` (Swin-Conv-UNet denoise).
-        #[arg(long, default_value = "restormer", value_parser = ["restormer", "scunet"])]
+        /// Restoration engine: `restormer` (denoise+deblur, default), `scunet`
+        /// (Swin-Conv-UNet denoise), or `instructir` (all-in-one, see
+        /// --restore-task).
+        #[arg(long, default_value = "restormer", value_parser = ["restormer", "scunet", "instructir"])]
         restore_engine: String,
+        /// InstructIR task (only when --restore-engine instructir).
+        #[arg(long, default_value = "denoise",
+              value_parser = ["denoise", "deblur", "dehaze", "derain", "super_resolution", "low_light", "enhance"])]
+        restore_task: String,
         /// Dewarp engine: `basic` (cubic-baseline, default) or `tps` (thin-plate
         /// spline spatial transformer).
         #[arg(long, default_value = "basic", value_parser = ["basic", "tps"])]
@@ -1204,13 +1209,13 @@ pub fn run() -> ExitCode {
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
-            restore_engine, dewarp_engine,
+            restore_engine, restore_task, dewarp_engine,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
-            restore_engine, dewarp_engine,
+            restore_engine, restore_task, dewarp_engine,
         ),
         Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
@@ -1262,6 +1267,7 @@ fn cmd_ocr(
     restore_model: Option<String>,
     dewarp: bool,
     restore_engine: String,
+    restore_task: String,
     dewarp_engine: String,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
@@ -1317,6 +1323,7 @@ fn cmd_ocr(
         restore,
         restore_model,
         restore_engine,
+        restore_task,
         dewarp,
         dewarp_engine,
     };
