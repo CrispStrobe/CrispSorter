@@ -661,6 +661,67 @@ pub fn ocr_regions_via_pipeline(
     anyhow::bail!("OCR region extraction requires the `crispembed` cargo feature")
 }
 
+/// A region plus per-character confidence, for the OCR workbench. `confidence`
+/// is the **recognition** confidence (mean per-char softmax) when the engine
+/// exposes it (the signal that flags OCR errors), else the detection score.
+#[derive(Debug, Clone)]
+pub struct RegionConf {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub confidence: f32,
+    pub char_conf: Vec<f32>,
+}
+
+/// Like [`ocr_regions_via_pipeline`] but also returns per-character confidence
+/// (PARSeq / Tesseract-LSTM expose it; VLM engines don't → empty).
+#[cfg(feature = "crispembed")]
+pub fn ocr_regions_detailed(
+    path: &Path,
+    cfg: &super::OcrPipelineConfig,
+) -> Result<Vec<RegionConf>> {
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
+    let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
+    let mut guard = orch
+        .lock()
+        .map_err(|e| anyhow::anyhow!("OCR pipeline lock poisoned: {e}"))?;
+    let res = guard
+        .run(path_str)
+        .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+    Ok(res
+        .regions
+        .into_iter()
+        .map(|r| {
+            // Prefer recognition confidence when available — detection score is
+            // usually ~1.0 and useless for proofreading.
+            let confidence = if !r.char_conf.is_empty() && r.rec_confidence > 0.0 {
+                r.rec_confidence
+            } else {
+                r.confidence
+            };
+            RegionConf {
+                text: r.text,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                confidence,
+                char_conf: r.char_conf,
+            }
+        })
+        .collect())
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn ocr_regions_detailed(
+    _path: &Path,
+    _cfg: &super::OcrPipelineConfig,
+) -> Result<Vec<RegionConf>> {
+    anyhow::bail!("OCR region extraction requires the `crispembed` cargo feature")
+}
+
 /// Map a VLM escalation engine name to the C `vlm_engine` id used by
 /// `CrispOcrPipeline::new` (0=GOT 1=GLM 2=Qwen2-VL 3=InternVL2). Note this
 /// numbering differs from the per-stage `engine_id`. Unknown → Qwen2-VL.

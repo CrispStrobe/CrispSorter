@@ -6,7 +6,7 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
 
-    interface Region { text: string; x: number; y: number; w: number; h: number; confidence: number; }
+    interface Region { text: string; x: number; y: number; w: number; h: number; confidence: number; char_conf: number[]; orig: string; }
     interface PageOcr { width: number; height: number; regions: Region[]; ocred: boolean; proofread: boolean; cleanedPath?: string | null; }
 
     let locationUri = $state('');          // source doc path (sidecar/export/re-ingest target)
@@ -69,10 +69,11 @@
         if (!pagePath) return;
         busy = 'ocr'; status = i18n.t.ocrwb.running; error = '';
         try {
-            const res = await invoke<{ width: number; height: number; regions: Region[] }>('ocr_page_regions', { pagePath });
-            setPageOcr(idx, { width: res.width, height: res.height, regions: res.regions, ocred: true });
+            const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath });
+            const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
+            setPageOcr(idx, { width: res.width, height: res.height, regions, ocred: true });
             selected = null;
-            status = `${res.regions.length} ${i18n.t.ocrwb.regions}`;
+            status = `${regions.length} ${i18n.t.ocrwb.regions}`;
         } catch (e: any) {
             error = String(e?.message ?? e);
         } finally {
@@ -85,8 +86,9 @@
         try {
             for (let i = 0; i < pages.length; i++) {
                 status = `${i18n.t.ocrwb.running} ${i + 1}/${pages.length}`;
-                const res = await invoke<{ width: number; height: number; regions: Region[] }>('ocr_page_regions', { pagePath: pages[i] });
-                setPageOcr(i, { width: res.width, height: res.height, regions: res.regions, ocred: true });
+                const res = await invoke<{ width: number; height: number; regions: any[] }>('ocr_page_regions', { pagePath: pages[i] });
+                const regions: Region[] = res.regions.map(r => ({ ...r, char_conf: r.char_conf ?? [], orig: r.text }));
+                setPageOcr(i, { width: res.width, height: res.height, regions, ocred: true });
             }
             status = i18n.t.ocrwb.done;
         } catch (e: any) {
@@ -257,12 +259,23 @@
                 {:else}
                     {#each cur.regions as r, i}
                         <div class="region-row" class:low={r.confidence < threshold} class:sel={selected === i}>
-                            <button class="conf" title="confidence" onclick={() => selected = i}>{(r.confidence * 100).toFixed(0)}</button>
-                            <textarea
-                                value={r.text}
-                                oninput={(e) => editRegion(i, (e.target as HTMLTextAreaElement).value)}
-                                onfocus={() => selected = i}
-                                rows="1"></textarea>
+                            <button class="conf" title={i18n.t.ocrwb.confidence} onclick={() => selected = i}>{(r.confidence * 100).toFixed(0)}</button>
+                            <div class="region-body">
+                                {#if r.char_conf.length}
+                                    <!-- Per-character confidence: tint chars the recognizer was unsure
+                                         about (aligned to the original OCR text, a "where to look" guide). -->
+                                    <div class="charview" title={i18n.t.ocrwb.charconf_hint}>
+                                        {#each [...r.orig] as ch, k}
+                                            <span class:low={(r.char_conf[k] ?? 1) < threshold}>{ch === ' ' ? ' ' : ch}</span>
+                                        {/each}
+                                    </div>
+                                {/if}
+                                <textarea
+                                    value={r.text}
+                                    oninput={(e) => editRegion(i, (e.target as HTMLTextAreaElement).value)}
+                                    onfocus={() => selected = i}
+                                    rows="1"></textarea>
+                            </div>
                         </div>
                     {/each}
                 {/if}
@@ -314,9 +327,12 @@
     .region-row { display: flex; gap: 6px; align-items: flex-start; border-radius: 6px; padding: 2px; }
     .region-row.low { background: rgba(239,68,68,0.08); }
     .region-row.sel { background: rgba(234,179,8,0.12); outline: 1px solid rgba(234,179,8,0.5); }
-    .conf { flex: none; width: 30px; text-align: center; font-size: 0.7rem; color: #a1a1aa; background: #1f1f23; border: 1px solid #3f3f46; border-radius: 4px; cursor: pointer; padding: 2px 0; }
+    .conf { flex: none; width: 30px; text-align: center; font-size: 0.7rem; color: #a1a1aa; background: #1f1f23; border: 1px solid #3f3f46; border-radius: 4px; cursor: pointer; padding: 2px 0; height: fit-content; }
     .region-row.low .conf { color: #fca5a5; border-color: #7f1d1d; }
-    .region-row textarea { flex: 1; resize: vertical; background: #18181b; color: #e4e4e7; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; font-size: 0.85rem; font-family: inherit; min-height: 1.6em; }
+    .region-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .charview { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #71717a; white-space: pre-wrap; word-break: break-word; padding: 1px 4px; }
+    .charview span.low { background: rgba(239,68,68,0.35); color: #fecaca; border-radius: 2px; }
+    .region-body textarea { resize: vertical; background: #18181b; color: #e4e4e7; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; font-size: 0.85rem; font-family: inherit; min-height: 1.6em; width: 100%; box-sizing: border-box; }
     .pagebar { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid #27272a; }
     .pageno { font-size: 0.8125rem; color: #a1a1aa; }
 </style>

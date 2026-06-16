@@ -3872,6 +3872,9 @@ pub struct OcrRegionDto {
     pub w: f32,
     pub h: f32,
     pub confidence: f32,
+    /// Per-character confidence (PARSeq / Tesseract-LSTM); empty otherwise.
+    #[serde(default)]
+    pub char_conf: Vec<f32>,
 }
 
 /// Result of OCR'ing one page.
@@ -3897,7 +3900,7 @@ pub async fn ocr_page_regions(
     cfg.enabled = true;
 
     tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
-        let regions = crate::extractors::ocr_crispembed::ocr_regions_via_pipeline(&path, &cfg)
+        let regions = crate::extractors::ocr_crispembed::ocr_regions_detailed(&path, &cfg)
             .map_err(|e| format!("OCR failed: {e:#}"))?;
         let (w, h) = image::image_dimensions(&path).unwrap_or((0, 0));
         Ok(OcrPageResult {
@@ -3912,6 +3915,7 @@ pub async fn ocr_page_regions(
                     w: r.w,
                     h: r.h,
                     confidence: r.confidence,
+                    char_conf: r.char_conf,
                 })
                 .collect(),
         })
