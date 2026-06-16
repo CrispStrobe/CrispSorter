@@ -3538,3 +3538,257 @@ async fn embed_query(
         .next()
         .ok_or_else(|| "Embedder returned no vectors".to_owned())
 }
+
+// ── Per-file document tools (GUI surface for the `ocr`/`kie`/`table` CLI) ─────
+//
+// These wrap the same underlying CrispEmbed-backed functions the CLI uses, so
+// the GUI "Doc tools" buttons in IndexSearch produce byte-identical artifacts.
+// All resolve a `location_uri` to a local path (cloud-drive rows must be
+// downloaded first) and run the heavy work on a blocking thread.
+
+/// Result of [`tool_ocr_export`]: a structured/searchable artifact written
+/// beside the source file.
+#[derive(serde::Serialize)]
+pub struct OcrExportResult {
+    pub saved_path: String,
+    pub bytes: usize,
+    pub pages: usize,
+    pub format: String,
+}
+
+/// Export a file's OCR as txt / hOCR / ALTO / searchable PDF / PDF-A, written
+/// beside the source as `<stem>.ocr.<ext>`. Reuses the user's persisted Smart
+/// OCR Pipeline config (Settings → Smart OCR Pipeline), so dewarp / restore /
+/// super-resolution / layout choices apply. GUI surface for `crispsorter ocr
+/// --render`.
+#[tauri::command]
+pub async fn tool_ocr_export(
+    state: State<'_, AppState>,
+    location_uri: String,
+    format: String,
+    pdfa: bool,
+) -> Result<OcrExportResult, String> {
+    use crate::extractors::ocr_render::OcrOutputFormat;
+
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| {
+            format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
+        })?;
+    if !path.exists() {
+        return Err(format!("file not present on disk: {}", path.display()));
+    }
+    let fmt = OcrOutputFormat::from_name(&format)
+        .ok_or_else(|| format!("unknown render format: {format}"))?;
+
+    // Reuse the persisted Smart-OCR-pipeline config; force it on for this run.
+    let mut cfg = state.bg_ingest.lock().await.ocr_pipeline.clone();
+    cfg.enabled = true;
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output")
+        .to_string();
+    let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let out_path = parent.join(format!("{stem}.ocr.{}", fmt.ext()));
+
+    let out2 = out_path.clone();
+    let (bytes_written, n_pages) = tokio::task::spawn_blocking(
+        move || -> Result<(usize, usize), String> {
+            let (bytes, pages) = if fmt == OcrOutputFormat::Text {
+                let opts = crate::extractors::ExtractOptions {
+                    try_ocr: true,
+                    ocr_pdf_min_chars: usize::MAX,
+                    ocr_pipeline: cfg,
+                    ..Default::default()
+                };
+                let doc = crate::extractors::extract_text_from_path_with_opts(&path, opts)
+                    .map_err(|e| format!("OCR failed: {e:#}"))?;
+                (doc.full_text.into_bytes(), 1usize)
+            } else {
+                let pages = crate::extractors::ocr_render::render_pages_from_file(&path, &ext, &cfg)?;
+                let n = pages.len();
+                let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
+                    .map_err(|e| format!("render failed: {e:#}"))?;
+                (bytes, n)
+            };
+            std::fs::write(&out2, &bytes)
+                .map_err(|e| format!("writing {}: {e}", out2.display()))?;
+            Ok((bytes.len(), pages))
+        },
+    )
+    .await
+    .map_err(|e| format!("ocr export join error: {e}"))??;
+
+    Ok(OcrExportResult {
+        saved_path: out_path.display().to_string(),
+        bytes: bytes_written,
+        pages: n_pages,
+        format: if pdfa && fmt == OcrOutputFormat::Pdf {
+            "pdfa".to_string()
+        } else {
+            format
+        },
+    })
+}
+
+/// One extracted key-information field.
+#[derive(serde::Serialize)]
+pub struct KieFieldDto {
+    pub label: String,
+    pub value: String,
+    pub score: f32,
+}
+
+/// Key-information extraction over a single file. With `lilt`, runs layout-aware
+/// LiLT token classification directly on the image; otherwise OCRs the document
+/// and runs zero-shot GLiNER NER over the text. Empty `labels` falls back to the
+/// labels configured under Settings → NER. GUI surface for `crispsorter kie`.
+#[tauri::command]
+pub async fn tool_kie_extract(
+    state: State<'_, AppState>,
+    location_uri: String,
+    labels: Vec<String>,
+    threshold: Option<f32>,
+    lilt: bool,
+    lilt_model: Option<String>,
+) -> Result<Vec<KieFieldDto>, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| {
+            format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
+        })?;
+    if !path.exists() {
+        return Err(format!("file not present on disk: {}", path.display()));
+    }
+
+    // Default labels + threshold + model come from the persisted NER settings.
+    let (cfg_labels, ner_model, ner_threshold) = {
+        let lock = state.index.lock().await;
+        (
+            lock.config.ner_labels.clone(),
+            lock.config.ner_model.clone(),
+            lock.config.ner_threshold,
+        )
+    };
+    let labels = if labels.is_empty() { cfg_labels } else { labels };
+    if labels.is_empty() {
+        return Err("no KIE labels given and Settings → NER has none configured".to_string());
+    }
+    let thr = threshold.unwrap_or(ner_threshold);
+
+    let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
+        let path2 = path.clone();
+        let labels2 = labels.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::extractors::ocr_crispembed::kie_extract_lilt(
+                &path2,
+                &labels2,
+                thr,
+                lilt_model.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| format!("kie join error: {e}"))?
+        .map_err(|e| format!("LiLT KIE failed: {e:#}"))?
+    } else {
+        // GLiNER path: OCR → NER over the extracted text.
+        let data_dir = state
+            .data_dir
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "index not initialised (no data_dir)".to_string())?;
+        let cache_dir = {
+            let lock = state.index.lock().await;
+            super::resolve_model_cache_dir(&lock.config, &data_dir)
+        };
+        let model = ner_model.unwrap_or_default();
+        let path2 = path.clone();
+        let doc = tokio::task::spawn_blocking(move || {
+            let opts = crate::extractors::ExtractOptions {
+                try_ocr: true,
+                ocr_pdf_min_chars: usize::MAX,
+                ..Default::default()
+            };
+            crate::extractors::extract_text_from_path_with_opts(&path2, opts)
+        })
+        .await
+        .map_err(|e| format!("extract join error: {e}"))?
+        .map_err(|e| format!("extract failed: {e:#}"))?;
+        if doc.full_text.trim().is_empty() {
+            return Err("no text extracted from document".to_string());
+        }
+        let handle =
+            crate::index::ner::NerHandle::new(model, labels, thr, 0, 200_000, cache_dir);
+        handle.extract_fields(&doc.full_text).await
+    };
+
+    Ok(fields
+        .into_iter()
+        .map(|(label, value, score)| KieFieldDto { label, value, score })
+        .collect())
+}
+
+/// Result of [`tool_table_extract`]: detected grid + HTML, optionally saved.
+#[derive(serde::Serialize)]
+pub struct TableExtractResult {
+    pub rows: i32,
+    pub cols: i32,
+    pub html: String,
+    pub saved_path: Option<String>,
+}
+
+/// Parse a table image into HTML (and report its grid dimensions). When `save`,
+/// writes `<stem>.table.html` beside the source. GUI surface for `crispsorter
+/// table`.
+#[tauri::command]
+pub async fn tool_table_extract(
+    state: State<'_, AppState>,
+    location_uri: String,
+    ocr_model: Option<String>,
+    save: bool,
+) -> Result<TableExtractResult, String> {
+    let _ = &state; // resolved purely from the URI; state kept for signature parity
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| {
+            format!("location_uri does not map to a local path: {location_uri} (download cloud files first)")
+        })?;
+    if !path.exists() {
+        return Err(format!("file not present on disk: {}", path.display()));
+    }
+
+    let path2 = path.clone();
+    let (rows, cols, html) = tokio::task::spawn_blocking(
+        move || -> Result<(i32, i32, String), String> {
+            let (rows, cols) = crate::extractors::ocr_crispembed::table_grid(&path2)
+                .map_err(|e| format!("grid detection failed: {e:#}"))?;
+            let html = crate::extractors::ocr_crispembed::table_to_html(&path2, ocr_model.as_deref())
+                .map_err(|e| format!("table parse failed: {e:#}"))?;
+            Ok((rows, cols, html))
+        },
+    )
+    .await
+    .map_err(|e| format!("table join error: {e}"))??;
+
+    let saved_path = if save {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("table")
+            .to_string();
+        let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let out = parent.join(format!("{stem}.table.html"));
+        std::fs::write(&out, html.as_bytes())
+            .map_err(|e| format!("writing {}: {e}", out.display()))?;
+        Some(out.display().to_string())
+    } else {
+        None
+    };
+
+    Ok(TableExtractResult { rows, cols, html, saved_path })
+}

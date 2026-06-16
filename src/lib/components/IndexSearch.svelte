@@ -271,6 +271,21 @@
         error?: string;
     }
     let transcribes = $state<Map<string, TranscribeState>>(new Map());
+
+    // Per-file document tools (GUI surface for the `ocr`/`kie`/`table` CLI).
+    // Keyed by doc_id; holds the in-flight tool + its last result/error.
+    interface DocToolsState {
+        busy?: 'pdf' | 'kie' | 'table' | null;
+        error?: string;
+        pdf?: { saved_path: string; pages: number };
+        kie?: { label: string; value: string; score: number }[];
+        table?: { rows: number; cols: number; saved_path: string | null };
+    }
+    let docTools = $state<Map<string, DocToolsState>>(new Map());
+    // Doc tools (searchable-PDF render, LiLT/GLiNER KIE, table parse) all need
+    // CrispEmbed linked in — gate the surface so we don't show failing buttons.
+    let crispembedAvailable = $state(false);
+
     /** Set of audio/video extensions for O(1) lookup in template. */
     const AUDIO_EXTS_SET_SEARCH = new Set<string>(AUDIO_EXTENSIONS);
     /** Set of image extensions — kept in lockstep with
@@ -342,6 +357,58 @@
             const after = new Map(transcribes);
             after.set(key, { loading: false, error: String(e?.message ?? e) });
             transcribes = after;
+        }
+    }
+
+    /** Should this row offer the per-file document tools? Image/PDF rows only,
+     *  and only when CrispEmbed is linked in (the tools need it). */
+    function looksDocToolable(r: SearchResult): boolean {
+        if (!crispembedAvailable) return false;
+        const ext = (r.ext ?? '').toLowerCase();
+        return IMAGE_EXTS_SET_SEARCH.has(ext) || ext === 'pdf';
+    }
+    function setDocTool(key: string, patch: Partial<DocToolsState>): void {
+        const next = new Map(docTools);
+        next.set(key, { ...(docTools.get(key) ?? {}), ...patch });
+        docTools = next;
+    }
+    /** OCR → structured/searchable artifact written beside the source file. */
+    async function handleOcrExport(r: SearchResult, format: string): Promise<void> {
+        const key = r.doc_id;
+        setDocTool(key, { busy: 'pdf', error: undefined });
+        try {
+            const res = await invoke<{ saved_path: string; pages: number }>('tool_ocr_export', {
+                locationUri: r.location_uri, format, pdfa: false,
+            });
+            setDocTool(key, { busy: null, pdf: { saved_path: res.saved_path, pages: res.pages } });
+        } catch (e: any) {
+            setDocTool(key, { busy: null, error: String(e?.message ?? e) });
+        }
+    }
+    /** Key-information extraction (uses the Settings → NER labels by default). */
+    async function handleKie(r: SearchResult): Promise<void> {
+        const key = r.doc_id;
+        setDocTool(key, { busy: 'kie', error: undefined });
+        try {
+            const res = await invoke<{ label: string; value: string; score: number }[]>('tool_kie_extract', {
+                locationUri: r.location_uri, labels: [], threshold: null, lilt: false, liltModel: null,
+            });
+            setDocTool(key, { busy: null, kie: res });
+        } catch (e: any) {
+            setDocTool(key, { busy: null, error: String(e?.message ?? e) });
+        }
+    }
+    /** Detect a table and export it as HTML beside the source file. */
+    async function handleTableExtract(r: SearchResult): Promise<void> {
+        const key = r.doc_id;
+        setDocTool(key, { busy: 'table', error: undefined });
+        try {
+            const res = await invoke<{ rows: number; cols: number; saved_path: string | null }>('tool_table_extract', {
+                locationUri: r.location_uri, ocrModel: null, save: true,
+            });
+            setDocTool(key, { busy: null, table: { rows: res.rows, cols: res.cols, saved_path: res.saved_path } });
+        } catch (e: any) {
+            setDocTool(key, { busy: null, error: String(e?.message ?? e) });
         }
     }
 
@@ -518,6 +585,12 @@
     onMount(async () => {
         const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
         savedSearches = stored ?? [];
+        try {
+            const caps = await invoke<{ crispembed: boolean }>('index_capabilities');
+            crispembedAvailable = !!caps.crispembed;
+        } catch {
+            crispembedAvailable = false;
+        }
     });
 
     async function persistSavedSearches() {
@@ -1128,6 +1201,61 @@
                                         <span class="translate-cached">Transcribed → {tx.chunks ?? 0} chunks. Re-run the search to see the new content.</span>
                                     </div>
                                 </div>
+                            {/if}
+                        </div>
+                    {/if}
+
+                    <!-- Per-file document tools: GUI surface for the
+                         `ocr --render` / `kie` / `table` CLI. Image/PDF rows
+                         only, gated on CrispEmbed being linked in. Each action
+                         writes its artifact beside the source file and reports
+                         inline. -->
+                    {#if looksDocToolable(r)}
+                        {@const dt = docTools.get(r.doc_id)}
+                        <div class="translate-surface" style="margin-top:6px;">
+                            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                                <span style="font-size:0.75rem; color:#a1a1aa;">Doc tools:</span>
+                                <button type="button" class="translate-btn" disabled={dt?.busy != null}
+                                    onclick={() => handleOcrExport(r, 'pdf')}
+                                    title="OCR → searchable PDF, written beside the source file">Searchable PDF</button>
+                                <button type="button" class="translate-btn" disabled={dt?.busy != null}
+                                    onclick={() => handleKie(r)}
+                                    title="Extract key fields (uses your Settings → NER labels)">Extract fields</button>
+                                <button type="button" class="translate-btn" disabled={dt?.busy != null}
+                                    onclick={() => handleTableExtract(r)}
+                                    title="Detect a table and export it as HTML beside the source file">Extract table</button>
+                            </div>
+                            {#if dt?.busy}
+                                <div class="translate-loading">
+                                    <span class="translate-spinner" aria-hidden="true"></span>
+                                    {dt.busy === 'pdf' ? 'Rendering searchable PDF…' : dt.busy === 'kie' ? 'Extracting fields…' : 'Parsing table…'}
+                                </div>
+                            {/if}
+                            {#if dt?.error}
+                                <div class="translate-error">Doc tool failed: {dt.error}</div>
+                            {/if}
+                            {#if dt?.pdf}
+                                <div class="translate-result"><div class="translate-meta">
+                                    <span class="translate-cached">Saved → {dt.pdf.saved_path} ({dt.pdf.pages} page{dt.pdf.pages === 1 ? '' : 's'})</span>
+                                </div></div>
+                            {/if}
+                            {#if dt?.kie}
+                                <div class="translate-result"><div class="translate-meta">
+                                    {#if dt.kie.length === 0}
+                                        <span class="translate-cached">No fields found.</span>
+                                    {:else}
+                                        <ul style="margin:4px 0 0; padding-left:16px;">
+                                            {#each dt.kie as f}
+                                                <li style="font-size:0.8125rem;"><strong>{f.label}:</strong> {f.value} <span style="color:#71717a;">({f.score.toFixed(2)})</span></li>
+                                            {/each}
+                                        </ul>
+                                    {/if}
+                                </div></div>
+                            {/if}
+                            {#if dt?.table}
+                                <div class="translate-result"><div class="translate-meta">
+                                    <span class="translate-cached">Table {dt.table.rows}×{dt.table.cols}{dt.table.saved_path ? ` — saved → ${dt.table.saved_path}` : ''}</span>
+                                </div></div>
                             {/if}
                         </div>
                     {/if}

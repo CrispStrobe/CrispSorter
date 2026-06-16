@@ -202,7 +202,9 @@
     let ocrPipelineSrMaxPx    = $state(1200);
     let ocrPipelineSrEngine   = $state('pan');
     let ocrPipelineRestore    = $state(false);
+    let ocrPipelineRestoreEngine = $state('restormer');
     let ocrPipelineDewarp     = $state(false);
+    let ocrPipelineDewarpEngine  = $state('basic');
     type OcrStage = {
         source_type: string; engine: string; det_model: string; rec_model: string;
         cleanup: { enabled: boolean; deskew: boolean; crop_borders: boolean; whiten_background: boolean;
@@ -258,8 +260,10 @@
             sr:                  ocrPipelineSr,
             sr_engine:           ocrPipelineSrEngine,
             restore:             ocrPipelineRestore,
+            restore_engine:      ocrPipelineRestoreEngine,
             restore_model:       null,
             dewarp:              ocrPipelineDewarp,
+            dewarp_engine:       ocrPipelineDewarpEngine,
             sr_model:            null,
             sr_max_short_side:   Number(ocrPipelineSrMaxPx) || 1200,
             layout:              ocrPipelineLayout,
@@ -1033,7 +1037,9 @@
         ocrPipelineSrMaxPx   = await getSetting('ocrPipelineSrMaxPx', 1200) as number;
         ocrPipelineSrEngine  = await getSetting('ocrPipelineSrEngine', 'pan') as string;
         ocrPipelineRestore   = await getSetting('ocrPipelineRestore', false) as boolean;
+        ocrPipelineRestoreEngine = await getSetting('ocrPipelineRestoreEngine', 'restormer') as string;
         ocrPipelineDewarp    = await getSetting('ocrPipelineDewarp', false) as boolean;
+        ocrPipelineDewarpEngine  = await getSetting('ocrPipelineDewarpEngine', 'basic') as string;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1399,7 +1405,9 @@
         await saveSetting('ocrPipelineSrMaxPx',   ocrPipelineSrMaxPx);
         await saveSetting('ocrPipelineSrEngine',  ocrPipelineSrEngine);
         await saveSetting('ocrPipelineRestore',   ocrPipelineRestore);
+        await saveSetting('ocrPipelineRestoreEngine', ocrPipelineRestoreEngine);
         await saveSetting('ocrPipelineDewarp',    ocrPipelineDewarp);
+        await saveSetting('ocrPipelineDewarpEngine',  ocrPipelineDewarpEngine);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2576,11 +2584,33 @@
                         <input id="ocr-pipeline-dewarp" type="checkbox" bind:checked={ocrPipelineDewarp} />
                         <label for="ocr-pipeline-dewarp">{i18n.t.settings.ocr_pipeline_dewarp}</label>
                     </div>
+                    {#if ocrPipelineDewarp}
+                        <div class="field-row" style="margin-top:4px;">
+                            <label for="ocr-pipeline-dewarp-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                {i18n.t.settings.ocr_pipeline_dewarp_engine}
+                                <select id="ocr-pipeline-dewarp-engine" bind:value={ocrPipelineDewarpEngine} style="margin-left:4px;">
+                                    <option value="basic">Basic (deskew, fast)</option>
+                                    <option value="tps">TPS (curved pages)</option>
+                                </select>
+                            </label>
+                        </div>
+                    {/if}
                     <div class="checkbox-group" style="margin-top:4px;">
                         <input id="ocr-pipeline-restore" type="checkbox" bind:checked={ocrPipelineRestore} />
                         <label for="ocr-pipeline-restore">{i18n.t.settings.ocr_pipeline_restore}</label>
                     </div>
                     <p class="hint">{i18n.t.settings.ocr_pipeline_restore_hint}</p>
+                    {#if ocrPipelineRestore}
+                        <div class="field-row" style="margin-top:4px;">
+                            <label for="ocr-pipeline-restore-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                {i18n.t.settings.ocr_pipeline_restore_engine}
+                                <select id="ocr-pipeline-restore-engine" bind:value={ocrPipelineRestoreEngine} style="margin-left:4px;">
+                                    <option value="restormer">Restormer (deblur)</option>
+                                    <option value="scunet">SCUNet (denoise)</option>
+                                </select>
+                            </label>
+                        </div>
+                    {/if}
 
                     <div class="checkbox-group" style="margin-top:4px;">
                         <input id="ocr-pipeline-sr" type="checkbox" bind:checked={ocrPipelineSr} />

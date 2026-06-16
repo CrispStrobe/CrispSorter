@@ -137,6 +137,39 @@ pub fn structured_render_available() -> bool {
     cfg!(feature = "crispembed")
 }
 
+/// Rasterize a document (image/PDF/TIFF) and OCR each page through the smart
+/// pipeline into [`RenderPage`]s, ready for [`render`]. Shared by the `ocr`
+/// CLI (`--render`) and the GUI's per-file "export searchable" action so both
+/// produce byte-identical structured output. `ext` is the lower-cased source
+/// extension (drives PDF vs single-image rasterization).
+pub fn render_pages_from_file(
+    file: &std::path::Path,
+    ext: &str,
+    cfg: &crate::extractors::OcrPipelineConfig,
+) -> std::result::Result<Vec<RenderPage>, String> {
+    use crate::extractors::{ocr_crispembed, page_source};
+
+    let images = if ext == "pdf" {
+        page_source::rasterize_pdf(file).map_err(|e| format!("rasterize PDF: {e:#}"))?
+    } else {
+        page_source::rasterize_pages(file, ext).map_err(|e| format!("rasterize: {e:#}"))?
+    };
+
+    let mut pages = Vec::with_capacity(images.len());
+    for (i, page_path) in images.paths().iter().enumerate() {
+        let regions = ocr_crispembed::ocr_regions_via_pipeline(page_path, cfg)
+            .map_err(|e| format!("OCR failed on page {}: {e:#}", i + 1))?;
+        let (w, h) = image::image_dimensions(page_path).unwrap_or((0, 0));
+        pages.push(RenderPage::from_regions(
+            regions,
+            w as i32,
+            h as i32,
+            page_path.display().to_string(),
+        ));
+    }
+    Ok(pages)
+}
+
 /// Plain-text rendering: regions joined by newlines, pages by form-feed.
 fn render_text(pages: &[RenderPage]) -> String {
     let mut out = String::new();

@@ -1381,7 +1381,7 @@ fn cmd_ocr(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let pages = ocr_render_pages(&file, &ext, &cfg)?;
+    let pages = crate::extractors::ocr_render::render_pages_from_file(&file, &ext, &cfg)?;
     let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
         .map_err(|e| format!("render failed: {e:#}"))?;
     match &out_path {
@@ -1512,36 +1512,6 @@ fn cmd_table(
     Ok(())
 }
 
-/// Decode `file` into per-page images (multi-frame TIFF / rasterized PDF /
-/// single image) and OCR each page into a [`RenderPage`] of regions for the
-/// structured renderers. Reuses the same page-sourcing as the ingest path.
-fn ocr_render_pages(
-    file: &std::path::Path,
-    ext: &str,
-    cfg: &crate::extractors::OcrPipelineConfig,
-) -> Result<Vec<crate::extractors::ocr_render::RenderPage>, String> {
-    use crate::extractors::{ocr_crispembed, ocr_render::RenderPage, page_source};
-
-    let images = if ext == "pdf" {
-        page_source::rasterize_pdf(file).map_err(|e| format!("rasterize PDF: {e:#}"))?
-    } else {
-        page_source::rasterize_pages(file, ext).map_err(|e| format!("rasterize: {e:#}"))?
-    };
-
-    let mut pages = Vec::with_capacity(images.len());
-    for (i, page_path) in images.paths().iter().enumerate() {
-        let regions = ocr_crispembed::ocr_regions_via_pipeline(page_path, cfg)
-            .map_err(|e| format!("OCR failed on page {}: {e:#}", i + 1))?;
-        let (w, h) = image::image_dimensions(page_path).unwrap_or((0, 0));
-        pages.push(RenderPage::from_regions(
-            regions,
-            w as i32,
-            h as i32,
-            page_path.display().to_string(),
-        ));
-    }
-    Ok(pages)
-}
 
 // ── version + doctor ────────────────────────────────────────────────────────
 
