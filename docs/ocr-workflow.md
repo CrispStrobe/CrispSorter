@@ -65,10 +65,28 @@ first use). The router's defaults: scanned-doc binarizes, photo denoises.
 model (FireRedPunc / PCS). Useful for engines (e.g. Tesseract-LSTM) whose raw
 output needs cleanup.
 
+## Scan restoration (dewarp → deblur → super-resolve)
+
+For degraded scans, an optional pre-OCR chain runs before recognition (all
+compute in C++; CrispSorter decides *when*):
+
+1. **Dewarp** (`--dewarp`, `crispembed::dewarp`) — straighten curved/warped text
+   lines (photos of pages, book spines).
+2. **Restore** (`--restore`, Restormer) — **denoise + deblur**. Fixes the
+   motion/defocus blur that classical cleanup + NAFNet *denoise* can't.
+3. **Super-resolve** (`--sr`, below) — upscale low-res pages.
+
+```bash
+crispsorter ocr blurry.jpg --restore                       # deblur
+crispsorter ocr book.jpg --dewarp --restore --sr --sr-engine esrgan
+```
+
 ## Super-resolution (low-res pages)
 
 `--sr` upscales a page whose short side is ≤ `--sr-max-px` (default 1200) **4×**
-via CrispEmbed's PAN engine (`pan-x4`, 0.5 MB) *before* OCR — a real recognition
+*before* OCR. `--sr-engine` selects the model: **PAN** (`pan-x4`, 0.5 MB, fast,
+default), **Real-ESRGAN** (`esrgan-x4`, better on real-world blur/noise/
+compression), or **SAFMN** (`safmn-x4`, lightweight) — a real recognition
 win on small scans, screenshots, and faxes. It pairs with the PDF DPI profiling
 (a low-DPI page is detected, then super-resolved); the SR compute is in C++,
 CrispSorter only decides when to invoke it. Larger pages skip SR (OCR is fine and

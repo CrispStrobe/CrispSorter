@@ -122,6 +122,8 @@ crispsorter ocr paper.pdf --render pdf  --out paper-searchable.pdf  # searchable
 crispsorter ocr paper.pdf --render pdf --pdfa --out paper-archival.pdf  # PDF/A-2b (archival: XMP + sRGB OutputIntent)
 crispsorter ocr photo.jpg --layout --drop-headers-footers          # layout-aware reading order
 crispsorter ocr lowres-scan.png --sr                               # super-resolve (PAN 4×) low-res pages before OCR
+crispsorter ocr blurry-scan.jpg --restore                          # Restormer denoise+deblur before OCR
+crispsorter ocr book-photo.jpg --dewarp --restore --sr --sr-engine esrgan  # full restore chain: dewarp → deblur → SR (Real-ESRGAN)
 
 # Key-information extraction (KIE) — pull structured fields from a document.
 crispsorter kie receipt.png --labels "total,date,vendor,tax"       # OCR + zero-shot NER → label·value·score

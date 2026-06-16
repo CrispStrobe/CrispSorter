@@ -199,6 +199,9 @@
     // P20 #2 — pre-OCR super-resolution for low-res pages (PAN 4×).
     let ocrPipelineSr         = $state(false);
     let ocrPipelineSrMaxPx    = $state(1200);
+    let ocrPipelineSrEngine   = $state('pan');
+    let ocrPipelineRestore    = $state(false);
+    let ocrPipelineDewarp     = $state(false);
     type OcrStage = {
         source_type: string; engine: string; det_model: string; rec_model: string;
         cleanup: { enabled: boolean; deskew: boolean; crop_borders: boolean; whiten_background: boolean;
@@ -252,6 +255,10 @@
             punct_model:     ocrPipelinePunct.trim() || null,
             stages,
             sr:                  ocrPipelineSr,
+            sr_engine:           ocrPipelineSrEngine,
+            restore:             ocrPipelineRestore,
+            restore_model:       null,
+            dewarp:              ocrPipelineDewarp,
             sr_model:            null,
             sr_max_short_side:   Number(ocrPipelineSrMaxPx) || 1200,
             layout:              ocrPipelineLayout,
@@ -1021,6 +1028,9 @@
         ocrPipelineDropHF    = await getSetting('ocrPipelineDropHF', false) as boolean;
         ocrPipelineSr        = await getSetting('ocrPipelineSr', false) as boolean;
         ocrPipelineSrMaxPx   = await getSetting('ocrPipelineSrMaxPx', 1200) as number;
+        ocrPipelineSrEngine  = await getSetting('ocrPipelineSrEngine', 'pan') as string;
+        ocrPipelineRestore   = await getSetting('ocrPipelineRestore', false) as boolean;
+        ocrPipelineDewarp    = await getSetting('ocrPipelineDewarp', false) as boolean;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1383,6 +1393,9 @@
         await saveSetting('ocrPipelineDropHF',    ocrPipelineDropHF);
         await saveSetting('ocrPipelineSr',        ocrPipelineSr);
         await saveSetting('ocrPipelineSrMaxPx',   ocrPipelineSrMaxPx);
+        await saveSetting('ocrPipelineSrEngine',  ocrPipelineSrEngine);
+        await saveSetting('ocrPipelineRestore',   ocrPipelineRestore);
+        await saveSetting('ocrPipelineDewarp',    ocrPipelineDewarp);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2556,11 +2569,31 @@
                     <p class="hint">{i18n.t.settings.ocr_pipeline_denoise_hint}</p>
 
                     <div class="checkbox-group" style="margin-top:4px;">
+                        <input id="ocr-pipeline-dewarp" type="checkbox" bind:checked={ocrPipelineDewarp} />
+                        <label for="ocr-pipeline-dewarp">{i18n.t.settings.ocr_pipeline_dewarp}</label>
+                    </div>
+                    <div class="checkbox-group" style="margin-top:4px;">
+                        <input id="ocr-pipeline-restore" type="checkbox" bind:checked={ocrPipelineRestore} />
+                        <label for="ocr-pipeline-restore">{i18n.t.settings.ocr_pipeline_restore}</label>
+                    </div>
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_restore_hint}</p>
+
+                    <div class="checkbox-group" style="margin-top:4px;">
                         <input id="ocr-pipeline-sr" type="checkbox" bind:checked={ocrPipelineSr} />
                         <label for="ocr-pipeline-sr">{i18n.t.settings.ocr_pipeline_sr}</label>
                     </div>
                     <p class="hint">{i18n.t.settings.ocr_pipeline_sr_hint}</p>
                     {#if ocrPipelineSr}
+                        <div class="field-row" style="margin-top:4px;">
+                            <label for="ocr-pipeline-sr-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                {i18n.t.settings.ocr_pipeline_sr_engine}
+                                <select id="ocr-pipeline-sr-engine" bind:value={ocrPipelineSrEngine} style="margin-left:4px;">
+                                    <option value="pan">PAN (4×, fast)</option>
+                                    <option value="esrgan">Real-ESRGAN (blur/noise)</option>
+                                    <option value="safmn">SAFMN (lightweight)</option>
+                                </select>
+                            </label>
+                        </div>
                         <div class="field-row" style="margin-top:4px;">
                             <label for="ocr-pipeline-sr-maxpx" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
                                 {i18n.t.settings.ocr_pipeline_sr_max_px}
