@@ -65,6 +65,9 @@ static DAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispDatSr>>> =
 #[cfg(feature = "crispembed")]
 static SWINIR_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSwinirSr>>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static SCAN_CLEANUP: std::sync::OnceLock<Option<Mutex<crispembed::CrispScanCleanup>>> =
+    std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
 #[cfg(feature = "crispembed")]
@@ -79,6 +82,41 @@ fn save_rgb_temp(
     image::DynamicImage::ImageRgb8(img).save(tmp.path()).ok()?;
     let p = tmp.path().to_path_buf();
     Some((tmp, p))
+}
+
+/// Write an RGB buffer to a **stable** temp PNG that survives across Tauri
+/// calls (unlike [`save_rgb_temp`]'s auto-deleting NamedTempFile). For the OCR
+/// workbench, where the frontend loads the path via `convertFileSrc` later.
+#[cfg(feature = "crispembed")]
+fn save_rgb_stable(prefix: &str, w: u32, h: u32, rgb: Vec<u8>) -> Option<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let img = image::RgbImage::from_raw(w, h, rgb)?;
+    let dir = std::env::temp_dir().join("crispsorter_ocr_workbench");
+    std::fs::create_dir_all(&dir).ok()?;
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let p = dir.join(format!("{prefix}{n}.png"));
+    image::DynamicImage::ImageRgb8(img).save(&p).ok()?;
+    Some(p)
+}
+
+/// Produce the **classical-cleanup** image (deskew / crop / whiten / binarize)
+/// for a page, so the OCR workbench can show "what the OCR saw" alongside the
+/// original. Returns a stable temp PNG path. `None` when off / unavailable.
+#[cfg(feature = "crispembed")]
+pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
+    let img = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let eng = SCAN_CLEANUP
+        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .as_ref()?;
+    let (out, ow, oh) = eng.lock().ok()?.process(img.as_raw(), w as i32, h as i32, 3).ok()?;
+    save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn cleaned_page_image(_path: &Path) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Map an InstructIR task name to its model task index (mirrors

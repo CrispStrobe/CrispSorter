@@ -3792,3 +3792,308 @@ pub async fn tool_table_extract(
 
     Ok(TableExtractResult { rows, cols, html, saved_path })
 }
+
+// ── OCR Workbench (interactive proofreading screen) ──────────────────────────
+//
+// Commands powering the user-steered OCR review loop: open a doc into per-page
+// images, OCR a page into regions+confidence, produce the cleaned image to
+// compare against, and save corrected results (export / re-ingest / sidecar).
+
+/// Resolve a location_uri to a present local path (shared by the commands below).
+fn workbench_resolve(location_uri: &str) -> Result<std::path::PathBuf, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(location_uri)
+        .ok_or_else(|| format!("location_uri does not map to a local path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("file not present on disk: {}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Per-document page list returned by [`ocr_doc_open`].
+#[derive(serde::Serialize)]
+pub struct OcrDocPages {
+    pub count: usize,
+    /// Stable local image paths, one per page (load via `convertFileSrc`).
+    pub pages: Vec<String>,
+}
+
+/// Open a document for the workbench: rasterize a PDF/TIFF into per-page PNGs
+/// (or pass a single image straight through), copied to a stable temp dir so
+/// the frontend can load + re-OCR pages across calls.
+#[tauri::command]
+pub async fn ocr_doc_open(location_uri: String) -> Result<OcrDocPages, String> {
+    let path = workbench_resolve(&location_uri)?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let pages = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        use crate::extractors::page_source;
+        // Single image: already a stable source path — no rasterization needed.
+        const IMG_EXTS: &[&str] = &["png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"];
+        if ext != "pdf" && IMG_EXTS.contains(&ext.as_str()) && ext != "tif" && ext != "tiff" {
+            return Ok(vec![path.display().to_string()]);
+        }
+        let images = if ext == "pdf" {
+            page_source::rasterize_pdf(&path).map_err(|e| format!("rasterize PDF: {e:#}"))?
+        } else {
+            page_source::rasterize_pages(&path, &ext).map_err(|e| format!("rasterize: {e:#}"))?
+        };
+        // Copy each page to a stable per-doc dir (rasterized temp dir is dropped
+        // when `images` goes out of scope).
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path.display().to_string().hash(&mut hasher);
+        let id = format!("{:016x}", hasher.finish());
+        let dir = std::env::temp_dir().join("crispsorter_ocr_workbench").join(&id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create temp dir: {e}"))?;
+        let mut out = Vec::with_capacity(images.len());
+        for (i, p) in images.paths().iter().enumerate() {
+            let dst = dir.join(format!("page_{:04}.png", i + 1));
+            std::fs::copy(p, &dst).map_err(|e| format!("copy page {}: {e}", i + 1))?;
+            out.push(dst.display().to_string());
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("ocr_doc_open join error: {e}"))??;
+
+    Ok(OcrDocPages { count: pages.len(), pages })
+}
+
+/// One OCR region returned to the workbench.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct OcrRegionDto {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub confidence: f32,
+}
+
+/// Result of OCR'ing one page.
+#[derive(serde::Serialize)]
+pub struct OcrPageResult {
+    pub width: i32,
+    pub height: i32,
+    pub regions: Vec<OcrRegionDto>,
+}
+
+/// OCR a single page image into regions (box + text + confidence) using the
+/// persisted Smart-OCR-pipeline config. Coordinates are in image pixels.
+#[tauri::command]
+pub async fn ocr_page_regions(
+    state: State<'_, AppState>,
+    page_path: String,
+) -> Result<OcrPageResult, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    if !path.exists() {
+        return Err(format!("page image not found: {page_path}"));
+    }
+    let mut cfg = state.bg_ingest.lock().await.ocr_pipeline.clone();
+    cfg.enabled = true;
+
+    tokio::task::spawn_blocking(move || -> Result<OcrPageResult, String> {
+        let regions = crate::extractors::ocr_crispembed::ocr_regions_via_pipeline(&path, &cfg)
+            .map_err(|e| format!("OCR failed: {e:#}"))?;
+        let (w, h) = image::image_dimensions(&path).unwrap_or((0, 0));
+        Ok(OcrPageResult {
+            width: w as i32,
+            height: h as i32,
+            regions: regions
+                .into_iter()
+                .map(|r| OcrRegionDto {
+                    text: r.text,
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    confidence: r.confidence,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| format!("ocr_page_regions join error: {e}"))?
+}
+
+/// Produce the cleaned (classical-cleanup) image for a page → stable temp PNG
+/// path, for the workbench's original-vs-cleaned compare. Empty string when
+/// cleanup is unavailable (e.g. CrispEmbed not linked).
+#[tauri::command]
+pub async fn ocr_page_cleaned(page_path: String) -> Result<String, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    if !path.exists() {
+        return Err(format!("page image not found: {page_path}"));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::extractors::ocr_crispembed::cleaned_page_image(&path)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| format!("ocr_page_cleaned join error: {e}"))
+}
+
+/// One page of corrected regions sent back by the workbench for export.
+#[derive(serde::Deserialize)]
+pub struct WorkbenchPageInput {
+    pub image_path: String,
+    pub width: i32,
+    pub height: i32,
+    pub regions: Vec<OcrRegionDto>,
+}
+
+/// Export the workbench's (possibly user-corrected) regions as a structured /
+/// searchable artifact (text / hOCR / ALTO / searchable PDF / PDF-A), written
+/// beside the source as `<stem>.ocr.<ext>`. Reuses the `ocr_render` path so the
+/// corrected text flows into the output layer.
+#[tauri::command]
+pub async fn ocr_workbench_export(
+    location_uri: String,
+    format: String,
+    pdfa: bool,
+    pages: Vec<WorkbenchPageInput>,
+) -> Result<OcrExportResult, String> {
+    use crate::extractors::ocr_render::{OcrOutputFormat, OcrRegion, RenderPage};
+
+    let path = workbench_resolve(&location_uri)?;
+    let fmt = OcrOutputFormat::from_name(&format)
+        .ok_or_else(|| format!("unknown render format: {format}"))?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
+    let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let out_path = parent.join(format!("{stem}.ocr.{}", fmt.ext()));
+
+    let n_pages = pages.len();
+    let out2 = out_path.clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let render_pages: Vec<RenderPage> = pages
+            .into_iter()
+            .map(|p| {
+                let regions = p
+                    .regions
+                    .into_iter()
+                    .map(|r| OcrRegion {
+                        text: r.text,
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                        confidence: r.confidence,
+                    })
+                    .collect();
+                RenderPage::from_regions(regions, p.width, p.height, p.image_path)
+            })
+            .collect();
+        let bytes = crate::extractors::ocr_render::render(&render_pages, fmt, pdfa)
+            .map_err(|e| format!("render failed: {e:#}"))?;
+        std::fs::write(&out2, &bytes).map_err(|e| format!("writing {}: {e}", out2.display()))?;
+        Ok(bytes.len())
+    })
+    .await
+    .map_err(|e| format!("ocr_workbench_export join error: {e}"))??;
+
+    Ok(OcrExportResult {
+        saved_path: out_path.display().to_string(),
+        bytes,
+        pages: n_pages,
+        format: if pdfa && fmt == OcrOutputFormat::Pdf { "pdfa".into() } else { format },
+    })
+}
+
+/// Write the workbench's corrected text to a sidecar `<stem>.corrected.txt`.
+#[tauri::command]
+pub async fn ocr_workbench_sidecar(
+    location_uri: String,
+    text: String,
+) -> Result<String, String> {
+    let path = workbench_resolve(&location_uri)?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("output").to_string();
+    let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let out = parent.join(format!("{stem}.corrected.txt"));
+    std::fs::write(&out, text.as_bytes()).map_err(|e| format!("writing {}: {e}", out.display()))?;
+    Ok(out.display().to_string())
+}
+
+/// Re-ingest a document into the local index with the workbench's corrected
+/// text (so search reflects the fixes). Mirrors the image L3 promote, but uses
+/// the provided text instead of re-extracting.
+#[tauri::command]
+pub async fn ocr_workbench_reingest(
+    state: State<'_, AppState>,
+    location_uri: String,
+    text: String,
+) -> Result<IngestStats, String> {
+    let path = workbench_resolve(&location_uri)?;
+
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled in settings".to_owned());
+    }
+    let pipeline = lock
+        .pipeline
+        .clone()
+        .ok_or_else(|| "No local ingest pipeline (remote backend?)".to_string())?;
+    drop(lock);
+
+    let p_meta = std::fs::metadata(&path).ok();
+    let source_hash = {
+        let p = path.clone();
+        tokio::task::spawn_blocking(move || -> Result<String, String> {
+            use sha2::{Digest, Sha256};
+            let bytes = std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            Ok(hex::encode(h.finalize()))
+        })
+        .await
+        .map_err(|e| format!("source_hash spawn_blocking: {e}"))??
+    };
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let raw = RawDocument {
+        full_text: text.clone(),
+        full_text_md: text,
+        headings: Vec::new(),
+        title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+        author: None,
+        year: None,
+        filename: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        ext,
+        language: String::new(),
+        source_hash,
+        location_uri: location_uri.clone(),
+        owner_id: "local".to_string(),
+        tags: vec![],
+        mtime_unix: p_meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64),
+        file_size: p_meta.as_ref().map(|m| m.len() as i64),
+        volume_id: crate::volume::volume_id_for_path(&path),
+        parent_dir: path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+        translated_text: None,
+        translated_to_lang: None,
+        audio_duration_seconds: None,
+        audio_codec: None,
+        audio_sample_rate_hz: None,
+        audio_channels: None,
+        audio_bitrate_kbps: None,
+        image_camera_make: None,
+        image_camera_model: None,
+        image_lens_model: None,
+        image_taken_at_unix: None,
+        image_iso: None,
+        multivec_packed: None,
+        multivec_n_tokens: None,
+        url: None,
+    };
+    pipeline
+        .reingest_document(raw)
+        .await
+        .map_err(|e| format!("workbench re-ingest failed: {e:#}"))
+}
