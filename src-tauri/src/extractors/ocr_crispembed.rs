@@ -47,6 +47,9 @@ static SAFMN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSafmnSr>>> =
 #[cfg(feature = "crispembed")]
 static RESTORMER: std::sync::OnceLock<Option<Mutex<crispembed::CrispRestormer>>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static SCUNET: std::sync::OnceLock<Option<Mutex<crispembed::CrispScunet>>> =
+    std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
 #[cfg(feature = "crispembed")]
@@ -135,13 +138,24 @@ pub fn restore_page(
     }
     let rgb = image::open(path).ok()?.to_rgb8();
     let (w, h) = (rgb.width(), rgb.height());
-    let model = cfg.restore_model.as_deref().filter(|s| !s.is_empty()).unwrap_or("restormer-denoise");
-    let eng = RESTORMER
-        .get_or_init(|| crispembed::CrispRestormer::new(&resolve(model), 0).ok().map(Mutex::new))
-        .as_ref()?;
-    let out = {
-        let guard = eng.lock().ok()?;
-        guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
+    let model = cfg.restore_model.as_deref().filter(|s| !s.is_empty());
+    let out = match cfg.restore_engine.as_str() {
+        "scunet" => {
+            let m = resolve(model.unwrap_or("scunet-color"));
+            let eng = SCUNET
+                .get_or_init(|| crispembed::CrispScunet::new(m, 0).map(Mutex::new))
+                .as_ref()?;
+            let (o, _ow, _oh) = eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32)?;
+            o
+        }
+        _ => {
+            let m = resolve(model.unwrap_or("restormer-denoise"));
+            let eng = RESTORMER
+                .get_or_init(|| crispembed::CrispRestormer::new(&m, 0).ok().map(Mutex::new))
+                .as_ref()?;
+            let guard = eng.lock().ok()?;
+            guard.process(rgb.as_raw(), w as i32, h as i32, 0, 0).ok()?
+        }
     };
     save_rgb_temp("ocr_restore_", w, h, out)
 }
@@ -158,7 +172,14 @@ pub fn dewarp_page(
     }
     let gray = image::open(path).ok()?.to_luma8();
     let (w, h) = (gray.width(), gray.height());
-    let (out, ow, oh) = crispembed::dewarp(gray.as_raw(), w as i32, h as i32).ok()?;
+    let (out, ow, oh) = if cfg.dewarp_engine == "tps" {
+        // TPS spatial-transformer dewarp (learned localizer); same dims out.
+        let m = resolve("tps-loc");
+        let o = crispembed::tps_auto_dewarp(gray.as_raw(), w as i32, h as i32, &m).ok()?;
+        (o, w as i32, h as i32)
+    } else {
+        crispembed::dewarp(gray.as_raw(), w as i32, h as i32).ok()?
+    };
     let img = image::GrayImage::from_raw(ow as u32, oh as u32, out)?;
     let tmp = tempfile::Builder::new().prefix("ocr_dewarp_").suffix(".png").tempfile().ok()?;
     image::DynamicImage::ImageLuma8(img).save(tmp.path()).ok()?;

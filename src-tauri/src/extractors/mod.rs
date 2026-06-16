@@ -276,9 +276,17 @@ pub struct OcrPipelineConfig {
     /// `crispembed`.
     #[serde(default)]
     pub restore: bool,
-    /// Restoration model registry name (`None` → `restormer-denoise`).
+    /// Restoration model registry name (`None` → engine default).
     #[serde(default)]
     pub restore_model: Option<String>,
+    /// Restoration engine: `restormer` (denoise + deblur, default) or `scunet`
+    /// (Swin-Conv-UNet denoise — higher quality on real-world noise).
+    #[serde(default = "default_restore_engine")]
+    pub restore_engine: String,
+    /// Dewarp engine: `basic` (cubic-baseline, default) or `tps` (thin-plate-
+    /// spline spatial transformer — learned localizer, stronger on curved pages).
+    #[serde(default = "default_dewarp_engine")]
+    pub dewarp_engine: String,
     /// P20 #11 — pre-OCR **dewarping** (straighten curved/warped text lines) via
     /// CrispEmbed's cubic-baseline dewarp. Helps photos of pages / book spines.
     /// Off by default. Needs `crispembed`.
@@ -291,6 +299,12 @@ fn default_sr_engine() -> String {
 }
 fn default_layout_engine() -> String {
     "rtdetr".to_string()
+}
+fn default_restore_engine() -> String {
+    "restormer".to_string()
+}
+fn default_dewarp_engine() -> String {
+    "basic".to_string()
 }
 
 /// Per-stage cleanup recipe (mirrors `crispembed::OcrCleanupSpec`).
@@ -427,7 +441,9 @@ impl Default for OcrPipelineConfig {
             sr_engine: default_sr_engine(),
             restore: false,
             restore_model: None,
+            restore_engine: default_restore_engine(),
             dewarp: false,
+            dewarp_engine: default_dewarp_engine(),
         }
     }
 }
@@ -1280,6 +1296,8 @@ mod ocr_pipeline_tests {
             serde_json::from_str(r#"{"enabled":true,"restore":true,"dewarp":true}"#).unwrap();
         assert!(c.restore && c.dewarp);
         assert_eq!(c.sr_engine, "pan", "sr_engine defaults when omitted");
+        assert_eq!(c.restore_engine, "restormer", "restore engine defaults");
+        assert_eq!(c.dewarp_engine, "basic", "dewarp engine defaults");
         assert!(c.restore_model.is_none());
         // Full round-trip preserves the engine choice.
         let mut full = OcrPipelineConfig::default();

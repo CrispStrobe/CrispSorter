@@ -259,6 +259,14 @@ enum Command {
         /// before OCR — helps photos of pages / book spines.
         #[arg(long)]
         dewarp: bool,
+        /// Restoration engine: `restormer` (denoise+deblur, default) or
+        /// `scunet` (Swin-Conv-UNet denoise).
+        #[arg(long, default_value = "restormer", value_parser = ["restormer", "scunet"])]
+        restore_engine: String,
+        /// Dewarp engine: `basic` (cubic-baseline, default) or `tps` (thin-plate
+        /// spline spatial transformer).
+        #[arg(long, default_value = "basic", value_parser = ["basic", "tps"])]
+        dewarp_engine: String,
     },
     /// Key-information extraction — pull structured fields from a document.
     /// OCRs the file, then runs zero-shot NER for the given field labels →
@@ -1189,11 +1197,13 @@ pub fn run() -> ExitCode {
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
+            restore_engine, dewarp_engine,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
+            restore_engine, dewarp_engine,
         ),
         Command::Kie { file, labels, threshold, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, data_dir)
@@ -1244,6 +1254,8 @@ fn cmd_ocr(
     restore: bool,
     restore_model: Option<String>,
     dewarp: bool,
+    restore_engine: String,
+    dewarp_engine: String,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
@@ -1297,7 +1309,9 @@ fn cmd_ocr(
         sr_engine,
         restore,
         restore_model,
+        restore_engine,
         dewarp,
+        dewarp_engine,
     };
 
     let fmt = OcrOutputFormat::from_name(&render)
