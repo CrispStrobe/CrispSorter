@@ -246,7 +246,7 @@ enum Command {
         sr_max_px: i32,
         /// Super-resolution engine: `pan` (4×, default), `esrgan` (real-world
         /// blur/noise), `safmn` (lightweight).
-        #[arg(long, default_value = "pan", value_parser = ["pan", "esrgan", "safmn", "hat", "tbsrn"])]
+        #[arg(long, default_value = "pan", value_parser = ["pan", "esrgan", "safmn", "hat", "tbsrn", "dat", "swinir"])]
         sr_engine: String,
         /// Pre-processor: restore (denoise + deblur) the page via Restormer
         /// before OCR — helps noisy / blurred scans. Needs `crispembed`.

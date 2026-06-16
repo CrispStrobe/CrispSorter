@@ -59,6 +59,12 @@ static TBSRN_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispTbsrnSr>>> =
 #[cfg(feature = "crispembed")]
 static INSTRUCTIR: std::sync::OnceLock<Option<Mutex<crispembed::CrispInstructIR>>> =
     std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static DAT_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispDatSr>>> =
+    std::sync::OnceLock::new();
+#[cfg(feature = "crispembed")]
+static SWINIR_SR: std::sync::OnceLock<Option<Mutex<crispembed::CrispSwinirSr>>> =
+    std::sync::OnceLock::new();
 
 /// Save an RGB buffer to a temp PNG and return it + its path (held alive).
 #[cfg(feature = "crispembed")]
@@ -90,8 +96,8 @@ fn instructir_task_id(task: &str) -> i32 {
     }
 }
 
-/// Run the selected SR engine (`pan` / `esrgan` / `safmn` / `hat` / `tbsrn`) on
-/// an RGB buffer.
+/// Run the selected SR engine (`pan` / `esrgan` / `safmn` / `hat` / `tbsrn` /
+/// `dat` / `swinir`) on an RGB buffer.
 #[cfg(feature = "crispembed")]
 fn run_sr(
     engine: &str,
@@ -130,6 +136,22 @@ fn run_sr(
                 .get_or_init(|| crispembed::CrispTbsrnSr::new(&m, 0).ok().map(Mutex::new))
                 .as_ref()?;
             e.lock().ok()?.process(rgb, w, h).ok()
+        }
+        "dat" => {
+            // DAT — Dual Aggregation Transformer SR (strong transformer SR).
+            let m = resolve(model.unwrap_or("dat-sr-x2"));
+            let e = DAT_SR
+                .get_or_init(|| crispembed::CrispDatSr::new(&m, 0).ok().map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h, 0, 0).ok()
+        }
+        "swinir" => {
+            // SwinIR-light — classic Swin-Transformer SR (tiny, 930K params).
+            let m = resolve(model.unwrap_or("swinir-sr-x4"));
+            let e = SWINIR_SR
+                .get_or_init(|| crispembed::CrispSwinirSr::new(&m, 0).map(Mutex::new))
+                .as_ref()?;
+            e.lock().ok()?.process(rgb, w, h, 0, 0)
         }
         _ => {
             let m = resolve(model.unwrap_or("pan-x4"));
@@ -959,7 +981,7 @@ mod tests {
     fn sr_engines_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "low.png", 64, 48);
-        for engine in ["pan", "esrgan", "safmn", "hat", "tbsrn"] {
+        for engine in ["pan", "esrgan", "safmn", "hat", "tbsrn", "dat", "swinir"] {
             let cfg = super::super::OcrPipelineConfig {
                 sr: true,
                 sr_engine: engine.into(),

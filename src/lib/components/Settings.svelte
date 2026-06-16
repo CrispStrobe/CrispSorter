@@ -2648,6 +2648,8 @@
                                     <option value="safmn">SAFMN (lightweight)</option>
                                     <option value="hat">HAT (4×, SOTA quality)</option>
                                     <option value="tbsrn">TBSRN (text-line, tiny)</option>
+                                    <option value="dat">DAT (2×, transformer)</option>
+                                    <option value="swinir">SwinIR (4×, tiny)</option>
                                 </select>
                             </label>
                         </div>
