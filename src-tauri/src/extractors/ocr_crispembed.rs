@@ -748,6 +748,10 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "glm" => "glm-ocr",
         "got" => "got-ocr2",
         "internvl2" => "internvl2-ocr",
+        "deepseek_ocr2" => "deepseek-ocr2",
+        "pix2struct" => "pix2struct-base",
+        "granite_vision" => "granite-vision",
+        "lightonocr" => "lightonocr",
         _ => "qwen2vl-ocr",
     }
 }
@@ -1286,7 +1290,8 @@ mod tests {
     fn ocr_engines_charconf_vlm_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "vlm.png", 320, 96);
-        for engine in ["got", "glm", "qwen2vl", "internvl2"] {
+        for engine in ["got", "glm", "qwen2vl", "internvl2",
+                       "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr"] {
             let regions = run_engine_fresh(&p, engine);
             for r in &regions {
                 assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");

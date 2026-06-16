@@ -2789,6 +2789,10 @@
                                                 <option value="glm">GLM-OCR</option>
                                                 <option value="qwen2vl">Qwen2.5-VL</option>
                                                 <option value="internvl2">InternVL2</option>
+                                                <option value="granite_vision">Granite Vision 3.3-2B</option>
+                                                <option value="lightonocr">LightOnOCR-2-1B</option>
+                                                <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
+                                                <option value="pix2struct">Pix2Struct (doc/chart)</option>
                                             </select>
                                         </label>
                                     </div>

@@ -497,6 +497,10 @@ fn engine_id(name: &str) -> i32 {
         "internvl2" => 5,
         "tesseract" => 6,
         "parseq" => 7, // DBNet detect + PARSeq recognize (per-char confidence)
+        "deepseek_ocr2" => 8,  // DeepSeek-OCR-2 (MoE VLM)
+        "pix2struct" => 9,     // Pix2Struct (doc/chart understanding)
+        "granite_vision" => 10, // Granite Vision 3.3-2B (LLaVA-Next)
+        "lightonocr" => 11,    // LightOnOCR-2-1B (Pixtral ViT + Qwen3)
         _ => 0, // dbnet_trocr
     }
 }
