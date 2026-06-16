@@ -298,6 +298,27 @@ pub struct OcrPipelineConfig {
     /// Off by default. Needs `crispembed`.
     #[serde(default)]
     pub dewarp: bool,
+    /// Optional VLM escalation model for simple mode (e.g. `german-ocr-3.1` for
+    /// German invoices / forms / receipts). When set, OCR escalates to this VLM
+    /// when the fast DBNet+TrOCR accept-gate fails. `None` = no escalation.
+    #[serde(default)]
+    pub vlm_ocr_model: Option<String>,
+    /// VLM escalation engine for `vlm_ocr_model`: `qwen2vl` (default, the
+    /// german-ocr-3.1 family), `glm`, `got`, or `internvl2`.
+    #[serde(default = "default_vlm_ocr_engine")]
+    pub vlm_ocr_engine: String,
+    /// Optional post-OCR **truecaser** model — fixes casing on ALL-CAPS /
+    /// lowercased OCR output. Registry name or path. `None` = off.
+    #[serde(default)]
+    pub truecase_model: Option<String>,
+    /// Optional text **LID** model run on OCR output for language detection.
+    /// Registry name or path. `None` = off.
+    #[serde(default)]
+    pub lid_model: Option<String>,
+    /// Optional directory of `tesseract-{lang}` GGUFs for LID-based Tesseract
+    /// model auto-select. Filesystem path. `None` = off.
+    #[serde(default)]
+    pub tess_model_dir: Option<String>,
 }
 
 fn default_sr_engine() -> String {
@@ -311,6 +332,9 @@ fn default_restore_engine() -> String {
 }
 fn default_restore_task() -> String {
     "denoise".to_string()
+}
+fn default_vlm_ocr_engine() -> String {
+    "qwen2vl".to_string()
 }
 fn default_dewarp_engine() -> String {
     "basic".to_string()
@@ -454,6 +478,11 @@ impl Default for OcrPipelineConfig {
             restore_task: default_restore_task(),
             dewarp: false,
             dewarp_engine: default_dewarp_engine(),
+            vlm_ocr_model: None,
+            vlm_ocr_engine: default_vlm_ocr_engine(),
+            truecase_model: None,
+            lid_model: None,
+            tess_model_dir: None,
         }
     }
 }

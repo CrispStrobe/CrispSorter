@@ -272,6 +272,22 @@ enum Command {
         /// spline spatial transformer).
         #[arg(long, default_value = "basic", value_parser = ["basic", "tps"])]
         dewarp_engine: String,
+        /// VLM escalation model for simple mode (e.g. `german-ocr-3.1` for German
+        /// invoices/forms/receipts). Falls back to this VLM when the accept-gate fails.
+        #[arg(long)]
+        vlm_ocr_model: Option<String>,
+        /// VLM escalation engine for --vlm-ocr-model.
+        #[arg(long, default_value = "qwen2vl", value_parser = ["qwen2vl", "glm", "got", "internvl2"])]
+        vlm_ocr_engine: String,
+        /// Post-OCR truecaser model (fixes ALL-CAPS / lowercased output).
+        #[arg(long)]
+        truecase_model: Option<String>,
+        /// Text-LID model run on OCR output for language detection.
+        #[arg(long)]
+        lid_model: Option<String>,
+        /// Directory of tesseract-{lang} GGUFs for LID-based model auto-select.
+        #[arg(long)]
+        tess_model_dir: Option<String>,
     },
     /// Key-information extraction — pull structured fields from a document.
     /// OCRs the file, then runs zero-shot NER for the given field labels →
@@ -1210,12 +1226,14 @@ pub fn run() -> ExitCode {
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
+            vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
             punct_model, min_chars, min_confidence, render, out, pdfa,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
+            vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
         ),
         Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
@@ -1269,6 +1287,11 @@ fn cmd_ocr(
     restore_engine: String,
     restore_task: String,
     dewarp_engine: String,
+    vlm_ocr_model: Option<String>,
+    vlm_ocr_engine: String,
+    truecase_model: Option<String>,
+    lid_model: Option<String>,
+    tess_model_dir: Option<String>,
 ) -> Result<(), String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
     use crate::extractors::{ExtractOptions, OcrCleanupSpec, OcrPipelineConfig, OcrStageSpec};
@@ -1326,6 +1349,11 @@ fn cmd_ocr(
         restore_task,
         dewarp,
         dewarp_engine,
+        vlm_ocr_model: vlm_ocr_model.filter(|s| !s.trim().is_empty()),
+        vlm_ocr_engine,
+        truecase_model: truecase_model.filter(|s| !s.trim().is_empty()),
+        lid_model: lid_model.filter(|s| !s.trim().is_empty()),
+        tess_model_dir: tess_model_dir.filter(|s| !s.trim().is_empty()),
     };
 
     let fmt = OcrOutputFormat::from_name(&render)

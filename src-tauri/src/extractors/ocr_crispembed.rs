@@ -623,6 +623,19 @@ pub fn ocr_regions_via_pipeline(
     anyhow::bail!("OCR region extraction requires the `crispembed` cargo feature")
 }
 
+/// Map a VLM escalation engine name to the C `vlm_engine` id used by
+/// `CrispOcrPipeline::new` (0=GOT 1=GLM 2=Qwen2-VL 3=InternVL2). Note this
+/// numbering differs from the per-stage `engine_id`. Unknown → Qwen2-VL.
+#[cfg(feature = "crispembed")]
+fn vlm_engine_id(engine: &str) -> i32 {
+    match engine {
+        "got" => 0,
+        "glm" => 1,
+        "internvl2" => 3,
+        _ => 2, // qwen2vl (german-ocr-3.1 family)
+    }
+}
+
 /// Default single-shot model registry name for a VLM engine string.
 #[cfg(feature = "crispembed")]
 fn vlm_default_model(engine: &str) -> &'static str {
@@ -645,12 +658,25 @@ fn resolve(name: &str) -> String {
 #[cfg(feature = "crispembed")]
 fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipeline {
     use super::{engine_id, source_type_id};
-    // Optional post-OCR punctuation/spacing/truecasing restorer (resolved once).
+    // Optional post-OCR punctuation/spacing restorer (resolved once).
     let punct: Option<String> = cfg
         .punct_model
         .as_deref()
         .filter(|s| !s.is_empty())
         .map(resolve);
+    // Optional post-OCR truecaser + text-LID models (registry names → paths).
+    let truecase: Option<String> = cfg
+        .truecase_model
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(resolve);
+    let lid: Option<String> = cfg
+        .lid_model
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(resolve);
+    // Tesseract LID-auto-select dir is a filesystem path, not a registry model.
+    let tess_dir: Option<&str> = cfg.tess_model_dir.as_deref().filter(|s| !s.is_empty());
     if cfg.stages.is_empty() {
         // Simple mode (slice-A flat config).
         let det = resolve(cfg.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL));
@@ -664,6 +690,13 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         } else {
             None
         };
+        // Optional VLM escalation (e.g. german-ocr-3.1): when set, the chain
+        // tries DBNet+TrOCR first and falls back to the VLM if the gate fails.
+        let vlm: Option<String> = cfg
+            .vlm_ocr_model
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(resolve);
         return crispembed::CrispOcrPipeline::new(
             &det,
             &rec,
@@ -672,9 +705,12 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
             cfg.cleanup_enabled,
             cfg.min_chars,
             cfg.min_confidence,
-            None, // vlm_model — simple mode uses det+rec (DBNet+TrOCR), no VLM
-            0,    // vlm_engine — dbnet_trocr
+            vlm.as_deref(),
+            vlm_engine_id(&cfg.vlm_ocr_engine),
             punct.as_deref(),
+            lid.as_deref(),
+            truecase.as_deref(),
+            tess_dir,
             0,
         )
         .expect("CrispEmbed OCR pipeline init failed");
@@ -741,6 +777,9 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
         nafnet.as_deref(),
         None,
         punct.as_deref(),
+        lid.as_deref(),
+        truecase.as_deref(),
+        tess_dir,
         &specs,
         0,
     )

@@ -204,6 +204,10 @@
     let ocrPipelineRestore    = $state(false);
     let ocrPipelineRestoreEngine = $state('restormer');
     let ocrPipelineRestoreTask = $state('denoise');
+    // VLM escalation (e.g. german-ocr-3.1) + post-OCR truecasing.
+    let ocrPipelineVlmModel   = $state('');
+    let ocrPipelineVlmEngine  = $state('qwen2vl');
+    let ocrPipelineTruecase   = $state('');
     let ocrPipelineDewarp     = $state(false);
     let ocrPipelineDewarpEngine  = $state('basic');
     type OcrStage = {
@@ -266,6 +270,9 @@
             restore_model:       null,
             dewarp:              ocrPipelineDewarp,
             dewarp_engine:       ocrPipelineDewarpEngine,
+            vlm_ocr_model:       ocrPipelineVlmModel.trim() || null,
+            vlm_ocr_engine:      ocrPipelineVlmEngine,
+            truecase_model:      ocrPipelineTruecase.trim() || null,
             sr_model:            null,
             sr_max_short_side:   Number(ocrPipelineSrMaxPx) || 1200,
             layout:              ocrPipelineLayout,
@@ -1043,6 +1050,9 @@
         ocrPipelineRestoreTask = await getSetting('ocrPipelineRestoreTask', 'denoise') as string;
         ocrPipelineDewarp    = await getSetting('ocrPipelineDewarp', false) as boolean;
         ocrPipelineDewarpEngine  = await getSetting('ocrPipelineDewarpEngine', 'basic') as string;
+        ocrPipelineVlmModel  = await getSetting('ocrPipelineVlmModel', '') as string;
+        ocrPipelineVlmEngine = await getSetting('ocrPipelineVlmEngine', 'qwen2vl') as string;
+        ocrPipelineTruecase  = await getSetting('ocrPipelineTruecase', '') as string;
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         authorSortEnabled = await getSetting('authorSortEnabled', false);
         noThinking = await getSetting('noThinking', true);
@@ -1412,6 +1422,9 @@
         await saveSetting('ocrPipelineRestoreTask', ocrPipelineRestoreTask);
         await saveSetting('ocrPipelineDewarp',    ocrPipelineDewarp);
         await saveSetting('ocrPipelineDewarpEngine',  ocrPipelineDewarpEngine);
+        await saveSetting('ocrPipelineVlmModel',  ocrPipelineVlmModel);
+        await saveSetting('ocrPipelineVlmEngine', ocrPipelineVlmEngine);
+        await saveSetting('ocrPipelineTruecase',  ocrPipelineTruecase);
         invoke('bg_ingest_set_ocr_pipeline', { config: ocrPipelineConfig() }).catch(() => {});
         // Sync OCR options to the background ingest worker.
         invoke('bg_ingest_set_ocr', { enabled: ocrEnabled, tier: ocrTier, recLang: ocrRecLang }).catch(() => {});
@@ -2682,6 +2695,30 @@
                     <input id="ocr-pipeline-punct" type="text" bind:value={ocrPipelinePunct}
                         placeholder={i18n.t.settings.ocr_pipeline_punct_ph} />
                     <p class="hint">{i18n.t.settings.ocr_pipeline_punct_hint}</p>
+
+                    <!-- VLM escalation (e.g. german-ocr-3.1) + post-OCR truecasing -->
+                    <label for="ocr-pipeline-vlm-model" style="margin-top:10px;">{i18n.t.settings.ocr_pipeline_vlm_model}</label>
+                    <input id="ocr-pipeline-vlm-model" type="text" bind:value={ocrPipelineVlmModel}
+                        placeholder="german-ocr-3.1" />
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_vlm_model_hint}</p>
+                    {#if ocrPipelineVlmModel.trim()}
+                        <div class="field-row" style="margin-top:4px;">
+                            <label for="ocr-pipeline-vlm-engine" style="font-size:0.8125rem; color:#a1a1aa; white-space:nowrap;">
+                                {i18n.t.settings.ocr_pipeline_vlm_engine}
+                                <select id="ocr-pipeline-vlm-engine" bind:value={ocrPipelineVlmEngine} style="margin-left:4px;">
+                                    <option value="qwen2vl">Qwen2-VL (german-ocr-3.1)</option>
+                                    <option value="glm">GLM-OCR</option>
+                                    <option value="got">GOT-OCR2</option>
+                                    <option value="internvl2">InternVL2</option>
+                                </select>
+                            </label>
+                        </div>
+                    {/if}
+
+                    <label for="ocr-pipeline-truecase" style="margin-top:10px;">{i18n.t.settings.ocr_pipeline_truecase}</label>
+                    <input id="ocr-pipeline-truecase" type="text" bind:value={ocrPipelineTruecase}
+                        placeholder={i18n.t.settings.ocr_pipeline_truecase_ph} />
+                    <p class="hint">{i18n.t.settings.ocr_pipeline_truecase_hint}</p>
 
                     <!-- P20 slice 3 — layout-aware reading order -->
                     <div style="margin-top:14px; border-top:1px solid #27272a; padding-top:10px;">
