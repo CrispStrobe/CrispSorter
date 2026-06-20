@@ -39,6 +39,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: None,
     })
 }
 

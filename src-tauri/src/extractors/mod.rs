@@ -113,6 +113,12 @@ pub struct ExtractedDocument {
     /// markers) so they survive into both `DocumentChunk.tags` and
     /// the cb-api wire's `ManifestRow.tags`.
     pub tags: Vec<String>,
+
+    /// Raw 16 kHz mono float32 PCM from the audio decoder.  Populated
+    /// when the audio extractor decodes the file for transcription;
+    /// None for non-audio files and when decoding fails.  Used by
+    /// bg_ingest for omni cross-modal embedding.
+    pub audio_pcm: Option<Vec<f32>>,
 }
 
 /// Image extensions that OCR can handle. Surface them to `supported`
@@ -822,6 +828,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: None,
     })
 }
 
@@ -982,6 +989,7 @@ pub fn extract_text_from_path_with_opts(
                     image_exif,
                     source_url: None,
                     tags: vec![],
+                    audio_pcm: None,
                 });
             }
 
@@ -1026,6 +1034,7 @@ pub fn extract_text_from_path_with_opts(
                 image_exif,
                 source_url: None,
                 tags: vec![],
+                audio_pcm: None,
             })
         }
         e if audio::AUDIO_EXTS.contains(&e) => {
@@ -1083,6 +1092,7 @@ pub fn extract_text_from_path_with_opts(
                         image_exif: None,
                         source_url: None,
                         tags: vec![],
+                        audio_pcm: None,
                     })
                 }
                 #[cfg(not(feature = "crispasr"))]

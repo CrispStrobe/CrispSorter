@@ -91,6 +91,10 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
     // session, paid for once across the whole batch.
     let handle = shared_asr_handle();
 
+    // Clone the decoded PCM before transcription consumes it — bg_ingest
+    // needs the raw samples for omni cross-modal embedding.
+    let pcm_for_omni = decoded.pcm.clone();
+
     // Build a current-thread runtime to bridge the sync extractor
     // boundary into the async `AsrHandle::transcribe_with_language`.
     // bg_ingest already calls extractors via `tokio::task::spawn_blocking`
@@ -123,6 +127,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: Some(pcm_for_omni),
     })
 }
 
@@ -311,6 +316,23 @@ mod tests {
             probe, actual_runs,
             "probe disagrees with cfg!(feature = \"crispasr\")"
         );
+    }
+
+    #[test]
+    fn audio_pcm_field_surfaces_on_extracted_document() {
+        // Verify that the audio_pcm field exists on ExtractedDocument
+        // and round-trips through construction.
+        let doc = ExtractedDocument {
+            audio_pcm: Some(vec![0.1, -0.2, 0.3]),
+            ..Default::default()
+        };
+        let pcm = doc.audio_pcm.as_ref().unwrap();
+        assert_eq!(pcm.len(), 3);
+        assert!((pcm[0] - 0.1).abs() < f32::EPSILON);
+
+        // Non-audio docs have None.
+        let doc2 = ExtractedDocument::default();
+        assert!(doc2.audio_pcm.is_none());
     }
 
     #[test]

@@ -493,6 +493,7 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: None,
     })
 }
 
@@ -563,6 +564,7 @@ pub fn ocr_via_crispembed_custom(
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: None,
     })
 }
 
@@ -635,6 +637,7 @@ pub fn ocr_via_pipeline(
         image_exif: None,
         source_url: None,
         tags: vec![],
+        audio_pcm: None,
     })
 }
 

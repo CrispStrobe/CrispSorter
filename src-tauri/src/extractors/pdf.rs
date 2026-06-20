@@ -43,6 +43,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         // v107 — PDF tag lift not implemented yet (would require XMP
         // dc:subject parse).  Empty Vec keeps the wire happy.
         tags: vec![],
+        audio_pcm: None,
     })
 }
 

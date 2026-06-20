@@ -802,11 +802,18 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                             Err(e) => { eprintln!("[bg_ingest] omni image embed join error: {e}"); }
                         }
                     }
-                    // Audio omni embedding would need decoded PCM samples.
-                    // The audio extractor may have already decoded — check
-                    // if extracted.audio carries raw samples.  If not, skip
-                    // for now (audio omni needs a decode pass that bg_ingest
-                    // doesn't currently do for the omni path).
+                    if is_audio {
+                        if let Some(ref pcm) = extracted.audio_pcm {
+                            let pcm_clone = pcm.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                crate::index::omni_embed::encode_audio_omni(&pcm_clone)
+                            }).await {
+                                Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
+                                Ok(Err(e)) => { eprintln!("[bg_ingest] omni audio embed failed for {}: {e:#}", p.display()); }
+                                Err(e) => { eprintln!("[bg_ingest] omni audio embed join error: {e}"); }
+                            }
+                        }
+                    }
                 }
             }
 

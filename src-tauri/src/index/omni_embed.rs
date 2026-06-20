@@ -354,4 +354,25 @@ mod tests {
             }
         }
     }
+
+    /// End-to-end test: decode a real audio file and compute the omni
+    /// embedding.  Requires `CS_TEST_AUDIO=/path/to/sample.mp3` and
+    /// `--features crispembed,crispasr`.
+    #[cfg(all(feature = "crispembed", feature = "crispasr"))]
+    #[tokio::test]
+    #[ignore]
+    async fn omni_audio_embed_from_file_live() {
+        let path = std::env::var("CS_TEST_AUDIO")
+            .expect("set CS_TEST_AUDIO=/path/to/sample.mp3 to run this test");
+        let decoded = crate::audio::decode_to_16khz_mono(
+            std::path::Path::new(&path),
+            crate::audio::FallbackPolicy::AllowFfmpeg,
+        )
+        .expect("audio decode should succeed");
+        assert!(!decoded.pcm.is_empty(), "decoded PCM should be non-empty");
+        let emb = encode_audio_omni(&decoded.pcm)
+            .expect("omni audio encoding should work");
+        assert_eq!(emb.len(), OMNI_DIM, "expected 2048-D embedding");
+        assert!(emb.iter().any(|&x| x != 0.0), "embedding should be non-zero");
+    }
 }
