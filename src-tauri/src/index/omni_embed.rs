@@ -17,11 +17,15 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
 /// Default BidirLM-Omni model name.
+#[cfg(feature = "crispembed")]
 const DEFAULT_OMNI_MODEL: &str = "bidirlm-omni-2.5b";
 /// Omni embedding dimension.
 pub const OMNI_DIM: usize = 2048;

@@ -122,8 +122,6 @@ pub struct RerankerGgufSpec {
 pub struct Reranker {
     #[cfg(feature = "crispembed")]
     backend: CrispEmbedBackend,
-    #[allow(dead_code)]
-    spec: RerankerGgufSpec,
 }
 
 impl Reranker {
@@ -147,7 +145,7 @@ impl Reranker {
                 path.display()
             );
         }
-        Ok(Self { backend, spec })
+        Ok(Self { backend })
     }
 
     #[cfg(not(feature = "crispembed"))]

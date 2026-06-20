@@ -188,10 +188,10 @@ that surfaced along the way.
   failed to resolve in `build.rs` → **every v0.5.0 desktop build failed and
   an empty release was published** (the `if: always()` publish gotcha). All
   three desktop `tauri_args` now include `desktop`.
-- [ ] **Re-release v0.5.0.** The published `v0.5.0` (Latest) has **zero
-  assets**. Delete it + the tag and re-tag once the `desktop`-feature fix is
-  on `main` to trigger a clean build. Consider tightening the `if: always()`
-  publish gate so a failed matrix can't publish an empty release again.
+- [x] **Re-release v0.5.0.** ✅ DONE (2026-06-20). The CI re-ran after the
+  `desktop`-feature fix and populated the draft with full assets (dmg, deb,
+  apk, windows portable, app.tar.gz). Published the draft as a non-latest
+  release (v0.6.0 remains Latest).
 
 ### P19 — Further CrispEmbed integration (v0.11.8 pinned; HEAD is v0.11.8+114)
 

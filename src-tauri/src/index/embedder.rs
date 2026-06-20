@@ -1916,12 +1916,8 @@ pub(crate) struct CrispEmbedBackend {
 }
 
 #[cfg(feature = "crispembed")]
-#[allow(dead_code)] // The set_*/has_sparse/encode_sparse/rerank* methods are
-                    // the future API surface for sparse retrieval and
-                    // cross-encoder reranking — wired into the search
-                    // pipeline in upcoming work (see PLAN.md "Wire CrispEmbed
-                    // sparse encoding into search pipeline" and "CrispEmbed
-                    // reranking in search").
+#[allow(dead_code)] // LoRA set/get/list are plumbed but not yet called from
+                    // a higher level (awaiting Settings UI for adapter selection).
 impl CrispEmbedBackend {
     /// Open a GGUF file through the CrispEmbed wrapper.
     ///
@@ -2026,17 +2022,6 @@ impl CrispEmbedBackend {
     /// `index::reranker::Reranker::score`.
     pub(crate) fn rerank(&mut self, query: &str, document: &str) -> f32 {
         self.model.rerank(query, document)
-    }
-
-    /// Bi-encoder reranking via cosine similarity
-    #[allow(dead_code)]
-    fn rerank_biencoder(
-        &mut self,
-        query: &str,
-        documents: &[&str],
-        top_n: Option<usize>,
-    ) -> Vec<(usize, f32)> {
-        self.model.rerank_biencoder(query, documents, top_n)
     }
 
     // ── LoRA adapter hot-swap (Jina v5 task adapters) ──────────────
