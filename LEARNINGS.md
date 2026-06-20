@@ -67,6 +67,21 @@ tesseract, parseq) must return `false`. PARSeq was missed initially
 because its name doesn't suggest a det+rec split, but it's engine 7 =
 DBNet detect + PARSeq recognize.
 
+### Feature-gated imports and constants cause warnings in default builds
+
+Many modules (ocr_crispembed, layout, math_ocr, face, vit_embed,
+omni_embed, audio, ocr_paddle) import `anyhow::Context`, `std::sync::Mutex`,
+or define constants like `DEFAULT_DET_MODEL` that are ONLY used inside
+`#[cfg(feature = "crispembed")]` (or `crispasr`, `paddle-ocr`) blocks.
+Without a matching `#[cfg]` on the import/constant itself, `cargo check`
+in default-feature builds (which is what CI and most devs run) emits
+"unused import" / "never used" warnings.
+
+Pattern: every import, constant, or helper function that's only consumed
+inside a `#[cfg(feature = "X")]` block needs the same gate on its
+declaration. For functions also used in `#[cfg(test)]` (like `engine_id`
+and `source_type_id`), use `#[cfg(any(feature = "crispembed", test))]`.
+
 ---
 
 ## Build & CI

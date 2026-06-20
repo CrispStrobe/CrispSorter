@@ -46,9 +46,25 @@ surface and wired in every actionable improvement.
 - **CI consolidation** — `CRISPEMBED_REF`/`CRISPASR_REF`/`CRISPDOCX_REF`
   moved from 3 job-level `env:` blocks to a single workflow-level block.
   Next version bump is a 1-line edit instead of 3.
-- **PLAN.md P19** — updated header with CrispEmbed HEAD capabilities
-  (Qwen3-VL, PaddleOCR-VL, FireRed-OCR, SmolDocling, LFM2.5,
-  DeepSeek-OCR-2 perf); marked "Expose all OCR Tier-4 variants" done.
+- **31 → 0 compiler warnings** — cfg-gated all feature-only imports
+  (`Context`, `Mutex`, `OnceLock`), constants (`DEFAULT_DET_MODEL`,
+  `DEFAULT_REC_MODEL`, `DEFAULT_MATH_MODEL`, `DEFAULT_VIT_MODEL`,
+  `DEFAULT_OMNI_MODEL`), and functions (`engine_id`, `source_type_id`,
+  `policy_kind`, `is_cjk`, `path_looks_cjk`) across 16 files. Removed
+  unused sha2 import, prefixed unused variables with `_`, removed
+  unnecessary `mut`, added `#[allow(dead_code)]` on deserialization-only
+  fields in drive connectors.
+- **Dead code removal** — removed `CrispEmbedBackend::rerank_biencoder`
+  (private method shadowed by the public `Embedder`-level implementation)
+  and `Reranker.spec` field (stored but never read).
+- **v0.5.0 published** — the draft release already had full assets after
+  CI re-ran with the `desktop` fix. Published as a non-latest release.
+- **PLAN.md audit** — verified and marked 11 items as shipped: P17.1–P17.7
+  (layout, OCR engines, math OCR, face detection, omni embeddings, decoder
+  embeddings, ViT image embeddings), P18 license-consent gate, P7.8 Tier 4
+  VLM OCR (superseded by CrispEmbed), P19 OCR Tier-4 variants, P19
+  rerank_biencoder. Open items reduced from 22 → 11; remaining items all
+  require multi-session work or external infrastructure.
 
 ---
 
