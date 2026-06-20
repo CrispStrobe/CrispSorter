@@ -29,8 +29,11 @@
 //! Pipeline code calls the probe first so the bg_ingest classifier
 //! can downgrade to "L2 metadata only" gracefully.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispasr")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispasr")]
 use std::sync::OnceLock;
 
 use super::ExtractedDocument;

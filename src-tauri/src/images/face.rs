@@ -14,11 +14,15 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
 /// Default detection model — YuNet (0.2 MB, fastest).
+#[cfg(feature = "crispembed")]
 const DEFAULT_DET_MODEL: &str = "yunet";
 
 /// A detected face with bounding box and confidence.

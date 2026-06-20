@@ -67,7 +67,7 @@ impl TaskFailureReason {
 /// fully encrypted, because the OPF directory listing is always plain-text.
 pub fn epub_is_drm_protected(path: &std::path::Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else { return false; };
-    let Ok(mut archive) = zip::ZipArchive::new(file) else { return false; };
+    let Ok(archive) = zip::ZipArchive::new(file) else { return false; };
     let found = archive.file_names().any(|n| n == "META-INF/encryption.xml");
     found
 }

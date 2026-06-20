@@ -8,7 +8,9 @@
 //! Gated behind `--features crispembed`.  When the feature is off, the
 //! public stubs return `Err` so call sites degrade gracefully.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
 
 // ── Region labels emitted by RT-DETRv2 (17 classes) ─────────────────

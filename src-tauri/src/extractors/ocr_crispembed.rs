@@ -11,15 +11,20 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
 use super::ExtractedDocument;
 
 /// Default detection model (Surya-OCR-2, EfficientViT, 91 languages).
+#[cfg(feature = "crispembed")]
 const DEFAULT_DET_MODEL: &str = "dbnet-det";
 /// Default recognition model (Qwen2.5-VL, German support).
+#[cfg(feature = "crispembed")]
 const DEFAULT_REC_MODEL: &str = "qwen2vl-ocr";
 
 /// Process-global lazy-loaded OCR pipeline.  The CrispEmbed OcrPipeline

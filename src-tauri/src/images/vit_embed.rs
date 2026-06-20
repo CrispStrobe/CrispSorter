@@ -10,11 +10,15 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
 /// Default ViT model — SigLIP base (768-D).
+#[cfg(feature = "crispembed")]
 const DEFAULT_VIT_MODEL: &str = "siglip-base";
 
 /// Process-global lazy-loaded ViT encoder.

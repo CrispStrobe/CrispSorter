@@ -15,11 +15,15 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "crispembed")]
+use anyhow::Context;
 use std::path::Path;
+#[cfg(feature = "crispembed")]
 use std::sync::Mutex;
 
 /// Default math OCR model — PP-FormulaNet-L for printed formulas.
+#[cfg(feature = "crispembed")]
 const DEFAULT_MATH_MODEL: &str = "ppformulanet-l";
 
 /// Process-global lazy-loaded math OCR engine.

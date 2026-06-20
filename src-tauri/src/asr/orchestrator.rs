@@ -36,8 +36,10 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::lang::{
-    route, BackendFallback, Language, LidMethod, RoutingDecision,
+    BackendFallback, Language, LidMethod, RoutingDecision,
 };
+#[cfg(feature = "crispasr")]
+use super::lang::route;
 use super::{AsrConfig, AsrHandle, AsrSegment};
 
 #[cfg(feature = "crispasr")]
@@ -253,6 +255,7 @@ pub async fn transcribe_with_lid_routing(
 /// Short, log-friendly name for the policy variant — `Debug`'s output
 /// for `Auto { fallback: AsrConfig { ... } }` is too verbose for an
 /// error message.  Used in the "policy X needs a language" hint.
+#[cfg(any(feature = "crispasr", test))]
 fn policy_kind(p: &BackendFallback) -> &'static str {
     match p {
         BackendFallback::AsConfigured => "as-configured",

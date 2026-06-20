@@ -240,7 +240,7 @@ pub fn partition_assignments(
 
     // 1. Group by depth-N path component under root.
     let mut groups: HashMap<String, Vec<FileSize>> = HashMap::new();
-    let root_str = root_path.to_string_lossy();
+    let _root_str = root_path.to_string_lossy();
     let root_label = root_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

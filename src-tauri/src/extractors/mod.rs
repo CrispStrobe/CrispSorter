@@ -488,6 +488,7 @@ impl Default for OcrPipelineConfig {
 }
 
 /// Map an engine string to the C builder's engine id.
+#[cfg(any(feature = "crispembed", test))]
 fn engine_id(name: &str) -> i32 {
     match name {
         "surya" => 1,
@@ -507,6 +508,7 @@ fn engine_id(name: &str) -> i32 {
 }
 
 /// Map a source-type string to the C builder's source-type id.
+#[cfg(any(feature = "crispembed", test))]
 fn source_type_id(name: &str) -> i32 {
     match name {
         "screenshot" => 1,

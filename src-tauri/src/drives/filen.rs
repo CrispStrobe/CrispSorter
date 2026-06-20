@@ -41,9 +41,11 @@ struct NodeInfo {
     size:          Option<u64>,
     /// Unix-millis last-modified (filen returns int).  Folders may emit 0.
     #[serde(rename = "lastModified", default)]
+    #[allow(dead_code)]
     last_modified: Option<i64>,
     /// Server timestamp (creation), unix-seconds.  Fallback when lastModified is 0.
     #[serde(default)]
+    #[allow(dead_code)]
     timestamp:     Option<i64>,
     /// Filen UUID (for diagnostics; not used by the trait API).
     #[serde(default)]

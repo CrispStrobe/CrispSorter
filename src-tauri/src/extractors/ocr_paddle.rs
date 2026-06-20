@@ -10,7 +10,9 @@
 //! Models auto-download from HuggingFace on first use (~50 MB det + ~10 MB rec).
 //! Gated behind the `paddle-ocr` Cargo feature.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "paddle-ocr")]
+use anyhow::Context;
 use std::path::Path;
 
 use super::{ExtractedDocument, OcrRecLang};
