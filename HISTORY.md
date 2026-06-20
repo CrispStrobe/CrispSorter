@@ -65,6 +65,11 @@ surface and wired in every actionable improvement.
   VLM OCR (superseded by CrispEmbed), P19 OCR Tier-4 variants, P19
   rerank_biencoder. Open items reduced from 22 → 11; remaining items all
   require multi-session work or external infrastructure.
+- **Dependency hygiene** — `npm audit fix` patched devalue (DoS), protobufjs
+  (DoS + property shadowing), svelte (SSR XSS, DOM clobbering, ReDoS).
+  `cargo update` applied 139 semver-compatible dependency updates. Full
+  workspace test suite: **699 passed, 0 failed** (501 s). CrispEmbed: 34
+  stale merged branches deleted, 1 stale remote tracking branch pruned.
 
 ---
 
