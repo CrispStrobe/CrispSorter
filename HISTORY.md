@@ -9,6 +9,49 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-20 — CrispEmbed sync: Qwen3-VL, LoRA, LID, confidence, CI consolidation
+
+Audited CrispEmbed HEAD (v0.11.8+114 commits) against CrispSorter's integration
+surface and wired in every actionable improvement.
+
+- **13 OCR engines** — added Qwen3-VL (engine 12) to `engine_id()`, CLI
+  `--engine` (expanded 7→13 values: was missing parseq, deepseek_ocr2,
+  pix2struct, granite_vision, lightonocr, qwen3vl), `--vlm-ocr-engine`,
+  and both Settings UI dropdowns (advanced stage builder + simple-mode VLM
+  escalation). Qwen3-VL activates once CRISPEMBED_REF is bumped past
+  v0.11.8. Unit test `engine_id_maps_all_engines` now covers all 13 IDs.
+- **`isVlmEngine` fix** — PARSeq was incorrectly treated as a VLM engine
+  in Settings.svelte, showing a single-model field instead of det+rec.
+  Fixed to exclude `parseq` (it's engine 7 = DBNet detect + PARSeq
+  recognize, same shape as dbnet_trocr/surya/tesseract).
+- **Recognition confidence in structured render** — `ocr_regions_via_pipeline`
+  now uses `effective_confidence(detection, rec, char_conf_len)` instead of
+  the raw detection score (~1.0, useless). hOCR/ALTO/PDF region confidence
+  values now reflect actual OCR quality (mean per-char softmax).
+- **Pipeline LID → `language` field** — added `CrispOcrPipeline::detected_lang()`
+  to CrispEmbed Rust wrapper (fixed FFI signature in crispembed-sys to match
+  C header's `out_confidence` param). CrispSorter's `ocr_via_pipeline` now
+  populates `ExtractedDocument.language` from the pipeline's LID result,
+  eliminating a redundant LID pass during indexing.
+- **Mean confidence logging** — `[ocr] pipeline: N regions, mean confidence
+  X.XX` diagnostic line during indexing for quality monitoring.
+- **LoRA adapter hot-swap** — added `crispembed_set_lora`/`get_lora`/
+  `list_lora` FFI decls to crispembed-sys, safe Rust wrappers in
+  crispembed, and `CrispEmbedBackend` methods in CrispSorter. Ready for
+  Jina v5 task-specific adapter switching without model reload.
+- **LFM2.5 license gate** — `lfm2-embed`, `lfm2-colbert`, `gliner-lfm`,
+  `gliner-lfm-q4k` registry names now gated as `Restricted("LFM Open
+  License v1.0")` in `license_consent.rs`. Prevents download without
+  consent when used as model-name overrides.
+- **CI consolidation** — `CRISPEMBED_REF`/`CRISPASR_REF`/`CRISPDOCX_REF`
+  moved from 3 job-level `env:` blocks to a single workflow-level block.
+  Next version bump is a 1-line edit instead of 3.
+- **PLAN.md P19** — updated header with CrispEmbed HEAD capabilities
+  (Qwen3-VL, PaddleOCR-VL, FireRed-OCR, SmolDocling, LFM2.5,
+  DeepSeek-OCR-2 perf); marked "Expose all OCR Tier-4 variants" done.
+
+---
+
 ## Session log — 2026-06-15 — P20 ⭐ Smart OCR pipeline → multi-page + structured/searchable output
 
 Built the configurable OCR pipeline end-to-end (CrispSorter Rust caller +
