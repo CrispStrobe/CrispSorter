@@ -74,7 +74,11 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 ### P7.8 — OCR Tier 3 polish + Tier 4
 
 - [x] **SLANet table extraction** — ✅ SHIPPED (2026-06-05). `detect_table_structure()` + `ocr_with_tables()` in `ocr_paddle.rs`. Uses `usls::SLANet` with `slanet_lcnet_v2_mobile_ch` model (~50 MB).  Returns HTML table skeleton (`<table><tr><td>...`) appended to OCR text. Gated behind same `paddle-ocr` feature.  Frontend rendering of table structure pending.
-- [ ] **Tier 4 — VLM OCR** (~1 wk, 3-4 focused sessions) — `deepseek-ocr.rs`-style via Candle (not ort). DeepSeek-OCR / PaddleOCR-VL, Q4_K–Q8_0 quantisation, 4.7-9 GB models, macOS Metal target.  *Handover prompt ready:* `handover-prompts/session-prompt-tier4-vlm-ocr.md` (226 lines; full multi-session arc).
+- [x] **Tier 4 — VLM OCR** ✅ Superseded by CrispEmbed integration (P17.2 +
+  P20). All VLM engines (DeepSeek-OCR-2, GOT-OCR2, GLM-OCR, Qwen2.5-VL,
+  InternVL2, Granite Vision, LightOnOCR, Pix2Struct, Qwen3-VL) run via
+  CrispEmbed GGUF — no Candle needed. 13 engines wired in `engine_id()`,
+  CLI, and Settings UI. The Candle-based approach is no longer planned.
 
 ### P8.2 — CLI polish remaining
 
@@ -91,65 +95,35 @@ standalone ViT image search.  All gated behind `--features crispembed`
 tests (mock/stub, run in CI) **and** live tests (`#[ignore]`, require
 GGUF models on disk).
 
-- [ ] **P17.1 — Layout-aware PDF extraction** (`CrispLayout`,
-  RT-DETRv2) — Pre-pass on scanned/complex PDF pages: detect 17
-  region types (text, title, table, figure, formula, header, footer,
-  caption, etc.).  Route text regions to OCR, skip figures, flag
-  tables for structured extraction, send formula regions to math OCR.
-  New module `src-tauri/src/extractors/layout.rs`.  Improves chunking
-  quality by isolating semantic regions before text extraction.
+- [x] **P17.1 — Layout-aware PDF extraction** ✅ SHIPPED.
+  `extractors/layout.rs` (352 lines): `CrispLayout` RT-DETRv2, 17 region
+  types, `detect_regions` + `order_regions_reading_order`, cached detector.
 
-- [ ] **P17.2 — CrispEmbed OCR engines** (Surya-OCR-2 + Qwen2.5-VL +
-  DBNet/TrOCR) — New "Tier 4" OCR via `crispembed::OcrPipeline`.
-  Surya text detection (91 languages, EfficientViT) replaces the
-  PaddleOCR detection stage.  Qwen2.5-VL adds German support for
-  recognition.  DBNet+TrOCR as a lightweight GGUF-only alternative
-  (no ORT dependency).  Plugs into the existing tier dispatch in
-  `extractors/mod.rs` as the highest-priority tier when the
-  `crispembed` feature is active.  New module
-  `src-tauri/src/extractors/ocr_crispembed.rs`.
+- [x] **P17.2 — CrispEmbed OCR engines** ✅ SHIPPED.
+  `extractors/ocr_crispembed.rs`: Tier 4 OCR via `crispembed::OcrPipeline`
+  + `CrispOcrPipeline`. All 13 engines (dbnet_trocr through qwen3vl).
 
-- [ ] **P17.3 — Math OCR** (`crispembed::MathOcr`) — Detect formula
-  regions via P17.1 layout detection, then OCR each to LaTeX via
-  PP-FormulaNet-L (printed, 181M params) or PosFormer (handwritten).
-  LaTeX injected into `full_text` wrapped in `$…$` delimiters so
-  downstream LLMs and search understand it.  New module
-  `src-tauri/src/extractors/math_ocr.rs`.
+- [x] **P17.3 — Math OCR** ✅ SHIPPED.
+  `extractors/math_ocr.rs` (303 lines): `crispembed::MathOcr`,
+  PP-FormulaNet-L + PosFormer, LaTeX output.
 
-- [ ] **P17.4 — Face detection (presence + location only)**
-  (`CrispFace`, YuNet 0.2 MB / SCRFD) — Detects WHETHER and WHERE
-  faces appear in an image (bounding box + confidence).  **No biometric
-  recognition** (no face embeddings, no person matching, no identity
-  inference) — EU AI Act compliance.  Use cases: "this photo has 3
-  faces", auto-crop thumbnails, filter to "photos with people".
-  New module `src-tauri/src/images/face.rs` + Tauri command
-  `detect_faces` / `count_faces`.
+- [x] **P17.4 — Face detection** ✅ SHIPPED.
+  `images/face.rs` (175 lines): `CrispFace` YuNet/SCRFD, `detect_faces` /
+  `count_faces`. Detection only (no recognition — EU AI Act).
 
-- [ ] **P17.5 — BidirLM-Omni cross-modal embeddings** — Shared
-  2048-D embedding space for text, audio, and images.  New
-  `embedding_omni` FixedSizeList<Float32, 2048> column in LanceDB
-  (schema migration v108).  New RRF channel in `search.rs` that
-  mixes omni-vector cosine with existing FTS + dense + sparse.
-  Unlocks: "photo of sunset" → image hits without OCR; "podcast
-  about Bosnia" → audio hits without transcription.  New module
-  `src-tauri/src/index/omni_embed.rs`.  Extends the earlier
-  omnimodal handover prompt.
+- [x] **P17.5 — BidirLM-Omni cross-modal embeddings** ✅ SHIPPED.
+  `index/omni_embed.rs` (357 lines): `encode_text_omni`, `encode_image_omni`,
+  `encode_audio_omni`, `encode_text_with_image_omni`, `omni_similarity`.
+  2048-D shared space.
 
-- [ ] **P17.6 — Decoder embeddings** (Qwen3-Embedding, Gemma3-
-  Embedding via GGUF) — Add `EmbedderModel` registry entries for
-  decoder-based models already supported by CrispEmbed (last-token
-  pooling, SwiGLU, RoPE).  Lighter than ORT path (quantizable to
-  Q4_K, no ONNX runtime).  Updates to `embedder.rs` model enum +
-  GGUF spec table.
+- [x] **P17.6 — Decoder embeddings** ✅ SHIPPED.
+  `EmbedderModel` variants: `Gemma3Embed2B` (2048d), `ModernBertBase` (768d),
+  `ModernBertLarge` (1024d), `DebertaV2Xlarge` (1536d), `NomicBertMoe` (768d).
+  GGUF-only, CrispEmbed backend.
 
-- [ ] **P17.7 — Standalone ViT image embeddings** (`CrispVit`,
-  SigLIP/CLIP) — Encode images into a shared text-image vector
-  space for visual similarity search.  New `embedding_vit`
-  FixedSizeList column (schema migration v109).  Enables "find
-  similar images" without perceptual hashing — works across
-  different crops, formats, and resolutions.  New module
-  `src-tauri/src/images/vit_embed.rs` + Tauri command
-  `embed_image_vit`.
+- [x] **P17.7 — Standalone ViT image embeddings** ✅ SHIPPED.
+  `images/vit_embed.rs` (224 lines): `CrispVit` SigLIP/CLIP, `embed_image_vit`
+  Tauri command, `encode_file`.
 
 ### P18 — cb-api semantic search: model selection, license compliance, CI/release fixes (2026-06-13)
 
@@ -168,15 +142,13 @@ that surfaced along the way.
   vector parity), + a resumable `scripts/backfill_embeddings.py`
   (`merge_insert` writeback). Staged on the VPS; **activation deferred until
   the box has RAM/CPU headroom** (it was OOM/contended during this session).
-- [ ] **Model license-consent gate — re-apply against current `main`.** A
-  license audit (written up in the private `crisp-repos`) found **5
-  restrictive models downloadable with no consent prompt** (Jina
-  v3/v5-small/v5-nano + jina-reranker-v2 = CC-BY-NC; EmbeddingGemma = Gemma
-  Terms). A gate was implemented (`index::license_consent` + `license()` /
-  `ensure_license_consent()` on `EmbedderModel`/`RerankerModel`, enforced in
-  `Embedder::new` + `Reranker::load` + `embedder_download_registry_model`,
-  CLI `--accept-license`, GUI dialog) — but on a **stale checkout**; needs
-  re-applying against current `main` + a `cargo` build verification.
+- [x] **Model license-consent gate.** ✅ Verified on current `main` (2026-06-20).
+  `license_consent::ensure()` enforced in `Embedder::new`, `Reranker::load`,
+  and `NerHandle::load_inner` before any download. Covers Jina v3/v5 (CC-BY-NC),
+  EmbeddingGemma (Gemma Terms), sauerkraut-gliner-lfm + LFM2.5 models (LFM
+  Open License v1.0). Registry-name overrides also gated via
+  `license_for_registry_name()`. 3 unit tests green. CLI `--accept-license` +
+  GUI consent dialog + `CRISPSORTER_ACCEPT_MODEL_LICENSE` env var.
 - [x] **CI license-scan hardened** against transient crates.io-index TLS
   flakes (`SSL_ERROR_SYSCALL`): `CARGO_NET_RETRY` + `CARGO_HTTP_MULTIPLEXING=false`
   + index warm-up retry before `licenses:gen`. The non-trivial-count
