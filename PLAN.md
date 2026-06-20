@@ -213,8 +213,11 @@ embedding dequant). Remaining gaps:
   (`nanonets-ocr-s`), and H2OVL (`h2ovl-2b`) are usable as model overrides on
   the matching engine (qwen2vl/internvl2).  **Qwen3-VL requires a CrispEmbed
   release > v0.11.8** (engine 12 is on HEAD, untagged).
-- [ ] **(Minor)** `rerank_biencoder` as a fast/cheap reranking option alongside
-  the cross-encoder; `encode_tokens` for token-level match highlighting.
+- [x] **(Minor)** `rerank_biencoder` ✅ SHIPPED — `IndexConfig.use_embedder_as_reranker`
+  toggle in Settings, wired through `SearchEngine.with_embedder_as_reranker()`
+  → `maybe_rerank()` fallback. Cosine-similarity re-scoring via the loaded
+  dense embedder when no dedicated cross-encoder GGUF is installed.
+- [ ] **(Minor)** `encode_tokens` for token-level match highlighting.
 
 ### P20 — Configurable OCR pipeline (cleanup + engines + post-process)
 
