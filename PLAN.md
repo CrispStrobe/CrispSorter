@@ -193,12 +193,18 @@ that surfaced along the way.
   on `main` to trigger a clean build. Consider tightening the `if: always()`
   publish gate so a failed matrix can't publish an empty release again.
 
-### P19 — Further CrispEmbed v0.8.0 integration (the not-yet-wired capabilities)
+### P19 — Further CrispEmbed integration (v0.11.8 pinned; HEAD is v0.11.8+114)
 
 P17 already wired most of CrispEmbed's surface (dense / sparse / ColBERT /
 rerank / `MathOcr` / `OcrPipeline` / `CrispVit` / `CrispLayout` / `CrispFace` /
-omni image+text). An API-surface diff of CrispEmbed **v0.8.0** vs CrispSorter's
-call sites leaves these gaps, in priority order:
+omni image+text). CrispEmbed HEAD (unreleased) adds **Qwen3-VL-2B** (engine 12,
+DeepStack injection, fused attention, KV cache fast path), **PaddleOCR-VL**
+(NaViT + ERNIE-4.5, 109 langs, SOTA 96.3% OmniDocBench, Apache-2.0),
+**FireRed-OCR** (Qwen3-VL fine-tune, tables+LaTeX), **SmolDocling** (SigLIP +
+SmolLM2-135M, 256M, Apache-2.0, outputs DocTags), **LFM2.5-Embedding/ColBERT**
+(350M, 1024d/128d, LFM-1.0 restricted), and major **DeepSeek-OCR-2 performance
+improvements** (9 min → ~23 s via Metal acceleration, -655 MB memory via per-row
+embedding dequant). Remaining gaps:
 
 - [x] **⭐ GLiNER NER → entity tags + facets** (`crispembed::CrispNER`). ✅ SHIPPED
   (2026-06-13). New `index::ner` module — `NerModel` enum
@@ -224,10 +230,17 @@ call sites leaves these gaps, in priority order:
   without transcription — needs audio embeddings actually indexed into the omni
   vector space + surfaced in search. Likely completing a partial wiring, not a
   new build.
-- [ ] **Expose all OCR Tier-4 variants.** `OcrPipeline` is integrated; v0.8.0
-  added GOT-OCR2 / Nanonets-OCR / GLM-OCR / InternVL2 ports. Confirm each is
-  selectable in the OCR backend registry/UI (low effort — registry entries) for
-  more language/quality coverage.
+- [x] **Expose all OCR Tier-4 variants.** `OcrPipeline` is integrated; all 13
+  engines (dbnet_trocr, surya, got, glm, qwen2vl, internvl2, tesseract, parseq,
+  deepseek_ocr2, pix2struct, granite_vision, lightonocr, **qwen3vl**) are now
+  wired in `engine_id()`, the CLI `--engine` value_parser, and the Settings UI
+  stage-builder dropdown.  PARSeq correctly treated as det+rec (not VLM) in
+  `isVlmEngine`.  The user-configurable model overrides (`det_model`/`rec_model`
+  or VLM single-model) route through to CrispEmbed's model registry, so
+  PaddleOCR-VL (`paddleocr-vl`), FireRed-OCR (`firered-ocr`), Nanonets-OCR
+  (`nanonets-ocr-s`), and H2OVL (`h2ovl-2b`) are usable as model overrides on
+  the matching engine (qwen2vl/internvl2).  **Qwen3-VL requires a CrispEmbed
+  release > v0.11.8** (engine 12 is on HEAD, untagged).
 - [ ] **(Minor)** `rerank_biencoder` as a fast/cheap reranking option alongside
   the cross-encoder; `encode_tokens` for token-level match highlighting.
 

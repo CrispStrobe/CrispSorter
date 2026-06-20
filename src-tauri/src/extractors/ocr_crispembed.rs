@@ -603,6 +603,17 @@ pub fn ocr_via_pipeline(
     let res = guard
         .run(path_str)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+    if res.mean_confidence > 0.0 {
+        println!(
+            "[ocr] pipeline: {} regions, mean confidence {:.2}",
+            res.regions.len(),
+            res.mean_confidence,
+        );
+    }
+    // Capture the LID result (ISO 639-1) detected during the pipeline run,
+    // if a lid_model was configured. Populates the `language` field so
+    // downstream indexing/search can use it without a separate LID pass.
+    let detected_lang = guard.detected_lang();
 
     Ok(ExtractedDocument {
         full_text: res.full_text,
@@ -612,7 +623,7 @@ pub fn ocr_via_pipeline(
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase(),
-        language: None,
+        language: detected_lang,
         translated_text: None,
         translated_to_lang: None,
         audio: None,
@@ -642,13 +653,16 @@ pub fn ocr_regions_via_pipeline(
     Ok(res
         .regions
         .into_iter()
-        .map(|r| super::ocr_render::OcrRegion {
-            text: r.text,
-            x: r.x,
-            y: r.y,
-            w: r.w,
-            h: r.h,
-            confidence: r.confidence,
+        .map(|r| {
+            let conf = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
+            super::ocr_render::OcrRegion {
+                text: r.text,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                confidence: conf,
+            }
         })
         .collect())
 }
@@ -737,6 +751,7 @@ fn vlm_engine_id(engine: &str) -> i32 {
         "got" => 0,
         "glm" => 1,
         "internvl2" => 3,
+        "qwen3vl" => 4,
         _ => 2, // qwen2vl (german-ocr-3.1 family)
     }
 }
@@ -752,6 +767,7 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "pix2struct" => "pix2struct-base",
         "granite_vision" => "granite-vision",
         "lightonocr" => "lightonocr",
+        "qwen3vl" => "qwen3vl-2b",
         _ => "qwen2vl-ocr",
     }
 }

@@ -171,7 +171,7 @@ enum Command {
         file: PathBuf,
         /// Primary OCR engine.
         #[arg(long, default_value = "dbnet_trocr",
-              value_parser = ["dbnet_trocr", "surya", "tesseract", "got", "glm", "qwen2vl", "internvl2"])]
+              value_parser = ["dbnet_trocr", "surya", "tesseract", "parseq", "got", "glm", "qwen2vl", "internvl2", "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr", "qwen3vl"])]
         engine: String,
         /// Source-type routing hint. `auto` classifies the image; an explicit
         /// type pins the cleanup+engine recipe and disables reclassification.
@@ -277,7 +277,7 @@ enum Command {
         #[arg(long)]
         vlm_ocr_model: Option<String>,
         /// VLM escalation engine for --vlm-ocr-model.
-        #[arg(long, default_value = "qwen2vl", value_parser = ["qwen2vl", "glm", "got", "internvl2"])]
+        #[arg(long, default_value = "qwen2vl", value_parser = ["qwen2vl", "glm", "got", "internvl2", "qwen3vl"])]
         vlm_ocr_engine: String,
         /// Post-OCR truecaser model (fixes ALL-CAPS / lowercased output).
         #[arg(long)]

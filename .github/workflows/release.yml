@@ -11,6 +11,17 @@ on:
         type: boolean
         default: false
 
+# ── Sibling-repo version pins (single source of truth) ──────────────
+# Bumping CRISPEMBED_REF / CRISPASR_REF / CRISPDOCX_REF here updates
+# all jobs at once — no more 3-place edits.
+env:
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: v0.11.8
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: v0.6.6
+  CRISPDOCX_REPO: CrispStrobe/crisp-docx
+  CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
+
 jobs:
   release-required:
     permissions:
@@ -88,43 +99,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     env:
-      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      # Pin to the release tag whose libcrispembed bundle the
-      # workflow downloads below. Same rationale as CRISPASR_REF.
-      # The CrispEmbed release-tag namespace and the internal
-      # `crispembed` crate version are NOT the same: v0.2.6 publishes
-      # crate v0.1.0; v0.3.2 publishes crate v0.3.2; v0.4.0 and later
-      # all publish crate v0.4.0. The crisp-docx-align sibling
-      # requires `crispembed = "^0.4"`, so REF must be >= v0.4.0 or
-      # cargo metadata fails with "failed to select a version for the
-      # requirement crispembed = \"^0.4\"". v0.6.0 is the latest stable
-      # tag at time of writing and ships the matching asset names
-      # (crispembed-{linux-x86_64,macos-arm64}.tar.gz +
-      # crispembed-windows-x86_64.zip).
-      CRISPEMBED_REF: v0.11.8
-      CRISPASR_REPO: CrispStrobe/CrispASR
-      # Pin the CrispASR ref to the release tag whose libcrispasr
-      # bundle we're consuming below. Keeps source-side cargo metadata
-      # (which still needs the sibling checkout for the path-dep
-      # resolution) in lockstep with the binary lib we link against.
-      # v0.5.7 added the missing libcrispasr-{linux,windows}-* lib
-      # bundles that unblock P3.5 Phase 2 (Linux + Windows native
-      # ASR + embedder). Bumping requires verifying the asset names
-      # in the per-matrix `crispasr_lib_asset` entries still resolve.
-      # v0.6.6 verified to ship libcrispasr-{linux-x86_64,
-      # macos-arm64, windows-x86_64-vulkan}.tar.gz and contains the
-      # text_detect_language + Session::translate_text FFI surfaces
-      # that the P13.5 audio + translation vertical depends on.
-      CRISPASR_REF: v0.6.6
-      # crisp-docx is the docx-translation pipeline workspace. src-tauri
-      # has path deps to ../../crisp-docx/crates/{crisp-docx-core,
-      # crisp-docx-llm, crisp-docx-align}, so cargo metadata fails
-      # without the sibling checkout. No release tags yet — pin to the
-      # current origin/main SHA for reproducibility. Bump alongside
-      # CRISPEMBED_REF / CRISPASR_REF when the docx pipeline picks up
-      # a fix worth shipping.
-      CRISPDOCX_REPO: CrispStrobe/crisp-docx
-      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
       APPIMAGE_EXTRACT_AND_RUN: '1'
       NO_STRIP: 'true'
 
@@ -674,12 +648,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PROTOC: /usr/bin/protoc
-      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: v0.11.8
-      CRISPASR_REPO: CrispStrobe/CrispASR
-      CRISPASR_REF: v0.6.6
-      CRISPDOCX_REPO: CrispStrobe/crisp-docx
-      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
     steps:
       - uses: actions/checkout@v4
       - name: Check out sibling CrispEmbed
@@ -786,13 +754,6 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-14
-    env:
-      CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-      CRISPEMBED_REF: v0.11.8
-      CRISPASR_REPO: CrispStrobe/CrispASR
-      CRISPASR_REF: v0.6.6
-      CRISPDOCX_REPO: CrispStrobe/crisp-docx
-      CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
     steps:
       - uses: actions/checkout@v4
       - name: Check out sibling CrispEmbed

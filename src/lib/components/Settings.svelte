@@ -235,7 +235,7 @@
         const j = i + dir; if (j < 0 || j >= ocrStages.length) return;
         const a = [...ocrStages]; [a[i], a[j]] = [a[j], a[i]]; ocrStages = a;
     }
-    function isVlmEngine(e: string) { return e !== 'dbnet_trocr' && e !== 'surya' && e !== 'tesseract'; }
+    function isVlmEngine(e: string) { return e !== 'dbnet_trocr' && e !== 'surya' && e !== 'tesseract' && e !== 'parseq'; }
     /** Build the OcrPipelineConfig payload (snake_case = Rust serde field names). */
     function ocrPipelineConfig() {
         const stages = (ocrPipelineAdvanced ? ocrStages : []).map((s) => ({
@@ -2710,6 +2710,11 @@
                                     <option value="glm">GLM-OCR</option>
                                     <option value="got">GOT-OCR2</option>
                                     <option value="internvl2">InternVL2</option>
+                                    <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
+                                    <option value="granite_vision">Granite Vision 3.3-2B</option>
+                                    <option value="lightonocr">LightOnOCR-2-1B</option>
+                                    <option value="pix2struct">Pix2Struct (doc/chart)</option>
+                                    <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
                                 </select>
                             </label>
                         </div>
@@ -2793,6 +2798,7 @@
                                                 <option value="lightonocr">LightOnOCR-2-1B</option>
                                                 <option value="deepseek_ocr2">DeepSeek-OCR-2</option>
                                                 <option value="pix2struct">Pix2Struct (doc/chart)</option>
+                                                <option value="qwen3vl">Qwen3-VL-2B (DeepStack)</option>
                                             </select>
                                         </label>
                                     </div>
