@@ -420,3 +420,38 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   unpopulated — confirmed live 2026-05-31.)
 
 (For per-version changelog and shipped phase specs, see [HISTORY.md](HISTORY.md).)
+
+---
+
+## CLI ↔ GUI feature parity audit (2026-06-20)
+
+**CLI surface:** 13 top-level commands, ~70 subcommands (see `cli/mod.rs`).
+**GUI surface:** 196 Tauri commands across 19 functional areas.
+
+### Implemented but unreachable from both CLI and GUI
+
+| Module | Status | Note |
+|--------|--------|------|
+| `images/face.rs` (175 lines) | Dead | EU AI Act — detection-only is fine but 1:N matching is not. Keep module but do NOT wire batch/index-time face scanning. Ad-hoc single-image detection could be exposed. |
+| `images/vit_embed.rs` (224 lines) | Dead | Visual similarity search; needs schema migration v109 |
+| `index/omni_embed.rs` (357 lines) | Dead | Cross-modal search; needs schema migration v108 + RRF channel |
+| `extractors/math_ocr.rs` partial | Dead (`recognize_formula`, `recognize_formula_with_model`; `recognize_formula_from_pixels` is used in layout pass) | Standalone formula OCR not exposed |
+| `extractors/ocr_paddle.rs` partial | Dead (`ocr_with_tables`, `detect_table_structure`) | Table-enhanced PaddleOCR never invoked |
+
+### CLI-only (no GUI equivalent)
+
+`doctor`, `index purge`, `index skip-failed`, `index l1-only`,
+`sync cloud-backup admin {mint,revoke,list}`, `sync cloud-backup partition`,
+`sync cloud-backup backup-shards/restore-shard`,
+`sync cloud-backup import-from-manifest-db`.
+
+### GUI-only (no CLI equivalent)
+
+OCR Workbench (interactive correction), background ingest controls,
+durable job queue, file watcher, LLM sidecars, embedder registry UI,
+.CIDX mount/unmount, `index_image_promote_l3`, `index_audio_promote_l3`.
+
+### Tauri commands registered but not called from any Svelte component
+
+`tool_kie_extract`, `tool_table_extract` — exist as Tauri commands but
+no Svelte component invokes them yet (marked "programmatic").
