@@ -9,6 +9,45 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Session log — 2026-06-20 (evening) — Audio omni embedding + build infra fix
+
+Implemented the audio omni embedding pipeline (P17.7 completion) and fixed
+the cargo build infrastructure.
+
+- **Audio omni embedding wired into bg_ingest** (`9eec70e`). Added
+  `ExtractedDocument.audio_pcm: Option<Vec<f32>>` field. The audio extractor
+  (`extractors/audio.rs`) now clones the decoded 16 kHz mono PCM before
+  transcription consumes it. `bg_ingest` feeds the PCM to
+  `encode_audio_omni()` via `spawn_blocking`, storing the 2048-D embedding
+  in the `embedding_omni` column. All 15 `ExtractedDocument` construction
+  sites updated (`audio_pcm: None` for non-audio extractors). Tests:
+  `audio_pcm_field_surfaces_on_extracted_document` unit test +
+  `omni_audio_embed_from_file_live` async live test (gated behind
+  `CS_TEST_AUDIO` env var + `crispembed,crispasr` features). All 11 omni
+  unit tests pass.
+- **Cargo target dir moved off SMB2 mount.** The `target/` symlink pointed
+  to `/mnt/akademie_storage` (SMB2), where build scripts fail with
+  "Invalid argument" (os error 22 — SMB2 can't exec ELF binaries). Created
+  `/mnt/volume1/cargo-targets/CrispSorter/target` on the ext4 disk and
+  symlinked `target → /mnt/volume1/cargo-targets/CrispSorter/target`.
+  Deleted the stale 3 GB SMB copy. `cargo check --features desktop` passes
+  clean (6m30s full rebuild → 5m08s incremental after move).
+
+### What's next (priority order)
+
+1. **⭐ Omni/ViT RRF search channel** (~6 h) — the ingest side is complete
+   (images + audio get `embedding_omni`/`embedding_vit` at index time). The
+   search side needs: `search_vector_column()` method on `LocalIndex`, omni
+   text-to-multimodal ANN channel in `search_hybrid()`, `search_by_image()`
+   method, Tauri command, CLI `--image` flag. Handover prompt:
+   `handover-prompts/session-prompt-omni-vit-search-channel.md`.
+2. **Cross-modal search UI** (~2 h) — "Search by Image" button in
+   `IndexSearch.svelte`. Depends on #1. Handover prompt:
+   `handover-prompts/session-prompt-cross-modal-search-ui.md`.
+3. **cb-api PIXIE-Rune backfill** (deferred) — VPS needs RAM headroom.
+
+---
+
 ## Session log — 2026-06-20 — CrispEmbed sync: Qwen3-VL, LoRA, LID, confidence, CI consolidation
 
 Audited CrispEmbed HEAD (v0.11.8+114 commits) against CrispSorter's integration

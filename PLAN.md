@@ -197,11 +197,13 @@ embedding dequant). Remaining gaps:
   `TagCloud groupEntities` view groups namespaced tags by label prefix. CLI
   `index ingest` + L3-reingest honour the persisted NER config. See
   [HISTORY.md](HISTORY.md) 2026-06-13 session log.
-- [ ] **Finish audio cross-modal search.** `encode_audio` is wired but barely
-  used (1 call site). The omni goal — "podcast about Bosnia" → audio hits
-  without transcription — needs audio embeddings actually indexed into the omni
-  vector space + surfaced in search. Likely completing a partial wiring, not a
-  new build.
+- [x] **Finish audio cross-modal search — ingest wiring.** ✅ SHIPPED (2026-06-20,
+  commit `9eec70e`). `ExtractedDocument.audio_pcm` surfaces decoded 16 kHz mono
+  PCM from the audio extractor. `bg_ingest` feeds it to `encode_audio_omni()`
+  via `spawn_blocking`, storing the 2048-D embedding in `embedding_omni`.
+  Audio/video files now get omni cross-modal embeddings at index time alongside
+  their text transcription. Search-side query (ANN over `embedding_omni`) is
+  still pending — tracked in the omni/vit search channel prompt.
 - [x] **Expose all OCR Tier-4 variants.** `OcrPipeline` is integrated; all 13
   engines (dbnet_trocr, surya, got, glm, qwen2vl, internvl2, tesseract, parseq,
   deepseek_ocr2, pix2struct, granite_vision, lightonocr, **qwen3vl**) are now
@@ -467,9 +469,9 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   After text extraction, `ingest_one` conditionally runs:
   - `vit_embed::embed_image()` for image files (768-D SigLIP/CLIP)
   - `omni_embed::encode_image_omni()` for image files (2048-D)
-  Both via `spawn_blocking`; soft-fail (log + continue with None).
-  Audio omni deferred (needs decoded PCM not currently available
-  in the omni path).
+  - `omni_embed::encode_audio_omni()` for audio/video files (2048-D)
+    — via `ExtractedDocument.audio_pcm` (commit `9eec70e`)
+  All via `spawn_blocking`; soft-fail (log + continue with None).
 
 - [x] **`images/vit_embed.rs` no longer dead.**  Called from bg_ingest
   for image files; embeddings stored in the `embedding_vit` column.
@@ -479,11 +481,11 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 
 ### Still pending (follow-up work)
 
-| Item | Effort | Notes |
-|------|--------|-------|
-| Audio omni embedding | ~4 h | Needs decoded PCM from the audio extractor piped into `encode_audio_omni` |
-| Omni/ViT RRF search channel | ~6 h | Add ANN query over `embedding_omni`/`embedding_vit` columns in `search.rs`, mix into existing RRF fusion |
-| Cross-modal search UI | ~2 h | "Search by image" button in IndexSearch that embeds an uploaded image and queries the ViT/omni columns |
+| Item | Effort | Handover prompt | Notes |
+|------|--------|-----------------|-------|
+| ~~Audio omni embedding~~ | ~~4 h~~ | ~~`session-prompt-audio-omni-embedding.md`~~ | ✅ DONE `9eec70e` |
+| **⭐ Omni/ViT RRF search channel** | ~6 h | `session-prompt-omni-vit-search-channel.md` | **Next priority.** Add ANN query over `embedding_omni`/`embedding_vit` columns in `search.rs`, mix into existing RRF fusion. All ingest-side wiring complete. |
+| Cross-modal search UI | ~2 h | `session-prompt-cross-modal-search-ui.md` | "Search by image" button in IndexSearch. **Depends on** omni/vit search channel. |
 
 ### P21 — CLI ↔ GUI parity gap closure (2026-06-20)
 
@@ -625,6 +627,8 @@ Closed 8 parity gaps in one session:
   inherently non-CLI.
 
 **Final status:** All closable CLI↔GUI parity gaps are resolved.
-Two modules (`vit_embed.rs`, `omni_embed.rs`) remain dead pending
-schema migrations + ingest pipeline work (~20 h combined).  These
-are tracked in the "Still dead" table above.
+`vit_embed.rs` and `omni_embed.rs` are fully wired into bg_ingest
+(images + audio).  The remaining gap is **search-side**: querying
+the `embedding_omni` / `embedding_vit` columns (ANN channel in RRF
+fusion + "search by image" UI).  See the "Still pending" table in
+P21 and the handover prompts for the next session.
