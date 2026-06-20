@@ -231,6 +231,41 @@ pub(crate) fn location_uri_to_local_path(uri: &str) -> Option<PathBuf> {
     }
 }
 
+// ── Face detection (CLI↔GUI parity) ────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct FaceDetectionDto {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub confidence: f32,
+}
+
+#[tauri::command]
+pub async fn images_detect_faces(
+    location_uri: String,
+    threshold: Option<f32>,
+) -> Result<Vec<FaceDetectionDto>, String> {
+    let path = location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("not a local path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+    let thr = threshold.unwrap_or(0.5);
+    let path2 = path.clone();
+    let faces = tokio::task::spawn_blocking(move || {
+        super::face::detect_faces(&path2, thr)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+    .map_err(|e| format!("face detection failed: {e:#}"))?;
+
+    Ok(faces.into_iter().map(|f| FaceDetectionDto {
+        x: f.x, y: f.y, w: f.w, h: f.h, confidence: f.confidence,
+    }).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

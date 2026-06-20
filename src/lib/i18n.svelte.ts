@@ -448,6 +448,19 @@ export const translations = {
             roundrobin_hint: 'If the active provider hits its rate limit, fall back to providers in this order.',
             roundrobin_no_providers: 'No remote providers configured. Add an API key under Providers first.',
             about: 'About CrispSorter',
+            diagnostics_title: 'Diagnostics',
+            diagnostics_hint: 'Run a system check to verify which backends and models are available on this machine.',
+            diagnostics_run: 'Run Diagnostics',
+            diagnostics_checking: 'Checking...',
+            diagnostics_face: 'Face detection',
+            diagnostics_embedder: 'Embedder model cached',
+            settings_purge_title: 'Index Purge',
+            settings_purge_hint: 'Remove old embeddings and rows to free disk space.',
+            settings_failed_title: 'Failed Extractions',
+            settings_failed_hint: 'Permanently skip retryable failures so the background worker stops retrying.',
+            settings_l1_title: 'L1-Only Scan',
+            settings_l1_hint: 'Quick metadata-only scan of a directory (no text extraction).',
+            settings_restore_title: 'Restore Shard',
             index: {
                 title: 'Search Index',
                 hint: 'Full-text + semantic (vector) search over all your documents. Requires an initial indexing run.',
@@ -753,7 +766,9 @@ export const translations = {
             exif_iso: 'ISO',
             exif_focal_length: 'Focal length',
             exif_gps: 'GPS',
-            exif_orientation: 'Orientation'
+            exif_orientation: 'Orientation',
+            face_detect_btn: 'Detect Faces',
+            face_detecting: 'Detecting...'
         },
         duplicates: {
             title: 'Find Duplicates',
@@ -1289,6 +1304,19 @@ export const translations = {
             roundrobin_hint: 'Falls der aktive Anbieter das Rate-Limit erreicht, wird auf diese Anbieter ausgewichen.',
             roundrobin_no_providers: 'Keine Remote-Anbieter konfiguriert. Zuerst einen API-Schlüssel unter Anbieter hinzufügen.',
             about: 'Über CrispSorter',
+            diagnostics_title: 'Diagnose',
+            diagnostics_hint: 'Systemprüfung durchführen, um verfügbare Backends und Modelle zu verifizieren.',
+            diagnostics_run: 'Diagnose starten',
+            diagnostics_checking: 'Prüfe...',
+            diagnostics_face: 'Gesichtserkennung',
+            diagnostics_embedder: 'Embedder-Modell gecacht',
+            settings_purge_title: 'Index bereinigen',
+            settings_purge_hint: 'Alte Embeddings und Zeilen entfernen, um Speicherplatz freizugeben.',
+            settings_failed_title: 'Fehlgeschlagene Extraktionen',
+            settings_failed_hint: 'Wiederholbare Fehler dauerhaft überspringen.',
+            settings_l1_title: 'L1-Schnellscan',
+            settings_l1_hint: 'Schneller Metadaten-Scan eines Ordners (keine Textextraktion).',
+            settings_restore_title: 'Shard wiederherstellen',
             index: {
                 title: 'Such-Index',
                 hint: 'Volltextsuche + semantische Vektorsuche über alle Dokumente. Erfordert einen ersten Indexierungsdurchlauf.',
@@ -1599,7 +1627,9 @@ export const translations = {
             exif_iso: 'ISO',
             exif_focal_length: 'Brennweite',
             exif_gps: 'GPS',
-            exif_orientation: 'Orientierung'
+            exif_orientation: 'Orientierung',
+            face_detect_btn: 'Gesichter erkennen',
+            face_detecting: 'Erkennung...'
         },
         duplicates: {
             title: 'Duplikate finden',

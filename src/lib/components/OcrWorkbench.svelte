@@ -178,6 +178,69 @@
             status = i18n.t.ocrwb.reingested;
         } catch (e: any) { error = String(e?.message ?? e); } finally { busy = null; }
     }
+
+    // ── KIE extraction ────────────────────────────────────────────────────────
+    interface KieField { label: string; value: string; score: number; }
+    let kieLabelsInput = $state('');
+    let kieResults     = $state<KieField[]>([]);
+    let kieBusy        = $state(false);
+    let kieError       = $state('');
+
+    async function runKie() {
+        const labels = kieLabelsInput.split(',').map(s => s.trim()).filter(Boolean);
+        if (!labels.length || !locationUri) return;
+        kieBusy = true; kieError = ''; kieResults = [];
+        try {
+            kieResults = await invoke<KieField[]>('tool_kie_extract', {
+                locationUri, labels, threshold: 0.5, lilt: false, liltModel: null,
+            });
+        } catch (e: any) {
+            kieError = String(e?.message ?? e);
+        } finally {
+            kieBusy = false;
+        }
+    }
+
+    // ── Table extraction ──────────────────────────────────────────────────────
+    interface TableResult { html: string; rows: number; cols: number; }
+    let tableResult = $state<TableResult | null>(null);
+    let tableBusy   = $state(false);
+    let tableError  = $state('');
+
+    async function runTable() {
+        if (!locationUri) return;
+        tableBusy = true; tableError = ''; tableResult = null;
+        try {
+            tableResult = await invoke<TableResult>('tool_table_extract', {
+                locationUri, ocrModel: null, save: false,
+            });
+        } catch (e: any) {
+            tableError = String(e?.message ?? e);
+        } finally {
+            tableBusy = false;
+        }
+    }
+
+    // ── Math OCR (LaTeX) ─────────────────────────────────────────────────────
+    let mathLoading = $state(false);
+    let mathResult = $state<string | null>(null);
+    let mathError = $state('');
+
+    async function runMathOcr() {
+        mathLoading = true;
+        mathResult = null;
+        mathError = '';
+        try {
+            mathResult = await invoke<string | null>('tool_math_ocr', {
+                locationUri,
+                model: null,
+            });
+        } catch (e: any) {
+            mathError = String(e?.message ?? e);
+        } finally {
+            mathLoading = false;
+        }
+    }
 </script>
 
 <div class="ocrwb">
@@ -292,6 +355,66 @@
                 <label class="chk"><input type="checkbox" checked={cur.proofread} onchange={toggleProofread} /> {i18n.t.ocrwb.proofread}</label>
             {/if}
         </div>
+
+        <!-- KIE extraction -->
+        <div class="tools-section">
+            <h4 class="tools-heading">KIE Field Extraction</h4>
+            <div class="tools-row">
+                <input type="text" class="tools-input" placeholder="total, date, vendor, invoice number"
+                    bind:value={kieLabelsInput} disabled={kieBusy || !locationUri} />
+                <button class="btn" onclick={runKie} disabled={kieBusy || !locationUri || !kieLabelsInput.trim()}>
+                    {kieBusy ? 'Extracting...' : 'Extract Fields'}
+                </button>
+            </div>
+            {#if kieError}<div class="bar err">{kieError}</div>{/if}
+            {#if kieResults.length > 0}
+                <table class="tools-table">
+                    <thead><tr><th>Label</th><th>Value</th><th>Score</th></tr></thead>
+                    <tbody>
+                        {#each kieResults as f}
+                            <tr>
+                                <td>{f.label}</td>
+                                <td>{f.value}</td>
+                                <td>{(f.score * 100).toFixed(1)}%</td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            {/if}
+        </div>
+
+        <!-- Table extraction -->
+        <div class="tools-section">
+            <h4 class="tools-heading">Table Extraction</h4>
+            <div class="tools-row">
+                <button class="btn" onclick={runTable} disabled={tableBusy || !locationUri}>
+                    {tableBusy ? 'Extracting...' : 'Extract Table'}
+                </button>
+            </div>
+            {#if tableError}<div class="bar err">{tableError}</div>{/if}
+            {#if tableResult}
+                <div class="muted" style="margin:4px 0;">{tableResult.rows} rows x {tableResult.cols} cols</div>
+                <div class="table-rendered">{@html tableResult.html}</div>
+            {/if}
+        </div>
+
+        <!-- Math OCR -->
+        <div class="tools-section">
+            <h4 class="tools-heading">Math OCR (LaTeX)</h4>
+            <div class="tools-row">
+                <button class="btn" onclick={runMathOcr} disabled={!locationUri || mathLoading}>
+                    {mathLoading ? 'Recognizing...' : 'Recognize Formula'}
+                </button>
+            </div>
+            {#if mathError}<div class="bar err">{mathError}</div>{/if}
+            {#if mathResult !== null}
+                {#if mathResult}
+                    <pre class="math-result" style="margin-top:6px; padding:8px; background:#0f0f12; border:1px solid #27272a; border-radius:6px; font-size:0.8125rem; color:#e4e4e7; overflow:auto;">{mathResult}</pre>
+                {:else}
+                    <p class="hint">No formula recognized in image.</p>
+                {/if}
+            {/if}
+        </div>
     {/if}
 </div>
 
@@ -335,4 +458,14 @@
     .region-body textarea { resize: vertical; background: #18181b; color: #e4e4e7; border: 1px solid #27272a; border-radius: 4px; padding: 4px 6px; font-size: 0.85rem; font-family: inherit; min-height: 1.6em; width: 100%; box-sizing: border-box; }
     .pagebar { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid #27272a; }
     .pageno { font-size: 0.8125rem; color: #a1a1aa; }
+    .tools-section { padding: 8px; border-top: 1px solid #27272a; }
+    .tools-heading { font-size: 0.85rem; color: #a1a1aa; margin: 0 0 6px; font-weight: 600; }
+    .tools-row { display: flex; gap: 6px; align-items: center; }
+    .tools-input { flex: 1; background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 6px; padding: 5px 8px; font-size: 0.8125rem; }
+    .tools-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; margin-top: 6px; }
+    .tools-table th { text-align: left; color: #71717a; font-weight: 600; padding: 4px 8px; border-bottom: 1px solid #27272a; }
+    .tools-table td { padding: 4px 8px; border-bottom: 1px solid #1c1c1f; color: #e4e4e7; }
+    .table-rendered { margin-top: 6px; overflow: auto; max-height: 300px; background: #0f0f12; border: 1px solid #27272a; border-radius: 6px; padding: 8px; font-size: 0.8125rem; color: #e4e4e7; }
+    .table-rendered :global(table) { border-collapse: collapse; width: 100%; }
+    .table-rendered :global(td), .table-rendered :global(th) { border: 1px solid #3f3f46; padding: 4px 6px; }
 </style>

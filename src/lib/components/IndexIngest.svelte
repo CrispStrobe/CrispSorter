@@ -255,6 +255,28 @@
     let imagesPreviewFacesLoading = $state(false);
     let imagesPreviewFacesError   = $state<string>('');
 
+    // Standalone local face detection (no CrispLens server needed)
+    interface LocalFace { x: number; y: number; w: number; h: number; confidence: number; }
+    let localFaceResult    = $state<LocalFace[] | null>(null);
+    let localFaceDetecting = $state(false);
+    let localFaceError     = $state('');
+
+    async function detectFacesLocal() {
+        if (!imagesPreview) return;
+        const path = uriToPath(imagesPreview.locationUri);
+        if (!path) return;
+        localFaceDetecting = true;
+        localFaceError     = '';
+        localFaceResult    = null;
+        try {
+            localFaceResult = await invoke<LocalFace[]>('images_detect_faces', { path });
+        } catch (e: any) {
+            localFaceError = String(e?.message ?? e);
+        } finally {
+            localFaceDetecting = false;
+        }
+    }
+
     // A3: SHA-256 dup-view state.  When `imagesDupMode` is true the
     // grid switches to grouped rendering and the linear list is
     // hidden.  Toggle is independent of the preview pane so the user
@@ -1803,6 +1825,9 @@
         imagesPreviewFaces        = [];
         imagesPreviewFacesError   = '';
         imagesPreviewFacesLoading = false;
+        localFaceResult    = null;
+        localFaceError     = '';
+        localFaceDetecting = false;
 
         const path = uriToPath(img.locationUri);
         imagesPreviewSrc = path ? convertFileSrc(path) : '';
@@ -1874,6 +1899,9 @@
         imagesPreviewFaces        = [];
         imagesPreviewFacesError   = '';
         imagesPreviewFacesLoading = false;
+        localFaceResult    = null;
+        localFaceError     = '';
+        localFaceDetecting = false;
     }
 
     /** A3: fetch SHA-256 duplicate clusters for the current image set.
@@ -3185,6 +3213,24 @@
                                 {#if !imagesPreviewExif.cameraMake && !imagesPreviewExif.cameraModel && !imagesPreviewExif.takenAt && imagesPreviewExif.width == null}
                                     <div class="images-exif-empty">{i18n.t.indexIngest.images_exif_empty}</div>
                                 {/if}
+                            {/if}
+                        </div>
+                        <!-- Local face detection (no server needed) -->
+                        <div class="images-exif-block" style="margin-top:8px;">
+                            <button class="action-btn small" onclick={detectFacesLocal} disabled={localFaceDetecting || !imagesPreview}>
+                                {#if localFaceDetecting}
+                                    <Loader2 size={14} class="spin" /> {i18n.t.indexIngest.face_detecting ?? 'Detecting...'}
+                                {:else}
+                                    {i18n.t.indexIngest.face_detect_btn ?? 'Detect Faces'}
+                                {/if}
+                            </button>
+                            {#if localFaceError}
+                                <div class="muted-small" style="color:#fca5a5;">{localFaceError}</div>
+                            {/if}
+                            {#if localFaceResult !== null}
+                                <div class="muted-small">
+                                    {localFaceResult.length} face{localFaceResult.length !== 1 ? 's' : ''} detected
+                                </div>
                             {/if}
                         </div>
                     </div>

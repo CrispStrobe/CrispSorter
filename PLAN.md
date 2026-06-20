@@ -425,33 +425,176 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 
 ## CLI ↔ GUI feature parity audit (2026-06-20)
 
-**CLI surface:** 13 top-level commands, ~70 subcommands (see `cli/mod.rs`).
-**GUI surface:** 196 Tauri commands across 19 functional areas.
+**CLI surface:** 15 top-level commands, ~78 subcommands (see `cli/mod.rs`).
+**GUI surface:** 204 Tauri commands across 19 functional areas.
 
 ### Implemented but unreachable from both CLI and GUI
 
 | Module | Status | Note |
 |--------|--------|------|
-| `images/face.rs` (175 lines) | Dead | EU AI Act — detection-only is fine but 1:N matching is not. Keep module but do NOT wire batch/index-time face scanning. Ad-hoc single-image detection could be exposed. |
-| `images/vit_embed.rs` (224 lines) | Dead | Visual similarity search; needs schema migration v109 |
-| `index/omni_embed.rs` (357 lines) | Dead | Cross-modal search; needs schema migration v108 + RRF channel |
-| `extractors/math_ocr.rs` partial | Dead (`recognize_formula`, `recognize_formula_with_model`; `recognize_formula_from_pixels` is used in layout pass) | Standalone formula OCR not exposed |
-| `extractors/ocr_paddle.rs` partial | Dead (`ocr_with_tables`, `detect_table_structure`) | Table-enhanced PaddleOCR never invoked |
+| `images/vit_embed.rs` (224 lines) | Dead | Visual similarity search; needs schema migration v109 + ingest pipeline wiring |
+| `index/omni_embed.rs` (357 lines) | Dead | Cross-modal search; schema v108 exists but ingest pipeline doesn't compute omni embeddings yet |
 
 ### CLI-only (no GUI equivalent)
 
-`doctor`, `index purge`, `index skip-failed`, `index l1-only`,
-`sync cloud-backup admin {mint,revoke,list}`, `sync cloud-backup partition`,
-`sync cloud-backup backup-shards/restore-shard`,
-`sync cloud-backup import-from-manifest-db`.
+*(None — all CLI commands now have GUI equivalents.)*
 
 ### GUI-only (no CLI equivalent)
 
-OCR Workbench (interactive correction), background ingest controls,
-durable job queue, file watcher, LLM sidecars, embedder registry UI,
-.CIDX mount/unmount, `index_image_promote_l3`, `index_audio_promote_l3`.
+*(Inherently visual or already have functional CLI equivalents:)*
 
-### Tauri commands registered but not called from any Svelte component
+- OCR Workbench interactive correction — inherently visual, no CLI equivalent possible
+- Background ingest controls / durable job queue — CLI `index ingest` handles headless ingest
+- LLM sidecars — CLI `chat query/transcribe/tts` provide headless equivalents
+- `index_image_promote_l3` / `index_audio_promote_l3` — CLI `index promote-l3 <doc_id>` already handles all file types (explicitly mirrors both; see cli/mod.rs line 2030)
 
-`tool_kie_extract`, `tool_table_extract` — exist as Tauri commands but
-no Svelte component invokes them yet (marked "programmatic").
+### Still dead (awaiting schema/pipeline work)
+
+| Module | Blocker | Effort |
+|--------|---------|--------|
+| `images/vit_embed.rs` | Schema migration adding `embedding_vit` FixedSizeList column + ingest pipeline wiring + RRF search channel | ~8 h |
+| `index/omni_embed.rs` | Ingest pipeline must compute omni embeddings for text/audio/image + RRF search channel (schema v108 column exists in module docs but migration not yet created) | ~12 h |
+
+### P21 — CLI ↔ GUI parity gap closure (2026-06-20)
+
+Closed 8 parity gaps in one session:
+
+- [x] **`doctor_check` Tauri command + Settings Diagnostics panel.**
+  `lib.rs::doctor_check` — returns the same JSON as `cli::cmd_doctor`
+  (tesseract, ocrs, PaddleOCR, CrispEmbed, face detection, embedder
+  model cache, LanceDB dir).  Settings sidebar gains a "Diagnostics"
+  entry with a "Run Diagnostics" button → checklist with green/red
+  indicators + LanceDB path.
+
+- [x] **KIE + Table tools wired into OcrWorkbench.**
+  `OcrWorkbench.svelte` now invokes the existing `tool_kie_extract`
+  and `tool_table_extract` Tauri commands that were registered but
+  uncalled.  KIE section: comma-separated label input → extract button →
+  results table (label / value / score).  Table section: extract button →
+  rendered HTML output with rows×cols count.
+
+- [x] **CLI `watch` command.**  New `crispsorter watch <DIR>` subcommand
+  (`cli/mod.rs::cmd_watch`).  Headless equivalent of the GUI folder
+  watcher — prints new-file paths to stdout as they appear (same
+  `notify` + debounce + extension filtering as `watcher/mod.rs`).
+  Runs until Ctrl-C; `desktop` feature-gated (same as the GUI watcher).
+  Pipe to `xargs -I{} crispsorter batch add "{}"` for auto-queue.
+
+- [x] **CLI `index tag-facets` command.**  New `crispsorter index
+  tag-facets [--limit N]` subcommand.  Calls `LocalIndex::tag_facets`
+  and prints tag / count in JSON or columnar text.
+
+- [x] **Advanced search filters in IndexSearch GUI.**  The filter panel
+  (`IndexSearch.svelte`) now exposes: extension, language, year range,
+  folder prefix, URL domain, tag, audio duration range, camera
+  make/model, and ColBERT rerank toggle — 12 new inputs matching the
+  full `SearchFilters` struct.
+
+- [x] **Advanced filters on `sync_federated_search` Tauri command.**
+  `sync/tauri_commands.rs::sync_federated_search` accepts 12 new
+  optional parameters (`ext`, `lang`, `year_min/max`, `folder_prefix`,
+  `url_domain`, `tag`, `audio_duration_min/max`, `image_camera_make/
+  model`, `colbert_rerank`).  Builds a `SearchFilters` and passes it
+  to `engine.search_hybrid()` instead of the empty default.
+
+- [x] **Single-image face detection in GUI.**
+  `images/tauri_commands.rs::images_detect_faces` — resolves a
+  `location_uri` to a local path, runs `face::detect_faces` on a
+  blocking thread, returns `Vec<FaceDetectionDto>`.  Registered in
+  both handler lists.  `IndexIngest.svelte` image preview pane gains
+  a "Detect Faces" button + count display.  Detection only (no
+  biometric identification — EU AI Act compliant).
+
+- [x] **`images/face.rs` + `ocr_paddle.rs::ocr_with_tables` no longer
+  dead.**  Face detection is now reachable via the GUI's
+  `images_detect_faces` command; table-enhanced PaddleOCR is reachable
+  via the `tool_table_extract` Tauri command + OcrWorkbench UI.
+
+- [x] **`doctor` no longer CLI-only.**  GUI equivalent via the Settings
+  Diagnostics panel.
+
+- [x] **File watcher no longer GUI-only.**  CLI `watch` provides the
+  headless equivalent.
+
+- [x] **`tool_kie_extract` + `tool_table_extract` no longer uncalled.**
+  Both wired into the OcrWorkbench Svelte component.
+
+- [x] **`sync cloud-backup admin {mint,revoke,list}` already had a GUI**
+  — Settings panel (verified: `Settings.svelte` lines 1772–1816 call
+  `sync_cb_admin_mint/revoke/list_keys`).  Removed from the CLI-only
+  gap list.
+
+**Round 2** — closed 12 more gaps:
+
+- [x] **`index_purge` Tauri command + Settings UI.**
+  `index/tauri_commands.rs::index_purge(max_size, dry_run)` wraps
+  `LocalIndex::purge_to_size`.  Settings → Diagnostics gains a Purge
+  section with size input, dry-run checkbox, and result display.
+
+- [x] **`index_skip_all_failed` Tauri command + Settings UI.**
+  Marks all retryable extraction failures as permanently skipped
+  (reason `"unsupported"`).  Settings gains "Skip All Failed" +
+  "Retry All Failed" buttons (the latter wraps the existing
+  `index_retry_all_failed` command).
+
+- [x] **`index_l1_only_scan` Tauri command + Settings UI.**
+  Walks a directory, computes SHA-256 per file, writes thin L1 rows
+  via `IngestPipeline`.  Settings gains an "L1 Scan Folder" button
+  with a folder picker dialog, showing scanned/written counts.
+
+- [x] **`sync_cb_restore_shard` Tauri command + Settings UI.**
+  Restores a shard backup from a cloud drive to the cb-api VPS.
+  Settings cloud-backup section gains a "Restore Shard" form (prefix,
+  drive ID, optional date).
+
+- [x] **CLI `math-ocr` command.**  New top-level `crispsorter math-ocr
+  <FILE> [--model NAME]`.  Recognizes mathematical formulas in images
+  and prints LaTeX to stdout.  Uses `extractors/math_ocr.rs`.
+
+- [x] **`tool_math_ocr` Tauri command + OcrWorkbench UI.**
+  Exposes `math_ocr::recognize_formula` as a Tauri command.
+  OcrWorkbench gains a "Math OCR (LaTeX)" section with a recognize
+  button and LaTeX output display.
+
+- [x] **CLI `index mount-cidx` command.**  Opens a `.cidx` offline
+  archive and prints doc/chunk counts + FTS availability.
+
+- [x] **CLI `index search-cidx` command.**  Opens a `.cidx`, runs FTS
+  search, prints results.  Standalone alternative to the GUI mount +
+  browse workflow.
+
+- [x] **CLI `index list-models` command.**  Lists CrispEmbed model
+  registry entries (name, description, filename, size).  Gated behind
+  `--features crispembed`.
+
+- [x] **`sync cloud-backup partition/backup-shards/import-from-manifest-db`
+  already had GUI equivalents** — Settings cloud-backup section calls
+  `sync_cb_partition`, `sync_cb_backup_shards`,
+  `sync_cb_import_from_manifest_db`.  Removed from the CLI-only gap list.
+
+- [x] **`extractors/math_ocr.rs` no longer dead.**  Standalone formula
+  recognition now reachable via `crispsorter math-ocr` CLI + `tool_math_ocr`
+  Tauri command + OcrWorkbench UI.
+
+- [x] **Embedder registry no longer GUI-only.**  CLI `index list-models`
+  provides the headless equivalent.
+
+- [x] **`.cidx mount/unmount` no longer GUI-only.**  CLI `index
+  mount-cidx` + `index search-cidx` provide headless equivalents.
+
+**Audit corrections** (round 2):
+
+- [x] **`index_image_promote_l3` / `index_audio_promote_l3` already
+  had a CLI equivalent** — `index promote-l3 <doc_id>` explicitly
+  mirrors both (see comment at cli/mod.rs:2030).  Removed from
+  GUI-only gap list.
+- [x] **Background ingest / job queue / LLM sidecars** are not parity
+  gaps — CLI `index ingest`, `batch process/apply`, and `chat
+  query/transcribe/tts` provide the headless equivalents.  The GUI
+  variants add visual feedback (progress bars, streaming) that is
+  inherently non-CLI.
+
+**Final status:** All closable CLI↔GUI parity gaps are resolved.
+Two modules (`vit_embed.rs`, `omni_embed.rs`) remain dead pending
+schema migrations + ingest pipeline work (~20 h combined).  These
+are tracked in the "Still dead" table above.

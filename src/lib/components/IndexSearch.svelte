@@ -91,6 +91,20 @@
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
+
+    // Advanced search filters
+    let filterExt           = $state('');
+    let filterLang          = $state('');
+    let filterYearMin       = $state<number | null>(null);
+    let filterYearMax       = $state<number | null>(null);
+    let filterFolderPrefix  = $state('');
+    let filterUrlDomain     = $state('');
+    let filterTag           = $state('');
+    let filterAudioDurMin   = $state<number | null>(null);
+    let filterAudioDurMax   = $state<number | null>(null);
+    let filterCameraMake    = $state('');
+    let filterCameraModel   = $state('');
+    let filterColbert       = $state(false);
     // PLAN P7.6 follow-up — when on (default), backend hides results
     // pinned to currently-unmounted volumes. Toggle off to show
     // everything regardless of mount state.
@@ -224,6 +238,18 @@
                     q,
                     limit,
                     backends: fedBackends.join(','),
+                    ext: filterExt ? filterExt.split(',').map(s => s.trim()).filter(Boolean) : null,
+                    lang: filterLang || null,
+                    yearMin: filterYearMin,
+                    yearMax: filterYearMax,
+                    folderPrefix: filterFolderPrefix || null,
+                    urlDomain: filterUrlDomain || null,
+                    tag: filterTag || null,
+                    audioDurationMin: filterAudioDurMin,
+                    audioDurationMax: filterAudioDurMax,
+                    imageCameraMake: filterCameraMake || null,
+                    imageCameraModel: filterCameraModel || null,
+                    colbertRerank: filterColbert || null,
                 },
             );
             fedResults = r.hits ?? [];
@@ -984,6 +1010,57 @@
                     <option value="ja">ja — 日本語</option>
                     <option value="zh">zh — 中文</option>
                 </select>
+            </label>
+        </div>
+        <!-- Advanced filters -->
+        <div class="filter-row" style="flex-wrap:wrap;">
+            <label class="filter-field" title="Comma-separated file extensions (e.g. pdf,docx)">
+                <span>Extension</span>
+                <input type="text" bind:value={filterExt} placeholder="pdf,docx" style="width:110px;" />
+            </label>
+            <label class="filter-field" title="ISO 639-1 language code (e.g. en, de)">
+                <span>Language</span>
+                <input type="text" bind:value={filterLang} placeholder="en" style="width:60px;" />
+            </label>
+            <label class="filter-field" title="Minimum publication year">
+                <span>Year min</span>
+                <input type="number" bind:value={filterYearMin} placeholder="2000" style="width:80px;" />
+            </label>
+            <label class="filter-field" title="Maximum publication year">
+                <span>Year max</span>
+                <input type="number" bind:value={filterYearMax} placeholder="2026" style="width:80px;" />
+            </label>
+            <label class="filter-field" title="Folder prefix filter (path starts with)">
+                <span>Folder prefix</span>
+                <input type="text" bind:value={filterFolderPrefix} placeholder="/home/user/docs" style="width:160px;" />
+            </label>
+            <label class="filter-field" title="URL domain filter (e.g. spiegel.de)">
+                <span>URL domain</span>
+                <input type="text" bind:value={filterUrlDomain} placeholder="spiegel.de" style="width:120px;" />
+            </label>
+            <label class="filter-field" title="Tag filter">
+                <span>Tag</span>
+                <input type="text" bind:value={filterTag} placeholder="invoice" style="width:100px;" />
+            </label>
+            <label class="filter-field" title="Min audio duration (seconds)">
+                <span>Audio min (s)</span>
+                <input type="number" bind:value={filterAudioDurMin} placeholder="0" style="width:70px;" />
+            </label>
+            <label class="filter-field" title="Max audio duration (seconds)">
+                <span>Audio max (s)</span>
+                <input type="number" bind:value={filterAudioDurMax} placeholder="3600" style="width:70px;" />
+            </label>
+            <label class="filter-field" title="Camera make (e.g. Canon, Nikon)">
+                <span>Camera make</span>
+                <input type="text" bind:value={filterCameraMake} placeholder="Canon" style="width:100px;" />
+            </label>
+            <label class="filter-field" title="Camera model (e.g. EOS R5)">
+                <span>Camera model</span>
+                <input type="text" bind:value={filterCameraModel} placeholder="EOS R5" style="width:100px;" />
+            </label>
+            <label class="filter-field" title="ColBERT late-interaction reranking" style="flex-direction:row; align-items:center; gap:6px;">
+                <input type="checkbox" bind:checked={filterColbert} />
+                <span>ColBERT rerank</span>
             </label>
         </div>
     {/if}

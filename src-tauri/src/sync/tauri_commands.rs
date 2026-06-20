@@ -1092,6 +1092,64 @@ pub async fn sync_cb_backup_shards(
     }))
 }
 
+/// Restore a shard backup from a cloud drive into the cb-api VPS.
+/// Mirrors the CLI `sync cloud-backup restore-shard` command.
+#[tauri::command]
+pub async fn sync_cb_restore_shard(
+    state: State<'_, AppState>,
+    prefix: String,
+    drive_id: String,
+    date: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use crate::drives::DriveRegistry;
+
+    let cli = make_cb_client(&state).await?;
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+
+    let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let drive_cfg = registry.drives.iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?
+        .clone();
+    let drive = DriveRegistry::instantiate(&drive_cfg);
+
+    // Resolve the date dir: explicit or most-recent.
+    let cb_root = std::path::Path::new("cb-backups");
+    let date_dir = if let Some(d) = date {
+        d
+    } else {
+        let mut dirs: Vec<String> = drive.list_dir(cb_root)
+            .map_err(|e| format!("list cb-backups: {e}"))?
+            .into_iter()
+            .filter(|e| e.is_dir)
+            .map(|e| e.name)
+            .collect();
+        dirs.sort();
+        dirs.pop().ok_or("no backup directories found on drive")?
+    };
+
+    let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
+    let data = drive.read_file(&tar_path)
+        .map_err(|e| format!("read {} from drive: {e}", tar_path.display()))?;
+
+    let byte_count = data.len();
+    cli.shard_import(&prefix, data).await.map_err(|e| e.to_string())?;
+
+    // Update backup state so next incremental backup knows about this.
+    if let Ok(bs) = crate::sync::backup_state::BackupState::open(&data_dir) {
+        let drive_path_str = tar_path.to_string_lossy().into_owned();
+        let _ = bs.record_backup(&prefix, 0, &drive_id, &drive_path_str);
+    }
+
+    Ok(serde_json::json!({
+        "restored": prefix,
+        "from_drive": drive_id,
+        "date": date_dir,
+        "bytes": byte_count,
+    }))
+}
+
 /// Stage R — one-shot import of `source_files` rows from a controller.py
 /// manifest SQLite into the cb-api VPS via `/api/manifest/push`.
 /// Resumable: a per-path watermark in `<data-dir>/manifest_import_state.db`
@@ -1295,6 +1353,18 @@ pub async fn sync_federated_search(
     q: String,
     limit: Option<usize>,
     backends: Option<String>,
+    ext: Option<Vec<String>>,
+    lang: Option<String>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+    folder_prefix: Option<String>,
+    url_domain: Option<String>,
+    tag: Option<String>,
+    audio_duration_min: Option<f64>,
+    audio_duration_max: Option<f64>,
+    image_camera_make: Option<String>,
+    image_camera_model: Option<String>,
+    colbert_rerank: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     use tokio::join;
 
@@ -1326,6 +1396,40 @@ pub async fn sync_federated_search(
     };
     let data_dir = data_dir_opt.ok_or("data_dir not initialised")?;
 
+    // Build filters from optional params.
+    let filters = {
+        let mut f = crate::index::schema::SearchFilters::default();
+        if let Some(ref exts) = ext {
+            f.ext = exts.clone();
+        }
+        if let Some(ref l) = lang {
+            f.language = Some(l.clone());
+        }
+        f.year_min = year_min;
+        f.year_max = year_max;
+        if let Some(ref fp) = folder_prefix {
+            f.parent_dir_prefix = Some(fp.clone());
+        }
+        if let Some(ref ud) = url_domain {
+            f.url_domain = Some(ud.clone());
+        }
+        if let Some(ref t) = tag {
+            f.tag = Some(t.clone());
+        }
+        f.audio_duration_min_seconds = audio_duration_min;
+        f.audio_duration_max_seconds = audio_duration_max;
+        if let Some(ref m) = image_camera_make {
+            f.image_camera_make = Some(m.clone());
+        }
+        if let Some(ref m) = image_camera_model {
+            f.image_camera_model = Some(m.clone());
+        }
+        if let Some(c) = colbert_rerank {
+            f.colbert_rerank = c;
+        }
+        f
+    };
+
     // ── Local backend ───────────────────────────────────────────────────────
     let local_fut = async {
         if !want_local { return (Vec::new(), None); }
@@ -1336,7 +1440,7 @@ pub async fn sync_federated_search(
         let Some(engine) = engine else {
             return (Vec::new(), Some("local index not initialised".to_owned()));
         };
-        match engine.search_hybrid(&q, &Default::default(), limit).await {
+        match engine.search_hybrid(&q, &filters, limit).await {
             Err(e) => (Vec::new(), Some(e.to_string())),
             Ok(hits) => {
                 let fed: Vec<FederatedHit> = hits.into_iter().enumerate().map(|(i, r)| {

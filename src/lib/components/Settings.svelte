@@ -197,6 +197,119 @@
     let ocrPipelineLayoutThr  = $state(0.25);
     let ocrPipelineLayoutEngine = $state('rtdetr');
     let ocrPipelineDropHF     = $state(false);
+
+    // Diagnostics panel state
+    interface DiagResult {
+        tesseract_installed: boolean;
+        ocrs_models_available: boolean;
+        paddle_ocr_available: boolean;
+        crispembed_available: boolean;
+        face_detection_available: boolean;
+        embedder_model_cached: boolean;
+        lance_dir_exists: boolean;
+        lance_dir?: string | null;
+    }
+    let diagLoading = $state(false);
+    let diagResult  = $state<DiagResult | null>(null);
+    let diagError   = $state('');
+
+    async function runDiagnostics() {
+        diagLoading = true;
+        diagError   = '';
+        diagResult  = null;
+        try {
+            diagResult = await invoke<DiagResult>('doctor_check');
+        } catch (e: any) {
+            diagError = String(e?.message ?? e);
+        } finally {
+            diagLoading = false;
+        }
+    }
+    // ── Index Maintenance state ───────────────────────────────────────────────
+    let purgeMaxSize = $state('5G');
+    let purgeDryRun = $state(true);
+    let purgeLoading = $state(false);
+    let purgeResult = $state<any>(null);
+    let purgeError = $state('');
+
+    async function runPurge() {
+        purgeLoading = true;
+        purgeResult = null;
+        purgeError = '';
+        try {
+            purgeResult = await invoke('index_purge', { maxSize: purgeMaxSize, dryRun: purgeDryRun });
+        } catch (e: any) {
+            purgeError = String(e);
+        }
+        purgeLoading = false;
+    }
+
+    let skipLoading = $state(false);
+    let skipResult = $state<number | null>(null);
+    let retryLoading = $state(false);
+    let retryResult = $state<number | null>(null);
+
+    async function skipAllFailed() {
+        skipLoading = true;
+        skipResult = null;
+        try {
+            skipResult = await invoke<number>('index_skip_all_failed');
+        } catch (e: any) {
+            purgeError = String(e);
+        }
+        skipLoading = false;
+    }
+
+    async function retryAllFailed() {
+        retryLoading = true;
+        retryResult = null;
+        try {
+            retryResult = await invoke<number>('index_retry_all_failed');
+        } catch (e: any) {
+            purgeError = String(e);
+        }
+        retryLoading = false;
+    }
+
+    let l1Loading = $state(false);
+    let l1Result = $state<{ scanned: number; written: number } | null>(null);
+
+    async function runL1Scan() {
+        l1Loading = true;
+        l1Result = null;
+        try {
+            const selected = await openDialog({ directory: true, multiple: false });
+            if (selected) {
+                l1Result = await invoke<{ scanned: number; written: number }>('index_l1_only_scan', { path: selected });
+            }
+        } catch (e: any) {
+            purgeError = String(e);
+        }
+        l1Loading = false;
+    }
+
+    // ── Restore Shard state ──────────────────────────────────────────────────
+    let restorePrefix = $state('');
+    let restoreDriveId = $state('');
+    let restoreDate = $state('');
+    let restoreLoading = $state(false);
+    let restoreResult = $state<any>(null);
+
+    async function restoreShard() {
+        restoreLoading = true;
+        restoreResult = null;
+        try {
+            restoreResult = await invoke('sync_cb_restore_shard', {
+                prefix: restorePrefix,
+                driveId: restoreDriveId,
+                date: restoreDate || null,
+            });
+        } catch (e: any) {
+            purgeError = String(e);
+        }
+        restoreLoading = false;
+    }
+
     // P20 #2 — pre-OCR super-resolution for low-res pages (PAN 4×).
     let ocrPipelineSr         = $state(false);
     let ocrPipelineSrMaxPx    = $state(1200);
@@ -2447,6 +2560,9 @@
             <button class="provider-btn" class:active={selectedProviderId === 'about'} onclick={() => selectedProviderId = 'about'}>
                 <span class="prov-label"><Info size={16} /> {i18n.t.settings.about}</span>
             </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'diagnostics'} onclick={() => selectedProviderId = 'diagnostics'}>
+                <span class="prov-label"><CheckCircle2 size={16} /> {i18n.t.settings.diagnostics_title ?? 'Diagnostics'}</span>
+            </button>
 
             <div class="sidebar-divider"></div>
             <!-- Long provider list (14 entries) is collapsed by default —
@@ -3797,6 +3913,22 @@
                     {/if}
                 </div>
 
+                <!-- Stage U — restore a shard from cloud drive. -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <strong>{i18n.t.settings.settings_restore_title ?? 'Restore Shard'}</strong>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+                        <input type="text" bind:value={restorePrefix} placeholder="shard prefix (e.g. aa)" style="width:120px" />
+                        <input type="text" bind:value={restoreDriveId} placeholder="drive ID" style="width:180px" />
+                        <input type="text" bind:value={restoreDate} placeholder="YYYY-MM-DD (optional)" style="width:140px" />
+                        <button onclick={restoreShard} disabled={restoreLoading}>
+                            {restoreLoading ? 'Restoring\u2026' : 'Restore'}
+                        </button>
+                    </div>
+                    {#if restoreResult}
+                        <pre class="diag-result">{JSON.stringify(restoreResult, null, 2)}</pre>
+                    {/if}
+                </div>
+
                 <!-- Stage N — volume-proportional auto-partition.
                      Pure operator surface; doesn't persist into
                      IndexConfig (the partition_map.db is the
@@ -4275,6 +4407,109 @@
                         {/each}
                     {/if}
                 </div>
+            </div>
+
+        {:else if selectedProviderId === 'diagnostics'}
+            <div class="header">
+                <h1>{i18n.t.settings.diagnostics_title ?? 'Diagnostics'}</h1>
+            </div>
+
+            <div class="section-card">
+                <p class="hint" style="margin-bottom:10px;">
+                    {i18n.t.settings.diagnostics_hint ?? 'Run a system check to verify which backends and models are available on this machine.'}
+                </p>
+                <button class="action-btn primary" onclick={runDiagnostics} disabled={diagLoading} style="margin-bottom:12px;">
+                    {#if diagLoading}<Loader2 size={14} class="spin" />{:else}<CheckCircle2 size={14} />{/if}
+                    {diagLoading
+                        ? (i18n.t.settings.diagnostics_checking ?? 'Checking...')
+                        : (i18n.t.settings.diagnostics_run ?? 'Run Diagnostics')}
+                </button>
+
+                {#if diagError}
+                    <div style="color:#fca5a5; font-size:0.82rem; margin-bottom:8px;">{diagError}</div>
+                {/if}
+
+                {#if diagResult}
+                    <div style="display:grid; grid-template-columns:24px 1fr; gap:6px 10px; font-size:0.85rem; align-items:center;">
+                        <span style="color:{diagResult.tesseract_installed ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.tesseract_installed ? '\u2713' : '\u2717'}</span>
+                        <span>Tesseract OCR</span>
+
+                        <span style="color:{diagResult.ocrs_models_available ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.ocrs_models_available ? '\u2713' : '\u2717'}</span>
+                        <span>OCRS models</span>
+
+                        <span style="color:{diagResult.paddle_ocr_available ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.paddle_ocr_available ? '\u2713' : '\u2717'}</span>
+                        <span>PaddleOCR</span>
+
+                        <span style="color:{diagResult.crispembed_available ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.crispembed_available ? '\u2713' : '\u2717'}</span>
+                        <span>CrispEmbed</span>
+
+                        <span style="color:{diagResult.face_detection_available ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.face_detection_available ? '\u2713' : '\u2717'}</span>
+                        <span>{i18n.t.settings.diagnostics_face ?? 'Face detection'}</span>
+
+                        <span style="color:{diagResult.embedder_model_cached ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.embedder_model_cached ? '\u2713' : '\u2717'}</span>
+                        <span>{i18n.t.settings.diagnostics_embedder ?? 'Embedder model cached'}</span>
+
+                        <span style="color:{diagResult.lance_dir_exists ? '#22c55e' : '#ef4444'}; font-weight:700;">{diagResult.lance_dir_exists ? '\u2713' : '\u2717'}</span>
+                        <span>LanceDB directory</span>
+                    </div>
+
+                    {#if diagResult.lance_dir}
+                        <div style="margin-top:8px; font-size:0.78rem; color:#a1a1aa;">
+                            <code>{diagResult.lance_dir}</code>
+                        </div>
+                    {/if}
+                {/if}
+            </div>
+
+            <!-- ── Index Maintenance ──────────────────────────────────── -->
+            <div class="section-group">
+                <strong>{i18n.t.settings.settings_purge_title ?? 'Index Purge'}</strong>
+                <p class="hint">{i18n.t.settings.settings_purge_hint ?? 'Remove old embeddings and rows to free disk space.'}</p>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <input type="text" bind:value={purgeMaxSize} placeholder="e.g. 5G, 500M" style="width:120px" />
+                    <button onclick={runPurge} disabled={purgeLoading}>
+                        {purgeLoading ? 'Purging\u2026' : 'Purge'}
+                    </button>
+                    <label><input type="checkbox" bind:checked={purgeDryRun} /> Dry run</label>
+                </div>
+                {#if purgeResult}
+                    <pre class="diag-result">{JSON.stringify(purgeResult, null, 2)}</pre>
+                {/if}
+                {#if purgeError}
+                    <p class="error">{purgeError}</p>
+                {/if}
+            </div>
+
+            <div class="section-group">
+                <strong>{i18n.t.settings.settings_failed_title ?? 'Failed Extractions'}</strong>
+                <p class="hint">{i18n.t.settings.settings_failed_hint ?? 'Permanently skip retryable failures so the background worker stops retrying them.'}</p>
+                <div style="display:flex; gap:8px;">
+                    <button onclick={skipAllFailed} disabled={skipLoading}>
+                        {skipLoading ? 'Skipping\u2026' : 'Skip All Failed'}
+                    </button>
+                    <button onclick={retryAllFailed} disabled={retryLoading}>
+                        {retryLoading ? 'Retrying\u2026' : 'Retry All Failed'}
+                    </button>
+                </div>
+                {#if skipResult !== null}
+                    <p>{skipResult} extraction(s) permanently skipped.</p>
+                {/if}
+                {#if retryResult !== null}
+                    <p>{retryResult} extraction(s) queued for retry.</p>
+                {/if}
+            </div>
+
+            <div class="section-group">
+                <strong>{i18n.t.settings.settings_l1_title ?? 'L1-Only Scan'}</strong>
+                <p class="hint">{i18n.t.settings.settings_l1_hint ?? 'Quick metadata-only scan of a directory (no text extraction). Hashes files and writes thin index rows.'}</p>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button onclick={runL1Scan} disabled={l1Loading}>
+                        {l1Loading ? 'Scanning\u2026' : 'L1 Scan Folder'}
+                    </button>
+                </div>
+                {#if l1Result}
+                    <p>Scanned {l1Result.scanned} files, wrote {l1Result.written} rows.</p>
+                {/if}
             </div>
 
         {:else}

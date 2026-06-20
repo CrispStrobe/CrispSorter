@@ -99,6 +99,41 @@ async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, St
     Ok(guard.list())
 }
 
+// ── Doctor diagnostic (CLI↔GUI parity) ─────────────────────────────────
+
+/// Return the same environment diagnostics the CLI `doctor` command
+/// prints, as a JSON object the Settings panel can render.
+#[tauri::command]
+async fn doctor_check() -> Result<serde_json::Value, String> {
+    let tesseract = crate::extractors::ocr::is_tesseract_installed();
+    let ocrs_models = crate::extractors::ocr_ocrs::is_ocrs_available();
+    let paddle_ocr = crate::extractors::ocr_paddle::is_paddle_ocr_available();
+    let pdf_extract_ok = true;
+    let crispembed_available = cfg!(feature = "crispembed");
+    let face_detection = crate::images::face::is_face_detection_available();
+    // Check model cache — use HOME env like cmd_doctor does (no `dirs` crate).
+    let model_cache = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
+        .unwrap_or_default();
+    let embedder_cached = model_cache.exists() &&
+        std::fs::read_dir(&model_cache).map(|d| d.count() > 0).unwrap_or(false);
+    let lance_dir = std::env::var_os("HOME").map(|h| {
+        std::path::PathBuf::from(h)
+            .join("Library/Application Support/com.crispstrobe.crispsorter/lance")
+    });
+    Ok(serde_json::json!({
+        "tesseract_installed": tesseract,
+        "ocrs_models_available": ocrs_models,
+        "paddle_ocr_available": paddle_ocr,
+        "pdf_extract_compiled_in": pdf_extract_ok,
+        "crispembed_available": crispembed_available,
+        "face_detection_available": face_detection,
+        "embedder_model_cached": embedder_cached,
+        "lance_dir_exists": lance_dir.as_ref().map(|p| p.exists()).unwrap_or(false),
+        "lance_dir": lance_dir.as_ref().map(|p| p.display().to_string()),
+    }))
+}
+
 // ── Volume awareness (PLAN P7.6) ────────────────────────────────────────
 
 /// List currently-mounted volumes with their stable id, mount point,
@@ -2605,6 +2640,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_partition,
             sync::tauri_commands::sync_status_all,
             sync::tauri_commands::sync_cb_backup_shards,
+            sync::tauri_commands::sync_cb_restore_shard,
             sync::tauri_commands::sync_cb_import_from_manifest_db,
             sync::tauri_commands::sync_federated_search,
             sync::tauri_commands::sync_cb_admin_mint,
@@ -2618,12 +2654,14 @@ pub fn run() {
             drives::tauri_commands::drive_delete,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,
+            doctor_check,
             images::tauri_commands::images_list,
             images::tauri_commands::images_default_extensions,
             images::tauri_commands::images_thumbnail,
             images::tauri_commands::images_exif,
             images::tauri_commands::images_duplicates,
             images::tauri_commands::images_near_duplicates,
+            images::tauri_commands::images_detect_faces,
             images::crisplens::tauri_commands::images_crisplens_settings_get,
             images::crisplens::tauri_commands::images_crisplens_settings_set,
             images::crisplens::tauri_commands::images_crisplens_session_status,
@@ -2647,6 +2685,9 @@ pub fn run() {
             index::tauri_commands::index_query_cidx_documents,
             index::tauri_commands::index_list_failed_extractions,
             index::tauri_commands::index_retry_all_failed,
+            index::tauri_commands::index_purge,
+            index::tauri_commands::index_skip_all_failed,
+            index::tauri_commands::index_l1_only_scan,
             index::tauri_commands::index_ingest_path,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
@@ -2671,6 +2712,7 @@ pub fn run() {
             index::tauri_commands::tool_ocr_export,
             index::tauri_commands::tool_kie_extract,
             index::tauri_commands::tool_table_extract,
+            index::tauri_commands::tool_math_ocr,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
@@ -2792,6 +2834,7 @@ pub fn run() {
             sync::tauri_commands::sync_cb_partition,
             sync::tauri_commands::sync_status_all,
             sync::tauri_commands::sync_cb_backup_shards,
+            sync::tauri_commands::sync_cb_restore_shard,
             sync::tauri_commands::sync_cb_import_from_manifest_db,
             sync::tauri_commands::sync_federated_search,
             sync::tauri_commands::sync_cb_admin_mint,
@@ -2805,12 +2848,14 @@ pub fn run() {
             drives::tauri_commands::drive_delete,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,
+            doctor_check,
             images::tauri_commands::images_list,
             images::tauri_commands::images_default_extensions,
             images::tauri_commands::images_thumbnail,
             images::tauri_commands::images_exif,
             images::tauri_commands::images_duplicates,
             images::tauri_commands::images_near_duplicates,
+            images::tauri_commands::images_detect_faces,
             images::crisplens::tauri_commands::images_crisplens_settings_get,
             images::crisplens::tauri_commands::images_crisplens_settings_set,
             images::crisplens::tauri_commands::images_crisplens_session_status,
@@ -2834,6 +2879,9 @@ pub fn run() {
             index::tauri_commands::index_query_cidx_documents,
             index::tauri_commands::index_list_failed_extractions,
             index::tauri_commands::index_retry_all_failed,
+            index::tauri_commands::index_purge,
+            index::tauri_commands::index_skip_all_failed,
+            index::tauri_commands::index_l1_only_scan,
             index::tauri_commands::index_ingest_path,
             index::tauri_commands::index_update_location,
             index::tauri_commands::index_update_location_by_path,
@@ -2858,6 +2906,7 @@ pub fn run() {
             index::tauri_commands::tool_ocr_export,
             index::tauri_commands::tool_kie_extract,
             index::tauri_commands::tool_table_extract,
+            index::tauri_commands::tool_math_ocr,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,

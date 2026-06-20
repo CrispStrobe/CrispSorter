@@ -2969,6 +2969,203 @@ pub async fn index_retry_all_failed(
     local.retry_all_failed_extractions().await.map_err(|e| e.to_string())
 }
 
+// ── P21 — CLI↔GUI parity: purge / skip-failed / l1-only-scan ────────────────
+
+/// Purge the local Lance index down to `max_size` bytes.
+/// `max_size` is a human string like "2G" / "500M".
+/// When `dry_run` is true, no data is deleted — only the excess is reported.
+#[tauri::command]
+pub async fn index_purge(
+    state: State<'_, AppState>,
+    max_size: String,
+    dry_run: bool,
+) -> Result<serde_json::Value, String> {
+    let max_bytes = crate::cli::parse_size_str_pub(&max_size)?;
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not set")?;
+    let lance_dir = data_dir.join("lance");
+    let current = super::local_index::dir_size_bytes(&lance_dir);
+    if current <= max_bytes {
+        return Ok(serde_json::json!({
+            "status": "already_within_cap",
+            "current_bytes": current,
+            "max_bytes": max_bytes,
+        }));
+    }
+    if dry_run {
+        return Ok(serde_json::json!({
+            "dry_run": true,
+            "current_bytes": current,
+            "max_bytes": max_bytes,
+            "excess_bytes": current.saturating_sub(max_bytes),
+        }));
+    }
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    let (stripped, deleted, reclaimed) = local
+        .purge_to_size(&lance_dir, max_bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "stripped_rows": stripped,
+        "deleted_rows": deleted,
+        "bytes_reclaimed": reclaimed,
+        "final_bytes": super::local_index::dir_size_bytes(&lance_dir),
+    }))
+}
+
+/// Mark all failed-extraction rows as "skipped" (unsupported) so they
+/// stop appearing in the retry queue.
+#[tauri::command]
+pub async fn index_skip_all_failed(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    let rows = local.list_failed_extractions(false).await.map_err(|e| e.to_string())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let new_meta = format!(
+        r#"{{"level":2,"extraction_failure":{{"reason":"unsupported","msg":"skipped via GUI","at":{}}}}}"#,
+        now_ms
+    );
+    let mut n = 0usize;
+    for row in &rows {
+        let _ = local.update_l2_fields(
+            &row.doc_id,
+            None, None, None, None, None,
+            Some(&new_meta),
+        ).await;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Walk a local directory and write L1 (metadata-only) rows into the
+/// index.  Mirrors the CLI `index l1-only` command for the GUI.
+#[tauri::command]
+pub async fn index_l1_only_scan(
+    state: State<'_, AppState>,
+    path: String,
+    owner_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use sha2::{Digest, Sha256};
+
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not set")?;
+    let root = std::path::PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+
+    let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+    let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
+        .map_err(|e| e.to_string())?;
+    let pipeline = crate::index::ingest::IngestPipeline::new(
+        std::sync::Arc::new(fts),
+        std::sync::Arc::new(local),
+        None,
+        crate::index::ingest::IngestConfig::default(),
+    );
+
+    let mut total_scanned = 0u64;
+    let mut total_written = 0u64;
+
+    for entry in jwalk::WalkDir::new(&root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let fp = entry.path();
+        total_scanned += 1;
+
+        let meta = match std::fs::metadata(&fp) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.len() == 0 { continue; }
+
+        let mtime_unix = meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+        let file_size = meta.len() as i64;
+        let filename = fp.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ext = fp.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let parent_dir = fp.parent()
+            .and_then(|d| d.to_str())
+            .map(|s| s.to_owned());
+
+        let bytes = match std::fs::read(&fp) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        let sha256 = hex::encode(h.finalize());
+
+        let loc = crate::index::location::FileLocation::Local {
+            user_id: uuid::Uuid::parse_str(&owner).unwrap_or(uuid::Uuid::nil()),
+            machine_id: uuid::Uuid::nil(),
+            path: fp.to_path_buf(),
+        };
+
+        let raw = crate::index::ingest::RawDocument {
+            full_text: String::new(),
+            full_text_md: String::new(),
+            headings: Vec::new(),
+            title: None,
+            author: None,
+            year: None,
+            filename,
+            ext,
+            language: String::new(),
+            source_hash: sha256,
+            location_uri: loc.to_uri(),
+            owner_id: owner.clone(),
+            tags: Vec::new(),
+            mtime_unix,
+            file_size: Some(file_size),
+            volume_id: crate::volume::volume_id_for_path(fp.as_path()),
+            parent_dir,
+            translated_text: None,
+            translated_to_lang: None,
+            audio_duration_seconds: None,
+            audio_codec: None,
+            audio_sample_rate_hz: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            image_camera_make: None,
+            image_camera_model: None,
+            image_lens_model: None,
+            image_taken_at_unix: None,
+            image_iso: None,
+            multivec_packed: None,
+            multivec_n_tokens: None,
+            url: None,
+        };
+
+        if pipeline.ingest_document(raw).await.is_ok() {
+            total_written += 1;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "scanned": total_scanned,
+        "written": total_written,
+    }))
+}
+
 // ── P12 — cloud-backup L3 promotion via retrieve.py ──────────────────────────
 
 /// Promote a `crisp+cb-archive://...` row to L3 by spawning `retrieve.py`
@@ -3790,6 +3987,33 @@ pub async fn tool_table_extract(
     };
 
     Ok(TableExtractResult { rows, cols, html, saved_path })
+}
+
+// ── Math OCR tool ───────────────────────────────────────────────────────────
+
+/// Recognize a mathematical formula in an image and return the LaTeX string.
+/// Mirrors the CLI `math-ocr` command for the GUI tool-palette.
+#[tauri::command]
+pub async fn tool_math_ocr(
+    location_uri: String,
+    model: Option<String>,
+) -> Result<Option<String>, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("not a local path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        if let Some(ref m) = model {
+            crate::extractors::math_ocr::recognize_formula_with_model(&path, m)
+        } else {
+            crate::extractors::math_ocr::recognize_formula(&path)
+        }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+    .map_err(|e| format!("math OCR failed: {e:#}"))?;
+    Ok(result)
 }
 
 // ── OCR Workbench (interactive proofreading screen) ──────────────────────────

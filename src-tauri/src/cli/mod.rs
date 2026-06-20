@@ -44,7 +44,7 @@ use std::process::ExitCode;
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie", "table",
+    "sync", "ocr", "kie", "table", "math-ocr", "watch",
     "manpage", "completion", "help", "--help", "-h",
 ];
 
@@ -315,6 +315,14 @@ enum Command {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+    /// Recognize a mathematical formula in an image and output LaTeX.
+    MathOcr {
+        /// Image file containing a formula (PNG/JPG/…).
+        file: PathBuf,
+        /// Model registry name (default: ppformulanet-l).
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Table structure recognition — parse a table image into HTML (rule-based
     /// line detection + per-cell OCR), or just report its grid dimensions.
     Table {
@@ -374,6 +382,16 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: SyncCmd,
+    },
+    /// Watch a folder for new files and print detected paths to stdout.
+    /// Headless equivalent of the GUI folder-watcher. Runs until interrupted
+    /// (Ctrl-C). Combine with `batch add` to auto-queue detected files.
+    Watch {
+        /// Directory to watch recursively.
+        folder: PathBuf,
+        /// Also include image/audio/video extensions (not just documents).
+        #[arg(long)]
+        all_exts: bool,
     },
     /// Unified search — one verb over the local index AND the configured
     /// cloud-backup (cb-api) corpus, RRF-merged and badged by source.
@@ -1202,6 +1220,7 @@ pub fn run() -> ExitCode {
         Command::Chat { cmd } => cmd_chat(cli.format, cmd),
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
+        Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
             folder_prefix, author, year_min, year_max, url_domain, tag,
@@ -1238,6 +1257,7 @@ pub fn run() -> ExitCode {
         Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
             cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
         }
+        Command::MathOcr { file, model } => cmd_math_ocr(file, model),
         Command::Table { file, ocr_model, grid, out } => {
             cmd_table(cli.format, file, ocr_model, grid, out)
         }
@@ -1506,6 +1526,29 @@ fn cmd_kie(
         }
     }
     Ok(())
+}
+
+/// Recognize a mathematical formula in an image and print LaTeX.
+fn cmd_math_ocr(file: PathBuf, model: Option<String>) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+    let result = if let Some(ref m) = model {
+        crate::extractors::math_ocr::recognize_formula_with_model(&file, m)
+    } else {
+        crate::extractors::math_ocr::recognize_formula(&file)
+    };
+    match result {
+        Ok(Some(latex)) => {
+            println!("{}", latex);
+            Ok(())
+        }
+        Ok(None) => {
+            eprintln!("no formula recognized");
+            Ok(())
+        }
+        Err(e) => Err(format!("math OCR failed: {e:#}")),
+    }
 }
 
 /// Parse a table image into HTML (or report its grid dimensions).
@@ -2023,6 +2066,29 @@ enum IndexCmd {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// List the most common tags in the index as a faceted count.
+    TagFacets {
+        /// Maximum tags to return.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Mount a .cidx offline archive and print its stats.
+    MountCidx {
+        /// Path to the .cidx directory.
+        path: PathBuf,
+    },
+    /// Search a .cidx archive (mounts, searches, unmounts).
+    SearchCidx {
+        /// Path to the .cidx directory.
+        path: PathBuf,
+        /// Query text.
+        query: String,
+        /// Maximum results.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// List available embedder models from the CrispEmbed registry.
+    ListModels,
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -3140,8 +3206,124 @@ async fn cmd_index_async(
                 }
             }
         }
+        IndexCmd::TagFacets { limit } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let facets = local.tag_facets(&Default::default(), limit)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&facets).unwrap_or_default());
+                }
+                OutFormat::Text => {
+                    if facets.is_empty() {
+                        println!("No tags found.");
+                    } else {
+                        for f in &facets {
+                            println!("  {:>6}  {}", f.count, f.tag);
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::MountCidx { path } => {
+            let idx = crate::index::LocalIndex::open_cidx(&path)
+                .await.map_err(|e| e.to_string())?;
+            let docs = idx.count_docs().await.map_err(|e| e.to_string())?;
+            let chunks = idx.count().await.map_err(|e| e.to_string())?;
+            let fts_dir = path.join("fts");
+            let has_fts = fts_dir.exists();
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "path": path.display().to_string(),
+                    "docs": docs,
+                    "chunks": chunks,
+                    "has_fts": has_fts,
+                })),
+                OutFormat::Text => println!(
+                    "mounted {}: {} docs, {} chunks{}",
+                    path.display(), docs, chunks,
+                    if has_fts { ", FTS available" } else { "" }
+                ),
+            }
+        }
+        IndexCmd::SearchCidx { path, query, limit } => {
+            let idx = crate::index::LocalIndex::open_cidx(&path)
+                .await.map_err(|e| e.to_string())?;
+            let fts_dir = path.join("fts");
+            let fts = if fts_dir.exists() {
+                crate::index::FtsIndex::open_or_create(&fts_dir).ok()
+            } else {
+                None
+            };
+            if let Some(fts) = fts {
+                let hits = fts.search(&query, &Default::default(), limit)
+                    .map_err(|e| e.to_string())?;
+                let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+                let batches = idx.fetch_by_doc_ids(&doc_ids).await.map_err(|e| e.to_string())?;
+                let empty = std::collections::HashMap::<String, f32>::new();
+                let rows = crate::index::local_index::batches_to_search_results_with_scores(&batches, &empty)
+                    .map_err(|e| e.to_string())?;
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default()),
+                    OutFormat::Text => {
+                        println!("{} results from .cidx:", rows.len());
+                        for r in &rows {
+                            println!("  {} — {}", r.filename.as_deref().unwrap_or("?"), r.location_uri);
+                        }
+                    }
+                }
+            } else {
+                match out {
+                    OutFormat::Json => println!("{}", serde_json::json!({"error": "no FTS index in cidx"})),
+                    OutFormat::Text => println!("No FTS index found in {}; use --include-fts when exporting.", path.display()),
+                }
+            }
+        }
+        IndexCmd::ListModels => {
+            #[cfg(feature = "crispembed")]
+            {
+                let models = crispembed::CrispEmbed::list_models();
+                match out {
+                    OutFormat::Json => {
+                        let entries: Vec<serde_json::Value> = models.iter().map(|m| {
+                            serde_json::json!({
+                                "name": m.name,
+                                "desc": m.desc,
+                                "filename": m.filename,
+                                "size": m.size,
+                            })
+                        }).collect();
+                        println!("{}", serde_json::to_string_pretty(&entries).unwrap_or_default());
+                    }
+                    OutFormat::Text => {
+                        if models.is_empty() {
+                            println!("No models in registry.");
+                        } else {
+                            for m in &models {
+                                println!("  {:<30} {} ({})", m.name, m.desc, m.size);
+                            }
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "crispembed"))]
+            {
+                match out {
+                    OutFormat::Json => println!("[]"),
+                    OutFormat::Text => println!("CrispEmbed not compiled in; no model registry available."),
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// Public wrapper for `parse_size_str` so Tauri commands can reuse it.
+pub fn parse_size_str_pub(s: &str) -> Result<u64, String> {
+    parse_size_str(s)
 }
 
 /// Parse a byte-count string with optional SI suffix (G / M / K).
@@ -3160,6 +3342,70 @@ fn parse_size_str(s: &str) -> Result<u64, String> {
         other => return Err(format!("unknown suffix '{other}'; use K/M/G/T")),
     };
     Ok(base * multiplier)
+}
+
+// ── watch (CLI↔GUI parity) ────────────────────────────────────────────────
+
+#[cfg(feature = "desktop")]
+fn cmd_watch(folder: PathBuf, _all_exts: bool) -> Result<(), String> {
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::{EventKind, CreateKind, ModifyKind, RenameMode}};
+    use std::sync::mpsc;
+
+    let folder = folder.canonicalize().map_err(|e| format!("cannot resolve path: {e}"))?;
+    if !folder.is_dir() {
+        return Err(format!("not a directory: {}", folder.display()));
+    }
+    eprintln!("[watch] watching {} (Ctrl-C to stop)", folder.display());
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        notify::Config::default(),
+    ).map_err(|e| format!("watcher init failed: {e}"))?;
+
+    watcher.watch(&folder, RecursiveMode::Recursive)
+        .map_err(|e| format!("watch failed: {e}"))?;
+
+    for event in rx {
+        let dominated = matches!(
+            event.kind,
+            EventKind::Create(CreateKind::File)
+                | EventKind::Create(CreateKind::Any)
+                | EventKind::Modify(ModifyKind::Name(RenameMode::To))
+                | EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+        );
+        if !dominated { continue; }
+        for path in &event.paths {
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if name.starts_with('.') || name.ends_with('~') { continue; }
+            let ext = match path.extension().and_then(|e| e.to_str()) {
+                Some(e) => e.to_ascii_lowercase(),
+                None => continue,
+            };
+            if matches!(ext.as_str(), "tmp" | "swp" | "swx" | "part" | "crdownload") {
+                continue;
+            }
+            // Check it's a real file with size > 0
+            if let Ok(m) = std::fs::metadata(path) {
+                if m.is_file() && m.len() > 0 {
+                    println!("{}", path.display());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "desktop"))]
+fn cmd_watch(_folder: PathBuf, _all_exts: bool) -> Result<(), String> {
+    Err("watch command requires --features desktop (notify crate)".to_string())
 }
 
 // ── sync (P13.7 Step 5 — cloud-backup HTTP target) ────────────────────────
