@@ -2038,6 +2038,25 @@ impl CrispEmbedBackend {
     ) -> Vec<(usize, f32)> {
         self.model.rerank_biencoder(query, documents, top_n)
     }
+
+    // ── LoRA adapter hot-swap (Jina v5 task adapters) ──────────────
+
+    /// List available LoRA adapter names embedded in the loaded GGUF.
+    /// Empty if the model has no adapters.
+    pub(crate) fn list_lora(&self) -> Vec<String> {
+        self.model.list_lora()
+    }
+
+    /// Activate a LoRA adapter by name (`""` to deactivate).
+    /// Returns `true` on success.
+    pub(crate) fn set_lora(&mut self, adapter_name: &str) -> bool {
+        self.model.set_lora(adapter_name)
+    }
+
+    /// Currently active LoRA adapter name, or `None`.
+    pub(crate) fn get_lora(&self) -> Option<String> {
+        self.model.get_lora()
+    }
 }
 
 /// Pre-converted GGUF hosted by cstr/ on HuggingFace. Mirrors the registry

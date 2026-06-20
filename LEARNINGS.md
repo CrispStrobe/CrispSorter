@@ -39,6 +39,34 @@ exposes only `detect_faces` / `count_faces` — no `recognize_faces`, no
 `encode_face`, no face embeddings.  The CrispEmbed API supports recognition
 but we don't call it.
 
+### Two separate engine-int namespaces: pipeline stages vs VLM escalation
+
+CrispEmbed has **two different integer mappings** for OCR engines:
+
+1. **`crispembed_ocr_stage.engine`** — the per-stage pipeline engine ID
+   (0=dbnet_trocr, 1=surya, 2=got, ..., 12=qwen3vl). Mapped by
+   `engine_id()` in `extractors/mod.rs`.
+
+2. **`crispembed_ocr_pipeline_params.vlm_engine`** — the VLM escalation
+   engine for simple mode (0=GOT, 1=GLM, 2=Qwen2-VL, 3=InternVL2,
+   4=Qwen3-VL). Mapped by `vlm_engine_id()` in `ocr_crispembed.rs`.
+
+These are **not the same numbering**. GOT is engine 2 in the stage
+namespace but 0 in the VLM namespace. Adding a new engine to one doesn't
+automatically add it to the other — check both `engine_id()` and
+`vlm_engine_id()`, plus the CLI value_parsers for `--engine` and
+`--vlm-ocr-engine`, plus both Settings UI dropdowns (stage builder and
+simple-mode VLM escalation).
+
+### `isVlmEngine` in Settings.svelte must track det+rec engines
+
+The frontend helper `isVlmEngine(e)` controls whether the stage builder
+shows two model fields (det+rec) or one (VLM single-model). Any engine
+that uses the DBNet detector + a separate recognizer (dbnet_trocr, surya,
+tesseract, parseq) must return `false`. PARSeq was missed initially
+because its name doesn't suggest a det+rec split, but it's engine 7 =
+DBNet detect + PARSeq recognize.
+
 ---
 
 ## Build & CI

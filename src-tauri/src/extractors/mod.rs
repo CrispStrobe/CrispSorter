@@ -501,6 +501,7 @@ fn engine_id(name: &str) -> i32 {
         "pix2struct" => 9,     // Pix2Struct (doc/chart understanding)
         "granite_vision" => 10, // Granite Vision 3.3-2B (LLaVA-Next)
         "lightonocr" => 11,    // LightOnOCR-2-1B (Pixtral ViT + Qwen3)
+        "qwen3vl" => 12,       // Qwen3-VL-2B (DeepStack, IMROPE, per-head QK-norm)
         _ => 0, // dbnet_trocr
     }
 }
@@ -1292,6 +1293,12 @@ mod ocr_pipeline_tests {
         assert_eq!(engine_id("qwen2vl"), 4);
         assert_eq!(engine_id("internvl2"), 5);
         assert_eq!(engine_id("tesseract"), 6);
+        assert_eq!(engine_id("parseq"), 7);
+        assert_eq!(engine_id("deepseek_ocr2"), 8);
+        assert_eq!(engine_id("pix2struct"), 9);
+        assert_eq!(engine_id("granite_vision"), 10);
+        assert_eq!(engine_id("lightonocr"), 11);
+        assert_eq!(engine_id("qwen3vl"), 12);
         // Unknown falls back to dbnet_trocr.
         assert_eq!(engine_id("nonsense"), 0);
     }

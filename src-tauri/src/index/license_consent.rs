@@ -110,7 +110,11 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         }
         // GLiNER NER (index::ner) — the German-tuned LFM model ships under the
         // LFM Open License v1.0 (restricted); the DeBERTa GGUF is Apache-2.0.
-        "sauerkraut-gliner-lfm" => ModelLicense::Restricted("LFM Open License v1.0"),
+        // LFM2.5 embeddings/ColBERT from CrispEmbed also use LFM Open License.
+        "sauerkraut-gliner-lfm" | "gliner-lfm" | "gliner-lfm-q4k"
+        | "lfm2-embed" | "lfm2-embed-q4k" | "lfm2-colbert" | "lfm2-colbert-q4k" => {
+            ModelLicense::Restricted("LFM Open License v1.0")
+        }
         _ => ModelLicense::Permissive,
     }
 }
