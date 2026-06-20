@@ -233,6 +233,7 @@ fn is_eligible_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::{CreateKind, DataChange, EventKind, ModifyKind, RenameMode};
 
     #[test]
     fn dotfiles_rejected() {
@@ -252,5 +253,38 @@ mod tests {
     fn unknown_extension_rejected() {
         assert!(!is_eligible_path(Path::new("/x/photo.jpg")));
         assert!(!is_eligible_path(Path::new("/x/script.sh")));
+    }
+
+    // --- is_eligible_path edge cases ---
+
+    #[test]
+    fn part_extension_rejected() {
+        assert!(!is_eligible_path(Path::new("/x/document.part")));
+    }
+
+    #[test]
+    fn no_extension_rejected() {
+        assert!(!is_eligible_path(Path::new("/tmp/Makefile")));
+    }
+
+    // --- is_relevant_kind ---
+
+    #[test]
+    fn is_relevant_kind_create_file() {
+        assert!(is_relevant_kind(&EventKind::Create(CreateKind::File)));
+    }
+
+    #[test]
+    fn is_relevant_kind_rename_to() {
+        assert!(is_relevant_kind(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::To
+        ))));
+    }
+
+    #[test]
+    fn is_relevant_kind_data_write_false() {
+        assert!(!is_relevant_kind(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
     }
 }

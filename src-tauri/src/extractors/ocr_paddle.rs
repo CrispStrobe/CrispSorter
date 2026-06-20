@@ -28,7 +28,7 @@ pub fn is_paddle_ocr_available() -> bool {
 /// Heuristic: does the path contain CJK Unicode characters?
 /// Used when `OcrRecLang::Auto` — if the filename or parent directory
 /// has a significant proportion of CJK codepoints we prefer the CH model.
-#[cfg(feature = "paddle-ocr")]
+#[cfg(any(feature = "paddle-ocr", test))]
 fn path_looks_cjk(path: &Path) -> bool {
     let s = path.to_string_lossy();
     let total = s.chars().count().max(1);
@@ -36,7 +36,7 @@ fn path_looks_cjk(path: &Path) -> bool {
     cjk * 5 > total // >20% CJK codepoints
 }
 
-#[cfg(feature = "paddle-ocr")]
+#[cfg(any(feature = "paddle-ocr", test))]
 fn is_cjk(c: char) -> bool {
     matches!(c as u32,
         0x4E00..=0x9FFF |  // CJK Unified Ideographs
@@ -231,4 +231,49 @@ pub fn ocr_with_tables(_path: &Path, _rec_lang: OcrRecLang) -> Result<ExtractedD
 #[cfg(not(feature = "paddle-ocr"))]
 pub fn detect_table_structure(_path: &Path) -> Result<Option<String>> {
     anyhow::bail!("PaddleOCR Tier 3 is not compiled in (build with --features paddle-ocr)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_cjk ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_cjk_unified_ideograph_accepted() {
+        // U+4E00 is the first CJK Unified Ideograph ("一").
+        assert!(is_cjk('\u{4E00}'));
+    }
+
+    #[test]
+    fn is_cjk_hangul_accepted() {
+        // U+AC00 is the first Hangul syllable block ("가").
+        assert!(is_cjk('\u{AC00}'));
+    }
+
+    #[test]
+    fn is_cjk_latin_rejected() {
+        assert!(!is_cjk('a'));
+    }
+
+    // ── path_looks_cjk ────────────────────────────────────────────────────────
+
+    #[test]
+    fn path_looks_cjk_ascii_is_false() {
+        assert!(!path_looks_cjk(Path::new("/tmp/hello.jpg")));
+    }
+
+    #[test]
+    fn path_looks_cjk_majority_cjk_is_true() {
+        // Filename is four CJK chars + ".jpg" — well over 20 % CJK.
+        assert!(path_looks_cjk(Path::new("/tmp/\u{4E00}\u{4E01}\u{4E02}\u{4E03}.jpg")));
+    }
+
+    #[test]
+    fn path_looks_cjk_boundary_exclusive() {
+        // Exactly 1 CJK char in 5 total chars: 1 * 5 == 5, which is NOT > 5,
+        // so the function must return false (strict greater-than boundary).
+        // "\u{4E00}abcd" — 5 chars, 1 CJK.
+        assert!(!path_looks_cjk(Path::new("\u{4E00}abcd")));
+    }
 }
