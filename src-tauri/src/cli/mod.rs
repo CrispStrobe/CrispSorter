@@ -2556,6 +2556,8 @@ async fn cmd_index_async(
                     multivec_packed: None,
                     multivec_n_tokens: None,
                     url: None,
+                    embedding_omni: None,
+                    embedding_vit: None,
                 };
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
@@ -2960,6 +2962,8 @@ async fn cmd_index_async(
                 multivec_packed: None,
                 multivec_n_tokens: None,
                 url: None,
+                embedding_omni: None,
+                embedding_vit: None,
             };
             let stats = pipeline.reingest_document(raw)
                 .await.map_err(|e| format!("reingest: {e:#}"))?;
@@ -3145,6 +3149,8 @@ async fn cmd_index_async(
                     multivec_packed: None,
                     multivec_n_tokens: None,
                     url: None,
+                    embedding_omni: None,
+                    embedding_vit: None,
                 };
 
                 if pipeline.ingest_document(raw.clone()).await.is_ok() {
@@ -3780,6 +3786,8 @@ async fn cmd_sync_cloud_backup(
                     // local L1 chunk so `crispsorter index search`
                     // can filter by source URL.
                     url: r.url.clone(),
+                    embedding_omni: None,
+                    embedding_vit: None,
                 }
             }).collect();
             let applied = chunks.len();

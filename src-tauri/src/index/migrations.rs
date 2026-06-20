@@ -47,6 +47,8 @@ pub fn all() -> Vec<Box<dyn Migration>> {
         Box::new(NullifyTranslationOnSubChunks),
         Box::new(AddColbertMultivec),
         Box::new(AddUrlColumn),
+        Box::new(AddOmniEmbedding),
+        Box::new(AddVitEmbedding),
     ]
 }
 
@@ -563,7 +565,7 @@ mod tests {
         // framework guarantees.
         assert_eq!(
             summary.applied,
-            vec![100, 101, 102, 103, 104, 105, 106],
+            vec![100, 101, 102, 103, 104, 105, 106, 108, 109],
             "first run must apply every registered migration"
         );
         assert!(summary.skipped.is_empty());
@@ -574,7 +576,7 @@ mod tests {
         // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104, 105, 106]);
+        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104, 105, 106, 108, 109]);
     }
 
     #[tokio::test]
@@ -883,6 +885,8 @@ mod tests {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         local.ingest_batch(&[make_chunk(0), make_chunk(1)]).await.expect("ingest");
 
@@ -1038,6 +1042,110 @@ impl Migration for AddUrlColumn {
             .await
             .context("adding url column (v106)")?;
         eprintln!("[index] v106 migration applied — added url column");
+        Ok(())
+    }
+}
+
+/// **v108** — Add the `embedding_omni` FixedSizeList<Float32, 2048> column
+/// for BidirLM-Omni cross-modal embeddings.  Populated at ingest time for
+/// image and audio files when `--features crispembed` is active.  Enables
+/// cross-modal search: "sunset photo" → image hits, "podcast about Bosnia"
+/// → audio hits.  Idempotent: skips when the column is already present.
+pub struct AddOmniEmbedding;
+
+#[async_trait]
+impl Migration for AddOmniEmbedding {
+    fn version(&self) -> u32 {
+        108
+    }
+    fn name(&self) -> &str {
+        "add embedding_omni column (cross-modal 2048-D)"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v108 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v108 migration")?;
+
+        if schema.field_with_name("embedding_omni").is_ok() {
+            eprintln!("[index] v108 migration skipped — embedding_omni column already present");
+            return Ok(());
+        }
+
+        let omni_field = arrow_schema::Field::new(
+            "embedding_omni",
+            arrow_schema::DataType::FixedSizeList(
+                Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                2048,
+            ),
+            true,
+        );
+        let col_schema = Arc::new(arrow_schema::Schema::new(vec![omni_field]));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding embedding_omni column (v108)")?;
+        eprintln!("[index] v108 migration applied — added embedding_omni (2048-D)");
+        Ok(())
+    }
+}
+
+/// **v109** — Add the `embedding_vit` FixedSizeList<Float32, 768> column
+/// for SigLIP/CLIP image embeddings.  Populated at ingest time for image
+/// files when `--features crispembed` is active.  Enables "find similar
+/// images" by cosine similarity — works across crops, formats, and
+/// resolutions unlike perceptual hashing.  Idempotent.
+pub struct AddVitEmbedding;
+
+#[async_trait]
+impl Migration for AddVitEmbedding {
+    fn version(&self) -> u32 {
+        109
+    }
+    fn name(&self) -> &str {
+        "add embedding_vit column (ViT image 768-D)"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v109 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v109 migration")?;
+
+        if schema.field_with_name("embedding_vit").is_ok() {
+            eprintln!("[index] v109 migration skipped — embedding_vit column already present");
+            return Ok(());
+        }
+
+        let vit_field = arrow_schema::Field::new(
+            "embedding_vit",
+            arrow_schema::DataType::FixedSizeList(
+                Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                768,
+            ),
+            true,
+        );
+        let col_schema = Arc::new(arrow_schema::Schema::new(vec![vit_field]));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding embedding_vit column (v109)")?;
+        eprintln!("[index] v109 migration applied — added embedding_vit (768-D)");
         Ok(())
     }
 }

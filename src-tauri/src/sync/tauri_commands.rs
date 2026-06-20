@@ -165,6 +165,8 @@ pub async fn sync_pull(
                 multivec_packed: None,
                 multivec_n_tokens: None,
                 url: None,
+                embedding_omni: None,
+                embedding_vit: None,
             }
         })
         .collect();
@@ -552,6 +554,8 @@ pub async fn sync_cb_manifest_pull(
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         }
     }).collect();
 

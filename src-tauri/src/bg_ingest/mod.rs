@@ -593,6 +593,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         // Write L1 row locally (mtime guard already ran above).
         let _ = pipeline.ingest_document(raw_l1.clone()).await;
@@ -691,7 +693,7 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     match extract_result {
         // ── Success ─────────────────────────────────────────────────────
         Ok(Ok(Ok(extracted))) => {
-            let raw = crate::index::ingest::RawDocument {
+            let mut raw = crate::index::ingest::RawDocument {
                 full_text: extracted.full_text,
                 full_text_md: String::new(),
                 headings: extracted.headings,
@@ -750,7 +752,64 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 // pulled out of YAML frontmatter (or future PDF /
                 // EPUB extractors).
                 url: extracted.source_url.clone(),
+                // P17.5 / P17.7 — cross-modal embeddings for image/audio files.
+                // Computed synchronously below; None when crispembed
+                // is not compiled in or the file type doesn't apply.
+                embedding_omni: None, // populated below
+                embedding_vit: None,  // populated below
             };
+            // ── P17.5 / P17.7 — compute cross-modal embeddings ────────────
+            // Run on a blocking thread since both CrispEmbed FFI calls are
+            // CPU-bound (model inference). Soft-fail: log and continue with
+            // None on error — the document is still fully searchable via
+            // text embedding.
+            {
+                let ext_lower = raw.ext.to_ascii_lowercase();
+                let is_image = matches!(
+                    ext_lower.as_str(),
+                    "jpg" | "jpeg" | "png" | "tiff" | "tif" | "bmp" | "webp"
+                    | "heic" | "heif" | "avif" | "jp2" | "j2k" | "jxl"
+                );
+                let is_audio = matches!(
+                    ext_lower.as_str(),
+                    "wav" | "mp3" | "m4a" | "flac" | "ogg" | "opus" | "aac"
+                    | "wma" | "aiff" | "aif" | "ape" | "wv"
+                    | "mp4" | "mkv" | "avi" | "mov" | "webm" | "ts" | "mts"
+                    | "m2ts" | "flv" | "wmv" | "3gp"
+                );
+
+                // ViT image embedding (768-D SigLIP/CLIP)
+                if is_image && crate::images::vit_embed::is_vit_available() {
+                    let p2 = p.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        crate::images::vit_embed::embed_image(&p2)
+                    }).await {
+                        Ok(Ok(emb)) => { raw.embedding_vit = Some(emb); }
+                        Ok(Err(e)) => { eprintln!("[bg_ingest] vit embed failed for {}: {e:#}", p.display()); }
+                        Err(e) => { eprintln!("[bg_ingest] vit embed join error: {e}"); }
+                    }
+                }
+
+                // Omni cross-modal embedding (2048-D BidirLM-Omni)
+                if (is_image || is_audio) && crate::index::omni_embed::is_omni_available() {
+                    if is_image {
+                        let p2 = p.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            crate::index::omni_embed::encode_image_omni(&p2)
+                        }).await {
+                            Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
+                            Ok(Err(e)) => { eprintln!("[bg_ingest] omni image embed failed for {}: {e:#}", p.display()); }
+                            Err(e) => { eprintln!("[bg_ingest] omni image embed join error: {e}"); }
+                        }
+                    }
+                    // Audio omni embedding would need decoded PCM samples.
+                    // The audio extractor may have already decoded — check
+                    // if extracted.audio carries raw samples.  If not, skip
+                    // for now (audio omni needs a decode pass that bg_ingest
+                    // doesn't currently do for the omni path).
+                }
+            }
+
             // P13.7 Stage F + N — capture the wire-shape snapshot
             // BEFORE ingest_document consumes `raw`.  If the auto-
             // partition map (Stage N) has an entry for this file's

@@ -1837,6 +1837,8 @@ mod tests {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert_eq!(row.sha256, "abc");
@@ -1879,6 +1881,8 @@ mod tests {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         let row = ManifestRow::from_raw_document(&raw);
         assert!(row.full_text.is_none(), "empty body should map to None on wire");

@@ -524,6 +524,8 @@ pub async fn index_ingest_path(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
 
     let lock = state.index.lock().await;
@@ -597,6 +599,8 @@ pub async fn index_ingest_document(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
 
     use tauri::Emitter;
@@ -739,6 +743,8 @@ pub async fn index_ingest_document(
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -853,6 +859,8 @@ pub async fn index_ingest_batch(
                 multivec_packed: None,
                 multivec_n_tokens: None,
                 url: None,
+                embedding_omni: None,
+                embedding_vit: None,
             })
             .collect();
 
@@ -942,6 +950,8 @@ pub async fn index_ingest_batch(
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
@@ -1731,6 +1741,8 @@ pub async fn index_audio_promote_l3(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
 
     pipeline
@@ -1868,6 +1880,8 @@ pub async fn index_image_promote_l3(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
 
     pipeline
@@ -3153,6 +3167,8 @@ pub async fn index_l1_only_scan(
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
 
         if pipeline.ingest_document(raw).await.is_ok() {
@@ -3334,6 +3350,8 @@ async fn promote_path(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
 
     // Delete the existing L1 row before re-ingesting.
@@ -4318,6 +4336,8 @@ pub async fn ocr_workbench_reingest(
         multivec_packed: None,
         multivec_n_tokens: None,
         url: None,
+        embedding_omni: None,
+        embedding_vit: None,
     };
     pipeline
         .reingest_document(raw)

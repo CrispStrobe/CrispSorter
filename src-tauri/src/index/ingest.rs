@@ -157,6 +157,16 @@ pub struct RawDocument {
     /// LanceDB writer persists it as a first-class column.  `None`
     /// for files with no provenance URL.
     pub url: Option<String>,
+
+    /// P17.5 — 2048-D cross-modal embedding from BidirLM-Omni.
+    /// Populated by bg_ingest for image/audio files when the
+    /// `crispembed` feature is compiled in.  `None` otherwise.
+    pub embedding_omni: Option<Vec<f32>>,
+
+    /// P17.7 — 768-D ViT image embedding (SigLIP/CLIP).
+    /// Populated by bg_ingest for image files when the
+    /// `crispembed` feature is compiled in.  `None` otherwise.
+    pub embedding_vit: Option<Vec<f32>>,
 }
 
 // ── IngestStats ─────────────────────────────────────────────────────────────
@@ -540,6 +550,8 @@ impl IngestPipeline {
                     multivec_packed: None,
                     multivec_n_tokens: None,
                     url: None,
+                    embedding_omni: None,
+                    embedding_vit: None,
                 }
             })
             .collect();
@@ -658,6 +670,8 @@ impl IngestPipeline {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -825,6 +839,8 @@ fn build_doc_chunk(
         // v106 — Source URL carried from RawDocument (extractor lifted
         // it from YAML frontmatter / XMP / dc:source).
         url: raw.url.clone(),
+        embedding_omni: raw.embedding_omni.clone(),
+        embedding_vit: raw.embedding_vit.clone(),
     }
 }
 
@@ -900,6 +916,8 @@ mod tests {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         }
     }
 

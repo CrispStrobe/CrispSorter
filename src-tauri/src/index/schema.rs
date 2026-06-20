@@ -127,6 +127,29 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
         // never had a source URL.  Added on existing tables by the
         // `AddUrlColumn` migration in `index/migrations.rs`.
         Field::new("url", DataType::Utf8, true),
+        // P17.5 — BidirLM-Omni cross-modal embedding (2048-D).
+        // Shared embedding space for text, audio, and images.
+        // Populated at ingest time for image/audio files when
+        // crispembed is available.  Added by migration v108.
+        Field::new(
+            "embedding_omni",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                2048,
+            ),
+            true,
+        ),
+        // P17.7 — ViT image embedding (768-D, SigLIP/CLIP).
+        // Populated at ingest time for image files when crispembed
+        // is available.  Added by migration v109.
+        Field::new(
+            "embedding_vit",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                768,
+            ),
+            true,
+        ),
     ]))
 }
 
@@ -222,6 +245,18 @@ pub struct DocumentChunk {
     // for files with no provenance URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+
+    // P17.5 — BidirLM-Omni cross-modal embedding (2048-D).
+    // Populated for image/audio files at ingest time.  None for
+    // text-only documents and when crispembed is not compiled in.
+    #[serde(skip)]
+    pub embedding_omni: Option<Vec<f32>>,
+
+    // P17.7 — ViT image embedding (768-D, SigLIP/CLIP).
+    // Populated for image files at ingest time.  None for non-image
+    // documents and when crispembed is not compiled in.
+    #[serde(skip)]
+    pub embedding_vit: Option<Vec<f32>>,
 }
 
 /// Lightweight search result returned to the frontend.

@@ -430,10 +430,7 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 
 ### Implemented but unreachable from both CLI and GUI
 
-| Module | Status | Note |
-|--------|--------|------|
-| `images/vit_embed.rs` (224 lines) | Dead | Visual similarity search; needs schema migration v109 + ingest pipeline wiring |
-| `index/omni_embed.rs` (357 lines) | Dead | Cross-modal search; schema v108 exists but ingest pipeline doesn't compute omni embeddings yet |
+*(None — all modules are now wired.)*
 
 ### CLI-only (no GUI equivalent)
 
@@ -448,12 +445,45 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 - LLM sidecars — CLI `chat query/transcribe/tts` provide headless equivalents
 - `index_image_promote_l3` / `index_audio_promote_l3` — CLI `index promote-l3 <doc_id>` already handles all file types (explicitly mirrors both; see cli/mod.rs line 2030)
 
-### Still dead (awaiting schema/pipeline work)
+### P21 round 3 — vit_embed + omni_embed revived (2026-06-20)
 
-| Module | Blocker | Effort |
-|--------|---------|--------|
-| `images/vit_embed.rs` | Schema migration adding `embedding_vit` FixedSizeList column + ingest pipeline wiring + RRF search channel | ~8 h |
-| `index/omni_embed.rs` | Ingest pipeline must compute omni embeddings for text/audio/image + RRF search channel (schema v108 column exists in module docs but migration not yet created) | ~12 h |
+- [x] **Schema migration v108 — `embedding_omni` (2048-D).**
+  `AddOmniEmbedding` migration adds `FixedSizeList<Float32, 2048>`
+  column to the LanceDB documents table.  Idempotent.  Backfills
+  existing rows with NULLs.
+
+- [x] **Schema migration v109 — `embedding_vit` (768-D).**
+  `AddVitEmbedding` migration adds `FixedSizeList<Float32, 768>`
+  column.  Same pattern as v108.
+
+- [x] **`DocumentChunk` + `RawDocument` + `build_schema()` extended.**
+  Both structs gain `embedding_omni: Option<Vec<f32>>` and
+  `embedding_vit: Option<Vec<f32>>` fields (`#[serde(skip)]`).
+  Arrow schema in `build_schema()` gains matching FixedSizeList
+  columns.  `chunks_to_record_batch` serialises them.  All 13
+  `DocumentChunk` and 20 `RawDocument` construction sites updated.
+
+- [x] **`bg_ingest` computes embeddings at ingest time.**
+  After text extraction, `ingest_one` conditionally runs:
+  - `vit_embed::embed_image()` for image files (768-D SigLIP/CLIP)
+  - `omni_embed::encode_image_omni()` for image files (2048-D)
+  Both via `spawn_blocking`; soft-fail (log + continue with None).
+  Audio omni deferred (needs decoded PCM not currently available
+  in the omni path).
+
+- [x] **`images/vit_embed.rs` no longer dead.**  Called from bg_ingest
+  for image files; embeddings stored in the `embedding_vit` column.
+
+- [x] **`index/omni_embed.rs` no longer dead.**  Called from bg_ingest
+  for image files; embeddings stored in the `embedding_omni` column.
+
+### Still pending (follow-up work)
+
+| Item | Effort | Notes |
+|------|--------|-------|
+| Audio omni embedding | ~4 h | Needs decoded PCM from the audio extractor piped into `encode_audio_omni` |
+| Omni/ViT RRF search channel | ~6 h | Add ANN query over `embedding_omni`/`embedding_vit` columns in `search.rs`, mix into existing RRF fusion |
+| Cross-modal search UI | ~2 h | "Search by image" button in IndexSearch that embeds an uploaded image and queries the ViT/omni columns |
 
 ### P21 — CLI ↔ GUI parity gap closure (2026-06-20)
 

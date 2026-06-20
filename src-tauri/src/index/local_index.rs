@@ -2122,6 +2122,46 @@ fn chunks_to_record_batch(
     let urls: arrow_array::StringArray =
         chunks.iter().map(|c| c.url.as_deref()).collect();
 
+    // P17.5 — BidirLM-Omni embedding (2048-D FixedSizeList<Float32>).
+    let embedding_omni_col: Arc<dyn Array> = {
+        const OMNI_DIM: usize = 2048;
+        let flat: Vec<Option<f32>> = chunks
+            .iter()
+            .flat_map(|c| match &c.embedding_omni {
+                Some(v) => v.iter().map(|&x| Some(x)).collect::<Vec<_>>(),
+                None => vec![None; OMNI_DIM],
+            })
+            .collect();
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type,
+            _,
+            _,
+        >(
+            flat.chunks(OMNI_DIM).map(|chunk| Some(chunk.iter().copied())),
+            OMNI_DIM as i32,
+        ))
+    };
+
+    // P17.7 — ViT image embedding (768-D FixedSizeList<Float32>).
+    let embedding_vit_col: Arc<dyn Array> = {
+        const VIT_DIM: usize = 768;
+        let flat: Vec<Option<f32>> = chunks
+            .iter()
+            .flat_map(|c| match &c.embedding_vit {
+                Some(v) => v.iter().map(|&x| Some(x)).collect::<Vec<_>>(),
+                None => vec![None; VIT_DIM],
+            })
+            .collect();
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type,
+            _,
+            _,
+        >(
+            flat.chunks(VIT_DIM).map(|chunk| Some(chunk.iter().copied())),
+            VIT_DIM as i32,
+        ))
+    };
+
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -2167,6 +2207,8 @@ fn chunks_to_record_batch(
             Arc::new(multivec_packed_col),
             Arc::new(multivec_n_tokens_col),
             Arc::new(urls),
+            embedding_omni_col,
+            embedding_vit_col,
         ],
     )
     .context("building RecordBatch")?;
@@ -3077,6 +3119,8 @@ mod push_candidate_tests {
             multivec_packed: None,
             multivec_n_tokens: None,
             url: None,
+            embedding_omni: None,
+            embedding_vit: None,
         }
     }
 
