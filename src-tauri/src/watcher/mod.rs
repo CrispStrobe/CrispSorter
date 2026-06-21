@@ -89,18 +89,42 @@ pub struct AutoProcessEvent {
     pub folder: String,
 }
 
+/// Status event emitted after queue changes — frontend renders as
+/// a status chip or tray badge.
+#[derive(Debug, Clone, Serialize)]
+pub struct WatchStatusEvent {
+    pub daily_processed: u32,
+    pub daily_cap: u32,
+    pub daily_tokens_used: u64,
+    pub daily_token_budget: u64,
+    pub pending_files: usize,
+    pub dead_letter_count: usize,
+}
+
 /// Per-folder watcher entry.
 struct WatchEntry {
     _watcher: RecommendedWatcher,
     mode: WatchMode,
 }
 
-/// Rate-limiting counters.
+/// A file that failed during auto-processing.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeadLetter {
+    pub path: String,
+    pub folder: String,
+    pub error: String,
+    pub timestamp: u64,
+}
+
+/// Rate-limiting counters — dual: file-count + token-cost.
 struct RateLimits {
     /// Per-folder: (folder_path, hour_start) → count.
     hourly: HashMap<PathBuf, (Instant, u32)>,
-    /// Global daily count (day_start, count).
+    /// Global daily file count (day_start, count).
     daily: (Instant, u32),
+    /// Global daily token cost (day_start, tokens_used).
+    /// Estimated at ~750 tokens/page for text, ~1500 for OCR'd images.
+    daily_tokens: (Instant, u64),
 }
 
 impl RateLimits {
@@ -108,19 +132,32 @@ impl RateLimits {
         Self {
             hourly: HashMap::new(),
             daily: (Instant::now(), 0),
+            daily_tokens: (Instant::now(), 0),
         }
     }
 
     /// Check if a file from `folder` is within caps. If yes, increment
-    /// and return true. If no, return false.
-    fn try_increment(&mut self, folder: &Path, hourly_cap: u32, daily_cap: u32) -> bool {
+    /// file count and return true. If no, return false.
+    /// Token budget is a soft cap checked via `is_token_budget_exceeded`.
+    fn try_increment(
+        &mut self,
+        folder: &Path,
+        hourly_cap: u32,
+        daily_cap: u32,
+        daily_token_budget: u64,
+    ) -> bool {
         let now = Instant::now();
 
-        // Daily cap (24h rolling window).
+        // Daily cap — 24h rolling window (file count).
         if now.duration_since(self.daily.0) > Duration::from_secs(86400) {
             self.daily = (now, 0);
+            self.daily_tokens = (now, 0);
         }
         if self.daily.1 >= daily_cap {
+            return false;
+        }
+        // Token budget check (soft — based on already-consumed tokens).
+        if daily_token_budget > 0 && self.daily_tokens.1 >= daily_token_budget {
             return false;
         }
 
@@ -137,6 +174,22 @@ impl RateLimits {
         self.daily.1 += 1;
         true
     }
+
+    /// Record actual tokens consumed after processing a file.
+    fn record_tokens(&mut self, tokens: u64) {
+        let now = Instant::now();
+        if now.duration_since(self.daily_tokens.0) > Duration::from_secs(86400) {
+            self.daily_tokens = (now, 0);
+        }
+        self.daily_tokens.1 += tokens;
+    }
+
+    /// Estimate tokens for a file based on size (heuristic: ~1 token per 4 bytes).
+    fn estimate_tokens_for_file(path: &Path) -> u64 {
+        std::fs::metadata(path)
+            .map(|m| m.len() / 4)
+            .unwrap_or(1000)
+    }
 }
 
 /// State held in `AppState`. Holds one `RecommendedWatcher` per watched
@@ -149,10 +202,14 @@ pub struct WatcherState {
     auto_queue: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Rate limiter.
     rate_limits: Arc<Mutex<RateLimits>>,
+    /// Dead-letter list: files that failed auto-processing.
+    dead_letters: Arc<Mutex<Vec<DeadLetter>>>,
     /// Hourly file cap per folder (configurable).
     pub hourly_cap: u32,
     /// Daily file cap globally (configurable).
     pub daily_cap: u32,
+    /// Daily token budget (0 = unlimited). Estimated at ~1 token/4 bytes.
+    pub daily_token_budget: u64,
 }
 
 impl WatcherState {
@@ -162,8 +219,10 @@ impl WatcherState {
             last_emit: Arc::new(Mutex::new(HashMap::new())),
             auto_queue: Arc::new(Mutex::new(HashMap::new())),
             rate_limits: Arc::new(Mutex::new(RateLimits::new())),
+            dead_letters: Arc::new(Mutex::new(Vec::new())),
             hourly_cap: 100,
             daily_cap: 500,
+            daily_token_budget: 2_000_000, // ~2M tokens/day default
         }
     }
 
@@ -209,6 +268,7 @@ impl WatcherState {
     pub async fn queue_status(&self) -> QueueStatus {
         let queue = self.auto_queue.lock().await;
         let limits = self.rate_limits.lock().await;
+        let dead = self.dead_letters.lock().await;
         let pending: HashMap<String, usize> = queue
             .iter()
             .map(|(k, v)| (k.to_string_lossy().into_owned(), v.len()))
@@ -217,6 +277,60 @@ impl WatcherState {
             pending_by_folder: pending,
             daily_processed: limits.daily.1,
             daily_cap: self.daily_cap,
+            daily_tokens_used: limits.daily_tokens.1,
+            daily_token_budget: self.daily_token_budget,
+            dead_letter_count: dead.len(),
+        }
+    }
+
+    /// Record tokens consumed after processing a file.
+    pub async fn record_tokens_used(&self, tokens: u64) {
+        let mut limits = self.rate_limits.lock().await;
+        limits.record_tokens(tokens);
+    }
+
+    /// Report a file as failed (dead letter).
+    pub async fn report_failure(&self, path: &str, folder: &str, error: &str) {
+        let mut dead = self.dead_letters.lock().await;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        dead.push(DeadLetter {
+            path: path.to_owned(),
+            folder: folder.to_owned(),
+            error: error.to_owned(),
+            timestamp: ts,
+        });
+        // Keep at most 500 entries.
+        if dead.len() > 500 {
+            let excess = dead.len() - 500;
+            dead.drain(0..excess);
+        }
+    }
+
+    /// Get dead letters (most recent first).
+    pub async fn dead_letters(&self) -> Vec<DeadLetter> {
+        let dead = self.dead_letters.lock().await;
+        let mut v = dead.clone();
+        v.reverse();
+        v
+    }
+
+    /// Dismiss a dead letter by path.
+    pub async fn dismiss_dead_letter(&self, path: &str) {
+        let mut dead = self.dead_letters.lock().await;
+        dead.retain(|d| d.path != path);
+    }
+
+    /// Retry a dead letter — removes from dead list and returns the path
+    /// for re-queuing.
+    pub async fn retry_dead_letter(&self, path: &str) -> Option<DeadLetter> {
+        let mut dead = self.dead_letters.lock().await;
+        if let Some(pos) = dead.iter().position(|d| d.path == path) {
+            Some(dead.remove(pos))
+        } else {
+            None
         }
     }
 }
@@ -227,6 +341,9 @@ pub struct QueueStatus {
     pub pending_by_folder: HashMap<String, usize>,
     pub daily_processed: u32,
     pub daily_cap: u32,
+    pub daily_tokens_used: u64,
+    pub daily_token_budget: u64,
+    pub dead_letter_count: usize,
 }
 
 impl Default for WatcherState {
@@ -264,6 +381,7 @@ pub fn start(
     let rate_limits = state.rate_limits.clone();
     let hourly_cap = state.hourly_cap;
     let daily_cap = state.daily_cap;
+    let daily_token_budget = state.daily_token_budget;
     let app_for_handler = app.clone();
     let folder_for_handler = folder.clone();
 
@@ -279,6 +397,7 @@ pub fn start(
                 mode,
                 hourly_cap,
                 daily_cap,
+                daily_token_budget,
             ),
             Err(e) => eprintln!("[watch] notify error: {e}"),
         }
@@ -306,6 +425,7 @@ pub fn start(
                 &limits_scan,
                 hourly_cap,
                 daily_cap,
+                daily_token_budget,
             )
             .await
             {
@@ -342,6 +462,7 @@ async fn run_initial_scan(
     limits: &Arc<Mutex<RateLimits>>,
     hourly_cap: u32,
     daily_cap: u32,
+    daily_token_budget: u64,
 ) -> Result<()> {
     let mut batch: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(folder)
@@ -355,7 +476,7 @@ async fn run_initial_scan(
         }
         // Rate check.
         let mut lim = limits.lock().await;
-        if !lim.try_increment(folder, hourly_cap, daily_cap) {
+        if !lim.try_increment(folder, hourly_cap, daily_cap, daily_token_budget) {
             eprintln!(
                 "[watch] initial scan hit rate limit for {}",
                 folder.display()
@@ -405,6 +526,7 @@ fn handle_event(
     mode: WatchMode,
     hourly_cap: u32,
     daily_cap: u32,
+    daily_token_budget: u64,
 ) {
     if !is_relevant_kind(&event.kind) {
         return;
@@ -445,7 +567,7 @@ fn handle_event(
             if mode != WatchMode::Off {
                 // Rate limit check.
                 let mut lim = rate_limits_clone.lock().await;
-                if !lim.try_increment(&folder_clone, hourly_cap, daily_cap) {
+                if !lim.try_increment(&folder_clone, hourly_cap, daily_cap, daily_token_budget) {
                     eprintln!(
                         "[watch] rate limit hit for {} — skipping auto-process",
                         folder_clone.display()
@@ -465,11 +587,13 @@ fn handle_event(
                 // for this folder.
                 let app_flush = app_clone.clone();
                 let queue_flush = auto_queue_clone.clone();
+                let rate_flush = rate_limits_clone.clone();
                 let folder_flush = folder_clone.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(AUTO_DISPATCH_DELAY).await;
                     let mut q = queue_flush.lock().await;
                     let batch = q.remove(&folder_flush).unwrap_or_default();
+                    let total_pending: usize = q.values().map(|v| v.len()).sum();
                     drop(q);
                     if batch.is_empty() {
                         return;
@@ -484,6 +608,18 @@ fn handle_event(
                     if let Err(e) = app_flush.emit("folder-watch:auto-process", payload) {
                         eprintln!("[watch] auto-process emit failed: {e}");
                     }
+                    // Emit status event so the frontend can update badges.
+                    let lim = rate_flush.lock().await;
+                    let status = WatchStatusEvent {
+                        daily_processed: lim.daily.1,
+                        daily_cap,
+                        daily_tokens_used: lim.daily_tokens.1,
+                        daily_token_budget,
+                        pending_files: total_pending,
+                        dead_letter_count: 0, // not accessible here; frontend polls
+                    };
+                    drop(lim);
+                    let _ = app_flush.emit("folder-watch:status", status);
                 });
             }
         });
@@ -595,10 +731,10 @@ mod tests {
         let folder = PathBuf::from("/test");
         // Should allow up to cap.
         for _ in 0..5 {
-            assert!(rl.try_increment(&folder, 5, 100));
+            assert!(rl.try_increment(&folder, 5, 100, 0));
         }
         // Should reject after cap.
-        assert!(!rl.try_increment(&folder, 5, 100));
+        assert!(!rl.try_increment(&folder, 5, 100, 0));
     }
 
     #[test]
@@ -607,10 +743,35 @@ mod tests {
         let f1 = PathBuf::from("/a");
         let f2 = PathBuf::from("/b");
         // Fill daily cap (3) across two folders.
-        assert!(rl.try_increment(&f1, 100, 3));
-        assert!(rl.try_increment(&f2, 100, 3));
-        assert!(rl.try_increment(&f1, 100, 3));
+        assert!(rl.try_increment(&f1, 100, 3, 0));
+        assert!(rl.try_increment(&f2, 100, 3, 0));
+        assert!(rl.try_increment(&f1, 100, 3, 0));
         // Daily cap hit.
-        assert!(!rl.try_increment(&f2, 100, 3));
+        assert!(!rl.try_increment(&f2, 100, 3, 0));
+    }
+
+    #[test]
+    fn rate_limits_token_budget() {
+        let mut rl = RateLimits::new();
+        let folder = PathBuf::from("/test");
+        // With token budget of 1000, should allow files initially.
+        assert!(rl.try_increment(&folder, 100, 500, 1000));
+        // Record 900 tokens consumed.
+        rl.record_tokens(900);
+        // Still under budget.
+        assert!(rl.try_increment(&folder, 100, 500, 1000));
+        // Record another 200 → total 1100, over budget.
+        rl.record_tokens(200);
+        // Should now be rejected by token budget.
+        assert!(!rl.try_increment(&folder, 100, 500, 1000));
+    }
+
+    #[test]
+    fn token_budget_zero_means_unlimited() {
+        let mut rl = RateLimits::new();
+        let folder = PathBuf::from("/test");
+        rl.record_tokens(999_999_999);
+        // Budget of 0 = unlimited — should still allow.
+        assert!(rl.try_increment(&folder, 100, 500, 0));
     }
 }

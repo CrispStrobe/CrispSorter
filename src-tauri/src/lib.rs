@@ -147,6 +147,65 @@ async fn watch_queue_status(
     Ok(guard.queue_status().await)
 }
 
+#[cfg(feature = "desktop")]
+/// Report tokens consumed by auto-processing (called after each file).
+#[tauri::command]
+async fn watch_record_tokens(
+    state: tauri::State<'_, AppState>,
+    tokens: u64,
+) -> Result<(), String> {
+    let guard = state.watcher.lock().await;
+    guard.record_tokens_used(tokens).await;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+/// Report a file as failed during auto-processing.
+#[tauri::command]
+async fn watch_report_failure(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    folder: String,
+    error: String,
+) -> Result<(), String> {
+    let guard = state.watcher.lock().await;
+    guard.report_failure(&path, &folder, &error).await;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+/// Get the dead letter list (failed auto-process files).
+#[tauri::command]
+async fn watch_dead_letters(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<watcher::DeadLetter>, String> {
+    let guard = state.watcher.lock().await;
+    Ok(guard.dead_letters().await)
+}
+
+#[cfg(feature = "desktop")]
+/// Dismiss a dead letter by path.
+#[tauri::command]
+async fn watch_dismiss_dead_letter(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let guard = state.watcher.lock().await;
+    guard.dismiss_dead_letter(&path).await;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+/// Retry a dead letter — removes from dead list, returns the entry.
+#[tauri::command]
+async fn watch_retry_dead_letter(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Option<watcher::DeadLetter>, String> {
+    let guard = state.watcher.lock().await;
+    Ok(guard.retry_dead_letter(&path).await)
+}
+
 // ── Doctor diagnostic (CLI↔GUI parity) ─────────────────────────────────
 
 /// Return the same environment diagnostics the CLI `doctor` command
@@ -2788,6 +2847,11 @@ pub fn run() {
             watch_set_mode,
             watch_list_modes,
             watch_queue_status,
+            watch_record_tokens,
+            watch_report_failure,
+            watch_dead_letters,
+            watch_dismiss_dead_letter,
+            watch_retry_dead_letter,
             volume_list_mounted,
             file_sha256,
             catalog_load_caf,

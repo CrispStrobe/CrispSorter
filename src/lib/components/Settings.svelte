@@ -427,6 +427,8 @@
     let watchFolders = $state<string[]>([]);
     let watchModes = $state<Record<string, string>>({});
     let watchStatusMsg = $state('');
+    let watchDeadLetters = $state<Array<{ path: string; folder: string; error: string; timestamp: number }>>([]);
+    let watchQueueStatus = $state<{ daily_processed: number; daily_cap: number; daily_tokens_used: number; daily_token_budget: number; dead_letter_count: number } | null>(null);
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
@@ -1198,6 +1200,7 @@
                 ? `${active.length} folder(s) watched`
                 : '';
         } catch { /* command not yet wired */ }
+        refreshWatchStatus();
         roundRobinProviders = (await getSetting('roundRobinProviders', [])) as string[];
         pdfBackend = await getSetting('pdfBackend', 'js') as any;
         parsingFormat = await getSetting('parsingFormat', 'xml') as any;
@@ -2050,6 +2053,23 @@
         } catch (e: any) {
             watchStatusMsg = `Mode error: ${e?.message ?? e}`;
         }
+    }
+
+    async function refreshWatchStatus() {
+        try {
+            watchQueueStatus = await invoke('watch_queue_status');
+            watchDeadLetters = await invoke('watch_dead_letters');
+        } catch { /* not yet wired */ }
+    }
+
+    async function dismissDeadLetter(path: string) {
+        await invoke('watch_dismiss_dead_letter', { path });
+        watchDeadLetters = watchDeadLetters.filter(d => d.path !== path);
+    }
+
+    async function retryDeadLetter(path: string) {
+        await invoke('watch_retry_dead_letter', { path });
+        watchDeadLetters = watchDeadLetters.filter(d => d.path !== path);
     }
 
     async function removeWatchFolder(folder: string) {
@@ -3159,6 +3179,33 @@
                     <p class="hint" style="margin-top:6px;">{watchStatusMsg}</p>
                 {/if}
                 <p class="hint">{i18n.t.settings.watch_hint}</p>
+                {#if watchQueueStatus}
+                    <div style="margin-top:10px; padding:8px; border-radius:6px; background:var(--bg-secondary, #1a1a2e); font-size:0.75rem;">
+                        <strong>Auto-process status:</strong>
+                        Files today: {watchQueueStatus.daily_processed}/{watchQueueStatus.daily_cap} ·
+                        Tokens: {(watchQueueStatus.daily_tokens_used / 1000).toFixed(0)}k / {(watchQueueStatus.daily_token_budget / 1000).toFixed(0)}k
+                        {#if watchQueueStatus.dead_letter_count > 0}
+                            · <span style="color:#ef4444;">{watchQueueStatus.dead_letter_count} failed</span>
+                        {/if}
+                    </div>
+                {/if}
+                {#if watchDeadLetters.length > 0}
+                    <details style="margin-top:8px;">
+                        <summary style="cursor:pointer; font-size:0.75rem; color:#ef4444;">
+                            {watchDeadLetters.length} failed file(s)
+                        </summary>
+                        <ul style="list-style:none; padding:0; margin:6px 0; display:flex; flex-direction:column; gap:4px; max-height:200px; overflow-y:auto;">
+                            {#each watchDeadLetters as dl (dl.path)}
+                                <li style="display:flex; align-items:center; gap:6px; font-size:0.7rem;">
+                                    <code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                          title={dl.error}>{dl.path.split('/').pop() || dl.path}</code>
+                                    <button class="action-btn small" onclick={() => retryDeadLetter(dl.path)} title="Retry">↻</button>
+                                    <button class="action-btn small danger" onclick={() => dismissDeadLetter(dl.path)} title="Dismiss">×</button>
+                                </li>
+                            {/each}
+                        </ul>
+                    </details>
+                {/if}
             </div>
 
             <div class="section-card">
