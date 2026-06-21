@@ -68,7 +68,16 @@ Only `[ ]` items live here. Shipped items are in HISTORY.md.
 ### P5 — Future / planned
 
 - [x] **Batch session persistence → SQLite** — ✅ SHIPPED (commits `06e0282` → `00e9962`).  Fixed the "we LOST all the files?!" data-loss + UI-hang-at-53/196 bugs by replacing the single JSON-blob-in-`settings.json` persistence with a transactional SQLite store (`src-tauri/src/batch_session/`, one row per item, WAL, bulk upserts).  All 5 slices landed plus extras the handover prompt didn't spec (processed-history dedup → skip re-extraction of previously-sorted files: `record_processed`/`lookup_history`/`history_count`; full `extractedText` stripped from the IPC payload + lazy-loaded from SQLite on resume).  15 `batch_session` unit tests green (roundtrip, bulk 100+, interleaved upsert/clear, migration sentinel, processed-history).  See [HISTORY.md](HISTORY.md) + `handover-prompts/session-prompt-batch-sqlite-persistence.md` for the original spec.
-- [ ] **Auto-process toggle on watch detection** — UX design pass complete (2026-05-16): per-folder three-mode dropdown (off / analyse / sort), opt-in initial scan, debounced queue, hourly file cap + daily cost cap, tray status surface, fail-soft error path.  6-slice implementation arc spec'd in `handover-prompts/session-prompt-auto-process-toggle.md` (~16 h total).
+- [x] **Auto-process toggle on watch detection** — ✅ SHIPPED (2026-06-21).
+  Per-folder `WatchMode` enum (Off/Analyse/Sort), debounced auto-dispatch
+  queue (5 s batch window → `folder-watch:auto-process` Tauri event),
+  rate limiting (hourly per-folder cap 100, daily global cap 500), opt-in
+  initial scan on registration.  Tauri commands: `watch_set_mode`,
+  `watch_list_modes`, `watch_queue_status`.  Frontend: per-folder mode
+  dropdown in Settings, persisted in `watchModes`.  `ALLOWED_EXTS`
+  expanded to images + audio/video.  12 unit tests.  Remaining follow-ups:
+  tray status surface, fail-soft dead-letter UI, cost cap (token-based
+  rather than file-count-based) — tracked as future polish.
 - [ ] **PWA demo via File System Access API** — speculative
 
 ### P7.8 — OCR Tier 3 polish + Tier 4
