@@ -44,7 +44,7 @@ use std::process::ExitCode;
 /// unrecognised (including no args at all, the typical GUI launch).
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie", "table", "math-ocr", "watch",
+    "sync", "ocr", "kie", "table", "math-ocr", "pdf", "watch",
     "manpage", "completion", "help", "--help", "-h",
 ];
 
@@ -382,6 +382,12 @@ enum Command {
         data_dir: Option<PathBuf>,
         #[command(subcommand)]
         cmd: SyncCmd,
+    },
+    /// PDF page-level manipulation — merge, split, extract, remove,
+    /// reorder, rotate, crop, add page numbers, watermark, metadata.
+    Pdf {
+        #[command(subcommand)]
+        cmd: PdfCmd,
     },
     /// Watch a folder for new files and print detected paths to stdout.
     /// Headless equivalent of the GUI folder-watcher. Runs until interrupted
@@ -1135,6 +1141,184 @@ enum ChatCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum PdfCmd {
+    /// Show PDF info — page count, dimensions, metadata.
+    Info { file: PathBuf },
+    /// Merge multiple PDFs into one.
+    Merge {
+        /// Input PDF files (2+).
+        files: Vec<PathBuf>,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Split a PDF by page ranges.
+    Split {
+        file: PathBuf,
+        /// Comma-separated ranges, e.g. "1-5,6-10" (1-based).
+        #[arg(long)]
+        pages: String,
+        /// Output directory (default: same as input).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    /// Extract selected pages into a new PDF.
+    Extract {
+        file: PathBuf,
+        /// Comma-separated page numbers (1-based), e.g. "1,3,5-7".
+        #[arg(long)]
+        pages: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Remove selected pages.
+    Remove {
+        file: PathBuf,
+        /// Comma-separated page numbers to remove (1-based).
+        #[arg(long)]
+        pages: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Reorder pages.
+    Reorder {
+        file: PathBuf,
+        /// New page order (1-based), e.g. "3,1,2,4".
+        #[arg(long)]
+        order: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Rotate selected pages.
+    Rotate {
+        file: PathBuf,
+        /// Pages to rotate (1-based, comma-separated). Default: all.
+        #[arg(long)]
+        pages: Option<String>,
+        /// Rotation in degrees (90, 180, 270).
+        #[arg(long)]
+        degrees: i64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Crop pages to a rectangle.
+    Crop {
+        file: PathBuf,
+        /// Pages to crop (1-based). Default: all.
+        #[arg(long)]
+        pages: Option<String>,
+        /// Crop box as "x,y,width,height" in points (origin = bottom-left).
+        #[arg(long)]
+        rect: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Add page numbers.
+    Number {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Position: bottom-center (default), bottom-left, bottom-right,
+        /// top-center, top-left, top-right.
+        #[arg(long, default_value = "bottom-center")]
+        position: String,
+        /// Font size in points.
+        #[arg(long, default_value_t = 10.0)]
+        font_size: f64,
+        /// Format: arabic (default), roman, page-of.
+        #[arg(long, default_value = "arabic")]
+        format: String,
+        /// Start numbering from this value.
+        #[arg(long, default_value_t = 1)]
+        start: usize,
+        /// Skip first N pages (e.g., cover page).
+        #[arg(long, default_value_t = 0)]
+        skip_first: usize,
+    },
+    /// Add a text watermark / stamp.
+    Watermark {
+        file: PathBuf,
+        /// Watermark text.
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Font size (default 48).
+        #[arg(long, default_value_t = 48.0)]
+        font_size: f64,
+        /// Rotation angle in degrees (default 45).
+        #[arg(long, default_value_t = 45.0)]
+        angle: f64,
+        /// Opacity 0.0–1.0 (default 0.15).
+        #[arg(long, default_value_t = 0.15)]
+        opacity: f64,
+    },
+    /// Insert a blank page.
+    InsertBlank {
+        file: PathBuf,
+        /// Position (1-based: insert before this page number).
+        #[arg(long)]
+        at: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Edit PDF metadata (title, author, subject, keywords).
+    Metadata {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        author: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        keywords: Option<String>,
+    },
+}
+
+/// Parse a page-range string like "1,3,5-7" into 0-based indices.
+fn parse_page_spec(spec: &str, max_pages: usize) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.contains('-') {
+            let mut split = part.splitn(2, '-');
+            let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
+            let end: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
+            if start < 1 || end < start || end > max_pages {
+                return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+            }
+            for i in start..=end { out.push(i - 1); }
+        } else {
+            let n: usize = part.parse().map_err(|_| format!("bad page number: {part}"))?;
+            if n < 1 || n > max_pages {
+                return Err(format!("page {n} out of bounds (1..{max_pages})"));
+            }
+            out.push(n - 1);
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a split ranges string like "1-5,6-10" into [(start, end)] 0-based half-open.
+fn parse_split_ranges(spec: &str, max_pages: usize) -> Result<Vec<(usize, usize)>, String> {
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        let mut split = part.splitn(2, '-');
+        let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
+        let end: usize = split.next().ok_or_else(|| format!("range needs start-end: {part}"))?.trim().parse().map_err(|_| format!("bad range: {part}"))?;
+        if start < 1 || end < start || end > max_pages {
+            return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+        }
+        out.push((start - 1, end)); // 0-based start, exclusive end
+    }
+    Ok(out)
+}
+
+#[derive(Subcommand, Debug)]
 enum CatalogCmd {
     /// Walk a folder and write a .caf catalog.
     Scan {
@@ -1220,6 +1404,7 @@ pub fn run() -> ExitCode {
         Command::Chat { cmd } => cmd_chat(cli.format, cmd),
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
+        Command::Pdf { cmd } => cmd_pdf(cli.format, cmd),
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
@@ -3484,6 +3669,115 @@ fn cmd_watch(folder: PathBuf, _all_exts: bool) -> Result<(), String> {
 #[cfg(not(feature = "desktop"))]
 fn cmd_watch(_folder: PathBuf, _all_exts: bool) -> Result<(), String> {
     Err("watch command requires --features desktop (notify crate)".to_string())
+}
+
+// ── pdf — page-level PDF manipulation ────────────────────────────────────
+
+fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
+    use crate::pdf_ops;
+    match cmd {
+        PdfCmd::Info { file } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&info).unwrap()),
+                OutFormat::Text => {
+                    println!("{} pages", info.page_count);
+                    if let Some(ref t) = info.title { println!("Title:    {t}"); }
+                    if let Some(ref a) = info.author { println!("Author:   {a}"); }
+                    if let Some(ref s) = info.subject { println!("Subject:  {s}"); }
+                    if let Some(ref k) = info.keywords { println!("Keywords: {k}"); }
+                    if let Some(ref p) = info.producer { println!("Producer: {p}"); }
+                    if let Some(ref c) = info.creator { println!("Creator:  {c}"); }
+                    for p in &info.pages {
+                        println!("  Page {}: {:.0} x {:.0} pt, rot {}°", p.page_number, p.width_pt, p.height_pt, p.rotation);
+                    }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::Merge { files, out: out_path } => {
+            let paths: Vec<&std::path::Path> = files.iter().map(|f| f.as_path()).collect();
+            let total = pdf_ops::merge_pdfs(&paths, &out_path)?;
+            eprintln!("Merged {} files → {} ({total} pages)", files.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::Split { file, pages, out_dir } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let ranges = parse_split_ranges(&pages, info.page_count)?;
+            let dir = out_dir.unwrap_or_else(|| file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf());
+            let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "doc".into());
+            let outputs = pdf_ops::split_pdf(&file, &ranges, &dir, &stem)?;
+            for o in &outputs { eprintln!("  → {o}"); }
+            Ok(())
+        }
+        PdfCmd::Extract { file, pages, out: out_path } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let indices = parse_page_spec(&pages, info.page_count)?;
+            pdf_ops::extract_pages(&file, &indices, &out_path)?;
+            eprintln!("Extracted {} pages → {}", indices.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::Remove { file, pages, out: out_path } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let indices = parse_page_spec(&pages, info.page_count)?;
+            pdf_ops::remove_pages(&file, &indices, &out_path)?;
+            eprintln!("Removed {} pages → {}", indices.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::Reorder { file, order, out: out_path } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let new_order = parse_page_spec(&order, info.page_count)?;
+            pdf_ops::reorder_pages(&file, &new_order, &out_path)?;
+            eprintln!("Reordered → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Rotate { file, pages, degrees, out: out_path } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let indices = match pages {
+                Some(spec) => parse_page_spec(&spec, info.page_count)?,
+                None => (0..info.page_count).collect(),
+            };
+            pdf_ops::rotate_pages(&file, &indices, degrees, &out_path)?;
+            eprintln!("Rotated {} pages by {degrees}° → {}", indices.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::Crop { file, pages, rect, out: out_path } => {
+            let info = pdf_ops::pdf_info(&file)?;
+            let indices = match pages {
+                Some(spec) => parse_page_spec(&spec, info.page_count)?,
+                None => (0..info.page_count).collect(),
+            };
+            let parts: Vec<f64> = rect.split(',').map(|s| s.trim().parse::<f64>().map_err(|_| format!("bad rect: {rect}"))).collect::<Result<_, _>>()?;
+            if parts.len() != 4 { return Err("rect must be x,y,w,h".into()); }
+            pdf_ops::crop_pages(&file, &indices, parts[0], parts[1], parts[2], parts[3], &out_path)?;
+            eprintln!("Cropped {} pages → {}", indices.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::Number { file, out: out_path, position, font_size, format, start, skip_first } => {
+            let config = pdf_ops::PageNumberConfig { position, font_size, format, start_number: start, skip_first };
+            pdf_ops::add_page_numbers(&file, &config, &out_path)?;
+            eprintln!("Added page numbers → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Watermark { file, text, out: out_path, font_size, angle, opacity } => {
+            let config = pdf_ops::WatermarkConfig { text, font_size, angle, opacity, color: [0.5, 0.5, 0.5] };
+            pdf_ops::add_watermark(&file, &config, None, &out_path)?;
+            eprintln!("Added watermark → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::InsertBlank { file, at, out: out_path } => {
+            if at < 1 { return Err("--at must be >= 1".into()); }
+            pdf_ops::insert_blank_page(&file, at - 1, 612.0, 792.0, &out_path)?;
+            eprintln!("Inserted blank page at position {at} → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Metadata { file, out: out_path, title, author, subject, keywords } => {
+            let edits = pdf_ops::MetadataEdit { title, author, subject, keywords };
+            pdf_ops::edit_metadata(&file, &edits, &out_path)?;
+            eprintln!("Updated metadata → {}", out_path.display());
+            Ok(())
+        }
+    }
 }
 
 // ── sync (P13.7 Step 5 — cloud-backup HTTP target) ────────────────────────

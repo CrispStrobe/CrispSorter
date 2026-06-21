@@ -827,6 +827,10 @@ thousands for.
   `barcode:<value>` tags — lights up in the existing tag cloud,
   `--tag barcode:…` filter, and NER entity view.  Enables automated
   document routing by barcode (pair with Stapel sort rules).
+  **Follow-up: expand barcode coverage** — `rxing` already supports
+  24+ symbologies (Code 39, Code 93, ITF, Codabar, PDF417, Data Matrix,
+  Aztec, MaxiCode, RSS/GS1 DataBar, UPC-E) but only a subset is wired.
+  Expose all supported types in detection + tag output.  ~2 h.
 
 - [x] **P25.6 — Form field extraction → structured CSV export.**
   Chain the existing KIE pipeline (CrispEmbed GLiNER + LiLT) with a
@@ -943,3 +947,177 @@ management systems and enterprise OCR/archival suites.
   stabilise).  Settings panel for scanner selection, resolution, color
   mode, duplex.  Scanned pages feed directly into the OCR pipeline →
   index, skipping the filesystem.
+
+### P27 — PDF manipulation & format parity (planned)
+
+Features that turn CrispSorter from a read-only document intelligence
+tool into a full document lifecycle platform.  The heaviest items are
+PDF editing and form creation; the rest are moderate or small.
+
+- [ ] **P27.1 — PDF viewer + page-level operations.**  A proper
+  in-app PDF viewer (PDFium-rendered page thumbnails + full-page
+  preview with zoom/pan) plus the page-level manipulation toolkit:
+  - **View** — paginated render, page-fit / width-fit / zoom slider,
+    keyboard navigation (PgUp/PgDn, Home/End).
+  - **Reorder pages** — drag-and-drop in the thumbnail strip.
+  - **Extract pages** — select pages → export as a new PDF.
+  - **Remove pages** — delete selected pages, save in-place or as copy.
+  - **Crop** — draw a crop rectangle on a page, apply to selected
+    pages or all; rewrites the `/MediaBox` + `/CropBox`.
+  - **Merge** — combine multiple PDFs into one (multi-file picker).
+  - **Split** — split by page range, by blank-page detection, or
+    every N pages.
+  - **Add page numbers** — configurable position (header/footer,
+    left/centre/right), font size, format ("Page N", "N / M",
+    Roman numerals), skip-first-page option.  Rendered as a text
+    content-stream overlay on each page.
+  Rust: `lopdf` (already in deps) for page-tree manipulation + PDFium
+  for rendering.  Frontend: dedicated "PDF Tools" tab with thumbnail
+  sidebar + main canvas.  CLI: `crispsorter pdf merge|split|extract|
+  remove|crop|number …`.  ~12–16 h for the full set.
+
+- [ ] **P27.2 — PDF text extraction & OCR overlay.**  Three related
+  capabilities for working with PDF text content:
+  - **Extract text** — copy all text from a (digital) PDF preserving
+    reading order.  Uses the existing `pdfjs-dist` + `pdf-extract`
+    pipeline but exposed as a standalone "Extract Text" button in the
+    PDF Tools tab → clipboard or `.txt` file.
+  - **OCR with invisible text layer** — run the OCR pipeline on a
+    scanned PDF and write the recognised text as an invisible overlay
+    behind each page image (the existing `ocr --render pdf` path).
+    The result looks identical to the original but is fully searchable
+    and copy-pasteable.  Exposed as "Make Searchable" in PDF Tools.
+  - **OCR and extract text** — OCR a scanned PDF and immediately
+    output the recognised text (no PDF rewrite).  One-click "OCR →
+    Text" button.
+  These are largely wired already via the OCR Workbench and CLI; this
+  item surfaces them in the PDF Tools tab with a streamlined UX.  ~4 h.
+
+- [ ] **P27.3 — PDF text editing (in-place).**  Edit text paragraphs
+  in a PDF by rewriting content streams.  Scope is intentionally
+  limited to text replacement within existing bounding boxes — not a
+  full desktop-publisher layout engine.  Approach: extract text runs
+  with coordinates from the content stream, present them as editable
+  spans in the preview pane, rewrite the affected content stream
+  operators on save.  Font subsetting (embed only used glyphs) is the
+  hardest sub-problem — use `subsetter` crate or CrispEmbed's
+  freetype bindings.  Library: `lopdf` for low-level stream
+  manipulation + PDFium for rendering the preview.  Frontend:
+  click-to-edit text overlay on the page preview.  **Large** —
+  20–40 h for a robust implementation; a "good enough" v1 that
+  handles single-font Latin text is ~12 h.
+
+- [ ] **P27.4 — Interactive PDF form creation.**  Insert AcroForm
+  fields (text input, checkbox, radio, dropdown, signature placeholder)
+  into an existing PDF.  Uses `lopdf` to write `/AcroForm` dictionary +
+  widget annotations.  Frontend: field palette + drag-to-place on the
+  page preview.  CLI: `crispsorter pdf add-field doc.pdf --type text
+  --page 1 --rect 100,200,300,230 --name "invoice_number"`.  **Large**
+  — AcroForm spec is deep; a v1 covering text + checkbox + dropdown
+  is ~16 h; radio buttons and signature fields add ~8 h.
+
+- [ ] **P27.5 — PDF/UA accessible output.**  Generate tagged PDFs
+  with a structure tree (headings, paragraphs, tables, figures with
+  alt-text) so the output is screen-reader-friendly.  Builds on the
+  existing searchable-PDF renderer (`ocr --render pdf`) by adding
+  `/StructTreeRoot`, `/MarkInfo`, and tagged content markers.  Requires
+  proper reading-order (already available via P20's layout-aware
+  pipeline).  Validation against the Matterhorn Protocol checklist
+  (PDF/UA-1 conformance).  ~12–16 h.
+
+- [ ] **P27.6 — MRC (Mixed Raster Content) compression.**  Layer-
+  separated PDF compression for scanned documents: foreground (text)
+  as JBIG2 or CCITT, background (images/photos) as JPEG2000/JPEG,
+  mask layer as 1-bit.  Produces dramatically smaller files (often
+  3–5× reduction) while preserving visual fidelity.  Approach:
+  CrispEmbed's binarisation output already separates text from
+  background; encode each layer with the optimal codec, compose into
+  a single PDF page via content-stream image XObjects.  JBIG2 encoding
+  via `jbig2enc` (C, shell-out) or a Rust port.  ~12 h.
+
+- [ ] **P27.7 — Password-protected PDF handling.**  When a PDF is
+  encrypted (standard security handler, RC4 or AES), prompt for the
+  password and decrypt before extraction.  `lopdf` already supports
+  `Document::decrypt(password)`; the extraction pipeline currently
+  marks these as `TaskFailureReason::Password` and skips them.  Change:
+  store the password (per-document or per-folder pattern) in the OS
+  keychain, retry extraction after decrypt.  Frontend: password prompt
+  dialog on ingest failure + "Remember for this folder" checkbox.
+  CLI: `--password` flag on `index ingest` / `ocr`.  ~4 h.
+
+- [ ] **P27.8 — Checkmark / OMR (Optical Mark Recognition).**
+  Detect filled checkboxes, radio buttons, and bubble marks in
+  scanned forms.  Lightweight approach: crop candidate regions (from
+  KIE or template zones), run a small binary classifier (checkbox
+  filled vs. empty — fine-tuned MobileNet or a classical CV pipeline
+  with contour analysis + fill-ratio threshold).  Store results as
+  structured KIE fields (`checkbox_agree: true`).  Pairs well with
+  P26.4 zoned OCR templates for high-volume form processing.  ~6–8 h.
+
+- [ ] **P27.9 — Handwritten text recognition (ICR).**  Dedicated
+  handwriting recognition beyond what the general VLM OCR engines
+  provide.  v1: route handwriting regions (detected by the layout
+  pipeline's region classifier) to a specialised engine — TrOCR
+  fine-tuned on IAM/RIMES handwriting datasets via CrispEmbed GGUF,
+  or Qwen2.5-VL with a handwriting-specific prompt.  v2: user-
+  adaptive fine-tuning (few-shot LoRA on a handful of user-provided
+  handwriting samples).  Scope depends heavily on script coverage —
+  Latin handwriting is tractable; CJK/Arabic handwriting is a
+  separate research problem.  ~8–12 h for v1 (Latin).
+
+- [ ] **P27.10 — Additional export formats.**  Extend the export
+  pipeline beyond the current text / hOCR / ALTO / searchable PDF
+  outputs:
+  - **DOCX** — structured OCR output → Word document preserving
+    headings, paragraphs, tables, and images.  Via `docx-rs` crate
+    or the existing `crisp-docx` workspace.  ~6 h.
+  - **XLSX** — table-extraction results → Excel workbook (already
+    started in P26.3 for single tables; extend to multi-table
+    documents).  ~2 h (incremental).
+  - **EPUB** — long-form documents → reflowable ebook with chapter
+    structure derived from heading detection.  ~4 h.
+  - **PPTX** — page-per-slide conversion for presentations, one
+    slide per PDF page with text overlay.  Via `rust_pptx` or
+    XML-template approach.  ~6 h.
+  - **HTML** — standalone HTML with embedded images (base64) and
+    CSS styling.  Trivial extension of the existing hOCR output.
+    ~2 h.
+
+- [ ] **P27.11 — Cloud storage connectors (SharePoint / OneDrive /
+  Google Drive).**  OAuth2-based cloud drive connectors beyond the
+  existing WebDAV / Filen / Internxt support.  Each connector
+  implements the `CloudDrive` trait (list / download / upload /
+  metadata).  SharePoint + OneDrive: Microsoft Graph API via
+  `oauth2` + `reqwest` (shared Azure AD app registration).  Google
+  Drive: Google Drive API v3 via service account or OAuth2.  Token
+  refresh + storage in OS keychain.  Settings UI for connector setup
+  (OAuth flow in a webview).  ~8 h per connector (SharePoint/OneDrive
+  share 80% of the code).
+
+- [ ] **P27.12 — Digital signature creation.**  Extend P26.6's
+  verify-only signature support with the ability to *sign* PDFs.
+  PKCS#7/CMS detached signature via `cms` or `openssl` crate.
+  Support: PFX/P12 certificate files (password-protected, stored in
+  OS keychain), hardware tokens via PKCS#11 (smartcard/USB key).
+  Visible signature appearance (name, date, reason stamp on the
+  page).  LTV (Long-Term Validation) via embedded OCSP/CRL
+  responses.  SHA-256/384/512 digest algorithms.  Frontend:
+  "Sign PDF" button in the PDF Tools section, certificate picker,
+  signature placement (click on page), reason/location fields.
+  CLI: `crispsorter pdf sign doc.pdf --cert my.p12 --out signed.pdf`.
+  ~12–16 h.
+
+- [ ] **P27.13 — PDF encryption & permissions.**  Set password
+  protection and permission flags on exported PDFs.  Owner password
+  (full access) + user password (restricted access).  Permission
+  flags: print, copy text, edit, annotate, fill forms.  AES-256
+  encryption (PDF 2.0 standard handler).  `lopdf` supports writing
+  encrypted documents.  CLI: `crispsorter pdf protect doc.pdf
+  --user-password VIEW --owner-password ADMIN --no-print --no-copy`.
+  ~4 h.
+
+- [ ] **P27.14 — Hidden metadata removal.**  Strip all metadata
+  from exported PDFs for privacy: `/Info` dictionary, XMP packet,
+  embedded thumbnails, JavaScript, file attachments, comments,
+  form field data, document history.  "Sanitise" export option.
+  CLI: `crispsorter pdf sanitise doc.pdf --out clean.pdf`.  ~4 h.

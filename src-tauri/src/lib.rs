@@ -17,6 +17,7 @@ pub mod secrets;
 pub mod translate;
 #[cfg(feature = "desktop")]
 pub mod tts;
+pub mod pdf_ops;
 pub mod volume;
 #[cfg(feature = "desktop")]
 pub mod watcher;
@@ -2914,6 +2915,18 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            pdf_ops::tauri_commands::pdf_info,
+            pdf_ops::tauri_commands::pdf_reorder_pages,
+            pdf_ops::tauri_commands::pdf_extract_pages,
+            pdf_ops::tauri_commands::pdf_remove_pages,
+            pdf_ops::tauri_commands::pdf_rotate_pages,
+            pdf_ops::tauri_commands::pdf_crop_pages,
+            pdf_ops::tauri_commands::pdf_merge,
+            pdf_ops::tauri_commands::pdf_split,
+            pdf_ops::tauri_commands::pdf_add_page_numbers,
+            pdf_ops::tauri_commands::pdf_add_watermark,
+            pdf_ops::tauri_commands::pdf_insert_blank_page,
+            pdf_ops::tauri_commands::pdf_edit_metadata,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
             #[cfg(not(feature = "desktop"))]
@@ -3111,6 +3124,18 @@ pub fn run() {
             secrets::tauri_commands::secret_delete,
             secrets::tauri_commands::secrets_bulk_set,
             secrets::tauri_commands::secrets_list_known,
+            pdf_ops::tauri_commands::pdf_info,
+            pdf_ops::tauri_commands::pdf_reorder_pages,
+            pdf_ops::tauri_commands::pdf_extract_pages,
+            pdf_ops::tauri_commands::pdf_remove_pages,
+            pdf_ops::tauri_commands::pdf_rotate_pages,
+            pdf_ops::tauri_commands::pdf_crop_pages,
+            pdf_ops::tauri_commands::pdf_merge,
+            pdf_ops::tauri_commands::pdf_split,
+            pdf_ops::tauri_commands::pdf_add_page_numbers,
+            pdf_ops::tauri_commands::pdf_add_watermark,
+            pdf_ops::tauri_commands::pdf_insert_blank_page,
+            pdf_ops::tauri_commands::pdf_edit_metadata,
         ] }
         })
         .run(tauri::generate_context!())

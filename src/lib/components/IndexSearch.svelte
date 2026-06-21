@@ -1,10 +1,10 @@
 <script lang="ts">
-    import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+    import { invoke } from '@tauri-apps/api/core';
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
-    import { readTextFile } from '@tauri-apps/plugin-fs';
     import { save } from '@tauri-apps/plugin-dialog';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
+    import DocumentViewer from './viewer/DocumentViewer.svelte';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
     import {
         Search, X, ChevronDown, ChevronRight,
@@ -19,20 +19,7 @@
         return path.split(/[\\/]/).pop()?.replace(/\.caf$/i, '') ?? path;
     }
 
-    // Convert a `crisp+local://user@machine/path` URI back to a plain
-    // filesystem path (catalog hits already use plain paths). Returns
-    // `null` for non-local URIs (vps / internxt) — those can't preview.
-    function uriToPath(uri: string): string | null {
-        if (uri.startsWith('crisp+local://')) {
-            const rest = uri.slice('crisp+local://'.length);
-            const slashIdx = rest.indexOf('/');
-            if (slashIdx === -1) return null;
-            return rest.slice(slashIdx);
-        }
-        // Catalog rows store plain paths in `location_uri`.
-        if (uri.startsWith('/') || /^[A-Za-z]:[\\/]/.test(uri)) return uri;
-        return null;
-    }
+    // uriToPath was inlined here; now centralised in viewer/types.ts.
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -534,72 +521,17 @@
     }
 
     // ── Preview pane (PLAN P7.3) ───────────────────────────────────────────────
-    // Right-side slide-in pane that shows the matched document in place
-    // so users can verify the hit without leaving the result list.
-    // PDF / image: tauri.convertFileSrc into native <object>/<img>.
-    // Text / markdown: readTextFile into a <pre>.
-    // Anything else: "Open in app" fallback.
-    let previewing      = $state<SearchResult | null>(null);
-    let previewKind     = $state<'pdf' | 'image' | 'text' | 'unsupported'>('unsupported');
-    let previewSrc      = $state('');           // file URL for pdf/image
-    let previewText     = $state('');           // file contents for text
-    let previewLoading  = $state(false);
-    let previewError    = $state('');
+    // Right-side slide-in pane using the universal DocumentViewer component.
+    // Format detection + rendering is handled entirely by the viewer.
+    let previewing = $state<SearchResult | null>(null);
 
-    const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'rst', 'log',
-        'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'xml', 'html',
-        'rs', 'py', 'js', 'ts', 'svelte', 'go', 'java', 'c', 'cpp', 'h', 'hpp',
-        'sh', 'bash', 'zsh']);
-    const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif',
-        'bmp', 'svg', 'ico']);
-
-    async function openPreview(r: SearchResult) {
-        // Toggle off if clicking the same row.
-        if (previewing && previewing.doc_id === r.doc_id) {
-            closePreview();
-            return;
-        }
-        const path = uriToPath(r.location_uri);
-        if (!path) {
-            previewing = r;
-            previewKind = 'unsupported';
-            previewError = 'No local path for this result (remote location)';
-            return;
-        }
+    function openPreview(r: SearchResult) {
+        if (previewing && previewing.doc_id === r.doc_id) { closePreview(); return; }
         previewing = r;
-        previewLoading = true;
-        previewError = '';
-        previewSrc = '';
-        previewText = '';
-        const ext = (r.ext ?? path.split('.').pop() ?? '').toLowerCase();
-        if (ext === 'pdf') {
-            previewKind = 'pdf';
-            previewSrc = convertFileSrc(path);
-        } else if (IMAGE_EXTS.has(ext)) {
-            previewKind = 'image';
-            previewSrc = convertFileSrc(path);
-        } else if (TEXT_EXTS.has(ext)) {
-            previewKind = 'text';
-            try {
-                // Cap at ~512 KB to avoid choking the DOM on huge logs.
-                const raw = await readTextFile(path);
-                previewText = raw.length > 512 * 1024
-                    ? raw.slice(0, 512 * 1024) + '\n\n…(truncated; file is larger than 512 KB)'
-                    : raw;
-            } catch (e: any) {
-                previewError = `read failed: ${e?.message ?? e}`;
-            }
-        } else {
-            previewKind = 'unsupported';
-        }
-        previewLoading = false;
     }
 
     function closePreview() {
         previewing = null;
-        previewSrc = '';
-        previewText = '';
-        previewError = '';
     }
 
     // ── Saved searches (PLAN P7.5) ────────────────────────────────────────────
@@ -1659,29 +1591,10 @@
                 </button>
             </header>
             <div class="preview-body">
-                {#if previewLoading}
-                    <div class="state-msg"><Loader2 size={20} class="spin" /> Loading…</div>
-                {:else if previewError}
-                    <div class="state-msg error">{previewError}</div>
-                {:else if previewKind === 'pdf'}
-                    <object data={previewSrc} type="application/pdf" width="100%" height="100%" aria-label="PDF preview of {previewing.title || previewing.filename || 'document'}">
-                        <p>PDF preview not supported by your webview.
-                            <button class="open-btn" onclick={() => openFile(previewing!.location_uri)}>Open in app</button>
-                        </p>
-                    </object>
-                {:else if previewKind === 'image'}
-                    <img src={previewSrc} alt={previewing.filename ?? ''} class="preview-image" />
-                {:else if previewKind === 'text'}
-                    <pre class="preview-text">{previewText}</pre>
-                {:else}
-                    <div class="state-msg">
-                        Preview not supported for this file type.
-                        <br />
-                        <button class="open-btn" onclick={() => openFile(previewing!.location_uri)}>
-                            <ExternalLink size={13} /> Open in app
-                        </button>
-                    </div>
-                {/if}
+                <DocumentViewer
+                    locationUri={previewing.location_uri}
+                    filename={previewing.title || previewing.filename || ''}
+                />
             </div>
         </aside>
     {/if}

@@ -11,11 +11,12 @@
     import { i18n, type Language } from '$lib/i18n.svelte';
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
-    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText } from 'lucide-svelte';
+    import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
+    import PdfTools from '$lib/components/PdfTools.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
@@ -344,6 +345,11 @@
                 <ScanText size={20} />
                 {#if !navCollapsed}<span>{i18n.t.nav.ocr}</span>{/if}
             </button>
+
+            <button class="nav-item" class:active={activeTab === 'pdf'} onclick={() => activeTab = 'pdf'} title={i18n.t.nav.pdf}>
+                <FileText size={20} />
+                {#if !navCollapsed}<span>{i18n.t.nav.pdf}</span>{/if}
+            </button>
         </div>
 
         <div class="nav-bottom">
@@ -464,6 +470,8 @@
                 <Translate />
             {:else if activeTab === 'ocr'}
                 <OcrWorkbench />
+            {:else if activeTab === 'pdf'}
+                <PdfTools />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />

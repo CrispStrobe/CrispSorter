@@ -8,6 +8,8 @@
     import { getSetting, saveSetting } from '$lib/store';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
+    import DocumentViewer from './viewer/DocumentViewer.svelte';
+    import { uriToPath } from './viewer/types';
     import {
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
@@ -664,29 +666,10 @@
     });
 
     // PLAN P9 step 8 — preview pane for Übersicht rows.
-    const TEXT_EXTS  = new Set(['txt','md','markdown','rst','log','csv','tsv',
-        'json','jsonl','yaml','yml','toml','xml','html',
-        'rs','py','js','ts','svelte','go','java','c','cpp','h','hpp','sh','bash','zsh']);
-    const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','avif','bmp','svg','ico']);
-
-    function uriToPath(uri: string): string | null {
-        if (uri.startsWith('crisp+local://')) {
-            const rest = uri.slice('crisp+local://'.length);
-            const slashIdx = rest.indexOf('/');
-            return slashIdx === -1 ? null : rest.slice(slashIdx);
-        }
-        if (uri.startsWith('/') || /^[A-Za-z]:[\\/]/.test(uri)) return uri;
-        return null;
-    }
-
+    // Format detection + uriToPath now live in viewer/types.ts.
     let previewDoc     = $state<any | null>(null);
     let cbLookupResult = $state<any | null>(null);
     let cbLookupLoading = $state(false);
-    let previewKind    = $state<'pdf' | 'image' | 'text' | 'unsupported'>('unsupported');
-    let previewSrc     = $state('');
-    let previewText    = $state('');
-    let previewLoading = $state(false);
-    let previewError   = $state('');
 
     async function openDocPreview(doc: any) {
         cbLookupResult = null;
@@ -705,44 +688,11 @@
                 }
             }
         }
-        const path = uriToPath(doc.location_uri ?? '');
-        if (!path) {
-            previewDoc    = doc;
-            previewKind   = 'unsupported';
-            previewError  = 'Kein lokaler Pfad (Remote-Speicherort)';
-            return;
-        }
-        previewDoc    = doc;
-        previewLoading = true;
-        previewError  = '';
-        previewSrc    = '';
-        previewText   = '';
-        const ext = (doc.ext ?? path.split('.').pop() ?? '').toLowerCase();
-        if (ext === 'pdf') {
-            previewKind = 'pdf';
-            previewSrc  = convertFileSrc(path);
-        } else if (IMAGE_EXTS.has(ext)) {
-            previewKind = 'image';
-            previewSrc  = convertFileSrc(path);
-        } else if (TEXT_EXTS.has(ext)) {
-            previewKind = 'text';
-            try {
-                const raw = await readTextFile(path);
-                previewText = raw.length > 512 * 1024
-                    ? raw.slice(0, 512 * 1024) + '\n\n…(abgeschnitten; Datei > 512 KB)'
-                    : raw;
-            } catch (e: any) { previewError = `Lesefehler: ${e?.message ?? e}`; }
-        } else {
-            previewKind = 'unsupported';
-        }
-        previewLoading = false;
+        previewDoc = doc;
     }
 
     function closeDocPreview() {
-        previewDoc    = null;
-        previewSrc    = '';
-        previewText   = '';
-        previewError  = '';
+        previewDoc = null;
     }
 
     // Ingest progress from Rust events
@@ -4183,34 +4133,10 @@
                         </div>
                     {/if}
                     <div class="preview-body">
-                        {#if previewLoading}
-                            <div class="preview-msg"><Loader2 size={20} class="spin" /> Lade …</div>
-                        {:else if previewError}
-                            <div class="preview-msg preview-error">{previewError}</div>
-                        {:else if previewKind === 'pdf'}
-                            <object data={previewSrc} type="application/pdf"
-                                width="100%" height="100%"
-                                aria-label="PDF-Vorschau: {previewDoc.title || previewDoc.filename || 'Dokument'}">
-                                <p class="preview-msg">
-                                    PDF nicht unterstützt.
-                                    <button class="open-ext-btn" onclick={() => openIndexedFile(previewDoc.location_uri)}>
-                                        <ExternalLink size={12} /> In App öffnen
-                                    </button>
-                                </p>
-                            </object>
-                        {:else if previewKind === 'image'}
-                            <img src={previewSrc} alt={previewDoc.filename ?? ''} class="preview-image" />
-                        {:else if previewKind === 'text'}
-                            <pre class="preview-text">{previewText}</pre>
-                        {:else}
-                            <div class="preview-msg">
-                                Vorschau für diesen Dateityp nicht verfügbar.
-                                <br />
-                                <button class="open-ext-btn" onclick={() => openIndexedFile(previewDoc.location_uri)}>
-                                    <ExternalLink size={12} /> In App öffnen
-                                </button>
-                            </div>
-                        {/if}
+                        <DocumentViewer
+                            locationUri={previewDoc.location_uri ?? ''}
+                            filename={previewDoc.title || previewDoc.filename || ''}
+                        />
                     </div>
                 </aside>
             {/if}
