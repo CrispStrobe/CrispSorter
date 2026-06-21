@@ -219,7 +219,16 @@ embedding dequant). Remaining gaps:
   toggle in Settings, wired through `SearchEngine.with_embedder_as_reranker()`
   → `maybe_rerank()` fallback. Cosine-similarity re-scoring via the loaded
   dense embedder when no dedicated cross-encoder GGUF is installed.
-- [ ] **(Minor)** `encode_tokens` for token-level match highlighting.
+- [x] **(Minor)** `encode_tokens` for token-level match highlighting. ✅ SHIPPED.
+  `Embedder::encode_tokens(text) -> Vec<(String, Vec<f32>)>` delegates to
+  `CrispEmbedBackend::encode_tokens` (per-subword contextual embeddings).
+  New `index/token_highlight.rs` module: `highlight_tokens()` computes
+  per-token cosine similarity between query and document tokens, returns
+  `TokenSpan { offset, length, score }` above a configurable threshold;
+  `merge_spans()` coalesces adjacent/overlapping spans.  Tauri command
+  `index_token_highlight(query, doc_text, threshold)` registered.  4 unit
+  tests (cosine, merge_adjacent, merge_overlapping).  ONNX path returns
+  empty (GGUF-only).
 
 ### P20 — Configurable OCR pipeline (cleanup + engines + post-process)
 
@@ -484,8 +493,8 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 | Item | Effort | Handover prompt | Notes |
 |------|--------|-----------------|-------|
 | ~~Audio omni embedding~~ | ~~4 h~~ | ~~`session-prompt-audio-omni-embedding.md`~~ | ✅ DONE `9eec70e` |
-| **⭐ Omni/ViT RRF search channel** | ~6 h | `session-prompt-omni-vit-search-channel.md` | **Next priority.** Add ANN query over `embedding_omni`/`embedding_vit` columns in `search.rs`, mix into existing RRF fusion. All ingest-side wiring complete. |
-| Cross-modal search UI | ~2 h | `session-prompt-cross-modal-search-ui.md` | "Search by image" button in IndexSearch. **Depends on** omni/vit search channel. |
+| ~~Omni/ViT RRF search channel~~ | ~~6 h~~ | ~~`session-prompt-omni-vit-search-channel.md`~~ | ✅ DONE `a0ecdee` |
+| ~~Cross-modal search UI~~ | ~~2 h~~ | ~~`session-prompt-cross-modal-search-ui.md`~~ | ✅ DONE `a0ecdee` |
 
 ### P21 — CLI ↔ GUI parity gap closure (2026-06-20)
 
@@ -628,7 +637,10 @@ Closed 8 parity gaps in one session:
 
 **Final status:** All closable CLI↔GUI parity gaps are resolved.
 `vit_embed.rs` and `omni_embed.rs` are fully wired into bg_ingest
-(images + audio).  The remaining gap is **search-side**: querying
-the `embedding_omni` / `embedding_vit` columns (ANN channel in RRF
-fusion + "search by image" UI).  See the "Still pending" table in
-P21 and the handover prompts for the next session.
+(images + audio) **and** the search pipeline:
+- `search_hybrid()` gains a 4th omni channel (text→image/audio) via
+  `SearchFilters.omni_search` + `LocalIndex::search_vector_column()`
+- `SearchEngine::search_by_image()` + `index_search_by_image` Tauri
+  command + CLI `index search --image <PATH>`
+- Frontend "Search by Image" button + "Omni cross-modal" filter checkbox
+The full ingest→search pipeline for cross-modal embeddings is complete.

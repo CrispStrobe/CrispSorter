@@ -2011,6 +2011,12 @@ impl CrispEmbedBackend {
         self.model.encode_multivec(text)
     }
 
+    /// Per-token contextual embeddings for token-level match highlighting.
+    /// Returns `(token_text, embedding)` for each subword token.
+    pub(crate) fn encode_tokens(&mut self, text: &str) -> Vec<(String, Vec<f32>)> {
+        self.model.encode_tokens(text)
+    }
+
     /// Check if model is a cross-encoder reranker.
     /// Used by `index::reranker::Reranker::load` to verify a reranker
     /// GGUF was actually loaded.
@@ -2544,6 +2550,25 @@ impl Embedder {
             }
         }
         Ok(vec![vec![]; texts.len()])
+    }
+
+    /// Per-token contextual embeddings for token-level match highlighting.
+    ///
+    /// Tokenises `text` through the loaded model and returns one embedding
+    /// vector per subword token.  Only available on the CrispEmbed (GGUF)
+    /// backend — returns an empty vec on the ONNX path.
+    ///
+    /// Usage: compute cosine between each query token and each document
+    /// token to find which spans in the document best match the query.
+    pub fn encode_tokens(&mut self, text: &str) -> Vec<(String, Vec<f32>)> {
+        #[cfg(feature = "crispembed")]
+        {
+            if let DenseBackend::CrispEmbed(ref mut backend) = self.dense {
+                return backend.encode_tokens(text);
+            }
+        }
+        let _ = text;
+        vec![]
     }
 }
 

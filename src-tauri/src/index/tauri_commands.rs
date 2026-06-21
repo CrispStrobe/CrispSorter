@@ -4375,6 +4375,31 @@ pub async fn ocr_workbench_reingest(
         .map_err(|e| format!("workbench re-ingest failed: {e:#}"))
 }
 
+// ── Token-level highlighting ──────────────────────────────────────────────────
+
+/// Compute token-level semantic highlights for a document snippet.
+/// Returns spans (byte offset + length + score) where the document
+/// text is semantically similar to the query at the subword level.
+#[tauri::command]
+pub async fn index_token_highlight(
+    state: State<'_, AppState>,
+    query: String,
+    doc_text: String,
+    threshold: Option<f32>,
+) -> Result<Vec<super::token_highlight::TokenSpan>, String> {
+    let lock = state.index.lock().await;
+    let embedder = lock
+        .embedder
+        .clone()
+        .ok_or("No embedder loaded — enable vector search in settings")?;
+    drop(lock);
+
+    let thresh = threshold.unwrap_or(super::token_highlight::DEFAULT_THRESHOLD);
+    let spans = super::token_highlight::highlight_tokens(&embedder, &query, &doc_text, thresh).await;
+    let merged = super::token_highlight::merge_spans(spans);
+    Ok(merged)
+}
+
 #[cfg(test)]
 mod workbench_tests {
     use super::{OcrRegionDto, ocr_doc_open};

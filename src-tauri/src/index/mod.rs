@@ -30,6 +30,7 @@ pub mod migrations;
 pub mod schema;
 pub mod search;
 pub mod snippet;
+pub mod token_highlight;
 pub mod tauri_commands;
 pub mod translate_commands;
 
