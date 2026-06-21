@@ -1369,6 +1369,7 @@ pub async fn sync_federated_search(
     image_camera_make: Option<String>,
     image_camera_model: Option<String>,
     colbert_rerank: Option<bool>,
+    omni_search: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     use tokio::join;
 
@@ -1430,6 +1431,9 @@ pub async fn sync_federated_search(
         }
         if let Some(c) = colbert_rerank {
             f.colbert_rerank = c;
+        }
+        if let Some(o) = omni_search {
+            f.omni_search = o;
         }
         f
     };

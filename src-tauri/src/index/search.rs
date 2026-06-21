@@ -481,13 +481,53 @@ impl SearchEngine {
             .maybe_sparse_search(query_text, &fts_hits, &vec_hits, filters, inner_limit)
             .await;
 
-        // RRF merge — 2-way (no sparse) or 3-way (with sparse).
+        // Optional 4th modality: BidirLM-Omni cross-modal search.
+        // Encode the query text into the 2048-D omni space, then ANN-search
+        // the embedding_omni column.  Hits include images and audio files
+        // that match the query semantically across modalities.
+        let omni_hits = if filters.omni_search
+            && crate::index::omni_embed::is_omni_available()
+        {
+            match tokio::task::spawn_blocking({
+                let q = query_text.to_owned();
+                move || crate::index::omni_embed::encode_text_omni(&q)
+            })
+            .await
+            {
+                Ok(Ok(omni_emb)) => {
+                    self.vector
+                        .search_vector_column(
+                            &omni_emb,
+                            "embedding_omni",
+                            filters,
+                            inner_limit * 2,
+                        )
+                        .await
+                        .ok()
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[search] omni query encode failed, skipping: {e:#}");
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[search] omni task panicked, skipping: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // RRF merge — 2-way, 3-way (with sparse), or 4-way (with omni).
         let mut lists: Vec<Vec<String>> = vec![
             doc_ids_from_fts(&fts_hits),
             doc_ids_from_results(&vec_hits),
         ];
         if let Some(ref sparse) = sparse_hits {
             lists.push(doc_ids_from_results(sparse));
+        }
+        if let Some(ref omni) = omni_hits {
+            lists.push(doc_ids_from_results(omni));
         }
         let merged = rrf_merge_n(&lists, 60, inner_limit);
         if merged.is_empty() {
@@ -497,11 +537,17 @@ impl SearchEngine {
 
         // Index vector results by doc_id (first/best chunk per doc from ANN).
         // Vec search is already sorted best-chunk-first by cosine similarity.
-        let vec_by_doc: HashMap<String, SearchResult> =
+        // Omni hits are merged in so they don't need separate hydration.
+        let mut vec_by_doc: HashMap<String, SearchResult> =
             vec_hits.into_iter().fold(HashMap::new(), |mut map, r| {
                 map.entry(r.doc_id.clone()).or_insert(r);
                 map
             });
+        if let Some(omni) = omni_hits {
+            for r in omni {
+                vec_by_doc.entry(r.doc_id.clone()).or_insert(r);
+            }
+        }
 
         // FTS-only doc_ids need hydration from LanceDB.
         let fts_only_ids: Vec<String> = merged
@@ -557,6 +603,149 @@ impl SearchEngine {
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
         let results = self.maybe_colbert_rerank(query_text, results, filters, limit).await;
         Ok(self.maybe_rerank(query_text, results, limit).await)
+    }
+
+    // ── Image search ──────────────────────────────────────────────────────
+
+    /// Search by image similarity: encode the image via ViT (768-D) and
+    /// optionally omni (2048-D), ANN-search both columns, RRF-merge.
+    /// Returns visually similar images (ViT channel) and cross-modal
+    /// matches (omni channel — e.g. audio files whose content relates
+    /// to the image).
+    pub async fn search_by_image(
+        &self,
+        image_path: &std::path::Path,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        use crate::images::vit_embed;
+        use crate::index::omni_embed;
+
+        let path = image_path.to_path_buf();
+
+        // Encode the image in a blocking thread (both encoders do FFI).
+        let path_vit = path.clone();
+        let vit_result = tokio::task::spawn_blocking(move || {
+            vit_embed::embed_image(&path_vit)
+        })
+        .await;
+
+        let vit_emb = match vit_result {
+            Ok(Ok(emb)) => Some(emb),
+            Ok(Err(e)) => {
+                eprintln!("[search_by_image] ViT encoding failed: {e:#}");
+                None
+            }
+            Err(e) => {
+                eprintln!("[search_by_image] ViT task panicked: {e:#}");
+                None
+            }
+        };
+
+        let omni_emb = if omni_embed::is_omni_available() {
+            let path_omni = path.clone();
+            match tokio::task::spawn_blocking(move || {
+                omni_embed::encode_image_omni(&path_omni)
+            })
+            .await
+            {
+                Ok(Ok(emb)) => Some(emb),
+                Ok(Err(e)) => {
+                    eprintln!("[search_by_image] omni encoding failed: {e:#}");
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[search_by_image] omni task panicked: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if vit_emb.is_none() && omni_emb.is_none() {
+            return Err(anyhow::anyhow!(
+                "image search requires CrispEmbed (--features crispembed)"
+            ));
+        }
+
+        let inner_limit = self.fetch_limit(limit);
+
+        // ViT channel — image-to-image similarity.
+        let vit_hits = if let Some(ref emb) = vit_emb {
+            self.vector
+                .search_vector_column(emb, "embedding_vit", filters, inner_limit * 2)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // Omni channel — cross-modal image-to-anything.
+        let omni_hits = if let Some(ref emb) = omni_emb {
+            self.vector
+                .search_vector_column(emb, "embedding_omni", filters, inner_limit * 2)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // RRF merge across available channels.
+        let mut lists: Vec<Vec<String>> = Vec::new();
+        if let Some(ref hits) = vit_hits {
+            lists.push(doc_ids_from_results(hits));
+        }
+        if let Some(ref hits) = omni_hits {
+            lists.push(doc_ids_from_results(hits));
+        }
+        if lists.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let merged = if lists.len() == 1 {
+            // Single channel — skip RRF, just use scores directly.
+            lists[0]
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (id.clone(), 1.0 / (60 + i + 1) as f32))
+                .collect::<Vec<_>>()
+        } else {
+            rrf_merge_n(&lists, 60, inner_limit)
+        };
+
+        if merged.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build doc_id → SearchResult map from both channels.
+        let mut by_doc: HashMap<String, SearchResult> = HashMap::new();
+        if let Some(hits) = vit_hits {
+            for r in hits {
+                by_doc.entry(r.doc_id.clone()).or_insert(r);
+            }
+        }
+        if let Some(hits) = omni_hits {
+            for r in hits {
+                by_doc.entry(r.doc_id.clone()).or_insert(r);
+            }
+        }
+
+        let mut results: Vec<SearchResult> = Vec::with_capacity(merged.len());
+        for (doc_id, rrf_score) in &merged {
+            if let Some(mut r) = by_doc.get(doc_id).cloned() {
+                r.score = *rrf_score;
+                results.push(r);
+            }
+        }
+
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
+        Ok(results)
     }
 
     // ── Private helpers ────────────────────────────────────────────────────

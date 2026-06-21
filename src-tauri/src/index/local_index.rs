@@ -153,6 +153,32 @@ impl LocalIndex {
         record_batches_to_search_results(&batches)
     }
 
+    /// ANN vector search targeting a specific vector column (e.g.
+    /// `embedding_omni` or `embedding_vit`) instead of the default
+    /// `embedding` column.  Same pattern as `search_vector` but with
+    /// an explicit `.column()` call on the LanceDB `VectorQuery`.
+    pub async fn search_vector_column(
+        &self,
+        embedding: &[f32],
+        column: &str,
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let mut vq = self
+            .table
+            .vector_search(embedding)?
+            .column(column)
+            .distance_type(DistanceType::Cosine)
+            .limit(limit);
+
+        if let Some(sql) = filters.to_lance_sql() {
+            vq = vq.only_if(sql);
+        }
+
+        let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
+        record_batches_to_search_results(&batches)
+    }
+
     /// Stage AE — ColBERT late-interaction re-ranking of an existing
     /// candidate pool.  Fetches each candidate's `multivec_packed` +
     /// `multivec_n_tokens`, computes MaxSim against `query_multivec`,

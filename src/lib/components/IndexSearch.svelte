@@ -9,7 +9,8 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag,
+        Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
 
@@ -105,10 +106,14 @@
     let filterCameraMake    = $state('');
     let filterCameraModel   = $state('');
     let filterColbert       = $state(false);
+    let filterOmniSearch    = $state(false);
     // PLAN P7.6 follow-up — when on (default), backend hides results
     // pinned to currently-unmounted volumes. Toggle off to show
     // everything regardless of mount state.
     let includeUnmounted = $state(false);
+
+    // P21 — image search via ViT + omni embeddings.
+    let imageSearchLoading = $state(false);
 
     // P13.5 on-demand translation — per-result Map keyed by
     // `${doc_id}:${chunk_index}`.  Kept in Map state rather than
@@ -250,6 +255,7 @@
                     imageCameraMake: filterCameraMake || null,
                     imageCameraModel: filterCameraModel || null,
                     colbertRerank: filterColbert || null,
+                    omniSearch: filterOmniSearch || null,
                 },
             );
             fedResults = r.hits ?? [];
@@ -745,6 +751,38 @@
         if (e.key === 'Enter') runSearch();
     }
 
+    // P21 — search by image similarity via ViT + omni embeddings.
+    async function searchByImage() {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({
+            multiple: false,
+            filters: [{
+                name: 'Images',
+                extensions: ['jpg', 'jpeg', 'png', 'tiff', 'tif', 'webp', 'heic', 'bmp', 'avif'],
+            }],
+        });
+        if (!selected) return;
+        const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
+        if (!imagePath) return;
+
+        imageSearchLoading = true;
+        error    = '';
+        searched = true;
+        clearTranslations();
+        searchTags = new Set();
+        try {
+            results = await invoke<SearchResult[]>('index_search_by_image', {
+                imagePath,
+                limit,
+            });
+        } catch (e: any) {
+            error   = String(e);
+            results = [];
+        } finally {
+            imageSearchLoading = false;
+        }
+    }
+
     // P13.7 Stage M — search the cloud-backup VPS over HTTPS via
     // /api/v2/index/search.  Uses the same query box; remote hits
     // surface in a separate panel below the local results.  Embed
@@ -919,6 +957,12 @@
             {#if fedLoading}<Loader2 size={15} class="spin" />{:else}🔀{/if}
             Alle
         </button>
+        <!-- P21 — search by image similarity via ViT + omni embeddings. -->
+        <button class="filter-toggle" onclick={searchByImage}
+                disabled={imageSearchLoading}
+                title="Search by image similarity (ViT + omni embeddings)">
+            {#if imageSearchLoading}<Loader2 size={15} class="spin" />{:else}<ImageIcon size={15} />{/if}
+        </button>
         <button
             class="filter-toggle"
             onclick={saveCurrentSearch}
@@ -1061,6 +1105,10 @@
             <label class="filter-field" title="ColBERT late-interaction reranking" style="flex-direction:row; align-items:center; gap:6px;">
                 <input type="checkbox" bind:checked={filterColbert} />
                 <span>ColBERT rerank</span>
+            </label>
+            <label class="filter-field" title="Include omni cross-modal search channel (text → image/audio)" style="flex-direction:row; align-items:center; gap:6px;">
+                <input type="checkbox" bind:checked={filterOmniSearch} />
+                <span>Omni cross-modal</span>
             </label>
         </div>
     {/if}

@@ -1859,7 +1859,9 @@ enum IndexCmd {
     /// preferred-translation language).
     Search {
         /// Query string.  Empty/`*` lists rows matching only the
-        /// filters (the BM25 stage is short-circuited).
+        /// filters (the BM25 stage is short-circuited).  Optional
+        /// when `--image` is provided.
+        #[arg(default_value = "")]
         query: String,
         /// Maximum results.
         #[arg(long, default_value_t = 20)]
@@ -1942,6 +1944,13 @@ enum IndexCmd {
         /// (schema v105+).  Graceful no-op otherwise.
         #[arg(long)]
         colbert: bool,
+        /// Search by image similarity instead of text.  Encodes the
+        /// image via ViT + omni embeddings and ANN-searches the
+        /// `embedding_vit` / `embedding_omni` columns.  Conflicts
+        /// with the positional `query` argument — use one or the
+        /// other.
+        #[arg(long, value_name = "IMAGE")]
+        image: Option<PathBuf>,
     },
     /// Download the embedder model weights to the local cache.
     /// Run this once on a fresh install before the first `index ingest`.
@@ -2240,6 +2249,7 @@ async fn cmd_index_async(
             url_domain,
             tag,
             colbert,
+            image,
         } => {
             let fts_dir = data_dir.join("fts");
             if !fts_dir.exists() {
@@ -2295,7 +2305,69 @@ async fn cmd_index_async(
                 colbert_rerank: colbert,
                 url_domain,
                 tag,
+                ..Default::default()
             };
+
+            // ── Image search path ──────────────────────────────────────
+            if let Some(ref img_path) = image {
+                if !img_path.exists() {
+                    return Err(format!(
+                        "image file not found: {}",
+                        img_path.display()
+                    ));
+                }
+                let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
+                    .map_err(|e| e.to_string())?;
+                let engine = crate::index::SearchEngine::new(
+                    std::sync::Arc::new(fts),
+                    std::sync::Arc::new(local),
+                    None,
+                );
+                let rows = engine
+                    .search_by_image(img_path, &filters, limit)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                match out {
+                    OutFormat::Json => {
+                        for r in &rows {
+                            let payload = serde_json::json!({
+                                "doc_id": r.doc_id,
+                                "filename": r.filename,
+                                "title": r.title,
+                                "ext": r.ext,
+                                "location_uri": r.location_uri,
+                                "score": r.score,
+                            });
+                            println!("{payload}");
+                        }
+                    }
+                    OutFormat::Text => {
+                        println!(
+                            "{:<40}  {:<6}  {:>8}  {}",
+                            "TITLE", "EXT", "SCORE", "FILENAME"
+                        );
+                        for r in &rows {
+                            let title = r
+                                .title
+                                .as_deref()
+                                .or(r.filename.as_deref())
+                                .unwrap_or(&r.doc_id);
+                            let title_short: String = title.chars().take(40).collect();
+                            let ext = r.ext.as_deref().unwrap_or("");
+                            let filename = r.filename.as_deref().unwrap_or("");
+                            println!(
+                                "{:<40}  {:<6}  {:>8.4}  {}",
+                                title_short, ext, r.score, filename
+                            );
+                        }
+                    }
+                }
+                eprintln!("{} result(s)", rows.len());
+                return Ok(());
+            }
 
             // FTS pass.  An empty query is rejected to keep the
             // search-CLI shape predictable — wildcard syntax (`*foo`)
@@ -4789,22 +4861,14 @@ async fn cmd_search_async(
             errors.insert("local", "FTS index not found — ingest some files first".into());
         } else {
             let filters = crate::index::SearchFilters {
-                owner_id: None,
                 language: lang.clone(),
                 year_min,
                 year_max,
-                tags: vec![],
-                prefer_translated_lang: None,
                 ext: normalised_ext.clone(),
-                source_hash_prefix: None,
                 parent_dir_prefix: folder_prefix.clone(),
-                audio_duration_min_seconds: None,
-                audio_duration_max_seconds: None,
-                image_camera_make: None,
-                image_camera_model: None,
-                colbert_rerank: false,
                 url_domain: url_domain.clone(),
                 tag: tag.clone(),
+                ..Default::default()
             };
             let leg: Result<Vec<FederatedHit>, String> = async {
                 let fts = crate::index::FtsIndex::open_or_create(&fts_dir)

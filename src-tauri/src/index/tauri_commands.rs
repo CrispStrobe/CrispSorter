@@ -213,6 +213,36 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
     }
 }
 
+// ── Image search ─────────────────────────────────────────────────────────────
+
+/// Search by image similarity — encode an image via ViT + omni embeddings,
+/// ANN-search the `embedding_vit` / `embedding_omni` columns, RRF-merge.
+#[tauri::command]
+pub async fn index_search_by_image(
+    state: State<'_, AppState>,
+    image_path: String,
+    limit: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+
+    let lock = state.index.lock().await;
+    let engine = lock
+        .engine
+        .clone()
+        .ok_or("Search engine not initialised — enable the index first")?;
+    drop(lock);
+
+    let path = std::path::PathBuf::from(&image_path);
+    if !path.exists() {
+        return Err(format!("image file not found: {image_path}"));
+    }
+
+    engine
+        .search_by_image(&path, &Default::default(), limit.unwrap_or(20))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ── Index status ──────────────────────────────────────────────────────────────
 
 /// Returns true if the index backend is initialised and ready.

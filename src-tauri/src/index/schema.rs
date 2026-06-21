@@ -397,6 +397,13 @@ pub struct SearchFilters {
     pub image_camera_make: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_camera_model: Option<String>,
+    /// P21 — enable the omni cross-modal search channel in hybrid
+    /// search.  When `true` and CrispEmbed is available, the query
+    /// text is encoded into the 2048-D omni space and ANN-searched
+    /// against `embedding_omni`, adding a 4th leg to the RRF merge.
+    /// Default: `false` (opt-in because the omni encoder is heavy).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omni_search: bool,
     /// Stage AE follow-up — when set, run ColBERT MaxSim re-ranking on
     /// the top-K candidates before any cross-encoder reranker fires.
     /// Requires a model with a ColBERT head (BGE-M3 GGUF today) and
