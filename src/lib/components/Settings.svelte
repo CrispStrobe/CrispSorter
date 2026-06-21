@@ -425,6 +425,7 @@
     // 'folder-watch:added' Tauri events; +page.svelte owns the global
     // listener that calls batchManager.addItem.
     let watchFolders = $state<string[]>([]);
+    let watchModes = $state<Record<string, string>>({});
     let watchStatusMsg = $state('');
 
     // Local Model Management
@@ -1184,6 +1185,7 @@
             const legacyFolder = (await getSetting('watchFolder', '')) as string;
             watchFolders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
         }
+        watchModes = (await getSetting('watchModes', {})) as Record<string, string>;
         try {
             const active = await invoke<string[]>('watch_list');
             // Resync UI list from backend in case +page.svelte already
@@ -1556,6 +1558,7 @@
         const { setLogVerbosity } = await import('../log');
         setLogVerbosity(logVerbosity);
         await saveSetting('watchFolders', watchFolders);
+        await saveSetting('watchModes', watchModes);
         await saveSetting('roundRobinProviders', $state.snapshot(roundRobinProviders));
         await saveSetting('pdfBackend', pdfBackend);
         await saveSetting('parsingFormat', parsingFormat);
@@ -2027,12 +2030,25 @@
             return;
         }
         try {
-            await invoke('watch_start', { folder });
+            const mode = 'off';
+            await invoke('watch_start', { folder, mode, initialScan: false });
             watchFolders = [...watchFolders, folder];
+            watchModes = { ...watchModes, [folder]: mode };
             await saveSetting('watchFolders', watchFolders);
+            await saveSetting('watchModes', watchModes);
             watchStatusMsg = `Watching: ${folder}`;
         } catch (e: any) {
             watchStatusMsg = `Watcher error: ${e?.message ?? e}`;
+        }
+    }
+
+    async function setWatchMode(folder: string, mode: string) {
+        try {
+            await invoke('watch_set_mode', { folder, mode });
+            watchModes = { ...watchModes, [folder]: mode };
+            await saveSetting('watchModes', watchModes);
+        } catch (e: any) {
+            watchStatusMsg = `Mode error: ${e?.message ?? e}`;
         }
     }
 
@@ -3115,10 +3131,19 @@
                 {#if watchFolders.length === 0}
                     <p class="hint" style="margin-top:6px;">{i18n.t.settings.watch_none}</p>
                 {:else}
-                    <ul style="list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:4px;">
+                    <ul style="list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:6px;">
                         {#each watchFolders as folder (folder)}
                             <li style="display:flex; align-items:center; gap:8px;">
                                 <code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.75rem;">{folder}</code>
+                                <select
+                                    style="font-size:0.7rem; padding:2px 4px; border-radius:4px; border:1px solid var(--border, #333); background:var(--bg-secondary, #1a1a2e);"
+                                    value={watchModes[folder] || 'off'}
+                                    onchange={(e) => setWatchMode(folder, (e.target as HTMLSelectElement).value)}
+                                >
+                                    <option value="off">Off</option>
+                                    <option value="analyse">Analyse</option>
+                                    <option value="sort">Sort</option>
+                                </select>
                                 <button class="action-btn small danger" onclick={() => removeWatchFolder(folder)}
                                         title={i18n.t.settings.watch_remove}>
                                     ×

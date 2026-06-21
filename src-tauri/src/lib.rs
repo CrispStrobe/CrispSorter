@@ -57,15 +57,25 @@ async fn tts_speak(
 #[cfg(feature = "desktop")]
 /// Start watching `folder` recursively. Idempotent — adding the same
 /// folder twice does not create a duplicate watcher.
+/// `mode`: "off" | "analyse" | "sort" (default "off").
+/// `initial_scan`: when true and mode ≠ off, walk existing files once.
 #[tauri::command]
 async fn watch_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     folder: String,
+    mode: Option<String>,
+    initial_scan: Option<bool>,
 ) -> Result<(), String> {
     let path = std::path::PathBuf::from(folder);
+    let watch_mode: watcher::WatchMode = match mode.as_deref() {
+        Some("analyse") => watcher::WatchMode::Analyse,
+        Some("sort") => watcher::WatchMode::Sort,
+        _ => watcher::WatchMode::Off,
+    };
     let mut guard = state.watcher.lock().await;
-    watcher::start(&mut guard, app, path).map_err(|e| format!("watch_start failed: {e:#}"))
+    watcher::start(&mut guard, app, path, watch_mode, initial_scan.unwrap_or(false))
+        .map_err(|e| format!("watch_start failed: {e:#}"))
 }
 
 #[cfg(feature = "desktop")]
@@ -97,6 +107,44 @@ async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String>
 async fn watch_list(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let guard = state.watcher.lock().await;
     Ok(guard.list())
+}
+
+#[cfg(feature = "desktop")]
+/// Set the auto-process mode for an already-watched folder.
+#[tauri::command]
+async fn watch_set_mode(
+    state: tauri::State<'_, AppState>,
+    folder: String,
+    mode: String,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&folder);
+    let watch_mode = match mode.as_str() {
+        "analyse" => watcher::WatchMode::Analyse,
+        "sort" => watcher::WatchMode::Sort,
+        _ => watcher::WatchMode::Off,
+    };
+    let mut guard = state.watcher.lock().await;
+    guard.set_mode(&path, watch_mode).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "desktop")]
+/// Returns watched folders with their modes.
+#[tauri::command]
+async fn watch_list_modes(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<(String, watcher::WatchMode)>, String> {
+    let guard = state.watcher.lock().await;
+    Ok(guard.list_with_modes())
+}
+
+#[cfg(feature = "desktop")]
+/// Queue status: pending files per folder + daily rate counters.
+#[tauri::command]
+async fn watch_queue_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<watcher::QueueStatus, String> {
+    let guard = state.watcher.lock().await;
+    Ok(guard.queue_status().await)
 }
 
 // ── Doctor diagnostic (CLI↔GUI parity) ─────────────────────────────────
@@ -2737,6 +2785,9 @@ pub fn run() {
             watch_stop_one,
             watch_stop_all,
             watch_list,
+            watch_set_mode,
+            watch_list_modes,
+            watch_queue_status,
             volume_list_mounted,
             file_sha256,
             catalog_load_caf,

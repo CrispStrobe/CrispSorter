@@ -2006,6 +2006,7 @@ dependencies = [
  "tokio-util",
  "usls",
  "uuid 1.23.3",
+ "walkdir",
  "zip 7.2.0",
 ]
 

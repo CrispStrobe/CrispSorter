@@ -96,6 +96,7 @@ lopdf       = "0.38"
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.
 notify      = { version = "8", optional = true }
+walkdir     = { version = "2", optional = true }
 # Streaming XML parser used to read the XMP metadata stream embedded in
 # PDFs. quick-xml is already a transitive dep; pinning it explicitly
 # guards against future churn from indirect upgrades.
@@ -189,7 +190,7 @@ default = []
 # crates behind it depend on subprocess spawning, inotify, and other
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
-desktop = ["dep:notify", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls"]
+desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]

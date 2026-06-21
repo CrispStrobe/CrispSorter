@@ -164,10 +164,12 @@
                     const legacyFolder = (await getSetting('watchFolder', '')) as string;
                     folders = legacyEnabled && legacyFolder ? [legacyFolder] : [];
                 }
+                const modes = (await getSetting('watchModes', {})) as Record<string, string>;
                 for (const folder of folders) {
                     try {
-                        await invoke('watch_start', { folder });
-                        flog('info', `Watcher resumed: ${folder}`);
+                        const mode = modes[folder] || 'off';
+                        await invoke('watch_start', { folder, mode, initialScan: false });
+                        flog('info', `Watcher resumed: ${folder} (mode: ${mode})`);
                     } catch (e) {
                         flog('warn', `Watcher resume failed for ${folder}: ${e}`);
                     }
