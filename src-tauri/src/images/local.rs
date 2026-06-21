@@ -456,6 +456,8 @@ mod tests {
             url: None,
             embedding_omni: None,
             embedding_vit: None,
+            summary: None,
+            doc_status: None,
         }
     }
 

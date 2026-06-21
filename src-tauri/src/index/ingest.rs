@@ -388,6 +388,14 @@ impl IngestPipeline {
             }
         }
 
+        // P25.5 — Barcode/QR detection in extracted text.
+        for raw in raws.iter_mut() {
+            let barcode_tags = super::barcode::detect_barcode_tags(&raw.full_text, 10);
+            if !barcode_tags.is_empty() {
+                merge_tags(&mut raw.tags, barcode_tags);
+            }
+        }
+
         let embedder = self.embedder.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Embedding (L3) is disabled. Switch the index config to \
@@ -552,6 +560,8 @@ impl IngestPipeline {
                     url: None,
                     embedding_omni: None,
                     embedding_vit: None,
+                    summary: None,
+                    doc_status: None,
                 }
             })
             .collect();
@@ -672,6 +682,8 @@ impl IngestPipeline {
             url: None,
             embedding_omni: None,
             embedding_vit: None,
+            summary: None,
+            doc_status: None,
         };
 
         self.submit_and_await(vec![chunk], vec![], 1, 0).await
@@ -841,6 +853,17 @@ fn build_doc_chunk(
         url: raw.url.clone(),
         embedding_omni: raw.embedding_omni.clone(),
         embedding_vit: raw.embedding_vit.clone(),
+        // P22 — extractive summary: first 2–3 sentences (≤ 300 chars).
+        // Only on the representative chunk (chunk_index = 0) to avoid
+        // replication across sub-chunks.
+        summary: if tc.chunk_index == 0 {
+            super::summary::extractive_summary(&raw.full_text, 300)
+        } else {
+            None
+        },
+        // P26.8 — doc_status is set via index_set_doc_status after ingest;
+        // new chunks always start with NULL.
+        doc_status: None,
     }
 }
 

@@ -41,6 +41,8 @@ pub async fn index_search(
     // `volume_id` always pass through (legacy ingests, frontend-driven
     // ingests, catalog hits).
     include_unmounted: Option<bool>,
+    fuzzy: Option<bool>,
+    doc_id_scope: Option<Vec<String>>,
 ) -> Result<Vec<SearchResult>, String> {
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
@@ -51,6 +53,8 @@ pub async fn index_search(
 
     let filters = super::SearchFilters {
         owner_id,
+        fuzzy: fuzzy.unwrap_or(false),
+        doc_id_scope: doc_id_scope.unwrap_or_default(),
         ..Default::default()
     };
 
@@ -210,6 +214,8 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
         // Catalog hits carry no source-URL provenance or tags.
         url: None,
         tags: vec![],
+        summary: None,
+        doc_status: None,
     }
 }
 
@@ -775,6 +781,8 @@ pub async fn index_ingest_document(
             url: None,
             embedding_omni: None,
             embedding_vit: None,
+            summary: None,
+            doc_status: None,
         };
         backend.ingest(chunk).await.map_err(|e| e.to_string())?;
     }
@@ -1956,6 +1964,29 @@ pub async fn index_delete_document(
     writer.commit().map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+// ── Document status ───────────────────────────────────────────────────────────
+
+/// Set or clear the `doc_status` label for every chunk row belonging to
+/// `doc_id`.  Pass `null` / `None` to reset the field to NULL.
+#[tauri::command]
+pub async fn index_set_doc_status(
+    state: State<'_, AppState>,
+    doc_id: String,
+    status: Option<String>,
+) -> Result<(), String> {
+    let lock = state.index.lock().await;
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Index not initialised")?
+        .clone();
+    drop(lock);
+    local
+        .set_doc_status(&doc_id, status.as_deref())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ── Extraction failure management ─────────────────────────────────────────────
@@ -4037,7 +4068,249 @@ pub async fn tool_table_extract(
     Ok(TableExtractResult { rows, cols, html, saved_path })
 }
 
+/// P26.3 — Convert an HTML table to CSV.
+/// Parses `<tr>`/`<td>`/`<th>` tags and emits RFC 4180 CSV.
+#[tauri::command]
+pub async fn tool_table_to_csv(
+    html: String,
+) -> Result<String, String> {
+    Ok(html_table_to_csv(&html))
+}
+
+/// Parse an HTML table into CSV rows.
+fn html_table_to_csv(html: &str) -> String {
+    let mut csv = String::new();
+    // Split on <tr> tags
+    for row_chunk in html.split("<tr") {
+        if !row_chunk.contains("<td") && !row_chunk.contains("<th") {
+            continue;
+        }
+        let mut cells = Vec::new();
+        // Split on <td> or <th> tags
+        for cell_chunk in row_chunk.split(|c| false).into_iter().chain(
+            // Custom splitting: find each <td...> or <th...> and extract inner text
+            std::iter::empty()
+        ) {
+            let _ = cell_chunk;
+        }
+        // Re-implement: scan for <td or <th, extract text until </td> or </th>
+        let mut pos = 0;
+        let bytes = row_chunk.as_bytes();
+        while pos < bytes.len() {
+            // Find <td or <th
+            let td_pos = row_chunk[pos..].find("<td").or_else(|| row_chunk[pos..].find("<th"));
+            let Some(rel) = td_pos else { break };
+            let start = pos + rel;
+            // Skip past the opening tag's >
+            let tag_end = row_chunk[start..].find('>');
+            let Some(te) = tag_end else { break };
+            let content_start = start + te + 1;
+            // Find closing tag
+            let close = row_chunk[content_start..].find("</td").or_else(|| row_chunk[content_start..].find("</th"));
+            let content_end = match close {
+                Some(c) => content_start + c,
+                None => row_chunk.len(),
+            };
+            let cell_text = strip_tags(&row_chunk[content_start..content_end]).trim().to_string();
+            cells.push(cell_text);
+            pos = content_end + 5; // skip past </td> or </th>
+        }
+        if !cells.is_empty() {
+            let escaped: Vec<String> = cells.iter().map(|c| {
+                if c.contains(',') || c.contains('"') || c.contains('\n') {
+                    format!("\"{}\"", c.replace('"', "\"\""))
+                } else {
+                    c.clone()
+                }
+            }).collect();
+            csv.push_str(&escaped.join(","));
+            csv.push('\n');
+        }
+    }
+    csv
+}
+
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        if c == '<' { in_tag = true; continue; }
+        if c == '>' { in_tag = false; continue; }
+        if !in_tag { out.push(c); }
+    }
+    out
+}
+
+#[cfg(test)]
+mod table_csv_tests {
+    use super::*;
+
+    #[test]
+    fn html_table_to_csv_basic() {
+        let html = "<table>\
+                    <tr><th>Name</th><th>Age</th></tr>\
+                    <tr><td>Alice</td><td>30</td></tr>\
+                    </table>";
+        let csv = html_table_to_csv(html);
+        assert!(csv.contains("Name,Age"), "header row missing; csv: {csv:?}");
+        assert!(csv.contains("Alice,30"), "data row missing; csv: {csv:?}");
+    }
+
+    #[test]
+    fn html_table_to_csv_escapes_commas() {
+        // A cell containing a comma must be wrapped in double-quotes per RFC 4180.
+        let html = "<table><tr><td>Smith, John</td><td>42</td></tr></table>";
+        let csv = html_table_to_csv(html);
+        assert!(
+            csv.contains("\"Smith, John\""),
+            "comma in cell should be quoted; csv: {csv:?}"
+        );
+    }
+}
+
 // ── Math OCR tool ───────────────────────────────────────────────────────────
+
+// ── Batch KIE → CSV (P25.6) ──────────────────────────────────────────────────
+
+/// One row in the batch-KIE output: filename + extracted fields.
+#[derive(serde::Serialize)]
+pub struct BatchKieRow {
+    pub filename: String,
+    pub fields: Vec<KieFieldDto>,
+}
+
+/// Run KIE (key-information extraction) across all supported files in a folder.
+/// Returns one row per file with the extracted field values, plus a CSV string
+/// that can be saved to disk.
+#[tauri::command]
+pub async fn tool_batch_kie(
+    state: State<'_, AppState>,
+    folder: String,
+    labels: Vec<String>,
+    threshold: Option<f32>,
+) -> Result<(Vec<BatchKieRow>, String), String> {
+    let dir = std::path::PathBuf::from(&folder);
+    if !dir.is_dir() {
+        return Err(format!("not a directory: {folder}"));
+    }
+
+    let (cfg_labels, ner_model, ner_threshold) = {
+        let lock = state.index.lock().await;
+        (
+            lock.config.ner_labels.clone(),
+            lock.config.ner_model.clone(),
+            lock.config.ner_threshold,
+        )
+    };
+    let labels = if labels.is_empty() { cfg_labels } else { labels };
+    if labels.is_empty() {
+        return Err("no KIE labels given and Settings → NER has none configured".to_string());
+    }
+    let thr = threshold.unwrap_or(ner_threshold);
+
+    let data_dir = state.data_dir.lock().await
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let cache_dir = {
+        let lock = state.index.lock().await;
+        super::resolve_model_cache_dir(&lock.config, &data_dir)
+    };
+    let model = ner_model;
+
+    // Collect supported files
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if crate::extractors::supported(ext) {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+    }
+    files.sort();
+
+    let mut rows: Vec<BatchKieRow> = Vec::new();
+
+    for file in &files {
+        let path2 = file.clone();
+        let labels2 = labels.clone();
+        let cache2 = cache_dir.clone();
+        let model2 = model.clone();
+
+        let fields = tokio::task::spawn_blocking(move || -> Vec<(String, String, f32)> {
+            let opts = crate::extractors::ExtractOptions {
+                try_ocr: true,
+                ocr_pdf_min_chars: usize::MAX,
+                ..Default::default()
+            };
+            let doc = match crate::extractors::extract_text_from_path_with_opts(&path2, opts) {
+                Ok(d) => d,
+                Err(_) => return vec![],
+            };
+            if doc.full_text.trim().is_empty() {
+                return vec![];
+            }
+            let handle = crate::index::ner::NerHandle::new(
+                model2.unwrap_or_default(), labels2, thr, 0, 200_000, cache2,
+            );
+            // Block on the async extract_fields from a sync context
+            tokio::runtime::Handle::current()
+                .block_on(handle.extract_fields(&doc.full_text))
+        })
+        .await
+        .map_err(|e| format!("kie join error: {e}"))?;
+
+        let filename = file.file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("?")
+            .to_string();
+
+        rows.push(BatchKieRow {
+            filename,
+            fields: fields
+                .into_iter()
+                .map(|(label, value, score)| KieFieldDto { label, value, score })
+                .collect(),
+        });
+    }
+
+    // Build CSV
+    let mut csv = String::new();
+    // Header: filename + one column per label
+    csv.push_str("filename");
+    for label in &labels {
+        csv.push(',');
+        csv.push_str(&csv_escape(label));
+    }
+    csv.push('\n');
+
+    for row in &rows {
+        csv.push_str(&csv_escape(&row.filename));
+        for label in &labels {
+            csv.push(',');
+            let val = row.fields.iter()
+                .find(|f| f.label == *label)
+                .map(|f| f.value.as_str())
+                .unwrap_or("");
+            csv.push_str(&csv_escape(val));
+        }
+        csv.push('\n');
+    }
+
+    Ok((rows, csv))
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
 
 /// Recognize a mathematical formula in an image and return the LaTeX string.
 /// Mirrors the CLI `math-ocr` command for the GUI tool-palette.
@@ -4398,6 +4671,91 @@ pub async fn index_token_highlight(
     let spans = super::token_highlight::highlight_tokens(&embedder, &query, &doc_text, thresh).await;
     let merged = super::token_highlight::merge_spans(spans);
     Ok(merged)
+}
+
+// ── P22 — "More Like This" ───────────────────────────────────────────────────
+
+/// Find documents similar to a given document (by embedding proximity).
+/// Looks up the embedding for `doc_id` at `chunk_index`, then runs an
+/// ANN search excluding the source document.
+#[tauri::command]
+pub async fn index_find_similar(
+    state: State<'_, AppState>,
+    doc_id: String,
+    chunk_index: Option<i32>,
+    limit: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
+    let lock = state.index.lock().await;
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Index not initialised")?
+        .clone();
+    drop(lock);
+
+    let lim = limit.unwrap_or(10);
+    local
+        .find_similar(&doc_id, chunk_index.unwrap_or(0), lim)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── P22 — Extractive summary ─────────────────────────────────────────────────
+
+/// Generate an extractive summary for a given text (stateless utility).
+#[tauri::command]
+pub async fn index_generate_summary(
+    text: String,
+    max_chars: Option<usize>,
+) -> Result<Option<String>, String> {
+    Ok(super::summary::extractive_summary(
+        &text,
+        max_chars.unwrap_or(300),
+    ))
+}
+
+// ── P22 — Natural Language → Filters ─────────────────────────────────────────
+
+/// Parse a natural-language query into structured filters + cleaned text.
+#[tauri::command]
+pub async fn index_parse_nl_query(
+    query: String,
+) -> Result<super::nl_query::ParsedQuery, String> {
+    Ok(super::nl_query::parse_nl_query(&query))
+}
+
+// ── P22 — Corpus Dashboard ──────────────────────────────────────────────────
+
+/// Aggregate corpus statistics for the dashboard view.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorpusStats {
+    pub total_docs: usize,
+    pub total_chunks: usize,
+    pub ext_distribution: Vec<(String, usize)>,
+    pub lang_distribution: Vec<(String, usize)>,
+    pub year_histogram: Vec<(i32, usize)>,
+    pub top_tags: Vec<(String, usize)>,
+    pub total_size_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn index_corpus_stats(
+    state: State<'_, AppState>,
+) -> Result<CorpusStats, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".into());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Stats are only available for the local backend")?
+        .clone();
+    drop(lock);
+
+    local.corpus_stats().await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

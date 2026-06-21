@@ -532,6 +532,55 @@ pub fn fold_accents(text: &str) -> String {
     deunicode(text).to_lowercase()
 }
 
+/// Rewrite a query string to add fuzzy matching (~1) to every bare word.
+/// Preserves phrases, operators, wildcards, and existing fuzzy markers.
+/// Only words with 4+ chars are fuzzified (short words produce too many
+/// false-positive matches at edit-distance 1).
+pub fn fuzzify_query(query: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_quote = false;
+    for token in query.split_whitespace() {
+        if token.starts_with('"') {
+            in_quote = true;
+        }
+        if in_quote {
+            result.push(token.to_string());
+            if token.ends_with('"') && token.len() > 1 {
+                in_quote = false;
+            }
+            continue;
+        }
+        // Skip operators
+        let upper = token.to_uppercase();
+        if upper == "AND" || upper == "OR" || upper == "NOT"
+            || token.contains("w/")
+            || token.contains("pre/")
+        {
+            result.push(token.to_string());
+            continue;
+        }
+        // Skip if already has fuzzy/wildcard markers
+        if token.contains('~')
+            || token.contains('*')
+            || token.contains('?')
+            || token.starts_with('(')
+            || token.ends_with(')')
+            || token.contains(':')
+        {
+            result.push(token.to_string());
+            continue;
+        }
+        // Only fuzzify alphabetic words >= 4 chars.
+        // Pure numbers (years, IDs) should match exactly.
+        if token.len() >= 4 && !token.chars().all(|c| c.is_ascii_digit()) {
+            result.push(format!("{}~1", token));
+        } else {
+            result.push(token.to_string());
+        }
+    }
+    result.join(" ")
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -708,5 +757,42 @@ mod tests {
         };
         let q = build_term_query("notafield:karl", &fields);
         assert!(q.is_ok(), "unknown prefix should still produce a query");
+    }
+
+    #[test]
+    fn fuzzify_adds_tilde_to_bare_words() {
+        assert_eq!(
+            fuzzify_query("climate change 2024"),
+            "climate~1 change~1 2024"
+        );
+        assert_eq!(
+            fuzzify_query("\"exact phrase\" AND foo*"),
+            "\"exact phrase\" AND foo*"
+        );
+        // "the" is 3 chars → not fuzzified; "long" is 4 → fuzzified
+        assert_eq!(fuzzify_query("the long road"), "the long~1 road~1");
+    }
+
+    #[test]
+    fn fuzzify_preserves_field_prefix() {
+        // Tokens containing ':' must pass through unchanged to preserve
+        // field-scoped syntax like "title:karl" or "body:foo".
+        let out = fuzzify_query("title:karl body:foo");
+        assert_eq!(out, "title:karl body:foo",
+            "field-prefixed tokens must not be fuzzified: {out}");
+    }
+
+    #[test]
+    fn fuzzify_skips_parentheses() {
+        // Tokens that start with '(' or end with ')' must be left alone.
+        let out = fuzzify_query("(climate OR weather)");
+        assert_eq!(out, "(climate OR weather)",
+            "parenthesized tokens must be preserved: {out}");
+    }
+
+    #[test]
+    fn fuzzify_handles_empty() {
+        // Empty input must return an empty string without panicking.
+        assert_eq!(fuzzify_query(""), "", "empty input must produce empty output");
     }
 }

@@ -45,6 +45,8 @@ pub struct SearchEngine {
     /// alongside a Latin-primary one — zero config for monolingual
     /// users, automatic upgrade for multilingual users.
     reranker_multilingual: Option<RerankerHandle>,
+    /// P23 — LRU cache for search results, invalidated on ingest.
+    cache: Mutex<super::result_cache::ResultCache>,
 }
 
 /// Returns `true` when ≥ 25% of non-whitespace characters in `query`
@@ -90,6 +92,7 @@ impl SearchEngine {
             rerank_top_n: 50,
             use_embedder_as_reranker: false,
             reranker_multilingual: None,
+            cache: Mutex::new(super::result_cache::ResultCache::new(32)),
         }
     }
 
@@ -374,7 +377,12 @@ impl SearchEngine {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
         let inner_limit = self.fetch_limit(limit);
-        let hits = self.fts.search(query, filters, inner_limit)?;
+        let effective_query = if filters.fuzzy {
+            super::fts_query::fuzzify_query(query)
+        } else {
+            query.to_owned()
+        };
+        let hits = self.fts.search(&effective_query, filters, inner_limit)?;
         if hits.is_empty() {
             return Ok(vec![]);
         }
@@ -445,6 +453,15 @@ impl SearchEngine {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        // P23 — check result cache before doing any work.
+        let filters_hash = super::result_cache::hash_filters(filters);
+        {
+            let mut c = self.cache.lock().await;
+            if let Some(cached) = c.get(query_text, "hybrid", filters_hash) {
+                return Ok(cached);
+            }
+        }
+
         // Embed first, then run both searches concurrently.
         let embedding = self.embed_query(query_text).await?;
 
@@ -455,7 +472,11 @@ impl SearchEngine {
 
         let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
-        let q_owned = query_text.to_owned();
+        let q_owned = if filters.fuzzy {
+            super::fts_query::fuzzify_query(query_text)
+        } else {
+            query_text.to_owned()
+        };
         let filters_fts = filters.clone();
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();
@@ -602,7 +623,14 @@ impl SearchEngine {
         });
         Self::apply_translation_snippet(&mut results, filters.prefer_translated_lang.as_deref());
         let results = self.maybe_colbert_rerank(query_text, results, filters, limit).await;
-        Ok(self.maybe_rerank(query_text, results, limit).await)
+        let out = self.maybe_rerank(query_text, results, limit).await;
+
+        // P23 — populate cache.
+        {
+            let mut c = self.cache.lock().await;
+            c.put(query_text, "hybrid", filters_hash, out.clone());
+        }
+        Ok(out)
     }
 
     // ── Image search ──────────────────────────────────────────────────────
@@ -963,6 +991,8 @@ mod tests {
                 text_translated_lang: None,
                 url: None,
                 tags: vec![],
+                summary: None,
+                doc_status: None,
             })
             .collect()
     }
@@ -996,6 +1026,8 @@ mod tests {
                 text_translated_lang: None,
                 url: None,
                 tags: vec![],
+                summary: None,
+                doc_status: None,
             });
         }
         vec.push(SearchResult {
@@ -1020,6 +1052,8 @@ mod tests {
             text_translated_lang: None,
             url: None,
             tags: vec![],
+            summary: None,
+            doc_status: None,
         });
 
         let merged = rrf_merge(&fts, &vec, 60, 10);
@@ -1128,6 +1162,8 @@ mod tests {
             text_translated_lang: lang.map(|s| s.to_string()),
             url: None,
             tags: vec![],
+            summary: None,
+            doc_status: None,
         }
     }
 
@@ -1310,7 +1346,7 @@ mod tests {
                 score: 0.5, chunk_index: 0, metadata_json: None,
                 catalog_source: None, volume_id: None, indexed_at: 0,
                 source_hash: String::new(), text_translated: None,
-                text_translated_lang: None, url: None, tags: vec![] },
+                text_translated_lang: None, url: None, tags: vec![], summary: None, doc_status: None },
         ];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = false; // flag off → no-op
@@ -1340,7 +1376,7 @@ mod tests {
                 score: 0.5, chunk_index: 0, metadata_json: None,
                 catalog_source: None, volume_id: None, indexed_at: 0,
                 source_hash: String::new(), text_translated: None,
-                text_translated_lang: None, url: None, tags: vec![] },
+                text_translated_lang: None, url: None, tags: vec![], summary: None, doc_status: None },
         ];
         let mut filters = SearchFilters::default();
         filters.colbert_rerank = true; // flag ON but no embedder

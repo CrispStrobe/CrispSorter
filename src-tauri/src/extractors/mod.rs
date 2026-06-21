@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod audio;
+pub mod eml;
 pub mod html;
 pub mod layout;
 pub mod math_ocr;
@@ -142,6 +143,8 @@ pub fn supported(ext: &str) -> bool {
             // HTML gets its own arm (tag-strip), but list it here too
             // so callers can pre-filter accept lists with `supported`.
             | "html" | "htm"
+            // Email formats
+            | "eml" | "mbox"
             // Source code (UTF-8 read)
             | "rs" | "py" | "js" | "ts" | "tsx" | "jsx"
             | "svelte" | "vue"
@@ -950,6 +953,8 @@ pub fn extract_text_from_path_with_opts(
             doc.ext = ext.clone();
             doc
         }),
+        "eml" => eml::extract(path),
+        "mbox" => eml::extract_mbox(path),
         e if OCR_IMAGE_EXTS.contains(&e) => {
             // PLAN P7.8 — tiered OCR for images.
             // P13.7 Step 1+3 — image-side L1/L2/L3 + master-switch

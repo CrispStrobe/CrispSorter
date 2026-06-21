@@ -150,6 +150,14 @@ pub fn build_schema(embedding_dims: usize) -> Arc<Schema> {
             ),
             true,
         ),
+        // P22 — extractive summary (first 2–3 sentences, ≤ 300 chars).
+        // Populated at ingest time by `index::summary::extractive_summary`.
+        // Added on existing tables via the `AddSummaryColumn` migration (v110).
+        Field::new("summary", DataType::Utf8, true),
+        // P26.8 — document review status.  Values: null (no status),
+        // "pending_review", "approved", "rejected", "archived".
+        // Added on existing tables via migration v111.
+        Field::new("doc_status", DataType::Utf8, true),
     ]))
 }
 
@@ -257,6 +265,15 @@ pub struct DocumentChunk {
     // documents and when crispembed is not compiled in.
     #[serde(skip)]
     pub embedding_vit: Option<Vec<f32>>,
+
+    // P22 — extractive summary (first 2–3 sentences, ≤ 300 chars).
+    // Populated at ingest time by `index::summary::extractive_summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+
+    // P26.8 — document review status (pending_review/approved/rejected/archived).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
 }
 
 /// Lightweight search result returned to the frontend.
@@ -334,6 +351,13 @@ pub struct SearchResult {
     /// Empty for rows with no tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// P22 — extractive summary (first 2–3 sentences).  `None` for rows
+    /// ingested before the `AddSummaryColumn` migration (v110).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// P26.8 — document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
 }
 
 /// Pre-filter parameters applied before ANN / BM25 scoring.
@@ -428,6 +452,16 @@ pub struct SearchFilters {
     /// and drop out when this is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// P23 — when true, auto-apply ~1 fuzzy matching to all bare terms.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fuzzy: bool,
+    /// P23 — scope search to a specific set of doc_ids (for "search within results").
+    /// Empty Vec == no scope restriction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_id_scope: Vec<String>,
+    /// P26.8 — filter by document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
 }
 
 impl SearchFilters {
@@ -514,6 +548,17 @@ impl SearchFilters {
                 "array_has(tags, '{}')",
                 t.replace('\'', "''")
             ));
+        }
+        if !self.doc_id_scope.is_empty() {
+            let quoted: Vec<String> = self
+                .doc_id_scope
+                .iter()
+                .map(|id| format!("'{}'", id.replace('\'', "''")))
+                .collect();
+            parts.push(format!("doc_id IN ({})", quoted.join(", ")));
+        }
+        if let Some(ref status) = self.doc_status {
+            parts.push(format!("doc_status = '{}'", status.replace('\'', "''")));
         }
         if !parts.is_empty() {
             Some(parts.join(" AND "))

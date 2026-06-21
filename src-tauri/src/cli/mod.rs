@@ -3860,6 +3860,8 @@ async fn cmd_sync_cloud_backup(
                     url: r.url.clone(),
                     embedding_omni: None,
                     embedding_vit: None,
+                    summary: None,
+                    doc_status: None,
                 }
             }).collect();
             let applied = chunks.len();
@@ -7529,6 +7531,8 @@ mod tests {
             text_translated_lang: None,
             url: Some("https://www.spiegel.de/wirtschaft/x".into()),
             tags: vec!["pocket-import".into()],
+            summary: None,
+            doc_status: None,
         }
     }
 

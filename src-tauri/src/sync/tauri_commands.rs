@@ -167,6 +167,8 @@ pub async fn sync_pull(
                 url: None,
                 embedding_omni: None,
                 embedding_vit: None,
+                summary: None,
+                doc_status: None,
             }
         })
         .collect();
@@ -556,6 +558,8 @@ pub async fn sync_cb_manifest_pull(
             url: None,
             embedding_omni: None,
             embedding_vit: None,
+            summary: None,
+            doc_status: None,
         }
     }).collect();
 

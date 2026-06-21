@@ -8,7 +8,7 @@
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
     import {
         Search, X, ChevronDown, ChevronRight,
-        SlidersHorizontal, ExternalLink, Loader2,
+        SlidersHorizontal, ExternalLink, Loader2, Clock,
         FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag,
         Image as ImageIcon
     } from 'lucide-svelte';
@@ -65,6 +65,8 @@
         // for local-only files that never had a source URL / tags.
         url?:                  string;
         tags?:                 string[];
+        // P22.3 — extractive summary generated at ingest time.
+        summary?:              string;
     }
 
     // P13.5 on-demand translation surface — per-result state tracking
@@ -107,10 +109,14 @@
     let filterCameraModel   = $state('');
     let filterColbert       = $state(false);
     let filterOmniSearch    = $state(false);
+    // P23 — fuzzy search toggle (auto-apply ~1 edit distance to terms)
+    let filterFuzzy         = $state(false);
     // PLAN P7.6 follow-up — when on (default), backend hides results
     // pinned to currently-unmounted volumes. Toggle off to show
     // everything regardless of mount state.
     let includeUnmounted = $state(false);
+    // P23 — search-within-results: doc_id scope from previous results
+    let refinementScope = $state<string[]>([]);
 
     // P21 — image search via ViT + omni embeddings.
     let imageSearchLoading = $state(false);
@@ -614,9 +620,48 @@
     let savedSearches = $state<SavedSearch[]>([]);
     let showSavedDropdown = $state(false);
 
+    // P24.2 — Search history (last 50 queries)
+    interface HistoryEntry {
+        query: string;
+        mode: string;
+        ts: number;
+        resultCount: number;
+    }
+    let searchHistory = $state<HistoryEntry[]>([]);
+    let showHistory = $state(false);
+    const MAX_HISTORY = 50;
+
+    async function addToHistory(q: string, m: string, count: number) {
+        // Dedup on (query, mode) — re-running bumps to top
+        searchHistory = [
+            { query: q, mode: m, ts: Date.now(), resultCount: count },
+            ...searchHistory.filter(h => !(h.query === q && h.mode === m)),
+        ].slice(0, MAX_HISTORY);
+        await saveSetting('searchHistory', searchHistory);
+    }
+
+    async function loadHistoryEntry(h: HistoryEntry) {
+        query = h.query;
+        mode = h.mode as any;
+        showHistory = false;
+        await runSearch();
+    }
+
+    async function deleteHistoryEntry(idx: number) {
+        searchHistory = searchHistory.filter((_, i) => i !== idx);
+        await saveSetting('searchHistory', searchHistory);
+    }
+
+    async function clearHistory() {
+        searchHistory = [];
+        await saveSetting('searchHistory', []);
+    }
+
     onMount(async () => {
         const stored = (await getSetting('savedSearches', null)) as SavedSearch[] | null;
         savedSearches = stored ?? [];
+        const hist = (await getSetting('searchHistory', null)) as HistoryEntry[] | null;
+        searchHistory = hist ?? [];
         try {
             const caps = await invoke<{ crispembed: boolean }>('index_capabilities');
             crispembedAvailable = !!caps.crispembed;
@@ -722,6 +767,7 @@
         loading  = true;
         error    = '';
         searched = true;
+        similarHeader = '';
         // P13.5 — wipe per-result translation state on every new
         // query.  Otherwise the user types a different query and
         // sees stale "Translated en" badges on rows that haven't
@@ -732,19 +778,81 @@
         // hits have their own tag distribution.
         searchTags = new Set();
         try {
+            // P22.4 — Smart search: parse NL query into filters + cleaned query
+            let searchQuery = query.trim();
+            if (smartSearch) {
+                try {
+                    const parsed = await invoke<{ cleaned_query: string; filters: any }>(
+                        'index_parse_nl_query', { query: searchQuery }
+                    );
+                    searchQuery = parsed.cleaned_query || searchQuery;
+                    // Apply extracted filters (only override non-empty values)
+                    if (parsed.filters.language) filterLang = parsed.filters.language;
+                    if (parsed.filters.year_min) filterYearMin = parsed.filters.year_min;
+                    if (parsed.filters.year_max) filterYearMax = parsed.filters.year_max;
+                    if (parsed.filters.ext?.length) filterExt = parsed.filters.ext.join(',');
+                    if (parsed.filters.parent_dir_prefix) filterFolderPrefix = parsed.filters.parent_dir_prefix;
+                    if (parsed.filters.url_domain) filterUrlDomain = parsed.filters.url_domain;
+                    if (parsed.filters.tag) filterTag = parsed.filters.tag;
+                } catch { /* fall through with raw query */ }
+            }
             results = await invoke<SearchResult[]>('index_search', {
-                query: query.trim(),
+                query: searchQuery,
                 mode,
                 limit,
                 ownerId: null,
                 includeUnmounted,
+                fuzzy: filterFuzzy || null,
+                docIdScope: refinementScope.length > 0 ? refinementScope : null,
             });
+            // After a refinement search, clear the scope so the next
+            // plain search isn't scoped.
+            if (refinementScope.length > 0) refinementScope = [];
+            // P24.2 — record in search history
+            addToHistory(searchQuery, mode, results.length);
         } catch (e: any) {
             error   = String(e);
             results = [];
         } finally {
             loading = false;
         }
+    }
+
+    // P22.4 — Smart search (NL→Filters) toggle.
+    let smartSearch = $state(false);
+
+    // P22.2 — "More Like This" state.
+    let similarHeader = $state('');
+
+    async function findSimilar(r: SearchResult) {
+        loading = true;
+        error = '';
+        searched = true;
+        similarHeader = r.title || r.filename || r.doc_id.slice(0, 20);
+        clearTranslations();
+        searchTags = new Set();
+        try {
+            results = await invoke<SearchResult[]>('index_find_similar', {
+                docId: r.doc_id,
+                chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
+                limit,
+            });
+        } catch (e: any) {
+            error = String(e);
+            results = [];
+        } finally {
+            loading = false;
+        }
+    }
+
+    // P23 — search within current results (progressive refinement)
+    function refineSearch() {
+        if (results.length === 0) return;
+        // Scope the next search to the doc_ids in the current result set
+        const docIds = [...new Set(results.map(r => r.doc_id))];
+        refinementScope = docIds;
+        // Clear query so the user can type a new one
+        query = '';
     }
 
     function onKeydown(e: KeyboardEvent) {
@@ -1010,6 +1118,52 @@
                 </div>
             {/if}
         </div>
+        <div class="saved-wrap">
+            <button
+                class="filter-toggle"
+                class:active={showHistory}
+                onclick={() => showHistory = !showHistory}
+                disabled={searchHistory.length === 0}
+                title="Search history ({searchHistory.length})"
+            >
+                <Clock size={15} />
+            </button>
+            {#if showHistory && searchHistory.length > 0}
+                <div class="saved-dropdown history-dropdown">
+                    <div class="history-header">
+                        <span>Recent searches</span>
+                        <button class="saved-del" onclick={clearHistory} title="Clear all history">
+                            <Trash2 size={11} /> Clear
+                        </button>
+                    </div>
+                    {#each searchHistory as h, i (h.query + h.ts)}
+                        <div class="saved-item">
+                            <button
+                                class="saved-name"
+                                onclick={() => loadHistoryEntry(h)}
+                                title="{h.query} ({h.mode})"
+                            >
+                                {h.query.length > 50 ? h.query.slice(0, 47) + '…' : h.query}
+                                <span class="saved-meta">
+                                    {h.mode} · {h.resultCount} hits · {new Date(h.ts).toLocaleTimeString()}
+                                </span>
+                            </button>
+                            <button
+                                class="saved-del"
+                                onclick={() => deleteHistoryEntry(i)}
+                                title="Remove"
+                            >
+                                <X size={11} />
+                            </button>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+        <label class="smart-toggle" title="Smart search: auto-extract year, language, file type, etc. from your query">
+            <input type="checkbox" bind:checked={smartSearch} />
+            <span class="smart-label">Smart</span>
+        </label>
         <button class="filter-toggle" class:active={showFilters}
             onclick={() => showFilters = !showFilters} title="Optionen">
             <SlidersHorizontal size={15} />
@@ -1110,6 +1264,10 @@
                 <input type="checkbox" bind:checked={filterOmniSearch} />
                 <span>Omni cross-modal</span>
             </label>
+            <label class="filter-field" title="Fuzzy matching: tolerate typos and OCR errors (~1 edit distance)" style="flex-direction:row; align-items:center; gap:6px;">
+                <input type="checkbox" bind:checked={filterFuzzy} />
+                <span>Fuzzy (typo-tolerant)</span>
+            </label>
         </div>
     {/if}
 
@@ -1138,6 +1296,14 @@
             </div>
 
         {:else}
+            {#if similarHeader}
+                <div class="similar-header">
+                    Similar to: <strong>{similarHeader}</strong>
+                    <button class="clear-similar" onclick={() => { similarHeader = ''; results = []; searched = false; }}>
+                        <X size={12} /> Clear
+                    </button>
+                </div>
+            {/if}
             <div class="result-count">
                 {#if searchTags.size > 0}
                     {displayedGroups.length} / {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
@@ -1153,6 +1319,23 @@
                     >
                         <Tag size={11} /> Tags{#if searchTags.size > 0} ({searchTags.size}){/if}
                     </button>
+                {/if}
+                {#if grouped.length >= 2}
+                    <button
+                        class="tagcloud-toggle refine-btn"
+                        onclick={refineSearch}
+                        title="Search within these {grouped.length} results (progressive narrowing)"
+                    >
+                        Refine
+                    </button>
+                {/if}
+                {#if refinementScope.length > 0}
+                    <span class="refine-badge" title="Searching within {refinementScope.length} docs from previous results">
+                        Scoped to {refinementScope.length} docs
+                        <button class="clear-similar" onclick={() => refinementScope = []}>
+                            <X size={10} />
+                        </button>
+                    </span>
                 {/if}
             </div>
 
@@ -1220,11 +1403,23 @@
                                     <Globe size={13} />
                                 </button>
                             {/if}
+                            <button class="open-btn similar-btn"
+                                onclick={(e) => { e.stopPropagation(); findSimilar(r); }}
+                                title="Find similar documents">
+                                ≈
+                            </button>
                             {#if group.chunks.length > 1}
                                 {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
                             {/if}
                         </div>
                     </div>
+
+                    <!-- P22.3 — Auto-summary (when available, shows above snippet) -->
+                    {#if r.summary}
+                        <div class="result-summary">
+                            {r.summary}
+                        </div>
+                    {/if}
 
                     <!-- Best chunk snippet with highlighted terms -->
                     {#if r.snippet}
@@ -2067,4 +2262,88 @@
     }
     .fed-rank { font-size: 0.75em; color: #71717a; }
     .fed-btn { background: #1a1a2e; }
+
+    /* P22.2 — "More Like This" */
+    .similar-btn {
+        font-weight: 700;
+        font-size: 0.9em;
+        letter-spacing: -0.5px;
+    }
+    .similar-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        color: #94a3b8;
+        margin-bottom: 4px;
+    }
+    .clear-similar {
+        display: inline-flex; align-items: center; gap: 3px;
+        background: none; border: none; cursor: pointer;
+        color: #64748b; font-size: 0.75rem; padding: 2px 6px;
+        border-radius: 4px;
+    }
+    .clear-similar:hover { background: #334155; color: #e2e8f0; }
+
+    /* P22.3 — Summary display */
+    .result-summary {
+        padding: 4px 12px 2px;
+        font-size: 0.8rem;
+        color: #a1a1aa;
+        font-style: italic;
+        border-left: 2px solid #3b82f6;
+        margin: 4px 12px 0;
+    }
+
+    /* P22.4 — Smart search toggle */
+    .smart-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 8px;
+        cursor: pointer;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        color: #a1a1aa;
+        border: 1px solid transparent;
+        transition: all 0.15s;
+    }
+    .smart-toggle:has(input:checked) {
+        color: #60a5fa;
+        border-color: #3b82f6;
+        background: rgba(59, 130, 246, 0.1);
+    }
+    .smart-toggle input { width: 14px; height: 14px; margin: 0; cursor: pointer; }
+    .smart-label { user-select: none; font-weight: 500; }
+
+    /* P24.2 — Search history dropdown */
+    .history-dropdown { min-width: 320px; max-width: 480px; }
+    .history-header {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 6px 8px; border-bottom: 1px solid #27272a;
+        font-size: 0.75rem; color: #71717a;
+    }
+    .history-header button {
+        display: inline-flex; align-items: center; gap: 3px;
+        font-size: 0.65rem;
+    }
+
+    /* P23 — Refine / search-within-results */
+    .refine-btn { border: 1px solid #334155; }
+    .refine-btn:hover { background: #1e293b; }
+    .refine-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        background: rgba(59, 130, 246, 0.15);
+        border: 1px solid #3b82f6;
+        border-radius: 10px;
+        font-size: 0.7rem;
+        color: #60a5fa;
+    }
 </style>

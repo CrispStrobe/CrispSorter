@@ -653,3 +653,293 @@ Closed 8 parity gaps in one session:
   command + CLI `index search --image <PATH>`
 - Frontend "Search by Image" button + "Omni cross-modal" filter checkbox
 The full ingest→search pipeline for cross-modal embeddings is complete.
+
+### P22 — Search UX & Discovery (2026-06-21)
+
+Five features that close the gap between CrispSorter's strong backend
+infrastructure and the daily-use UX that professional desktop-search
+and knowledge-management tools have long standardised.
+
+- [x] **P22.1 — Saved Searches.**  Persist named query+filter combos
+  (store key `savedSearches` → `Vec<SavedSearch>`).  Tauri commands:
+  `index_save_search`, `index_list_saved_searches`,
+  `index_delete_saved_search`.  Frontend: bookmark button in the
+  search bar saves the current query+mode+filters; sidebar list loads
+  any saved search with one click; trash icon deletes.  DE/EN i18n.
+
+- [x] **P22.2 — "More Like This" (similar-document discovery).**
+  `index_find_similar(doc_id, limit)` Tauri command: looks up the
+  document's dense embedding from LanceDB, runs ANN excluding the
+  source doc, returns `Vec<SearchResult>`.  Frontend: "Find similar"
+  button on every search result row; results replace the current list
+  with a "Similar to: <title>" header.
+
+- [x] **P22.3 — Auto-Summary at ingest.**  Schema migration v110 adds
+  a `summary` Utf8 column.  `bg_ingest` generates an extractive
+  summary (first 2–3 sentences, cleaned) during the ingest pass and
+  stores it.  `SearchResult.summary` is surfaced in the frontend;
+  when present, the search-result card shows the summary above the
+  BM25 snippet for a better at-a-glance experience.  Tauri command
+  `index_generate_summary(doc_id)` for on-demand regeneration.
+
+- [x] **P22.4 — Natural-Language → Filters.**  Deterministic
+  heuristic parser (`index/nl_query.rs`) extracts structured intent
+  from plain-text queries: year ranges (`from 2023`, `2020–2024`),
+  language (`in German`/`auf Deutsch`), file types (`pdf files`,
+  `.docx`), folder prefixes (`in /home/…`), tag filters
+  (`tagged X`), and URL-domain filters (`from spiegel.de`).
+  Returns a cleaned query string + a pre-populated `SearchFilters`.
+  Tauri command `index_parse_nl_query`.  Frontend: "Smart search"
+  toggle in the search bar; when on, the query is parsed before
+  dispatch so the user can type `German PDFs about climate 2023-2024`
+  and get the right filters automatically.
+
+- [x] **P22.5 — Corpus Dashboard.**  `index_corpus_stats` Tauri
+  command returns `CorpusStats`: total docs, total chunks, extension
+  distribution, language distribution, top tags (NER entity
+  breakdown), year histogram, and total indexed size.  Frontend:
+  new Dashboard component accessible from the Catalog/Ingest tab,
+  rendering the stats as a summary grid + bar/pie charts (pure
+  CSS, no chart library).  DE/EN i18n.
+
+### P23 — Search power features (2026-06-21)
+
+Five features that bring CrispSorter's search to parity with
+professional desktop-search tools: fuzzy matching for OCR-heavy
+corpora, progressive result refinement, email indexing, a visual
+document timeline, and a transparent result cache for instant
+re-queries.
+
+- [x] **P23.1 — Fuzzy / typo-tolerant search.**  `fuzzify_query()`
+  in `fts_query.rs` auto-rewrites bare word terms with `~1` (1 edit
+  distance).  Skips phrases, operators, wildcards, existing fuzzy
+  markers, pure numbers, and words < 4 chars.  New `SearchFilters.fuzzy`
+  boolean wired through `index_search`.  Frontend: "Fuzzy" checkbox in
+  the advanced filters panel.
+
+- [x] **P23.2 — Search-within-results (progressive refinement).**
+  New `SearchFilters.doc_id_scope: Vec<String>` restricts search to a
+  specified set of doc_ids (emits `doc_id IN (…)` in `to_lance_sql()`).
+  Frontend: "Refine" button appears when ≥2 results are displayed;
+  clicking it captures current result doc_ids into a scope, clears the
+  query for the user to type a narrowing query, and runs the next
+  search scoped to those docs.  Scope badge + clear button.
+
+- [x] **P23.3 — Email (.eml) extraction.**  New `extractors/eml.rs`
+  module.  Parses RFC 822 headers (From → author, Subject → title,
+  Date → year, List-Id → tag) and body (text/plain preferred,
+  text/html with tag-stripping fallback, multipart MIME boundary
+  splitting).  Registered in `supported()` and the dispatch match.
+  2 unit tests (plain + HTML body).
+
+- [x] **P23.4 — Document timeline.**  The Corpus Dashboard's year
+  histogram is now a full-width interactive timeline with clickable
+  bars.  Selecting a year highlights the bar and shows a filter hint.
+  Pure CSS, no chart library.
+
+- [x] **P23.5 — Search result LRU cache.**  `index/result_cache.rs`:
+  32-entry LRU cache keyed on `(query, mode, filters_hash)` with
+  generation-based invalidation (global `AtomicU64` bumped on every
+  `ingest_batch`).  Wired into `SearchEngine.search_hybrid` —
+  cache-hit skips embedding + FTS + ANN entirely, returning cloned
+  results.  3 unit tests (hit/miss, invalidation, LRU eviction).
+
+### P24 — Discovery & clustering (planned)
+
+- [ ] **P24.1 — Topical clustering.**  K-means or hierarchical
+  agglomerative clustering on the existing dense-embedding vectors
+  (no LLM needed for v1).  `LocalIndex::cluster_documents(k)` fetches
+  embeddings, runs clustering, names each cluster via top TF-IDF terms
+  from its members.  Tauri command `index_cluster_documents`.  Frontend:
+  cluster panel in the Dashboard showing named clusters with doc counts,
+  clickable to browse.  Follow-up: LLM-generated cluster labels.
+
+- [x] **P24.2 — Search history panel.**  Persist last 50 queries in
+  the Tauri plugin-store under key `searchHistory`.  Frontend: history
+  sidebar toggled from the search bar — list of recent queries with
+  timestamp, one-click re-run, swipe-delete.  Deduplication on
+  (query, mode) — re-running the same search bumps it to the top.
+
+- [ ] **P24.3 — Knowledge graph visualization.**  Build an entity
+  co-occurrence graph from NER tags (`person:`, `org:`, `loc:`) across
+  documents.  `index_entity_graph(min_cooccurrence)` Tauri command
+  returns nodes + edges.  Frontend: d3.js force-directed graph panel
+  in the Dashboard — entities are nodes sized by document count, edges
+  weighted by co-occurrence.  Clickable to filter search by entity.
+
+- [ ] **P24.4 — Synonym expansion.**  Offline synonym lookup
+  (bundled DE+EN synonym lists derived from OpenThesaurus + WordNet,
+  ~2 MB compressed) → OR-expand query terms before FTS dispatch.
+  Toggle in advanced filters.  Especially useful for German compound
+  words and technical terminology.
+
+- [ ] **P24.5 — RSS/Atom feed ingestion.**  `extractors/feed.rs`
+  using `feed-rs` crate — poll configured feed URLs on a timer,
+  extract per-entry title/author/date/body, ingest each as a document
+  with `source_url` set.  Settings panel for feed management
+  (add/remove/poll interval).  Turns CrispSorter into a self-hosted
+  knowledge aggregator.
+
+- [ ] **P24.6 — Clipboard / screenshot capture.**  System-tray
+  "Capture" action that reads clipboard content (text or image via
+  `arboard` crate) and indexes it immediately as a synthetic document
+  with `source_url = clipboard://` and `indexed_at = now`.  Images
+  run through the OCR pipeline; text is indexed directly.  Quick
+  capture for research snippets.
+
+### P25 — DMS & compliance parity (planned)
+
+Features that close the gap with professional document management
+systems and enterprise OCR suites.  CrispSorter already has the
+extraction pipeline, search engine, and OCR stack — these items add
+the workflow and compliance layers that enterprise tools charge
+thousands for.
+
+- [ ] **P25.1 — Document versioning.**  Track changes to the same
+  file over time.  `version_group_id` column (SHA-256 of canonical
+  path) groups rows; `version_seq` monotonic counter per group.
+  `index_document_versions(doc_id)` returns the version history.
+  Frontend: "Versions" expandable on result cards showing the timeline
+  of changes with diff-highlight between consecutive versions.
+
+- [ ] **P25.2 — Audit trail / access log.**  Append-only SQLite
+  table `audit_log(ts, action, doc_id, user, detail)` recording
+  every search query, document open, export, delete, and ingest.
+  `index_audit_log(since, limit)` Tauri command.  Frontend: "Audit
+  Log" tab in Settings.  Required for ISO 27001 / GDPR compliance
+  in enterprise deployments.
+
+- [ ] **P25.3 — Retention policies.**  Per-folder or per-tag
+  retention rules: `retain_days`, `archive_after_days`,
+  `delete_after_days`.  Background worker checks daily, moves
+  expired docs to archive or deletes.  Settings UI for rule
+  management.  Compliance feature for legal document retention.
+
+- [ ] **P25.4 — Stamp / watermark on export.**  When exporting a
+  searchable PDF (via the existing `ocr --render pdf` path), optionally
+  overlay a configurable text stamp (date, user, "CONFIDENTIAL", custom
+  text) on every page.  Uses the existing CrispEmbed PDF renderer's
+  page callback.  Settings toggle + stamp text config.
+
+- [x] **P25.5 — Barcode / QR code detection at ingest.**  Detect
+  1D barcodes (Code128, EAN-13) and QR codes in scanned documents
+  using `rxing` (pure Rust, Apache-2.0).  Store decoded values as
+  `barcode:<value>` tags — lights up in the existing tag cloud,
+  `--tag barcode:…` filter, and NER entity view.  Enables automated
+  document routing by barcode (pair with Stapel sort rules).
+
+- [x] **P25.6 — Form field extraction → structured CSV export.**
+  Chain the existing KIE pipeline (CrispEmbed GLiNER + LiLT) with a
+  batch export: user defines a field schema (label list), runs KIE
+  across a folder of scanned forms (invoices, receipts, applications),
+  exports a CSV with one row per document and one column per label.
+  `index_batch_kie(folder, labels) → Vec<KieRow>` Tauri command.
+  Frontend: "Batch Extract" section in the OCR Workbench with schema
+  editor, folder picker, progress bar, and CSV download.
+
+- [ ] **P25.7 — Side-by-side document comparison.**  Open two
+  documents in split panes with synchronised scroll.  Text diff
+  (word-level Levenshtein via `similar` crate) highlighted inline.
+  Image overlay mode for scanned docs (alpha-blend two page images).
+  Useful for contract review, invoice matching, duplicate resolution.
+
+- [ ] **P25.8 — Annotation layer.**  Persistent per-document
+  annotations stored in a `doc_annotations` SQLite table:
+  `(doc_id, page, x, y, w, h, type, text, color, created_at, user)`.
+  Types: highlight, note, rectangle, stamp.  Tauri commands for CRUD.
+  Frontend: overlay layer on the preview pane with drawing tools.
+  Annotations are searchable (full-text on the `text` column via
+  Tantivy).
+
+- [ ] **P25.9 — Reading queue & highlights.**  Mark passages in
+  search results or the preview pane → stored in a `highlights`
+  SQLite table `(doc_id, chunk_index, start_offset, end_offset,
+  note, color, created_at)`.  "Reading List" tab showing all
+  highlighted passages across documents, sorted by recency.
+  One-click navigate back to the source.  Spaced-repetition review
+  mode (optional).
+
+- [x] **P25.10 — .mbox / Outlook .msg email extraction.**  Extend
+  P23.3's `.eml` extractor to handle `.mbox` (concatenated messages
+  split on `From ` lines) and `.msg` (Microsoft CFBF compound binary
+  via `cfb` crate — extract PR_SUBJECT, PR_SENDER_NAME,
+  PR_CLIENT_SUBMIT_TIME, PR_BODY / PR_RTF_COMPRESSED → strip to
+  plain text).  Recursive attachment extraction feeds back into the
+  main dispatch (a PDF attached to an email gets the full PDF
+  extractor treatment).
+
+### P26 — Enterprise DMS parity (planned)
+
+Features that close the remaining gaps against professional document
+management systems and enterprise OCR/archival suites.
+
+- [ ] **P26.1 — Document-type classification at ingest.**  Lightweight
+  ViT-based classifier (RVL-CDIP 16-class: letter, invoice, form,
+  email, memo, report, specification, etc.) run at ingest time via
+  CrispEmbed.  Stores `doctype:<class>` tag on each document —
+  lights up in the existing tag cloud, `--tag doctype:invoice` filter,
+  and faceted browse.  Enables automatic sort rules in Stapel keyed on
+  document type.  Falls back to "unknown" when crispembed is not
+  compiled in.
+
+- [ ] **P26.2 — Watched folder → auto-classify → auto-file.**  Unify
+  the existing folder watcher (P5) with Stapel's AI sort pipeline and
+  P26.1's document-type classifier into a single unattended flow:
+  hot folder → OCR/extract → classify → LLM metadata → sort-path →
+  move/copy.  `WatchMode::AutoFile` enum variant.  Settings UI for
+  per-folder sort-rule templates keyed on document type (e.g., invoices
+  → `Buchhaltung/{year}/{vendor}/`, contracts → `Verträge/{party}/`).
+
+- [x] **P26.3 — Table → CSV/XLSX export.**  Extend
+  `tool_table_extract`'s HTML table output with structured CSV and
+  XLSX export.  CSV via `csv` crate (already in deps); XLSX via
+  `rust_xlsxwriter` (MIT, ~3 MB).  CLI: `crispsorter ocr --table
+  --export csv|xlsx`.  Frontend: "Export as CSV" / "Export as XLSX"
+  buttons in the OcrWorkbench table section.
+
+- [ ] **P26.4 — Zoned OCR / template matching.**  User-defined
+  extraction zones on a document template: draw rectangles on a
+  reference page, name each zone (e.g., "invoice_number",
+  "total_amount"), save as a `.czt` template.  On ingest, documents
+  matching the template (layout similarity > threshold) extract the
+  named zones via crop+OCR instead of full-page OCR.  Faster and more
+  reliable for uniform high-volume documents (invoices from the same
+  vendor, government forms).  `templates/` SQLite table +
+  `index_apply_template` Tauri command.
+
+- [ ] **P26.5 — PDF/A archival conversion.**  Convert ingested PDFs
+  to PDF/A-3b for long-term archival compliance on export.  Uses
+  PDFium's `FPDF_SaveWithVersion` with conformance metadata (XMP
+  `pdfaid:part=3`, sRGB ICC profile embed, font embedding check).
+  Opt-in per export / per watched-folder rule.  CLI:
+  `crispsorter export --pdfa`.
+
+- [ ] **P26.6 — Digital signature verification.**  Detect and verify
+  PDF digital signatures on ingest.  Read signature dictionaries via
+  `lopdf`, verify PKCS#7/CMS via `cms` crate (or `openssl` FFI).
+  Store verification result as `signature:valid` / `signature:invalid`
+  / `signature:expired` tag.  Preview pane shows signature status
+  badge.  No signing — verification only.
+
+- [ ] **P26.7 — Bulk PII redaction.**  Combine NER entity detection
+  (`person:`, `loc:`, date patterns, account/IBAN numbers) with
+  bounding-box coordinates from the OCR pipeline to redact PII from
+  exported PDFs.  Black rectangle overlay + text removal via PDFium.
+  CLI: `crispsorter redact <FILE> --entities person,loc --out
+  redacted.pdf`.  Frontend: "Redact PII" button in OcrWorkbench with
+  entity-type checkboxes and preview before commit.
+
+- [x] **P26.8 — Document status / review workflow.**  Lightweight
+  approval flow: `doc_status` column (`pending_review` / `approved` /
+  `rejected` / `archived`).  Schema migration v111.  Filter in
+  Übersicht + search.  Bulk status-change in the overview table.
+  No multi-user approval chains (rabbit hole) — just a per-document
+  status flag that's enough for solo / small-team review workflows.
+
+- [ ] **P26.9 — Scanner integration (SANE/TWAIN).**  Direct
+  acquisition from flatbed/ADF scanners into the ingest pipeline.
+  Linux: SANE via `sane-rs` (FFI to libsane).  macOS: ImageCaptureCore
+  via objc2.  Windows: WIA via COM (deferred until Windows builds
+  stabilise).  Settings panel for scanner selection, resolution, color
+  mode, duplex.  Scanned pages feed directly into the OCR pipeline →
+  index, skipping the filesystem.

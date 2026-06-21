@@ -49,6 +49,8 @@ pub fn all() -> Vec<Box<dyn Migration>> {
         Box::new(AddUrlColumn),
         Box::new(AddOmniEmbedding),
         Box::new(AddVitEmbedding),
+        Box::new(AddSummaryColumn),
+        Box::new(AddDocStatusColumn),
     ]
 }
 
@@ -565,7 +567,7 @@ mod tests {
         // framework guarantees.
         assert_eq!(
             summary.applied,
-            vec![100, 101, 102, 103, 104, 105, 106, 108, 109],
+            vec![100, 101, 102, 103, 104, 105, 106, 108, 109, 110, 111],
             "first run must apply every registered migration"
         );
         assert!(summary.skipped.is_empty());
@@ -576,7 +578,7 @@ mod tests {
         // just each migration's internal check.
         let summary2 = runner.run(&ctx, &ledger).await.unwrap();
         assert!(summary2.applied.is_empty(), "rerun must apply nothing");
-        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104, 105, 106, 108, 109]);
+        assert_eq!(summary2.skipped, vec![100, 101, 102, 103, 104, 105, 106, 108, 109, 110, 111]);
     }
 
     #[tokio::test]
@@ -887,6 +889,8 @@ mod tests {
             url: None,
             embedding_omni: None,
             embedding_vit: None,
+            summary: None,
+            doc_status: None,
         };
         local.ingest_batch(&[make_chunk(0), make_chunk(1)]).await.expect("ingest");
 
@@ -1042,6 +1046,94 @@ impl Migration for AddUrlColumn {
             .await
             .context("adding url column (v106)")?;
         eprintln!("[index] v106 migration applied — added url column");
+        Ok(())
+    }
+}
+
+/// **v110** — Add the `summary` Utf8 column for extractive summaries.
+/// Populated at ingest time by `index::summary::extractive_summary`.
+/// Backfills existing rows with nulls. Idempotent: skips when the
+/// column is already present.
+pub struct AddSummaryColumn;
+
+#[async_trait]
+impl Migration for AddSummaryColumn {
+    fn version(&self) -> u32 {
+        110
+    }
+    fn name(&self) -> &str {
+        "add summary column"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v110 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v110 migration")?;
+
+        if schema.field_with_name("summary").is_ok() {
+            eprintln!("[index] v110 migration skipped — summary column already present");
+            return Ok(());
+        }
+
+        let summary_field = arrow_schema::Field::new("summary", arrow_schema::DataType::Utf8, true);
+        let col_schema = Arc::new(arrow_schema::Schema::new(vec![summary_field]));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding summary column (v110)")?;
+        eprintln!("[index] v110 migration applied — added summary column");
+        Ok(())
+    }
+}
+
+/// **v111** — Add the `doc_status` Utf8 column for user-assigned document
+/// status labels (e.g. "reviewed", "pending", "rejected").  Backfills
+/// existing rows with nulls.  Idempotent: skips when the column is already
+/// present.  Updated via `index_set_doc_status` Tauri command.
+pub struct AddDocStatusColumn;
+
+#[async_trait]
+impl Migration for AddDocStatusColumn {
+    fn version(&self) -> u32 {
+        111
+    }
+    fn name(&self) -> &str {
+        "add doc_status column"
+    }
+    async fn apply(&self, ctx: &MigrationContext) -> Result<()> {
+        let lance = ctx
+            .lance
+            .as_ref()
+            .ok_or_else(|| anyhow!("v111 needs the LanceDB handle"))?;
+        let table = lance.table_ref();
+        let schema = table
+            .schema()
+            .await
+            .context("reading LanceDB table schema for v111 migration")?;
+
+        if schema.field_with_name("doc_status").is_ok() {
+            eprintln!("[index] v111 migration skipped — doc_status column already present");
+            return Ok(());
+        }
+
+        let doc_status_field = arrow_schema::Field::new("doc_status", arrow_schema::DataType::Utf8, true);
+        let col_schema = Arc::new(arrow_schema::Schema::new(vec![doc_status_field]));
+        table
+            .add_columns(
+                lancedb::table::NewColumnTransform::AllNulls(col_schema),
+                None,
+            )
+            .await
+            .context("adding doc_status column (v111)")?;
+        eprintln!("[index] v111 migration applied — added doc_status column");
         Ok(())
     }
 }

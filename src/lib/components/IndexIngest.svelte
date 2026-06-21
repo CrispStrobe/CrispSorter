@@ -18,6 +18,7 @@
     import IndexSearch from './IndexSearch.svelte';
     import TagCloud from './TagCloud.svelte';
     import CafCatalog from './Catalog.svelte';
+    import CorpusDashboard from './CorpusDashboard.svelte';
     import Duplicates from './Duplicates.svelte';
     import { logInfo, logWarn, logError } from '$lib/log';
 
@@ -70,7 +71,7 @@
         fileCount:   number;
     }
 
-    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates' | 'images' | 'cidxArchive';
+    type Tab = 'overview' | 'search' | 'add' | 'sources' | 'cafCatalog' | 'duplicates' | 'images' | 'cidxArchive' | 'dashboard';
 
     // ── State ──────────────────────────────────────────────────────────────────
 
@@ -2756,6 +2757,9 @@
         <button class="tab" class:active={activeTab === 'duplicates'} onclick={() => activeTab = 'duplicates'}>
             <CopyCheck size={14} /> {i18n.t.indexIngest.tab_duplicates}
         </button>
+        <button class="tab" class:active={activeTab === 'dashboard'} onclick={() => activeTab = 'dashboard'}>
+            <Database size={14} /> Dashboard
+        </button>
         <button class="tab" class:active={activeTab === 'images'}
                 onclick={() => { activeTab = 'images'; loadImages(false); }}>
             <Images size={14} /> {i18n.t.indexIngest.tab_images}{#if imagesTotal > 0} ({imagesTotal}){/if}
@@ -3733,6 +3737,11 @@
     <!-- ══════════════════ SUCHE (semantic + full-text) ══════════════════ -->
     {#if activeTab === 'search'}
         <IndexSearch />
+    {/if}
+
+    <!-- ══════════════════ DASHBOARD (corpus stats) ══════════════════ -->
+    {#if activeTab === 'dashboard'}
+        <CorpusDashboard />
     {/if}
 
     <!-- ══════════════════ ÜBERSICHT (catalog contents) ══════════════════ -->

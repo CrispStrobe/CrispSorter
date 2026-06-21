@@ -31,6 +31,10 @@ pub mod schema;
 pub mod search;
 pub mod snippet;
 pub mod token_highlight;
+pub mod summary;
+pub mod nl_query;
+pub mod result_cache;
+pub mod barcode;
 pub mod tauri_commands;
 pub mod translate_commands;
 
