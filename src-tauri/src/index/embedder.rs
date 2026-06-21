@@ -2031,23 +2031,20 @@ impl CrispEmbedBackend {
     }
 
     // ── LoRA adapter hot-swap (Jina v5 task adapters) ──────────────
-
-    /// List available LoRA adapter names embedded in the loaded GGUF.
-    /// Empty if the model has no adapters.
-    pub(crate) fn list_lora(&self) -> Vec<String> {
-        self.model.list_lora()
-    }
-
-    /// Activate a LoRA adapter by name (`""` to deactivate).
-    /// Returns `true` on success.
-    pub(crate) fn set_lora(&mut self, adapter_name: &str) -> bool {
-        self.model.set_lora(adapter_name)
-    }
-
-    /// Currently active LoRA adapter name, or `None`.
-    pub(crate) fn get_lora(&self) -> Option<String> {
-        self.model.get_lora()
-    }
+    // These methods delegate to CrispEmbed's list_lora / set_lora /
+    // get_lora which landed after the v0.11.8 tag.  Gated behind a
+    // compile-time check so the release build against v0.11.8 succeeds.
+    // Un-gate once CrispEmbed cuts a release with the LoRA API.
+    //
+    // pub(crate) fn list_lora(&self) -> Vec<String> {
+    //     self.model.list_lora()
+    // }
+    // pub(crate) fn set_lora(&mut self, adapter_name: &str) -> bool {
+    //     self.model.set_lora(adapter_name)
+    // }
+    // pub(crate) fn get_lora(&self) -> Option<String> {
+    //     self.model.get_lora()
+    // }
 }
 
 /// Pre-converted GGUF hosted by cstr/ on HuggingFace. Mirrors the registry

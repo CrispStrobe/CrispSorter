@@ -620,7 +620,11 @@ pub fn ocr_via_pipeline(
     // Capture the LID result (ISO 639-1) detected during the pipeline run,
     // if a lid_model was configured. Populates the `language` field so
     // downstream indexing/search can use it without a separate LID pass.
-    let detected_lang = guard.detected_lang();
+    // NOTE: `detected_lang()` landed after CrispEmbed v0.11.8 — gated so
+    // the release build against the pinned tag compiles.  Un-gate once
+    // CrispEmbed cuts a release with this API.
+    let detected_lang: Option<String> = None;
+    // let detected_lang = guard.detected_lang();
 
     Ok(ExtractedDocument {
         full_text: res.full_text,
