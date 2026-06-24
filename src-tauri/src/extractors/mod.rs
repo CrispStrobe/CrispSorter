@@ -512,6 +512,7 @@ fn engine_id(name: &str) -> i32 {
         "granite_vision" => 10, // Granite Vision 3.3-2B (LLaVA-Next)
         "lightonocr" => 11,    // LightOnOCR-2-1B (Pixtral ViT + Qwen3)
         "qwen3vl" => 12,       // Qwen3-VL-2B (DeepStack, IMROPE, per-head QK-norm)
+        "unlimited_ocr" => 13, // Unlimited-OCR (SAM + CLIP + DeepSeek-V2 MoE, grounded)
         _ => 0, // dbnet_trocr
     }
 }
@@ -1316,6 +1317,7 @@ mod ocr_pipeline_tests {
         assert_eq!(engine_id("granite_vision"), 10);
         assert_eq!(engine_id("lightonocr"), 11);
         assert_eq!(engine_id("qwen3vl"), 12);
+        assert_eq!(engine_id("unlimited_ocr"), 13);
         // Unknown falls back to dbnet_trocr.
         assert_eq!(engine_id("nonsense"), 0);
     }

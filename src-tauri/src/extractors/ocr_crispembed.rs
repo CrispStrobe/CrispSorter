@@ -780,6 +780,7 @@ fn vlm_default_model(engine: &str) -> &'static str {
         "granite_vision" => "granite-vision",
         "lightonocr" => "lightonocr",
         "qwen3vl" => "qwen3vl-2b",
+        "unlimited_ocr" => "unlimited-ocr",
         _ => "qwen2vl-ocr",
     }
 }
