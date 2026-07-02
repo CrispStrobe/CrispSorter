@@ -1868,14 +1868,14 @@ dependencies = [
 
 [[package]]
 name = "crispasr"
-version = "0.5.6"
+version = "0.8.6"
 dependencies = [
  "crispasr-sys",
 ]
 
 [[package]]
 name = "crispasr-sys"
-version = "0.5.7"
+version = "0.8.6"
 
 [[package]]
 name = "crispcat"
@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed"
-version = "0.4.0"
+version = "0.13.0"
 dependencies = [
  "crispembed-sys",
  "libc",
@@ -1919,7 +1919,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed-sys"
-version = "0.4.0"
+version = "0.13.0"
 
 [[package]]
 name = "crisplens-protocol"
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arrow",
