@@ -377,11 +377,14 @@ impl SearchEngine {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
         let inner_limit = self.fetch_limit(limit);
-        let effective_query = if filters.fuzzy {
-            super::fts_query::fuzzify_query(query)
+        let mut effective_query = if filters.synonyms {
+            super::synonyms::synonym_expand_query(query)
         } else {
             query.to_owned()
         };
+        if filters.fuzzy {
+            effective_query = super::fts_query::fuzzify_query(&effective_query);
+        }
         let hits = self.fts.search(&effective_query, filters, inner_limit)?;
         if hits.is_empty() {
             return Ok(vec![]);
@@ -472,11 +475,14 @@ impl SearchEngine {
 
         let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
-        let q_owned = if filters.fuzzy {
-            super::fts_query::fuzzify_query(query_text)
+        let mut q_owned = if filters.synonyms {
+            super::synonyms::synonym_expand_query(query_text)
         } else {
             query_text.to_owned()
         };
+        if filters.fuzzy {
+            q_owned = super::fts_query::fuzzify_query(&q_owned);
+        }
         let filters_fts = filters.clone();
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();

@@ -1,6 +1,7 @@
 pub mod embedder;
 pub mod fts_index;
 pub mod fts_query;
+pub mod synonyms;
 pub mod hf_prefetch;
 pub mod ingest;
 pub mod license_consent;

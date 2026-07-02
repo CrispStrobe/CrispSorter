@@ -98,6 +98,8 @@
     let filterOmniSearch    = $state(false);
     // P23 — fuzzy search toggle (auto-apply ~1 edit distance to terms)
     let filterFuzzy         = $state(false);
+    // P24.4 — synonym expansion toggle
+    let filterSynonyms      = $state(false);
     // PLAN P7.6 follow-up — when on (default), backend hides results
     // pinned to currently-unmounted volumes. Toggle off to show
     // everything regardless of mount state.
@@ -735,6 +737,7 @@
                 ownerId: null,
                 includeUnmounted,
                 fuzzy: filterFuzzy || null,
+                synonyms: filterSynonyms || null,
                 docIdScope: refinementScope.length > 0 ? refinementScope : null,
             });
             // After a refinement search, clear the scope so the next
@@ -1199,6 +1202,10 @@
             <label class="filter-field" title="Fuzzy matching: tolerate typos and OCR errors (~1 edit distance)" style="flex-direction:row; align-items:center; gap:6px;">
                 <input type="checkbox" bind:checked={filterFuzzy} />
                 <span>Fuzzy (typo-tolerant)</span>
+            </label>
+            <label class="filter-field" title="Expand query terms with offline synonyms (EN + DE)" style="flex-direction:row; align-items:center; gap:6px;">
+                <input type="checkbox" bind:checked={filterSynonyms} />
+                <span>Synonyms (EN+DE)</span>
             </label>
         </div>
     {/if}

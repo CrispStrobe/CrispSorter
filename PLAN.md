@@ -768,11 +768,12 @@ re-queries.
   in the Dashboard — entities are nodes sized by document count, edges
   weighted by co-occurrence.  Clickable to filter search by entity.
 
-- [ ] **P24.4 — Synonym expansion.**  Offline synonym lookup
-  (bundled DE+EN synonym lists derived from OpenThesaurus + WordNet,
-  ~2 MB compressed) → OR-expand query terms before FTS dispatch.
-  Toggle in advanced filters.  Especially useful for German compound
-  words and technical terminology.
+- [x] **P24.4 — Synonym expansion.**  ✅ SHIPPED (2026-07-02).
+  `index/synonyms.rs` — embedded EN (50 groups) + DE (44 groups)
+  synonym lists.  `synonym_expand_query()` OR-expands bare terms
+  before FTS dispatch.  Wired into `search_text` and `search_hybrid`
+  via `SearchFilters.synonyms` flag.  Frontend: "Synonyms (EN+DE)"
+  checkbox in advanced filters.  6 unit tests.
 
 - [ ] **P24.5 — RSS/Atom feed ingestion.**  `extractors/feed.rs`
   using `feed-rs` crate — poll configured feed URLs on a timer,
