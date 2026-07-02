@@ -35,7 +35,9 @@ pub mod audio;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
 pub mod eml;
+#[cfg(feature = "desktop")]
 pub mod export;
+#[cfg(feature = "desktop")]
 pub mod feed;
 pub mod html;
 pub mod layout;

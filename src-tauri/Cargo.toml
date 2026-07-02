@@ -93,7 +93,9 @@ kamadak-exif = "0.6"
 # directly. Used by the extract_pdf_metadata Tauri command.
 lopdf       = "0.38"
 # RSS/Atom feed parser — used for P24.5 feed ingestion.
-feed-rs     = "2"
+# Gated behind desktop because feed-rs's transitive deps can break
+# Android NDK cross-compilation.
+feed-rs     = { version = "2", optional = true }
 # Cross-platform clipboard access — used for P24.6 clipboard/screenshot capture.
 # Not available on Android/iOS (no platform clipboard API in arboard).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
@@ -101,7 +103,7 @@ arboard     = "3"
 # Word-level text diff — used for P25.7 document comparison.
 similar     = { version = "2", features = ["unicode"] }
 # DOCX generation — used for P27.10 export to Word format.
-docx-rs     = "0.4"
+docx-rs     = { version = "0.4", optional = true }
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.
@@ -200,7 +202,7 @@ default = []
 # crates behind it depend on subprocess spawning, inotify, and other
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
-desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls"]
+desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]

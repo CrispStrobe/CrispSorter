@@ -1557,6 +1557,7 @@ impl PdfMetadata {
 }
 
 /// P27.10 — Export text to DOCX format.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn export_to_docx(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
     tokio::task::spawn_blocking(move || {
@@ -1565,6 +1566,7 @@ async fn export_to_docx(title: String, body: String, out_path: String) -> Result
 }
 
 /// P27.10 — Export text to standalone HTML format.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn export_to_html(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
     tokio::task::spawn_blocking(move || {
@@ -1592,12 +1594,14 @@ async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
 }
 
 /// P24.5 — Parse an RSS/Atom feed from a URL.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFeed, String> {
     extractors::feed::fetch_and_parse(&url).await
 }
 
 /// P24.5 — Parse a local feed file (XML).
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn feed_parse_file(path: String) -> Result<extractors::feed::ParsedFeed, String> {
     let bytes = tokio::fs::read(&path).await.map_err(|e| format!("read {path}: {e}"))?;
@@ -3030,10 +3034,6 @@ pub fn run() {
             delete_files,
             extract_pdf_native,
             extract_pdf_metadata,
-            feed_fetch_and_parse,
-            feed_parse_file,
-            export_to_docx,
-            export_to_html,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
