@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod audit;
 pub mod audio;
 pub mod batch_session;
 pub mod bg_ingest;
@@ -2966,6 +2967,10 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_is_encrypted,
             pdf_ops::tauri_commands::pdf_encrypt,
             pdf_ops::tauri_commands::pdf_sanitise,
+            audit::tauri_commands::audit_log_event,
+            audit::tauri_commands::audit_query,
+            audit::tauri_commands::audit_count,
+            audit::tauri_commands::audit_summary,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
             #[cfg(not(feature = "desktop"))]
@@ -3184,6 +3189,10 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_is_encrypted,
             pdf_ops::tauri_commands::pdf_encrypt,
             pdf_ops::tauri_commands::pdf_sanitise,
+            audit::tauri_commands::audit_log_event,
+            audit::tauri_commands::audit_query,
+            audit::tauri_commands::audit_count,
+            audit::tauri_commands::audit_summary,
         ] }
         })
         .run(tauri::generate_context!())

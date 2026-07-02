@@ -806,12 +806,13 @@ thousands for.
   Frontend: "Versions" expandable on result cards showing the timeline
   of changes with diff-highlight between consecutive versions.
 
-- [ ] **P25.2 — Audit trail / access log.**  Append-only SQLite
-  table `audit_log(ts, action, doc_id, user, detail)` recording
-  every search query, document open, export, delete, and ingest.
-  `index_audit_log(since, limit)` Tauri command.  Frontend: "Audit
-  Log" tab in Settings.  Required for ISO 27001 / GDPR compliance
-  in enterprise deployments.
+- [x] **P25.2 — Audit trail / access log.**  ✅ SHIPPED (2026-07-02).
+  `audit/mod.rs` — append-only WAL-mode SQLite `audit.db` with
+  `audit_log(id, ts, action, doc_id, detail, user_agent)`.
+  `AuditLog::log()` for writes; `query()` with filters (since,
+  action, doc_id, limit, offset); `count()` + `action_summary()`.
+  Tauri commands: `audit_log_event`, `audit_query`, `audit_count`,
+  `audit_summary`.  Indexed on ts, action, doc_id.  2 unit tests.
 
 - [ ] **P25.3 — Retention policies.**  Per-folder or per-tag
   retention rules: `retain_days`, `archive_after_days`,
