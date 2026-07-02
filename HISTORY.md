@@ -9,6 +9,135 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## v0.9.0 — Universal Document Viewer, PDF Toolkit, Discovery & DMS Features (2026-07-02)
+
+Major feature release spanning P24–P27.  25 new features, 101 new unit
+tests (total 891), 3 new Rust modules, 10 new Svelte components.
+
+### Universal Document Viewer (P27.1–P27.2)
+
+Cross-platform document viewer replacing the old `<object>` PDF embed
+and bare `<img>` tags.  New `src/lib/components/viewer/` module with
+format-specific sub-viewers:
+
+- **PdfViewer** — pdfjs-dist canvas rendering, page nav, zoom, text
+  layer for selection, keyboard shortcuts, fit-width/fit-page modes
+- **ImageViewer** — zoom/pan (0.1x–6x), Ctrl+wheel, fit toggle
+- **DocxViewer** — mammoth → HTML with dark-theme CSS
+- **EpubViewer** — chapter navigation sidebar + HTML rendering
+- **TextViewer** — monospace with 512KB truncation
+- **HtmlViewer** — sanitised HTML with charset detection
+- **CsvViewer** — auto-delimiter detection, sticky headers
+- **FallbackViewer** — "Open in app" button
+
+`DocumentViewer.svelte` router dispatches by file extension.  Replaced
+~150 lines of duplicated preview code in IndexIngest + IndexSearch.
+Shared `viewer/types.ts` with `uriToPath()`, `detectKind()`, format
+constants.
+
+### PDF Manipulation Toolkit (P27.1, P27.7, P27.13, P27.14, P26.5, P26.6, P26.7)
+
+`pdf_ops.rs` module — 18 operations via lopdf:
+
+| Operation | Function | CLI |
+|-----------|----------|-----|
+| Get info | `pdf_info` | `pdf info` |
+| Extract pages | `extract_pages` | `pdf extract` |
+| Remove pages | `remove_pages` | `pdf remove` |
+| Reorder pages | `reorder_pages` | `pdf reorder` |
+| Rotate pages | `rotate_pages` | `pdf rotate` |
+| Crop pages | `crop_pages` | `pdf crop` |
+| Merge PDFs | `merge_pdfs` | `pdf merge` |
+| Split PDF | `split_pdf` | `pdf split` |
+| Add page numbers | `add_page_numbers` | `pdf number` |
+| Add watermark | `add_watermark` | `pdf watermark` |
+| Insert blank page | `insert_blank_page` | `pdf insert-blank` |
+| Edit metadata | `edit_metadata` | `pdf metadata` |
+| Decrypt PDF | `decrypt_pdf` | `pdf decrypt` |
+| Encrypt PDF | `encrypt_pdf` | `pdf encrypt` |
+| Sanitise | `sanitise_pdf_with_options` | `pdf sanitise` |
+| Detect signatures | `detect_signatures` | `pdf signatures` |
+| PDF/A conversion | `convert_to_pdfa` | `pdf pdfa` |
+| Redact regions | `redact_regions` | `pdf redact` |
+
+**PdfTools.svelte** tab: page list sidebar, multi-select, operation
+panels for all 18 tools.  Fine-grained `SanitiseOptions` with per-
+category toggles (Info, XMP, JS, files, OpenAction, thumbnails,
+annotations).
+
+40 unit tests covering all operations.
+
+### Discovery & Clustering (P24.1, P24.3, P24.4, P24.5, P24.6)
+
+- **P24.1 — Topical clustering:** K-means++ on dense embeddings with
+  TF-IDF cluster naming.  `LocalIndex::cluster_documents(k)`, Tauri
+  command, CLI `crispsorter index cluster --k 5`, CorpusDashboard
+  panel.  12 unit tests.
+
+- **P24.3 — Knowledge graph:** Entity co-occurrence from NER tags.
+  `index_entity_graph` Tauri command returns nodes + edges.
+
+- **P24.4 — Synonym expansion:** 94 embedded synonym groups (50 EN +
+  44 DE).  `synonym_expand_query()` OR-expands before FTS.  Frontend
+  checkbox.  15 unit tests.
+
+- **P24.5 — RSS/Atom feed ingestion:** `extractors/feed.rs` via
+  `feed-rs`.  RSS 2.0 / Atom / JSON Feed.  11 unit tests.
+
+- **P24.6 — Clipboard/screenshot capture:** `extractors/clipboard.rs`
+  via `arboard`.  Text + image (saved to temp PNG).
+
+### DMS & Compliance (P25.1–P25.9)
+
+- **P25.1 — Document versioning:** `index/versioning.rs`, SHA-256
+  version groups, monotonic seq.  7 unit tests.
+
+- **P25.2 — Audit trail:** `audit/mod.rs`, append-only SQLite.
+  Query with filters.  7 unit tests.
+
+- **P25.3 — Retention policies:** `index/retention.rs`, per-folder/tag
+  rules.  7 unit tests.
+
+- **P25.4 — Stamp on export:** Wired into `tool_ocr_export` +
+  CLI `ocr --render pdf --stamp`.
+
+- **P25.7 — Document comparison:** `index/comparison.rs` via `similar`.
+  Word-level diff.  7 unit tests.
+
+- **P25.8 — Annotation layer:** `index/annotations.rs`, SQLite CRUD +
+  text search.  8 unit tests.
+
+- **P25.9 — Reading queue:** Highlights table, reading list by recency.
+
+### Export (P27.10)
+
+- `extractors/export.rs` — DOCX (via `docx-rs`) and standalone HTML
+  export.  5 unit tests.
+
+### CrispEmbed v0.13.0 Integration
+
+Pulled 37 upstream commits: GLM-OCR, Qwen2.5-VL, PaddleOCR-VL,
+Restormer, InternVL2, Granite-Vision, Qwen3-VL fixes.  No Rust API
+changes.  Fixed `crisp-docx` sibling version pins.
+
+### New Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `feed-rs` | 2 | RSS/Atom feed parsing |
+| `arboard` | 3 | Clipboard access |
+| `similar` | 2 | Text diffing |
+| `docx-rs` | 0.4 | DOCX generation |
+
+### Test Summary
+
+891 tests pass (was 790 at session start).  +101 new tests across
+pdf_ops (40), clustering (12), synonyms (15), annotations (8),
+versioning (7), retention (7), audit (7), feed (11), comparison (7),
+export (5).
+
+---
+
 ## Session log — 2026-06-20 (evening) — Audio omni embedding + build infra fix
 
 Implemented the audio omni embedding pipeline (P17.7 completion) and fixed
