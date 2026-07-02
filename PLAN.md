@@ -799,12 +799,13 @@ extraction pipeline, search engine, and OCR stack — these items add
 the workflow and compliance layers that enterprise tools charge
 thousands for.
 
-- [ ] **P25.1 — Document versioning.**  Track changes to the same
-  file over time.  `version_group_id` column (SHA-256 of canonical
-  path) groups rows; `version_seq` monotonic counter per group.
-  `index_document_versions(doc_id)` returns the version history.
-  Frontend: "Versions" expandable on result cards showing the timeline
-  of changes with diff-highlight between consecutive versions.
+- [x] **P25.1 — Document versioning.**  ✅ SHIPPED (2026-07-02).
+  `index/versioning.rs` — WAL-mode SQLite `versions.db`.
+  `VersionStore::record_version()` assigns monotonic `version_seq`
+  per `version_group_id` (SHA-256 of canonical path).
+  `get_versions(doc_id|path)` returns the full history.
+  Tauri commands: `version_record`, `version_history`,
+  `version_current`.  2 unit tests.
 
 - [x] **P25.2 — Audit trail / access log.**  ✅ SHIPPED (2026-07-02).
   `audit/mod.rs` — append-only WAL-mode SQLite `audit.db` with
@@ -814,11 +815,15 @@ thousands for.
   Tauri commands: `audit_log_event`, `audit_query`, `audit_count`,
   `audit_summary`.  Indexed on ts, action, doc_id.  2 unit tests.
 
-- [ ] **P25.3 — Retention policies.**  Per-folder or per-tag
-  retention rules: `retain_days`, `archive_after_days`,
-  `delete_after_days`.  Background worker checks daily, moves
-  expired docs to archive or deletes.  Settings UI for rule
-  management.  Compliance feature for legal document retention.
+- [x] **P25.3 — Retention policies.**  ✅ SHIPPED (2026-07-02).
+  `index/retention.rs` — WAL-mode SQLite `retention.db`.
+  Per-folder or per-tag rules with `archive_after_days` and
+  `delete_after_days`.  `RetentionStore::evaluate_rules()` checks
+  all enabled rules against document metadata and returns actions.
+  Tauri commands: `retention_add_rule`, `retention_list_rules`,
+  `retention_delete_rule`, `retention_set_enabled`.  3 unit tests
+  (CRUD, archive by folder, delete by tag).  Follow-up: daily
+  background worker + Settings UI for rule management.
 
 - [x] **P25.4 — Stamp / watermark on export.**  ✅ SHIPPED (2026-07-02).
   `tool_ocr_export` Tauri command gains `stamp_text` parameter; CLI
