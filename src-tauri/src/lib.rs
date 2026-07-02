@@ -2927,6 +2927,10 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_add_watermark,
             pdf_ops::tauri_commands::pdf_insert_blank_page,
             pdf_ops::tauri_commands::pdf_edit_metadata,
+            pdf_ops::tauri_commands::pdf_decrypt,
+            pdf_ops::tauri_commands::pdf_is_encrypted,
+            pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_sanitise,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
             #[cfg(not(feature = "desktop"))]
@@ -3136,6 +3140,10 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_add_watermark,
             pdf_ops::tauri_commands::pdf_insert_blank_page,
             pdf_ops::tauri_commands::pdf_edit_metadata,
+            pdf_ops::tauri_commands::pdf_decrypt,
+            pdf_ops::tauri_commands::pdf_is_encrypted,
+            pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_sanitise,
         ] }
         })
         .run(tauri::generate_context!())

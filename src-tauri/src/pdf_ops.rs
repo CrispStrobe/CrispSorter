@@ -596,6 +596,190 @@ pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Resu
     Ok(())
 }
 
+// ── Decrypt (password-protected PDFs) ───────────────────────────────
+
+/// Decrypt a password-protected PDF and save the unprotected version.
+pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    if !doc.is_encrypted() {
+        // Not encrypted — just copy as-is
+        doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+        return Ok(());
+    }
+    doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
+}
+
+/// Check whether a PDF is encrypted.
+pub fn is_encrypted(path: &Path) -> Result<bool, String> {
+    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    Ok(doc.is_encrypted())
+}
+
+// ── Encrypt (set password + permissions) ────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EncryptConfig {
+    /// Owner password (full access).
+    pub owner_password: String,
+    /// User password (restricted access). Empty string = no user password.
+    pub user_password: String,
+    /// Permission flags — which operations the user password allows.
+    pub allow_print: bool,
+    pub allow_copy: bool,
+    pub allow_modify: bool,
+    pub allow_annotate: bool,
+    pub allow_fill_forms: bool,
+    pub allow_assemble: bool,
+    pub allow_high_quality_print: bool,
+}
+
+impl Default for EncryptConfig {
+    fn default() -> Self {
+        Self {
+            owner_password: String::new(),
+            user_password: String::new(),
+            allow_print: true,
+            allow_copy: true,
+            allow_modify: true,
+            allow_annotate: true,
+            allow_fill_forms: true,
+            allow_assemble: true,
+            allow_high_quality_print: true,
+        }
+    }
+}
+
+pub fn encrypt_pdf(path: &Path, config: &EncryptConfig, out_path: &Path) -> Result<(), String> {
+    use lopdf::encryption::{EncryptionVersion, Permissions};
+
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+
+    if doc.is_encrypted() {
+        return Err("PDF is already encrypted; decrypt first".into());
+    }
+
+    let mut perms = Permissions::empty();
+    if config.allow_print              { perms |= Permissions::PRINTABLE; }
+    if config.allow_copy               { perms |= Permissions::COPYABLE | Permissions::COPYABLE_FOR_ACCESSIBILITY; }
+    if config.allow_modify             { perms |= Permissions::MODIFIABLE; }
+    if config.allow_annotate           { perms |= Permissions::ANNOTABLE; }
+    if config.allow_fill_forms         { perms |= Permissions::FILLABLE; }
+    if config.allow_assemble           { perms |= Permissions::ASSEMBLABLE; }
+    if config.allow_high_quality_print { perms |= Permissions::PRINTABLE_IN_HIGH_QUALITY; }
+
+    // Use V2 (RC4 with configurable key length, widely compatible).
+    // V4/V5 (AES) would be stronger but requires private CryptFilter types
+    // in lopdf 0.38; upgrade when lopdf exposes them publicly.
+    let enc_version = EncryptionVersion::V2 {
+        document: &doc,
+        owner_password: &config.owner_password,
+        user_password: &config.user_password,
+        key_length: 128,
+        permissions: perms,
+    };
+
+    let state = lopdf::encryption::EncryptionState::try_from(enc_version)
+        .map_err(|e| format!("encryption setup: {e}"))?;
+    doc.encrypt(&state).map_err(|e| format!("encrypt: {e}"))?;
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
+}
+
+// ── Sanitise (strip hidden metadata) ────────────────────────────────
+
+/// Remove all metadata, JavaScript, thumbnails, and other hidden
+/// content from a PDF for privacy.
+pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    let mut stripped = Vec::new();
+
+    // 1. Remove /Info dictionary
+    if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
+        let info_id = *info_id;
+        doc.objects.remove(&info_id);
+        doc.trailer.remove(b"Info");
+        stripped.push("Info dictionary".into());
+    }
+
+    // Collect catalog-level IDs to remove (avoids borrow conflicts).
+    let mut remove_from_catalog: Vec<&'static [u8]> = Vec::new();
+    let mut meta_obj_id: Option<ObjectId> = None;
+    let mut names_id: Option<ObjectId> = None;
+    let mut names_remove: Vec<Vec<u8>> = Vec::new();
+
+    if let Ok(cat) = doc.catalog() {
+        // 2. XMP metadata
+        if let Ok(Object::Reference(mid)) = cat.get(b"Metadata") {
+            meta_obj_id = Some(*mid);
+            remove_from_catalog.push(b"Metadata");
+        }
+        // 4. OpenAction
+        if cat.has(b"OpenAction") {
+            remove_from_catalog.push(b"OpenAction");
+        }
+        // 3. Names dict
+        if let Ok(Object::Reference(nid)) = cat.get(b"Names") {
+            names_id = Some(*nid);
+        }
+    }
+
+    // Check what to remove from Names dict
+    if let Some(nid) = names_id {
+        if let Ok(Object::Dictionary(nd)) = doc.get_object(nid) {
+            if nd.has(b"JavaScript")    { names_remove.push(b"JavaScript".to_vec()); }
+            if nd.has(b"EmbeddedFiles") { names_remove.push(b"EmbeddedFiles".to_vec()); }
+        }
+    }
+
+    // Now mutate: remove XMP object
+    if let Some(mid) = meta_obj_id {
+        doc.objects.remove(&mid);
+        stripped.push("XMP metadata".into());
+    }
+
+    // Remove catalog keys
+    if !remove_from_catalog.is_empty() {
+        if let Ok(cm) = doc.catalog_mut() {
+            for key in &remove_from_catalog {
+                if *key == b"OpenAction" { stripped.push("OpenAction".into()); }
+                cm.remove(*key);
+            }
+        }
+    }
+
+    // Remove from Names dict
+    if let Some(nid) = names_id {
+        for key in &names_remove {
+            if let Ok(Object::Dictionary(ref mut nd)) = doc.get_object_mut(nid) {
+                nd.remove(key);
+                stripped.push(String::from_utf8_lossy(key).into_owned());
+            }
+        }
+    }
+
+    // 5. Strip per-page thumbnails and annotations
+    let ids = page_ids(&doc);
+    for &id in &ids {
+        if let Ok(Object::Dictionary(ref mut pg)) = doc.get_object_mut(id) {
+            if pg.has(b"Thumb") {
+                pg.remove(b"Thumb");
+                stripped.push("Page thumbnail".into());
+            }
+            if pg.has(b"Annots") {
+                pg.remove(b"Annots");
+                stripped.push("Annotations".into());
+            }
+        }
+    }
+    stripped.sort();
+    stripped.dedup();
+
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(stripped)
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────
 
 pub mod tauri_commands {
@@ -672,6 +856,30 @@ pub mod tauri_commands {
     #[tauri::command]
     pub async fn pdf_edit_metadata(path: String, edits: MetadataEdit, out_path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || super::edit_metadata(Path::new(&path), &edits, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_decrypt(path: String, password: String, out_path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || super::decrypt_pdf(Path::new(&path), &password, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_is_encrypted(path: String) -> Result<bool, String> {
+        tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_sanitise(path: String, out_path: String) -> Result<Vec<String>, String> {
+        tokio::task::spawn_blocking(move || super::sanitise_pdf(Path::new(&path), Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 }

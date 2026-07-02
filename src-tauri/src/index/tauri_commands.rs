@@ -3842,6 +3842,7 @@ pub async fn tool_ocr_export(
     location_uri: String,
     format: String,
     pdfa: bool,
+    stamp_text: Option<String>,
 ) -> Result<OcrExportResult, String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
 
@@ -3899,6 +3900,28 @@ pub async fn tool_ocr_export(
     )
     .await
     .map_err(|e| format!("ocr export join error: {e}"))??;
+
+    // Apply stamp/watermark to exported PDF if requested.
+    if let Some(ref text) = stamp_text {
+        if !text.is_empty() && format == "pdf" {
+            let stamp_path = out_path.clone();
+            let stamp_text = text.clone();
+            tokio::task::spawn_blocking(move || {
+                let config = crate::pdf_ops::WatermarkConfig {
+                    text: stamp_text,
+                    font_size: 10.0,
+                    angle: 0.0,
+                    opacity: 0.5,
+                    color: [0.3, 0.3, 0.3],
+                };
+                crate::pdf_ops::add_watermark(
+                    &stamp_path, &config, None, &stamp_path,
+                )
+            })
+            .await
+            .map_err(|e| format!("stamp join: {e}"))??;
+        }
+    }
 
     Ok(OcrExportResult {
         saved_path: out_path.display().to_string(),

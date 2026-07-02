@@ -234,6 +234,10 @@ enum Command {
         /// OutputIntent). Only affects `--render pdf`; ignored otherwise.
         #[arg(long)]
         pdfa: bool,
+        /// Stamp text to overlay on each page of the exported PDF. Only affects
+        /// `--render pdf`; ignored otherwise. Example: `--stamp "CONFIDENTIAL"`.
+        #[arg(long)]
+        stamp: Option<String>,
         /// Pre-processor: super-resolve low-resolution pages (PAN 4×) before
         /// OCR — helps small scans / screenshots / faxes. Needs `crispembed`.
         #[arg(long)]
@@ -1276,6 +1280,46 @@ enum PdfCmd {
         #[arg(long)]
         keywords: Option<String>,
     },
+    /// Decrypt a password-protected PDF.
+    Decrypt {
+        file: PathBuf,
+        /// Password to unlock the PDF.
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Encrypt a PDF with password protection and permissions.
+    Encrypt {
+        file: PathBuf,
+        /// Owner password (full access).
+        #[arg(long)]
+        owner_password: String,
+        /// User password (restricted access). Empty = no user password needed to view.
+        #[arg(long, default_value = "")]
+        user_password: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Disable printing.
+        #[arg(long)]
+        no_print: bool,
+        /// Disable text/image copying.
+        #[arg(long)]
+        no_copy: bool,
+        /// Disable content modification.
+        #[arg(long)]
+        no_modify: bool,
+    },
+    /// Strip all hidden metadata, JavaScript, thumbnails, annotations.
+    Sanitise {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check if a PDF is encrypted.
+    IsEncrypted {
+        file: PathBuf,
+    },
 }
 
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
@@ -1427,14 +1471,14 @@ pub fn run() -> ExitCode {
         Command::Ocr {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa,
+            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa,
+            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
@@ -1482,6 +1526,7 @@ fn cmd_ocr(
     render: String,
     out_path: Option<PathBuf>,
     pdfa: bool,
+    stamp: Option<String>,
     sr: bool,
     sr_model: Option<String>,
     sr_max_px: i32,
@@ -1634,6 +1679,17 @@ fn cmd_ocr(
         }
         None => {
             print!("{}", String::from_utf8_lossy(&bytes));
+        }
+    }
+    // Apply stamp to the output PDF if requested.
+    if let (Some(ref text), Some(ref p)) = (&stamp, &out_path) {
+        if !text.is_empty() && fmt == OcrOutputFormat::Pdf {
+            let config = crate::pdf_ops::WatermarkConfig {
+                text: text.clone(), font_size: 10.0, angle: 0.0,
+                opacity: 0.5, color: [0.3, 0.3, 0.3],
+            };
+            crate::pdf_ops::add_watermark(p, &config, None, p)?;
+            eprintln!("Stamp applied: {text}");
         }
     }
     Ok(())
@@ -3775,6 +3831,41 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             let edits = pdf_ops::MetadataEdit { title, author, subject, keywords };
             pdf_ops::edit_metadata(&file, &edits, &out_path)?;
             eprintln!("Updated metadata → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Decrypt { file, password, out: out_path } => {
+            pdf_ops::decrypt_pdf(&file, &password, &out_path)?;
+            eprintln!("Decrypted → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Encrypt { file, owner_password, user_password, out: out_path, no_print, no_copy, no_modify } => {
+            let config = pdf_ops::EncryptConfig {
+                owner_password,
+                user_password,
+                allow_print: !no_print,
+                allow_copy: !no_copy,
+                allow_modify: !no_modify,
+                allow_annotate: !no_modify,
+                allow_fill_forms: true,
+                allow_assemble: !no_modify,
+                allow_high_quality_print: !no_print,
+            };
+            pdf_ops::encrypt_pdf(&file, &config, &out_path)?;
+            eprintln!("Encrypted → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Sanitise { file, out: out_path } => {
+            let stripped = pdf_ops::sanitise_pdf(&file, &out_path)?;
+            if stripped.is_empty() {
+                eprintln!("No hidden metadata found → {}", out_path.display());
+            } else {
+                eprintln!("Stripped: {} → {}", stripped.join(", "), out_path.display());
+            }
+            Ok(())
+        }
+        PdfCmd::IsEncrypted { file } => {
+            let enc = pdf_ops::is_encrypted(&file)?;
+            println!("{}", if enc { "encrypted" } else { "not encrypted" });
             Ok(())
         }
     }

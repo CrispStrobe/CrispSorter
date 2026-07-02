@@ -6,7 +6,7 @@
     import {
         FileUp, FilePlus2, Scissors, Trash2, RotateCw, Crop, Hash,
         Stamp, FileText, Merge, ChevronLeft, ChevronRight, Check,
-        Loader2, X, Info, Download, Plus
+        Loader2, X, Info, Download, Plus, Lock, Unlock, Shield
     } from 'lucide-svelte';
 
     // ── Types ──────────────────────────────────────────────────────────
@@ -45,6 +45,13 @@
     let metaAuthor = $state('');
     let metaSubject = $state('');
     let metaKeywords = $state('');
+    let decryptPassword = $state('');
+    let encOwnerPw = $state('');
+    let encUserPw = $state('');
+    let encNoPrint = $state(false);
+    let encNoCopy = $state(false);
+    let encNoModify = $state(false);
+    let isEncrypted = $state(false);
 
     // ── File loading ───────────────────────────────────────────────────
     async function openFile() {
@@ -70,6 +77,8 @@
             metaAuthor = info.author ?? '';
             metaSubject = info.subject ?? '';
             metaKeywords = info.keywords ?? '';
+            // Check encryption
+            try { isEncrypted = await invoke<boolean>('pdf_is_encrypted', { path }); } catch { isEncrypted = false; }
         } catch (e: any) {
             error = e?.message ?? String(e);
         }
@@ -273,6 +282,56 @@
         } catch (e: any) { error = String(e); }
         loading = false;
     }
+
+    async function doDecrypt() {
+        if (!decryptPassword) { error = i18n.t.pdftools.enter_password; return; }
+        const out = await pickSavePath('decrypted.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            await invoke('pdf_decrypt', { path: filePath, password: decryptPassword, outPath: out });
+            success = `${i18n.t.pdftools.decrypted} → ${out}`;
+            decryptPassword = '';
+            loadPdf(out);
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
+    async function doEncrypt() {
+        if (!encOwnerPw) { error = i18n.t.pdftools.enter_owner_password; return; }
+        const out = await pickSavePath('encrypted.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            await invoke('pdf_encrypt', {
+                path: filePath,
+                config: {
+                    owner_password: encOwnerPw, user_password: encUserPw,
+                    allow_print: !encNoPrint, allow_copy: !encNoCopy, allow_modify: !encNoModify,
+                    allow_annotate: !encNoModify, allow_fill_forms: true,
+                    allow_assemble: !encNoModify, allow_high_quality_print: !encNoPrint,
+                },
+                outPath: out,
+            });
+            success = `${i18n.t.pdftools.encrypted} → ${out}`;
+            encOwnerPw = ''; encUserPw = '';
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
+    async function doSanitise() {
+        const out = await pickSavePath('sanitised.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            const stripped = await invoke<string[]>('pdf_sanitise', { path: filePath, outPath: out });
+            success = stripped.length > 0
+                ? `${i18n.t.pdftools.sanitised}: ${stripped.join(', ')} → ${out}`
+                : `${i18n.t.pdftools.no_metadata_found} → ${out}`;
+            loadPdf(out);
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
 </script>
 
 <div class="pdf-tools">
@@ -316,6 +375,19 @@
             </button>
             <button class="pt-btn" onclick={doReorder} title={i18n.t.pdftools.reverse_order}>
                 &#8693;
+            </button>
+            <span class="pt-sep"></span>
+            {#if isEncrypted}
+                <button class="pt-btn" class:active={activeOp === 'decrypt'} onclick={() => activeOp = activeOp === 'decrypt' ? null : 'decrypt'}>
+                    <Unlock size={14} /> {i18n.t.pdftools.decrypt}
+                </button>
+            {:else}
+                <button class="pt-btn" class:active={activeOp === 'encrypt'} onclick={() => activeOp = activeOp === 'encrypt' ? null : 'encrypt'}>
+                    <Lock size={14} /> {i18n.t.pdftools.encrypt}
+                </button>
+            {/if}
+            <button class="pt-btn" onclick={doSanitise} title={i18n.t.pdftools.sanitise}>
+                <Shield size={14} /> {i18n.t.pdftools.sanitise}
             </button>
         {/if}
     </div>
@@ -382,6 +454,16 @@
                 <label>Subject: <input type="text" bind:value={metaSubject} class="pt-input" /></label>
                 <label>Keywords: <input type="text" bind:value={metaKeywords} class="pt-input" /></label>
                 <button class="pt-btn-sm pt-go" onclick={doMetadata}>{i18n.t.pdftools.save}</button>
+            {:else if activeOp === 'decrypt'}
+                <label>{i18n.t.pdftools.password}: <input type="password" bind:value={decryptPassword} class="pt-input" /></label>
+                <button class="pt-btn-sm pt-go" onclick={doDecrypt}><Unlock size={12} /> {i18n.t.pdftools.decrypt}</button>
+            {:else if activeOp === 'encrypt'}
+                <label>{i18n.t.pdftools.owner_pw}: <input type="password" bind:value={encOwnerPw} class="pt-input" /></label>
+                <label>{i18n.t.pdftools.user_pw}: <input type="password" bind:value={encUserPw} class="pt-input" placeholder="(optional)" /></label>
+                <label><input type="checkbox" bind:checked={encNoPrint} /> {i18n.t.pdftools.no_print}</label>
+                <label><input type="checkbox" bind:checked={encNoCopy} /> {i18n.t.pdftools.no_copy}</label>
+                <label><input type="checkbox" bind:checked={encNoModify} /> {i18n.t.pdftools.no_modify}</label>
+                <button class="pt-btn-sm pt-go" onclick={doEncrypt}><Lock size={12} /> {i18n.t.pdftools.encrypt}</button>
             {/if}
         </div>
     {/if}

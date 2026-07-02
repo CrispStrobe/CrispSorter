@@ -815,11 +815,11 @@ thousands for.
   expired docs to archive or deletes.  Settings UI for rule
   management.  Compliance feature for legal document retention.
 
-- [ ] **P25.4 — Stamp / watermark on export.**  When exporting a
-  searchable PDF (via the existing `ocr --render pdf` path), optionally
-  overlay a configurable text stamp (date, user, "CONFIDENTIAL", custom
-  text) on every page.  Uses the existing CrispEmbed PDF renderer's
-  page callback.  Settings toggle + stamp text config.
+- [x] **P25.4 — Stamp / watermark on export.**  ✅ SHIPPED (2026-07-02).
+  `tool_ocr_export` Tauri command gains `stamp_text` parameter; CLI
+  `crispsorter ocr --render pdf --stamp "CONFIDENTIAL"`.  Applies
+  `pdf_ops::add_watermark` to the rendered PDF after OCR output.
+  Also available standalone via `crispsorter pdf watermark`.
 
 - [x] **P25.5 — Barcode / QR code detection at ingest.**  Detect
   1D barcodes (Code128, EAN-13) and QR codes in scanned documents
@@ -1035,15 +1035,12 @@ PDF editing and form creation; the rest are moderate or small.
   a single PDF page via content-stream image XObjects.  JBIG2 encoding
   via `jbig2enc` (C, shell-out) or a Rust port.  ~12 h.
 
-- [ ] **P27.7 — Password-protected PDF handling.**  When a PDF is
-  encrypted (standard security handler, RC4 or AES), prompt for the
-  password and decrypt before extraction.  `lopdf` already supports
-  `Document::decrypt(password)`; the extraction pipeline currently
-  marks these as `TaskFailureReason::Password` and skips them.  Change:
-  store the password (per-document or per-folder pattern) in the OS
-  keychain, retry extraction after decrypt.  Frontend: password prompt
-  dialog on ingest failure + "Remember for this folder" checkbox.
-  CLI: `--password` flag on `index ingest` / `ocr`.  ~4 h.
+- [x] **P27.7 — Password-protected PDF handling.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::decrypt_pdf` + `pdf_ops::is_encrypted`.  Tauri commands
+  `pdf_decrypt`, `pdf_is_encrypted`.  CLI: `crispsorter pdf decrypt
+  --password PW --out decrypted.pdf` + `crispsorter pdf is-encrypted`.
+  Frontend: PDF Tools tab shows Decrypt button when PDF is encrypted,
+  with password input panel.  ~4 h.
 
 - [ ] **P27.8 — Checkmark / OMR (Optical Mark Recognition).**
   Detect filled checkboxes, radio buttons, and bubble marks in
@@ -1107,17 +1104,19 @@ PDF editing and form creation; the rest are moderate or small.
   CLI: `crispsorter pdf sign doc.pdf --cert my.p12 --out signed.pdf`.
   ~12–16 h.
 
-- [ ] **P27.13 — PDF encryption & permissions.**  Set password
-  protection and permission flags on exported PDFs.  Owner password
-  (full access) + user password (restricted access).  Permission
-  flags: print, copy text, edit, annotate, fill forms.  AES-256
-  encryption (PDF 2.0 standard handler).  `lopdf` supports writing
-  encrypted documents.  CLI: `crispsorter pdf protect doc.pdf
-  --user-password VIEW --owner-password ADMIN --no-print --no-copy`.
-  ~4 h.
+- [x] **P27.13 — PDF encryption & permissions.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::encrypt_pdf` with `EncryptConfig` (owner/user password +
+  per-flag permissions: print, copy, modify, annotate, fill, assemble,
+  high-quality print).  RC4-128 via lopdf `EncryptionVersion::V2`
+  (AES V4/V5 deferred until lopdf exposes CryptFilter publicly).
+  Tauri command `pdf_encrypt`.  CLI: `crispsorter pdf encrypt
+  --owner-password ADMIN --no-print --no-copy --out protected.pdf`.
+  Frontend: Encrypt panel in PDF Tools with password inputs +
+  permission checkboxes.
 
-- [ ] **P27.14 — Hidden metadata removal.**  Strip all metadata
-  from exported PDFs for privacy: `/Info` dictionary, XMP packet,
-  embedded thumbnails, JavaScript, file attachments, comments,
-  form field data, document history.  "Sanitise" export option.
-  CLI: `crispsorter pdf sanitise doc.pdf --out clean.pdf`.  ~4 h.
+- [x] **P27.14 — Hidden metadata removal.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::sanitise_pdf` strips: /Info dict, XMP metadata stream,
+  JavaScript, EmbeddedFiles, OpenAction, per-page thumbnails, and
+  annotations.  Returns list of what was stripped.  Tauri command
+  `pdf_sanitise`.  CLI: `crispsorter pdf sanitise --out clean.pdf`.
+  Frontend: "Sanitise" button in PDF Tools toolbar.
