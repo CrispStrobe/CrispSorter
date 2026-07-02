@@ -4811,6 +4811,133 @@ pub async fn index_cluster_documents(
     local.cluster_documents(k).await.map_err(|e| e.to_string())
 }
 
+/// P24.3 — Entity co-occurrence graph node.
+#[derive(serde::Serialize, Clone)]
+pub struct GraphNode {
+    pub id: String,     // e.g. "person:Karl Barth"
+    pub label: String,  // e.g. "Karl Barth"
+    pub group: String,  // e.g. "person"
+    pub doc_count: usize,
+}
+
+/// P24.3 — Entity co-occurrence graph edge.
+#[derive(serde::Serialize, Clone)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub weight: usize, // number of documents where both entities co-occur
+}
+
+/// P24.3 — Entity co-occurrence graph.
+#[derive(serde::Serialize, Clone)]
+pub struct EntityGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+/// P24.3 — Build an entity co-occurrence graph from NER tags.
+#[tauri::command]
+pub async fn index_entity_graph(
+    state: State<'_, AppState>,
+    min_cooccurrence: Option<usize>,
+    max_nodes: Option<usize>,
+) -> Result<EntityGraph, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".into());
+    }
+    let local = lock.local.as_ref().ok_or("Entity graph requires local backend")?.clone();
+    drop(lock);
+
+    let min_co = min_cooccurrence.unwrap_or(2);
+    let max_n = max_nodes.unwrap_or(100);
+
+    // Fetch tag facets (reuse existing infra)
+    let facets = local.tag_facets(&Default::default(), 500)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Filter to NER entity tags (person:, org:, loc:, date:)
+    let entity_tags: Vec<(String, usize)> = facets.into_iter()
+        .filter(|f| f.tag.contains(':') && {
+            let prefix = f.tag.split(':').next().unwrap_or("");
+            matches!(prefix, "person" | "org" | "loc" | "date")
+        })
+        .take(max_n)
+        .map(|f| (f.tag, f.count as usize))
+        .collect();
+
+    if entity_tags.is_empty() {
+        return Ok(EntityGraph { nodes: vec![], edges: vec![] });
+    }
+
+    // Build nodes
+    let nodes: Vec<GraphNode> = entity_tags.iter().map(|(tag, count)| {
+        let (group, label) = tag.split_once(':').unwrap_or(("", tag));
+        GraphNode {
+            id: tag.clone(),
+            label: label.to_string(),
+            group: group.to_string(),
+            doc_count: *count,
+        }
+    }).collect();
+
+    // Fetch docs with their tags to compute co-occurrence.
+    let batches = local.query_tags_for_graph()
+        .await
+        .map_err(|e| format!("query: {e}"))?;
+
+    // Collect per-document tag sets
+    use arrow::array::Array;
+    let entity_set: std::collections::HashSet<&str> = entity_tags.iter().map(|(t, _)| t.as_str()).collect();
+    let mut doc_tag_sets: Vec<Vec<String>> = Vec::new();
+
+    for batch in &batches {
+        if let Some(tags_col) = batch.column_by_name("tags") {
+            if let Some(list_arr) = tags_col.as_any().downcast_ref::<arrow::array::ListArray>() {
+                for i in 0..batch.num_rows() {
+                    if list_arr.is_null(i) { continue; }
+                    let vals = list_arr.value(i);
+                    if let Some(str_arr) = vals.as_any().downcast_ref::<arrow::array::StringArray>() {
+                        let doc_entities: Vec<String> = (0..str_arr.len())
+                            .filter_map(|j| {
+                                if str_arr.is_null(j) { return None; }
+                                let t = str_arr.value(j);
+                                if entity_set.contains(t) { Some(t.to_string()) } else { None }
+                            })
+                            .collect();
+                        if doc_entities.len() >= 2 {
+                            doc_tag_sets.push(doc_entities);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build co-occurrence edges
+    let mut edge_map: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    for tags in &doc_tag_sets {
+        for i in 0..tags.len() {
+            for j in (i+1)..tags.len() {
+                let (a, b) = if tags[i] < tags[j] {
+                    (tags[i].clone(), tags[j].clone())
+                } else {
+                    (tags[j].clone(), tags[i].clone())
+                };
+                *edge_map.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let edges: Vec<GraphEdge> = edge_map.into_iter()
+        .filter(|(_, w)| *w >= min_co)
+        .map(|((s, t), w)| GraphEdge { source: s, target: t, weight: w })
+        .collect();
+
+    Ok(EntityGraph { nodes, edges })
+}
+
 #[cfg(test)]
 mod workbench_tests {
     use super::{OcrRegionDto, ocr_doc_open};

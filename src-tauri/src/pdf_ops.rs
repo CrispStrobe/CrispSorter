@@ -818,6 +818,125 @@ pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: 
     Ok(stripped)
 }
 
+// ── Digital signature detection (P26.6) ─────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PdfSignatureInfo {
+    /// Signer name from /Name field.
+    pub name: Option<String>,
+    /// Reason for signing from /Reason field.
+    pub reason: Option<String>,
+    /// Location from /Location field.
+    pub location: Option<String>,
+    /// Signing date from /M field.
+    pub date: Option<String>,
+    /// Filter (e.g. "Adobe.PPKLite", "Adobe.PPKMS").
+    pub filter: Option<String>,
+    /// Sub-filter (e.g. "adbe.pkcs7.detached", "ETSI.CAdES.detached").
+    pub sub_filter: Option<String>,
+    /// Whether the signature has a /ByteRange (i.e. covers actual content).
+    pub has_byte_range: bool,
+    /// Page number (1-based) where the signature widget appears, if any.
+    pub page: Option<usize>,
+}
+
+/// Detect digital signatures in a PDF.  Does not verify cryptographic
+/// validity (would need a PKCS#7/CMS library); reports what signatures
+/// exist and their metadata.
+pub fn detect_signatures(path: &Path) -> Result<Vec<PdfSignatureInfo>, String> {
+    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    let mut sigs = Vec::new();
+
+    // Walk all pages looking for /Annots with /Subtype /Widget and /FT /Sig
+    let page_list = page_ids(&doc);
+    for (page_idx, &pid) in page_list.iter().enumerate() {
+        let annot_refs = match doc.get_object(pid) {
+            Ok(Object::Dictionary(pg)) => {
+                match pg.get(b"Annots") {
+                    Ok(Object::Array(arr)) => arr.clone(),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+
+        for annot_ref in &annot_refs {
+            let annot_id = match annot_ref {
+                Object::Reference(r) => *r,
+                _ => continue,
+            };
+            let annot = match doc.get_object(annot_id) {
+                Ok(Object::Dictionary(d)) => d,
+                _ => continue,
+            };
+
+            // Check if this is a signature widget
+            let is_sig = matches!(annot.get(b"FT"), Ok(Object::Name(n)) if n == b"Sig");
+            if !is_sig { continue; }
+
+            // Get the /V (value) dict which contains the actual signature
+            let sig_dict = match annot.get(b"V") {
+                Ok(Object::Reference(r)) => {
+                    match doc.get_object(*r) {
+                        Ok(Object::Dictionary(d)) => Some(d),
+                        _ => None,
+                    }
+                }
+                Ok(Object::Dictionary(d)) => Some(d),
+                _ => None,
+            };
+
+            let (name, reason, location, date, filter, sub_filter, has_byte_range) =
+                if let Some(sd) = sig_dict {
+                    (
+                        dict_string(sd, b"Name"),
+                        dict_string(sd, b"Reason"),
+                        dict_string(sd, b"Location"),
+                        dict_string(sd, b"M"),
+                        dict_string(sd, b"Filter"),
+                        dict_string(sd, b"SubFilter"),
+                        sd.has(b"ByteRange"),
+                    )
+                } else {
+                    (None, None, None, None, None, None, false)
+                };
+
+            sigs.push(PdfSignatureInfo {
+                name,
+                reason,
+                location,
+                date,
+                filter,
+                sub_filter,
+                has_byte_range,
+                page: Some(page_idx + 1),
+            });
+        }
+    }
+
+    // Also check the AcroForm /SigFlags for document-level signature fields
+    if sigs.is_empty() {
+        if let Ok(cat) = doc.catalog() {
+            if let Ok(Object::Reference(form_ref)) = cat.get(b"AcroForm") {
+                if let Ok(Object::Dictionary(form)) = doc.get_object(*form_ref) {
+                    if let Ok(Object::Integer(flags)) = form.get(b"SigFlags") {
+                        if *flags & 1 != 0 {
+                            // SignaturesExist flag is set but we couldn't find the widget
+                            sigs.push(PdfSignatureInfo {
+                                name: None, reason: None, location: None, date: None,
+                                filter: None, sub_filter: None,
+                                has_byte_range: false, page: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(sigs)
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────
 
 pub mod tauri_commands {
@@ -912,6 +1031,12 @@ pub mod tauri_commands {
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_detect_signatures(path: String) -> Result<Vec<PdfSignatureInfo>, String> {
+        tokio::task::spawn_blocking(move || super::detect_signatures(Path::new(&path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 

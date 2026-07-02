@@ -1320,6 +1320,10 @@ enum PdfCmd {
     IsEncrypted {
         file: PathBuf,
     },
+    /// Detect digital signatures in a PDF.
+    Signatures {
+        file: PathBuf,
+    },
 }
 
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
@@ -3897,6 +3901,30 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
         PdfCmd::IsEncrypted { file } => {
             let enc = pdf_ops::is_encrypted(&file)?;
             println!("{}", if enc { "encrypted" } else { "not encrypted" });
+            Ok(())
+        }
+        PdfCmd::Signatures { file } => {
+            let sigs = pdf_ops::detect_signatures(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&sigs).unwrap_or_default()),
+                OutFormat::Text => {
+                    if sigs.is_empty() {
+                        println!("No digital signatures found.");
+                    } else {
+                        for (i, s) in sigs.iter().enumerate() {
+                            println!("Signature {}:", i + 1);
+                            if let Some(ref n) = s.name { println!("  Signer:     {n}"); }
+                            if let Some(ref r) = s.reason { println!("  Reason:     {r}"); }
+                            if let Some(ref l) = s.location { println!("  Location:   {l}"); }
+                            if let Some(ref d) = s.date { println!("  Date:       {d}"); }
+                            if let Some(ref f) = s.filter { println!("  Filter:     {f}"); }
+                            if let Some(ref sf) = s.sub_filter { println!("  Sub-filter: {sf}"); }
+                            if let Some(p) = s.page { println!("  Page:       {p}"); }
+                            println!("  ByteRange:  {}", if s.has_byte_range { "yes" } else { "no" });
+                        }
+                    }
+                }
+            }
             Ok(())
         }
     }

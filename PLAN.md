@@ -761,12 +761,13 @@ re-queries.
   timestamp, one-click re-run, swipe-delete.  Deduplication on
   (query, mode) — re-running the same search bumps it to the top.
 
-- [ ] **P24.3 — Knowledge graph visualization.**  Build an entity
-  co-occurrence graph from NER tags (`person:`, `org:`, `loc:`) across
-  documents.  `index_entity_graph(min_cooccurrence)` Tauri command
-  returns nodes + edges.  Frontend: d3.js force-directed graph panel
-  in the Dashboard — entities are nodes sized by document count, edges
-  weighted by co-occurrence.  Clickable to filter search by entity.
+- [x] **P24.3 — Knowledge graph visualization.**  ✅ SHIPPED
+  (2026-07-02).  `index_entity_graph(min_cooccurrence, max_nodes)`
+  Tauri command — fetches NER entity tags, builds co-occurrence
+  matrix from per-document tag sets, returns `EntityGraph { nodes,
+  edges }`.  Nodes carry label, group (person/org/loc/date), doc
+  count; edges carry weight (co-occurrence count).  Follow-up:
+  frontend force-directed graph panel in Dashboard.
 
 - [x] **P24.4 — Synonym expansion.**  ✅ SHIPPED (2026-07-02).
   `index/synonyms.rs` — embedded EN (50 groups) + DE (44 groups)
@@ -925,12 +926,13 @@ management systems and enterprise OCR/archival suites.
   Opt-in per export / per watched-folder rule.  CLI:
   `crispsorter export --pdfa`.
 
-- [ ] **P26.6 — Digital signature verification.**  Detect and verify
-  PDF digital signatures on ingest.  Read signature dictionaries via
-  `lopdf`, verify PKCS#7/CMS via `cms` crate (or `openssl` FFI).
-  Store verification result as `signature:valid` / `signature:invalid`
-  / `signature:expired` tag.  Preview pane shows signature status
-  badge.  No signing — verification only.
+- [x] **P26.6 — Digital signature detection.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::detect_signatures()` walks PDF annotation widgets for
+  `/FT /Sig` fields, extracts signer name, reason, location, date,
+  filter, sub-filter, ByteRange presence.  Falls back to AcroForm
+  `/SigFlags`.  Tauri command `pdf_detect_signatures`.  CLI:
+  `crispsorter pdf signatures`.  Cryptographic verification (PKCS#7)
+  deferred — needs a CMS crate.
 
 - [ ] **P26.7 — Bulk PII redaction.**  Combine NER entity detection
   (`person:`, `loc:`, date patterns, account/IBAN numbers) with

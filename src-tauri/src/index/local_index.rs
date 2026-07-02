@@ -1128,6 +1128,19 @@ impl LocalIndex {
         Ok(clusters)
     }
 
+    /// P24.3 helper — fetch the tags column for all documents.
+    pub async fn query_tags_for_graph(&self) -> Result<Vec<RecordBatch>> {
+        use lancedb::query::Select;
+        self.table.query()
+            .only_if("chunk_index <= 0")
+            .select(Select::Columns(vec!["tags".to_owned()]))
+            .execute()
+            .await?
+            .try_collect()
+            .await
+            .map_err(Into::into)
+    }
+
     // ── Purge ──────────────────────────────────────────────────────────────
 
     /// Stage P — LRU purge to keep the lance dir ≤ `max_bytes`.
