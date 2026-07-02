@@ -1555,6 +1555,19 @@ impl PdfMetadata {
     }
 }
 
+/// P24.5 — Parse an RSS/Atom feed from a URL.
+#[tauri::command]
+async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFeed, String> {
+    extractors::feed::fetch_and_parse(&url).await
+}
+
+/// P24.5 — Parse a local feed file (XML).
+#[tauri::command]
+async fn feed_parse_file(path: String) -> Result<extractors::feed::ParsedFeed, String> {
+    let bytes = tokio::fs::read(&path).await.map_err(|e| format!("read {path}: {e}"))?;
+    extractors::feed::parse_feed(&bytes)
+}
+
 #[tauri::command]
 async fn extract_pdf_metadata(path: String) -> Result<PdfMetadata, String> {
     use lopdf::Document;
@@ -2715,6 +2728,8 @@ pub fn run() {
             delete_files,
             extract_pdf_native,
             extract_pdf_metadata,
+            feed_fetch_and_parse,
+            feed_parse_file,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
@@ -2944,6 +2959,8 @@ pub fn run() {
             delete_files,
             extract_pdf_native,
             extract_pdf_metadata,
+            feed_fetch_and_parse,
+            feed_parse_file,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,

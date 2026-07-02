@@ -92,6 +92,8 @@ kamadak-exif = "0.6"
 # /Info dictionary (Title / Author / Subject / Keywords / CreationDate)
 # directly. Used by the extract_pdf_metadata Tauri command.
 lopdf       = "0.38"
+# RSS/Atom feed parser — used for P24.5 feed ingestion.
+feed-rs     = "2"
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.

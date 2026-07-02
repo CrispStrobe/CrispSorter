@@ -775,12 +775,14 @@ re-queries.
   via `SearchFilters.synonyms` flag.  Frontend: "Synonyms (EN+DE)"
   checkbox in advanced filters.  6 unit tests.
 
-- [ ] **P24.5 — RSS/Atom feed ingestion.**  `extractors/feed.rs`
-  using `feed-rs` crate — poll configured feed URLs on a timer,
-  extract per-entry title/author/date/body, ingest each as a document
-  with `source_url` set.  Settings panel for feed management
-  (add/remove/poll interval).  Turns CrispSorter into a self-hosted
-  knowledge aggregator.
+- [x] **P24.5 — RSS/Atom feed ingestion.**  ✅ SHIPPED (2026-07-02).
+  `extractors/feed.rs` using `feed-rs` crate — parses RSS 2.0, Atom,
+  and JSON Feed formats.  `parse_feed()` yields `FeedEntry` per item
+  (title, author, year, body text with HTML stripping, source URL,
+  tags/categories).  `fetch_and_parse()` async variant fetches from
+  URL.  Tauri commands `feed_fetch_and_parse` + `feed_parse_file`.
+  4 unit tests (RSS2 + Atom + HTML stripping).  Follow-up: Settings
+  panel for feed URL management + poll timer + auto-ingest.
 
 - [ ] **P24.6 — Clipboard / screenshot capture.**  System-tray
   "Capture" action that reads clipboard content (text or image via

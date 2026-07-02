@@ -33,6 +33,7 @@ use std::path::Path;
 
 pub mod audio;
 pub mod eml;
+pub mod feed;
 pub mod html;
 pub mod layout;
 pub mod math_ocr;
