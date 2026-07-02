@@ -198,4 +198,82 @@ mod tests {
         assert_eq!(feed.entries.len(), 1);
         assert_eq!(feed.entries[0].body, "Summary text");
     }
+
+    #[test]
+    fn parse_rss2_multiple_entries() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>T</title>
+          <item><title>A</title><description>aaa</description></item>
+          <item><title>B</title><description>bbb</description></item>
+          <item><title>C</title><description>ccc</description></item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert_eq!(feed.entries.len(), 3);
+        assert_eq!(feed.entries[0].title, "A");
+        assert_eq!(feed.entries[2].title, "C");
+    }
+
+    #[test]
+    fn parse_rss2_with_html_body() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>T</title>
+          <item><title>Article</title>
+            <description>&lt;p&gt;Hello &lt;b&gt;world&lt;/b&gt;&lt;/p&gt;</description>
+          </item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert_eq!(feed.entries[0].body, "Hello world");
+    }
+
+    #[test]
+    fn parse_rss2_missing_optional_fields() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>T</title>
+          <item><title>Minimal</title></item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert_eq!(feed.entries.len(), 1);
+        assert!(feed.entries[0].author.is_none());
+        assert!(feed.entries[0].year.is_none());
+        assert!(feed.entries[0].body.is_empty());
+    }
+
+    #[test]
+    fn parse_malformed_xml_fails() {
+        let result = parse_feed(b"not xml at all {{{");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_empty_feed() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>Empty</title></channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert!(feed.entries.is_empty());
+        assert_eq!(feed.feed_title.as_deref(), Some("Empty"));
+    }
+
+    #[test]
+    fn strip_html_script_tags() {
+        let html = "before<script>evil();</script>after";
+        assert_eq!(strip_html(html), "beforeafter");
+    }
+
+    #[test]
+    fn strip_html_style_tags() {
+        let html = "before<style>.red{color:red}</style>after";
+        assert_eq!(strip_html(html), "beforeafter");
+    }
+
+    #[test]
+    fn strip_html_collapses_whitespace() {
+        assert_eq!(strip_html("hello    world   foo"), "hello world foo");
+    }
+
+    #[test]
+    fn strip_html_numeric_entities() {
+        // We don't handle &#123; yet — just verify it doesn't crash
+        let result = strip_html("&#65;&#66;");
+        assert!(!result.is_empty());
+    }
 }

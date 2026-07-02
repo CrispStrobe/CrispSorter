@@ -258,4 +258,56 @@ mod tests {
         store.record_version("/b.pdf", "b1", None, None, None, None).unwrap();
         assert_eq!(store.count_groups().unwrap(), 2);
     }
+
+    #[test]
+    fn group_id_deterministic() {
+        let id1 = VersionStore::group_id("/doc/report.pdf");
+        let id2 = VersionStore::group_id("/doc/report.pdf");
+        assert_eq!(id1, id2);
+        assert_eq!(id1.len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn group_id_differs_for_different_paths() {
+        let id1 = VersionStore::group_id("/a.pdf");
+        let id2 = VersionStore::group_id("/b.pdf");
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn current_version_none_for_unknown() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        assert_eq!(store.current_version("/nonexistent.pdf").unwrap(), None);
+    }
+
+    #[test]
+    fn get_versions_by_path() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        store.record_version("/doc.pdf", "d1", Some("v1"), None, Some(100), None).unwrap();
+        store.record_version("/doc.pdf", "d2", Some("v2"), None, Some(200), None).unwrap();
+        let versions = store.get_versions(None, Some("/doc.pdf")).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version_seq, 2); // newest first
+        assert_eq!(versions[0].title.as_deref(), Some("v2"));
+        assert_eq!(versions[1].file_size, Some(100));
+    }
+
+    #[test]
+    fn get_versions_empty_for_unknown_doc_id() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        let versions = store.get_versions(Some("nonexistent"), None).unwrap();
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn version_with_file_hash() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        store.record_version("/f.pdf", "d1", None, None, None, Some("abc123")).unwrap();
+        let versions = store.get_versions(Some("d1"), None).unwrap();
+        assert_eq!(versions[0].file_hash.as_deref(), Some("abc123"));
+    }
 }

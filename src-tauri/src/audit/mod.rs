@@ -201,4 +201,66 @@ mod tests {
         assert_eq!(summary[0], ("search".to_string(), 2));
         assert_eq!(summary[1], ("open".to_string(), 1));
     }
+
+    #[test]
+    fn query_with_since_filter() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        log.log("old", None, "", "gui").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let ts = super::now_ms();
+        log.log("new", None, "", "gui").unwrap();
+        let recent = log.query(Some(ts), None, None, 100, 0).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].action, "new");
+    }
+
+    #[test]
+    fn query_combined_filters() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        log.log("search", Some("d1"), "q=a", "gui").unwrap();
+        log.log("search", Some("d2"), "q=b", "cli").unwrap();
+        log.log("open", Some("d1"), "", "gui").unwrap();
+        let results = log.query(None, Some("search"), Some("d1"), 100, 0).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].detail, "q=a");
+    }
+
+    #[test]
+    fn query_pagination() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        for i in 0..10 {
+            log.log("action", None, &format!("{i}"), "gui").unwrap();
+        }
+        let page1 = log.query(None, None, None, 3, 0).unwrap();
+        let page2 = log.query(None, None, None, 3, 3).unwrap();
+        assert_eq!(page1.len(), 3);
+        assert_eq!(page2.len(), 3);
+        assert_ne!(page1[0].id, page2[0].id);
+    }
+
+    #[test]
+    fn user_agent_variants() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        log.log("a", None, "", "gui").unwrap();
+        log.log("b", None, "", "cli").unwrap();
+        log.log("c", None, "", "api").unwrap();
+        let all = log.query(None, None, None, 100, 0).unwrap();
+        let agents: Vec<&str> = all.iter().map(|e| e.user_agent.as_str()).collect();
+        assert!(agents.contains(&"gui"));
+        assert!(agents.contains(&"cli"));
+        assert!(agents.contains(&"api"));
+    }
+
+    #[test]
+    fn empty_log_counts() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        assert_eq!(log.count(None).unwrap(), 0);
+        assert!(log.action_summary().unwrap().is_empty());
+        assert!(log.query(None, None, None, 100, 0).unwrap().is_empty());
+    }
 }

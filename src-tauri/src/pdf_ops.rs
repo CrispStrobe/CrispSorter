@@ -1115,6 +1115,58 @@ pub mod tauri_commands {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    /// Create a minimal valid 2-page PDF for testing.
+    fn create_test_pdf(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("test.pdf");
+        let mut doc = Document::with_version("1.7");
+        let pages_id = doc.new_object_id();
+        let page1_id = doc.new_object_id();
+        let page2_id = doc.new_object_id();
+
+        let pages = lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Pages".to_vec())),
+            ("Kids", Object::Array(vec![Object::Reference(page1_id), Object::Reference(page2_id)])),
+            ("Count", Object::Integer(2)),
+        ]);
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        for pid in [page1_id, page2_id] {
+            let page = lopdf::Dictionary::from_iter(vec![
+                ("Type", Object::Name(b"Page".to_vec())),
+                ("Parent", Object::Reference(pages_id)),
+                ("MediaBox", Object::Array(vec![
+                    Object::Integer(0), Object::Integer(0),
+                    Object::Real(612.0), Object::Real(792.0),
+                ])),
+            ]);
+            doc.objects.insert(pid, Object::Dictionary(page));
+        }
+
+        let info = lopdf::Dictionary::from_iter(vec![
+            ("Title", Object::String(b"Test PDF".to_vec(), lopdf::StringFormat::Literal)),
+            ("Author", Object::String(b"Tester".to_vec(), lopdf::StringFormat::Literal)),
+        ]);
+        let info_id = doc.add_object(Object::Dictionary(info));
+
+        let catalog = lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Catalog".to_vec())),
+            ("Pages", Object::Reference(pages_id)),
+        ]);
+        let catalog_id = doc.add_object(Object::Dictionary(catalog));
+
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        doc.trailer.set("Info", Object::Reference(info_id));
+        // Encryption requires /ID in the trailer
+        let file_id = Object::Array(vec![
+            Object::String(b"testid1234567890".to_vec(), lopdf::StringFormat::Literal),
+            Object::String(b"testid1234567890".to_vec(), lopdf::StringFormat::Literal),
+        ]);
+        doc.trailer.set("ID", file_id);
+        doc.save(&path).unwrap();
+        path
+    }
 
     #[test]
     fn test_to_roman() {
@@ -1123,6 +1175,7 @@ mod tests {
         assert_eq!(to_roman(9), "ix");
         assert_eq!(to_roman(42), "xlii");
         assert_eq!(to_roman(1999), "mcmxcix");
+        assert_eq!(to_roman(0), "");
     }
 
     #[test]
@@ -1130,5 +1183,409 @@ mod tests {
         let c = PageNumberConfig::default();
         assert_eq!(c.position, "bottom-center");
         assert_eq!(c.format, "arabic");
+        assert_eq!(c.start_number, 1);
+        assert_eq!(c.skip_first, 0);
+    }
+
+    #[test]
+    fn test_watermark_config_default() {
+        let c = WatermarkConfig::default();
+        assert_eq!(c.text, "CONFIDENTIAL");
+        assert_eq!(c.opacity, 0.15);
+    }
+
+    #[test]
+    fn test_sanitise_options_default() {
+        let o = SanitiseOptions::default();
+        assert!(o.strip_info);
+        assert!(o.strip_xmp);
+        assert!(o.strip_javascript);
+        assert!(o.strip_annotations);
+    }
+
+    #[test]
+    fn test_encrypt_config_default() {
+        let c = EncryptConfig::default();
+        assert!(c.allow_print);
+        assert!(c.allow_copy);
+        assert!(c.allow_modify);
+    }
+
+    #[test]
+    fn pdf_info_reads_metadata() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let info = pdf_info(&pdf).unwrap();
+        assert_eq!(info.page_count, 2);
+        assert_eq!(info.title.as_deref(), Some("Test PDF"));
+        assert_eq!(info.author.as_deref(), Some("Tester"));
+        assert_eq!(info.pages.len(), 2);
+        assert!((info.pages[0].width_pt - 612.0).abs() < 1.0);
+        assert!((info.pages[0].height_pt - 792.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn extract_pages_subset() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("extracted.pdf");
+        extract_pages(&pdf, &[0], &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 1);
+    }
+
+    #[test]
+    fn extract_pages_out_of_range() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("bad.pdf");
+        let err = extract_pages(&pdf, &[5], &out);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn remove_pages_keeps_remaining() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("trimmed.pdf");
+        remove_pages(&pdf, &[1], &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 1);
+    }
+
+    #[test]
+    fn remove_all_pages_fails() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("empty.pdf");
+        let err = remove_pages(&pdf, &[0, 1], &out);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("Cannot remove all"));
+    }
+
+    #[test]
+    fn reorder_pages_reverses() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("reordered.pdf");
+        reorder_pages(&pdf, &[1, 0], &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn rotate_pages_sets_rotation() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("rotated.pdf");
+        rotate_pages(&pdf, &[0], 90, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.pages[0].rotation, 90);
+        assert_eq!(info.pages[1].rotation, 0); // untouched
+    }
+
+    #[test]
+    fn rotate_invalid_degrees() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("bad.pdf");
+        let err = rotate_pages(&pdf, &[0], 45, &out);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn crop_pages_sets_cropbox() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("cropped.pdf");
+        crop_pages(&pdf, &[0, 1], 50.0, 50.0, 200.0, 300.0, &out).unwrap();
+        // Just verify it doesn't crash and produces a valid PDF
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn merge_two_pdfs() {
+        let dir = TempDir::new().unwrap();
+        let pdf1 = create_test_pdf(dir.path());
+        let pdf2_path = dir.path().join("test2.pdf");
+        std::fs::copy(&pdf1, &pdf2_path).unwrap();
+        let out = dir.path().join("merged.pdf");
+        let total = merge_pdfs(&[&pdf1, &pdf2_path], &out).unwrap();
+        assert_eq!(total, 4); // 2 + 2
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 4);
+    }
+
+    #[test]
+    fn merge_empty_fails() {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("empty.pdf");
+        let err = merge_pdfs(&[], &out);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn split_pdf_into_parts() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out_dir = dir.path().join("splits");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let outputs = split_pdf(&pdf, &[(0, 1), (1, 2)], &out_dir, "doc").unwrap();
+        assert_eq!(outputs.len(), 2);
+        for o in &outputs {
+            let info = pdf_info(Path::new(o)).unwrap();
+            assert_eq!(info.page_count, 1);
+        }
+    }
+
+    #[test]
+    fn add_page_numbers_arabic() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("numbered.pdf");
+        let config = PageNumberConfig::default();
+        add_page_numbers(&pdf, &config, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn add_page_numbers_roman() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("roman.pdf");
+        let config = PageNumberConfig { format: "roman".into(), ..Default::default() };
+        add_page_numbers(&pdf, &config, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn add_page_numbers_page_of() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("pageof.pdf");
+        let config = PageNumberConfig { format: "page-of".into(), ..Default::default() };
+        add_page_numbers(&pdf, &config, &out).unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn add_page_numbers_skip_first() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("skip.pdf");
+        let config = PageNumberConfig { skip_first: 1, ..Default::default() };
+        add_page_numbers(&pdf, &config, &out).unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn add_watermark_all_pages() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("watermarked.pdf");
+        let config = WatermarkConfig::default();
+        add_watermark(&pdf, &config, None, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn add_watermark_specific_pages() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("wm_partial.pdf");
+        let config = WatermarkConfig::default();
+        add_watermark(&pdf, &config, Some(&[0]), &out).unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn insert_blank_page_at_start() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("blank_start.pdf");
+        insert_blank_page(&pdf, 0, 612.0, 792.0, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 3);
+    }
+
+    #[test]
+    fn insert_blank_page_at_end() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("blank_end.pdf");
+        insert_blank_page(&pdf, 2, 612.0, 792.0, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 3);
+    }
+
+    #[test]
+    fn insert_blank_out_of_range() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("bad.pdf");
+        let err = insert_blank_page(&pdf, 10, 612.0, 792.0, &out);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn edit_metadata_updates_fields() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("meta.pdf");
+        let edits = MetadataEdit {
+            title: Some("New Title".into()),
+            author: Some("New Author".into()),
+            subject: Some("Subject".into()),
+            keywords: Some("test, pdf".into()),
+        };
+        edit_metadata(&pdf, &edits, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.title.as_deref(), Some("New Title"));
+        assert_eq!(info.author.as_deref(), Some("New Author"));
+        assert_eq!(info.subject.as_deref(), Some("Subject"));
+    }
+
+    #[test]
+    fn edit_metadata_partial_update() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("partial.pdf");
+        let edits = MetadataEdit { title: Some("Only Title".into()), ..Default::default() };
+        edit_metadata(&pdf, &edits, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.title.as_deref(), Some("Only Title"));
+        // Author should still be "Tester" from original
+        assert_eq!(info.author.as_deref(), Some("Tester"));
+    }
+
+    #[test]
+    fn is_encrypted_false_for_normal_pdf() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        assert!(!is_encrypted(&pdf).unwrap());
+    }
+
+    #[test]
+    fn encrypt_marks_as_encrypted() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let encrypted = dir.path().join("encrypted.pdf");
+
+        let config = EncryptConfig {
+            owner_password: "owner123".into(),
+            user_password: "user456".into(),
+            ..Default::default()
+        };
+        encrypt_pdf(&pdf, &config, &encrypted).unwrap();
+        assert!(is_encrypted(&encrypted).unwrap());
+    }
+
+    #[test]
+    fn decrypt_unencrypted_passes_through() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("decrypted.pdf");
+        // Decrypting an unencrypted PDF should just copy it
+        decrypt_pdf(&pdf, "", &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn encrypt_already_encrypted_fails() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let enc1 = dir.path().join("enc1.pdf");
+        let enc2 = dir.path().join("enc2.pdf");
+        let config = EncryptConfig { owner_password: "pw".into(), ..Default::default() };
+        encrypt_pdf(&pdf, &config, &enc1).unwrap();
+        let err = encrypt_pdf(&enc1, &config, &enc2);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("already encrypted"));
+    }
+
+    #[test]
+    fn sanitise_strips_info() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("sanitised.pdf");
+        let stripped = sanitise_pdf(&pdf, &out).unwrap();
+        assert!(stripped.contains(&"Info dictionary".to_string()));
+        let info = pdf_info(&out).unwrap();
+        assert!(info.title.is_none());
+        assert!(info.author.is_none());
+    }
+
+    #[test]
+    fn sanitise_with_options_keeps_annotations() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("partial_san.pdf");
+        let opts = SanitiseOptions {
+            strip_info: true,
+            strip_annotations: false, // keep annotations
+            ..Default::default()
+        };
+        let stripped = sanitise_pdf_with_options(&pdf, &opts, &out).unwrap();
+        assert!(stripped.contains(&"Info dictionary".to_string()));
+        assert!(!stripped.contains(&"Annotations".to_string()));
+    }
+
+    #[test]
+    fn detect_signatures_on_unsigned_pdf() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let sigs = detect_signatures(&pdf).unwrap();
+        assert!(sigs.is_empty());
+    }
+
+    #[test]
+    fn convert_to_pdfa_adds_metadata() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("pdfa.pdf");
+        convert_to_pdfa(&pdf, &out).unwrap();
+        // Verify the output is a valid PDF
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn decode_pdf_str_utf16be() {
+        let bytes = [0xFE, 0xFF, 0x00, 0x48, 0x00, 0x69]; // "Hi" in UTF-16BE
+        assert_eq!(decode_pdf_str(&bytes), "Hi");
+    }
+
+    #[test]
+    fn decode_pdf_str_latin1() {
+        let bytes = [0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
+        assert_eq!(decode_pdf_str(&bytes), "Hello");
+    }
+
+    #[test]
+    fn remap_refs_rewrites_references() {
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        map.insert((1, 0), (10, 0));
+        let mut obj = Object::Reference((1, 0));
+        remap_refs(&mut obj, &map);
+        assert_eq!(obj, Object::Reference((10, 0)));
+    }
+
+    #[test]
+    fn remap_refs_nested_array() {
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        map.insert((1, 0), (10, 0));
+        let mut obj = Object::Array(vec![Object::Reference((1, 0)), Object::Integer(42)]);
+        remap_refs(&mut obj, &map);
+        match &obj {
+            Object::Array(a) => assert_eq!(a[0], Object::Reference((10, 0))),
+            _ => panic!("expected array"),
+        }
     }
 }

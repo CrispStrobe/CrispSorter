@@ -382,4 +382,64 @@ mod tests {
         assert_eq!(doc1.len(), 1);
         assert_eq!(doc1[0].text, "passage one");
     }
+
+    #[test]
+    fn highlight_update_and_delete() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        let id = store.add_highlight("d1", 0, 0, 10, "text", "note1", "#fff").unwrap();
+        store.update_highlight(id, "note2", "#f00").unwrap();
+        let hl = store.get_highlights("d1").unwrap();
+        assert_eq!(hl[0].note, "note2");
+        assert_eq!(hl[0].color, "#f00");
+
+        store.delete_highlight(id).unwrap();
+        assert_eq!(store.highlight_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn annotation_multiple_pages() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        store.add_annotation("d1", 1, 0.0, 0.0, 10.0, 10.0, "note", "page1 note", "#fff").unwrap();
+        store.add_annotation("d1", 2, 0.0, 0.0, 10.0, 10.0, "highlight", "page2 hl", "#ff0").unwrap();
+        store.add_annotation("d1", 1, 50.0, 50.0, 10.0, 10.0, "note", "page1 note2", "#fff").unwrap();
+        let anns = store.get_annotations("d1").unwrap();
+        assert_eq!(anns.len(), 3);
+        // Ordered by page, then created_at
+        assert_eq!(anns[0].page, 1);
+        assert_eq!(anns[2].page, 2);
+    }
+
+    #[test]
+    fn annotation_empty_doc() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        let anns = store.get_annotations("nonexistent").unwrap();
+        assert!(anns.is_empty());
+    }
+
+    #[test]
+    fn annotation_search_special_chars() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        store.add_annotation("d1", 0, 0.0, 0.0, 0.0, 0.0, "note", "100% complete", "#fff").unwrap();
+        // The % should be escaped in LIKE
+        let found = store.search_annotations("100%", 10).unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn reading_list_pagination() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        for i in 0..5 {
+            store.add_highlight("d1", i, 0, 10, &format!("hl{i}"), "", "#fff").unwrap();
+        }
+        let page1 = store.reading_list(2, 0).unwrap();
+        let page2 = store.reading_list(2, 2).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 2);
+        assert_ne!(page1[0].id, page2[0].id);
+    }
 }

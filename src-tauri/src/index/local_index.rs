@@ -3277,6 +3277,119 @@ fn cluster_top_terms(member_indices: &[usize], all_texts: &[String], top_n: usiz
     scored.into_iter().take(top_n).map(|(t, _)| t).collect()
 }
 
+#[cfg(test)]
+mod clustering_tests {
+    use super::*;
+
+    #[test]
+    fn kmeans_empty() {
+        let result = kmeans_pp(&[], 3, 2, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn kmeans_k_zero() {
+        let data = vec![vec![1.0, 2.0]];
+        let result = kmeans_pp(&data, 0, 2, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn kmeans_k_equals_n() {
+        let data = vec![vec![0.0, 0.0], vec![10.0, 10.0], vec![20.0, 20.0]];
+        let result = kmeans_pp(&data, 3, 2, 10);
+        assert_eq!(result.len(), 3);
+        // Each point is its own cluster
+        let mut sorted = result.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3);
+    }
+
+    #[test]
+    fn kmeans_k_greater_than_n() {
+        let data = vec![vec![1.0, 1.0], vec![2.0, 2.0]];
+        let result = kmeans_pp(&data, 5, 2, 10);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn kmeans_two_clusters() {
+        // Two well-separated clusters
+        let data = vec![
+            vec![0.0, 0.0], vec![0.1, 0.1], vec![0.2, 0.0],
+            vec![10.0, 10.0], vec![10.1, 9.9], vec![9.9, 10.1],
+        ];
+        let result = kmeans_pp(&data, 2, 2, 20);
+        assert_eq!(result.len(), 6);
+        // Points 0-2 should be in same cluster, 3-5 in another
+        assert_eq!(result[0], result[1]);
+        assert_eq!(result[1], result[2]);
+        assert_eq!(result[3], result[4]);
+        assert_eq!(result[4], result[5]);
+        assert_ne!(result[0], result[3]);
+    }
+
+    #[test]
+    fn kmeans_single_point() {
+        let data = vec![vec![5.0, 5.0]];
+        let result = kmeans_pp(&data, 1, 2, 10);
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn kmeans_deterministic() {
+        // Same input → same output (fixed seed)
+        let data = vec![
+            vec![0.0, 0.0], vec![1.0, 1.0], vec![10.0, 10.0], vec![11.0, 11.0],
+        ];
+        let r1 = kmeans_pp(&data, 2, 2, 20);
+        let r2 = kmeans_pp(&data, 2, 2, 20);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn sq_dist_basic() {
+        assert!((sq_dist(&[0.0, 0.0], &[3.0, 4.0]) - 25.0).abs() < 1e-6);
+        assert!((sq_dist(&[1.0, 1.0], &[1.0, 1.0])).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cluster_top_terms_basic() {
+        let texts = vec![
+            "machine learning algorithms neural networks".into(),
+            "deep learning neural networks training".into(),
+            "database queries optimization indexing".into(),
+        ];
+        let members = vec![0, 1]; // cluster of ML docs
+        let terms = cluster_top_terms(&members, &texts, 3);
+        // "neural" and "networks" should be top terms (appear in cluster but not in all docs)
+        assert!(!terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_empty_members() {
+        let texts = vec!["hello world".into()];
+        let terms = cluster_top_terms(&[], &texts, 3);
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_filters_stopwords() {
+        let texts = vec!["the and but for with this that from".into()];
+        let terms = cluster_top_terms(&[0], &texts, 5);
+        // All stopwords should be filtered
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_short_words_skipped() {
+        let texts = vec!["ab cd ef gh ij kl mn".into()];
+        let terms = cluster_top_terms(&[0], &texts, 5);
+        assert!(terms.is_empty()); // all < 3 chars
+    }
+}
+
 /// query API doesn't expose ORDER BY, so we sort client-side after
 /// fetching `[0..offset+limit]`. See `query_documents` for the
 /// scaling envelope and the migration path off this implementation.

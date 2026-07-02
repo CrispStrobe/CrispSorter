@@ -293,4 +293,62 @@ mod tests {
         assert_eq!(actions[0].doc_id, "d1");
         assert_eq!(actions[0].action, "delete");
     }
+
+    #[test]
+    fn delete_overrides_archive() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        // Rule with both archive and delete — delete should win
+        store.add_rule("Both", "folder", "/docs/", Some(10), Some(30)).unwrap();
+        let now = now_ms();
+        let old = now - 31 * 86_400_000;
+        let docs = vec![("d1".into(), "/docs/file.pdf".into(), vec![], old)];
+        let actions = store.evaluate_rules(&docs).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, "delete");
+    }
+
+    #[test]
+    fn disabled_rules_skipped() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        let id = store.add_rule("Disabled", "folder", "/docs/", Some(1), None).unwrap();
+        store.set_rule_enabled(id, false).unwrap();
+        let now = now_ms();
+        let old = now - 10 * 86_400_000;
+        let docs = vec![("d1".into(), "/docs/f.pdf".into(), vec![], old)];
+        let actions = store.evaluate_rules(&docs).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn evaluate_recent_docs_not_affected() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        store.add_rule("Archive old", "folder", "/", Some(30), None).unwrap();
+        let now = now_ms();
+        let recent = now - 5 * 86_400_000; // 5 days
+        let docs = vec![("d1".into(), "/file.pdf".into(), vec![], recent)];
+        let actions = store.evaluate_rules(&docs).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn evaluate_empty_docs_list() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        store.add_rule("Rule", "folder", "/", Some(1), None).unwrap();
+        let actions = store.evaluate_rules(&[]).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn evaluate_no_rules() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        let now = now_ms();
+        let docs = vec![("d1".into(), "/f.pdf".into(), vec![], now)];
+        let actions = store.evaluate_rules(&docs).unwrap();
+        assert!(actions.is_empty());
+    }
 }

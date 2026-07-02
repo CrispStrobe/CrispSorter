@@ -218,4 +218,68 @@ mod tests {
         let q = synonym_expand_query("do it");
         assert_eq!(q, "do it");
     }
+
+    #[test]
+    fn preserves_wildcards() {
+        let q = synonym_expand_query("help* foo~2 bar?");
+        assert!(q.contains("help*"));
+        assert!(q.contains("foo~2"));
+        assert!(q.contains("bar?"));
+    }
+
+    #[test]
+    fn preserves_proximity() {
+        let q = synonym_expand_query("help w/5 fast");
+        assert!(q.contains("w/5"));
+    }
+
+    #[test]
+    fn preserves_parens() {
+        let q = synonym_expand_query("(help OR error)");
+        assert!(q.contains("(help"));
+        assert!(q.contains("error)"));
+    }
+
+    #[test]
+    fn preserves_field_prefix() {
+        let q = synonym_expand_query("title:help body:error");
+        assert!(q.contains("title:help"));
+        assert!(q.contains("body:error"));
+    }
+
+    #[test]
+    fn multiple_synonyms_in_query() {
+        let q = synonym_expand_query("help create goal");
+        assert!(q.contains("assist")); // help
+        assert!(q.contains("build"));  // create
+        assert!(q.contains("objective")); // goal
+    }
+
+    #[test]
+    fn mixed_en_de_query() {
+        let q = synonym_expand_query("help wichtig");
+        assert!(q.contains("assist"));
+        assert!(q.contains("bedeutend"));
+    }
+
+    #[test]
+    fn numbers_not_expanded() {
+        let q = synonym_expand_query("2024 help");
+        assert!(q.contains("2024"));
+        assert!(!q.contains("(2024"));
+    }
+
+    #[test]
+    fn empty_query() {
+        assert_eq!(synonym_expand_query(""), "");
+    }
+
+    #[test]
+    fn synonym_groups_are_bidirectional() {
+        // If "help" → "assist", then "assist" → "help"
+        let q1 = synonym_expand_query("help");
+        let q2 = synonym_expand_query("assist");
+        assert!(q1.contains("assist"));
+        assert!(q2.contains("help"));
+    }
 }
