@@ -1556,6 +1556,22 @@ impl PdfMetadata {
     }
 }
 
+/// P27.10 — Export text to DOCX format.
+#[tauri::command]
+async fn export_to_docx(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        extractors::export::export_to_docx(&title, &body, std::path::Path::new(&out_path))
+    }).await.map_err(|e| format!("join: {e}"))?
+}
+
+/// P27.10 — Export text to standalone HTML format.
+#[tauri::command]
+async fn export_to_html(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        extractors::export::export_to_html(&title, &body, std::path::Path::new(&out_path))
+    }).await.map_err(|e| format!("join: {e}"))?
+}
+
 /// P24.6 — Read clipboard content (text or image).
 #[tauri::command]
 async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, String> {
@@ -2750,6 +2766,8 @@ pub fn run() {
             feed_parse_file,
             clipboard_capture,
             clipboard_save_image,
+            export_to_docx,
+            export_to_html,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
@@ -2880,6 +2898,8 @@ pub fn run() {
             index::tauri_commands::index_corpus_stats,
             index::tauri_commands::index_cluster_documents,
             index::tauri_commands::index_entity_graph,
+            index::comparison::tauri_commands::compare_documents,
+            index::comparison::tauri_commands::compare_texts_raw,
             index::versioning::tauri_commands::version_record,
             index::versioning::tauri_commands::version_history,
             index::versioning::tauri_commands::version_current,
@@ -2985,6 +3005,8 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_decrypt,
             pdf_ops::tauri_commands::pdf_is_encrypted,
             pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_redact_regions,
+            pdf_ops::tauri_commands::pdf_redact_text,
             pdf_ops::tauri_commands::pdf_convert_pdfa,
             pdf_ops::tauri_commands::pdf_detect_signatures,
             pdf_ops::tauri_commands::pdf_sanitise,
@@ -3008,6 +3030,8 @@ pub fn run() {
             feed_parse_file,
             clipboard_capture,
             clipboard_save_image,
+            export_to_docx,
+            export_to_html,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
@@ -3137,6 +3161,8 @@ pub fn run() {
             index::tauri_commands::index_corpus_stats,
             index::tauri_commands::index_cluster_documents,
             index::tauri_commands::index_entity_graph,
+            index::comparison::tauri_commands::compare_documents,
+            index::comparison::tauri_commands::compare_texts_raw,
             index::versioning::tauri_commands::version_record,
             index::versioning::tauri_commands::version_history,
             index::versioning::tauri_commands::version_current,
@@ -3228,6 +3254,8 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_decrypt,
             pdf_ops::tauri_commands::pdf_is_encrypted,
             pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_redact_regions,
+            pdf_ops::tauri_commands::pdf_redact_text,
             pdf_ops::tauri_commands::pdf_convert_pdfa,
             pdf_ops::tauri_commands::pdf_detect_signatures,
             pdf_ops::tauri_commands::pdf_sanitise,

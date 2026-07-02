@@ -12,6 +12,7 @@ pub mod omni_embed;
 pub mod reranker;
 pub mod skeleton;
 pub mod annotations;
+pub mod comparison;
 pub mod retention;
 pub mod task_failure;
 pub mod versioning;

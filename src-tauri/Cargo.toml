@@ -96,6 +96,10 @@ lopdf       = "0.38"
 feed-rs     = "2"
 # Cross-platform clipboard access — used for P24.6 clipboard/screenshot capture.
 arboard     = "3"
+# Word-level text diff — used for P25.7 document comparison.
+similar     = { version = "2", features = ["unicode"] }
+# DOCX generation — used for P27.10 export to Word format.
+docx-rs     = "0.4"
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.

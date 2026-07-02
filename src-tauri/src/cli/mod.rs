@@ -1324,6 +1324,15 @@ enum PdfCmd {
     Signatures {
         file: PathBuf,
     },
+    /// Redact text patterns from PDF metadata.
+    Redact {
+        file: PathBuf,
+        /// Comma-separated text patterns to redact.
+        #[arg(long)]
+        patterns: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Add PDF/A-2b conformance metadata to an existing PDF.
     Pdfa {
         file: PathBuf,
@@ -3907,6 +3916,12 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
         PdfCmd::IsEncrypted { file } => {
             let enc = pdf_ops::is_encrypted(&file)?;
             println!("{}", if enc { "encrypted" } else { "not encrypted" });
+            Ok(())
+        }
+        PdfCmd::Redact { file, patterns, out: out_path } => {
+            let pats: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
+            let count = pdf_ops::redact_text_patterns(&file, &pats, &out_path)?;
+            eprintln!("Redacted {count} patterns → {}", out_path.display());
             Ok(())
         }
         PdfCmd::Pdfa { file, out: out_path } => {

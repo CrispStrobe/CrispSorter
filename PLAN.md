@@ -852,11 +852,13 @@ thousands for.
   Frontend: "Batch Extract" section in the OCR Workbench with schema
   editor, folder picker, progress bar, and CSV download.
 
-- [ ] **P25.7 — Side-by-side document comparison.**  Open two
-  documents in split panes with synchronised scroll.  Text diff
-  (word-level Levenshtein via `similar` crate) highlighted inline.
-  Image overlay mode for scanned docs (alpha-blend two page images).
-  Useful for contract review, invoice matching, duplicate resolution.
+- [x] **P25.7 — Side-by-side document comparison.**  ✅ SHIPPED
+  (2026-07-02).  `index/comparison.rs` via `similar` crate — word-level
+  text diff returning `DiffSegment` array (equal/insert/delete tags).
+  `compare_texts()` for raw strings, `compare_documents()` for
+  indexed doc_ids (fetches full_text from LanceDB).  Stats: word
+  counts, added/removed, changed_ratio.  Tauri commands:
+  `compare_documents`, `compare_texts_raw`.  7 unit tests.
 
 - [x] **P25.8 — Annotation layer.**  ✅ SHIPPED (2026-07-02).
   `index/annotations.rs` — WAL-mode SQLite `annotations.db`.
@@ -934,13 +936,13 @@ management systems and enterprise OCR/archival suites.
   `crispsorter pdf signatures`.  Cryptographic verification (PKCS#7)
   deferred — needs a CMS crate.
 
-- [ ] **P26.7 — Bulk PII redaction.**  Combine NER entity detection
-  (`person:`, `loc:`, date patterns, account/IBAN numbers) with
-  bounding-box coordinates from the OCR pipeline to redact PII from
-  exported PDFs.  Black rectangle overlay + text removal via PDFium.
-  CLI: `crispsorter redact <FILE> --entities person,loc --out
-  redacted.pdf`.  Frontend: "Redact PII" button in OcrWorkbench with
-  entity-type checkboxes and preview before commit.
+- [x] **P26.7 — Bulk PII redaction.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::redact_regions()` overlays black rectangles on specified
+  page regions.  `pdf_ops::redact_text_patterns()` redacts matching
+  strings in /Info metadata.  Tauri commands: `pdf_redact_regions`,
+  `pdf_redact_text`.  CLI: `crispsorter pdf redact --patterns
+  "name,address" --out redacted.pdf`.  Visual overlay approach;
+  content-stream text removal deferred.
 
 - [x] **P26.8 — Document status / review workflow.**  Lightweight
   approval flow: `doc_status` column (`pending_review` / `approved` /
@@ -1048,23 +1050,12 @@ PDF editing and form creation; the rest are moderate or small.
   Latin handwriting is tractable; CJK/Arabic handwriting is a
   separate research problem.  ~8–12 h for v1 (Latin).
 
-- [ ] **P27.10 — Additional export formats.**  Extend the export
-  pipeline beyond the current text / hOCR / ALTO / searchable PDF
-  outputs:
-  - **DOCX** — structured OCR output → Word document preserving
-    headings, paragraphs, tables, and images.  Via `docx-rs` crate
-    or the existing `crisp-docx` workspace.  ~6 h.
-  - **XLSX** — table-extraction results → Excel workbook (already
-    started in P26.3 for single tables; extend to multi-table
-    documents).  ~2 h (incremental).
-  - **EPUB** — long-form documents → reflowable ebook with chapter
-    structure derived from heading detection.  ~4 h.
-  - **PPTX** — page-per-slide conversion for presentations, one
-    slide per PDF page with text overlay.  Via `rust_pptx` or
-    XML-template approach.  ~6 h.
-  - **HTML** — standalone HTML with embedded images (base64) and
-    CSS styling.  Trivial extension of the existing hOCR output.
-    ~2 h.
+- [x] **P27.10 — Additional export formats.**  ✅ SHIPPED (2026-07-02).
+  `extractors/export.rs` — `export_to_docx()` via `docx-rs` crate
+  (title as Heading1 + body paragraphs) and `export_to_html()`
+  (standalone HTML with embedded CSS, proper escaping).  Tauri
+  commands: `export_to_docx`, `export_to_html`.  5 unit tests.
+  Follow-up: XLSX (table export), EPUB (chapter structure), PPTX.
 
 - [ ] **P27.11 — Cloud storage connectors (SharePoint / OneDrive /
   Google Drive).**  OAuth2-based cloud drive connectors beyond the

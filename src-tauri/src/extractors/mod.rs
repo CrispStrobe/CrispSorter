@@ -34,6 +34,7 @@ use std::path::Path;
 pub mod audio;
 pub mod clipboard;
 pub mod eml;
+pub mod export;
 pub mod feed;
 pub mod html;
 pub mod layout;

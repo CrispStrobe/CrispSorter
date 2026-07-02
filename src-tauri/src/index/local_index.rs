@@ -1128,6 +1128,30 @@ impl LocalIndex {
         Ok(clusters)
     }
 
+    /// P25.7 helper — fetch a document's full_text by doc_id.
+    pub async fn fetch_full_text(&self, doc_id: &str) -> Result<String> {
+        use lancedb::query::Select;
+        let filter = format!("doc_id = '{}' AND chunk_index <= 0", doc_id.replace('\'', "''"));
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(filter)
+            .select(Select::Columns(vec!["full_text".to_owned()]))
+            .limit(1)
+            .execute().await?
+            .try_collect().await?;
+        for batch in &batches {
+            if batch.num_rows() > 0 {
+                if let Some(col) = batch.column_by_name("full_text") {
+                    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
+                        if !arr.is_null(0) {
+                            return Ok(arr.value(0).to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Err(anyhow!("Document not found: {}", doc_id))
+    }
+
     /// P24.3 helper — fetch the tags column for all documents.
     pub async fn query_tags_for_graph(&self) -> Result<Vec<RecordBatch>> {
         use lancedb::query::Select;

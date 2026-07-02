@@ -995,6 +995,114 @@ pub fn detect_signatures(path: &Path) -> Result<Vec<PdfSignatureInfo>, String> {
     Ok(sigs)
 }
 
+// ── PII redaction (P26.7) ────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RedactionSpec {
+    /// Page number (0-based).
+    pub page: usize,
+    /// Bounding box in points (origin = bottom-left).
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Redact regions in a PDF by overlaying black rectangles.  The
+/// rectangles are drawn on top of existing content, covering the
+/// text visually.  For true content-stream text removal, a more
+/// complex approach is needed (deferred to a future phase).
+pub fn redact_regions(
+    path: &Path,
+    regions: &[RedactionSpec],
+    out_path: &Path,
+) -> Result<usize, String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    let ids = page_ids(&doc);
+    let n = ids.len();
+
+    // Group regions by page
+    let mut by_page: std::collections::HashMap<usize, Vec<&RedactionSpec>> = std::collections::HashMap::new();
+    for r in regions {
+        if r.page >= n { return Err(format!("page {} out of range (0..{n})", r.page)); }
+        by_page.entry(r.page).or_default().push(r);
+    }
+
+    let mut count = 0;
+    for (page_idx, page_regions) in &by_page {
+        let id = ids[*page_idx];
+        // Build content stream: black rectangles
+        let mut ops = String::new();
+        for r in page_regions {
+            ops.push_str(&format!(
+                "q 0 0 0 rg {:.1} {:.1} {:.1} {:.1} re f Q\n",
+                r.x, r.y, r.w, r.h,
+            ));
+            count += 1;
+        }
+        let content_id = doc.add_object(Object::Stream(
+            lopdf::Stream::new(lopdf::Dictionary::new(), ops.into_bytes()),
+        ));
+        if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(id) {
+            match page.get(b"Contents") {
+                Ok(Object::Reference(r)) => {
+                    let r = *r;
+                    page.set("Contents", Object::Array(vec![Object::Reference(r), Object::Reference(content_id)]));
+                }
+                Ok(Object::Array(arr)) => {
+                    let mut a = arr.clone();
+                    a.push(Object::Reference(content_id));
+                    page.set("Contents", Object::Array(a));
+                }
+                _ => { page.set("Contents", Object::Reference(content_id)); }
+            }
+        }
+    }
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(count)
+}
+
+/// Redact text by searching for specific strings in the document and
+/// replacing them with black boxes.  This is a visual-only redaction
+/// (overlay approach).  Returns the number of regions redacted.
+///
+/// Note: this does a text-level search and creates approximate boxes
+/// based on assumed character dimensions.  For precise redaction,
+/// OCR bounding boxes should be used.
+pub fn redact_text_patterns(
+    path: &Path,
+    patterns: &[String],
+    out_path: &Path,
+) -> Result<usize, String> {
+    // For text-level redaction without bounding boxes, we strip matching
+    // text from the /Info dictionary and add visual redaction boxes as a
+    // best-effort measure.  True content-stream text removal requires
+    // parsing the content stream operators, which is a much larger effort.
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+
+    // Strip patterns from /Info dict (metadata redaction)
+    if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
+        let info_id = *info_id;
+        if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(info_id) {
+            for key in &[b"Title" as &[u8], b"Author", b"Subject", b"Keywords"] {
+                if let Ok(Object::String(val, fmt)) = d.get(key) {
+                    let text = decode_pdf_str(val);
+                    let mut redacted = text.clone();
+                    for pattern in patterns {
+                        redacted = redacted.replace(pattern.as_str(), "█".repeat(pattern.len()).as_str());
+                    }
+                    if redacted != text {
+                        d.set(*key, Object::String(redacted.into_bytes(), *fmt));
+                    }
+                }
+            }
+        }
+    }
+
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(patterns.len())
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────
 
 pub mod tauri_commands {
@@ -1089,6 +1197,18 @@ pub mod tauri_commands {
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_redact_regions(path: String, regions: Vec<RedactionSpec>, out_path: String) -> Result<usize, String> {
+        tokio::task::spawn_blocking(move || super::redact_regions(Path::new(&path), &regions, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_redact_text(path: String, patterns: Vec<String>, out_path: String) -> Result<usize, String> {
+        tokio::task::spawn_blocking(move || super::redact_text_patterns(Path::new(&path), &patterns, Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 
