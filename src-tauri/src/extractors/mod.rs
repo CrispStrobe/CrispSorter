@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod audio;
+pub mod clipboard;
 pub mod eml;
 pub mod feed;
 pub mod html;

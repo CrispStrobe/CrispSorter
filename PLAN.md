@@ -784,12 +784,12 @@ re-queries.
   4 unit tests (RSS2 + Atom + HTML stripping).  Follow-up: Settings
   panel for feed URL management + poll timer + auto-ingest.
 
-- [ ] **P24.6 — Clipboard / screenshot capture.**  System-tray
-  "Capture" action that reads clipboard content (text or image via
-  `arboard` crate) and indexes it immediately as a synthetic document
-  with `source_url = clipboard://` and `indexed_at = now`.  Images
-  run through the OCR pipeline; text is indexed directly.  Quick
-  capture for research snippets.
+- [x] **P24.6 — Clipboard / screenshot capture.**  ✅ SHIPPED
+  (2026-07-02).  `extractors/clipboard.rs` using `arboard` crate —
+  `read_clipboard()` returns text or saves clipboard image to temp
+  PNG.  `save_clipboard_image_to_temp()` for OCR pipeline feeding.
+  Tauri commands `clipboard_capture` + `clipboard_save_image`.
+  Follow-up: system-tray "Capture" action + auto-ingest into index.
 
 ### P25 — DMS & compliance parity (planned)
 

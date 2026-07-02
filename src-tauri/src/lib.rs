@@ -1555,6 +1555,23 @@ impl PdfMetadata {
     }
 }
 
+/// P24.6 — Read clipboard content (text or image).
+#[tauri::command]
+async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, String> {
+    tokio::task::spawn_blocking(extractors::clipboard::read_clipboard)
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+/// P24.6 — Save clipboard image to a temp PNG file (for OCR pipeline).
+#[tauri::command]
+async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
+    let (path, w, h) = tokio::task::spawn_blocking(extractors::clipboard::save_clipboard_image_to_temp)
+        .await
+        .map_err(|e| format!("join: {e}"))??;
+    Ok((path.to_string_lossy().into_owned(), w, h))
+}
+
 /// P24.5 — Parse an RSS/Atom feed from a URL.
 #[tauri::command]
 async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFeed, String> {
@@ -2730,6 +2747,8 @@ pub fn run() {
             extract_pdf_metadata,
             feed_fetch_and_parse,
             feed_parse_file,
+            clipboard_capture,
+            clipboard_save_image,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
@@ -2961,6 +2980,8 @@ pub fn run() {
             extract_pdf_metadata,
             feed_fetch_and_parse,
             feed_parse_file,
+            clipboard_capture,
+            clipboard_save_image,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
