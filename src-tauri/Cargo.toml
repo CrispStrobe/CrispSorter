@@ -95,6 +95,8 @@ lopdf       = "0.38"
 # RSS/Atom feed parser — used for P24.5 feed ingestion.
 feed-rs     = "2"
 # Cross-platform clipboard access — used for P24.6 clipboard/screenshot capture.
+# Not available on Android/iOS (no platform clipboard API in arboard).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard     = "3"
 # Word-level text diff — used for P25.7 document comparison.
 similar     = { version = "2", features = ["unicode"] }

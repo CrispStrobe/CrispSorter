@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod audio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod clipboard;
 pub mod eml;
 pub mod export;

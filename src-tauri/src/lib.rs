@@ -1573,6 +1573,7 @@ async fn export_to_html(title: String, body: String, out_path: String) -> Result
 }
 
 /// P24.6 — Read clipboard content (text or image).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, String> {
     tokio::task::spawn_blocking(extractors::clipboard::read_clipboard)
@@ -1581,6 +1582,7 @@ async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, 
 }
 
 /// P24.6 — Save clipboard image to a temp PNG file (for OCR pipeline).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
     let (path, w, h) = tokio::task::spawn_blocking(extractors::clipboard::save_clipboard_image_to_temp)
@@ -3016,6 +3018,8 @@ pub fn run() {
             audit::tauri_commands::audit_summary,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
+            // Note: clipboard_capture/clipboard_save_image excluded (arboard
+            // doesn't support Android/iOS).
             #[cfg(not(feature = "desktop"))]
             { tauri::generate_handler![
             get_logs,
@@ -3028,8 +3032,6 @@ pub fn run() {
             extract_pdf_metadata,
             feed_fetch_and_parse,
             feed_parse_file,
-            clipboard_capture,
-            clipboard_save_image,
             export_to_docx,
             export_to_html,
             get_app_data_dir,
