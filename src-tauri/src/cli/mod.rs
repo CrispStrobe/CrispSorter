@@ -2316,6 +2316,12 @@ enum IndexCmd {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Cluster documents by embedding similarity (K-means).
+    Cluster {
+        /// Number of clusters.
+        #[arg(long, default_value_t = 5)]
+        k: usize,
+    },
     /// List the most common tags in the index as a faceted count.
     TagFacets {
         /// Maximum tags to return.
@@ -3520,6 +3526,31 @@ async fn cmd_index_async(
                                 println!("    - {} ({})", item.title.as_deref().unwrap_or("untitled"), item.location_uri);
                             }
                             println!();
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::Cluster { k } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let clusters = local.cluster_documents(k)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&clusters).unwrap_or_default());
+                }
+                OutFormat::Text => {
+                    if clusters.is_empty() {
+                        println!("No documents with embeddings to cluster.");
+                    } else {
+                        for c in &clusters {
+                            println!("Cluster {} — {} ({} docs)", c.id + 1, c.name, c.doc_count);
+                            for t in &c.sample_titles {
+                                println!("  · {}", t);
+                            }
                         }
                     }
                 }

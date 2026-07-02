@@ -994,6 +994,140 @@ impl LocalIndex {
         })
     }
 
+    // ── Clustering ─────────────────────────────────────────────────────────
+
+    /// K-means clustering on the dense embedding column.  Returns `k`
+    /// clusters, each with its member doc_ids and top TF-IDF terms
+    /// (from `full_text`) as a human-readable name.
+    pub async fn cluster_documents(
+        &self,
+        k: usize,
+    ) -> Result<Vec<super::tauri_commands::Cluster>> {
+        use lancedb::query::Select;
+
+        if k == 0 {
+            return Err(anyhow!("k must be >= 1"));
+        }
+
+        // 1. Fetch all docs with embeddings (one row per document).
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index <= 0 AND embedding IS NOT NULL")
+            .select(Select::Columns(vec![
+                "doc_id".to_owned(),
+                "embedding".to_owned(),
+                "full_text".to_owned(),
+                "title".to_owned(),
+            ]))
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Collect doc_ids, embeddings, texts.
+        let mut doc_ids: Vec<String> = Vec::new();
+        let mut embeddings: Vec<Vec<f32>> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        let mut titles: Vec<String> = Vec::new();
+
+        for batch in &batches {
+            let n = batch.num_rows();
+            let doc_col = batch.column_by_name("doc_id");
+            let emb_col = batch
+                .column_by_name("embedding")
+                .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>());
+            let text_col = batch.column_by_name("full_text");
+            let title_col = batch.column_by_name("title");
+
+            for i in 0..n {
+                // doc_id
+                let did = doc_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                // embedding
+                let emb = emb_col.and_then(|fsl| {
+                    if fsl.is_null(i) { return None; }
+                    let vals = fsl.value(i);
+                    vals.as_any()
+                        .downcast_ref::<Float32Array>()
+                        .map(|a| a.values().to_vec())
+                });
+                let Some(e) = emb else { continue };
+
+                let txt = text_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                let ttl = title_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                doc_ids.push(did);
+                embeddings.push(e);
+                texts.push(txt);
+                titles.push(ttl);
+            }
+        }
+
+        let n = embeddings.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let actual_k = k.min(n);
+
+        // 2. K-means++ clustering.
+        let dim = embeddings[0].len();
+        let assignments = kmeans_pp(&embeddings, actual_k, dim, 20);
+
+        // 3. Build clusters with top TF-IDF terms for naming.
+        let mut clusters: Vec<super::tauri_commands::Cluster> = Vec::with_capacity(actual_k);
+        for c in 0..actual_k {
+            let member_indices: Vec<usize> = assignments
+                .iter()
+                .enumerate()
+                .filter(|(_, &a)| a == c)
+                .map(|(i, _)| i)
+                .collect();
+            if member_indices.is_empty() { continue; }
+
+            let member_doc_ids: Vec<String> = member_indices.iter().map(|&i| doc_ids[i].clone()).collect();
+            let member_titles: Vec<String> = member_indices.iter()
+                .filter_map(|&i| {
+                    let t = &titles[i];
+                    if t.is_empty() { None } else { Some(t.clone()) }
+                })
+                .take(5)
+                .collect();
+
+            // Simple term-frequency naming: collect words from cluster members,
+            // rank by frequency, pick top 3 distinctive words.
+            let top_terms = cluster_top_terms(&member_indices, &texts, 4);
+            let name = if top_terms.is_empty() {
+                format!("Cluster {}", c + 1)
+            } else {
+                top_terms.join(", ")
+            };
+
+            clusters.push(super::tauri_commands::Cluster {
+                id: c as u32,
+                name,
+                doc_count: member_indices.len(),
+                top_terms,
+                sample_titles: member_titles,
+                member_doc_ids,
+            });
+        }
+
+        // Sort by doc count descending.
+        clusters.sort_by(|a, b| b.doc_count.cmp(&a.doc_count));
+        Ok(clusters)
+    }
+
     // ── Purge ──────────────────────────────────────────────────────────────
 
     /// Stage P — LRU purge to keep the lance dir ≤ `max_bytes`.
@@ -3003,6 +3137,133 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
 }
 
 /// In-process sort over the candidate window. LanceDB 0.26's public
+// ── K-means++ clustering ──────────────────────────────────────────────
+
+/// K-means++ initialization + Lloyd iterations.  Returns a Vec of
+/// cluster assignments (0..k) for each embedding.
+fn kmeans_pp(embeddings: &[Vec<f32>], k: usize, dim: usize, max_iter: usize) -> Vec<usize> {
+    let n = embeddings.len();
+    if n == 0 || k == 0 { return vec![]; }
+    if k >= n { return (0..n).collect(); }
+
+    // K-means++ seeding
+    let mut rng_state: u64 = 42;
+    let mut next_rand = || -> f64 {
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng_state >> 33) as f64 / (1u64 << 31) as f64
+    };
+
+    let mut centroids: Vec<Vec<f32>> = Vec::with_capacity(k);
+    let first = (next_rand() * n as f64) as usize % n;
+    centroids.push(embeddings[first].clone());
+
+    for _ in 1..k {
+        let mut dists: Vec<f64> = embeddings
+            .iter()
+            .map(|e| {
+                centroids.iter().map(|c| sq_dist(e, c)).fold(f64::MAX, f64::min)
+            })
+            .collect();
+        let total: f64 = dists.iter().sum();
+        if total <= 0.0 { break; }
+        let threshold = next_rand() * total;
+        let mut cumulative = 0.0;
+        let mut chosen = 0;
+        for (i, d) in dists.iter().enumerate() {
+            cumulative += d;
+            if cumulative >= threshold { chosen = i; break; }
+        }
+        centroids.push(embeddings[chosen].clone());
+    }
+
+    // Lloyd iterations
+    let mut assignments = vec![0usize; n];
+    for _ in 0..max_iter {
+        let mut changed = false;
+        // Assign
+        for (i, e) in embeddings.iter().enumerate() {
+            let best = centroids.iter().enumerate()
+                .map(|(ci, c)| (ci, sq_dist(e, c)))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(ci, _)| ci)
+                .unwrap_or(0);
+            if assignments[i] != best { changed = true; assignments[i] = best; }
+        }
+        if !changed { break; }
+        // Update centroids
+        for ci in 0..centroids.len() {
+            let mut sum = vec![0.0f64; dim];
+            let mut count = 0usize;
+            for (i, &a) in assignments.iter().enumerate() {
+                if a == ci {
+                    for (j, &v) in embeddings[i].iter().enumerate() {
+                        sum[j] += v as f64;
+                    }
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                for j in 0..dim {
+                    centroids[ci][j] = (sum[j] / count as f64) as f32;
+                }
+            }
+        }
+    }
+    assignments
+}
+
+fn sq_dist(a: &[f32], b: &[f32]) -> f64 {
+    a.iter().zip(b.iter()).map(|(x, y)| { let d = (*x as f64) - (*y as f64); d * d }).sum()
+}
+
+/// Extract top distinctive terms from cluster members' texts via simple
+/// TF-IDF-ish scoring (term frequency in cluster / frequency in corpus).
+fn cluster_top_terms(member_indices: &[usize], all_texts: &[String], top_n: usize) -> Vec<String> {
+    use std::collections::HashMap;
+
+    let stop = [
+        "the","a","an","and","or","but","in","on","at","to","for","of","with",
+        "is","it","as","by","that","this","from","are","was","were","be","been",
+        "has","have","had","not","no","all","its","der","die","das","und","ist",
+        "ein","eine","von","den","dem","des","im","zu","auf","mit","sich","als",
+        "für","auch","nach","wie","über","nur","aus","so","noch","bei","er","sie",
+    ];
+    let stop_set: std::collections::HashSet<&str> = stop.iter().copied().collect();
+
+    // Corpus-wide document frequency
+    let mut df: HashMap<String, usize> = HashMap::new();
+    for text in all_texts {
+        let mut seen = std::collections::HashSet::new();
+        for w in text.split_whitespace().take(200) {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            if w.len() >= 3 && !stop_set.contains(w.as_str()) && seen.insert(w.clone()) {
+                *df.entry(w).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Cluster term frequency
+    let mut tf: HashMap<String, usize> = HashMap::new();
+    for &i in member_indices {
+        for w in all_texts[i].split_whitespace().take(200) {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            if w.len() >= 3 && !stop_set.contains(w.as_str()) {
+                *tf.entry(w).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let n_docs = all_texts.len().max(1) as f64;
+    let mut scored: Vec<(String, f64)> = tf.into_iter()
+        .map(|(term, count)| {
+            let idf = (n_docs / (*df.get(&term).unwrap_or(&1)) as f64).ln();
+            (term, count as f64 * idf)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().take(top_n).map(|(t, _)| t).collect()
+}
+
 /// query API doesn't expose ORDER BY, so we sort client-side after
 /// fetching `[0..offset+limit]`. See `query_documents` for the
 /// scaling envelope and the migration path off this implementation.

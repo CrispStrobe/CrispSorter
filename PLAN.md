@@ -746,13 +746,14 @@ re-queries.
 
 ### P24 — Discovery & clustering (planned)
 
-- [ ] **P24.1 — Topical clustering.**  K-means or hierarchical
-  agglomerative clustering on the existing dense-embedding vectors
-  (no LLM needed for v1).  `LocalIndex::cluster_documents(k)` fetches
-  embeddings, runs clustering, names each cluster via top TF-IDF terms
-  from its members.  Tauri command `index_cluster_documents`.  Frontend:
-  cluster panel in the Dashboard showing named clusters with doc counts,
-  clickable to browse.  Follow-up: LLM-generated cluster labels.
+- [x] **P24.1 — Topical clustering.**  ✅ SHIPPED (2026-07-02).
+  K-means++ on dense embeddings with TF-IDF term-based cluster naming.
+  `LocalIndex::cluster_documents(k)` fetches all embeddings, runs
+  K-means++ (20 Lloyd iterations), names each cluster by top TF-IDF
+  terms.  Tauri command `index_cluster_documents`.  CLI:
+  `crispsorter index cluster --k 5`.  Frontend: CorpusDashboard
+  "Topical Clusters" panel with k selector + cluster cards showing
+  name, doc count, and sample titles.
 
 - [x] **P24.2 — Search history panel.**  Persist last 50 queries in
   the Tauri plugin-store under key `searchHistory`.  Frontend: history
@@ -954,44 +955,21 @@ Features that turn CrispSorter from a read-only document intelligence
 tool into a full document lifecycle platform.  The heaviest items are
 PDF editing and form creation; the rest are moderate or small.
 
-- [ ] **P27.1 — PDF viewer + page-level operations.**  A proper
-  in-app PDF viewer (PDFium-rendered page thumbnails + full-page
-  preview with zoom/pan) plus the page-level manipulation toolkit:
-  - **View** — paginated render, page-fit / width-fit / zoom slider,
-    keyboard navigation (PgUp/PgDn, Home/End).
-  - **Reorder pages** — drag-and-drop in the thumbnail strip.
-  - **Extract pages** — select pages → export as a new PDF.
-  - **Remove pages** — delete selected pages, save in-place or as copy.
-  - **Crop** — draw a crop rectangle on a page, apply to selected
-    pages or all; rewrites the `/MediaBox` + `/CropBox`.
-  - **Merge** — combine multiple PDFs into one (multi-file picker).
-  - **Split** — split by page range, by blank-page detection, or
-    every N pages.
-  - **Add page numbers** — configurable position (header/footer,
-    left/centre/right), font size, format ("Page N", "N / M",
-    Roman numerals), skip-first-page option.  Rendered as a text
-    content-stream overlay on each page.
-  Rust: `lopdf` (already in deps) for page-tree manipulation + PDFium
-  for rendering.  Frontend: dedicated "PDF Tools" tab with thumbnail
-  sidebar + main canvas.  CLI: `crispsorter pdf merge|split|extract|
-  remove|crop|number …`.  ~12–16 h for the full set.
+- [x] **P27.1 — PDF viewer + page-level operations.**  ✅ SHIPPED
+  (v0.8.0, 2026-06-21).  Universal `DocumentViewer` component with
+  pdfjs-dist canvas rendering (page nav, zoom, text selection) +
+  `pdf_ops.rs` Rust module with 12 lopdf operations: reorder, extract,
+  remove, rotate, crop, merge, split, add page numbers, watermark,
+  insert blank, edit metadata.  `PdfTools.svelte` tab with page sidebar
+  + operation panels.  CLI `crispsorter pdf <subcommand>` (12 verbs).
+  All registered as Tauri commands (desktop + mobile).
 
-- [ ] **P27.2 — PDF text extraction & OCR overlay.**  Three related
-  capabilities for working with PDF text content:
-  - **Extract text** — copy all text from a (digital) PDF preserving
-    reading order.  Uses the existing `pdfjs-dist` + `pdf-extract`
-    pipeline but exposed as a standalone "Extract Text" button in the
-    PDF Tools tab → clipboard or `.txt` file.
-  - **OCR with invisible text layer** — run the OCR pipeline on a
-    scanned PDF and write the recognised text as an invisible overlay
-    behind each page image (the existing `ocr --render pdf` path).
-    The result looks identical to the original but is fully searchable
-    and copy-pasteable.  Exposed as "Make Searchable" in PDF Tools.
-  - **OCR and extract text** — OCR a scanned PDF and immediately
-    output the recognised text (no PDF rewrite).  One-click "OCR →
-    Text" button.
-  These are largely wired already via the OCR Workbench and CLI; this
-  item surfaces them in the PDF Tools tab with a streamlined UX.  ~4 h.
+- [x] **P27.2 — PDF text extraction & OCR overlay.**  ✅ Already
+  shipped across prior phases.  Extract text: `extract_pdf_native`
+  Tauri command + CLI.  OCR → searchable PDF: `ocr --render pdf` CLI
+  + `tool_ocr_export` Tauri command (+ stamp_text in v0.8.1).  OCR →
+  text: OCR Workbench + `crispsorter ocr --render text`.  All three
+  capabilities reachable from the existing UI surfaces.
 
 - [ ] **P27.3 — PDF text editing (in-place).**  Edit text paragraphs
   in a PDF by rewriting content streams.  Scope is intentionally

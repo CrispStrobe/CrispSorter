@@ -4781,6 +4781,36 @@ pub async fn index_corpus_stats(
     local.corpus_stats().await.map_err(|e| e.to_string())
 }
 
+/// One cluster from K-means topical clustering.
+#[derive(serde::Serialize, Clone)]
+pub struct Cluster {
+    pub id: u32,
+    pub name: String,
+    pub doc_count: usize,
+    pub top_terms: Vec<String>,
+    pub sample_titles: Vec<String>,
+    pub member_doc_ids: Vec<String>,
+}
+
+/// P24.1 — Topical clustering on the embedding column.
+#[tauri::command]
+pub async fn index_cluster_documents(
+    state: State<'_, AppState>,
+    k: usize,
+) -> Result<Vec<Cluster>, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".into());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Clustering requires the local backend")?
+        .clone();
+    drop(lock);
+    local.cluster_documents(k).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod workbench_tests {
     use super::{OcrRegionDto, ocr_doc_open};
