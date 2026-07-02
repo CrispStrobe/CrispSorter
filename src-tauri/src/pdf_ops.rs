@@ -689,18 +689,50 @@ pub fn encrypt_pdf(path: &Path, config: &EncryptConfig, out_path: &Path) -> Resu
 
 // ── Sanitise (strip hidden metadata) ────────────────────────────────
 
-/// Remove all metadata, JavaScript, thumbnails, and other hidden
-/// content from a PDF for privacy.
+/// Fine-grained options for what to strip during sanitisation.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SanitiseOptions {
+    pub strip_info: bool,
+    pub strip_xmp: bool,
+    pub strip_javascript: bool,
+    pub strip_embedded_files: bool,
+    pub strip_open_action: bool,
+    pub strip_thumbnails: bool,
+    pub strip_annotations: bool,
+}
+
+impl Default for SanitiseOptions {
+    fn default() -> Self {
+        Self {
+            strip_info: true,
+            strip_xmp: true,
+            strip_javascript: true,
+            strip_embedded_files: true,
+            strip_open_action: true,
+            strip_thumbnails: true,
+            strip_annotations: true,
+        }
+    }
+}
+
+/// Remove hidden metadata from a PDF.  Uses `SanitiseOptions` to
+/// control which categories are stripped.
 pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String> {
+    sanitise_pdf_with_options(path, &SanitiseOptions::default(), out_path)
+}
+
+pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: &Path) -> Result<Vec<String>, String> {
     let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
     let mut stripped = Vec::new();
 
     // 1. Remove /Info dictionary
-    if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
-        let info_id = *info_id;
-        doc.objects.remove(&info_id);
-        doc.trailer.remove(b"Info");
-        stripped.push("Info dictionary".into());
+    if opts.strip_info {
+        if let Ok(Object::Reference(info_id)) = doc.trailer.get(b"Info") {
+            let info_id = *info_id;
+            doc.objects.remove(&info_id);
+            doc.trailer.remove(b"Info");
+            stripped.push("Info dictionary".into());
+        }
     }
 
     // Collect catalog-level IDs to remove (avoids borrow conflicts).
@@ -711,25 +743,29 @@ pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String>
 
     if let Ok(cat) = doc.catalog() {
         // 2. XMP metadata
-        if let Ok(Object::Reference(mid)) = cat.get(b"Metadata") {
-            meta_obj_id = Some(*mid);
-            remove_from_catalog.push(b"Metadata");
+        if opts.strip_xmp {
+            if let Ok(Object::Reference(mid)) = cat.get(b"Metadata") {
+                meta_obj_id = Some(*mid);
+                remove_from_catalog.push(b"Metadata");
+            }
         }
         // 4. OpenAction
-        if cat.has(b"OpenAction") {
+        if opts.strip_open_action && cat.has(b"OpenAction") {
             remove_from_catalog.push(b"OpenAction");
         }
         // 3. Names dict
-        if let Ok(Object::Reference(nid)) = cat.get(b"Names") {
-            names_id = Some(*nid);
+        if opts.strip_javascript || opts.strip_embedded_files {
+            if let Ok(Object::Reference(nid)) = cat.get(b"Names") {
+                names_id = Some(*nid);
+            }
         }
     }
 
     // Check what to remove from Names dict
     if let Some(nid) = names_id {
         if let Ok(Object::Dictionary(nd)) = doc.get_object(nid) {
-            if nd.has(b"JavaScript")    { names_remove.push(b"JavaScript".to_vec()); }
-            if nd.has(b"EmbeddedFiles") { names_remove.push(b"EmbeddedFiles".to_vec()); }
+            if opts.strip_javascript && nd.has(b"JavaScript")    { names_remove.push(b"JavaScript".to_vec()); }
+            if opts.strip_embedded_files && nd.has(b"EmbeddedFiles") { names_remove.push(b"EmbeddedFiles".to_vec()); }
         }
     }
 
@@ -760,16 +796,18 @@ pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String>
     }
 
     // 5. Strip per-page thumbnails and annotations
-    let ids = page_ids(&doc);
-    for &id in &ids {
-        if let Ok(Object::Dictionary(ref mut pg)) = doc.get_object_mut(id) {
-            if pg.has(b"Thumb") {
-                pg.remove(b"Thumb");
-                stripped.push("Page thumbnail".into());
-            }
-            if pg.has(b"Annots") {
-                pg.remove(b"Annots");
-                stripped.push("Annotations".into());
+    if opts.strip_thumbnails || opts.strip_annotations {
+        let ids = page_ids(&doc);
+        for &id in &ids {
+            if let Ok(Object::Dictionary(ref mut pg)) = doc.get_object_mut(id) {
+                if opts.strip_thumbnails && pg.has(b"Thumb") {
+                    pg.remove(b"Thumb");
+                    stripped.push("Page thumbnail".into());
+                }
+                if opts.strip_annotations && pg.has(b"Annots") {
+                    pg.remove(b"Annots");
+                    stripped.push("Annotations".into());
+                }
             }
         }
     }
@@ -878,8 +916,9 @@ pub mod tauri_commands {
     }
 
     #[tauri::command]
-    pub async fn pdf_sanitise(path: String, out_path: String) -> Result<Vec<String>, String> {
-        tokio::task::spawn_blocking(move || super::sanitise_pdf(Path::new(&path), Path::new(&out_path)))
+    pub async fn pdf_sanitise(path: String, options: Option<SanitiseOptions>, out_path: String) -> Result<Vec<String>, String> {
+        let opts = options.unwrap_or_default();
+        tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 }

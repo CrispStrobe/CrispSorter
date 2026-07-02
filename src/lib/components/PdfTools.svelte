@@ -52,6 +52,14 @@
     let encNoCopy = $state(false);
     let encNoModify = $state(false);
     let isEncrypted = $state(false);
+    // Sanitise options
+    let sanStripInfo = $state(true);
+    let sanStripXmp = $state(true);
+    let sanStripJs = $state(true);
+    let sanStripFiles = $state(true);
+    let sanStripOpen = $state(true);
+    let sanStripThumbs = $state(true);
+    let sanStripAnnots = $state(true);
 
     // ── File loading ───────────────────────────────────────────────────
     async function openFile() {
@@ -324,7 +332,13 @@
         if (!out) return;
         loading = true; error = ''; success = '';
         try {
-            const stripped = await invoke<string[]>('pdf_sanitise', { path: filePath, outPath: out });
+            const options = {
+                strip_info: sanStripInfo, strip_xmp: sanStripXmp,
+                strip_javascript: sanStripJs, strip_embedded_files: sanStripFiles,
+                strip_open_action: sanStripOpen, strip_thumbnails: sanStripThumbs,
+                strip_annotations: sanStripAnnots,
+            };
+            const stripped = await invoke<string[]>('pdf_sanitise', { path: filePath, options, outPath: out });
             success = stripped.length > 0
                 ? `${i18n.t.pdftools.sanitised}: ${stripped.join(', ')} → ${out}`
                 : `${i18n.t.pdftools.no_metadata_found} → ${out}`;
@@ -386,7 +400,7 @@
                     <Lock size={14} /> {i18n.t.pdftools.encrypt}
                 </button>
             {/if}
-            <button class="pt-btn" onclick={doSanitise} title={i18n.t.pdftools.sanitise}>
+            <button class="pt-btn" class:active={activeOp === 'sanitise'} onclick={() => activeOp = activeOp === 'sanitise' ? null : 'sanitise'} title={i18n.t.pdftools.sanitise}>
                 <Shield size={14} /> {i18n.t.pdftools.sanitise}
             </button>
         {/if}
@@ -464,6 +478,15 @@
                 <label><input type="checkbox" bind:checked={encNoCopy} /> {i18n.t.pdftools.no_copy}</label>
                 <label><input type="checkbox" bind:checked={encNoModify} /> {i18n.t.pdftools.no_modify}</label>
                 <button class="pt-btn-sm pt-go" onclick={doEncrypt}><Lock size={12} /> {i18n.t.pdftools.encrypt}</button>
+            {:else if activeOp === 'sanitise'}
+                <label><input type="checkbox" bind:checked={sanStripInfo} /> /Info (title, author…)</label>
+                <label><input type="checkbox" bind:checked={sanStripXmp} /> XMP metadata</label>
+                <label><input type="checkbox" bind:checked={sanStripJs} /> JavaScript</label>
+                <label><input type="checkbox" bind:checked={sanStripFiles} /> Embedded files</label>
+                <label><input type="checkbox" bind:checked={sanStripOpen} /> OpenAction</label>
+                <label><input type="checkbox" bind:checked={sanStripThumbs} /> Thumbnails</label>
+                <label><input type="checkbox" bind:checked={sanStripAnnots} /> Annotations</label>
+                <button class="pt-btn-sm pt-go" onclick={doSanitise}><Shield size={12} /> {i18n.t.pdftools.apply}</button>
             {/if}
         </div>
     {/if}

@@ -857,21 +857,18 @@ thousands for.
   Image overlay mode for scanned docs (alpha-blend two page images).
   Useful for contract review, invoice matching, duplicate resolution.
 
-- [ ] **P25.8 — Annotation layer.**  Persistent per-document
-  annotations stored in a `doc_annotations` SQLite table:
-  `(doc_id, page, x, y, w, h, type, text, color, created_at, user)`.
-  Types: highlight, note, rectangle, stamp.  Tauri commands for CRUD.
-  Frontend: overlay layer on the preview pane with drawing tools.
-  Annotations are searchable (full-text on the `text` column via
-  Tantivy).
+- [x] **P25.8 — Annotation layer.**  ✅ SHIPPED (2026-07-02).
+  `index/annotations.rs` — WAL-mode SQLite `annotations.db`.
+  `annotations` table (doc_id, page, x, y, w, h, ann_type, text,
+  color, created_at).  CRUD + search via LIKE on text.  Tauri
+  commands: `annotation_add/list/update/delete/search`.  3 tests.
 
-- [ ] **P25.9 — Reading queue & highlights.**  Mark passages in
-  search results or the preview pane → stored in a `highlights`
-  SQLite table `(doc_id, chunk_index, start_offset, end_offset,
-  note, color, created_at)`.  "Reading List" tab showing all
-  highlighted passages across documents, sorted by recency.
-  One-click navigate back to the source.  Spaced-repetition review
-  mode (optional).
+- [x] **P25.9 — Reading queue & highlights.**  ✅ SHIPPED (2026-07-02).
+  Same `annotations.db` — `highlights` table (doc_id, chunk_index,
+  start_offset, end_offset, text, note, color, created_at).
+  `reading_list(limit, offset)` returns all highlights sorted by
+  recency.  Tauri commands: `highlight_add/list/reading_list/
+  update/delete/count`.  Shared tests in annotations module.
 
 - [x] **P25.10 — .mbox / Outlook .msg email extraction.**  Extend
   P23.3's `.eml` extractor to handle `.mbox` (concatenated messages
