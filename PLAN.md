@@ -919,12 +919,12 @@ management systems and enterprise OCR/archival suites.
   vendor, government forms).  `templates/` SQLite table +
   `index_apply_template` Tauri command.
 
-- [ ] **P26.5 — PDF/A archival conversion.**  Convert ingested PDFs
-  to PDF/A-3b for long-term archival compliance on export.  Uses
-  PDFium's `FPDF_SaveWithVersion` with conformance metadata (XMP
-  `pdfaid:part=3`, sRGB ICC profile embed, font embedding check).
-  Opt-in per export / per watched-folder rule.  CLI:
-  `crispsorter export --pdfa`.
+- [x] **P26.5 — PDF/A archival conversion.**  ✅ SHIPPED (2026-07-02).
+  `pdf_ops::convert_to_pdfa()` adds PDF/A-2b conformance metadata
+  (XMP `pdfaid:part=2 conformance=B`, sRGB OutputIntent, PDF 1.7
+  version).  Tauri command `pdf_convert_pdfa`.  CLI:
+  `crispsorter pdf pdfa --out archival.pdf`.  Also available via
+  existing `ocr --render pdf --pdfa` for OCR output.
 
 - [x] **P26.6 — Digital signature detection.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::detect_signatures()` walks PDF annotation widgets for

@@ -1324,6 +1324,12 @@ enum PdfCmd {
     Signatures {
         file: PathBuf,
     },
+    /// Add PDF/A-2b conformance metadata to an existing PDF.
+    Pdfa {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
@@ -3901,6 +3907,11 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
         PdfCmd::IsEncrypted { file } => {
             let enc = pdf_ops::is_encrypted(&file)?;
             println!("{}", if enc { "encrypted" } else { "not encrypted" });
+            Ok(())
+        }
+        PdfCmd::Pdfa { file, out: out_path } => {
+            pdf_ops::convert_to_pdfa(&file, &out_path)?;
+            eprintln!("PDF/A-2b metadata added → {}", out_path.display());
             Ok(())
         }
         PdfCmd::Signatures { file } => {

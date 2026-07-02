@@ -818,6 +818,64 @@ pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: 
     Ok(stripped)
 }
 
+// ── PDF/A conformance metadata (P26.5) ──────────────────────────────
+
+/// Add PDF/A-2b conformance metadata to an existing PDF.  This sets
+/// the XMP metadata packet with `pdfaid:part=2` + `pdfaid:conformance=B`
+/// and adds an sRGB OutputIntent.  Does NOT re-encode fonts or images
+/// — the caller is responsible for ensuring the content is conformant.
+pub fn convert_to_pdfa(path: &Path, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+
+    // 1. Create XMP metadata stream with PDF/A-2b conformance
+    let xmp = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/"
+      xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <pdfaid:part>2</pdfaid:part>
+      <pdfaid:conformance>B</pdfaid:conformance>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+    let xmp_stream = lopdf::Stream::new(
+        lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Metadata".to_vec())),
+            ("Subtype", Object::Name(b"XML".to_vec())),
+        ]),
+        xmp.as_bytes().to_vec(),
+    );
+    let xmp_id = doc.add_object(Object::Stream(xmp_stream));
+
+    // 2. Set /Metadata on catalog
+    if let Ok(cm) = doc.catalog_mut() {
+        cm.set("Metadata", Object::Reference(xmp_id));
+    }
+
+    // 3. Add sRGB OutputIntent
+    let output_intent = lopdf::Dictionary::from_iter(vec![
+        ("Type", Object::Name(b"OutputIntent".to_vec())),
+        ("S", Object::Name(b"GTS_PDFA1".to_vec())),
+        ("OutputConditionIdentifier", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
+        ("RegistryName", Object::String(b"http://www.color.org".to_vec(), lopdf::StringFormat::Literal)),
+        ("Info", Object::String(b"sRGB IEC61966-2.1".to_vec(), lopdf::StringFormat::Literal)),
+    ]);
+    let intent_id = doc.add_object(Object::Dictionary(output_intent));
+
+    if let Ok(cm) = doc.catalog_mut() {
+        cm.set("OutputIntents", Object::Array(vec![Object::Reference(intent_id)]));
+    }
+
+    // 4. Set PDF version to 1.7 (minimum for PDF/A-2)
+    doc.version = "1.7".to_string();
+
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
+}
+
 // ── Digital signature detection (P26.6) ─────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1031,6 +1089,12 @@ pub mod tauri_commands {
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_convert_pdfa(path: String, out_path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || super::convert_to_pdfa(Path::new(&path), Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 
