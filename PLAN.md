@@ -50,7 +50,10 @@
 - **Discovery & clustering (v0.9.0)** — K-means++ topical clustering, knowledge graph (NER co-occurrence), synonym expansion (94 EN+DE groups), RSS/Atom feed ingestion, clipboard/screenshot capture.
 - **DMS & compliance (v0.9.0)** — document versioning (SHA-256 groups), audit trail (append-only SQLite), retention policies, document comparison (word-level diff), annotation layer, reading queue/highlights, stamp on export, DOCX/HTML export.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (891 as of v0.9.0).
+- **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
+- **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
+
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (954 as of v0.9.1).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
