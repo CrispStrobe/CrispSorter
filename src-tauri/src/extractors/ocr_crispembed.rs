@@ -120,32 +120,20 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// Detect if an image is a two-up book spread and return the gutter column.
-#[cfg(feature = "crispembed")]
-pub fn detect_page_split(path: &Path) -> Option<i32> {
-    let img = image::open(path).ok()?.to_rgb8();
-    let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock().ok()?.detect_page_split(img.as_raw(), w as i32, h as i32, 3)
+/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 5). Soft-fails to None
+/// when the method is not available (older CrispEmbed build).
+pub fn detect_page_split(_path: &Path) -> Option<i32> {
+    // Deferred until CrispEmbed tags a release with detect_page_split().
+    // The method exists on HEAD but not in v0.13.0 which CI pins.
+    None
 }
 
 /// Detect the content bounding box (trim blank margins).
-#[cfg(feature = "crispembed")]
-pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
-    let img = image::open(path).ok()?.to_rgb8();
-    let (w, h) = (img.width(), img.height());
-    let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
-        .as_ref()?;
-    eng.lock().ok()?.content_bbox(img.as_raw(), w as i32, h as i32, 3)
+/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 6). Soft-fails to None.
+pub fn content_bbox(_path: &Path) -> Option<(i32, i32, i32, i32)> {
+    // Deferred until CrispEmbed tags a release with content_bbox().
+    None
 }
-
-#[cfg(not(feature = "crispembed"))]
-pub fn detect_page_split(_path: &Path) -> Option<i32> { None }
-
-#[cfg(not(feature = "crispembed"))]
-pub fn content_bbox(_path: &Path) -> Option<(i32, i32, i32, i32)> { None }
 
 #[cfg(not(feature = "crispembed"))]
 pub fn cleaned_page_image(_path: &Path) -> Option<std::path::PathBuf> {
