@@ -4516,6 +4516,29 @@ pub async fn ocr_page_cleaned(page_path: String) -> Result<String, String> {
     .map_err(|e| format!("ocr_page_cleaned join error: {e}"))
 }
 
+/// Detect if a scanned image is a two-up book spread. Returns the gutter
+/// column (x pixel) to split at, or null if single page.
+#[tauri::command]
+pub async fn ocr_detect_page_split(page_path: String) -> Result<Option<i32>, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    tokio::task::spawn_blocking(move || {
+        Ok(crate::extractors::ocr_crispembed::detect_page_split(&path))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+/// Detect content bounding box (trim margins). Returns [x0, y0, x1, y1] or null.
+#[tauri::command]
+pub async fn ocr_content_bbox(page_path: String) -> Result<Option<(i32, i32, i32, i32)>, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    tokio::task::spawn_blocking(move || {
+        Ok(crate::extractors::ocr_crispembed::content_bbox(&path))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
 /// One page of corrected regions sent back by the workbench for export.
 #[derive(serde::Deserialize)]
 pub struct WorkbenchPageInput {

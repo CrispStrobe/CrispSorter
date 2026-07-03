@@ -382,6 +382,18 @@ pub struct OcrCleanupSpec {
     pub deskew_max_angle: f32,
     #[serde(default)]
     pub denoise: bool, // NAFNet tier-2
+    /// CrispEmbed v0.13.0+ — remove speckle noise (salt-and-pepper).
+    #[serde(default)]
+    pub despeckle: bool,
+    /// CrispEmbed v0.13.0+ — remove black borders/edges from scans.
+    #[serde(default)]
+    pub blackfilter: bool,
+    /// CrispEmbed v0.13.0+ — detect and split two-up book spreads.
+    #[serde(default)]
+    pub page_split: bool,
+    /// CrispEmbed v0.13.0+ — auto-crop to content bounding box.
+    #[serde(default)]
+    pub auto_crop: bool,
 }
 
 fn default_sauvola_k() -> f32 { 0.2 }
@@ -405,6 +417,10 @@ impl Default for OcrCleanupSpec {
             border_threshold: 0.15,
             deskew_max_angle: 15.0,
             denoise: false,
+            despeckle: false,
+            blackfilter: false,
+            page_split: false,
+            auto_crop: false,
         }
     }
 }

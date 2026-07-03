@@ -119,6 +119,34 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
     save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
 }
 
+/// Detect if an image is a two-up book spread and return the gutter column.
+#[cfg(feature = "crispembed")]
+pub fn detect_page_split(path: &Path) -> Option<i32> {
+    let img = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let eng = SCAN_CLEANUP
+        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .as_ref()?;
+    eng.lock().ok()?.detect_page_split(img.as_raw(), w as i32, h as i32, 3)
+}
+
+/// Detect the content bounding box (trim blank margins).
+#[cfg(feature = "crispembed")]
+pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
+    let img = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let eng = SCAN_CLEANUP
+        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .as_ref()?;
+    eng.lock().ok()?.content_bbox(img.as_raw(), w as i32, h as i32, 3)
+}
+
+#[cfg(not(feature = "crispembed"))]
+pub fn detect_page_split(_path: &Path) -> Option<i32> { None }
+
+#[cfg(not(feature = "crispembed"))]
+pub fn content_bbox(_path: &Path) -> Option<(i32, i32, i32, i32)> { None }
+
 #[cfg(not(feature = "crispembed"))]
 pub fn cleaned_page_image(_path: &Path) -> Option<std::path::PathBuf> {
     None
