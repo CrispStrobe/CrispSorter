@@ -165,4 +165,33 @@ mod tests {
         assert!(tags.contains(&"equal"));
         assert!(tags.contains(&"insert") || tags.contains(&"delete"));
     }
+
+    #[test]
+    fn changed_ratio_zero_for_identical() {
+        let r = compare_texts("hello world", "hello world");
+        assert!((r.changed_ratio).abs() < 0.001);
+    }
+
+    #[test]
+    fn changed_ratio_high_for_different() {
+        let r = compare_texts("aaa bbb ccc", "xxx yyy zzz");
+        assert!(r.changed_ratio > 0.5);
+    }
+
+    #[test]
+    fn long_text_comparison() {
+        let a = (0..100).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let b = (0..100).map(|i| if i == 50 { "CHANGED".to_string() } else { format!("word{i}") }).collect::<Vec<_>>().join(" ");
+        let r = compare_texts(&a, &b);
+        assert!(r.added_words >= 1);
+        assert!(r.removed_words >= 1);
+        assert!(r.changed_ratio < 0.1); // only 1 word changed out of 100
+    }
+
+    #[test]
+    fn whitespace_only_difference() {
+        let r = compare_texts("hello  world", "hello world");
+        // similar treats whitespace as separate tokens
+        assert!(r.segments.len() >= 1);
+    }
 }

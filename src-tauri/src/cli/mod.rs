@@ -8897,4 +8897,64 @@ mod tests {
 
         let _ = std::fs::remove_file(&base);
     }
+
+    // ── parse_page_spec tests ─────────────────────────────────────────
+    #[test]
+    fn parse_page_spec_single() {
+        assert_eq!(super::parse_page_spec("3", 10).unwrap(), vec![2]);
+    }
+    #[test]
+    fn parse_page_spec_multiple() {
+        assert_eq!(super::parse_page_spec("1,3,5", 10).unwrap(), vec![0, 2, 4]);
+    }
+    #[test]
+    fn parse_page_spec_range() {
+        assert_eq!(super::parse_page_spec("2-4", 10).unwrap(), vec![1, 2, 3]);
+    }
+    #[test]
+    fn parse_page_spec_mixed() {
+        assert_eq!(super::parse_page_spec("1,3-5,7", 10).unwrap(), vec![0, 2, 3, 4, 6]);
+    }
+    #[test]
+    fn parse_page_spec_out_of_range() {
+        assert!(super::parse_page_spec("11", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_zero() {
+        assert!(super::parse_page_spec("0", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_bad_input() {
+        assert!(super::parse_page_spec("abc", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_reversed_range() {
+        assert!(super::parse_page_spec("5-3", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_whitespace() {
+        assert_eq!(super::parse_page_spec(" 1 , 3 ", 10).unwrap(), vec![0, 2]);
+    }
+
+    // ── parse_split_ranges tests ──────────────────────────────────────
+    #[test]
+    fn parse_split_ranges_single() {
+        assert_eq!(super::parse_split_ranges("1-5", 10).unwrap(), vec![(0, 5)]);
+    }
+    #[test]
+    fn parse_split_ranges_multiple() {
+        assert_eq!(super::parse_split_ranges("1-5,6-10", 10).unwrap(), vec![(0, 5), (5, 10)]);
+    }
+    #[test]
+    fn parse_split_ranges_out_of_range() {
+        assert!(super::parse_split_ranges("1-15", 10).is_err());
+    }
+    #[test]
+    fn parse_split_ranges_missing_end() {
+        assert!(super::parse_split_ranges("5", 10).is_err());
+    }
+    #[test]
+    fn parse_split_ranges_bad_input() {
+        assert!(super::parse_split_ranges("a-b", 10).is_err());
+    }
 }

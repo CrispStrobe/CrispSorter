@@ -1708,4 +1708,125 @@ mod tests {
             _ => panic!("expected array"),
         }
     }
+
+    // ── Redaction tests ───────────────────────────────────────────────
+
+    #[test]
+    fn redact_regions_applies_boxes() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("redacted.pdf");
+        let regions = vec![
+            RedactionSpec { page: 0, x: 50.0, y: 50.0, w: 100.0, h: 20.0 },
+            RedactionSpec { page: 1, x: 10.0, y: 10.0, w: 50.0, h: 50.0 },
+        ];
+        let count = redact_regions(&pdf, &regions, &out).unwrap();
+        assert_eq!(count, 2);
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn redact_regions_out_of_range() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("bad.pdf");
+        let regions = vec![RedactionSpec { page: 5, x: 0.0, y: 0.0, w: 10.0, h: 10.0 }];
+        assert!(redact_regions(&pdf, &regions, &out).is_err());
+    }
+
+    #[test]
+    fn redact_regions_empty() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("empty.pdf");
+        let count = redact_regions(&pdf, &[], &out).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn redact_text_patterns_in_metadata() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("redacted_meta.pdf");
+        let count = redact_text_patterns(&pdf, &["Tester".into()], &out).unwrap();
+        assert_eq!(count, 1);
+        // Author "Tester" should be redacted in /Info
+        let info = pdf_info(&out).unwrap();
+        assert_ne!(info.author.as_deref(), Some("Tester"));
+    }
+
+    #[test]
+    fn redact_text_patterns_empty() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("empty_redact.pdf");
+        let count = redact_text_patterns(&pdf, &[], &out).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ── PDF/A tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn convert_pdfa_creates_valid_output() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("pdfa.pdf");
+        convert_to_pdfa(&pdf, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+        // Verify the output file is larger (has XMP + OutputIntent)
+        let orig_size = std::fs::metadata(&pdf).unwrap().len();
+        let pdfa_size = std::fs::metadata(&out).unwrap().len();
+        assert!(pdfa_size > orig_size);
+    }
+
+    // ── Signature detection tests ─────────────────────────────────────
+
+    #[test]
+    fn detect_signatures_none_on_unsigned() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let sigs = detect_signatures(&pdf).unwrap();
+        assert!(sigs.is_empty());
+    }
+
+    // ── Sanitise options tests ────────────────────────────────────────
+
+    #[test]
+    fn sanitise_selective_strips_only_requested() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("selective.pdf");
+        // Only strip Info, keep everything else
+        let opts = SanitiseOptions {
+            strip_info: true,
+            strip_xmp: false,
+            strip_javascript: false,
+            strip_embedded_files: false,
+            strip_open_action: false,
+            strip_thumbnails: false,
+            strip_annotations: false,
+        };
+        let stripped = sanitise_pdf_with_options(&pdf, &opts, &out).unwrap();
+        assert!(stripped.contains(&"Info dictionary".to_string()));
+        assert!(!stripped.contains(&"XMP metadata".to_string()));
+    }
+
+    #[test]
+    fn sanitise_strip_nothing() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("noop.pdf");
+        let opts = SanitiseOptions {
+            strip_info: false, strip_xmp: false, strip_javascript: false,
+            strip_embedded_files: false, strip_open_action: false,
+            strip_thumbnails: false, strip_annotations: false,
+        };
+        let stripped = sanitise_pdf_with_options(&pdf, &opts, &out).unwrap();
+        assert!(stripped.is_empty());
+        // Output should still be valid
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
 }
