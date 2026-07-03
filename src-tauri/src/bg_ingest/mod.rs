@@ -307,7 +307,16 @@ async fn worker_loop(
         {
             let mut g = state.lock().await;
             match result {
-                Ok(()) => g.done += 1,
+                Ok(()) => {
+                    g.done += 1;
+                    // Audit trail: log successful ingest
+                    let path_str = next.path.to_string_lossy();
+                    if let Ok(data_dir) = app.state::<crate::AppState>().data_dir.lock().await.as_ref().ok_or(()) {
+                        if let Ok(audit) = crate::audit::AuditLog::open_or_create(data_dir) {
+                            let _ = audit.log("ingest", None, &path_str, "bg_ingest");
+                        }
+                    }
+                }
                 Err(e) => {
                     g.errored += 1;
                     g.last_error = Some(e);

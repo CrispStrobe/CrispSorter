@@ -327,6 +327,31 @@
         loading = false;
     }
 
+    async function doDetectSignatures() {
+        loading = true; error = ''; success = '';
+        try {
+            const sigs = await invoke<any[]>('pdf_detect_signatures', { path: filePath });
+            if (sigs.length === 0) {
+                success = 'No digital signatures found.';
+            } else {
+                success = `${sigs.length} signature(s): ${sigs.map((s: any) => s.name || s.filter || 'unsigned').join(', ')}`;
+            }
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
+    async function doPdfa() {
+        const out = await pickSavePath('archival.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            await invoke('pdf_convert_pdfa', { path: filePath, outPath: out });
+            success = `PDF/A-2b → ${out}`;
+            loadPdf(out);
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
     async function doSanitise() {
         const out = await pickSavePath('sanitised.pdf');
         if (!out) return;
@@ -402,6 +427,12 @@
             {/if}
             <button class="pt-btn" class:active={activeOp === 'sanitise'} onclick={() => activeOp = activeOp === 'sanitise' ? null : 'sanitise'} title={i18n.t.pdftools.sanitise}>
                 <Shield size={14} /> {i18n.t.pdftools.sanitise}
+            </button>
+            <button class="pt-btn" onclick={doDetectSignatures} title="Detect digital signatures">
+                ✎
+            </button>
+            <button class="pt-btn" onclick={doPdfa} title="Convert to PDF/A-2b">
+                A
             </button>
         {/if}
     </div>

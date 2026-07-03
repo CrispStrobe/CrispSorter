@@ -1963,6 +1963,13 @@ pub async fn index_delete_document(
         .map_err(|e| e.to_string())?;
     writer.commit().map_err(|e| e.to_string())?;
 
+    // Audit trail
+    if let Ok(dir) = state.data_dir.lock().await.as_ref().ok_or(()) {
+        if let Ok(audit) = crate::audit::AuditLog::open_or_create(dir) {
+            let _ = audit.log("delete", Some(&doc_id), "", "gui");
+        }
+    }
+
     Ok(())
 }
 

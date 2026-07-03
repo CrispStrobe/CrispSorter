@@ -59,6 +59,21 @@
         }
     }
 
+    // Knowledge graph
+    interface GraphNode { id: string; label: string; group: string; doc_count: number; }
+    interface GraphEdge { source: string; target: string; weight: number; }
+    interface EntityGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
+    let graph = $state<EntityGraph | null>(null);
+    let graphLoading = $state(false);
+
+    async function loadGraph() {
+        graphLoading = true;
+        try {
+            graph = await invoke<EntityGraph>('index_entity_graph', { minCooccurrence: 2, maxNodes: 50 });
+        } catch { graph = null; }
+        graphLoading = false;
+    }
+
     onMount(() => { loadStats(); });
 </script>
 
@@ -201,6 +216,35 @@
                     </div>
                 {:else if !clusterLoading}
                     <p class="muted">Click "Cluster" to group documents by embedding similarity.</p>
+                {/if}
+            </section>
+
+            <!-- Knowledge graph -->
+            <section class="panel">
+                <h3>
+                    <Network size={14} /> Entity Graph
+                    <span class="cluster-controls">
+                        <button class="cluster-btn" onclick={loadGraph} disabled={graphLoading}>
+                            {#if graphLoading}<Loader2 size={12} class="spin" />{:else}Build{/if}
+                        </button>
+                    </span>
+                </h3>
+                {#if graph && graph.nodes.length > 0}
+                    <div class="graph-info">
+                        {graph.nodes.length} entities, {graph.edges.length} co-occurrences
+                    </div>
+                    <div class="cluster-list">
+                        {#each graph.nodes.slice(0, 20) as node (node.id)}
+                            <div class="cluster-card">
+                                <div class="cluster-header">
+                                    <strong>{node.label}</strong>
+                                    <span class="cluster-count">{node.group} · {node.doc_count} docs</span>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {:else if !graphLoading}
+                    <p class="muted">Click "Build" to generate entity co-occurrence graph from NER tags.</p>
                 {/if}
             </section>
         </div>

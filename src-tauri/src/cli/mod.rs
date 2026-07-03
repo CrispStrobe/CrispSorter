@@ -2364,6 +2364,70 @@ enum IndexCmd {
     },
     /// List available embedder models from the CrispEmbed registry.
     ListModels,
+    /// Show version history for a document.
+    Versions {
+        /// Document ID or file path.
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Query the audit trail.
+    AuditLog {
+        /// Filter by action type (search, open, delete, ingest, export).
+        #[arg(long)]
+        action: Option<String>,
+        /// Filter by document ID.
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// List retention policy rules.
+    RetentionRules,
+    /// Add a retention policy rule.
+    RetentionAdd {
+        #[arg(long)]
+        name: String,
+        /// "folder" or "tag"
+        #[arg(long, default_value = "folder")]
+        match_type: String,
+        #[arg(long)]
+        match_value: String,
+        #[arg(long)]
+        archive_after_days: Option<i64>,
+        #[arg(long)]
+        delete_after_days: Option<i64>,
+    },
+    /// Compare two documents by their doc_ids.
+    Compare {
+        #[arg(long)]
+        doc_id_a: String,
+        #[arg(long)]
+        doc_id_b: String,
+    },
+    /// Build the entity co-occurrence knowledge graph.
+    EntityGraph {
+        #[arg(long, default_value_t = 2)]
+        min_cooccurrence: usize,
+        #[arg(long, default_value_t = 100)]
+        max_nodes: usize,
+    },
+    /// Fetch and parse an RSS/Atom feed.
+    Feed {
+        /// Feed URL to fetch and parse.
+        url: String,
+    },
+    /// Export a document's text to DOCX or HTML.
+    Export {
+        /// Document ID to export.
+        doc_id: String,
+        /// Output format: docx or html.
+        #[arg(long, default_value = "html")]
+        format: String,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -3685,6 +3749,146 @@ async fn cmd_index_async(
                     OutFormat::Text => println!("CrispEmbed not compiled in; no model registry available."),
                 }
             }
+        }
+        IndexCmd::Versions { doc_id, path } => {
+            let store = crate::index::versioning::VersionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let versions = store.get_versions(doc_id.as_deref(), path.as_deref())
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&versions).unwrap_or_default()),
+                OutFormat::Text => {
+                    if versions.is_empty() { println!("No version history found."); }
+                    else {
+                        for v in &versions {
+                            println!("v{} — {} ({})", v.version_seq, v.doc_id,
+                                v.title.as_deref().unwrap_or("untitled"));
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::AuditLog { action, doc_id, limit } => {
+            let log = crate::audit::AuditLog::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let entries = log.query(None, action.as_deref(), doc_id.as_deref(), limit, 0)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entries).unwrap_or_default()),
+                OutFormat::Text => {
+                    if entries.is_empty() { println!("No audit entries."); }
+                    else {
+                        for e in &entries {
+                            println!("[{}] {} {} — {}",
+                                e.user_agent, e.action,
+                                e.doc_id.as_deref().unwrap_or(""),
+                                e.detail);
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::RetentionRules => {
+            let store = crate::index::retention::RetentionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let rules = store.list_rules().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rules).unwrap_or_default()),
+                OutFormat::Text => {
+                    if rules.is_empty() { println!("No retention rules."); }
+                    else {
+                        for r in &rules {
+                            println!("{}: {} match={} archive={}d delete={}d {}",
+                                r.id, r.name, r.match_value,
+                                r.archive_after_days.unwrap_or(-1),
+                                r.delete_after_days.unwrap_or(-1),
+                                if r.enabled { "ON" } else { "OFF" });
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::RetentionAdd { name, match_type, match_value, archive_after_days, delete_after_days } => {
+            let store = crate::index::retention::RetentionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let id = store.add_rule(&name, &match_type, &match_value, archive_after_days, delete_after_days)
+                .map_err(|e| e.to_string())?;
+            eprintln!("Added retention rule #{id}: {name}");
+        }
+        IndexCmd::Compare { doc_id_a, doc_id_b } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let text_a = local.fetch_full_text(&doc_id_a).await.map_err(|e| e.to_string())?;
+            let text_b = local.fetch_full_text(&doc_id_b).await.map_err(|e| e.to_string())?;
+            let result = crate::index::comparison::compare_texts(&text_a, &text_b);
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default()),
+                OutFormat::Text => {
+                    println!("Words A: {} | Words B: {} | Added: {} | Removed: {} | Changed: {:.1}%",
+                        result.total_words_a, result.total_words_b,
+                        result.added_words, result.removed_words,
+                        result.changed_ratio * 100.0);
+                }
+            }
+        }
+        IndexCmd::EntityGraph { min_cooccurrence, max_nodes } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let facets = local.tag_facets(&Default::default(), 500)
+                .await.map_err(|e| e.to_string())?;
+            // Filter to entity tags
+            let entity_tags: Vec<_> = facets.into_iter()
+                .filter(|f| f.tag.contains(':') && matches!(f.tag.split(':').next().unwrap_or(""), "person" | "org" | "loc" | "date"))
+                .take(max_nodes)
+                .collect();
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entity_tags).unwrap_or_default()),
+                OutFormat::Text => {
+                    if entity_tags.is_empty() { println!("No entity tags found (run NER at ingest)."); }
+                    else {
+                        for t in &entity_tags { println!("  {} ({})", t.tag, t.count); }
+                    }
+                }
+            }
+        }
+        #[cfg(feature = "desktop")]
+        IndexCmd::Feed { url } => {
+            let feed = crate::extractors::feed::fetch_and_parse(&url).await
+                .map_err(|e| format!("feed: {e}"))?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&feed).unwrap_or_default()),
+                OutFormat::Text => {
+                    println!("Feed: {}", feed.feed_title.as_deref().unwrap_or("(untitled)"));
+                    println!("{} entries", feed.entries.len());
+                    for e in feed.entries.iter().take(10) {
+                        println!("  · {} — {}", e.title, e.url.as_deref().unwrap_or(""));
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "desktop"))]
+        IndexCmd::Feed { .. } => {
+            return Err("feed command requires --features desktop".into());
+        }
+        IndexCmd::Export { doc_id, format, out: out_path } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let text = local.fetch_full_text(&doc_id).await.map_err(|e| e.to_string())?;
+            let title = doc_id.clone(); // Use doc_id as fallback title
+            match format.as_str() {
+                #[cfg(feature = "desktop")]
+                "docx" => {
+                    crate::extractors::export::export_to_docx(&title, &text, &out_path)
+                        .map_err(|e| format!("docx export: {e}"))?;
+                }
+                #[cfg(feature = "desktop")]
+                "html" => {
+                    crate::extractors::export::export_to_html(&title, &text, &out_path)
+                        .map_err(|e| format!("html export: {e}"))?;
+                }
+                _ => return Err(format!("Unknown export format: {format}. Use docx or html.")),
+            }
+            eprintln!("Exported → {}", out_path.display());
         }
     }
     Ok(())

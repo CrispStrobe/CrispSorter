@@ -745,6 +745,8 @@
             if (refinementScope.length > 0) refinementScope = [];
             // P24.2 — record in search history
             addToHistory(searchQuery, mode, results.length);
+            // P25.2 — audit trail
+            auditSearch(searchQuery);
         } catch (e: any) {
             error   = String(e);
             results = [];
@@ -778,6 +780,36 @@
         } finally {
             loading = false;
         }
+    }
+
+    // P27.10 — Export a search result to HTML/DOCX
+    async function exportDoc(r: SearchResult, fmt: string) {
+        try {
+            const savePath = await save({ filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }], defaultPath: `${r.title || r.doc_id}.${fmt}` });
+            if (!savePath) return;
+            await invoke(`export_to_${fmt}`, { title: r.title || r.filename || '', body: r.snippet || '', outPath: savePath });
+        } catch (e: any) { console.warn('Export failed:', e); }
+    }
+
+    // P25.9 — Add passage to reading list
+    async function highlightPassage(r: SearchResult) {
+        try {
+            await invoke('highlight_add', {
+                docId: r.doc_id,
+                chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
+                startOffset: 0,
+                endOffset: (r.snippet || '').length,
+                text: (r.snippet || '').replace(/<\/?mark>/g, '').slice(0, 500),
+                note: '',
+                color: '#60a5fa',
+            });
+        } catch (e: any) { console.warn('Highlight failed:', e); }
+    }
+
+    // P25.2 — Log search to audit trail
+    async function auditSearch(q: string) {
+        try { await invoke('audit_log_event', { action: 'search', docId: null, detail: `query=${q}` }); }
+        catch { /* best-effort */ }
     }
 
     // P23 — search within current results (progressive refinement)
@@ -1346,6 +1378,16 @@
                                 onclick={(e) => { e.stopPropagation(); findSimilar(r); }}
                                 title="Find similar documents">
                                 ≈
+                            </button>
+                            <button class="open-btn"
+                                onclick={(e) => { e.stopPropagation(); exportDoc(r, 'html'); }}
+                                title="Export as HTML">
+                                ⤓
+                            </button>
+                            <button class="open-btn"
+                                onclick={(e) => { e.stopPropagation(); highlightPassage(r); }}
+                                title="Add to reading list">
+                                ★
                             </button>
                             {#if group.chunks.length > 1}
                                 {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}

@@ -71,7 +71,7 @@
         Scan, Edit, Zap, Trash2, Download, Plus, HardDrive, Code,
         Rocket, FileText, Brain, Square, ChevronUp, ChevronDown, Info,
         RotateCcw, Search, CheckCircle2, AlertCircle, Beaker, Play, Check,
-        Server
+        Server, Clock
     } from 'lucide-svelte';
     import { open as openDialog, save, ask } from '@tauri-apps/plugin-dialog';
     import * as opener from '@tauri-apps/plugin-opener';
@@ -197,6 +197,54 @@
     let ocrPipelineLayoutThr  = $state(0.25);
     let ocrPipelineLayoutEngine = $state('rtdetr');
     let ocrPipelineDropHF     = $state(false);
+
+    // Audit log state
+    interface AuditEntry { id: number; ts: number; action: string; doc_id?: string; detail: string; user_agent: string; }
+    let auditEntries = $state<AuditEntry[]>([]);
+    async function loadAuditLog() {
+        try { auditEntries = await invoke<AuditEntry[]>('audit_query', { limit: 100 }); } catch { auditEntries = []; }
+    }
+
+    // Retention state
+    interface RetentionRule { id: number; name: string; match_type: string; match_value: string; archive_after_days?: number; delete_after_days?: number; enabled: boolean; }
+    let retentionRules = $state<RetentionRule[]>([]);
+    let newRuleName = $state('');
+    let newRuleMatchType = $state('folder');
+    let newRuleMatchValue = $state('');
+    let newRuleArchiveDays = $state<number | undefined>(undefined);
+    let newRuleDeleteDays = $state<number | undefined>(undefined);
+    async function loadRetentionRules() {
+        try { retentionRules = await invoke<RetentionRule[]>('retention_list_rules'); } catch { retentionRules = []; }
+    }
+    async function addRetentionRule() {
+        if (!newRuleName || !newRuleMatchValue) return;
+        try {
+            await invoke('retention_add_rule', {
+                name: newRuleName, matchType: newRuleMatchType, matchValue: newRuleMatchValue,
+                archiveAfterDays: newRuleArchiveDays ?? null, deleteAfterDays: newRuleDeleteDays ?? null,
+            });
+            newRuleName = ''; newRuleMatchValue = '';
+            loadRetentionRules();
+        } catch (e: any) { console.warn('add rule:', e); }
+    }
+    async function deleteRetentionRule(id: number) {
+        try { await invoke('retention_delete_rule', { id }); loadRetentionRules(); } catch {}
+    }
+    async function toggleRetentionRule(id: number, enabled: boolean) {
+        try { await invoke('retention_set_enabled', { id, enabled }); loadRetentionRules(); } catch {}
+    }
+
+    // Feed state
+    let feedUrl = $state('');
+    let feedLoading = $state(false);
+    let feedResult = $state<any>(null);
+    async function fetchFeed() {
+        if (!feedUrl) return;
+        feedLoading = true; feedResult = null;
+        try { feedResult = await invoke('feed_fetch_and_parse', { url: feedUrl }); }
+        catch (e: any) { console.warn('feed:', e); }
+        feedLoading = false;
+    }
 
     // Diagnostics panel state
     interface DiagResult {
@@ -2599,6 +2647,15 @@
             <button class="provider-btn" class:active={selectedProviderId === 'diagnostics'} onclick={() => selectedProviderId = 'diagnostics'}>
                 <span class="prov-label"><CheckCircle2 size={16} /> {i18n.t.settings.diagnostics_title ?? 'Diagnostics'}</span>
             </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'audit'} onclick={() => selectedProviderId = 'audit'}>
+                <span class="prov-label"><FileText size={16} /> Audit Log</span>
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'retention'} onclick={() => selectedProviderId = 'retention'}>
+                <span class="prov-label"><Clock size={16} /> Retention</span>
+            </button>
+            <button class="provider-btn" class:active={selectedProviderId === 'feeds'} onclick={() => selectedProviderId = 'feeds'}>
+                <span class="prov-label"><Globe size={16} /> RSS Feeds</span>
+            </button>
 
             <div class="sidebar-divider"></div>
             <!-- Long provider list (14 entries) is collapsed by default —
@@ -4584,6 +4641,96 @@
                 {/if}
             </div>
 
+        {:else if selectedProviderId === 'audit'}
+            <div class="header"><h1>Audit Log</h1></div>
+            <div class="provider-panel">
+                <p class="section-desc">Append-only log of all search, open, delete, ingest, and export operations.</p>
+                <button class="action-btn" onclick={loadAuditLog}>Load recent entries</button>
+                {#if auditEntries.length > 0}
+                    <div class="settings-table-wrap" style="max-height:400px; overflow-y:auto;">
+                        <table class="settings-table">
+                            <thead><tr><th>Time</th><th>Action</th><th>Doc ID</th><th>Detail</th><th>Agent</th></tr></thead>
+                            <tbody>
+                                {#each auditEntries as e (e.id)}
+                                    <tr>
+                                        <td>{new Date(e.ts).toLocaleString()}</td>
+                                        <td>{e.action}</td>
+                                        <td title={e.doc_id ?? ''}>{(e.doc_id ?? '').slice(0, 12)}</td>
+                                        <td title={e.detail}>{e.detail.slice(0, 40)}</td>
+                                        <td>{e.user_agent}</td>
+                                    </tr>
+                                {/each}
+                            </tbody>
+                        </table>
+                    </div>
+                {/if}
+            </div>
+
+        {:else if selectedProviderId === 'retention'}
+            <div class="header"><h1>Retention Policies</h1></div>
+            <div class="provider-panel">
+                <p class="section-desc">Automatic archival or deletion of documents based on age, folder, or tag.</p>
+                <button class="action-btn" onclick={loadRetentionRules}>Refresh rules</button>
+                {#if retentionRules.length > 0}
+                    <div class="settings-table-wrap">
+                        <table class="settings-table">
+                            <thead><tr><th>Name</th><th>Match</th><th>Archive (d)</th><th>Delete (d)</th><th>Enabled</th><th></th></tr></thead>
+                            <tbody>
+                                {#each retentionRules as r (r.id)}
+                                    <tr>
+                                        <td>{r.name}</td>
+                                        <td>{r.match_type}:{r.match_value}</td>
+                                        <td>{r.archive_after_days ?? '—'}</td>
+                                        <td>{r.delete_after_days ?? '—'}</td>
+                                        <td><input type="checkbox" checked={r.enabled} onchange={() => toggleRetentionRule(r.id, !r.enabled)} /></td>
+                                        <td><button class="icon-btn" onclick={() => deleteRetentionRule(r.id)}>×</button></td>
+                                    </tr>
+                                {/each}
+                            </tbody>
+                        </table>
+                    </div>
+                {:else}
+                    <p style="color:#71717a;">No retention rules configured.</p>
+                {/if}
+                <div style="margin-top:12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                    <input type="text" bind:value={newRuleName} placeholder="Rule name" class="settings-input" style="width:120px;" />
+                    <select bind:value={newRuleMatchType} class="settings-input" style="width:80px;"><option value="folder">folder</option><option value="tag">tag</option></select>
+                    <input type="text" bind:value={newRuleMatchValue} placeholder="Match value" class="settings-input" style="width:120px;" />
+                    <input type="number" bind:value={newRuleArchiveDays} placeholder="Archive (d)" class="settings-input" style="width:80px;" />
+                    <input type="number" bind:value={newRuleDeleteDays} placeholder="Delete (d)" class="settings-input" style="width:80px;" />
+                    <button class="action-btn" onclick={addRetentionRule}>Add rule</button>
+                </div>
+            </div>
+
+        {:else if selectedProviderId === 'feeds'}
+            <div class="header"><h1>RSS / Atom Feeds</h1></div>
+            <div class="provider-panel">
+                <p class="section-desc">Fetch and parse RSS/Atom feeds for ingestion.</p>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <input type="text" bind:value={feedUrl} placeholder="https://example.com/feed.xml" class="settings-input" style="flex:1;" />
+                    <button class="action-btn" onclick={fetchFeed} disabled={feedLoading}>{feedLoading ? 'Fetching…' : 'Fetch'}</button>
+                </div>
+                {#if feedResult}
+                    <div style="margin-top:8px;">
+                        <strong>{feedResult.feed_title ?? 'Feed'}</strong> — {feedResult.entries.length} entries
+                        <div class="settings-table-wrap" style="max-height:300px; overflow-y:auto; margin-top:6px;">
+                            <table class="settings-table">
+                                <thead><tr><th>Title</th><th>Author</th><th>Year</th></tr></thead>
+                                <tbody>
+                                    {#each feedResult.entries.slice(0, 20) as e}
+                                        <tr>
+                                            <td title={e.url ?? ''}>{e.title.slice(0, 60)}</td>
+                                            <td>{e.author ?? ''}</td>
+                                            <td>{e.year ?? ''}</td>
+                                        </tr>
+                                    {/each}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                {/if}
+            </div>
+
         {:else}
             <!-- Provider Settings (Local/Remote) -->
             <div class="header">
@@ -5021,6 +5168,7 @@
                     </div>
                 </div>
             {/if}
+
         {/if}
     </div>
 </div>
