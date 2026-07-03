@@ -16,11 +16,11 @@ on:
 # all jobs at once — no more 3-place edits.
 env:
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.11.8
+  CRISPEMBED_REF: f5e05975223a821fc1a0d96b7c644a0bb6286106
   CRISPASR_REPO: CrispStrobe/CrispASR
-  CRISPASR_REF: v0.6.6
+  CRISPASR_REF: fe7210af3ddf469ba10e6f45f140ab3d7115d1c0
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
-  CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
+  CRISPDOCX_REF: b1de892c6092bdf3306e442138475a7f94c19637
 
 jobs:
   release-required:
