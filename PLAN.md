@@ -891,14 +891,16 @@ thousands for.
 Features that close the remaining gaps against professional document
 management systems and enterprise OCR/archival suites.
 
-- [ ] **P26.1 — Document-type classification at ingest.**  Lightweight
-  ViT-based classifier (RVL-CDIP 16-class: letter, invoice, form,
-  email, memo, report, specification, etc.) run at ingest time via
-  CrispEmbed.  Stores `doctype:<class>` tag on each document —
-  lights up in the existing tag cloud, `--tag doctype:invoice` filter,
-  and faceted browse.  Enables automatic sort rules in Stapel keyed on
-  document type.  Falls back to "unknown" when crispembed is not
-  compiled in.
+- [x] **P26.1 — Document-type classification at ingest.**  ✅ SHIPPED
+  (2026-07-03).  `index/doctype.rs` — heuristic classifier based on
+  file extension + text content patterns (invoice/receipt keywords,
+  contract signals, letter/memo markers, form fields, report
+  structure).  18 document types: letter, invoice, receipt, form,
+  email, report, specification, presentation, spreadsheet, image,
+  audio, video, ebook, code, article, contract, memo, unknown.
+  Wired into bg_ingest — every document gets a `doctype:<class>`
+  tag automatically.  11 unit tests.  Follow-up: ViT-based
+  classifier for higher accuracy on scanned documents.
 
 - [ ] **P26.2 — Watched folder → auto-classify → auto-file.**  Unify
   the existing folder watcher (P5) with Stapel's AI sort pipeline and

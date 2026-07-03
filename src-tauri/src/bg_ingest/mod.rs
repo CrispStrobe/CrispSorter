@@ -767,6 +767,15 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 embedding_omni: None, // populated below
                 embedding_vit: None,  // populated below
             };
+
+            // P26.1 — Document-type classification at ingest
+            let doctype = crate::index::doctype::classify(
+                &raw.ext,
+                &raw.full_text,
+                raw.title.as_deref(),
+                None,
+            );
+            raw.tags.push(doctype.as_tag());
             // ── P17.5 / P17.7 — compute cross-modal embeddings ────────────
             // Run on a blocking thread since both CrispEmbed FFI calls are
             // CPU-bound (model inference). Soft-fail: log and continue with

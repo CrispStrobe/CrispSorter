@@ -13,6 +13,7 @@ pub mod reranker;
 pub mod skeleton;
 pub mod annotations;
 pub mod comparison;
+pub mod doctype;
 pub mod retention;
 pub mod task_failure;
 pub mod versioning;
