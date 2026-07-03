@@ -278,4 +278,58 @@ mod tests {
         assert_eq!(DocType::Invoice.as_tag(), "doctype:invoice");
         assert_eq!(DocType::Contract.as_tag(), "doctype:contract");
     }
+
+    #[test]
+    fn classify_specification() {
+        let text = "Technical Specification v2.3\n\nRevision History\n\nTable of Contents\n1. Scope\n2. Requirements\n3. Appendix\n\nThis specification defines the requirements for the new system architecture.";
+        assert_eq!(classify("pdf", text, None, Some(5)), DocType::Specification);
+    }
+
+    #[test]
+    fn classify_german_invoice() {
+        let text = format!("Rechnung\n\nRechnungsnummer: DE-2026-001\nFällig: 15.01.2026\nZwischensumme: 500,00 EUR\nMehrwertsteuer: 95,00 EUR\nGesamtbetrag: 595,00 EUR\n\n{}", "Zahlungsbedingungen gelten. ".repeat(15));
+        assert_eq!(classify("pdf", &text, None, Some(1)), DocType::Invoice);
+    }
+
+    #[test]
+    fn classify_german_letter() {
+        let text = format!("Sehr geehrte Frau Müller,\n\nhiermit möchte ich Ihnen mitteilen, dass wir Ihren Antrag geprüft haben. {}\n\nMit freundlichen Grüßen,\nDr. Schmidt", "Bitte beachten Sie die beigefügten Unterlagen. ".repeat(40));
+        assert_eq!(classify("pdf", &text, None, Some(1)), DocType::Letter);
+    }
+
+    #[test]
+    fn classify_empty_text() {
+        assert_eq!(classify("pdf", "", None, None), DocType::Unknown);
+    }
+
+    #[test]
+    fn classify_all_extensions_covered() {
+        // Verify all media extensions produce expected types
+        assert_eq!(classify("msg", "", None, None), DocType::Email);
+        assert_eq!(classify("mbox", "", None, None), DocType::Email);
+        assert_eq!(classify("mobi", "", None, None), DocType::Ebook);
+        assert_eq!(classify("ppt", "", None, None), DocType::Presentation);
+        assert_eq!(classify("xls", "", None, None), DocType::Spreadsheet);
+        assert_eq!(classify("wav", "", None, None), DocType::Audio);
+        assert_eq!(classify("mkv", "", None, None), DocType::Video);
+        assert_eq!(classify("go", "", None, None), DocType::Code);
+        assert_eq!(classify("java", "", None, None), DocType::Code);
+        assert_eq!(classify("svg", "", None, None), DocType::Image);
+    }
+
+    #[test]
+    fn as_str_roundtrip() {
+        // Verify all variants have valid str representations
+        let types = [
+            DocType::Letter, DocType::Invoice, DocType::Receipt, DocType::Form,
+            DocType::Email, DocType::Report, DocType::Specification,
+            DocType::Presentation, DocType::Spreadsheet, DocType::Image,
+            DocType::Audio, DocType::Video, DocType::Ebook, DocType::Code,
+            DocType::Article, DocType::Contract, DocType::Memo, DocType::Unknown,
+        ];
+        for t in &types {
+            assert!(!t.as_str().is_empty());
+            assert!(t.as_tag().starts_with("doctype:"));
+        }
+    }
 }

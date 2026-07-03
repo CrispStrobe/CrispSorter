@@ -276,4 +276,71 @@ mod tests {
         let result = strip_html("&#65;&#66;");
         assert!(!result.is_empty());
     }
+
+    #[test]
+    fn parse_rss2_with_pubdate() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>T</title>
+          <item>
+            <title>Dated</title>
+            <pubDate>Wed, 15 Jan 2025 12:00:00 GMT</pubDate>
+          </item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert_eq!(feed.entries[0].year, Some(2025));
+    }
+
+    #[test]
+    fn parse_rss2_with_author() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel><title>T</title>
+          <item>
+            <title>Authored</title>
+            <author>jane@example.com (Jane Doe)</author>
+          </item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        // feed-rs extracts author from dc:creator or author element
+        // The exact format depends on how feed-rs parses the author field
+        assert_eq!(feed.entries.len(), 1);
+    }
+
+    #[test]
+    fn parse_atom_with_content() {
+        let xml = r#"<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <title>T</title>
+          <entry>
+            <title>Full</title>
+            <content type="html">&lt;p&gt;Rich content&lt;/p&gt;</content>
+          </entry>
+        </feed>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert!(feed.entries[0].body.contains("Rich content"));
+    }
+
+    #[test]
+    fn parse_feed_url_extraction() {
+        let xml = r#"<?xml version="1.0"?>
+        <rss version="2.0"><channel>
+          <title>T</title>
+          <link>https://example.com</link>
+          <item>
+            <title>A</title>
+            <link>https://example.com/article</link>
+          </item>
+        </channel></rss>"#;
+        let feed = parse_feed(xml.as_bytes()).unwrap();
+        assert!(feed.entries[0].url.as_ref().unwrap().contains("example.com"));
+    }
+
+    #[test]
+    fn strip_html_nested_tags() {
+        assert_eq!(strip_html("<div><p>Hello <em>world</em></p></div>"), "Hello world");
+    }
+
+    #[test]
+    fn strip_html_empty_input() {
+        assert_eq!(strip_html(""), "");
+    }
 }

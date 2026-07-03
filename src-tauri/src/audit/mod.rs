@@ -263,4 +263,43 @@ mod tests {
         assert!(log.action_summary().unwrap().is_empty());
         assert!(log.query(None, None, None, 100, 0).unwrap().is_empty());
     }
+
+    #[test]
+    fn concurrent_writes() {
+        use std::sync::Arc;
+        let dir = TempDir::new().unwrap();
+        let log = Arc::new(AuditLog::open_or_create(dir.path()).unwrap());
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let l = log.clone();
+            handles.push(std::thread::spawn(move || {
+                l.log("action", None, &format!("detail-{i}"), "test").unwrap();
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
+        assert_eq!(log.count(None).unwrap(), 10);
+    }
+
+    #[test]
+    fn special_chars_in_detail() {
+        let dir = TempDir::new().unwrap();
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        log.log("search", None, "query='hello \"world\"' & <tag>", "gui").unwrap();
+        let entries = log.query(None, None, None, 1, 0).unwrap();
+        assert!(entries[0].detail.contains("\"world\""));
+        assert!(entries[0].detail.contains("<tag>"));
+    }
+
+    #[test]
+    fn reopen_preserves_data() {
+        let dir = TempDir::new().unwrap();
+        {
+            let log = AuditLog::open_or_create(dir.path()).unwrap();
+            log.log("a", None, "1", "gui").unwrap();
+            log.log("b", None, "2", "cli").unwrap();
+        }
+        // Reopen
+        let log = AuditLog::open_or_create(dir.path()).unwrap();
+        assert_eq!(log.count(None).unwrap(), 2);
+    }
 }

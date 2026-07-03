@@ -1829,4 +1829,126 @@ mod tests {
         let info = pdf_info(&out).unwrap();
         assert_eq!(info.page_count, 2);
     }
+
+    // ── Additional edge case tests ────────────────────────────────────
+
+    #[test]
+    fn merge_same_file_twice() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("doubled.pdf");
+        let total = merge_pdfs(&[&pdf, &pdf], &out).unwrap();
+        assert_eq!(total, 4);
+    }
+
+    #[test]
+    fn extract_all_pages_is_copy() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("copy.pdf");
+        extract_pages(&pdf, &[0, 1], &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 2);
+    }
+
+    #[test]
+    fn rotate_all_pages() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("rotated_all.pdf");
+        rotate_pages(&pdf, &[0, 1], 180, &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.pages[0].rotation, 180);
+        assert_eq!(info.pages[1].rotation, 180);
+    }
+
+    #[test]
+    fn add_page_numbers_all_positions() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        for pos in ["bottom-center", "bottom-left", "bottom-right", "top-center", "top-left", "top-right"] {
+            let out = dir.path().join(format!("num_{pos}.pdf"));
+            let config = PageNumberConfig { position: pos.into(), ..Default::default() };
+            add_page_numbers(&pdf, &config, &out).unwrap();
+            assert!(out.exists());
+        }
+    }
+
+    #[test]
+    fn watermark_custom_color() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("colored.pdf");
+        let config = WatermarkConfig {
+            text: "DRAFT".into(),
+            color: [1.0, 0.0, 0.0], // red
+            ..Default::default()
+        };
+        add_watermark(&pdf, &config, None, &out).unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn split_single_page_ranges() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out_dir = dir.path().join("single_splits");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let outputs = split_pdf(&pdf, &[(0, 1), (1, 2)], &out_dir, "test").unwrap();
+        assert_eq!(outputs.len(), 2);
+        for o in &outputs {
+            assert_eq!(pdf_info(Path::new(o)).unwrap().page_count, 1);
+        }
+    }
+
+    #[test]
+    fn reorder_duplicate_pages() {
+        // Reorder with duplicated indices (page 0 twice)
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("duped.pdf");
+        reorder_pages(&pdf, &[0, 0, 1], &out).unwrap();
+        let info = pdf_info(&out).unwrap();
+        assert_eq!(info.page_count, 3);
+    }
+
+    #[test]
+    fn metadata_edit_preserves_pages() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("meta_pages.pdf");
+        edit_metadata(&pdf, &MetadataEdit { title: Some("X".into()), ..Default::default() }, &out).unwrap();
+        assert_eq!(pdf_info(&out).unwrap().page_count, 2);
+    }
+
+    #[test]
+    fn encrypt_with_restricted_permissions() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("restricted.pdf");
+        let config = EncryptConfig {
+            owner_password: "admin".into(),
+            user_password: "view".into(),
+            allow_print: false,
+            allow_copy: false,
+            allow_modify: false,
+            ..Default::default()
+        };
+        encrypt_pdf(&pdf, &config, &out).unwrap();
+        assert!(is_encrypted(&out).unwrap());
+    }
+
+    #[test]
+    fn redact_multiple_regions_same_page() {
+        let dir = TempDir::new().unwrap();
+        let pdf = create_test_pdf(dir.path());
+        let out = dir.path().join("multi_redact.pdf");
+        let regions = vec![
+            RedactionSpec { page: 0, x: 10.0, y: 10.0, w: 50.0, h: 20.0 },
+            RedactionSpec { page: 0, x: 100.0, y: 100.0, w: 80.0, h: 30.0 },
+            RedactionSpec { page: 0, x: 200.0, y: 200.0, w: 60.0, h: 15.0 },
+        ];
+        let count = redact_regions(&pdf, &regions, &out).unwrap();
+        assert_eq!(count, 3);
+    }
 }

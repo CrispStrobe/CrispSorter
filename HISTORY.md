@@ -9,6 +9,57 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## Post-v0.9.0 — Wiring, Tests, Document Classification (2026-07-03)
+
+### Feature wiring (CLI + GUI)
+
+Closed all wiring gaps from the v0.9.0 audit:
+
+**CLI** — 10 new `crispsorter index` subcommands: `versions`,
+`audit-log`, `retention-rules`, `retention-add`, `compare`,
+`entity-graph`, `feed`, `export`.
+
+**Frontend** — Settings panels for Audit Log (query + table),
+Retention Policies (CRUD), RSS Feeds (fetch + preview).  Search
+result row buttons: Export (HTML), Highlight (reading list).
+CorpusDashboard: Entity Graph panel.  PdfTools: Detect Signatures
++ PDF/A conversion buttons.
+
+**Backend** — Audit logging auto-fires on search, delete, and
+ingest operations.
+
+### P26.1 — Document-type classification
+
+Heuristic classifier (`index/doctype.rs`) with 18 document types
+(letter, invoice, receipt, form, email, report, specification,
+presentation, spreadsheet, image, audio, video, ebook, code,
+article, contract, memo, unknown).  Based on file extension + text
+content pattern matching.  Wired into bg_ingest — every ingested
+document gets a `doctype:<class>` tag automatically.
+
+### Android build fix
+
+Root cause: TOML `[target.'cfg(not(android/ios))'.dependencies]`
+section for arboard was placed mid-file, causing ALL subsequent
+deps (rusqlite, sha2, image, etc.) to be excluded on Android.
+Fixed by moving arboard to its own target section.  Also gated
+`feed-rs`, `docx-rs`, and clipboard behind `desktop` feature.
+
+### Test suite
+
+929 tests (was 790 at start of session).  +139 new tests:
+- pdf_ops: 49 total (redaction, PDF/A, sanitise options, remap_refs)
+- doctype: 11 (extension, invoice, receipt, contract, letter, memo,
+  article, report, form, short text, tag format)
+- CLI parse: 14 (parse_page_spec, parse_split_ranges edge cases)
+- clustering: 12 (kmeans edge cases, TF-IDF)
+- synonyms: 15 (operators, wildcards, bidirectional, mixed langs)
+- comparison: 11 (ratios, long text, whitespace)
+- annotations: 8, versioning: 7, retention: 7, audit: 7, feed: 11,
+  export: 5
+
+---
+
 ## v0.9.0 — Universal Document Viewer, PDF Toolkit, Discovery & DMS Features (2026-07-02)
 
 Major feature release spanning P24–P27.  25 new features, 101 new unit

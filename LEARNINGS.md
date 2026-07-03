@@ -4,6 +4,32 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## TOML target-specific dependency sections (gotcha)
+
+A `[target.'cfg(...)'.dependencies]` section in Cargo.toml extends
+until the next `[section]` header.  If placed mid-file among regular
+`[dependencies]` entries, **all subsequent deps are swallowed into
+the target gate**.  This caused a v0.9.0 Android build failure where
+`rusqlite`, `sha2`, `image`, and 590+ other crates were silently
+excluded from the Android build because a `[target.'cfg(not(android))'
+.dependencies]` section for `arboard` was placed in the middle of the
+dependency list.
+
+**Rule:** Always place target-specific dependency sections at the
+bottom of Cargo.toml, grouped with other target sections — never
+inline them between regular deps.
+
+## lopdf 0.38 API notes
+
+- `as_dict()` returns `Result`, not `Option` — chain with `.ok()`
+- No `merge_document()` method — manual object copying with ID
+  remapping required for PDF merging
+- `CryptFilter` trait is `pub(crate)` — can't use V4/V5 encryption
+  directly; V2 (RC4-128) is the only option from outside the crate
+- `EncryptionVersion::V2` requires `/ID` in the trailer
+
+---
+
 ## CrispEmbed integration (P17)
 
 ### CrispEmbed structs are `Send` but not `Sync`
