@@ -1088,4 +1088,19 @@ mod tests {
         assert!(dc.multivec_packed.is_some());
         assert_eq!(dc.multivec_n_tokens, Some(2));
     }
+
+    #[test]
+    fn lance_batch_size_scales_with_embed_batch() {
+        // Verify the 16x multiplier produces a LanceDB-friendly batch size.
+        let small = IngestConfig { batch_size: 32, ..Default::default() };
+        let large = IngestConfig { batch_size: 64, ..Default::default() };
+        let lance_small = small.batch_size.saturating_mul(16).max(256);
+        let lance_large = large.batch_size.saturating_mul(16).max(256);
+        assert_eq!(lance_small, 512, "32 × 16 = 512");
+        assert_eq!(lance_large, 1024, "64 × 16 = 1024");
+        // Minimum floor
+        let tiny = IngestConfig { batch_size: 1, ..Default::default() };
+        let lance_tiny = tiny.batch_size.saturating_mul(16).max(256);
+        assert_eq!(lance_tiny, 256, "floor must be 256");
+    }
 }

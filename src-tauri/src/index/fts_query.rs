@@ -803,4 +803,36 @@ mod tests {
         // Empty input must return an empty string without panicking.
         assert_eq!(fuzzify_query(""), "", "empty input must produce empty output");
     }
+
+    #[test]
+    fn lex_mixed_case_within_pre() {
+        // W/ and PRE/ must be recognised in any casing.
+        let t1 = lex("a W/5 b").unwrap();
+        assert!(t1.iter().any(|t| matches!(t, Token::Within(5, false))));
+        let t2 = lex("a w/5 b").unwrap();
+        assert!(t2.iter().any(|t| matches!(t, Token::Within(5, false))));
+        let t3 = lex("a PRE/3 b").unwrap();
+        assert!(t3.iter().any(|t| matches!(t, Token::Within(3, true))));
+        let t4 = lex("a pre/3 b").unwrap();
+        assert!(t4.iter().any(|t| matches!(t, Token::Within(3, true))));
+    }
+
+    #[test]
+    fn lex_unicode_word_not_panics() {
+        // A multi-byte word like "über" must not panic on the W/ / PRE/
+        // byte-slice check — the `is_ascii()` guard protects it.
+        let tokens = lex("über Müller").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "über")));
+        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "Müller")));
+    }
+
+    #[test]
+    fn fuzzify_operators_case_insensitive() {
+        // Operators in any casing must be preserved by fuzzify_query.
+        for op in &["AND", "and", "And", "OR", "or", "NOT", "not"] {
+            let input = format!("climate {} weather", op);
+            let out = fuzzify_query(&input);
+            assert!(out.contains(op), "operator {op} must survive fuzzify: {out}");
+        }
+    }
 }

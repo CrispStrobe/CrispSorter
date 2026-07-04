@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (954 as of v0.9.1).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (974 as of v0.9.1+perf).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
@@ -1101,3 +1101,52 @@ PDF editing and form creation; the rest are moderate or small.
   annotations.  Returns list of what was stripped.  Tauri command
   `pdf_sanitise`.  CLI: `crispsorter pdf sanitise --out clean.pdf`.
   Frontend: "Sanitise" button in PDF Tools toolbar.
+
+### P28 — Performance optimization pass (2026-07-04)
+
+Systematic audit + optimisation of search, ingest, compile, and
+frontend hot paths.  13 new unit tests.
+
+- [x] **Search result cache.**  VecDeque LRU (O(1) eviction vs O(n)
+  `Vec::remove(0)`).  Direct field-by-field hashing of `SearchFilters`
+  instead of round-tripping through `serde_json::to_string`.  3 new
+  tests (LRU promotion, hash determinism, f64 bit-pattern hashing).
+- [x] **Zero-copy RRF merge.**  `rrf_merge_n` signature changed from
+  `&[Vec<String>]` to `&[&[&str]]` — eliminates per-doc-id String
+  cloning across all 4 RRF channels (FTS + dense + sparse + omni).
+  Internal `HashMap<String, _>` → `HashMap<&str, _>`.  Owned Strings
+  only materialised in the final output vec.  2 new tests.
+- [x] **Allocation-free operator detection.**  `to_uppercase()` →
+  `eq_ignore_ascii_case()` in `fts_query.rs` tokenizer, `fuzzify_query`,
+  and `synonyms.rs`.  Guard against multi-byte UTF-8 panic on the
+  `W/` / `PRE/` byte-slice check via `is_ascii()`.  4 new tests
+  (mixed-case W/PRE, Unicode word safety, fuzzify operators, synonym
+  operators).
+- [x] **Ingest: parallel image embeddings.**  ViT + Omni
+  `spawn_blocking` calls fired concurrently (both dispatched to the
+  blocking pool before either is awaited).  ~2× wall-time improvement
+  for dual-model image ingest.
+- [x] **Ingest: conditional texts.clone().**  `texts.clone()` for
+  `embed_full` now only happens when ColBERT is active; common path
+  (no ColBERT) avoids the per-batch String vector copy.
+- [x] **Ingest: single embedder lock.**  `model_id` read moved inside
+  the existing lock guard, eliminating a redundant `embedder.lock().await`
+  per batch.
+- [x] **Ingest: single fs::metadata call.**  Eliminated duplicate
+  `std::fs::metadata()` (was called for mtime-skip check, then again
+  for mtime + file_size).  1 new test.
+- [x] **LanceDB write batch size.**  Raised from 4× to 16× embed batch
+  size (128 → 512 at default batch_size=32).  Arrow RecordBatch
+  construction overhead is amortized over more rows.  1 new test.
+- [x] **Snippet token filter.**  Replaced `.cloned().collect()` with
+  in-place `.retain()` to avoid intermediate Vec allocation.  2 new tests.
+- [x] **Dependency trimming.**  tokio `"full"` → 7 specific features
+  (drops `net`, `signal`).  symphonia `"all"` → used codecs only
+  (drops `adpcm`, `mp1`, `mp2`).  Removed unused `similar "unicode"`
+  feature.  Removed duplicate `futures-util` dep (re-exported by
+  `futures`); updated 6 import sites.
+- [x] **Frontend: Vite vendor chunk splitting.**  `manualChunks` in
+  `vite.config.js` splits pdfjs-dist, mammoth, tesseract.js, katex,
+  deep-chat, web-llm, and HF transformers into separate lazy chunks.
+- [x] **Frontend: lazy WebLLM import.**  `@mlc-ai/web-llm` dynamically
+  imported inside `loadWebLLM()` instead of at module load time.

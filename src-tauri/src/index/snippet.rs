@@ -213,4 +213,22 @@ mod tests {
         assert!(s.contains("<mark>quick</mark>"), "got: {s}");
         assert!(s.contains("<mark>fox</mark>"), "got: {s}");
     }
+
+    #[test]
+    fn single_char_token_retained_when_only_option() {
+        // A single-char CJK query must still highlight (the retain
+        // fallback keeps all tokens when none pass the ≥2 filter).
+        let tokens = query_tokens("x");
+        assert_eq!(tokens.len(), 1, "single-char token must be kept as fallback");
+    }
+
+    #[test]
+    fn short_tokens_dropped_when_long_exist() {
+        let tokens = query_tokens("a hello b world");
+        // "a" and "b" are < 2 chars, dropped; "hello" and "world" survive.
+        assert_eq!(tokens.len(), 2);
+        let strs: Vec<String> = tokens.iter().map(|t| t.iter().collect()).collect();
+        assert!(strs.contains(&"hello".to_string()));
+        assert!(strs.contains(&"world".to_string()));
+    }
 }

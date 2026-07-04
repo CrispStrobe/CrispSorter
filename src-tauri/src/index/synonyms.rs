@@ -283,4 +283,13 @@ mod tests {
         assert!(q1.contains("assist"));
         assert!(q2.contains("help"));
     }
+
+    #[test]
+    fn operators_case_insensitive() {
+        // Operators in any casing must be preserved, not expanded.
+        for op in &["AND", "and", "And", "OR", "or", "Or", "NOT", "not", "Not"] {
+            let q = synonym_expand_query(&format!("help {} fast", op));
+            assert!(q.contains(op), "operator {op} must be preserved, got: {q}");
+        }
+    }
 }

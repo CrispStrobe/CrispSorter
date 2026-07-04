@@ -1136,6 +1136,31 @@ mod tests {
         assert!((merged[0].1 - merged_single[0].1).abs() < 1e-6);
     }
 
+    #[test]
+    fn rrf_n_four_way_merge() {
+        // Simulate the 4-channel hybrid search path (FTS + dense + sparse + omni).
+        let fts: Vec<&str> = vec!["a", "b", "c"];
+        let dense: Vec<&str> = vec!["b", "a", "d"];
+        let sparse: Vec<&str> = vec!["a", "d"];
+        let omni: Vec<&str> = vec!["a", "e"];
+        let merged = rrf_merge_n(&[&fts, &dense, &sparse, &omni], 60, 10);
+        // "a" appears in all 4 lists → highest score
+        assert_eq!(merged[0].0, "a", "consensus doc must rank first");
+        // All 5 unique docs must appear
+        assert_eq!(merged.len(), 5);
+    }
+
+    #[test]
+    fn rrf_n_borrowed_ids_no_double_free() {
+        // Verify that the &[&str] signature doesn't cause double-free or
+        // use-after-free — the owned Strings only appear in the output.
+        let ids = vec!["x", "y", "z"];
+        let merged = rrf_merge_n(&[&ids], 60, 3);
+        assert_eq!(merged.len(), 3);
+        // Output contains owned Strings, input is still alive
+        assert_eq!(ids.len(), 3);
+    }
+
     // ── P13.5 follow-up: apply_translation_snippet ────────────────────────
 
     fn mk_result(snippet: &str, translated: Option<&str>, lang: Option<&str>) -> SearchResult {

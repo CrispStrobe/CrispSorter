@@ -197,4 +197,70 @@ mod tests {
             "original filters_hash=111 should still hit"
         );
     }
+
+    #[test]
+    fn lru_touch_prevents_eviction() {
+        // Access "a" after inserting "b" → "a" is promoted, "b" is evicted.
+        let mut cache = ResultCache::new(2);
+        cache.put("a", "h", 0, vec![]);
+        cache.put("b", "h", 0, vec![]);
+        // Touch "a" to promote it to MRU
+        let _ = cache.get("a", "h", 0);
+        // Insert "c" → should evict "b" (now the oldest), not "a"
+        cache.put("c", "h", 0, vec![]);
+        assert!(cache.get("a", "h", 0).is_some(), "a was touched, must survive");
+        assert!(cache.get("b", "h", 0).is_none(), "b is LRU, must be evicted");
+        assert!(cache.get("c", "h", 0).is_some(), "c was just inserted");
+    }
+
+    #[test]
+    fn hash_filters_deterministic() {
+        use super::super::schema::SearchFilters;
+        let f1 = SearchFilters {
+            language: Some("de".into()),
+            year_min: Some(2020),
+            fuzzy: true,
+            ..Default::default()
+        };
+        let f2 = SearchFilters {
+            language: Some("de".into()),
+            year_min: Some(2020),
+            fuzzy: true,
+            ..Default::default()
+        };
+        assert_eq!(hash_filters(&f1), hash_filters(&f2));
+    }
+
+    #[test]
+    fn hash_filters_differs_on_field_change() {
+        use super::super::schema::SearchFilters;
+        let f1 = SearchFilters {
+            language: Some("de".into()),
+            ..Default::default()
+        };
+        let f2 = SearchFilters {
+            language: Some("en".into()),
+            ..Default::default()
+        };
+        assert_ne!(hash_filters(&f1), hash_filters(&f2));
+    }
+
+    #[test]
+    fn hash_filters_f64_bits() {
+        use super::super::schema::SearchFilters;
+        let f1 = SearchFilters {
+            audio_duration_min_seconds: Some(10.5),
+            ..Default::default()
+        };
+        let f2 = SearchFilters {
+            audio_duration_min_seconds: Some(10.5),
+            ..Default::default()
+        };
+        let f3 = SearchFilters {
+            audio_duration_min_seconds: Some(10.6),
+            ..Default::default()
+        };
+        assert_eq!(hash_filters(&f1), hash_filters(&f2));
+        assert_ne!(hash_filters(&f1), hash_filters(&f3));
+    }
 }

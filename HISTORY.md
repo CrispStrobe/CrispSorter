@@ -9,6 +9,41 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## P28 — Performance optimization pass (2026-07-04)
+
+Systematic four-area audit (search hot paths, ingest pipeline, compile
+time / deps, frontend bundle) followed by targeted optimisations.
+974 unit tests (up from 961; 13 new covering the changes).
+
+**Search pipeline:**
+- `result_cache.rs`: VecDeque LRU with O(1) eviction; direct field
+  hashing (eliminates `serde_json::to_string` allocation per query).
+- `search.rs`: zero-copy `rrf_merge_n` (`&[&[&str]]` → no String
+  clones across 4 RRF channels); lazy ColBERT fallback snapshot.
+- `fts_query.rs` + `synonyms.rs`: `eq_ignore_ascii_case()` replaces
+  `to_uppercase()` (allocation-free); `is_ascii()` guard for safe
+  W/PRE byte-slice matching on multibyte input.
+- `snippet.rs`: in-place `retain()` replaces cloned filter.
+
+**Ingest pipeline:**
+- `bg_ingest`: ViT + Omni `spawn_blocking` fired concurrently (~2×
+  wall-time for dual-model image ingest); single `fs::metadata` call
+  (was duplicated).
+- `ingest.rs`: conditional `texts.clone()` (skip when ColBERT is off);
+  merged embedder lock (model_id read inside existing guard);
+  LanceDB write batch size raised from 128 to 512 rows.
+
+**Dependencies:**
+- tokio `"full"` → specific features (drops net, signal).
+- symphonia `"all"` → used codecs (drops adpcm, mp1, mp2).
+- Removed `similar "unicode"` feature + duplicate `futures-util` dep.
+
+**Frontend:**
+- Vite `manualChunks` vendor splitting (7 heavy deps).
+- `@mlc-ai/web-llm` dynamically imported on first use.
+
+---
+
 ## v0.9.1 — Wiring, Tests, Document Classification, Scan Cleanup (2026-07-03)
 
 Released with all 5 platforms (macOS, Linux, Windows, Android, iOS).
