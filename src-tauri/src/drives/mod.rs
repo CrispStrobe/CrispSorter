@@ -18,7 +18,9 @@
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
 pub mod filen;
+pub mod google_drive;
 pub mod internxt;
+pub mod onedrive;
 pub mod tauri_commands;
 pub mod webdav;
 
@@ -68,6 +70,10 @@ pub enum DriveType {
     /// Generic WebDAV server (Nextcloud, ownCloud, mailbox.org,
     /// `filen webdav-start`, `internxt webdav-enable`, Synology DSM, …).
     WebDav,
+    /// Microsoft OneDrive / SharePoint via Microsoft Graph API.
+    OneDrive,
+    /// Google Drive via Drive API v3.
+    GoogleDrive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +256,18 @@ pub struct DriveConfig {
     /// cert).  Has no effect on non-WebDAV drives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insecure_tls: Option<bool>,
+    /// OAuth2 access token (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    /// OAuth2 refresh token (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// OAuth2 client ID (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// OAuth2 client secret (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 }
 
 /// Loads and saves the list of configured drives.
@@ -313,6 +331,24 @@ impl DriveRegistry {
                     config.username.clone(),
                     config.password.clone(),
                     config.insecure_tls.unwrap_or(false),
+                ))
+            }
+            DriveType::OneDrive => {
+                Box::new(onedrive::OneDriveDrive::new(
+                    config.label.clone(),
+                    config.access_token.clone().unwrap_or_default(),
+                    config.refresh_token.clone(),
+                    config.client_id.clone(),
+                    config.client_secret.clone(),
+                ))
+            }
+            DriveType::GoogleDrive => {
+                Box::new(google_drive::GoogleDriveDrive::new(
+                    config.label.clone(),
+                    config.access_token.clone().unwrap_or_default(),
+                    config.refresh_token.clone(),
+                    config.client_id.clone(),
+                    config.client_secret.clone(),
                 ))
             }
         }
@@ -407,6 +443,7 @@ mod tests {
             username: None,
             password: None,
             insecure_tls: None,
+            access_token: None, refresh_token: None, client_id: None, client_secret: None,
         };
         {
             let mut reg = DriveRegistry::open(tmp.path()).unwrap();
@@ -429,12 +466,14 @@ mod tests {
             id: "x".into(), label: "v1".into(),
             kind: DriveType::Local, path: "/a".into(),
             username: None, password: None, insecure_tls: None,
+            access_token: None, refresh_token: None, client_id: None, client_secret: None,
         }).unwrap();
         // Same id, different label → must replace not duplicate.
         reg.add(DriveConfig {
             id: "x".into(), label: "v2".into(),
             kind: DriveType::Local, path: "/b".into(),
             username: None, password: None, insecure_tls: None,
+            access_token: None, refresh_token: None, client_id: None, client_secret: None,
         }).unwrap();
         assert_eq!(reg.drives.len(), 1);
         assert_eq!(reg.drives[0].label, "v2");
@@ -449,6 +488,7 @@ mod tests {
             id: "abc".into(), label: "a".into(),
             kind: DriveType::Local, path: "/a".into(),
             username: None, password: None, insecure_tls: None,
+            access_token: None, refresh_token: None, client_id: None, client_secret: None,
         }).unwrap();
         assert!( reg.remove("abc").unwrap());
         assert!(!reg.remove("abc").unwrap()); // already gone
@@ -480,7 +520,9 @@ mod tests {
             (DriveType::Sftp,     DriveType::Local),
             (DriveType::Filen,    DriveType::Filen),
             (DriveType::Internxt, DriveType::Internxt),
-            (DriveType::WebDav,   DriveType::WebDav),
+            (DriveType::WebDav,      DriveType::WebDav),
+            (DriveType::OneDrive,    DriveType::OneDrive),
+            (DriveType::GoogleDrive, DriveType::GoogleDrive),
         ] {
             let path = if matches!(kind, DriveType::WebDav) {
                 "https://example.com/dav/".to_owned()
@@ -488,6 +530,7 @@ mod tests {
             let cfg = DriveConfig {
                 id: "x".into(), label: "lbl".into(), kind: kind.clone(), path,
                 username: None, password: None, insecure_tls: None,
+                access_token: None, refresh_token: None, client_id: None, client_secret: None,
             };
             let drive = DriveRegistry::instantiate(&cfg);
             assert_eq!(drive.drive_type(), expected,

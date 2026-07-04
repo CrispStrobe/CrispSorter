@@ -42,6 +42,7 @@ pub async fn drive_create(
     let config = DriveConfig {
         id:    uuid::Uuid::new_v4().to_string(),
         label, kind: drive_type, path, username, password, insecure_tls,
+        access_token: None, refresh_token: None, client_id: None, client_secret: None,
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     reg.add(config.clone()).map_err(|e| e.to_string())?;
@@ -92,6 +93,7 @@ pub async fn drive_update(
     }
     let updated = DriveConfig {
         id, label, kind: drive_type, path, username, password, insecure_tls,
+        access_token: None, refresh_token: None, client_id: None, client_secret: None,
     };
     // `add` dedupes by id (replaces) — exactly the semantics we want.
     reg.add(updated.clone()).map_err(|e| e.to_string())?;
