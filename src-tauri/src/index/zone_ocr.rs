@@ -4,7 +4,7 @@
 //! normalised coordinates), crops each zone from the image, runs OCR
 //! on the crop, and returns structured `{label, text}` pairs.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

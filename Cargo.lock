@@ -1897,14 +1897,14 @@ dependencies = [
 
 [[package]]
 name = "crispasr"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "crispasr-sys",
 ]
 
 [[package]]
 name = "crispasr-sys"
-version = "0.8.7"
+version = "0.8.8"
 
 [[package]]
 name = "crispcat"
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arboard",

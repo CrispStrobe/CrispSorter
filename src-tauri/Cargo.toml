@@ -1,6 +1,6 @@
 [package]
 name = "crispsorter"
-version = "0.9.1"
+version = "0.10.0"
 description = "CrispSorter — local-first AI document organizer"
 authors = ["CrispSorter contributors"]
 license = "AGPL-3.0-or-later"

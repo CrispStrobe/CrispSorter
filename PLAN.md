@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (1018 as of P28+P26.4).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (1034 as of P28+P26.4+P27.8+P27.11).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
@@ -1086,7 +1086,8 @@ PDF editing and form creation; the rest are moderate or small.
   Frontend: PDF Tools tab shows Decrypt button when PDF is encrypted,
   with password input panel.  ~4 h.
 
-- [ ] **P27.8 — Checkmark / OMR (Optical Mark Recognition).**
+- [x] **P27.8 — Checkmark / OMR (Optical Mark Recognition).**  ✅
+  SHIPPED (2026-07-04).
 
   **Goal:** Detect filled checkboxes, radio buttons, and bubble marks
   in scanned forms via classical CV (no ML model for v1).
@@ -1135,8 +1136,12 @@ PDF editing and form creation; the rest are moderate or small.
   commands: `export_to_docx`, `export_to_html`.  5 unit tests.
   Follow-up: XLSX (table export), EPUB (chapter structure), PPTX.
 
-- [ ] **P27.11 — Cloud storage connectors (SharePoint / OneDrive /
-  Google Drive).**
+- [x] **P27.11 — Cloud storage connectors (OneDrive / Google Drive).**
+  ✅ SHIPPED (2026-07-04).  Both connectors implement the `CloudDrive`
+  trait via Microsoft Graph API v1.0 / Google Drive API v3.  OAuth2
+  access token auth.  Registered in `DriveRegistry::instantiate`.
+  8 unit tests.  OAuth webview flow + Settings UI deferred to
+  follow-up.
 
   **Goal:** OAuth2-based cloud drive connectors beyond the existing
   WebDAV / Filen / Internxt support.
