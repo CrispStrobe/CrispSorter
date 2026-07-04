@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (1006 as of P28).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (1018 as of P28+P26.4).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
@@ -921,7 +921,9 @@ management systems and enterprise OCR/archival suites.
   --export csv|xlsx`.  Frontend: "Export as CSV" / "Export as XLSX"
   buttons in the OcrWorkbench table section.
 
-- [ ] **P26.4 — Zoned OCR / template matching.**
+- [x] **P26.4 — Zoned OCR / template matching.**  ✅ SHIPPED
+  (2026-07-04).  Slices 1–3 complete (store + engine + CLI/Tauri);
+  Slice 4 (frontend) deferred.
 
   **Goal:** User-defined extraction zones on a document template.
   Draw rectangles on a reference page, name each zone (e.g.
