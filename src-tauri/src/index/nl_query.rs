@@ -399,4 +399,26 @@ mod tests {
             "expected lang=de for 'auf Deutsch': {:?}", p.filters.language
         );
     }
+
+    #[test]
+    fn year_range_inverted_not_extracted() {
+        let p = parse_nl_query("docs 2025-2020");
+        assert!(p.filters.year_min.is_none(), "inverted range should not be extracted");
+        assert!(p.filters.year_max.is_none());
+    }
+
+    #[test]
+    fn from_domain_and_year_both_extracted() {
+        let p = parse_nl_query("articles from spiegel.de since 2023");
+        assert_eq!(p.filters.url_domain.as_deref(), Some("spiegel.de"));
+        assert_eq!(p.filters.year_min, Some(2023));
+    }
+
+    #[test]
+    fn empty_query_returns_empty() {
+        let p = parse_nl_query("");
+        assert_eq!(p.cleaned_query, "");
+        assert!(p.filters.year_min.is_none());
+        assert!(p.filters.language.is_none());
+    }
 }

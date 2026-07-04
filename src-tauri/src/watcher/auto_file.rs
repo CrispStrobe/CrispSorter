@@ -167,4 +167,42 @@ mod tests {
         let y: u64 = chrono_year().parse().unwrap();
         assert!(y >= 2025 && y <= 2030);
     }
+
+    #[test]
+    fn resolve_destination_filename_with_spaces() {
+        let rules = rule_map(&default_rules());
+        let dest = resolve_destination(
+            Path::new("/inbox/my contract.pdf"),
+            Path::new("/sorted"),
+            "eml",
+            "",
+            &rules,
+        );
+        assert!(dest.is_some());
+        assert!(dest.unwrap().to_string_lossy().contains("my contract.pdf"));
+    }
+
+    #[test]
+    fn rule_map_duplicate_last_wins() {
+        let rules = vec![
+            SortRule { doctype: "invoice".into(), pattern: "First/{filename}".into() },
+            SortRule { doctype: "invoice".into(), pattern: "Second/{filename}".into() },
+        ];
+        let map = rule_map(&rules);
+        assert_eq!(map.get("invoice").unwrap(), "Second/{filename}");
+    }
+
+    #[test]
+    fn resolve_destination_code_by_ext() {
+        let rules = rule_map(&default_rules());
+        let dest = resolve_destination(
+            Path::new("/inbox/main.rs"),
+            Path::new("/sorted"),
+            "rs",
+            "",
+            &rules,
+        );
+        assert!(dest.is_some());
+        assert!(dest.unwrap().to_string_lossy().contains("Code"));
+    }
 }

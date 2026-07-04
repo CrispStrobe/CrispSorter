@@ -257,4 +257,17 @@ mod tests {
         // Must not panic on a boundary inside a multi-byte char
         assert_eq!(truncate_str("日本語テスト", 3), "日本語");
     }
+
+    #[test]
+    fn window_larger_than_body() {
+        let s = highlight_snippet("hello", "hello", 10_000).unwrap();
+        assert!(s.contains("<mark>hello</mark>"));
+        assert!(!s.contains('…'), "no ellipsis when window exceeds body: {s}");
+    }
+
+    #[test]
+    fn query_single_char_highlights_in_body() {
+        let s = highlight_snippet("a b c d e", "a", SNIPPET_WINDOW).unwrap();
+        assert!(s.contains("<mark>a</mark>"), "single-char token must highlight: {s}");
+    }
 }

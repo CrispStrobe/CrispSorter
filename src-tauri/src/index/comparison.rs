@@ -194,4 +194,23 @@ mod tests {
         // similar treats whitespace as separate tokens
         assert!(r.segments.len() >= 1);
     }
+
+    #[test]
+    fn both_empty_changed_ratio_not_nan() {
+        let r = compare_texts("", "");
+        assert!(r.changed_ratio.is_finite(), "ratio must not be NaN: {}", r.changed_ratio);
+        assert!((r.changed_ratio).abs() < 0.001);
+    }
+
+    #[test]
+    fn segment_merge_identical() {
+        let r = compare_texts("a b c", "a b c");
+        assert_eq!(r.segments.len(), 1, "consecutive equal tokens must merge: {:?}", r.segments);
+    }
+
+    #[test]
+    fn changed_ratio_upper_bound() {
+        let r = compare_texts("aaa bbb ccc", "xxx yyy zzz");
+        assert!(r.changed_ratio <= 1.0, "ratio should not exceed 1.0: {}", r.changed_ratio);
+    }
 }

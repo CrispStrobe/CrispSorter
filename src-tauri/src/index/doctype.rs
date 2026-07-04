@@ -336,4 +336,24 @@ mod tests {
             assert!(t.as_tag().starts_with("doctype:"));
         }
     }
+
+    #[test]
+    fn classify_extension_case_insensitive() {
+        // Extensions are lowercased internally
+        assert_eq!(classify("RS", "", None, None), DocType::Code);
+        assert_eq!(classify("JPG", "", None, None), DocType::Image);
+        assert_eq!(classify("Mp3", "", None, None), DocType::Audio);
+    }
+
+    #[test]
+    fn classify_unknown_extension_short_text() {
+        assert_eq!(classify("docx", "hi", None, None), DocType::Unknown);
+        assert_eq!(classify("xyz", "", None, None), DocType::Unknown);
+    }
+
+    #[test]
+    fn classify_report_fallback_for_long_text() {
+        let long = "x ".repeat(3000);
+        assert_eq!(classify("pdf", &long, None, Some(5)), DocType::Report);
+    }
 }

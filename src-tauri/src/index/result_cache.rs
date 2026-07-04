@@ -263,4 +263,26 @@ mod tests {
         assert_eq!(hash_filters(&f1), hash_filters(&f2));
         assert_ne!(hash_filters(&f1), hash_filters(&f3));
     }
+
+    #[test]
+    fn put_same_key_twice_no_duplicate() {
+        let mut cache = ResultCache::new(4);
+        cache.put("q", "h", 0, vec![]);
+        cache.put("q", "h", 0, vec![]);
+        // Internal deque should deduplicate — adding 3 more should not evict "q"
+        cache.put("a", "h", 0, vec![]);
+        cache.put("b", "h", 0, vec![]);
+        cache.put("c", "h", 0, vec![]);
+        assert!(cache.get("q", "h", 0).is_some(), "q should still be within capacity 4");
+    }
+
+    #[test]
+    fn capacity_one_works() {
+        let mut cache = ResultCache::new(1);
+        cache.put("a", "h", 0, vec![]);
+        assert!(cache.get("a", "h", 0).is_some());
+        cache.put("b", "h", 0, vec![]);
+        assert!(cache.get("a", "h", 0).is_none(), "a should be evicted at cap=1");
+        assert!(cache.get("b", "h", 0).is_some());
+    }
 }
