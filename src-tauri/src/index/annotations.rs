@@ -442,4 +442,34 @@ mod tests {
         assert_eq!(page2.len(), 2);
         assert_ne!(page1[0].id, page2[0].id);
     }
+
+    #[test]
+    fn update_nonexistent_annotation_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        // SQLite UPDATE on missing row is a no-op, not an error
+        let result = store.update_annotation(99999, "updated text", "#000");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn delete_nonexistent_no_error() {
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        assert!(store.delete_annotation(99999).is_ok());
+        assert!(store.delete_highlight(99999).is_ok());
+    }
+
+    #[test]
+    fn highlight_end_before_start() {
+        // Schema doesn't enforce offset ordering — verify it stores and retrieves
+        let dir = TempDir::new().unwrap();
+        let store = AnnotationStore::open_or_create(dir.path()).unwrap();
+        let id = store.add_highlight("d1", 0, 100, 50, "reversed", "", "#fff").unwrap();
+        let hls = store.get_highlights("d1").unwrap();
+        assert_eq!(hls.len(), 1);
+        assert_eq!(hls[0].id, id);
+        assert_eq!(hls[0].start_offset, 100);
+        assert_eq!(hls[0].end_offset, 50);
+    }
 }

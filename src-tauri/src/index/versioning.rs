@@ -310,4 +310,38 @@ mod tests {
         let versions = store.get_versions(Some("d1"), None).unwrap();
         assert_eq!(versions[0].file_hash.as_deref(), Some("abc123"));
     }
+
+    #[test]
+    fn get_versions_both_none_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        store.record_version("/f.pdf", "d1", None, None, None, None).unwrap();
+        let versions = store.get_versions(None, None).unwrap();
+        assert!(versions.is_empty(), "both None should return empty");
+    }
+
+    #[test]
+    fn sequential_versions_get_incrementing_seq() {
+        let dir = TempDir::new().unwrap();
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        store.record_version("/f.pdf", "d1", None, None, None, None).unwrap();
+        store.record_version("/f.pdf", "d1-v2", None, None, None, None).unwrap();
+        store.record_version("/f.pdf", "d1-v3", None, None, None, None).unwrap();
+        let versions = store.get_versions(None, Some("/f.pdf")).unwrap();
+        assert_eq!(versions.len(), 3);
+        let seqs: Vec<i32> = versions.iter().map(|v| v.version_seq).collect();
+        assert_eq!(seqs, vec![3, 2, 1], "versions should be ordered newest-first");
+    }
+
+    #[test]
+    fn reopen_preserves_versions() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = VersionStore::open_or_create(dir.path()).unwrap();
+            store.record_version("/f.pdf", "d1", None, None, None, None).unwrap();
+        }
+        let store = VersionStore::open_or_create(dir.path()).unwrap();
+        let versions = store.get_versions(Some("d1"), None).unwrap();
+        assert_eq!(versions.len(), 1);
+    }
 }

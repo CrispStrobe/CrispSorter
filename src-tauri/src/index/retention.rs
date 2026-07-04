@@ -351,4 +351,35 @@ mod tests {
         let actions = store.evaluate_rules(&docs).unwrap();
         assert!(actions.is_empty());
     }
+
+    #[test]
+    fn disabled_rule_produces_no_action() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        let id = store.add_rule("Rule", "folder", "/docs", Some(1), None).unwrap();
+        store.set_rule_enabled(id, false).unwrap();
+        let old = now_ms() - 86_400_000 * 30;
+        let docs = vec![("d1".into(), "/docs/f.pdf".into(), vec![], old)];
+        let actions = store.evaluate_rules(&docs).unwrap();
+        assert!(actions.is_empty(), "disabled rule should produce no actions");
+    }
+
+    #[test]
+    fn delete_rule_and_verify_gone() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        let id = store.add_rule("Temp", "tag", "tmp", None, Some(7)).unwrap();
+        assert_eq!(store.list_rules().unwrap().len(), 1);
+        store.delete_rule(id).unwrap();
+        assert!(store.list_rules().unwrap().is_empty());
+    }
+
+    #[test]
+    fn evaluate_empty_docs_no_panic() {
+        let dir = TempDir::new().unwrap();
+        let store = RetentionStore::open_or_create(dir.path()).unwrap();
+        store.add_rule("Rule", "folder", "/", Some(1), None).unwrap();
+        let actions = store.evaluate_rules(&[]).unwrap();
+        assert!(actions.is_empty());
+    }
 }

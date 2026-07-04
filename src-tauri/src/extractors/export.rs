@@ -161,4 +161,35 @@ mod tests {
         let result = export_to_docx("", "Just body text.", &out).unwrap();
         assert!(result.bytes > 0);
     }
+
+    #[test]
+    fn export_html_escapes_title() {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("escaped2.html");
+        let result = export_to_html("He said \"hello\" & <bye>", "body text", &out).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("&amp;"), "& must be escaped");
+        assert!(html.contains("&lt;"), "< must be escaped");
+        assert!(!html.contains("<bye>"), "raw tag must not appear");
+        assert!(result.bytes > 0);
+    }
+
+    #[test]
+    fn export_html_unicode_body() {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("unicode.html");
+        let result = export_to_html("日本語", "日本語テスト\n\n第二段落", &out).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("日本語"));
+        assert!(html.contains("<p>"));
+        assert!(result.bytes > 0);
+    }
+
+    #[test]
+    fn export_docx_unicode_no_panic() {
+        let dir = TempDir::new().unwrap();
+        let out = dir.path().join("unicode.docx");
+        let result = export_to_docx("日本語タイトル", "こんにちは世界\n\n第二段落", &out).unwrap();
+        assert!(result.bytes > 0);
+    }
 }
