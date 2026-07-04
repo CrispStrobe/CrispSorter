@@ -78,3 +78,12 @@ lance-linalg = { path = "patches/lance-linalg" }
 
 [profile.dev.package."*"]
 debug = 0
+# Optimize heavy deps even in dev builds (arrow, lance, tantivy) for
+# faster local iteration — debug builds of these are painfully slow.
+opt-level = 1
+
+[profile.release]
+# Thin LTO gives ~5-10% runtime speedup with moderate compile cost
+# (much cheaper than fat LTO). Codegen-units left at default (16) to
+# keep release builds reasonable on CI.
+lto = "thin"

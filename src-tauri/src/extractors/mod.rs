@@ -1166,8 +1166,12 @@ pub fn extract_text_from_path_with_opts(
             // EPUBs with all chapters concatenated).  A min-length
             // check skips tiny inputs where LID would be unreliable
             // anyway.
-            let sample: String = doc.full_text.chars().take(2000).collect();
-            let trimmed = sample.trim();
+            // Slice at a char boundary near 2000 chars to avoid allocating.
+            let byte_end = doc.full_text.char_indices()
+                .nth(2000)
+                .map(|(i, _)| i)
+                .unwrap_or(doc.full_text.len());
+            let trimmed = doc.full_text[..byte_end].trim();
             if trimmed.len() >= 20 {
                 match text_lid::detect_language(trimmed, model_path, 2) {
                     Ok(r) => {

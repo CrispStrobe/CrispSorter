@@ -1150,3 +1150,15 @@ frontend hot paths.  13 new unit tests.
   deep-chat, web-llm, and HF transformers into separate lazy chunks.
 - [x] **Frontend: lazy WebLLM import.**  `@mlc-ai/web-llm` dynamically
   imported inside `loadWebLLM()` instead of at module load time.
+- [x] **ColBERT IN-list: single collect.**  Collapsed double Vec
+  allocation (`ids` + `quoted`) into one pass in `rerank_with_colbert`.
+- [x] **Vec::with_capacity in hot paths.**  Pre-computed `total_rows`
+  from `batches` for `cluster_documents`, `list_failed_extractions`,
+  `batches_to_search_results_with_scores`, and
+  `record_batches_to_search_results`.
+- [x] **LID text sampling: zero-alloc slice.**  Replaced
+  `chars().take(2000).collect::<String>()` with a `char_indices`-based
+  byte-boundary slice — avoids a heap allocation on every LID-enabled
+  ingest call.
+- [x] **Cargo profiles.**  `opt-level = 1` for deps in dev builds
+  (arrow/lance/tantivy run ~3× faster); `lto = "thin"` in release.

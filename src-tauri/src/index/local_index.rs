@@ -266,13 +266,12 @@ impl LocalIndex {
 
         // Build `id IN (...)` filter from the candidates' (doc_id,
         // chunk_index) — matches the row-id formula used at ingest.
-        let ids: Vec<String> = candidates
+        let quoted: Vec<String> = candidates
             .iter()
-            .map(|r| chunk_row_id(&r.doc_id, r.chunk_index))
-            .collect();
-        let quoted: Vec<String> = ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .map(|r| {
+                let id = chunk_row_id(&r.doc_id, r.chunk_index);
+                format!("'{}'", id.replace('\'', "''"))
+            })
             .collect();
         let filter = format!("id IN ({})", quoted.join(", "));
 
@@ -1026,10 +1025,11 @@ impl LocalIndex {
             .await?;
 
         // Collect doc_ids, embeddings, texts.
-        let mut doc_ids: Vec<String> = Vec::new();
-        let mut embeddings: Vec<Vec<f32>> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        let mut titles: Vec<String> = Vec::new();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let mut doc_ids: Vec<String> = Vec::with_capacity(total_rows);
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(total_rows);
+        let mut texts: Vec<String> = Vec::with_capacity(total_rows);
+        let mut titles: Vec<String> = Vec::with_capacity(total_rows);
 
         for batch in &batches {
             let n = batch.num_rows();
@@ -2001,7 +2001,7 @@ impl LocalIndex {
             .try_collect()
             .await?;
 
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(64);
         for batch in &batches {
             let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() else { continue };
             let Some(doc_id_idx) = batch.schema().index_of("doc_id").ok() else { continue };
@@ -2308,7 +2308,8 @@ pub fn batches_to_search_results_with_scores(
     batches: &[RecordBatch],
     score_map: &std::collections::HashMap<String, f32>,
 ) -> Result<Vec<SearchResult>> {
-    let mut results = Vec::new();
+    let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let mut results = Vec::with_capacity(total);
 
     for batch in batches {
         let n = batch.num_rows();
@@ -2632,7 +2633,8 @@ fn chunks_to_record_batch(
 /// Extract `SearchResult` values from a stream of `RecordBatch`es returned by
 /// a LanceDB vector query.
 fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<SearchResult>> {
-    let mut results = Vec::new();
+    let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let mut results = Vec::with_capacity(total);
 
     for batch in batches {
         let n = batch.num_rows();
