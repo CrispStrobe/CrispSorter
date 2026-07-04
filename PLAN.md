@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (974 as of v0.9.1+perf).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (976 as of v0.9.1+perf).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
@@ -1162,3 +1162,18 @@ frontend hot paths.  13 new unit tests.
   ingest call.
 - [x] **Cargo profiles.**  `opt-level = 1` for deps in dev builds
   (arrow/lance/tantivy run ~3× faster); `lto = "thin"` in release.
+- [x] **Browse scanner column projection.**  `scanner.project()` on
+  `query_documents` excludes 3 embedding vectors, `multivec_packed`,
+  `full_text_md`, `embedding_sparse`, `embedding_model` — potentially
+  5–20× fewer bytes read per browse page.
+- [x] **Cached Arrow schema.**  `Arc<Schema>` stored in `LocalIndex`
+  at construction, reused by every `ingest_batch` (was rebuilding
+  ~25 Fields per document).
+- [x] **`truncate_str` helper.**  `snippet::truncate_str()` replaces
+  `chars().take(N).collect::<String>()` at 5 hot-path sites (browse
+  snippet, search snippet, translation snippet, federated snippet).
+  Slices at char boundary without heap allocation.  2 new tests.
+- [x] **Dynamic extractor imports.**  All 5 JS extractors (pdf, docx,
+  epub, html, image) converted to `await import()` inside switch
+  cases — mammoth, pdfjs, epub-parser, tesseract only load when the
+  matching file type is processed.
