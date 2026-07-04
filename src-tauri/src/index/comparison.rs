@@ -8,8 +8,8 @@ use similar::{ChangeTag, TextDiff};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffSegment {
-    /// "equal", "insert", "delete"
-    pub tag: String,
+    /// "equal", "insert", or "delete" — always a static string.
+    pub tag: &'static str,
     /// The text content of this segment.
     pub text: String,
 }
@@ -49,7 +49,7 @@ pub fn compare_texts(text_a: &str, text_b: &str) -> ComparisonResult {
             }
         }
         segments.push(DiffSegment {
-            tag: tag.into(),
+            tag,
             text: change.as_str().unwrap_or("").to_string(),
         });
     }
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn segments_have_all_three_tags() {
         let r = compare_texts("a b c d e", "a b x y e");
-        let tags: Vec<&str> = r.segments.iter().map(|s| s.tag.as_str()).collect();
+        let tags: Vec<&str> = r.segments.iter().map(|s| s.tag).collect();
         assert!(tags.contains(&"equal"));
         assert!(tags.contains(&"insert") || tags.contains(&"delete"));
     }

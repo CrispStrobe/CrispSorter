@@ -69,10 +69,10 @@ pub fn classify(
     page_count: Option<usize>,
 ) -> DocType {
     let ext_lower = ext.to_lowercase();
-    let text_lower = text.to_lowercase();
     let text_len = text.len();
 
     // 1. Extension-based classification (high confidence)
+    // These early-returns avoid the expensive text.to_lowercase() below.
     match ext_lower.as_str() {
         "eml" | "msg" | "mbox" => return DocType::Email,
         "epub" | "mobi" | "azw3" | "fb2" => return DocType::Ebook,
@@ -92,6 +92,10 @@ pub fn classify(
     if text_len < 50 {
         return DocType::Unknown;
     }
+
+    // Deferred: only allocate the lowercase copy when we actually need
+    // content-based signal matching (skipped for all extension-matched types).
+    let text_lower = text.to_lowercase();
 
     // Invoice / receipt detection
     let invoice_signals = [
