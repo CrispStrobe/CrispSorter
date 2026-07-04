@@ -24,6 +24,8 @@
     let clusterLoading = $state(false);
     let clusterK = $state(5);
 
+    let labelLoading = $state(false);
+
     async function loadClusters() {
         clusterLoading = true;
         try {
@@ -33,6 +35,28 @@
             clusters = [];
         }
         clusterLoading = false;
+    }
+
+    async function labelClustersWithLlm() {
+        if (clusters.length === 0) return;
+        labelLoading = true;
+        try {
+            // Use the configured LLM URL from settings (Ollama default)
+            const { getSetting } = await import('$lib/store');
+            const url = await getSetting('llmUrl', 'http://localhost:11434/v1') as string;
+            const model = await getSetting('llmModel', 'llama3') as string;
+            const labels = await invoke<string[]>('index_label_clusters', {
+                clusters, llmUrl: url, llmModel: model,
+            });
+            // Apply labels to clusters
+            for (let i = 0; i < Math.min(labels.length, clusters.length); i++) {
+                if (labels[i]) clusters[i].name = labels[i];
+            }
+            clusters = [...clusters]; // trigger reactivity
+        } catch (e: any) {
+            console.warn('LLM labelling failed:', e);
+        }
+        labelLoading = false;
     }
 
     function formatBytes(bytes: number): string {
@@ -194,6 +218,11 @@
                         <button class="cluster-btn" onclick={loadClusters} disabled={clusterLoading}>
                             {#if clusterLoading}<Loader2 size={12} class="spin" />{:else}Cluster{/if}
                         </button>
+                        {#if clusters.length > 0}
+                            <button class="cluster-btn" onclick={labelClustersWithLlm} disabled={labelLoading} title="Generate labels with LLM">
+                                {#if labelLoading}<Loader2 size={12} class="spin" />{:else}AI Label{/if}
+                            </button>
+                        {/if}
                     </span>
                 </h3>
                 {#if clusters.length > 0}

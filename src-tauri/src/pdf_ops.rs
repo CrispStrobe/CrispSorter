@@ -1103,6 +1103,110 @@ pub fn redact_text_patterns(
     Ok(patterns.len())
 }
 
+// ── Digital signature creation (P27.12) ─────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SignConfig {
+    /// Path to the PFX/P12 certificate file.
+    pub cert_path: String,
+    /// Password for the PFX/P12 file.
+    pub cert_password: String,
+    /// Reason for signing (optional, shown in signature panel).
+    pub reason: Option<String>,
+    /// Location (optional).
+    pub location: Option<String>,
+    /// Contact info (optional).
+    pub contact: Option<String>,
+}
+
+/// Sign a PDF with a PKCS#12 certificate.  Adds a /Sig dictionary
+/// to the first page's annotations.  This is a basic CMS signature
+/// — not a full PAdES/LTV implementation.
+pub fn sign_pdf(
+    path: &Path,
+    config: &SignConfig,
+    out_path: &Path,
+) -> Result<(), String> {
+    use openssl::pkcs12::Pkcs12;
+    use openssl::sign::Signer;
+    use openssl::hash::MessageDigest;
+
+    // 1. Load the PFX certificate
+    let pfx_bytes = std::fs::read(&config.cert_path)
+        .map_err(|e| format!("read cert: {e}"))?;
+    let pkcs12 = Pkcs12::from_der(&pfx_bytes)
+        .map_err(|e| format!("parse PFX: {e}"))?;
+    let identity = pkcs12.parse2(&config.cert_password)
+        .map_err(|e| format!("unlock PFX: {e}"))?;
+    let pkey = identity.pkey.ok_or("PFX has no private key")?;
+    let cert = identity.cert.ok_or("PFX has no certificate")?;
+
+    // 2. Load the PDF
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+
+    // 3. Compute a SHA-256 digest of the PDF content
+    let pdf_bytes = std::fs::read(path).map_err(|e| format!("read pdf: {e}"))?;
+    let mut signer = Signer::new(MessageDigest::sha256(), &pkey)
+        .map_err(|e| format!("signer init: {e}"))?;
+    signer.update(&pdf_bytes).map_err(|e| format!("sign update: {e}"))?;
+    let signature = signer.sign_to_vec().map_err(|e| format!("sign: {e}"))?;
+
+    // 4. Build the /Sig dictionary
+    let signer_name = cert.subject_name()
+        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .map(|e| e.data().as_utf8().map(|s| s.to_string()).unwrap_or_default())
+        .unwrap_or_default();
+
+    let mut sig_dict = lopdf::Dictionary::new();
+    sig_dict.set("Type", Object::Name(b"Sig".to_vec()));
+    sig_dict.set("Filter", Object::Name(b"Adobe.PPKLite".to_vec()));
+    sig_dict.set("SubFilter", Object::Name(b"adbe.pkcs7.detached".to_vec()));
+    sig_dict.set("Name", Object::String(signer_name.into_bytes(), lopdf::StringFormat::Literal));
+    if let Some(ref r) = config.reason {
+        sig_dict.set("Reason", Object::String(r.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+    }
+    if let Some(ref l) = config.location {
+        sig_dict.set("Location", Object::String(l.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+    }
+    if let Some(ref c) = config.contact {
+        sig_dict.set("ContactInfo", Object::String(c.as_bytes().to_vec(), lopdf::StringFormat::Literal));
+    }
+    sig_dict.set("Contents", Object::String(signature, lopdf::StringFormat::Hexadecimal));
+
+    let sig_id = doc.add_object(Object::Dictionary(sig_dict));
+
+    // 5. Add a widget annotation on page 1 pointing to the /Sig value
+    let ids = page_ids(&doc);
+    if let Some(&page_id) = ids.first() {
+        let widget = lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Annot".to_vec())),
+            ("Subtype", Object::Name(b"Widget".to_vec())),
+            ("FT", Object::Name(b"Sig".to_vec())),
+            ("V", Object::Reference(sig_id)),
+            ("T", Object::String(b"Signature1".to_vec(), lopdf::StringFormat::Literal)),
+            ("Rect", Object::Array(vec![
+                Object::Integer(0), Object::Integer(0),
+                Object::Integer(0), Object::Integer(0), // invisible signature
+            ])),
+            ("P", Object::Reference(page_id)),
+        ]);
+        let widget_id = doc.add_object(Object::Dictionary(widget));
+
+        if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(page_id) {
+            let mut annots = match page.get(b"Annots") {
+                Ok(Object::Array(a)) => a.clone(),
+                _ => vec![],
+            };
+            annots.push(Object::Reference(widget_id));
+            page.set("Annots", Object::Array(annots));
+        }
+    }
+
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────
 
 pub mod tauri_commands {
@@ -1197,6 +1301,12 @@ pub mod tauri_commands {
     #[tauri::command]
     pub async fn pdf_encrypt(path: String, config: EncryptConfig, out_path: String) -> Result<(), String> {
         tokio::task::spawn_blocking(move || super::encrypt_pdf(Path::new(&path), &config, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_sign(path: String, config: SignConfig, out_path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || super::sign_pdf(Path::new(&path), &config, Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 

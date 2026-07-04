@@ -4,6 +4,19 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## CI release refs must use tagged releases, not commit SHAs
+
+The release workflow downloads pre-built native libs (libcrispembed,
+libcrispasr) from GitHub Releases.  The download URL is:
+`github.com/<repo>/releases/download/<REF>/lib*.tar.gz`.  This only
+works when `<REF>` is a release tag (e.g. `v0.13.0`), not a raw
+commit SHA — raw SHAs return 404.
+
+**Rule:** Only bump `CRISPEMBED_REF` / `CRISPASR_REF` in
+`release.yml` to tagged releases.  If you need features from HEAD,
+either tag a new release on the sibling repo first, or stub the new
+API calls so the code compiles against the older tagged version.
+
 ## TOML target-specific dependency sections (gotcha)
 
 A `[target.'cfg(...)'.dependencies]` section in Cargo.toml extends

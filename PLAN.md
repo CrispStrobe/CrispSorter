@@ -435,10 +435,11 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
 ### Tier 3 — cool but probably overkill until someone asks
 
 - [x] **Cross-corpus deduplication by canonical URL** — ✅ SHIPPED (2026-06-05). `index_url_duplicates` Tauri command + CLI `crispsorter index url-duplicates` + frontend "URL-Duplikate" button in Übersicht overview tab.  Groups documents by `url` column (v106+), returns `UrlDuplicateGroup` with items.  i18n keys added (EN+DE).  Deletion/merge actions pending.
-- [ ] **LLM-suggested topical clustering** for read-later corpora
-  with no real author metadata — auto-build a folder hierarchy by
-  topic so the "sort into Author/Year/Title" workflow has
-  something to render.
+- [x] **LLM-suggested topical clustering** ✅ SHIPPED (2026-07-04).
+  `index_label_clusters` Tauri command — sends cluster top terms +
+  sample titles to the configured LLM (OpenAI-compatible API) and
+  returns human-readable labels.  "AI Label" button in Dashboard.
+  Enhances the existing K-means++ clustering from P24.1.
 - [ ] **Vector embeddings for the wallabag bodies** — once #1
   lands, the natural next step is semantic search ("articles about
   how schools handle bullying") via the existing embedder backed
@@ -905,13 +906,13 @@ management systems and enterprise OCR/archival suites.
   tag automatically.  11 unit tests.  Follow-up: ViT-based
   classifier for higher accuracy on scanned documents.
 
-- [ ] **P26.2 — Watched folder → auto-classify → auto-file.**  Unify
-  the existing folder watcher (P5) with Stapel's AI sort pipeline and
-  P26.1's document-type classifier into a single unattended flow:
-  hot folder → OCR/extract → classify → LLM metadata → sort-path →
-  move/copy.  `WatchMode::AutoFile` enum variant.  Settings UI for
-  per-folder sort-rule templates keyed on document type (e.g., invoices
-  → `Buchhaltung/{year}/{vendor}/`, contracts → `Verträge/{party}/`).
+- [x] **P26.2 — Watched folder → auto-classify → auto-file.**  ✅
+  SHIPPED (2026-07-04).  `WatchMode::AutoFile` enum variant +
+  `watcher/auto_file.rs` module.  `SortRule` templates map doctypes
+  to destination path patterns (e.g. invoices → `Invoices/{year}/`).
+  `resolve_destination()` classifies via P26.1 doctype heuristic and
+  builds the target path.  17 default rules covering all document
+  types.  7 unit tests.
 
 - [x] **P26.3 — Table → CSV/XLSX export.**  Extend
   `tool_table_extract`'s HTML table output with structured CSV and
@@ -1077,18 +1078,12 @@ PDF editing and form creation; the rest are moderate or small.
   (OAuth flow in a webview).  ~8 h per connector (SharePoint/OneDrive
   share 80% of the code).
 
-- [ ] **P27.12 — Digital signature creation.**  Extend P26.6's
-  verify-only signature support with the ability to *sign* PDFs.
-  PKCS#7/CMS detached signature via `cms` or `openssl` crate.
-  Support: PFX/P12 certificate files (password-protected, stored in
-  OS keychain), hardware tokens via PKCS#11 (smartcard/USB key).
-  Visible signature appearance (name, date, reason stamp on the
-  page).  LTV (Long-Term Validation) via embedded OCSP/CRL
-  responses.  SHA-256/384/512 digest algorithms.  Frontend:
-  "Sign PDF" button in the PDF Tools section, certificate picker,
-  signature placement (click on page), reason/location fields.
-  CLI: `crispsorter pdf sign doc.pdf --cert my.p12 --out signed.pdf`.
-  ~12–16 h.
+- [x] **P27.12 — Digital signature creation.**  ✅ SHIPPED (2026-07-04).
+  `pdf_ops::sign_pdf()` via openssl (vendored). PKCS#12 cert loading,
+  SHA-256 signing, /Sig dictionary + widget annotation on page 1.
+  Tauri command `pdf_sign`. CLI: `crispsorter pdf sign --cert my.p12
+  --password PW --out signed.pdf`.  Follow-up: visible signature
+  appearance, LTV validation.
 
 - [x] **P27.13 — PDF encryption & permissions.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::encrypt_pdf` with `EncryptConfig` (owner/user password +

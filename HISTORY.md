@@ -9,6 +9,11 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## v0.9.1 — Wiring, Tests, Document Classification, Scan Cleanup (2026-07-03)
+
+Released with all 5 platforms (macOS, Linux, Windows, Android, iOS).
+See `RELEASE_NOTES_v0.9.1.md` for full details.
+
 ## Post-v0.9.0 — Wiring, Tests, Document Classification (2026-07-03)
 
 ### Feature wiring (CLI + GUI)

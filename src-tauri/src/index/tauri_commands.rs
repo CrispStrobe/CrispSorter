@@ -4812,7 +4812,7 @@ pub async fn index_corpus_stats(
 }
 
 /// One cluster from K-means topical clustering.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Cluster {
     pub id: u32,
     pub name: String,
@@ -4820,6 +4820,61 @@ pub struct Cluster {
     pub top_terms: Vec<String>,
     pub sample_titles: Vec<String>,
     pub member_doc_ids: Vec<String>,
+}
+
+/// LLM-suggested cluster labels — takes existing cluster data and
+/// sends it to the configured LLM for human-readable naming.
+#[tauri::command]
+pub async fn index_label_clusters(
+    clusters: Vec<Cluster>,
+    llm_url: String,
+    llm_model: String,
+) -> Result<Vec<String>, String> {
+    // Build a prompt with all clusters' top terms + sample titles
+    let mut prompt = String::from(
+        "You are a librarian organizing a document collection. Below are document clusters, each described by their most distinctive keywords and sample document titles. Generate a short, descriptive label (2-5 words) for each cluster. Return ONLY the labels, one per line, in the same order.\n\n"
+    );
+    for (i, c) in clusters.iter().enumerate() {
+        prompt.push_str(&format!(
+            "Cluster {}: keywords=[{}], titles=[{}]\n",
+            i + 1,
+            c.top_terms.join(", "),
+            c.sample_titles.iter().take(3).cloned().collect::<Vec<_>>().join("; "),
+        ));
+    }
+    prompt.push_str("\nLabels:\n");
+
+    // Call the LLM via OpenAI-compatible API
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": llm_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 200,
+    });
+    let resp = client
+        .post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("LLM request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("LLM returned {}", resp.status()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("parse: {e}"))?;
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // Parse one label per line
+    let labels: Vec<String> = content
+        .lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ':').trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    Ok(labels)
 }
 
 /// P24.1 — Topical clustering on the embedding column.

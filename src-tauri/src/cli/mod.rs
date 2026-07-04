@@ -1333,6 +1333,24 @@ enum PdfCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Sign a PDF with a PKCS#12 certificate.
+    Sign {
+        file: PathBuf,
+        /// Path to PFX/P12 certificate file.
+        #[arg(long)]
+        cert: PathBuf,
+        /// Password for the certificate.
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Reason for signing.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Location.
+        #[arg(long)]
+        location: Option<String>,
+    },
     /// Add PDF/A-2b conformance metadata to an existing PDF.
     Pdfa {
         file: PathBuf,
@@ -4126,6 +4144,18 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             let pats: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
             let count = pdf_ops::redact_text_patterns(&file, &pats, &out_path)?;
             eprintln!("Redacted {count} patterns → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Sign { file, cert, password, out: out_path, reason, location } => {
+            let config = pdf_ops::SignConfig {
+                cert_path: cert.to_string_lossy().into_owned(),
+                cert_password: password,
+                reason,
+                location,
+                contact: None,
+            };
+            pdf_ops::sign_pdf(&file, &config, &out_path)?;
+            eprintln!("Signed → {}", out_path.display());
             Ok(())
         }
         PdfCmd::Pdfa { file, out: out_path } => {

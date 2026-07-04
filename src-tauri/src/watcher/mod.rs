@@ -28,6 +28,8 @@
 //! - **Daily cost cap** (default 500 files globally): hard stop across
 //!   all folders for one calendar day.
 
+pub mod auto_file;
+
 use anyhow::{Context, Result};
 use notify::{
     event::{CreateKind, EventKind, ModifyKind, RenameMode},
@@ -71,6 +73,9 @@ pub enum WatchMode {
     Analyse,
     /// Auto-queue for full batch pipeline (extract → LLM → sort → move).
     Sort,
+    /// P26.2 — Auto-classify via P26.1 doctype + auto-file using
+    /// per-folder sort-rule templates keyed on document type.
+    AutoFile,
 }
 
 /// Tauri event payload — kept stable so the frontend listener can
