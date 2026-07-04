@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (976 as of P28).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (1006 as of P28).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---
@@ -1196,3 +1196,9 @@ frontend hot paths.  13 new unit tests.
 - [x] **NL query parser.**  5 × `to_lowercase()` → 1 (recompute only
   after mutations).  `while contains("  ")` loop → single-pass
   `split_whitespace().join()`.
+- [x] **Warning cleanup.**  All 9 compiler warnings resolved (unused
+  imports, unused variables, deprecated API, dead code).
+- [x] **Edge-case test hardening.**  30 new tests across 11 modules:
+  comparison (3), doctype (3), auto_file (3), nl_query (3),
+  snippet (2), result_cache (2), annotations (3), retention (3),
+  versioning (3), eml (2), export (3).  Total: 1006 tests.
