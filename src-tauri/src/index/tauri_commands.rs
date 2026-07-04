@@ -5086,9 +5086,10 @@ pub async fn template_add_zone(
     y: f64,
     w: f64,
     h: f64,
+    zone_type: Option<String>,
 ) -> Result<i64, String> {
     let store = get_template_store(&state).await?;
-    store.add_zone(template_id, &label, x, y, w, h).map_err(|e| e.to_string())
+    store.add_zone(template_id, &label, x, y, w, h, zone_type.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5136,6 +5137,26 @@ pub async fn template_apply(
 
     tokio::task::spawn_blocking(move || {
         super::zone_ocr::extract_zones(&path, &template)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn omr_detect(
+    location_uri: String,
+    x: f64, y: f64, w: f64, h: f64,
+    threshold: Option<f64>,
+) -> Result<super::omr::CheckmarkResult, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("Cannot resolve path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("File not found: {}", path.display()));
+    }
+    let thr = threshold.unwrap_or(super::omr::DEFAULT_THRESHOLD);
+    tokio::task::spawn_blocking(move || {
+        super::omr::detect_checkmark(&path, "detection", x, y, w, h, thr)
     })
     .await
     .map_err(|e| format!("join: {e}"))?

@@ -69,6 +69,26 @@ pub fn extract_zones(
         crop.save(&tmp_path)
             .with_context(|| format!("saving zone crop for '{}'", zone.label))?;
 
+        // Dispatch by zone type: "checkbox" → OMR, else → OCR
+        if zone.zone_type == "checkbox" {
+            let omr = super::omr::detect_checkmark(
+                image_path, &zone.label,
+                zone.x, zone.y, zone.w, zone.h,
+                super::omr::DEFAULT_THRESHOLD,
+            ).unwrap_or_else(|_| super::omr::CheckmarkResult {
+                label: zone.label.clone(),
+                filled: false,
+                fill_ratio: 0.0,
+                confidence: 0.0,
+            });
+            results.push(ZoneResult {
+                label: omr.label,
+                text: if omr.filled { "true".into() } else { "false".into() },
+                confidence: omr.confidence as f32,
+            });
+            continue;
+        }
+
         // OCR the crop
         let text = ocr_crop(&tmp_path);
 
@@ -133,7 +153,7 @@ mod tests {
         img.save(&img_path).unwrap();
 
         let t = dummy_template(vec![
-            Zone { id: 1, label: "oob".into(), x: 2.0, y: 2.0, w: 0.5, h: 0.5 },
+            Zone { id: 1, label: "oob".into(), x: 2.0, y: 2.0, w: 0.5, h: 0.5, zone_type: "text".into() },
         ]);
         let results = extract_zones(&img_path, &t).unwrap();
         assert_eq!(results.len(), 1);
@@ -151,7 +171,7 @@ mod tests {
 
         // Zone that extends past the right edge
         let t = dummy_template(vec![
-            Zone { id: 1, label: "edge".into(), x: 0.8, y: 0.0, w: 0.5, h: 0.1 },
+            Zone { id: 1, label: "edge".into(), x: 0.8, y: 0.0, w: 0.5, h: 0.1, zone_type: "text".into() },
         ]);
         // Should not panic — zone is clamped
         let results = extract_zones(&img_path, &t).unwrap();
@@ -162,7 +182,7 @@ mod tests {
     #[test]
     fn nonexistent_image_returns_error() {
         let t = dummy_template(vec![
-            Zone { id: 1, label: "x".into(), x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+            Zone { id: 1, label: "x".into(), x: 0.0, y: 0.0, w: 1.0, h: 1.0, zone_type: "text".into() },
         ]);
         assert!(extract_zones(Path::new("/nonexistent/img.png"), &t).is_err());
     }

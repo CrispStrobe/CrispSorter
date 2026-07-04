@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS template_zones (
     x           REAL    NOT NULL,  -- normalised 0.0–1.0
     y           REAL    NOT NULL,
     w           REAL    NOT NULL,
-    h           REAL    NOT NULL
+    h           REAL    NOT NULL,
+    zone_type   TEXT    NOT NULL DEFAULT 'text'  -- 'text' or 'checkbox'
 );
 CREATE INDEX IF NOT EXISTS idx_tz_template ON template_zones(template_id);
 ";
@@ -42,7 +43,12 @@ pub struct Zone {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// "text" (default) or "checkbox" (OMR detection).
+    #[serde(default = "default_zone_type")]
+    pub zone_type: String,
 }
+
+fn default_zone_type() -> String { "text".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Template {
@@ -90,16 +96,19 @@ impl TemplateStore {
     }
 
     /// Add a zone to a template. Returns the zone id.
+    /// `zone_type`: `"text"` (default OCR) or `"checkbox"` (OMR detection).
     pub fn add_zone(
         &self,
         template_id: i64,
         label: &str,
         x: f64, y: f64, w: f64, h: f64,
+        zone_type: Option<&str>,
     ) -> Result<i64> {
+        let zt = zone_type.unwrap_or("text");
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO template_zones (template_id, label, x, y, w, h) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![template_id, label, x, y, w, h],
+            "INSERT INTO template_zones (template_id, label, x, y, w, h, zone_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![template_id, label, x, y, w, h, zt],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -150,7 +159,7 @@ impl TemplateStore {
 
     fn get_zones_locked(&self, conn: &Connection, template_id: i64) -> Result<Vec<Zone>> {
         let mut stmt = conn.prepare(
-            "SELECT id, label, x, y, w, h FROM template_zones WHERE template_id = ?1 ORDER BY id"
+            "SELECT id, label, x, y, w, h, zone_type FROM template_zones WHERE template_id = ?1 ORDER BY id"
         )?;
         let zones = stmt.query_map(params![template_id], |row| {
             Ok(Zone {
@@ -160,6 +169,7 @@ impl TemplateStore {
                 y: row.get(3)?,
                 w: row.get(4)?,
                 h: row.get(5)?,
+                zone_type: row.get::<_, String>(6).unwrap_or_else(|_| "text".into()),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -217,8 +227,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let id = store.create_template("Invoice A", 2480, 3508).unwrap();
-        store.add_zone(id, "invoice_number", 0.1, 0.05, 0.3, 0.04).unwrap();
-        store.add_zone(id, "total_amount", 0.6, 0.8, 0.3, 0.04).unwrap();
+        store.add_zone(id, "invoice_number", 0.1, 0.05, 0.3, 0.04, None).unwrap();
+        store.add_zone(id, "total_amount", 0.6, 0.8, 0.3, 0.04, None).unwrap();
 
         let t = store.get_template(id).unwrap().unwrap();
         assert_eq!(t.name, "Invoice A");
@@ -234,8 +244,8 @@ mod tests {
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let id1 = store.create_template("A", 100, 100).unwrap();
         let id2 = store.create_template("B", 100, 100).unwrap();
-        store.add_zone(id1, "f1", 0.0, 0.0, 0.5, 0.5).unwrap();
-        store.add_zone(id1, "f2", 0.5, 0.5, 0.5, 0.5).unwrap();
+        store.add_zone(id1, "f1", 0.0, 0.0, 0.5, 0.5, None).unwrap();
+        store.add_zone(id1, "f2", 0.5, 0.5, 0.5, 0.5, None).unwrap();
         // B has no zones
 
         let list = store.list_templates().unwrap();
@@ -251,7 +261,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let id = store.create_template("X", 100, 100).unwrap();
-        store.add_zone(id, "z1", 0.0, 0.0, 1.0, 1.0).unwrap();
+        store.add_zone(id, "z1", 0.0, 0.0, 1.0, 1.0, None).unwrap();
         store.delete_template(id).unwrap();
         assert!(store.get_template(id).unwrap().is_none());
         assert!(store.list_templates().unwrap().is_empty());
@@ -278,8 +288,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let tid = store.create_template("T", 100, 100).unwrap();
-        let z1 = store.add_zone(tid, "a", 0.0, 0.0, 0.5, 0.5).unwrap();
-        store.add_zone(tid, "b", 0.5, 0.5, 0.5, 0.5).unwrap();
+        let z1 = store.add_zone(tid, "a", 0.0, 0.0, 0.5, 0.5, None).unwrap();
+        store.add_zone(tid, "b", 0.5, 0.5, 0.5, 0.5, None).unwrap();
         store.delete_zone(z1).unwrap();
         let t = store.get_template(tid).unwrap().unwrap();
         assert_eq!(t.zones.len(), 1);
@@ -291,7 +301,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let tid = store.create_template("T", 100, 100).unwrap();
-        store.add_zone(tid, "precise", 0.123456, 0.654321, 0.111111, 0.222222).unwrap();
+        store.add_zone(tid, "precise", 0.123456, 0.654321, 0.111111, 0.222222, None).unwrap();
         let t = store.get_template(tid).unwrap().unwrap();
         let z = &t.zones[0];
         assert!((z.x - 0.123456).abs() < 1e-10);
@@ -306,7 +316,7 @@ mod tests {
         {
             let store = TemplateStore::open_or_create(dir.path()).unwrap();
             let tid = store.create_template("Persist", 200, 300).unwrap();
-            store.add_zone(tid, "field", 0.1, 0.2, 0.3, 0.4).unwrap();
+            store.add_zone(tid, "field", 0.1, 0.2, 0.3, 0.4, None).unwrap();
         }
         let store = TemplateStore::open_or_create(dir.path()).unwrap();
         let list = store.list_templates().unwrap();
