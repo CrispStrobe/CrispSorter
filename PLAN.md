@@ -1193,3 +1193,6 @@ frontend hot paths.  13 new unit tests.
   word boundary scanner.
 - [x] **Static diff tags.**  `DiffSegment.tag` changed from `String`
   to `&'static str` — eliminates one heap allocation per diff segment.
+- [x] **NL query parser.**  5 × `to_lowercase()` → 1 (recompute only
+  after mutations).  `while contains("  ")` loop → single-pass
+  `split_whitespace().join()`.
