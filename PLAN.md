@@ -53,7 +53,7 @@
 - **CrispEmbed scan cleanup (v0.9.1)** — despeckle, blackfilter, two-up page splitting, content-bbox auto-crop. Wired via `OcrCleanupSpec` toggles + standalone Tauri commands.
 - **Document-type classification (v0.9.1)** — heuristic classifier (18 types) runs at ingest, auto-tags every document with `doctype:<class>`.
 
-Run `cargo test --workspace --lib` for the exact Rust unit-test count (976 as of v0.9.1+perf).
+Run `cargo test --workspace --lib` for the exact Rust unit-test count (976 as of P28).
 For per-feature deep-dives, see [HISTORY.md](HISTORY.md).
 
 ---

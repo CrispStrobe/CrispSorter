@@ -11,19 +11,39 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ## P28 — Performance optimization pass (2026-07-04)
 
-Systematic four-area audit (search hot paths, ingest pipeline, compile
-time / deps, frontend bundle) followed by targeted optimisations.
-974 unit tests (up from 961; 13 new covering the changes).
+Systematic audit across search, ingest, LanceDB I/O, dependencies,
+and frontend bundle — ~25 distinct optimizations in 14 commits.
+976 unit tests (up from 961; 15 new covering the changes).
 
 **Search pipeline:**
 - `result_cache.rs`: VecDeque LRU with O(1) eviction; direct field
   hashing (eliminates `serde_json::to_string` allocation per query).
+  3 new tests (LRU promotion, hash determinism, f64 bit-pattern).
 - `search.rs`: zero-copy `rrf_merge_n` (`&[&[&str]]` → no String
-  clones across 4 RRF channels); lazy ColBERT fallback snapshot.
+  clones across 4 RRF channels).  2 new tests.
 - `fts_query.rs` + `synonyms.rs`: `eq_ignore_ascii_case()` replaces
   `to_uppercase()` (allocation-free); `is_ascii()` guard for safe
-  W/PRE byte-slice matching on multibyte input.
-- `snippet.rs`: in-place `retain()` replaces cloned filter.
+  W/PRE byte-slice matching on multibyte input.  4 new tests.
+- `snippet.rs`: in-place `retain()` replaces cloned filter;
+  `truncate_str()` helper replaces `chars().take(N).collect::<String>()`
+  at 5 hot-path sites (browse, search, translation, federated
+  snippets).  4 new tests.
+
+**LanceDB I/O:**
+- Column projection on all 6 major query paths: browse scanner
+  (`query_documents`), dense ANN (`search_vector`), omni/vit ANN
+  (`search_vector_column`), similarity (`find_similar`), chunk
+  hydration (`fetch_best_chunk_per_doc`), sparse pool
+  (`search_sparse_in_pool`).  Excludes 3 embedding vectors
+  (1024+2048+768 f32), `multivec_packed`, `full_text_md`,
+  `embedding_sparse`, `embedding_model` — potentially 5–20× fewer
+  bytes read per page/search.  `search_result_columns()` helper
+  centralises the column list.
+- Cached `Arc<Schema>` in `LocalIndex` — built once at construction,
+  reused by every `ingest_batch` (was rebuilding ~25 Field objects per
+  document).
+- `Vec::with_capacity(total_rows)` in `cluster_documents`,
+  `list_failed_extractions`, and both search-result builders.
 
 **Ingest pipeline:**
 - `bg_ingest`: ViT + Omni `spawn_blocking` fired concurrently (~2×
@@ -31,16 +51,33 @@ time / deps, frontend bundle) followed by targeted optimisations.
   (was duplicated).
 - `ingest.rs`: conditional `texts.clone()` (skip when ColBERT is off);
   merged embedder lock (model_id read inside existing guard);
-  LanceDB write batch size raised from 128 to 512 rows.
+  LanceDB write batch size raised from 128 to 512 rows.  1 new test.
+- ColBERT IN-list: collapsed double Vec allocation into single pass.
+- `chunk_text`: O(N) byte-level word boundary scanner replaces O(N²)
+  `text[pos..].find(word)` loop.
+- `doctype.rs`: `text.to_lowercase()` deferred past extension-based
+  early returns — avoids full-text heap copy for extension-classified
+  types (email, epub, image, audio, video, code).
+- Zero-alloc LID text sampling via `char_indices` byte-boundary slice.
 
-**Dependencies:**
-- tokio `"full"` → specific features (drops net, signal).
-- symphonia `"all"` → used codecs (drops adpcm, mp1, mp2).
+**Dependencies + build:**
+- tokio `"full"` → 7 specific features (drops `net`, `signal`).
+- symphonia `"all"` → used codecs only (drops `adpcm`, `mp1`, `mp2`).
 - Removed `similar "unicode"` feature + duplicate `futures-util` dep.
+- Cargo profiles: `opt-level = 1` for deps in dev builds;
+  `lto = "thin"` in release.
 
 **Frontend:**
-- Vite `manualChunks` vendor splitting (7 heavy deps).
+- Vite `manualChunks` vendor splitting (7 heavy deps: pdfjs, mammoth,
+  tesseract, katex, deep-chat, web-llm, HF transformers).
 - `@mlc-ai/web-llm` dynamically imported on first use.
+- All 5 extractors (pdf, docx, epub, html, image) converted to
+  dynamic `import()` inside switch cases.
+
+**Other:**
+- `DiffSegment.tag`: `String` → `&'static str` (eliminates heap
+  allocation per diff segment).
+- Performance patterns documented in `LEARNINGS.md`.
 
 ---
 
