@@ -243,7 +243,10 @@ impl IngestPipeline {
         let fts_w = fts.clone();
         let vector_w = vector.clone();
         let pending_w = pending.clone();
-        let lance_batch_size = config.batch_size.saturating_mul(4).max(64);
+        // LanceDB writes are most efficient at 512-2048 rows per RecordBatch.
+        // The embed batch_size (default 32) is constrained by model VRAM; the
+        // write batch size is constrained by Arrow allocation cost — decouple.
+        let lance_batch_size = config.batch_size.saturating_mul(16).max(256);
 
         tokio::spawn(async move {
             while let Some(job) = writer_rx.recv().await {

@@ -42,8 +42,9 @@ pub fn synonym_expand_query(query: &str) -> String {
             continue;
         }
         // Skip operators and special syntax
-        let upper = token.to_uppercase();
-        if upper == "AND" || upper == "OR" || upper == "NOT"
+        if token.eq_ignore_ascii_case("AND")
+            || token.eq_ignore_ascii_case("OR")
+            || token.eq_ignore_ascii_case("NOT")
             || token.contains("w/") || token.contains("pre/")
             || token.contains('~') || token.contains('*') || token.contains('?')
             || token.starts_with('(') || token.ends_with(')')

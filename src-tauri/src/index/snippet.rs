@@ -39,17 +39,17 @@ fn lower1(c: char) -> char {
 /// fragments); if that leaves nothing, we fall back to the raw non-empty
 /// tokens so a single-character CJK query still highlights.
 fn query_tokens(query: &str) -> Vec<Vec<char>> {
-    let raw: Vec<Vec<char>> = query
+    let mut raw: Vec<Vec<char>> = query
         .split_whitespace()
         .map(|t| t.chars().map(lower1).collect::<Vec<char>>())
         .filter(|t| !t.is_empty())
         .collect();
-    let kept: Vec<Vec<char>> = raw.iter().filter(|t| t.len() >= 2).cloned().collect();
-    if kept.is_empty() {
-        raw
-    } else {
-        kept
+    // Drop single-char tokens (stop-word noise) unless they're all we have.
+    let has_long = raw.iter().any(|t| t.len() >= 2);
+    if has_long {
+        raw.retain(|t| t.len() >= 2);
     }
+    raw
 }
 
 /// Index of the first occurrence of `needle` in `hay[from..]`, or `None`.

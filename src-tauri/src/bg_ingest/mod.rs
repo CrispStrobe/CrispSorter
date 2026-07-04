@@ -792,40 +792,55 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                     | "m2ts" | "flv" | "wmv" | "3gp"
                 );
 
-                // ViT image embedding (768-D SigLIP/CLIP)
-                if is_image && crate::images::vit_embed::is_vit_available() {
-                    let p2 = p.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        crate::images::vit_embed::embed_image(&p2)
-                    }).await {
-                        Ok(Ok(emb)) => { raw.embedding_vit = Some(emb); }
-                        Ok(Err(e)) => { eprintln!("[bg_ingest] vit embed failed for {}: {e:#}", p.display()); }
-                        Err(e) => { eprintln!("[bg_ingest] vit embed join error: {e}"); }
-                    }
-                }
+                // ViT + Omni image embeddings — fire concurrently when
+                // both are available (independent models, no shared state).
+                let vit_available = is_image && crate::images::vit_embed::is_vit_available();
+                let omni_available = crate::index::omni_embed::is_omni_available();
 
-                // Omni cross-modal embedding (2048-D BidirLM-Omni)
-                if (is_image || is_audio) && crate::index::omni_embed::is_omni_available() {
-                    if is_image {
+                if is_image && (vit_available || omni_available) {
+                    let vit_handle = if vit_available {
                         let p2 = p.clone();
-                        match tokio::task::spawn_blocking(move || {
+                        Some(tokio::task::spawn_blocking(move || {
+                            crate::images::vit_embed::embed_image(&p2)
+                        }))
+                    } else {
+                        None
+                    };
+                    let omni_handle = if omni_available {
+                        let p2 = p.clone();
+                        Some(tokio::task::spawn_blocking(move || {
                             crate::index::omni_embed::encode_image_omni(&p2)
-                        }).await {
+                        }))
+                    } else {
+                        None
+                    };
+                    // Await both — they're already running on the blocking pool.
+                    if let Some(h) = vit_handle {
+                        match h.await {
+                            Ok(Ok(emb)) => { raw.embedding_vit = Some(emb); }
+                            Ok(Err(e)) => { eprintln!("[bg_ingest] vit embed failed for {}: {e:#}", p.display()); }
+                            Err(e) => { eprintln!("[bg_ingest] vit embed join error: {e}"); }
+                        }
+                    }
+                    if let Some(h) = omni_handle {
+                        match h.await {
                             Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
                             Ok(Err(e)) => { eprintln!("[bg_ingest] omni image embed failed for {}: {e:#}", p.display()); }
                             Err(e) => { eprintln!("[bg_ingest] omni image embed join error: {e}"); }
                         }
                     }
-                    if is_audio {
-                        if let Some(ref pcm) = extracted.audio_pcm {
-                            let pcm_clone = pcm.clone();
-                            match tokio::task::spawn_blocking(move || {
-                                crate::index::omni_embed::encode_audio_omni(&pcm_clone)
-                            }).await {
-                                Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
-                                Ok(Err(e)) => { eprintln!("[bg_ingest] omni audio embed failed for {}: {e:#}", p.display()); }
-                                Err(e) => { eprintln!("[bg_ingest] omni audio embed join error: {e}"); }
-                            }
+                }
+
+                // Omni audio embedding (2048-D BidirLM-Omni)
+                if is_audio && omni_available {
+                    if let Some(ref pcm) = extracted.audio_pcm {
+                        let pcm_clone = pcm.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            crate::index::omni_embed::encode_audio_omni(&pcm_clone)
+                        }).await {
+                            Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
+                            Ok(Err(e)) => { eprintln!("[bg_ingest] omni audio embed failed for {}: {e:#}", p.display()); }
+                            Err(e) => { eprintln!("[bg_ingest] omni audio embed join error: {e}"); }
                         }
                     }
                 }
