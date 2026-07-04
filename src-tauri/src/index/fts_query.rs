@@ -95,23 +95,30 @@ fn lex(input: &str) -> Result<Vec<Token>> {
                     chars.next();
                     word.push(nc);
                 }
-                match word.to_uppercase().as_str() {
-                    "AND" => tokens.push(Token::And),
-                    "OR" => tokens.push(Token::Or),
-                    "NOT" => tokens.push(Token::Not),
-                    upper if upper.starts_with("W/") => {
-                        let n = word[2..]
-                            .parse::<u32>()
-                            .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
-                        tokens.push(Token::Within(n, false));
-                    }
-                    upper if upper.starts_with("PRE/") => {
-                        let n = word[4..]
-                            .parse::<u32>()
-                            .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
-                        tokens.push(Token::Within(n, true));
-                    }
-                    _ => tokens.push(Token::Word(word)),
+                if word.eq_ignore_ascii_case("AND") {
+                    tokens.push(Token::And);
+                } else if word.eq_ignore_ascii_case("OR") {
+                    tokens.push(Token::Or);
+                } else if word.eq_ignore_ascii_case("NOT") {
+                    tokens.push(Token::Not);
+                } else if word.is_ascii()
+                    && word.len() > 2
+                    && word[..2].eq_ignore_ascii_case("W/")
+                {
+                    let n = word[2..]
+                        .parse::<u32>()
+                        .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
+                    tokens.push(Token::Within(n, false));
+                } else if word.is_ascii()
+                    && word.len() > 4
+                    && word[..4].eq_ignore_ascii_case("PRE/")
+                {
+                    let n = word[4..]
+                        .parse::<u32>()
+                        .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
+                    tokens.push(Token::Within(n, true));
+                } else {
+                    tokens.push(Token::Word(word));
                 }
             }
         }
@@ -550,9 +557,10 @@ pub fn fuzzify_query(query: &str) -> String {
             }
             continue;
         }
-        // Skip operators
-        let upper = token.to_uppercase();
-        if upper == "AND" || upper == "OR" || upper == "NOT"
+        // Skip operators (avoid to_uppercase() allocation)
+        if token.eq_ignore_ascii_case("AND")
+            || token.eq_ignore_ascii_case("OR")
+            || token.eq_ignore_ascii_case("NOT")
             || token.contains("w/")
             || token.contains("pre/")
         {

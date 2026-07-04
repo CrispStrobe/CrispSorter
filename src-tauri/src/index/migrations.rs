@@ -29,7 +29,7 @@
 use anyhow::{anyhow, Context, Result};
 use arrow_array::{Array as _, StringArray};
 use async_trait::async_trait;
-use futures_util::TryStreamExt as _;
+use futures::TryStreamExt as _;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use std::sync::Arc;
 

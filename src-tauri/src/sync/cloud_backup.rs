@@ -926,7 +926,7 @@ impl CloudBackupClient {
     ) -> Result<u64> {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncWriteExt;
-        use futures_util::StreamExt;
+        use futures::StreamExt;
 
         let url = format!("{}{}{}", self.base_url, FILES_PATH_PREFIX, sha256);
         let resp = self.client
@@ -1014,7 +1014,7 @@ impl CloudBackupClient {
     /// `GET /api/shard/export/{prefix}` — download the shard's
     /// tarball bytes.  The caller uploads them to the cloud drive.
     pub async fn shard_export(&self, prefix: &str) -> Result<Vec<u8>> {
-        use futures_util::StreamExt;
+        use futures::StreamExt;
         let url = format!("{}{}{}", self.base_url, SHARD_EXPORT_PREFIX, prefix);
         let resp = self.client
             .get(url)

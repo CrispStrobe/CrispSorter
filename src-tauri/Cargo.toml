@@ -70,10 +70,10 @@ openssl = { version = "0.10", features = ["vendored"] }
 # through a temp dir.  Was previously dev-only; promoted to a runtime dep
 # when InternxtDrive started using it for `read_file` / `write_file`.
 tempfile = "3"
-futures-util = "0.3.32"
+# futures-util removed — re-exported by the `futures` crate
 tauri-plugin-shell = { version = "2.3.5", optional = true }
 tauri-plugin-process = { version = "2.3.1", optional = true }
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 # `ReaderStream` for streaming file uploads to cloud-backup over
 # reqwest::Body::wrap_stream (avoids buffering multi-GB files in
 # RAM).  tokio-util is already transitive via reqwest+lance — this
@@ -97,7 +97,7 @@ lopdf       = "0.38"
 # Android NDK cross-compilation.
 feed-rs     = { version = "2", optional = true }
 # Word-level text diff — used for P25.7 document comparison.
-similar     = { version = "2", features = ["unicode"] }
+similar     = "2"
 # DOCX generation — used for P27.10 export to Word format.
 docx-rs     = { version = "0.4", optional = true }
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
@@ -315,7 +315,10 @@ version = "3.5"
 # `src-tauri/src/audio/ffmpeg_fallback.rs`.
 [dependencies.symphonia]
 version  = "0.5"
-features = ["all"]
+# Only the codecs + containers we actually decode (wav, mp3, m4a, flac,
+# ogg, opus, aac, alac, caf, aiff, mp4, mkv/webm).  "all" pulled in
+# adpcm/mp1/mp2 which we never use.
+features = ["aac", "alac", "flac", "mp3", "pcm", "vorbis", "all-formats"]
 optional = true
 
 # Sample-rate conversion to the canonical 16 kHz mono ASR input

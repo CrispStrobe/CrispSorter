@@ -464,8 +464,9 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let p = item.path.clone();
 
     // ── mtime-skip + failure-skip (P7.4.3 / P10) ──────────────────────
-    let file_mtime: Option<i64> = std::fs::metadata(&p)
-        .ok()
+    let bg_meta = std::fs::metadata(&p).ok();
+    let file_mtime: Option<i64> = bg_meta
+        .as_ref()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
@@ -531,13 +532,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let bg_meta = std::fs::metadata(&p).ok();
-    let mtime_unix = bg_meta
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64);
-    let file_size = bg_meta.map(|m| m.len() as i64);
+    let mtime_unix = file_mtime; // reuse mtime already computed above
+    let file_size = bg_meta.as_ref().map(|m| m.len() as i64);
     let volume_id = crate::volume::volume_id_for_path(&p);
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
     let doc_id = uuid::Uuid::new_v4().to_string();

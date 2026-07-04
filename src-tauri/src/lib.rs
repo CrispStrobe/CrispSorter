@@ -851,7 +851,7 @@ async fn asr_transcribe(
         .map_err(|e| format!("ASR transcribe failed: {e:#}"))
 }
 
-use futures_util::StreamExt;
+use futures::StreamExt;
 #[cfg(feature = "desktop")]
 use mistralrs::{
     best_device, initialize_logging, GgufModelBuilder, IsqType, Model, PagedAttentionMetaBuilder,

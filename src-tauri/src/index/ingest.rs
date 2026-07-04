@@ -422,21 +422,25 @@ impl IngestPipeline {
 
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-                let (dense, sparse, multivecs) = {
+                let (dense, sparse, multivecs, model_id) = {
                     use super::embedder::EmbedRole;
                     let mut emb = embedder.lock().await;
-                    let (dense, sparse) = emb.embed_full(texts.clone(), EmbedRole::Passage)?;
-                    // Stage AD: ColBERT multi-vector encoding (BGE-M3 only).
-                    let multivecs = if emb.has_colbert() {
-                        emb.embed_multivec(texts)?
+                    // Clone texts only when ColBERT is active; otherwise
+                    // pass texts directly to embed_full and skip the copy.
+                    let has_colbert = emb.has_colbert();
+                    let (embed_texts, colbert_texts) = if has_colbert {
+                        (texts.clone(), Some(texts))
+                    } else {
+                        (texts, None)
+                    };
+                    let (dense, sparse) = emb.embed_full(embed_texts, EmbedRole::Passage)?;
+                    let multivecs = if let Some(ct) = colbert_texts {
+                        emb.embed_multivec(ct)?
                     } else {
                         vec![vec![]; batch.len()]
                     };
-                    (dense, sparse, multivecs)
-                };
-                let model_id = {
-                    let emb = embedder.lock().await;
-                    format!("{:?}", emb.model())
+                    let mid = format!("{:?}", emb.model());
+                    (dense, sparse, multivecs, mid)
                 };
                 for (i, text_chunk) in batch.iter().enumerate() {
                     let embedding = dense.vectors.get(i).cloned();

@@ -19,7 +19,7 @@ use arrow_array::{
 };
 use arrow_schema::Schema;
 use async_trait::async_trait;
-use futures_util::TryStreamExt;
+use futures::TryStreamExt;
 use lancedb::{
     connect,
     index::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder, Index},
