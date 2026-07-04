@@ -808,6 +808,37 @@ Linux-only mypy CI lane.
 
 ---
 
+## Performance patterns (P28)
+
+### `to_uppercase()` for operator detection is a hidden allocation
+
+`token.to_uppercase() == "AND"` allocates a new String per token.
+`token.eq_ignore_ascii_case("AND")` is zero-alloc and handles the same
+cases.  Found in `fts_query.rs`, `synonyms.rs`, and `fuzzify_query`.
+
+### Byte-slicing ASCII prefixes on UTF-8 strings panics
+
+`word[..2].eq_ignore_ascii_case("W/")` panics when `word` starts with
+a multi-byte char (e.g. `ü` is 2 bytes in UTF-8, so `word[..2]` lands
+inside the char).  Guard with `word.is_ascii()` first, since `W/` and
+`PRE/` are inherently ASCII.
+
+### `chars().take(N).collect::<String>()` is an allocation you usually don't need
+
+For LID sampling, snippet generation, etc. where the consumer just
+reads the slice — use `char_indices().nth(N)` to find the byte boundary
+and slice the original `&str`.  The `String` collect allocates a copy
+on the heap that's immediately discarded after `.trim()` / `.len()`.
+
+### `Vec::with_capacity` matters for Arrow RecordBatch iteration
+
+Functions that iterate `Vec<RecordBatch>` and push results should
+pre-compute `batches.iter().map(|b| b.num_rows()).sum()` and pass it
+to `Vec::with_capacity`.  Without it, the Vec re-allocates 3–5 times
+for a typical 1000-row result set.
+
+---
+
 ## Local index & search
 
 ### `chunk_index = 0` is required for local search visibility
