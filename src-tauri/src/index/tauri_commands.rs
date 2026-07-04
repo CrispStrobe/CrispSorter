@@ -5063,3 +5063,87 @@ mod workbench_tests {
         assert!(std::path::Path::new(&res.pages[0]).exists());
     }
 }
+
+// ── P26.4 — Zoned OCR template commands ──────────────────────────────────
+
+#[tauri::command]
+pub async fn template_create(
+    state: State<'_, AppState>,
+    name: String,
+    width: u32,
+    height: u32,
+) -> Result<i64, String> {
+    let store = get_template_store(&state).await?;
+    store.create_template(&name, width, height).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_add_zone(
+    state: State<'_, AppState>,
+    template_id: i64,
+    label: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<i64, String> {
+    let store = get_template_store(&state).await?;
+    store.add_zone(template_id, &label, x, y, w, h).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::templates::TemplateSummary>, String> {
+    let store = get_template_store(&state).await?;
+    store.list_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_get(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<super::templates::Template>, String> {
+    let store = get_template_store(&state).await?;
+    store.get_template(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_delete(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let store = get_template_store(&state).await?;
+    store.delete_template(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_apply(
+    state: State<'_, AppState>,
+    location_uri: String,
+    template_id: i64,
+) -> Result<Vec<super::zone_ocr::ZoneResult>, String> {
+    let store = get_template_store(&state).await?;
+    let template = store.get_template(template_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Template {} not found", template_id))?;
+
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("Cannot resolve path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("File not found: {}", path.display()));
+    }
+
+    tokio::task::spawn_blocking(move || {
+        super::zone_ocr::extract_zones(&path, &template)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+async fn get_template_store(state: &State<'_, AppState>) -> Result<super::templates::TemplateStore, String> {
+    let data_dir = state.data_dir.lock().await;
+    let dir = data_dir.as_ref().ok_or("App data dir not set")?;
+    super::templates::TemplateStore::open_or_create(dir).map_err(|e| e.to_string())
+}

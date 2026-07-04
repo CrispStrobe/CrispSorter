@@ -342,6 +342,17 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Apply a zoned OCR template to an image — crop + OCR each named zone.
+    Zone {
+        /// Image file to process (PNG/JPG/TIFF/…).
+        file: PathBuf,
+        /// Template name (as created via the GUI or `template_create` command).
+        #[arg(long)]
+        template: String,
+        /// App data directory (to locate templates.db).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Emit shell-completion scripts to stdout.
     Completion {
         /// Target shell.
@@ -1527,6 +1538,9 @@ pub fn run() -> ExitCode {
         Command::Table { file, ocr_model, grid, out } => {
             cmd_table(cli.format, file, ocr_model, grid, out)
         }
+        Command::Zone { file, template, data_dir } => {
+            cmd_zone(cli.format, file, template, data_dir)
+        }
     };
 
     match result {
@@ -1868,6 +1882,60 @@ fn cmd_table(
     Ok(())
 }
 
+
+fn cmd_zone(
+    out: OutFormat,
+    file: PathBuf,
+    template_name: String,
+    data_dir: Option<PathBuf>,
+) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+    let data_dir = data_dir.unwrap_or_else(|| {
+        // Same fallback as other CLI commands that need the data dir.
+        #[cfg(target_os = "macos")]
+        let base = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("Library/Application Support"))
+            .unwrap_or_else(|_| PathBuf::from("."));
+        #[cfg(not(target_os = "macos"))]
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+        base.join("com.crispstrobe.crispsorter")
+    });
+    let store = crate::index::templates::TemplateStore::open_or_create(&data_dir)
+        .map_err(|e| format!("opening template store: {e}"))?;
+    let template = store.get_template_by_name(&template_name)
+        .map_err(|e| format!("looking up template: {e}"))?
+        .ok_or_else(|| format!("template '{}' not found", template_name))?;
+
+    let results = crate::index::zone_ocr::extract_zones(&file, &template)
+        .map_err(|e| format!("zone extraction: {e:#}"))?;
+
+    match out {
+        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&results).unwrap_or_default()),
+        OutFormat::Text => {
+            if results.is_empty() {
+                println!("No zones in template '{}'.", template_name);
+            } else {
+                for r in &results {
+                    let text = r.text.trim();
+                    if text.is_empty() {
+                        println!("  {}: (empty)", r.label);
+                    } else {
+                        println!("  {}: {}", r.label, text);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 // ── version + doctor ────────────────────────────────────────────────────────
 

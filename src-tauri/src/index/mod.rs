@@ -41,6 +41,8 @@ pub mod summary;
 pub mod nl_query;
 pub mod result_cache;
 pub mod barcode;
+pub mod templates;
+pub mod zone_ocr;
 pub mod tauri_commands;
 pub mod translate_commands;
 
