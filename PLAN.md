@@ -969,10 +969,13 @@ management systems and enterprise OCR/archival suites.
   All registered in both desktop + mobile handler lists.
 
   **Slice 4 — Frontend (Settings + OcrWorkbench).**
-  Settings: "Templates" section with create/delete + zone list.
-  OcrWorkbench: "Apply Template" dropdown + results table.
-  Deferred to a follow-up session — the backend is usable via CLI
-  and Tauri commands without a frontend.
+  Settings → "Templates" panel: create template (name + ref width/height),
+  add zones (label + normalised rect), delete template/zone.  Backed by
+  `template_create`, `template_add_zone`, `template_list`, `template_get`,
+  `template_delete` Tauri commands.  OcrWorkbench → "Apply Template"
+  section: dropdown of templates, "Apply" button → calls `template_apply`,
+  results table (label | text | confidence).  DE/EN i18n keys.
+  Follow-up: drag-to-draw zones on the page preview canvas.
 
 - [x] **P26.5 — PDF/A archival conversion.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::convert_to_pdfa()` adds PDF/A-2b conformance metadata
@@ -1084,13 +1087,35 @@ PDF editing and form creation; the rest are moderate or small.
   with password input panel.  ~4 h.
 
 - [ ] **P27.8 — Checkmark / OMR (Optical Mark Recognition).**
-  Detect filled checkboxes, radio buttons, and bubble marks in
-  scanned forms.  Lightweight approach: crop candidate regions (from
-  KIE or template zones), run a small binary classifier (checkbox
-  filled vs. empty — fine-tuned MobileNet or a classical CV pipeline
-  with contour analysis + fill-ratio threshold).  Store results as
-  structured KIE fields (`checkbox_agree: true`).  Pairs well with
-  P26.4 zoned OCR templates for high-volume form processing.  ~6–8 h.
+
+  **Goal:** Detect filled checkboxes, radio buttons, and bubble marks
+  in scanned forms via classical CV (no ML model for v1).
+
+  **Architecture — 3 slices:**
+
+  **Slice 1 — OMR engine (`index/omr.rs`).**
+  `detect_checkmark(image_path, x, y, w, h) → CheckmarkResult` where
+  `CheckmarkResult { filled: bool, fill_ratio: f64, confidence: f64 }`.
+  Algorithm: crop the zone, convert to grayscale, adaptive threshold
+  (Otsu), count dark pixels / total pixels → `fill_ratio`.  If
+  `fill_ratio > threshold` (default 0.15), mark as filled.  Confidence
+  derived from distance to threshold.  No external CV dep — uses
+  the `image` crate already in deps.  `detect_checkmarks(image_path,
+  zones) → Vec<CheckmarkResult>` batch variant.  6+ unit tests
+  (synthetic white/black images, partial fill, out-of-bounds).
+
+  **Slice 2 — Template integration.**
+  Extend `template_zones` with an optional `zone_type` column
+  (default `"text"`, also `"checkbox"`).  `extract_zones` in
+  `zone_ocr.rs` dispatches: `"text"` → OCR as before, `"checkbox"`
+  → `detect_checkmark` → `ZoneResult.text = "true"/"false"`.
+  Migration adds the column to existing templates.db.
+
+  **Slice 3 — Tauri command + CLI.**
+  `omr_detect(location_uri, x, y, w, h, threshold)` Tauri command.
+  CLI: `crispsorter omr <FILE> --rect x,y,w,h [--threshold 0.15]`.
+  Also usable via `crispsorter zone --template NAME FILE` when the
+  template has checkbox-type zones.
 
 - [ ] **P27.9 — Handwritten text recognition (ICR).**  Dedicated
   handwriting recognition beyond what the general VLM OCR engines
@@ -1111,15 +1136,34 @@ PDF editing and form creation; the rest are moderate or small.
   Follow-up: XLSX (table export), EPUB (chapter structure), PPTX.
 
 - [ ] **P27.11 — Cloud storage connectors (SharePoint / OneDrive /
-  Google Drive).**  OAuth2-based cloud drive connectors beyond the
-  existing WebDAV / Filen / Internxt support.  Each connector
-  implements the `CloudDrive` trait (list / download / upload /
-  metadata).  SharePoint + OneDrive: Microsoft Graph API via
-  `oauth2` + `reqwest` (shared Azure AD app registration).  Google
-  Drive: Google Drive API v3 via service account or OAuth2.  Token
-  refresh + storage in OS keychain.  Settings UI for connector setup
-  (OAuth flow in a webview).  ~8 h per connector (SharePoint/OneDrive
-  share 80% of the code).
+  Google Drive).**
+
+  **Goal:** OAuth2-based cloud drive connectors beyond the existing
+  WebDAV / Filen / Internxt support.
+
+  **Architecture — per connector, implementing the `CloudDrive` trait
+  (`list` / `download` / `upload` / `metadata`):**
+
+  **OneDrive + SharePoint** (shared 80% of code): Microsoft Graph API
+  via `oauth2` + `reqwest`.  Azure AD app registration (client_id +
+  client_secret).  Token refresh via refresh_token grant stored in
+  OS keychain (`keyring` crate, already used for LLM API keys).
+  `list_folder` → `GET /me/drive/root:/{path}:/children`.
+  `download` → `GET /me/drive/items/{id}/content`.
+  `upload` → `PUT /me/drive/root:/{path}:/content` (< 4MB) or
+  resumable upload session (> 4MB).  SharePoint: same Graph API,
+  different drive root (`/sites/{site-id}/drive/...`).
+
+  **Google Drive**: Drive API v3 via service account JSON key or
+  OAuth2 web flow.  `list` → files.list with `q` parameter.
+  `download` → files.get with `alt=media`.  `upload` → files.create
+  multipart.  Folder semantics via `parents` field.
+
+  **Common:** Each connector registers in the CloudDrive registry
+  (same as `LocalDrive` / `InternxtDrive` / `FilenDrive` /
+  `WebDavDrive`).  Settings UI: connector type dropdown, OAuth
+  "Connect" button (opens webview for auth flow), token status
+  indicator.  ~8 h per connector.
 
 - [x] **P27.12 — Digital signature creation.**  ✅ SHIPPED (2026-07-04).
   `pdf_ops::sign_pdf()` via openssl (vendored). PKCS#12 cert loading,
