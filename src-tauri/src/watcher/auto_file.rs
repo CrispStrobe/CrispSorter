@@ -7,7 +7,7 @@
 //! 4. Build the destination path from the template
 //! 5. Move/copy the file
 
-use crate::index::doctype::{classify, DocType};
+use crate::index::doctype::classify;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -4117,7 +4117,7 @@ fn html_table_to_csv(html: &str) -> String {
         }
         let mut cells = Vec::new();
         // Split on <td> or <th> tags
-        for cell_chunk in row_chunk.split(|c| false).into_iter().chain(
+        for cell_chunk in row_chunk.split(|_c| false).into_iter().chain(
             // Custom splitting: find each <td...> or <th...> and extract inner text
             std::iter::empty()
         ) {

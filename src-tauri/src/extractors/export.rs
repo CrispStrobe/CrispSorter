@@ -40,7 +40,7 @@ pub fn export_to_docx(
         );
     }
 
-    let bytes = docx.build().pack(std::fs::File::create(out_path)
+    let _bytes = docx.build().pack(std::fs::File::create(out_path)
         .map_err(|e| format!("create {}: {e}", out_path.display()))?)
         .map_err(|e| format!("write DOCX: {e}"))?;
 

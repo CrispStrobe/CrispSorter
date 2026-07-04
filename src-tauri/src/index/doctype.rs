@@ -65,7 +65,7 @@ impl DocType {
 pub fn classify(
     ext: &str,
     text: &str,
-    title: Option<&str>,
+    _title: Option<&str>,
     page_count: Option<usize>,
 ) -> DocType {
     let ext_lower = ext.to_lowercase();

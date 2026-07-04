@@ -3244,7 +3244,7 @@ fn kmeans_pp(embeddings: &[Vec<f32>], k: usize, dim: usize, max_iter: usize) -> 
     centroids.push(embeddings[first].clone());
 
     for _ in 1..k {
-        let mut dists: Vec<f64> = embeddings
+        let dists: Vec<f64> = embeddings
             .iter()
             .map(|e| {
                 centroids.iter().map(|c| sq_dist(e, c)).fold(f64::MAX, f64::min)

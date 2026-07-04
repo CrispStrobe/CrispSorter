@@ -62,7 +62,7 @@ fn save_image_data(img: &arboard::ImageData) -> Result<(std::path::PathBuf, u32,
         .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
     let path = tmp_dir.join(format!("capture_{ts}.png"));
     let mut file = std::fs::File::create(&path).map_err(|e| format!("create file: {e}"))?;
-    let mut encoder = image::codecs::png::PngEncoder::new(&mut file);
+    let encoder = image::codecs::png::PngEncoder::new(&mut file);
     use image::ImageEncoder;
     encoder.write_image(&img.bytes, width, height, image::ExtendedColorType::Rgba8)
         .map_err(|e| format!("PNG encode: {e}"))?;

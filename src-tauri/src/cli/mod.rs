@@ -3849,7 +3849,7 @@ async fn cmd_index_async(
                 }
             }
         }
-        IndexCmd::EntityGraph { min_cooccurrence, max_nodes } => {
+        IndexCmd::EntityGraph { min_cooccurrence: _, max_nodes } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await.map_err(|e| e.to_string())?;
             let facets = local.tag_facets(&Default::default(), 500)

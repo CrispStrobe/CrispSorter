@@ -190,6 +190,8 @@ impl RateLimits {
     }
 
     /// Estimate tokens for a file based on size (heuristic: ~1 token per 4 bytes).
+    /// Reserved for the planned token-based cost cap (see PLAN.md P5 follow-ups).
+    #[allow(dead_code)]
     fn estimate_tokens_for_file(path: &Path) -> u64 {
         std::fs::metadata(path)
             .map(|m| m.len() / 4)

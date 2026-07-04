@@ -1155,7 +1155,7 @@ pub fn sign_pdf(
     let signer_name = cert.subject_name()
         .entries_by_nid(openssl::nid::Nid::COMMONNAME)
         .next()
-        .map(|e| e.data().as_utf8().map(|s| s.to_string()).unwrap_or_default())
+        .map(|e| e.data().to_string().unwrap_or_default())
         .unwrap_or_default();
 
     let mut sig_dict = lopdf::Dictionary::new();
