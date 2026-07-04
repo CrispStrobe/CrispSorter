@@ -1,9 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { extractPdf } from './pdfExtractor';
-import { extractDocx } from './docxExtractor';
-import { extractEpub } from './epubExtractor';
-import { extractHtml } from './htmlExtractor';
-import { extractImage } from './imageExtractor';
+// Extractors are dynamically imported on first use so mammoth, pdfjs,
+// epub-parser, and tesseract.js don't bloat the initial bundle.
 import { logInfo, logWarn, logDebug } from '../log';
 
 export interface ExtractionResult {
@@ -130,23 +127,29 @@ export async function extractText(
     // stays at console.log (browser-devtools only); the milestone
     // events the user actually wants to see go through flog.
     switch (extension) {
-        case 'pdf':
+        case 'pdf': {
             pickedTool = 'pdfjs-dist (JS)';
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
+            const { extractPdf } = await import('./pdfExtractor');
             text = await extractPdf(arrayBuffer, options);
             // PDF: build lightweight markdown with heuristic heading detection.
             ({ markdownText, headings } = pdfTextToMarkdown(text));
             break;
-        case 'docx':
+        }
+        case 'docx': {
             pickedTool = 'mammoth (DOCX)';
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
+            const { extractDocx } = await import('./docxExtractor');
             ({ text, markdownText, headings } = await extractDocx(arrayBuffer));
             break;
-        case 'epub':
+        }
+        case 'epub': {
             pickedTool = '@lingo-reader/epub-parser';
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
+            const { extractEpub } = await import('./epubExtractor');
             ({ text, markdownText, headings } = await extractEpub(arrayBuffer, name, options));
             break;
+        }
         case 'txt': {
             pickedTool = 'TextDecoder utf-8';
             logDebug(`Extracting ${name} as plain text`);
@@ -164,22 +167,26 @@ export async function extractText(
             break;
         }
         case 'html':
-        case 'htm':
+        case 'htm': {
             pickedTool = 'DOMParser (HTML)';
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
+            const { extractHtml } = await import('./htmlExtractor');
             ({ text, markdownText, headings } = await extractHtml(arrayBuffer));
             break;
+        }
         case 'webp':
         case 'png':
         case 'jpg':
         case 'jpeg':
         case 'bmp':
         case 'tif':
-        case 'tiff':
+        case 'tiff': {
             pickedTool = `tesseract.js OCR (.${extension})`;
             logInfo(`Extracting ${name} with ${pickedTool} (${(arrayBuffer.byteLength / 1024).toFixed(0)} KB input)`);
+            const { extractImage } = await import('./imageExtractor');
             ({ text, markdownText, headings } = await extractImage(arrayBuffer, name));
             break;
+        }
         case 'doc':
             // Legacy MS Word (CFB / OLE2). Browser libraries can't reliably read this.
             // Surface a clear message so the user can convert to .docx.

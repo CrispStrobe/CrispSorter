@@ -54,6 +54,9 @@ pub struct LocalIndex {
     _db: Connection,
     table: Table,
     pub dims: usize,
+    /// Cached Arrow schema — built once at construction, reused by every
+    /// `ingest_batch` call instead of re-allocating ~25 Field objects.
+    schema: Arc<Schema>,
 }
 
 // ── Constructor ────────────────────────────────────────────────────────────
@@ -98,10 +101,12 @@ impl LocalIndex {
             .await
             .context("schema v3: adding volume_id column")?;
 
+        let schema = build_schema(dims);
         Ok(LocalIndex {
             _db: db,
             table,
             dims,
+            schema,
         })
     }
 
@@ -118,10 +123,9 @@ impl LocalIndex {
             return Ok(());
         }
 
-        let schema = build_schema(self.dims);
-        let batch = chunks_to_record_batch(chunks, self.dims, &schema)?;
+        let batch = chunks_to_record_batch(chunks, self.dims, &self.schema)?;
 
-        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], Arc::clone(&self.schema));
         self.table
             .add(reader)
             .execute()
@@ -1543,6 +1547,21 @@ impl LocalIndex {
             .limit(Some(limit as i64), Some(offset as i64))
             .context("scanner limit")?;
 
+        // Project only the columns record_batches_to_search_results reads.
+        // Omits embedding (1024+ f32), embedding_omni (2048 f32),
+        // embedding_vit (768 f32), multivec_packed (LargeBinary),
+        // full_text_md, embedding_sparse, embedding_model, headings_text,
+        // and other large columns the browse view never displays.
+        scanner
+            .project(&[
+                "doc_id", "location_uri", "owner_id", "title", "author",
+                "year", "filename", "ext", "language", "chunk_index",
+                "full_text", "metadata_json", "indexed_at", "volume_id",
+                "source_hash", "text_translated", "text_translated_lang",
+                "url", "tags", "summary", "doc_status", "parent_dir",
+            ])
+            .context("scanner project")?;
+
         let batches: Vec<RecordBatch> = scanner
             .try_into_stream()
             .await
@@ -2244,7 +2263,7 @@ impl LocalIndex {
         // dims=0: .cidx is read-only; the dim value only matters for new
         // table creation (not applicable here) and embedding operations
         // (not performed on snapshots).
-        Ok(Self { _db: db, table, dims: 0 })
+        Ok(Self { _db: db, table, dims: 0, schema: build_schema(0) })
     }
 }
 
