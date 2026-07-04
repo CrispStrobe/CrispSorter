@@ -357,7 +357,7 @@ impl SearchEngine {
             // target lang doesn't match keep their original snippet.
             if r.text_translated_lang.as_deref() == Some(tgt) {
                 if let Some(ref translated) = r.text_translated {
-                    r.snippet = translated.chars().take(400).collect();
+                    r.snippet = super::snippet::truncate_str(translated, 400).to_owned();
                 }
             }
         }

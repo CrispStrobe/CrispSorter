@@ -12,6 +12,17 @@
 /// Default snippet window, in characters (roughly ±150 around the match).
 pub const SNIPPET_WINDOW: usize = 300;
 
+/// Truncate `s` to at most `max_chars` characters by slicing at a char
+/// boundary.  Returns a `&str` — no heap allocation.  Use
+/// `.to_owned()` only when the caller genuinely needs an owned String.
+#[inline]
+pub fn truncate_str(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
 /// HTML-escape the five characters that matter inside a `{@html …}` block so
 /// the snippet is safe to render verbatim frontend-side.
 fn escape_html_char(c: char, out: &mut String) {
@@ -230,5 +241,20 @@ mod tests {
         let strs: Vec<String> = tokens.iter().map(|t| t.iter().collect()).collect();
         assert!(strs.contains(&"hello".to_string()));
         assert!(strs.contains(&"world".to_string()));
+    }
+
+    #[test]
+    fn truncate_str_ascii() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+        assert_eq!(truncate_str("hi", 10), "hi");
+        assert_eq!(truncate_str("", 5), "");
+    }
+
+    #[test]
+    fn truncate_str_multibyte() {
+        // "Ü" is 2 bytes, "über" is 5 bytes / 4 chars
+        assert_eq!(truncate_str("über alles", 4), "über");
+        // Must not panic on a boundary inside a multi-byte char
+        assert_eq!(truncate_str("日本語テスト", 3), "日本語");
     }
 }

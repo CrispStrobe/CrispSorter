@@ -504,7 +504,7 @@ impl LocalIndex {
                     .as_ref()
                     .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                     .unwrap_or("");
-                let snippet = full_text.chars().take(400).collect::<String>();
+                let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
                 let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
                     metadata_col
@@ -2364,7 +2364,7 @@ pub fn batches_to_search_results_with_scores(
                 .as_ref()
                 .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                 .unwrap_or("");
-            let snippet = full_text.chars().take(400).collect::<String>();
+            let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
             let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
                 metadata_col
@@ -2697,7 +2697,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                 .unwrap_or("");
 
-            let snippet = full_text.chars().take(400).collect::<String>();
+            let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
             // Convert cosine distance → similarity score (0..1, higher = better).
             let distance = score_col.as_ref().map(|c| c.value(i)).unwrap_or(1.0);
