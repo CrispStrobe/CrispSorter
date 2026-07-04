@@ -456,11 +456,20 @@ impl LocalIndex {
             filter = format!("({}) AND ({})", filter, extra);
         }
         // 8 chunks per doc lets us pick the best per-doc chunk without
-        // scanning the full doc.
+        // scanning the full doc. Project to search-result cols +
+        // embedding_sparse (needed for scoring) to avoid reading dense
+        // embedding vectors.
+        let mut sparse_cols = vec![
+            "embedding_sparse".into(),
+        ];
+        if let lancedb::query::Select::Columns(ref cols) = search_result_columns() {
+            sparse_cols.extend(cols.iter().cloned());
+        }
         let batches: Vec<RecordBatch> = self
             .table
             .query()
             .only_if(filter)
+            .select(lancedb::query::Select::Columns(sparse_cols))
             .limit(candidate_doc_ids.len() * 8)
             .execute()
             .await?
