@@ -1185,3 +1185,11 @@ frontend hot paths.  13 new unit tests.
   + `multivec_packed` + `full_text_md` + `embedding_sparse` (except
   where needed for scoring).  Combined with the browse scanner
   projection, this covers all 6 major LanceDB read paths.
+- [x] **Deferred doctype `to_lowercase()`.**  `text.to_lowercase()`
+  moved past the extension-based early returns in `classify()` —
+  avoids a full-text heap copy for extension-classified types.
+- [x] **O(N) `chunk_text`.**  Replaced the O(N²)
+  `text[pos..].find(word)` per-word loop with a single-pass byte-level
+  word boundary scanner.
+- [x] **Static diff tags.**  `DiffSegment.tag` changed from `String`
+  to `&'static str` — eliminates one heap allocation per diff segment.
