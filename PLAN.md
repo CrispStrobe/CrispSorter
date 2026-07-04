@@ -1177,3 +1177,11 @@ frontend hot paths.  13 new unit tests.
   epub, html, image) converted to `await import()` inside switch
   cases — mammoth, pdfjs, epub-parser, tesseract only load when the
   matching file type is processed.
+- [x] **Column projection on all search queries.**  `search_result_columns()`
+  helper applied to `search_vector`, `search_vector_column`,
+  `find_similar`, `fetch_best_chunk_per_doc`, and
+  `search_sparse_in_pool` — every LanceDB query now selects only the
+  ~20 columns the result builder reads, excluding 3 embedding vectors
+  + `multivec_packed` + `full_text_md` + `embedding_sparse` (except
+  where needed for scoring).  Combined with the browse scanner
+  projection, this covers all 6 major LanceDB read paths.
