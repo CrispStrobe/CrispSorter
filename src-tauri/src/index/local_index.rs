@@ -47,6 +47,21 @@ pub struct FailedExtractionRow {
     pub retryable:    bool,
 }
 
+/// Columns consumed by `batches_to_search_results_with_scores` and
+/// `record_batches_to_search_results`.  Used by `.select(Select::Columns(…))`
+/// to avoid reading embedding vectors and other large blobs.
+fn search_result_columns() -> lancedb::query::Select {
+    lancedb::query::Select::Columns(vec![
+        "doc_id".into(), "location_uri".into(), "owner_id".into(),
+        "title".into(), "author".into(), "year".into(), "filename".into(),
+        "ext".into(), "language".into(), "chunk_index".into(),
+        "full_text".into(), "metadata_json".into(), "indexed_at".into(),
+        "volume_id".into(), "source_hash".into(), "text_translated".into(),
+        "text_translated_lang".into(), "url".into(), "tags".into(),
+        "summary".into(), "doc_status".into(),
+    ])
+}
+
 // ── Struct ─────────────────────────────────────────────────────────────────
 
 pub struct LocalIndex {
@@ -149,6 +164,7 @@ impl LocalIndex {
             .table
             .vector_search(embedding)?
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit);
 
         if let Some(sql) = filters.to_lance_sql() {
@@ -209,6 +225,7 @@ impl LocalIndex {
             .table
             .vector_search(embedding)?
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit)
             .only_if(exclude);
 
@@ -232,6 +249,7 @@ impl LocalIndex {
             .vector_search(embedding)?
             .column(column)
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit);
 
         if let Some(sql) = filters.to_lance_sql() {
@@ -371,6 +389,7 @@ impl LocalIndex {
             .table
             .query()
             .only_if(filter)
+            .select(search_result_columns())
             .limit(doc_ids.len() * per_doc)
             .execute()
             .await?
