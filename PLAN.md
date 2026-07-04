@@ -921,15 +921,56 @@ management systems and enterprise OCR/archival suites.
   --export csv|xlsx`.  Frontend: "Export as CSV" / "Export as XLSX"
   buttons in the OcrWorkbench table section.
 
-- [ ] **P26.4 — Zoned OCR / template matching.**  User-defined
-  extraction zones on a document template: draw rectangles on a
-  reference page, name each zone (e.g., "invoice_number",
-  "total_amount"), save as a `.czt` template.  On ingest, documents
-  matching the template (layout similarity > threshold) extract the
-  named zones via crop+OCR instead of full-page OCR.  Faster and more
-  reliable for uniform high-volume documents (invoices from the same
-  vendor, government forms).  `templates/` SQLite table +
-  `index_apply_template` Tauri command.
+- [ ] **P26.4 — Zoned OCR / template matching.**
+
+  **Goal:** User-defined extraction zones on a document template.
+  Draw rectangles on a reference page, name each zone (e.g.
+  "invoice_number", "total_amount"), save as a named template.  On
+  demand, apply a template to a document image: crop each zone,
+  OCR the crop, return structured `{label: text}` pairs.
+
+  **Architecture — 4 slices:**
+
+  **Slice 1 — Template store (`index/templates.rs`).**
+  WAL-mode SQLite `templates.db` (same pattern as audit, retention,
+  annotations).  Tables:
+  ```
+  templates (id PK, name TEXT UNIQUE, width INT, height INT, created_at INT)
+  template_zones (id PK, template_id FK, label TEXT, x REAL, y REAL,
+                  w REAL, h REAL)
+  ```
+  `TemplateStore` struct with CRUD: `create_template(name, w, h) → id`,
+  `add_zone(template_id, label, x, y, w, h) → zone_id`,
+  `get_template(id) → Template { zones }`, `list_templates`,
+  `delete_template(id)`.  Coordinates are normalised 0.0–1.0
+  (fraction of page width/height) so the same template works across
+  DPI variants.  6+ unit tests (CRUD, duplicate name, delete cascade).
+
+  **Slice 2 — Zone extraction engine (`index/zone_ocr.rs`).**
+  `extract_zones(image_path, template) → Vec<ZoneResult>` where
+  `ZoneResult { label, text, confidence }`.  For each zone:
+  1. Load image via `image` crate (`open` → `DynamicImage`).
+  2. Denormalise zone coords to pixel rect.
+  3. `crop_imm(x, y, w, h)` → write crop to a temp PNG.
+  4. OCR the crop via the existing `ocr_one_image` path (or
+     `ocr_via_pipeline` when the smart pipeline is active).
+  5. Collect `(label, text, confidence)`.
+  Returns empty text for zones that fall outside the image bounds
+  (soft-fail, not panic).  4+ unit tests (mock image, out-of-bounds
+  zone, empty template).
+
+  **Slice 3 — Tauri commands + CLI.**
+  Tauri commands: `template_create`, `template_add_zone`,
+  `template_list`, `template_get`, `template_delete`,
+  `template_apply(location_uri, template_id) → Vec<ZoneResult>`.
+  CLI: `crispsorter ocr zone --template <name> <FILE>`.
+  All registered in both desktop + mobile handler lists.
+
+  **Slice 4 — Frontend (Settings + OcrWorkbench).**
+  Settings: "Templates" section with create/delete + zone list.
+  OcrWorkbench: "Apply Template" dropdown + results table.
+  Deferred to a follow-up session — the backend is usable via CLI
+  and Tauri commands without a frontend.
 
 - [x] **P26.5 — PDF/A archival conversion.**  ✅ SHIPPED (2026-07-02).
   `pdf_ops::convert_to_pdfa()` adds PDF/A-2b conformance metadata
