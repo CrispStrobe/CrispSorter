@@ -29,9 +29,9 @@
 //! when the trait method is called from `tauri::command`s, because
 //! Tauri commands run on a worker thread.
 
-use anyhow::{Context, Result, anyhow};
-use quick_xml::Reader;
+use anyhow::{anyhow, Context, Result};
 use quick_xml::events::Event;
+use quick_xml::Reader;
 use std::path::Path;
 use std::time::Duration;
 
@@ -48,11 +48,11 @@ const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </D:propfind>"#;
 
 pub struct WebDavDrive {
-    label:    String,
+    label: String,
     base_url: String,
     username: Option<String>,
     password: Option<String>,
-    client:   reqwest::blocking::Client,
+    client: reqwest::blocking::Client,
 }
 
 impl WebDavDrive {
@@ -64,15 +64,16 @@ impl WebDavDrive {
         insecure_tls: bool,
     ) -> Self {
         let mut url = base_url.into();
-        if !url.ends_with('/') { url.push('/'); }
+        if !url.ends_with('/') {
+            url.push('/');
+        }
         let mut builder = reqwest::blocking::Client::builder()
             // Generous default — WebDAV servers can be slow on cold dirs.
             .timeout(Duration::from_secs(60));
         if insecure_tls {
             builder = builder.danger_accept_invalid_certs(true);
         }
-        let client = builder.build()
-            .expect("reqwest blocking client must build");
+        let client = builder.build().expect("reqwest blocking client must build");
         Self {
             label: label.into(),
             base_url: url,
@@ -88,10 +89,7 @@ impl WebDavDrive {
         let s = path.to_string_lossy();
         let trimmed = s.trim_start_matches('/');
         // Encode each segment, leaving the slashes intact.
-        let encoded: Vec<String> = trimmed
-            .split('/')
-            .map(percent_encode_segment)
-            .collect();
+        let encoded: Vec<String> = trimmed.split('/').map(percent_encode_segment).collect();
         format!("{}{}", self.base_url, encoded.join("/"))
     }
 
@@ -122,11 +120,11 @@ fn percent_encode_segment(seg: &str) -> String {
 /// One <D:response> entry from a multi-status PROPFIND reply.
 #[derive(Debug, Default, Clone)]
 struct DavResponse {
-    href:           String,
-    displayname:    Option<String>,
-    contentlength:  Option<u64>,
-    lastmodified:   Option<String>,
-    is_collection:  bool,
+    href: String,
+    displayname: Option<String>,
+    contentlength: Option<u64>,
+    lastmodified: Option<String>,
+    is_collection: bool,
 }
 
 /// Parse a multi-status PROPFIND XML body into a flat list of responses.
@@ -171,12 +169,15 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 if let Some(ref mut r) = current {
                     match local.as_str() {
                         "href" => r.href = text_buf.trim().to_owned(),
-                        "displayname" if !text_buf.trim().is_empty() =>
-                            r.displayname = Some(text_buf.trim().to_owned()),
-                        "getcontentlength" if !text_buf.trim().is_empty() =>
-                            r.contentlength = text_buf.trim().parse().ok(),
-                        "getlastmodified" if !text_buf.trim().is_empty() =>
-                            r.lastmodified = Some(text_buf.trim().to_owned()),
+                        "displayname" if !text_buf.trim().is_empty() => {
+                            r.displayname = Some(text_buf.trim().to_owned())
+                        }
+                        "getcontentlength" if !text_buf.trim().is_empty() => {
+                            r.contentlength = text_buf.trim().parse().ok()
+                        }
+                        "getlastmodified" if !text_buf.trim().is_empty() => {
+                            r.lastmodified = Some(text_buf.trim().to_owned())
+                        }
                         "response" => {
                             if let Some(done) = current.take() {
                                 out.push(done);
@@ -211,21 +212,31 @@ fn parse_http_date(s: &str) -> Option<i64> {
     let trimmed = s.trim();
     let after_comma = trimmed.split_once(", ").map(|(_, r)| r)?;
     let mut parts = after_comma.splitn(5, ' ');
-    let d:    i64 = parts.next()?.parse().ok()?;
-    let mon:  &str = parts.next()?;
-    let y:    i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    let mon: &str = parts.next()?;
+    let y: i64 = parts.next()?.parse().ok()?;
     let time: &str = parts.next()?;
     // Last token may be "GMT" or "+0000"; we ignore the value, assume UTC.
     let _tz = parts.next();
 
     let mo = match mon {
-        "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4,  "May" => 5,  "Jun" => 6,
-        "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
         _ => return None,
     };
 
     let mut tparts = time.split(':');
-    let h:  i64 = tparts.next()?.parse().ok()?;
+    let h: i64 = tparts.next()?.parse().ok()?;
     let mi: i64 = tparts.next()?.parse().ok()?;
     let s_int: i64 = tparts.next()?.parse().ok()?;
 
@@ -233,7 +244,11 @@ fn parse_http_date(s: &str) -> Option<i64> {
     let yy = if mo <= 2 { y - 1 } else { y };
     let era = yy.div_euclid(400);
     let yoe = (yy - era * 400) as u64;
-    let m_norm = if mo > 2 { (mo - 3) as u64 } else { (mo + 9) as u64 };
+    let m_norm = if mo > 2 {
+        (mo - 3) as u64
+    } else {
+        (mo + 9) as u64
+    };
     let doy = (153 * m_norm + 2) / 5 + d as u64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe as i64 - 719_468;
@@ -241,19 +256,26 @@ fn parse_http_date(s: &str) -> Option<i64> {
 }
 
 impl CloudDrive for WebDavDrive {
-    fn label(&self) -> &str { &self.label }
-    fn drive_type(&self) -> DriveType { DriveType::WebDav }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn drive_type(&self) -> DriveType {
+        DriveType::WebDav
+    }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let url = self.url_for(path);
-        let resp = self.req(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+        let resp = self
+            .req(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
             .header("Depth", "1")
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPFIND_BODY)
             .send()
             .with_context(|| format!("PROPFIND {url}"))?;
         let status = resp.status();
-        let body = resp.text().with_context(|| format!("reading PROPFIND body for {url}"))?;
+        let body = resp
+            .text()
+            .with_context(|| format!("reading PROPFIND body for {url}"))?;
         if !status.is_success() && status.as_u16() != 207 {
             return Err(anyhow!("WebDAV PROPFIND {url} → {status}: {body}"));
         }
@@ -273,11 +295,17 @@ impl CloudDrive for WebDavDrive {
         let mut out = Vec::with_capacity(responses.len());
         for r in &responses {
             let name = name_from_response(r);
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
             out.push(DirEntry {
                 name,
                 is_dir: r.is_collection,
-                size: if r.is_collection { None } else { r.contentlength },
+                size: if r.is_collection {
+                    None
+                } else {
+                    r.contentlength
+                },
             });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -286,30 +314,36 @@ impl CloudDrive for WebDavDrive {
 
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let url = self.url_for(path);
-        let resp = self.req(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
+        let resp = self
+            .req(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
             .header("Depth", "0")
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(PROPFIND_BODY)
             .send()
             .with_context(|| format!("PROPFIND (Depth 0) {url}"))?;
         let status = resp.status();
-        let body = resp.text().with_context(|| format!("reading PROPFIND body for {url}"))?;
+        let body = resp
+            .text()
+            .with_context(|| format!("reading PROPFIND body for {url}"))?;
         if !status.is_success() && status.as_u16() != 207 {
             return Err(anyhow!("WebDAV PROPFIND {url} → {status}: {body}"));
         }
         let responses = parse_propfind(&body)?;
-        let r = responses.into_iter().next()
+        let r = responses
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow!("PROPFIND returned no <response> for {url}"))?;
         Ok(FileStat {
-            size:       r.contentlength.unwrap_or(0),
-            is_dir:     r.is_collection,
+            size: r.contentlength.unwrap_or(0),
+            is_dir: r.is_collection,
             mtime_unix: r.lastmodified.as_deref().and_then(parse_http_date),
         })
     }
 
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
         let url = self.url_for(path);
-        let resp = self.req(reqwest::Method::GET, &url)
+        let resp = self
+            .req(reqwest::Method::GET, &url)
             .send()
             .with_context(|| format!("GET {url}"))?;
         let status = resp.status();
@@ -328,7 +362,8 @@ impl CloudDrive for WebDavDrive {
             self.ensure_collection(parent)?;
         }
         let url = self.url_for(path);
-        let resp = self.req(reqwest::Method::PUT, &url)
+        let resp = self
+            .req(reqwest::Method::PUT, &url)
             .body(data.to_vec())
             .send()
             .with_context(|| format!("PUT {url}"))?;
@@ -342,7 +377,8 @@ impl CloudDrive for WebDavDrive {
 
     fn delete(&self, path: &Path) -> Result<()> {
         let url = self.url_for(path);
-        let resp = self.req(reqwest::Method::DELETE, &url)
+        let resp = self
+            .req(reqwest::Method::DELETE, &url)
             .send()
             .with_context(|| format!("DELETE {url}"))?;
         let status = resp.status();
@@ -361,10 +397,13 @@ impl WebDavDrive {
         for comp in dir.components() {
             let s = comp.as_os_str().to_string_lossy();
             // Skip the leading "/" component when the path is absolute.
-            if s == "/" || s.is_empty() { continue; }
+            if s == "/" || s.is_empty() {
+                continue;
+            }
             acc.push(s.as_ref());
             let url = self.url_for(&acc);
-            let resp = self.req(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &url)
+            let resp = self
+                .req(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &url)
                 .send()
                 .with_context(|| format!("MKCOL {url}"))?;
             let code = resp.status().as_u16();
@@ -386,7 +425,9 @@ fn strip_origin_and_decode(s: &str) -> String {
     let after_scheme = if let Some(idx) = s.find("://") {
         let rest = &s[idx + 3..];
         rest.find('/').map(|p| &rest[p..]).unwrap_or("")
-    } else { s };
+    } else {
+        s
+    };
     percent_decode(after_scheme)
 }
 
@@ -396,8 +437,12 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h = u8::from_str_radix(std::str::from_utf8(&bytes[i+1..i+3]).unwrap_or(""), 16);
-            if let Ok(b) = h { out.push(b); i += 3; continue; }
+            let h = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16);
+            if let Ok(b) = h {
+                out.push(b);
+                i += 3;
+                continue;
+            }
         }
         out.push(bytes[i]);
         i += 1;
@@ -408,7 +453,9 @@ fn percent_decode(s: &str) -> String {
 /// Pick a display name for a `<D:response>`: prefer `<D:displayname>` if
 /// present, else the last segment of the href.
 fn name_from_response(r: &DavResponse) -> String {
-    if let Some(d) = &r.displayname { return d.clone(); }
+    if let Some(d) = &r.displayname {
+        return d.clone();
+    }
     let href = strip_origin_and_decode(&r.href);
     let trimmed = href.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or("").to_owned()
@@ -428,24 +475,33 @@ mod tests {
     #[test]
     fn url_for_normalises_leading_slash_and_encodes() {
         let d = WebDavDrive::new("d", "https://h/dav/", None, None, false);
-        assert_eq!(d.url_for(Path::new("/a/b.txt")),    "https://h/dav/a/b.txt");
-        assert_eq!(d.url_for(Path::new("a/b.txt")),     "https://h/dav/a/b.txt");
-        assert_eq!(d.url_for(Path::new("hi there")),    "https://h/dav/hi%20there");
-        assert_eq!(d.url_for(Path::new("a/b c/d.pdf")), "https://h/dav/a/b%20c/d.pdf");
-        assert_eq!(d.url_for(Path::new("a&b")),         "https://h/dav/a%26b");
+        assert_eq!(d.url_for(Path::new("/a/b.txt")), "https://h/dav/a/b.txt");
+        assert_eq!(d.url_for(Path::new("a/b.txt")), "https://h/dav/a/b.txt");
+        assert_eq!(d.url_for(Path::new("hi there")), "https://h/dav/hi%20there");
+        assert_eq!(
+            d.url_for(Path::new("a/b c/d.pdf")),
+            "https://h/dav/a/b%20c/d.pdf"
+        );
+        assert_eq!(d.url_for(Path::new("a&b")), "https://h/dav/a%26b");
     }
 
     #[test]
     fn url_for_handles_unicode() {
         let d = WebDavDrive::new("d", "https://h/dav/", None, None, false);
         // ü = U+00FC = UTF-8 bytes 0xC3 0xBC
-        assert_eq!(d.url_for(Path::new("\u{00FC}.txt")), "https://h/dav/%C3%BC.txt");
+        assert_eq!(
+            d.url_for(Path::new("\u{00FC}.txt")),
+            "https://h/dav/%C3%BC.txt"
+        );
     }
 
     #[test]
     fn percent_decode_round_trips_basic_chars() {
         assert_eq!(percent_decode("a%20b"), "a b");
-        assert_eq!(percent_decode("/Photos/2024%20holiday"), "/Photos/2024 holiday");
+        assert_eq!(
+            percent_decode("/Photos/2024%20holiday"),
+            "/Photos/2024 holiday"
+        );
         assert_eq!(percent_decode("noop"), "noop");
     }
 
@@ -455,18 +511,21 @@ mod tests {
             strip_origin_and_decode("https://h/dav/foo%20bar"),
             "/dav/foo bar"
         );
-        assert_eq!(
-            strip_origin_and_decode("/dav/foo"),
-            "/dav/foo"
-        );
+        assert_eq!(strip_origin_and_decode("/dav/foo"), "/dav/foo");
     }
 
     #[test]
     fn parse_http_date_imf_fixdate() {
         // "Wed, 21 Oct 2015 07:28:00 GMT" → 1445412480
-        assert_eq!(parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT"), Some(1_445_412_480));
+        assert_eq!(
+            parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480)
+        );
         // "Sun, 06 Nov 1994 08:49:37 GMT" → 784_111_777 (RFC 7231 example)
-        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"), Some(784_111_777));
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
     }
 
     #[test]
@@ -526,7 +585,10 @@ mod tests {
         assert_eq!(parsed[2].displayname.as_deref(), Some("note.txt"));
         assert!(!parsed[2].is_collection);
         assert_eq!(parsed[2].contentlength, Some(1234));
-        assert_eq!(parsed[2].lastmodified.as_deref(), Some("Sun, 06 Nov 1994 08:49:37 GMT"));
+        assert_eq!(
+            parsed[2].lastmodified.as_deref(),
+            Some("Sun, 06 Nov 1994 08:49:37 GMT")
+        );
     }
 
     #[test]
@@ -589,7 +651,8 @@ mod tests {
         let user = std::env::var("WEBDAV_TEST_USER").ok();
         let pass = std::env::var("WEBDAV_TEST_PASS").ok();
         let insecure = std::env::var("WEBDAV_TEST_INSECURE")
-            .map(|v| !v.is_empty() && v != "0").unwrap_or(false);
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
         Some(WebDavDrive::new("live-test", url, user, pass, insecure))
     }
 
@@ -600,14 +663,19 @@ mod tests {
             eprintln!("skip: WEBDAV_TEST_URL not set");
             return;
         };
-        let entries = drive.list_dir(Path::new("/"))
+        let entries = drive
+            .list_dir(Path::new("/"))
             .expect("PROPFIND root failed");
         eprintln!("--- root listing ({} entries) ---", entries.len());
         for e in entries.iter().take(20) {
-            eprintln!("  {} {} {}",
+            eprintln!(
+                "  {} {} {}",
                 if e.is_dir { "DIR " } else { "FILE" },
-                e.size.map(|s| format!("{:>10}", s)).unwrap_or_else(|| " ".repeat(10)),
-                e.name);
+                e.size
+                    .map(|s| format!("{:>10}", s))
+                    .unwrap_or_else(|| " ".repeat(10)),
+                e.name
+            );
         }
         // We don't assert anything about contents (varies by account); we
         // just want to know PROPFIND parses without panicking.
@@ -624,23 +692,31 @@ mod tests {
 
         // Use a fresh path each time so reruns don't collide.
         let nonce: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
         let test_path = format!("/_crispsorter_webdav_test_{nonce}.txt");
         let content = format!("hello from CrispSorter test at {nonce}").into_bytes();
 
         eprintln!("PUT  {test_path}");
-        drive.write_file(Path::new(&test_path), &content)
+        drive
+            .write_file(Path::new(&test_path), &content)
             .expect("write_file failed");
 
         eprintln!("STAT {test_path}");
-        let stat = drive.stat(Path::new(&test_path))
-            .expect("stat failed");
+        let stat = drive.stat(Path::new(&test_path)).expect("stat failed");
         assert!(!stat.is_dir, "test file must not be reported as a dir");
-        assert_eq!(stat.size, content.len() as u64,
-            "stat size mismatch (got {}, want {})", stat.size, content.len());
+        assert_eq!(
+            stat.size,
+            content.len() as u64,
+            "stat size mismatch (got {}, want {})",
+            stat.size,
+            content.len()
+        );
 
         eprintln!("GET  {test_path}");
-        let bytes = drive.read_file(Path::new(&test_path))
+        let bytes = drive
+            .read_file(Path::new(&test_path))
             .expect("read_file failed");
         assert_eq!(bytes, content, "round-trip content mismatch");
 
@@ -649,8 +725,11 @@ mod tests {
             Ok(_) => {
                 // Standards-compliant server: stat after delete must 404.
                 let post = drive.stat(Path::new(&test_path));
-                assert!(post.is_err(),
-                    "stat should fail after DELETE; got {:?}", post);
+                assert!(
+                    post.is_err(),
+                    "stat should fail after DELETE; got {:?}",
+                    post
+                );
                 eprintln!("OK: full write→stat→read→delete round-trip succeeded");
             }
             Err(e) => {

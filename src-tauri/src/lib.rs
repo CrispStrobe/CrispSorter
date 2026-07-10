@@ -8,6 +8,7 @@ pub mod images;
 /// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
 pub use crispcat as catalog;
 pub mod cli;
+pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
 pub mod sync;
@@ -3001,6 +3002,14 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            docx_tools::docx_check,
+            docx_tools::docx_analyze,
+            docx_tools::docx_infer_headings,
+            docx_tools::docx_transplant,
+            docx_tools::docx_convert_notes,
+            docx_tools::docx_inject_footnotes,
+            docx_tools::docx_strip_rsids,
+            docx_tools::docx_normalize_quotes,
             secrets::tauri_commands::secret_get,
             secrets::tauri_commands::secret_set,
             secrets::tauri_commands::secret_delete,
@@ -3257,6 +3266,14 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            docx_tools::docx_check,
+            docx_tools::docx_analyze,
+            docx_tools::docx_infer_headings,
+            docx_tools::docx_transplant,
+            docx_tools::docx_convert_notes,
+            docx_tools::docx_inject_footnotes,
+            docx_tools::docx_strip_rsids,
+            docx_tools::docx_normalize_quotes,
             secrets::tauri_commands::secret_get,
             secrets::tauri_commands::secret_set,
             secrets::tauri_commands::secret_delete,

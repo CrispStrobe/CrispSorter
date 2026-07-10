@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveType, FileStat, FileVersion};
 
 const API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
@@ -67,20 +67,27 @@ impl GoogleDriveDrive {
             );
             let url = format!(
                 "{}/files?q={}&fields=files(id,name)&pageSize=1",
-                API_BASE, encode_query_param(&q)
+                API_BASE,
+                encode_query_param(&q)
             );
-            let resp = self.client
+            let resp = self
+                .client
                 .get(&url)
                 .header("Authorization", self.auth_header())
                 .send()
                 .with_context(|| format!("Google Drive resolve: {name}"))?;
 
             if !resp.status().is_success() {
-                return Err(anyhow!("Google Drive resolve '{}': HTTP {}", name, resp.status()));
+                return Err(anyhow!(
+                    "Google Drive resolve '{}': HTTP {}",
+                    name,
+                    resp.status()
+                ));
             }
 
             let body: serde_json::Value = resp.json()?;
-            let files = body["files"].as_array()
+            let files = body["files"]
+                .as_array()
                 .ok_or_else(|| anyhow!("Google Drive: no files array for '{name}'"))?;
 
             if files.is_empty() {
@@ -91,7 +98,8 @@ impl GoogleDriveDrive {
                 return Err(anyhow!("folder not found: {name}"));
             }
 
-            parent_id = files[0]["id"].as_str()
+            parent_id = files[0]["id"]
+                .as_str()
                 .ok_or_else(|| anyhow!("no id for '{name}'"))?
                 .to_string();
         }
@@ -101,18 +109,24 @@ impl GoogleDriveDrive {
 }
 
 impl CloudDrive for GoogleDriveDrive {
-    fn label(&self) -> &str { &self.label }
-    fn drive_type(&self) -> DriveType { DriveType::GoogleDrive }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn drive_type(&self) -> DriveType {
+        DriveType::GoogleDrive
+    }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let folder_id = self.resolve_id(path)?;
         let q = format!("'{}' in parents and trashed = false", folder_id);
         let url = format!(
             "{}/files?q={}&fields=files(id,name,mimeType,size)&pageSize=1000",
-            API_BASE, encode_query_param(&q)
+            API_BASE,
+            encode_query_param(&q)
         );
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -123,7 +137,8 @@ impl CloudDrive for GoogleDriveDrive {
         }
 
         let body: serde_json::Value = resp.json()?;
-        let files = body["files"].as_array()
+        let files = body["files"]
+            .as_array()
             .ok_or_else(|| anyhow!("Google Drive: no files array"))?;
 
         let mut entries = Vec::with_capacity(files.len());
@@ -140,7 +155,8 @@ impl CloudDrive for GoogleDriveDrive {
         let file_id = self.resolve_id(path)?;
         let url = format!("{}/files/{}?alt=media", API_BASE, file_id);
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -157,7 +173,8 @@ impl CloudDrive for GoogleDriveDrive {
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
         let rel = path.to_string_lossy();
-        let filename = path.file_name()
+        let filename = path
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| rel.to_string());
 
@@ -171,23 +188,29 @@ impl CloudDrive for GoogleDriveDrive {
         });
 
         // Simple upload (< 5MB); resumable upload is a follow-up.
-        let url = format!(
-            "{}/files?uploadType=multipart&fields=id",
-            UPLOAD_BASE
-        );
+        let url = format!("{}/files?uploadType=multipart&fields=id", UPLOAD_BASE);
 
         let boundary = "crispsorter_boundary";
         let mut body = Vec::new();
-        body.extend_from_slice(format!("--{boundary}\r\nContent-Type: application/json\r\n\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("--{boundary}\r\nContent-Type: application/json\r\n\r\n").as_bytes(),
+        );
         body.extend_from_slice(metadata.to_string().as_bytes());
-        body.extend_from_slice(format!("\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n")
+                .as_bytes(),
+        );
         body.extend_from_slice(data);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .header("Authorization", self.auth_header())
-            .header("Content-Type", format!("multipart/related; boundary={boundary}"))
+            .header(
+                "Content-Type",
+                format!("multipart/related; boundary={boundary}"),
+            )
             .body(body)
             .send()
             .context("Google Drive write_file")?;
@@ -202,7 +225,8 @@ impl CloudDrive for GoogleDriveDrive {
         let file_id = self.resolve_id(path)?;
         let url = format!("{}/files/{}", API_BASE, file_id);
 
-        let resp = self.client
+        let resp = self
+            .client
             .delete(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -221,7 +245,8 @@ impl CloudDrive for GoogleDriveDrive {
             API_BASE, file_id
         );
 
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -232,14 +257,113 @@ impl CloudDrive for GoogleDriveDrive {
         }
 
         let body: serde_json::Value = resp.json()?;
-        let size = body["size"].as_str()
+        let size = body["size"]
+            .as_str()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         let is_dir = body["mimeType"].as_str() == Some("application/vnd.google-apps.folder");
-        let mtime_unix = body["modifiedTime"].as_str()
+        let mtime_unix = body["modifiedTime"]
+            .as_str()
             .and_then(super::onedrive::chrono_parse_iso8601);
 
-        Ok(FileStat { size, is_dir, mtime_unix })
+        Ok(FileStat {
+            size,
+            is_dir,
+            mtime_unix,
+        })
+    }
+
+    fn list_versions(&self, path: &Path) -> Result<Vec<FileVersion>> {
+        let file_id = self.resolve_id(path)?;
+        let url = format!(
+            "{}/files/{}/revisions?fields=revisions(id,modifiedTime,size,lastModifyingUser/displayName)",
+            API_BASE, file_id
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .context("Google Drive list_versions")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive list_versions: HTTP {}",
+                resp.status()
+            ));
+        }
+
+        let body: serde_json::Value = resp.json()?;
+        let revisions = body["revisions"]
+            .as_array()
+            .ok_or_else(|| anyhow!("Google Drive: no revisions array"))?;
+
+        let mut versions = Vec::with_capacity(revisions.len());
+        for rev in revisions {
+            let id = rev["id"].as_str().unwrap_or("").to_string();
+            let modified_at = rev["modifiedTime"]
+                .as_str()
+                .and_then(super::onedrive::chrono_parse_iso8601);
+            let size = rev["size"].as_str().and_then(|s| s.parse().ok());
+            let modifier_name = rev["lastModifyingUser"]["displayName"]
+                .as_str()
+                .map(|s| s.to_string());
+            versions.push(FileVersion {
+                id,
+                modified_at,
+                size,
+                modifier_name,
+            });
+        }
+        Ok(versions)
+    }
+
+    fn restore_version(&self, path: &Path, version_id: &str) -> Result<()> {
+        // Google Drive: copy a revision's content back to the current version.
+        // There's no direct "restore" API like OneDrive — the approach is to
+        // download the revision content and re-upload it.
+        let file_id = self.resolve_id(path)?;
+
+        // Download the specific revision
+        let download_url = format!(
+            "{}/files/{}/revisions/{}?alt=media",
+            API_BASE, file_id, version_id
+        );
+        let resp = self
+            .client
+            .get(&download_url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .context("Google Drive restore_version: download")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive restore_version download: HTTP {}",
+                resp.status()
+            ));
+        }
+
+        let data = resp.bytes()?.to_vec();
+
+        // Re-upload as the current version via PATCH (update, not create)
+        let update_url = format!("{}/files/{}?uploadType=media", UPLOAD_BASE, file_id);
+        let resp = self
+            .client
+            .patch(&update_url)
+            .header("Authorization", self.auth_header())
+            .header("Content-Type", "application/octet-stream")
+            .body(data)
+            .send()
+            .context("Google Drive restore_version: upload")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive restore_version upload: HTTP {}",
+                resp.status()
+            ));
+        }
+        Ok(())
     }
 }
 

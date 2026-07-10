@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveType, FileStat, FileVersion};
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 
@@ -69,12 +69,17 @@ impl OneDriveDrive {
 }
 
 impl CloudDrive for OneDriveDrive {
-    fn label(&self) -> &str { &self.label }
-    fn drive_type(&self) -> DriveType { DriveType::OneDrive }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn drive_type(&self) -> DriveType {
+        DriveType::OneDrive
+    }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let url = self.graph_url(path);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -84,9 +89,9 @@ impl CloudDrive for OneDriveDrive {
             return Err(anyhow!("OneDrive list_dir: HTTP {}", resp.status()));
         }
 
-        let body: serde_json::Value = resp.json()
-            .context("OneDrive list_dir: parse JSON")?;
-        let items = body["value"].as_array()
+        let body: serde_json::Value = resp.json().context("OneDrive list_dir: parse JSON")?;
+        let items = body["value"]
+            .as_array()
             .ok_or_else(|| anyhow!("OneDrive: no 'value' array in response"))?;
 
         let mut entries = Vec::with_capacity(items.len());
@@ -101,7 +106,8 @@ impl CloudDrive for OneDriveDrive {
 
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
         let url = format!("{}:/content", self.item_url(path));
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -121,7 +127,8 @@ impl CloudDrive for OneDriveDrive {
         let clean = rel.trim_start_matches('/');
         let url = format!("{}/me/drive/root:/{}:/content", GRAPH_BASE, clean);
 
-        let resp = self.client
+        let resp = self
+            .client
             .put(&url)
             .header("Authorization", self.auth_header())
             .header("Content-Type", "application/octet-stream")
@@ -137,7 +144,8 @@ impl CloudDrive for OneDriveDrive {
 
     fn delete(&self, path: &Path) -> Result<()> {
         let url = self.item_url(path);
-        let resp = self.client
+        let resp = self
+            .client
             .delete(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -151,7 +159,8 @@ impl CloudDrive for OneDriveDrive {
 
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let url = self.item_url(path);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .header("Authorization", self.auth_header())
             .send()
@@ -161,19 +170,79 @@ impl CloudDrive for OneDriveDrive {
             return Err(anyhow!("OneDrive stat: HTTP {}", resp.status()));
         }
 
-        let body: serde_json::Value = resp.json()
-            .context("OneDrive stat: parse JSON")?;
+        let body: serde_json::Value = resp.json().context("OneDrive stat: parse JSON")?;
 
         let size = body["size"].as_u64().unwrap_or(0);
         let is_dir = body.get("folder").is_some();
-        let mtime_unix = body["lastModifiedDateTime"]
-            .as_str()
-            .and_then(|s| {
-                // ISO 8601 → epoch seconds (rough parse)
-                chrono_parse_iso8601(s)
-            });
+        let mtime_unix = body["lastModifiedDateTime"].as_str().and_then(|s| {
+            // ISO 8601 → epoch seconds (rough parse)
+            chrono_parse_iso8601(s)
+        });
 
-        Ok(FileStat { size, is_dir, mtime_unix })
+        Ok(FileStat {
+            size,
+            is_dir,
+            mtime_unix,
+        })
+    }
+
+    fn list_versions(&self, path: &Path) -> Result<Vec<FileVersion>> {
+        // Graph API: GET /me/drive/root:/{path}:/versions
+        let url = format!("{}:/versions", self.item_url(path));
+        let resp = self
+            .client
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .with_context(|| format!("OneDrive list_versions: {url}"))?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("OneDrive list_versions: HTTP {}", resp.status()));
+        }
+
+        let body: serde_json::Value = resp.json().context("OneDrive list_versions: parse JSON")?;
+        let items = body["value"]
+            .as_array()
+            .ok_or_else(|| anyhow!("OneDrive: no 'value' array in versions response"))?;
+
+        let mut versions = Vec::with_capacity(items.len());
+        for item in items {
+            let id = item["id"].as_str().unwrap_or("").to_string();
+            let modified_at = item["lastModifiedDateTime"]
+                .as_str()
+                .and_then(chrono_parse_iso8601);
+            let size = item["size"].as_u64();
+            let modifier_name = item["lastModifiedBy"]["user"]["displayName"]
+                .as_str()
+                .map(|s| s.to_string());
+            versions.push(FileVersion {
+                id,
+                modified_at,
+                size,
+                modifier_name,
+            });
+        }
+        Ok(versions)
+    }
+
+    fn restore_version(&self, path: &Path, version_id: &str) -> Result<()> {
+        // Graph API: POST /me/drive/root:/{path}:/versions/{id}/restoreVersion
+        let url = format!(
+            "{}:/versions/{}/restoreVersion",
+            self.item_url(path),
+            version_id
+        );
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .with_context(|| format!("OneDrive restore_version: {url}"))?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("OneDrive restore_version: HTTP {}", resp.status()));
+        }
+        Ok(())
     }
 }
 
@@ -198,13 +267,19 @@ pub fn chrono_parse_iso8601(s: &str) -> Option<i64> {
     // Approximate days from epoch (no leap second precision needed)
     let mut days = 0i64;
     for y in 1970..year {
-        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
     }
     let month_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
     for m in 1..month {
         days += month_days[m as usize];
-        if m == 2 && is_leap { days += 1; }
+        if m == 2 && is_leap {
+            days += 1;
+        }
     }
     days += day - 1;
 

@@ -20,10 +20,16 @@
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
 pub mod backup_state;
+pub mod cert_pins;
 pub mod cloud_backup;
+pub mod conflict;
+pub mod delta;
+pub mod offline_queue;
 pub mod partition;
+pub mod proxy;
 pub mod secret;
 pub mod tauri_commands;
+pub mod transfer_queue;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};

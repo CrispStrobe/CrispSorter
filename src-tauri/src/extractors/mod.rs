@@ -24,7 +24,8 @@
 //! * **HTML** — basic tag-stripping via the regex crate. Lower
 //!   fidelity than scraper but zero new heavy deps.
 //!
-//! Deferred to follow-ups (heavier deps): docx (zip + xml-rs), epub
+//! Deferred to follow-ups (heavier deps): epub
+//! P30.2: docx now handled via crisp-docx-core (extract + heading inference)
 //! (epub crate), rtf (rtf-grimoire). Once those land, this module
 //! grows new dispatch arms; the public API stays the same.
 
@@ -149,6 +150,8 @@ pub fn supported(ext: &str) -> bool {
             // HTML gets its own arm (tag-strip), but list it here too
             // so callers can pre-filter accept lists with `supported`.
             | "html" | "htm"
+            // Word documents (crisp-docx-core)
+            | "docx"
             // Email formats
             | "eml" | "mbox"
             // Source code (UTF-8 read)
@@ -658,6 +661,60 @@ impl Default for ExtractOptions {
     }
 }
 
+/// P30.2 — Extract text + heading structure from a `.docx` file via
+/// `crisp-docx-core`.  Infers heading levels from bold/font-size
+/// formatting when explicit heading styles are absent.
+fn extract_docx(path: &Path, ext: &str) -> Result<ExtractedDocument> {
+    let pkg = crisp_docx_core::open(path)
+        .with_context(|| format!("opening DOCX: {}", path.display()))?;
+
+    let paragraphs = crisp_docx_core::extract_paragraph_texts(&pkg)
+        .with_context(|| format!("extracting paragraphs: {}", path.display()))?;
+
+    let full_text = paragraphs.join("\n");
+
+    // Infer heading structure from direct formatting.
+    let inferred = crisp_docx_core::infer_heading_levels(&pkg, None).unwrap_or_default();
+    let headings: Vec<String> = inferred.iter().map(|h| h.preview.clone()).collect();
+
+    // Prepend Markdown-style heading markers to the full text for BM25 boost.
+    let heading_prefix = if inferred.is_empty() {
+        String::new()
+    } else {
+        let mut buf = String::new();
+        for h in &inferred {
+            for _ in 0..h.heading_level {
+                buf.push('#');
+            }
+            buf.push(' ');
+            buf.push_str(&h.preview);
+            buf.push('\n');
+        }
+        buf.push('\n');
+        buf
+    };
+
+    let enriched_text = if heading_prefix.is_empty() {
+        full_text
+    } else {
+        format!("{heading_prefix}{full_text}")
+    };
+
+    Ok(ExtractedDocument {
+        full_text: enriched_text,
+        headings,
+        ext: ext.to_string(),
+        language: None,
+        translated_text: None,
+        translated_to_lang: None,
+        audio: None,
+        image_exif: None,
+        source_url: None,
+        tags: vec![],
+        audio_pcm: None,
+    })
+}
+
 /// Run the appropriate extractor for `path`. Returns an empty
 /// `ExtractedDocument` for unsupported extensions rather than erroring
 /// — callers can pre-filter via `supported(ext)` if they want to skip.
@@ -978,6 +1035,7 @@ pub fn extract_text_from_path_with_opts(
         }),
         "eml" => eml::extract(path),
         "mbox" => eml::extract_mbox(path),
+        "docx" => extract_docx(path, &ext),
         e if OCR_IMAGE_EXTS.contains(&e) => {
             // PLAN P7.8 — tiered OCR for images.
             // P13.7 Step 1+3 — image-side L1/L2/L3 + master-switch
@@ -1495,7 +1553,7 @@ mod tests {
         assert!(supported("md"));
         assert!(supported("rs"));
         assert!(supported("HTML")); // case-insensitive
-        assert!(!supported("docx")); // deferred
+        assert!(supported("docx")); // P30.2: now handled via crisp-docx-core
         assert!(!supported("zip"));
         assert!(!supported(""));
     }

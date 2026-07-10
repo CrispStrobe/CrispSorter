@@ -123,12 +123,38 @@ pub async fn translate_docx(
 
     if preserve_formatting {
         #[cfg(not(feature = "translate-align"))]
-        return Err("preserve_formatting requires the binary to be built with --features translate-align".into());
+        return Err(
+            "preserve_formatting requires the binary to be built with --features translate-align"
+                .into(),
+        );
     }
 
     let mut pkg = crisp_docx_core::open(&in_path).map_err(|e| e.to_string())?;
-    let paragraphs =
-        crisp_docx_core::extract_paragraph_texts(&pkg).map_err(|e| e.to_string())?;
+
+    // P30.1 — Pre-processing: strip revision IDs (cures Word
+    // "unreadable content" dialog) and normalize quotes.
+    let _ = crisp_docx_core::strip_rsids(&mut pkg);
+    let _ = crisp_docx_core::normalize_quotes_in_package(
+        &mut pkg,
+        crisp_docx_core::QuoteStyle::English,
+        crisp_docx_core::QuoteOptions::default(),
+    );
+
+    // P30.1 — Pre-flight validation: warn but don't block.
+    let check = crisp_docx_core::check_package(&pkg);
+    if let Ok(ref report) = check {
+        if !report.issues.is_empty() {
+            let warning = format!(
+                "DOCX pre-flight: {} issue(s): {}",
+                report.issues.len(),
+                report.issues.join("; ")
+            );
+            log::warn!("{warning}");
+            let _ = app.emit("translate://warning", warning);
+        }
+    }
+
+    let paragraphs = crisp_docx_core::extract_paragraph_texts(&pkg).map_err(|e| e.to_string())?;
     let total = paragraphs.len();
 
     // Wrap the translator so each spawned future can clone an Arc.
@@ -182,13 +208,8 @@ pub async fn translate_docx(
         let model_path = align_model_path
             .as_deref()
             .ok_or_else(|| "preserve_formatting requires align_model_path".to_string())?;
-        write_back_with_alignment(
-            &mut pkg,
-            &paragraphs,
-            &new_texts,
-            model_path,
-        )
-        .map_err(|e| format!("format-preserving write-back: {e}"))?;
+        write_back_with_alignment(&mut pkg, &paragraphs, &new_texts, model_path)
+            .map_err(|e| format!("format-preserving write-back: {e}"))?;
     } else {
         crisp_docx_core::replace_paragraph_texts(&mut pkg, &new_texts)
             .map_err(|e| e.to_string())?;
@@ -226,8 +247,7 @@ fn write_back_with_alignment(
     let mut model = CrispEmbed::new(model_path, 4)
         .map_err(|e| format!("loading align model {model_path}: {e}"))?;
 
-    let src_paragraphs = crisp_docx_core::extract_paragraph_runs(pkg)
-        .map_err(|e| e.to_string())?;
+    let src_paragraphs = crisp_docx_core::extract_paragraph_runs(pkg).map_err(|e| e.to_string())?;
     if src_paragraphs.len() != src_texts.len() {
         return Err(format!(
             "paragraph-count mismatch (text={}, runs={})",
@@ -300,8 +320,7 @@ fn write_back_with_alignment(
         });
     }
 
-    crisp_docx_core::replace_paragraph_runs(pkg, &new_paragraphs)
-        .map_err(|e| e.to_string())
+    crisp_docx_core::replace_paragraph_runs(pkg, &new_paragraphs).map_err(|e| e.to_string())
 }
 
 /// Summary returned from `translate_docx`.

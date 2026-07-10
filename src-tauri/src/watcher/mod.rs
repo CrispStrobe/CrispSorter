@@ -29,6 +29,7 @@
 //!   all folders for one calendar day.
 
 pub mod auto_file;
+pub mod rules;
 
 use anyhow::{Context, Result};
 use notify::{

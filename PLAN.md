@@ -1294,3 +1294,542 @@ frontend hot paths.  13 new unit tests.
   comparison (3), doctype (3), auto_file (3), nl_query (3),
   snippet (2), result_cache (2), annotations (3), retention (3),
   versioning (3), eml (2), export (3).  Total: 1006 tests.
+
+### P29 — Cloud sync hardening (CrispCloud cross-pollination)
+
+Patterns lifted from the [CrispCloud](../CrispCloud) sibling repo
+(Flutter dual-panel cloud file manager, 14 providers, 4468 tests) that
+directly strengthen CrispSorter's cloud sync path.  CrispCloud solves
+many of the same problems (multi-provider uploads, offline resilience,
+conflict handling) at a more mature level; the goal here is to port the
+*designs*, not the Dart code.
+
+#### Priority 1 — Transfer queue with backpressure
+
+CrispCloud's `TransferQueue` enforces 3 concurrent transfers,
+exponential backoff on transient failures, and unified progress
+tracking.  CrispSorter's five cloud connectors (Internxt, Filen,
+WebDAV, OneDrive, Google Drive) currently fire uploads/downloads
+independently with no shared concurrency limit or retry policy.
+
+- [x] **`sync/transfer_queue.rs` module.**  ✅ SHIPPED (2026-07-05).
+  Bounded async `tokio::sync::Semaphore` (default 3 permits).
+  `TransferDirection` enum (Upload / Download).  `TransferQueue::submit_upload`
+  / `submit_download` return `TransferHandle` with `watch::Receiver<TransferProgress>`
+  and `JoinHandle<Result<Vec<u8>>>`.  `TransferProgress` tracks `job_id`,
+  `direction`, `drive_id`, `remote_path`, `bytes_done`, `bytes_total`,
+  `TransferState` (Queued/Active/Retrying/Done/Failed/Cancelled).
+  Backoff: `min(2^attempt * 500ms, 30s)` with jitter.  `active_count()`
+  for monitoring.  8 unit tests (concurrency limit, 4th-job-waits,
+  progress reporting, failure state, serde round-trip).
+- [ ] **Wire all 5 CloudDrive impls through the queue.**  Replace
+  direct `reqwest` calls in `drives/{internxt,filen,webdav,onedrive,
+  gdrive}.rs` upload/download methods with `TransferQueue::submit`.
+  Each connector still owns its auth + endpoint logic; the queue only
+  gates concurrency and retries.
+- [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
+  active + queued transfers (filename, provider icon, progress bar,
+  speed, cancel button).  Listens to `transfer://progress` events.
+- [ ] **Tests.**  ✅ 8 tests shipped with the module (see above).
+  Remaining: cancel-in-flight (needs `CancellationToken` plumbing).
+
+#### Priority 2 — Block-level delta sync
+
+CrispCloud uses Adler-32 weak hash + SHA-256 strong hash per 4 MB
+block, uploading only changed blocks (98.4% bandwidth savings on a
+500 MB file with 8 MB changed).  CrispSorter's `cloud-backup` sync
+re-uploads entire shards on every push.  As LanceDB lance files and
+Tantivy segments grow, this becomes the dominant bandwidth cost.
+
+- [x] **`sync/delta.rs` module.**  ✅ SHIPPED (2026-07-05).
+  `Blockmap` struct with `Vec<Block>` where `Block { offset, size,
+  weak_hash: u32, strong_hash: [u8; 32] }`.  `compute_blockmap(path,
+  block_size)` + `compute_blockmap_from_bytes(data, block_size)`.
+  `diff_blockmaps(local, remote) → Vec<ChangedBlock>`.  `delta_summary()`
+  computes savings ratio.  Inline `adler32()` (no new dep).  Pure Rust.
+  12 unit tests (Adler-32 known values, blockmap from file/bytes,
+  single-block change, file growth, all-changed, serde round-trip,
+  savings calculation).
+- [ ] **`sync cloud-backup push --delta` flag.**  On push: compute
+  local blockmap for each shard file, request remote blockmap from
+  cb-api, diff, upload only changed blocks.  Falls back to full upload
+  if the remote has no blockmap (first push or legacy server).
+- [ ] **cb-api `/api/v2/shards/{id}/blockmap` + `/api/v2/shards/{id}/blocks`
+  endpoints.**  `GET blockmap` returns the stored blockmap JSON.
+  `PUT blocks?offset=N&size=M` writes a block at the given offset.
+  `POST finalize` commits after all blocks are written.  Blockmap
+  stored alongside each shard in the block-storage volume.
+- [ ] **Lance file awareness.**  Lance `.lance` data files are
+  append-mostly (new row groups appended, old ones rarely rewritten).
+  Delta sync naturally exploits this — only the tail blocks change.
+  Tantivy segments are immutable once written; only the `meta.json` +
+  new segments need uploading.  Document this in the delta module so
+  future maintainers understand why the savings are so high.
+- [ ] **Tests.**  ✅ 12 unit tests shipped with the module (see above).
+  Remaining: integration test with mock HTTP server verifying only
+  changed blocks are uploaded.
+
+#### Priority 3 — Offline operation queue with replay
+
+CrispCloud persists failed/interrupted cloud operations to an
+`OfflineQueue` SQLite table and replays them on reconnect.  CrispSorter
+has a dead-letter queue for failed batch items, but no general offline
+queue for cloud operations (drive uploads, sync pushes, manifest pulls).
+If the network drops mid-sync, operations are lost.
+
+- [x] **`sync/offline_queue.rs` module.**  ✅ SHIPPED (2026-07-05).
+  WAL-mode SQLite `offline_queue.db`.  `OfflineQueue` with
+  `enqueue(op_type, payload, provider_id)`, `dequeue_batch(limit)`,
+  `mark_done(id)`, `mark_failed(id, error)`, `pending_count()`,
+  `stats()` (pending/failed/total), `retry_all_failed()`,
+  `purge_old(max_age)`.  Max 10 retries before permanent failure.
+  6 unit tests (FIFO, mark_done, retry escalation, retry-all-reset,
+  stats).
+- [ ] **Enqueue on network failure.**  When a `TransferQueue` job
+  exhausts its 5 retries (or gets a connection-refused / DNS error),
+  persist it to the offline queue instead of dropping it.  Same for
+  `sync cloud-backup push/pull` when the cb-api is unreachable.
+- [ ] **Replay on reconnect.**  Background task
+  (`sync/offline_replay.rs`) polls network reachability every 60 s
+  (HEAD request to the cb-api `/health` endpoint).  On success,
+  drains the offline queue in FIFO order, re-submitting each op
+  through the `TransferQueue`.  Exponential backoff on the poll
+  interval (60 s → 120 s → 240 s, cap 600 s) to avoid hammering a
+  flaky connection.
+- [ ] **Frontend: offline indicator.**  Status bar badge showing
+  "N ops queued" when offline queue is non-empty.  Clicking opens a
+  list with per-op details and a "Retry now" button.
+- [ ] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
+
+#### Priority 4 — Conflict resolution policies
+
+CrispCloud offers 5 policies: newest-wins, local-wins, remote-wins,
+keep-both, manual.  CrispSorter's cloud-backup sync is currently
+"last push wins" with no explicit conflict handling.  As federated
+search grows (multiple machines indexing overlapping corpora), conflicts
+will surface.
+
+- [x] **`sync/conflict.rs` module.**  ✅ SHIPPED (2026-07-05).
+  `ConflictPolicy` enum: `NewestWins`, `LocalWins`, `RemoteWins`,
+  `KeepBoth`, `Manual` (default `NewestWins`).  `resolve_conflict(local,
+  remote, policy) → Resolution` where `Resolution` is `UseLocal |
+  UseRemote | KeepBoth { remote_doc_id } | NeedsManualReview`.
+  Short-circuits on identical `source_hash` (no conflict).  `ConflictSide`
+  struct with `doc_id`, `source_hash`, `updated_at`, `title`.
+  10 unit tests (each policy, hash short-circuit, missing timestamps,
+  equal timestamps, serde round-trip, default policy).
+- [ ] **Wire into `SyncManager` pull path.**  On `sync cloud-backup
+  pull`, when a pulled `ManifestRow` has a `doc_id` that already
+  exists locally with a different `source_hash`, invoke
+  `resolve_conflict` instead of unconditionally overwriting.
+  `KeepBoth` appends `_remote` suffix to the pulled doc_id.
+  `Manual` writes to a `sync_conflicts` SQLite table for later
+  user resolution.
+- [ ] **`IndexConfig.conflict_policy` setting.**  Default:
+  `NewestWins` (backward-compatible — same as current overwrite
+  behaviour).  Settings UI: dropdown in the Cloud-backup section.
+  CLI: `--conflict-policy newest|local|remote|keep-both|manual`.
+- [ ] **Frontend: conflict review panel.**  When `Manual` policy is
+  active and unresolved conflicts exist, show a review panel listing
+  each conflict with local vs remote metadata side-by-side and
+  accept/reject buttons.
+- [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
+  Remaining: manual queue persistence test (needs `sync_conflicts` table).
+
+#### Priority 5 — Share link generation
+
+CrispCloud generates native share links for GDrive, OneDrive, and
+Dropbox.  CrispSorter already connects to these providers but doesn't
+expose sharing.  Since users store documents on these drives and search
+them via CrispSorter, "share this document" from the search results is
+a natural feature.
+
+- [ ] **`CloudDrive` trait: `share_link(path) → Option<String>`
+  method** (default impl returns `None`).  Override in
+  `OneDriveDrive` (Graph API `POST /me/drive/items/{id}/createLink`
+  with `type: "view"`, `scope: "anonymous"`), `GDriveDrive` (Drive
+  API `POST /files/{id}/permissions` + `webViewLink`), and
+  `WebDavDrive` (Nextcloud OCS sharing API, if detected).  Internxt
+  and Filen: stub until their public-link APIs are documented.
+- [ ] **Tauri command `drive_share_link(drive_id, path)`.**
+  Resolves the drive, calls `share_link`, returns the URL or an
+  error if the provider doesn't support sharing.
+- [ ] **Frontend: share button on search results.**  When a result's
+  `location_uri` starts with `crisp+drive://`, show a share icon.
+  Click → calls `drive_share_link` → copies URL to clipboard with a
+  toast notification.  Disabled (greyed out) for providers that return
+  `None`.
+- [ ] **Tests.**  Unit: URL format validation per provider, unsupported
+  provider returns None, error handling for expired tokens.  4+ tests.
+
+#### Priority 6 — Cloud provider version history
+
+CrispCloud integrates with GDrive/OneDrive/Dropbox version history
+(list versions, restore previous).  CrispSorter tracks document
+versions locally (P25.1, SHA-256 groups in `versions.db`) but doesn't
+tap into the provider-side version history, missing an opportunity to
+unify local and cloud version tracking.
+
+- [x] **`CloudDrive` trait: `list_versions` + `restore_version` +
+  `share_link`.**  ✅ SHIPPED (2026-07-05).  Three new default methods
+  on `CloudDrive` (all backward-compatible — existing impls inherit
+  no-op defaults).  `FileVersion { id, modified_at, size, modifier_name }`
+  type.  `DriveType::label()` helper.  **OneDrive:** `list_versions`
+  via Graph API `GET /versions`, `restore_version` via `POST
+  restoreVersion`.  **Google Drive:** `list_versions` via Drive API
+  `GET /revisions`, `restore_version` via download-revision +
+  PATCH-upload (GDrive has no native restore endpoint).
+  4 unit tests (DriveType::label, FileVersion serde, default methods).
+- [ ] **Tauri commands `drive_list_versions` + `drive_restore_version`.**
+- [ ] **Frontend: version history panel.**  In the document viewer
+  sidebar, when viewing a cloud-backed document, show a "Versions"
+  tab listing cloud versions with timestamps and a "Restore" button.
+  Merges with the existing local version history from P25.1 into a
+  unified timeline (local versions tagged "local", cloud versions
+  tagged with the provider name).
+- [ ] **Tests.**  ✅ 4 unit tests shipped (see above).  Live tests
+  require OAuth tokens — tagged `#[ignore]`.
+
+#### Priority 7 — Certificate pinning
+
+CrispCloud pins TLS certs for Google, Microsoft, Dropbox, and Amazon
+endpoints.  CrispSorter talks to the same services via `reqwest` with
+no pinning.  Low effort, meaningful security improvement.
+
+- [x] **`sync/cert_pins.rs` module.**  ✅ SHIPPED (2026-07-05).
+  `PinSet` struct with provider name, domain patterns, and SHA-256
+  SPKI pin hashes.  `builtin_pin_sets()` covers Google (GTS Root R1 +
+  R4), Microsoft (DigiCert Global Root G2 + Baltimore CyberTrust),
+  Dropbox (DigiCert), Amazon/S3 (Amazon Root CA 1 + Starfield G2).
+  `find_pin_set(hostname, sets)` with wildcard domain matching.
+  `verify_pin(spki_hash, pin_set) → (matches, is_backup)`.
+  8 unit tests (exact match, wildcard, find/verify, serde).
+- [ ] **Wire into cloud drive constructors.**  Each `*Drive::new()`
+  that talks to a pinnable endpoint uses `pinned_client()` instead
+  of the default `reqwest::Client`.
+- [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
+  cert (roots rotate on a multi-year cadence).  Include 2 pins per
+  provider (current + backup) to survive a CA migration.  Log a
+  warning (not hard-fail) when only the backup pin matches — signals
+  an upcoming rotation.
+- [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
+
+#### Priority 8 — HTTP/SOCKS5 proxy support
+
+CrispCloud has `ProxyService` for HTTP and SOCKS5 proxies.  CrispSorter
+has no proxy support — users behind corporate proxies can't use cloud
+features.  `reqwest` already supports proxies natively, so this is
+mostly plumbing + settings UI.
+
+- [ ] **`IndexConfig` proxy fields.**  `proxy_url: Option<String>`,
+  `proxy_username: Option<String>`, `proxy_password: Option<String>`.
+  Supports `http://`, `https://`, `socks5://`, `socks5h://` URL
+  schemes.  Password stored in OS keychain (same pattern as LLM API
+  keys).
+- [x] **`sync/proxy.rs` helper.**  ✅ SHIPPED (2026-07-05).
+  `ProxyConfig` struct (url, username, password, all optional).
+  `build_async_client(config)` and `build_blocking_client(config)`.
+  Supports `http://`, `https://`, `socks5://`, `socks5h://`.  Falls
+  back to default client when no proxy configured (respects env vars).
+  8 unit tests (empty config, HTTP/SOCKS5, auth, invalid URL, serde).
+- [ ] **Wire into all cloud-facing code.**  `CloudDrive` constructors,
+  `SyncManager`, `cb-api` client, feed fetcher (`feed.rs`), LLM API
+  clients.  Single `build_proxy_client` call site shared via a
+  lazy `OnceCell<reqwest::Client>`.
+- [ ] **Settings UI.**  "Network" section: proxy URL input, username,
+  password (masked), "Test connection" button (HEAD to
+  `https://www.google.com` through the proxy).  DE/EN i18n.
+- [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
+
+#### Priority 9 — FUSE mounting for cloud indexing
+
+CrispCloud can FUSE-mount cloud storage on Linux/macOS via `MountService`.
+If CrispSorter could mount a cloud drive and index it via the existing
+folder watcher, users wouldn't need to download entire cloud libraries
+locally.  This turns CrispCloud's FUSE layer into a transparent indexing
+source.
+
+- [x] **`drives/fuse_mount/` module.**  ✅ SHIPPED (2026-07-05).
+  `fuser` 0.14 optional dep, gated behind `--features fuse`.
+  `FuseDriveFs` implements `fuser::Filesystem` with dynamic inode
+  mapping (bidirectional `path ↔ ino` HashMap).  Read-only: write
+  ops return `EROFS`.  `lookup`, `getattr`, `readdir`, `read` delegate
+  to `CloudDrive`.  `mount_blocking(drive, mount_point)` helper with
+  `RO` + `AutoUnmount` mount options.  `FuseMountConfig` (drive_id,
+  mount_point, cache_max_bytes with 2 GB default) + `FuseMountStatus`.
+  3 unconditional unit tests (config serde, default cache, status).
+  LRU content cache deferred (TODO in read path).
+- [ ] **Tauri commands: `drive_mount(drive_id, mount_point)`,
+  `drive_unmount(drive_id)`.**  Mount runs on a dedicated thread
+  (FUSE event loop is blocking).  Unmount via `fuser::MountOption`
+  or `fusermount -u`.
+- [ ] **Integration with folder watcher.**  Once mounted, the user
+  can point the existing `crispsorter watch <mountpoint>` at the
+  FUSE directory.  The watcher sees new/changed files and feeds them
+  into the ingest pipeline as if they were local.  No changes needed
+  in the watcher itself — it already works on any filesystem path.
+- [ ] **Platform notes.**  Linux: needs `fuse3` package + user in
+  `fuse` group.  macOS: needs macFUSE or FUSE-T.  Windows: deferred
+  (WinFSP/Dokany is a separate effort).  `doctor` command should
+  check for FUSE availability.
+- [ ] **Tests.**  ✅ 3 unit tests shipped (config serde).  Integration
+  tests require FUSE privileges — tagged `#[ignore]`.  Cache eviction
+  tests pending (LRU cache not yet implemented).
+
+#### Priority 10 — Automation rule engine
+
+CrispCloud has an `AutomationEngine` with trigger-action rules and a
+`PluginService` with a local REST API.  CrispSorter's folder watcher
+(`P5`, `P26.2`) auto-processes new files, but there's no user-
+configurable rule engine for complex workflows.
+
+- [x] **`watcher/rules.rs` module.**  ✅ SHIPPED (2026-07-05).
+  `Trigger` enum (Extension/Doctype/Tag/FolderPrefix/SizeRange),
+  `TriggerMode` (All/Any), `Action` enum (Ingest/Tag/MoveTo/UploadTo/
+  RunOcr/Notify), `AutomationRule` struct with name, enabled, priority,
+  triggers, trigger_mode, actions.  `evaluate(file, rules, match_all)
+  → Vec<Action>`.  `default_rules()` ships 3 example rules (disabled).
+  13 unit tests (each trigger type, AND/OR modes, priority ordering,
+  match-all, disabled skip, no-match fallthrough, serde round-trips).
+- [ ] **`AutomationEngine` struct.**  Loaded from persisted rules
+  (Tauri store or SQLite).  `evaluate(file_path, metadata) →
+  Vec<Action>`.  Called from the folder watcher's dispatch path
+  (after classification, before the default auto-file behaviour).
+  If no rules match, falls through to the existing `WatchMode`
+  behaviour (backward-compatible).
+- [ ] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
+  `automation_update_rule`, `automation_delete_rule`,
+  `automation_test_rule(file_path)`.**
+- [ ] **Settings UI: "Automation" panel.**  Rule list with
+  add/edit/delete.  Rule editor: trigger conditions (AND/OR
+  combinable), ordered action list, priority slider, enabled toggle.
+  "Test" button runs a rule against a sample file and shows what
+  actions would fire.  DE/EN i18n.
+- [ ] **Example rules shipped as defaults (disabled).**
+  "Invoices to accounting folder": trigger `doctype:invoice` →
+  `MoveTo("Invoices/{year}/{month}/")`.
+  "Photos to cloud": trigger `ext:jpg,png,heic` + `size > 1MB` →
+  `UploadTo(gdrive, "/Photos/{year}/")`.
+  "OCR all scans": trigger `folder_prefix:/Scans/` → `RunOcr(smart)`.
+- [ ] **Tests.**  ✅ 13 unit tests shipped with the module (see above).
+
+### P30 — crisp-docx deep integration (2026-07-05)
+
+CrispSorter uses only ~6 of crisp-docx's ~25+ public functions (all in
+the translate pipeline).  This phase wires in the remaining capabilities:
+OOXML surgery pre-processing, document validation, heading inference for
+the search index, blueprint analysis for the viewer, and body transplant
+("restyle to template") as a new PDF-Tools-tab feature.
+
+#### P30.1 — Translation pre-processing (quick wins)
+
+Wire three zero-UI calls into the existing `translate_docx` pipeline so
+translated output is more robust.
+
+- [x] **`strip_rsids()` before translation.**  ✅ SHIPPED (2026-07-05).
+  Called immediately after `open()` in `translate/tauri_commands.rs`.
+- [x] **`check_package()` pre-flight.**  ✅ SHIPPED (2026-07-05).
+  Called after open; issues emitted as `translate://warning` Tauri
+  event (non-blocking).  Also available standalone via
+  `docx_check(path)` Tauri command in `docx_tools.rs`.
+- [x] **`normalize_quotes_in_package()` before translation.**  ✅
+  SHIPPED (2026-07-05).  Called after `strip_rsids` with
+  `QuoteStyle::English` (uniform `"…"` for LLM input).  Also
+  available standalone via `docx_normalize_quotes(path, style, output)`
+  Tauri command.
+- [ ] **Tests.**  ✅ 6 unit tests shipped in `docx_tools.rs` (quote
+  style parsing, notes kind parsing, serde round-trips).  Fixture-
+  based tests (rsid strip, check_package with bad input) deferred.
+
+#### P30.2 — Heading inference at index time
+
+Many scanned→OCR→DOCX documents have no explicit heading styles.
+`infer_heading_levels()` detects H1/H2/H3 from direct formatting
+(bold + font size clustering), giving the search index structural
+metadata.
+
+- [ ] **Wire into DOCX extractor.**  In `extractors/mod.rs` (the
+  DOCX arm), after text extraction: `open()` the DOCX, call
+  `infer_heading_levels(&pkg, None)`, use the inferred levels to
+  generate a Markdown-style heading prefix (`# Title`, `## Section`,
+  etc.) prepended to the extracted text.  Improves BM25 ranking
+  (headings get term-frequency boost) and snippet quality.
+- [x] **`docx_infer_headings(path)` Tauri command.**  ✅ SHIPPED
+  (2026-07-05).  `docx_tools.rs::docx_infer_headings` returns
+  `Vec<InferredHeading { level, text }>`.
+- [x] **CLI: `crispsorter docx headings <FILE>`.**  ✅ SHIPPED
+  (2026-07-05).  Prints indented `H1`/`H2`/`H3` labels in text mode,
+  JSON array in `--format json`.
+- [ ] **Tests.**  Fixture-based DOCX tests deferred (need test .docx
+  fixtures in the repo).
+
+#### P30.3 — Blueprint analysis + document properties
+
+Expose `analyze_blueprint()` in the document viewer sidebar so users
+see page geometry, default font, section info at a glance.
+
+- [x] **`docx_analyze(path)` Tauri command.**  ✅ SHIPPED (2026-07-05).
+  `docx_tools.rs::docx_analyze` returns `DocxBlueprint { sections,
+  default_font, default_font_size_pt, style_count }`.
+- [ ] **Viewer sidebar: "Document Properties" panel.**  When viewing a
+  DOCX, show: page size (A4/Letter/custom), orientation, margins,
+  default font + size, number of sections, footnote format.
+- [x] **CLI: `crispsorter docx info <FILE>`.**  ✅ SHIPPED
+  (2026-07-05).  Prints font, style count, section geometry in text
+  mode; full `DocxBlueprint` JSON in `--format json`.
+- [ ] **Tests.**  Fixture-based tests deferred.
+
+#### P30.4 — DOCX validation command
+
+Standalone "validate this DOCX" feature, beyond the pre-flight check
+in translation.
+
+- [x] **`docx_check(path)` Tauri command.**  ✅ SHIPPED (2026-07-05).
+  `docx_tools.rs::docx_check` returns `DocxCheckResult { ok, issues,
+  valid }`.
+- [ ] **PDF Tools tab: "Validate DOCX" button.**  Frontend pending.
+- [x] **CLI: `crispsorter docx check <FILE>`.**  ✅ SHIPPED
+  (2026-07-05).  Prints ✓/✗ per axis in text mode; `DocxCheckResult`
+  JSON in `--format json`.  Exit code 1 on issues.
+- [ ] **Tests.**  Fixture-based tests deferred.
+
+#### P30.5 — Body transplant ("Restyle to template")
+
+The headline feature: user picks a "blueprint" DOCX (company template
+with styles/headers/footers), CrispSorter grafts the content of
+another document into it.
+
+- [x] **`docx_transplant(source, blueprint, output)` Tauri command.**
+  ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_transplant` opens
+  both, calls `transplant_body`, returns `TransplantResult { output_path,
+  source_paragraphs, blueprint_styles }`.
+- [ ] **PDF Tools tab: "Restyle" panel.**  Frontend pending.
+- [x] **CLI: `crispsorter docx restyle --source doc.docx --blueprint
+  template.docx --out restyled.docx`.**  ✅ SHIPPED (2026-07-05).
+- [x] **Style mapping.**  ✅ SHIPPED (2026-07-05).
+  `StyleIndex::from_package()` on both files, `StyleMapper::new()`
+  with empty overrides, `apply_style_mapping()` on the transplanted
+  result.  Fallback chain used automatically.  `TransplantResult`
+  reports `styles_remapped` count.
+- [ ] **Tests.**  Fixture-based tests deferred.
+
+#### P30.6 — Footnote/endnote conversion
+
+- [x] **`docx_convert_notes(path, target_kind, output)` Tauri
+  command.**  ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_convert_notes`
+  accepts `"footnotes"` or `"endnotes"`.
+- [ ] **PDF Tools tab: "Convert Notes" button.**  Frontend pending.
+- [x] **CLI: `crispsorter docx convert-notes --to endnotes doc.docx
+  --out converted.docx`.**  ✅ SHIPPED (2026-07-05).
+- [ ] **Tests.**  Fixture-based tests deferred.
+
+#### P30.7 — Footnote injection from LLM output
+
+When the LLM (or OCR) produces text with inline `[N]` markers,
+`inject_footnotes()` turns them into real Word footnotes.
+
+- [x] **`docx_inject_footnotes(path, notes_map, output)` Tauri
+  command.**  ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_inject_footnotes`
+  accepts `BTreeMap<u32, String>`, returns count of inserted footnotes.
+- [ ] **Post-process hook in translate pipeline.**  After LLM
+  translation, scan the output for `[N]` patterns, extract note texts,
+  call `inject_footnotes`.  Opt-in via `IndexConfig.inject_footnotes`.
+- [ ] **Tests.**  Unit: text with `[1]` and `[2]` markers → DOCX with
+  2 real footnotes.  2+ tests.
+
+#### P30.8 — Corpus-wide quote normalization
+
+Extend `normalize_quotes_in_package()` beyond translation to the
+ingest pipeline, so full-text search isn't confused by mixed quote
+styles in the corpus.
+
+- [ ] **At index time (optional).**  When `IndexConfig.normalize_quotes`
+  is true, run quote normalization on extracted text before indexing.
+  Normalizes to ASCII `"` and `'` for consistent BM25 matching.
+- [x] **`docx_normalize_quotes(path, style, output)` Tauri command.**
+  ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_normalize_quotes`
+  accepts style name string.
+- [ ] **Tests.**  Unit: mixed-quote input → uniform output.  2+ tests.
+
+### P31 — App Store submission readiness (2026-07-10)
+
+Prepare the iOS and macOS builds for Apple App Store / TestFlight
+submission.  Follows the playbook in `../appstore.md` (validated on
+CrispChess + CrispSudoku + Brickwright).  The CI pipeline is
+conditional on secrets — when `APPLE_API_KEY_P8` is set, it produces
+a signed IPA + uploads to App Store Connect; otherwise falls back to
+the existing unsigned build.
+
+#### Prerequisites (human, one-time)
+
+- [x] **App Store Connect API key** — Key ID `9RMU3C7422`, Issuer ID
+  `5f618ba3-98ef-42ad-835c-fbbef6c76cf5` (hardcoded in release.yml
+  env block — not secrets).  Remaining: store the `.p8` private key
+  as repo secret `APPLE_API_KEY_P8` (`base64 < AuthKey_9RMU3C7422.p8`).
+- [x] **Register bundle ID** `com.crispstrobe.crispsorter` ✅ DONE
+  (2026-07-10).  Platform `UNIVERSAL`, Team ID `N9XSJ4M3GT`,
+  resource ID `965ZJTQ9SK`.
+- [x] **Create app record** ✅ DONE (2026-07-10).  Numeric app ID
+  `6789543049`.  `APPSTORE_APP_ID` repo secret set.
+- [ ] **App Privacy "nutrition label"** (browser-only — Apple blocks
+  this via API).  CrispSorter collects no data → "Data Not Collected".
+  Privacy policy URL: `https://crispstrobe.github.io/CrispSorter/privacy.html`
+  (GitHub Pages enabled on `docs/` folder).
+
+#### Shipped artifacts (2026-07-10)
+
+- [x] **`entitlements.plist`** — macOS App Sandbox entitlements for
+  Mac App Store.  Grants: `app-sandbox`, `network.client`,
+  `network.server` (local Tauri dev server + crisp-index-server),
+  `files.user-selected.read-write`, `files.downloads.read-write`.
+- [x] **`ExportOptions.plist`** — iOS export options for
+  `app-store-connect` method with automatic signing.
+- [x] **`tauri.conf.json` macOS bundle config** — `entitlements`,
+  `minimumSystemVersion: 12.0`, `hardenedRuntime: true`.
+- [x] **`.gitignore` updated** — excludes `.appstoreconnect/` and
+  `*.p8` files.
+- [x] **`release.yml` iOS job rewritten** for App Store signing:
+  - Decodes `APPLE_API_KEY_P8` secret into `~/.appstoreconnect/`
+  - Archives with `-authenticationKeyPath` / `-allowProvisioningUpdates`
+  - Exports signed IPA via `ExportOptions.plist`
+  - Validates + uploads IPA to App Store Connect via `xcrun altool`
+  - Falls back to unsigned build when secrets are absent
+  - Injects `ITSAppUsesNonExemptEncryption=false` into Info.plist
+- [x] **Consistent release asset naming** — Android APK and iOS IPA
+  now follow `CrispSorter_{version}_{platform}.{ext}` pattern.
+
+#### Additional artifacts shipped (2026-07-10)
+
+- [x] **Privacy policy** — `docs/privacy.html`, hosted via GitHub Pages
+  at `https://crispstrobe.github.io/CrispSorter/privacy.html`.
+- [x] **`PrivacyInfo.xcprivacy`** — Required Reason API manifest
+  (NSUserDefaults CA92.1, FileTimestamp C617.1, DiskSpace E174.1).
+  Injected into the generated Xcode project in CI after `tauri ios init`.
+- [x] **AGPL + App Store exception** — LICENSE file already has a
+  Section 7 additional permission granting app marketplace distribution.
+  No separate LICENSE-COMMERCIAL needed.
+- [x] **All 4 repo secrets set** — `APPSTORE_API_KEY_ID`,
+  `APPSTORE_API_ISSUER_ID`, `APPSTORE_API_KEY_P8`, `APPSTORE_APP_ID`.
+
+#### Remaining (future sessions)
+
+- [ ] **macOS MAS (Mac App Store) build.**  Separate from the existing
+  `.dmg` (Developer ID) build.  Needs: `Apple Distribution` cert for
+  signing the `.app`, `3rd Party Mac Developer Installer` cert for
+  signing the `.pkg`, `productbuild` step, `altool --type macos` upload.
+  The entitlements.plist is ready; the CI step + tauri.conf.json
+  `signingIdentity` field are not.
+- [ ] **Set `DEVELOPMENT_TEAM` in generated Xcode project.**  After
+  `tauri ios init`, inject the team ID from secrets into the generated
+  `project.pbxproj` (`CODE_SIGN_STYLE = Automatic;
+  DEVELOPMENT_TEAM = <id>;`).  Currently relying on
+  `-allowProvisioningUpdates` + API key to resolve this automatically.
+- [ ] **TestFlight distribution automation.**  After upload succeeds:
+  set encryption compliance, create internal beta group, assign build,
+  add testers — all API-doable per `appstore.md` Step 9.
+- [ ] **App Store listing metadata.**  Description, keywords, subtitle,
+  category (`PRODUCTIVITY` or `UTILITIES`), screenshots (Simulator-
+  generated per Step 11), pricing (free), age rating, review contact.
+- [ ] **Screenshot generation in CI.**  Boot iOS Simulator, install
+  debug `.app`, capture screenshots via `xcrun simctl io`, upload to
+  App Store Connect API — per `appstore.md` Step 11.

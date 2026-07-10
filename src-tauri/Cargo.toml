@@ -105,6 +105,7 @@ docx-rs     = { version = "0.4", optional = true }
 # feature to auto-add new files into the batch.
 notify      = { version = "8", optional = true }
 walkdir     = { version = "2", optional = true }
+fuser       = { version = "0.14", optional = true }
 # Streaming XML parser used to read the XMP metadata stream embedded in
 # PDFs. quick-xml is already a transitive dep; pinning it explicitly
 # guards against future churn from indirect upgrades.
@@ -216,6 +217,9 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 # SimAlign over each paragraph's source ↔ translation pair and
 # redistributes the source runs' rPr onto the target text.
 translate-align = ["dep:crisp-docx-align", "crispembed"]
+# P29.9 — FUSE mounting for cloud drive indexing.  Linux/macOS only.
+# Requires libfuse3-dev (Linux) or macFUSE/FUSE-T (macOS) at runtime.
+fuse = ["dep:fuser"]
 
 # Offline NMT via CrispASR. Enables the `ProviderKind::Nmt` variant
 # in crisp-docx-llm — wraps `crispasr::Session::translate_text` over

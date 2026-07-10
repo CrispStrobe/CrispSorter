@@ -7,6 +7,10 @@ start-codex-crispsorter.sh
 # and credentials by env-var name.  Same rationale as handover-prompts/.
 CLAUDE.md
 
+# App Store Connect API key (one-time human-generated, never committed)
+.appstoreconnect/
+*.p8
+
 # Node.js
 node_modules
 /build

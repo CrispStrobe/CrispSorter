@@ -404,6 +404,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PdfCmd,
     },
+    /// DOCX surgery — validate, analyze, headings, restyle, notes.
+    Docx {
+        #[command(subcommand)]
+        cmd: DocxCmd,
+    },
     /// Watch a folder for new files and print detected paths to stdout.
     /// Headless equivalent of the GUI folder-watcher. Runs until interrupted
     /// (Ctrl-C). Combine with `batch add` to auto-queue detected files.
@@ -1370,6 +1375,55 @@ enum PdfCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum DocxCmd {
+    /// Validate DOCX internal structure (7 checks).
+    Check { file: PathBuf },
+    /// Show document properties — page geometry, fonts, styles.
+    Info { file: PathBuf },
+    /// Infer heading levels from direct formatting.
+    Headings { file: PathBuf },
+    /// Restyle: graft source body into blueprint template.
+    Restyle {
+        /// Source document with the content.
+        #[arg(long)]
+        source: PathBuf,
+        /// Blueprint document with styles/headers/footers.
+        #[arg(long)]
+        blueprint: PathBuf,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Convert footnotes ↔ endnotes.
+    ConvertNotes {
+        file: PathBuf,
+        /// Target kind: "footnotes" or "endnotes".
+        #[arg(long)]
+        to: String,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Strip revision tracking attributes (rsids, paraIds, textIds).
+    StripRsids {
+        file: PathBuf,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Normalize quote marks to a specific style.
+    NormalizeQuotes {
+        file: PathBuf,
+        /// Quote style: german, english, french, swiss, german_guillemets.
+        #[arg(long, default_value = "english")]
+        style: String,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
 fn parse_page_spec(spec: &str, max_pages: usize) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
@@ -1497,6 +1551,7 @@ pub fn run() -> ExitCode {
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
         Command::Pdf { cmd } => cmd_pdf(cli.format, cmd),
+        Command::Docx { cmd } => cmd_docx(cli.format, cmd),
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
@@ -8272,6 +8327,143 @@ fn chrono_like(epoch_secs: u32) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+// ── P30 — DOCX surgery CLI ──────────────────────────────────────────────
+
+fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
+    match cmd {
+        DocxCmd::Check { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let report = crisp_docx_core::check_package(&pkg).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let result = crate::docx_tools::DocxCheckResult {
+                        valid: report.issues.is_empty(),
+                        ok: report.ok,
+                        issues: report.issues,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                }
+                OutFormat::Text => {
+                    for item in &report.ok {
+                        println!("  ✓ {item}");
+                    }
+                    for item in &report.issues {
+                        println!("  ✗ {item}");
+                    }
+                    if report.issues.is_empty() {
+                        println!("Valid.");
+                    } else {
+                        println!("{} issue(s) found.", report.issues.len());
+                    }
+                }
+            }
+            if report.issues.is_empty() { Ok(()) } else {
+                Err(format!("{} issue(s)", report.issues.len()))
+            }
+        }
+        DocxCmd::Info { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let schema = crisp_docx_core::analyze_blueprint(&pkg).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let bp = crate::docx_tools::DocxBlueprint {
+                        sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
+                            page_width_pt: s.page_width_pt,
+                            page_height_pt: s.page_height_pt,
+                            left_margin_pt: s.left_margin_pt,
+                            right_margin_pt: s.right_margin_pt,
+                            top_margin_pt: s.top_margin_pt,
+                            bottom_margin_pt: s.bottom_margin_pt,
+                            orientation: s.orientation.clone(),
+                        }).collect(),
+                        default_font: schema.default_font.clone(),
+                        default_font_size_pt: schema.default_font_size_pt,
+                        style_count: schema.styles.styles.len(),
+                    };
+                    println!("{}", serde_json::to_string_pretty(&bp).unwrap());
+                }
+                OutFormat::Text => {
+                    println!("Font:     {} {:.0}pt", schema.default_font, schema.default_font_size_pt);
+                    println!("Styles:   {}", schema.styles.styles.len());
+                    println!("Sections: {}", schema.sections.len());
+                    for (i, s) in schema.sections.iter().enumerate() {
+                        let orient = s.orientation.as_deref().unwrap_or("portrait");
+                        println!(
+                            "  §{}: {:.0}×{:.0} pt ({orient}), margins L{:.0} R{:.0} T{:.0} B{:.0}",
+                            i + 1, s.page_width_pt, s.page_height_pt,
+                            s.left_margin_pt, s.right_margin_pt,
+                            s.top_margin_pt, s.bottom_margin_pt,
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        DocxCmd::Headings { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let inferences = crisp_docx_core::infer_heading_levels(&pkg, None)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let items: Vec<crate::docx_tools::InferredHeading> = inferences.iter().map(|h| {
+                        crate::docx_tools::InferredHeading { level: h.heading_level, text: h.preview.clone() }
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&items).unwrap());
+                }
+                OutFormat::Text => {
+                    if inferences.is_empty() {
+                        println!("No headings inferred (document may already have explicit heading styles).");
+                    } else {
+                        for h in &inferences {
+                            let indent = "  ".repeat(h.heading_level.saturating_sub(1) as usize);
+                            println!("{indent}H{} {}", h.heading_level, h.preview);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        DocxCmd::Restyle { source, blueprint, out: out_path } => {
+            let source_pkg = crisp_docx_core::open(&source).map_err(|e| e.to_string())?;
+            let mut blueprint_pkg = crisp_docx_core::open(&blueprint).map_err(|e| e.to_string())?;
+            crisp_docx_core::transplant_body(&mut blueprint_pkg, &source_pkg)
+                .map_err(|e| format!("transplant: {e}"))?;
+            crisp_docx_core::save(&blueprint_pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Restyled → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::ConvertNotes { file, to, out: out_path } => {
+            let target = match to.to_ascii_lowercase().as_str() {
+                "footnotes" | "footnote" => crisp_docx_core::NotesKind::Footnotes,
+                "endnotes" | "endnote" => crisp_docx_core::NotesKind::Endnotes,
+                other => return Err(format!("unknown target '{other}', expected 'footnotes' or 'endnotes'")),
+            };
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            crisp_docx_core::convert_notes_kind(&mut pkg, target).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Converted notes → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::StripRsids { file, out: out_path } => {
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let count = crisp_docx_core::strip_rsids(&mut pkg).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Stripped {count} rsid attributes → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::NormalizeQuotes { file, style, out: out_path } => {
+            let qs = crate::docx_tools::parse_quote_style(&style)?;
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            crisp_docx_core::normalize_quotes_in_package(
+                &mut pkg, qs, crisp_docx_core::QuoteOptions::default(),
+            ).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Normalized quotes → {}", out_path.display());
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
