@@ -763,6 +763,10 @@ jobs:
     permissions:
       contents: write
     runs-on: macos-14
+    env:
+      # Step-level `if:` can't reference `secrets.*` directly on
+      # workflow_dispatch — proxy through an env var instead.
+      HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Check out sibling CrispEmbed
@@ -811,7 +815,7 @@ jobs:
         run: brew install protobuf
 
       - name: Decode App Store Connect API key
-        if: ${{ secrets.APPSTORE_API_KEY_P8 != '' }}
+        if: ${{ env.HAS_SIGNING_KEY }}
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "${{ secrets.APPSTORE_API_KEY_P8 }}" | base64 -d \
@@ -852,7 +856,7 @@ jobs:
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
 
       - name: Build iOS app (signed for App Store)
-        if: ${{ secrets.APPSTORE_API_KEY_P8 != '' }}
+        if: ${{ env.HAS_SIGNING_KEY }}
         env:
           PROTOC: /opt/homebrew/bin/protoc
         run: |
@@ -898,7 +902,7 @@ jobs:
           ls -la build/ios/export/ 2>/dev/null || echo "export dir empty"
 
       - name: Build iOS app (unsigned fallback)
-        if: ${{ secrets.APPSTORE_API_KEY_P8 == '' }}
+        if: ${{ !env.HAS_SIGNING_KEY }}
         env:
           PROTOC: /opt/homebrew/bin/protoc
         run: |
@@ -931,7 +935,7 @@ jobs:
           fi
 
       - name: Validate + upload IPA to App Store Connect
-        if: ${{ secrets.APPSTORE_API_KEY_P8 != '' }}
+        if: ${{ env.HAS_SIGNING_KEY }}
         run: |
           IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
           if [ -z "$IPA" ]; then
