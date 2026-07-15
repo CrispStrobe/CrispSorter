@@ -2,11 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>method</key>
-    <string>app-store-connect</string>
-    <key>signingStyle</key>
-    <string>automatic</string>
-    <key>destination</key>
-    <string>export</string>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>N9XSJ4M3GT</string>
+	<!-- Manual signing: CI holds only the Distribution cert + an explicit App
+	     Store profile ("CrispSorter AppStore CI", bound to both fleet dist
+	     certs). We deliberately do NOT use -allowProvisioningUpdates — on a CI
+	     runner it mints a Development cert and revokes the shared Distribution
+	     cert, breaking signing for every app on the account (see appstore.md). -->
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.crispstrobe.crispsorter</key>
+		<string>CrispSorter AppStore CI</string>
+	</dict>
+	<key>destination</key>
+	<string>export</string>
+	<key>uploadSymbols</key>
+	<true/>
 </dict>
 </plist>
