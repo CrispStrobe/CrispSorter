@@ -902,6 +902,19 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" 2>/dev/null \
               || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$PLIST"
             echo "✓ Set ITSAppUsesNonExemptEncryption=false"
+            # Purpose strings for frameworks that linked deps REFERENCE, even if
+            # unused at runtime. Apple's async static analysis rejects the build
+            # otherwise (ITMS-90683, emailed after a "successful" upload → the
+            # build never reaches VALID). tauri-plugin-dialog links Photos/
+            # PhotosUI on iOS for file/image picking (same class of dep as the
+            # file_picker plugin that hit CrispCloud with NSPhotoLibrary…).
+            add_str() {
+              /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST" 2>/dev/null \
+                || /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST"
+              echo "✓ Set $1"
+            }
+            add_str NSPhotoLibraryUsageDescription "CrispSorter accesses your photo library only when you pick an image or document to import."
+            add_str NSPhotoLibraryAddUsageDescription "CrispSorter saves exported documents to the location you choose."
           else
             echo "⚠ Info.plist not found at $PLIST — will set via API after upload"
           fi
@@ -929,7 +942,6 @@ jobs:
             "CODE_SIGN_STYLE": "Manual",
             "DEVELOPMENT_TEAM": "N9XSJ4M3GT",
             "CODE_SIGN_IDENTITY": '"Apple Distribution"',
-            'CODE_SIGN_IDENTITY[sdk=iphoneos*]': '"Apple Distribution"',
             "PROVISIONING_PROFILE_SPECIFIER": '"CrispSorter AppStore CI"',
           }
           def patch(block):
