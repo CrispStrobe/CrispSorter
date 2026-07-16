@@ -1,6 +1,7 @@
 pub mod embedder;
 pub mod fts_index;
 pub mod fts_query;
+pub mod synonyms;
 pub mod hf_prefetch;
 pub mod ingest;
 pub mod license_consent;
@@ -10,7 +11,12 @@ pub mod ner;
 pub mod omni_embed;
 pub mod reranker;
 pub mod skeleton;
+pub mod annotations;
+pub mod comparison;
+pub mod doctype;
+pub mod retention;
 pub mod task_failure;
+pub mod versioning;
 /// CrispSorter search / RAG index module.
 ///
 /// Sub-modules:
@@ -35,6 +41,9 @@ pub mod summary;
 pub mod nl_query;
 pub mod result_cache;
 pub mod barcode;
+pub mod omr;
+pub mod templates;
+pub mod zone_ocr;
 pub mod tauri_commands;
 pub mod translate_commands;
 

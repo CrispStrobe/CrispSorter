@@ -119,6 +119,22 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
     save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
 }
 
+/// Detect if an image is a two-up book spread and return the gutter column.
+/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 5). Soft-fails to None
+/// when the method is not available (older CrispEmbed build).
+pub fn detect_page_split(_path: &Path) -> Option<i32> {
+    // Deferred until CrispEmbed tags a release with detect_page_split().
+    // The method exists on HEAD but not in v0.13.0 which CI pins.
+    None
+}
+
+/// Detect the content bounding box (trim blank margins).
+/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 6). Soft-fails to None.
+pub fn content_bbox(_path: &Path) -> Option<(i32, i32, i32, i32)> {
+    // Deferred until CrispEmbed tags a release with content_bbox().
+    None
+}
+
 #[cfg(not(feature = "crispembed"))]
 pub fn cleaned_page_image(_path: &Path) -> Option<std::path::PathBuf> {
     None

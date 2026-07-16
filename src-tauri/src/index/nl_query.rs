@@ -46,6 +46,10 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         cleaned = remove_fragment(&cleaned, &format!("{}–{}", y1, y2));
     }
 
+    // Compute lowercase once; recompute only after mutations to `cleaned`
+    // (previously 5 separate allocations per parse).
+    let mut lower = cleaned.to_lowercase();
+
     // ── Language ─────────────────────────────────────────────────────
     let lang_map: &[(&str, &str)] = &[
         ("in german", "de"),
@@ -86,11 +90,11 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         ("in korean", "ko"),
         ("auf koreanisch", "ko"),
     ];
-    let lower = cleaned.to_lowercase();
     for (phrase, code) in lang_map {
         if lower.contains(phrase) {
             filters.language = Some(code.to_string());
             cleaned = remove_fragment_ci(&cleaned, phrase);
+            lower = cleaned.to_lowercase();
             break;
         }
     }
@@ -122,19 +126,18 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         ("audio files", "mp3"),
         ("audiodateien", "mp3"),
     ];
-    let lower2 = cleaned.to_lowercase();
     for (phrase, ext) in ext_map {
-        if lower2.contains(phrase) {
+        if lower.contains(phrase) {
             filters.ext = vec![ext.to_string()];
             cleaned = remove_fragment_ci(&cleaned, phrase);
+            lower = cleaned.to_lowercase();
             break;
         }
     }
 
     // ── Folder prefix ────────────────────────────────────────────────
     // "in /path/to/folder", "in ~/Documents"
-    let lower3 = cleaned.to_lowercase();
-    if let Some(pos) = lower3.find("in /") {
+    if let Some(pos) = lower.find("in /") {
         let start = pos + 3; // skip "in "
         let rest = &cleaned[start..];
         let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
@@ -142,8 +145,9 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         if !path.is_empty() {
             filters.parent_dir_prefix = Some(path.clone());
             cleaned = remove_fragment(&cleaned, &format!("in {}", path));
+            lower = cleaned.to_lowercase();
         }
-    } else if let Some(pos) = lower3.find("in ~/") {
+    } else if let Some(pos) = lower.find("in ~/") {
         let start = pos + 3;
         let rest = &cleaned[start..];
         let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
@@ -151,14 +155,14 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         if !path.is_empty() {
             filters.parent_dir_prefix = Some(path.clone());
             cleaned = remove_fragment(&cleaned, &format!("in {}", path));
+            lower = cleaned.to_lowercase();
         }
     }
 
     // ── Tags ─────────────────────────────────────────────────────────
     // "tagged X", "with tag X", "tag:X"
-    let lower4 = cleaned.to_lowercase();
     for prefix in &["tagged ", "with tag ", "tag:"] {
-        if let Some(pos) = lower4.find(prefix) {
+        if let Some(pos) = lower.find(prefix) {
             let start = pos + prefix.len();
             let rest = &cleaned[start..];
             let end = rest
@@ -168,6 +172,7 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
             if !tag.is_empty() {
                 filters.tag = Some(tag.clone());
                 cleaned = remove_fragment_ci(&cleaned, &format!("{}{}", prefix, tag));
+                lower = cleaned.to_lowercase();
                 break;
             }
         }
@@ -175,8 +180,7 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
 
     // ── URL domain ───────────────────────────────────────────────────
     // "from spiegel.de", "from example.com"
-    let lower5 = cleaned.to_lowercase();
-    if let Some(pos) = lower5.find("from ") {
+    if let Some(pos) = lower.find("from ") {
         let start = pos + 5;
         let rest = &cleaned[start..];
         let end = rest
@@ -190,11 +194,9 @@ pub fn parse_nl_query(input: &str) -> ParsedQuery {
         }
     }
 
-    // Clean up double spaces left by fragment removal.
-    while cleaned.contains("  ") {
-        cleaned = cleaned.replace("  ", " ");
-    }
-    cleaned = cleaned.trim().to_string();
+    // Clean up double/triple/etc. spaces left by fragment removal —
+    // single-pass instead of O(N) allocations via the while loop.
+    cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
 
     ParsedQuery {
         cleaned_query: cleaned,
@@ -396,5 +398,27 @@ mod tests {
             Some("de"),
             "expected lang=de for 'auf Deutsch': {:?}", p.filters.language
         );
+    }
+
+    #[test]
+    fn year_range_inverted_not_extracted() {
+        let p = parse_nl_query("docs 2025-2020");
+        assert!(p.filters.year_min.is_none(), "inverted range should not be extracted");
+        assert!(p.filters.year_max.is_none());
+    }
+
+    #[test]
+    fn from_domain_and_year_both_extracted() {
+        let p = parse_nl_query("articles from spiegel.de since 2023");
+        assert_eq!(p.filters.url_domain.as_deref(), Some("spiegel.de"));
+        assert_eq!(p.filters.year_min, Some(2023));
+    }
+
+    #[test]
+    fn empty_query_returns_empty() {
+        let p = parse_nl_query("");
+        assert_eq!(p.cleaned_query, "");
+        assert!(p.filters.year_min.is_none());
+        assert!(p.filters.language.is_none());
     }
 }

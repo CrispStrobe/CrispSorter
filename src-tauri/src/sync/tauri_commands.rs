@@ -1501,7 +1501,7 @@ pub async fn sync_federated_search(
             Ok(resp) => {
                 let fed: Vec<FederatedHit> = resp.rows.into_iter().enumerate().map(|(i, h)| {
                     let snippet = h.snippet.clone().or_else(|| {
-                        h.full_text.as_ref().map(|t| t.chars().take(300).collect())
+                        h.full_text.as_ref().map(|t| crate::index::snippet::truncate_str(t, 300).to_owned())
                     });
                     FederatedHit {
                         id: format!("cloud_backup:{}", h.sha256),

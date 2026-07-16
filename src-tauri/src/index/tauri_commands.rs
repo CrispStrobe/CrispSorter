@@ -1963,6 +1963,13 @@ pub async fn index_delete_document(
         .map_err(|e| e.to_string())?;
     writer.commit().map_err(|e| e.to_string())?;
 
+    // Audit trail
+    if let Ok(dir) = state.data_dir.lock().await.as_ref().ok_or(()) {
+        if let Ok(audit) = crate::audit::AuditLog::open_or_create(dir) {
+            let _ = audit.log("delete", Some(&doc_id), "", "gui");
+        }
+    }
+
     Ok(())
 }
 
@@ -3842,6 +3849,7 @@ pub async fn tool_ocr_export(
     location_uri: String,
     format: String,
     pdfa: bool,
+    stamp_text: Option<String>,
 ) -> Result<OcrExportResult, String> {
     use crate::extractors::ocr_render::OcrOutputFormat;
 
@@ -3899,6 +3907,28 @@ pub async fn tool_ocr_export(
     )
     .await
     .map_err(|e| format!("ocr export join error: {e}"))??;
+
+    // Apply stamp/watermark to exported PDF if requested.
+    if let Some(ref text) = stamp_text {
+        if !text.is_empty() && format == "pdf" {
+            let stamp_path = out_path.clone();
+            let stamp_text = text.clone();
+            tokio::task::spawn_blocking(move || {
+                let config = crate::pdf_ops::WatermarkConfig {
+                    text: stamp_text,
+                    font_size: 10.0,
+                    angle: 0.0,
+                    opacity: 0.5,
+                    color: [0.3, 0.3, 0.3],
+                };
+                crate::pdf_ops::add_watermark(
+                    &stamp_path, &config, None, &stamp_path,
+                )
+            })
+            .await
+            .map_err(|e| format!("stamp join: {e}"))??;
+        }
+    }
 
     Ok(OcrExportResult {
         saved_path: out_path.display().to_string(),
@@ -4087,7 +4117,7 @@ fn html_table_to_csv(html: &str) -> String {
         }
         let mut cells = Vec::new();
         // Split on <td> or <th> tags
-        for cell_chunk in row_chunk.split(|c| false).into_iter().chain(
+        for cell_chunk in row_chunk.split(|_c| false).into_iter().chain(
             // Custom splitting: find each <td...> or <th...> and extract inner text
             std::iter::empty()
         ) {
@@ -4486,6 +4516,29 @@ pub async fn ocr_page_cleaned(page_path: String) -> Result<String, String> {
     .map_err(|e| format!("ocr_page_cleaned join error: {e}"))
 }
 
+/// Detect if a scanned image is a two-up book spread. Returns the gutter
+/// column (x pixel) to split at, or null if single page.
+#[tauri::command]
+pub async fn ocr_detect_page_split(page_path: String) -> Result<Option<i32>, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    tokio::task::spawn_blocking(move || {
+        Ok(crate::extractors::ocr_crispembed::detect_page_split(&path))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+/// Detect content bounding box (trim margins). Returns [x0, y0, x1, y1] or null.
+#[tauri::command]
+pub async fn ocr_content_bbox(page_path: String) -> Result<Option<(i32, i32, i32, i32)>, String> {
+    let path = std::path::PathBuf::from(&page_path);
+    tokio::task::spawn_blocking(move || {
+        Ok(crate::extractors::ocr_crispembed::content_bbox(&path))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
 /// One page of corrected regions sent back by the workbench for export.
 #[derive(serde::Deserialize)]
 pub struct WorkbenchPageInput {
@@ -4758,6 +4811,218 @@ pub async fn index_corpus_stats(
     local.corpus_stats().await.map_err(|e| e.to_string())
 }
 
+/// One cluster from K-means topical clustering.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct Cluster {
+    pub id: u32,
+    pub name: String,
+    pub doc_count: usize,
+    pub top_terms: Vec<String>,
+    pub sample_titles: Vec<String>,
+    pub member_doc_ids: Vec<String>,
+}
+
+/// LLM-suggested cluster labels — takes existing cluster data and
+/// sends it to the configured LLM for human-readable naming.
+#[tauri::command]
+pub async fn index_label_clusters(
+    clusters: Vec<Cluster>,
+    llm_url: String,
+    llm_model: String,
+) -> Result<Vec<String>, String> {
+    // Build a prompt with all clusters' top terms + sample titles
+    let mut prompt = String::from(
+        "You are a librarian organizing a document collection. Below are document clusters, each described by their most distinctive keywords and sample document titles. Generate a short, descriptive label (2-5 words) for each cluster. Return ONLY the labels, one per line, in the same order.\n\n"
+    );
+    for (i, c) in clusters.iter().enumerate() {
+        prompt.push_str(&format!(
+            "Cluster {}: keywords=[{}], titles=[{}]\n",
+            i + 1,
+            c.top_terms.join(", "),
+            c.sample_titles.iter().take(3).cloned().collect::<Vec<_>>().join("; "),
+        ));
+    }
+    prompt.push_str("\nLabels:\n");
+
+    // Call the LLM via OpenAI-compatible API
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": llm_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 200,
+    });
+    let resp = client
+        .post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("LLM request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("LLM returned {}", resp.status()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| format!("parse: {e}"))?;
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // Parse one label per line
+    let labels: Vec<String> = content
+        .lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ':').trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    Ok(labels)
+}
+
+/// P24.1 — Topical clustering on the embedding column.
+#[tauri::command]
+pub async fn index_cluster_documents(
+    state: State<'_, AppState>,
+    k: usize,
+) -> Result<Vec<Cluster>, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".into());
+    }
+    let local = lock
+        .local
+        .as_ref()
+        .ok_or("Clustering requires the local backend")?
+        .clone();
+    drop(lock);
+    local.cluster_documents(k).await.map_err(|e| e.to_string())
+}
+
+/// P24.3 — Entity co-occurrence graph node.
+#[derive(serde::Serialize, Clone)]
+pub struct GraphNode {
+    pub id: String,     // e.g. "person:Karl Barth"
+    pub label: String,  // e.g. "Karl Barth"
+    pub group: String,  // e.g. "person"
+    pub doc_count: usize,
+}
+
+/// P24.3 — Entity co-occurrence graph edge.
+#[derive(serde::Serialize, Clone)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub weight: usize, // number of documents where both entities co-occur
+}
+
+/// P24.3 — Entity co-occurrence graph.
+#[derive(serde::Serialize, Clone)]
+pub struct EntityGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+/// P24.3 — Build an entity co-occurrence graph from NER tags.
+#[tauri::command]
+pub async fn index_entity_graph(
+    state: State<'_, AppState>,
+    min_cooccurrence: Option<usize>,
+    max_nodes: Option<usize>,
+) -> Result<EntityGraph, String> {
+    let lock = state.index.lock().await;
+    if !lock.config.enabled {
+        return Err("Index is disabled".into());
+    }
+    let local = lock.local.as_ref().ok_or("Entity graph requires local backend")?.clone();
+    drop(lock);
+
+    let min_co = min_cooccurrence.unwrap_or(2);
+    let max_n = max_nodes.unwrap_or(100);
+
+    // Fetch tag facets (reuse existing infra)
+    let facets = local.tag_facets(&Default::default(), 500)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Filter to NER entity tags (person:, org:, loc:, date:)
+    let entity_tags: Vec<(String, usize)> = facets.into_iter()
+        .filter(|f| f.tag.contains(':') && {
+            let prefix = f.tag.split(':').next().unwrap_or("");
+            matches!(prefix, "person" | "org" | "loc" | "date")
+        })
+        .take(max_n)
+        .map(|f| (f.tag, f.count as usize))
+        .collect();
+
+    if entity_tags.is_empty() {
+        return Ok(EntityGraph { nodes: vec![], edges: vec![] });
+    }
+
+    // Build nodes
+    let nodes: Vec<GraphNode> = entity_tags.iter().map(|(tag, count)| {
+        let (group, label) = tag.split_once(':').unwrap_or(("", tag));
+        GraphNode {
+            id: tag.clone(),
+            label: label.to_string(),
+            group: group.to_string(),
+            doc_count: *count,
+        }
+    }).collect();
+
+    // Fetch docs with their tags to compute co-occurrence.
+    let batches = local.query_tags_for_graph()
+        .await
+        .map_err(|e| format!("query: {e}"))?;
+
+    // Collect per-document tag sets
+    use arrow::array::Array;
+    let entity_set: std::collections::HashSet<&str> = entity_tags.iter().map(|(t, _)| t.as_str()).collect();
+    let mut doc_tag_sets: Vec<Vec<String>> = Vec::new();
+
+    for batch in &batches {
+        if let Some(tags_col) = batch.column_by_name("tags") {
+            if let Some(list_arr) = tags_col.as_any().downcast_ref::<arrow::array::ListArray>() {
+                for i in 0..batch.num_rows() {
+                    if list_arr.is_null(i) { continue; }
+                    let vals = list_arr.value(i);
+                    if let Some(str_arr) = vals.as_any().downcast_ref::<arrow::array::StringArray>() {
+                        let doc_entities: Vec<String> = (0..str_arr.len())
+                            .filter_map(|j| {
+                                if str_arr.is_null(j) { return None; }
+                                let t = str_arr.value(j);
+                                if entity_set.contains(t) { Some(t.to_string()) } else { None }
+                            })
+                            .collect();
+                        if doc_entities.len() >= 2 {
+                            doc_tag_sets.push(doc_entities);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build co-occurrence edges
+    let mut edge_map: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    for tags in &doc_tag_sets {
+        for i in 0..tags.len() {
+            for j in (i+1)..tags.len() {
+                let (a, b) = if tags[i] < tags[j] {
+                    (tags[i].clone(), tags[j].clone())
+                } else {
+                    (tags[j].clone(), tags[i].clone())
+                };
+                *edge_map.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let edges: Vec<GraphEdge> = edge_map.into_iter()
+        .filter(|(_, w)| *w >= min_co)
+        .map(|((s, t), w)| GraphEdge { source: s, target: t, weight: w })
+        .collect();
+
+    Ok(EntityGraph { nodes, edges })
+}
+
 #[cfg(test)]
 mod workbench_tests {
     use super::{OcrRegionDto, ocr_doc_open};
@@ -4797,4 +5062,109 @@ mod workbench_tests {
         assert!(res.pages[0].ends_with("scan.png"), "got {}", res.pages[0]);
         assert!(std::path::Path::new(&res.pages[0]).exists());
     }
+}
+
+// ── P26.4 — Zoned OCR template commands ──────────────────────────────────
+
+#[tauri::command]
+pub async fn template_create(
+    state: State<'_, AppState>,
+    name: String,
+    width: u32,
+    height: u32,
+) -> Result<i64, String> {
+    let store = get_template_store(&state).await?;
+    store.create_template(&name, width, height).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_add_zone(
+    state: State<'_, AppState>,
+    template_id: i64,
+    label: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    zone_type: Option<String>,
+) -> Result<i64, String> {
+    let store = get_template_store(&state).await?;
+    store.add_zone(template_id, &label, x, y, w, h, zone_type.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::templates::TemplateSummary>, String> {
+    let store = get_template_store(&state).await?;
+    store.list_templates().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_get(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<super::templates::Template>, String> {
+    let store = get_template_store(&state).await?;
+    store.get_template(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_delete(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    let store = get_template_store(&state).await?;
+    store.delete_template(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn template_apply(
+    state: State<'_, AppState>,
+    location_uri: String,
+    template_id: i64,
+) -> Result<Vec<super::zone_ocr::ZoneResult>, String> {
+    let store = get_template_store(&state).await?;
+    let template = store.get_template(template_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Template {} not found", template_id))?;
+
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("Cannot resolve path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("File not found: {}", path.display()));
+    }
+
+    tokio::task::spawn_blocking(move || {
+        super::zone_ocr::extract_zones(&path, &template)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn omr_detect(
+    location_uri: String,
+    x: f64, y: f64, w: f64, h: f64,
+    threshold: Option<f64>,
+) -> Result<super::omr::CheckmarkResult, String> {
+    let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
+        .ok_or_else(|| format!("Cannot resolve path: {location_uri}"))?;
+    if !path.exists() {
+        return Err(format!("File not found: {}", path.display()));
+    }
+    let thr = threshold.unwrap_or(super::omr::DEFAULT_THRESHOLD);
+    tokio::task::spawn_blocking(move || {
+        super::omr::detect_checkmark(&path, "detection", x, y, w, h, thr)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+async fn get_template_store(state: &State<'_, AppState>) -> Result<super::templates::TemplateStore, String> {
+    let data_dir = state.data_dir.lock().await;
+    let dir = data_dir.as_ref().ok_or("App data dir not set")?;
+    super::templates::TemplateStore::open_or_create(dir).map_err(|e| e.to_string())
 }

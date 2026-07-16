@@ -1,6 +1,6 @@
 [package]
 name = "crispsorter"
-version = "0.8.0"
+version = "0.10.0"
 description = "CrispSorter — local-first AI document organizer"
 authors = ["CrispSorter contributors"]
 license = "AGPL-3.0-or-later"
@@ -70,10 +70,10 @@ openssl = { version = "0.10", features = ["vendored"] }
 # through a temp dir.  Was previously dev-only; promoted to a runtime dep
 # when InternxtDrive started using it for `read_file` / `write_file`.
 tempfile = "3"
-futures-util = "0.3.32"
+# futures-util removed — re-exported by the `futures` crate
 tauri-plugin-shell = { version = "2.3.5", optional = true }
 tauri-plugin-process = { version = "2.3.1", optional = true }
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 # `ReaderStream` for streaming file uploads to cloud-backup over
 # reqwest::Body::wrap_stream (avoids buffering multi-GB files in
 # RAM).  tokio-util is already transitive via reqwest+lance — this
@@ -92,11 +92,20 @@ kamadak-exif = "0.6"
 # /Info dictionary (Title / Author / Subject / Keywords / CreationDate)
 # directly. Used by the extract_pdf_metadata Tauri command.
 lopdf       = "0.38"
+# RSS/Atom feed parser — used for P24.5 feed ingestion.
+# Gated behind desktop because feed-rs's transitive deps can break
+# Android NDK cross-compilation.
+feed-rs     = { version = "2", optional = true }
+# Word-level text diff — used for P25.7 document comparison.
+similar     = "2"
+# DOCX generation — used for P27.10 export to Word format.
+docx-rs     = { version = "0.4", optional = true }
 # Cross-platform fs watcher (FSEvents on macOS, inotify on Linux,
 # ReadDirectoryChangesW on Windows). Used by the folder-watcher
 # feature to auto-add new files into the batch.
 notify      = { version = "8", optional = true }
 walkdir     = { version = "2", optional = true }
+fuser       = { version = "0.14", optional = true }
 # Streaming XML parser used to read the XMP metadata stream embedded in
 # PDFs. quick-xml is already a transitive dep; pinning it explicitly
 # guards against future churn from indirect upgrades.
@@ -190,7 +199,7 @@ default = []
 # crates behind it depend on subprocess spawning, inotify, and other
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
-desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls"]
+desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]
@@ -208,6 +217,9 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 # SimAlign over each paragraph's source ↔ translation pair and
 # redistributes the source runs' rPr onto the target text.
 translate-align = ["dep:crisp-docx-align", "crispembed"]
+# P29.9 — FUSE mounting for cloud drive indexing.  Linux/macOS only.
+# Requires libfuse3-dev (Linux) or macFUSE/FUSE-T (macOS) at runtime.
+fuse = ["dep:fuser"]
 
 # Offline NMT via CrispASR. Enables the `ProviderKind::Nmt` variant
 # in crisp-docx-llm — wraps `crispasr::Session::translate_text` over
@@ -230,6 +242,10 @@ crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 # `[profile.dev.package."*"]` lives at the workspace root (Cargo only
 # honours profile tables there; declaring them per-package emits a
 # warning and is silently ignored).
+
+# Cross-platform clipboard access — desktop only (arboard has no Android/iOS backend).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+arboard = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Windows
@@ -303,7 +319,10 @@ version = "3.5"
 # `src-tauri/src/audio/ffmpeg_fallback.rs`.
 [dependencies.symphonia]
 version  = "0.5"
-features = ["all"]
+# Only the codecs + containers we actually decode (wav, mp3, m4a, flac,
+# ogg, opus, aac, alac, caf, aiff, mp4, mkv/webm).  "all" pulled in
+# adpcm/mp1/mp2 which we never use.
+features = ["aac", "alac", "flac", "mp3", "pcm", "vorbis", "all-formats"]
 optional = true
 
 # Sample-rate conversion to the canonical 16 kHz mono ASR input

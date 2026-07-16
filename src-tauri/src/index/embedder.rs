@@ -2587,15 +2587,24 @@ pub fn chunk_text(
     stride: usize,
     _heading_offsets: &[usize],
 ) -> Vec<TextChunk> {
+    // Collect word (start, end) byte offsets in a single pass — O(N).
+    // Avoids the previous O(N²) text[pos..].find(word) per word.
+    let bytes = text.as_bytes();
+    let len = bytes.len();
     let mut words: Vec<(usize, usize)> = Vec::new();
-    let mut pos = 0usize;
-    for word in text.split_ascii_whitespace() {
-        if let Some(rel) = text[pos..].find(word) {
-            let start = pos + rel;
-            let end = start + word.len();
-            words.push((start, end));
-            pos = end;
+    let mut i = 0usize;
+    while i < len {
+        // Skip ASCII whitespace
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
         }
+        // Start of a word — scan to the next whitespace or end
+        let start = i;
+        while i < len && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        words.push((start, i));
     }
     if words.is_empty() {
         return vec![];

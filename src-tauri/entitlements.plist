@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox (mandatory for Mac App Store) -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Network: cloud sync, LLM API calls, cloud drive connectors -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Local server: Tauri's localhost dev server, crisp-index-server -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- User-selected files: document import/export via file picker -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+
+    <!-- Downloads folder: batch export, translated DOCX output -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+</dict>
+</plist>

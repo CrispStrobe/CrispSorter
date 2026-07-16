@@ -1,11 +1,13 @@
-import { CreateMLCEngine, type MLCEngine, type InitProgressReport } from '@mlc-ai/web-llm';
+// Lazy-loaded — @mlc-ai/web-llm is heavy and only needed when WebLLM is selected.
+type MLCEngine = import('@mlc-ai/web-llm').MLCEngine;
+type InitProgressReport = import('@mlc-ai/web-llm').InitProgressReport;
 
 // Pre-built small models suitable for document classification
 export const WEBLLM_MODELS = [
     { id: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',  name: 'Qwen2.5 0.5B · ~500 MB · fastest' },
     { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',   name: 'Llama 3.2 1B · ~800 MB · fast'    },
     { id: 'gemma-2-2b-it-q4f16_1-MLC',            name: 'Gemma 2 2B · ~1.5 GB · balanced'  },
-    { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',   name: 'Llama 3.2 3B · ~2 GB · quality'   },
+    { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',    name: 'Llama 3.2 3B · ~2 GB · quality'   },
     { id: 'Phi-3.5-mini-instruct-q4f16_1-MLC',    name: 'Phi-3.5 Mini 3.8B · ~2.2 GB'      },
 ];
 
@@ -48,6 +50,7 @@ export async function loadWebLLM(
     loadedModelId = '';
     await logWebGPUInfo();
     console.log(`[WebLLM] Loading model: ${modelId}`);
+    const { CreateMLCEngine } = await import('@mlc-ai/web-llm');
     engine = await CreateMLCEngine(modelId, { initProgressCallback: onProgress });
     loadedModelId = modelId;
 }

@@ -9,6 +9,263 @@ For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
 ---
 
+## P28 — Performance optimization pass (2026-07-04)
+
+Systematic audit across search, ingest, LanceDB I/O, dependencies,
+and frontend bundle — ~25 distinct optimizations in 14 commits.
+976 unit tests (up from 961; 15 new covering the changes).
+
+**Search pipeline:**
+- `result_cache.rs`: VecDeque LRU with O(1) eviction; direct field
+  hashing (eliminates `serde_json::to_string` allocation per query).
+  3 new tests (LRU promotion, hash determinism, f64 bit-pattern).
+- `search.rs`: zero-copy `rrf_merge_n` (`&[&[&str]]` → no String
+  clones across 4 RRF channels).  2 new tests.
+- `fts_query.rs` + `synonyms.rs`: `eq_ignore_ascii_case()` replaces
+  `to_uppercase()` (allocation-free); `is_ascii()` guard for safe
+  W/PRE byte-slice matching on multibyte input.  4 new tests.
+- `snippet.rs`: in-place `retain()` replaces cloned filter;
+  `truncate_str()` helper replaces `chars().take(N).collect::<String>()`
+  at 5 hot-path sites (browse, search, translation, federated
+  snippets).  4 new tests.
+
+**LanceDB I/O:**
+- Column projection on all 6 major query paths: browse scanner
+  (`query_documents`), dense ANN (`search_vector`), omni/vit ANN
+  (`search_vector_column`), similarity (`find_similar`), chunk
+  hydration (`fetch_best_chunk_per_doc`), sparse pool
+  (`search_sparse_in_pool`).  Excludes 3 embedding vectors
+  (1024+2048+768 f32), `multivec_packed`, `full_text_md`,
+  `embedding_sparse`, `embedding_model` — potentially 5–20× fewer
+  bytes read per page/search.  `search_result_columns()` helper
+  centralises the column list.
+- Cached `Arc<Schema>` in `LocalIndex` — built once at construction,
+  reused by every `ingest_batch` (was rebuilding ~25 Field objects per
+  document).
+- `Vec::with_capacity(total_rows)` in `cluster_documents`,
+  `list_failed_extractions`, and both search-result builders.
+
+**Ingest pipeline:**
+- `bg_ingest`: ViT + Omni `spawn_blocking` fired concurrently (~2×
+  wall-time for dual-model image ingest); single `fs::metadata` call
+  (was duplicated).
+- `ingest.rs`: conditional `texts.clone()` (skip when ColBERT is off);
+  merged embedder lock (model_id read inside existing guard);
+  LanceDB write batch size raised from 128 to 512 rows.  1 new test.
+- ColBERT IN-list: collapsed double Vec allocation into single pass.
+- `chunk_text`: O(N) byte-level word boundary scanner replaces O(N²)
+  `text[pos..].find(word)` loop.
+- `doctype.rs`: `text.to_lowercase()` deferred past extension-based
+  early returns — avoids full-text heap copy for extension-classified
+  types (email, epub, image, audio, video, code).
+- Zero-alloc LID text sampling via `char_indices` byte-boundary slice.
+
+**Dependencies + build:**
+- tokio `"full"` → 7 specific features (drops `net`, `signal`).
+- symphonia `"all"` → used codecs only (drops `adpcm`, `mp1`, `mp2`).
+- Removed `similar "unicode"` feature + duplicate `futures-util` dep.
+- Cargo profiles: `opt-level = 1` for deps in dev builds;
+  `lto = "thin"` in release.
+
+**Frontend:**
+- Vite `manualChunks` vendor splitting (7 heavy deps: pdfjs, mammoth,
+  tesseract, katex, deep-chat, web-llm, HF transformers).
+- `@mlc-ai/web-llm` dynamically imported on first use.
+- All 5 extractors (pdf, docx, epub, html, image) converted to
+  dynamic `import()` inside switch cases.
+
+**Other:**
+- `DiffSegment.tag`: `String` → `&'static str` (eliminates heap
+  allocation per diff segment).
+- Performance patterns documented in `LEARNINGS.md`.
+
+---
+
+## v0.9.1 — Wiring, Tests, Document Classification, Scan Cleanup (2026-07-03)
+
+Released with all 5 platforms (macOS, Linux, Windows, Android, iOS).
+See `RELEASE_NOTES_v0.9.1.md` for full details.
+
+## Post-v0.9.0 — Wiring, Tests, Document Classification (2026-07-03)
+
+### Feature wiring (CLI + GUI)
+
+Closed all wiring gaps from the v0.9.0 audit:
+
+**CLI** — 10 new `crispsorter index` subcommands: `versions`,
+`audit-log`, `retention-rules`, `retention-add`, `compare`,
+`entity-graph`, `feed`, `export`.
+
+**Frontend** — Settings panels for Audit Log (query + table),
+Retention Policies (CRUD), RSS Feeds (fetch + preview).  Search
+result row buttons: Export (HTML), Highlight (reading list).
+CorpusDashboard: Entity Graph panel.  PdfTools: Detect Signatures
++ PDF/A conversion buttons.
+
+**Backend** — Audit logging auto-fires on search, delete, and
+ingest operations.
+
+### P26.1 — Document-type classification
+
+Heuristic classifier (`index/doctype.rs`) with 18 document types
+(letter, invoice, receipt, form, email, report, specification,
+presentation, spreadsheet, image, audio, video, ebook, code,
+article, contract, memo, unknown).  Based on file extension + text
+content pattern matching.  Wired into bg_ingest — every ingested
+document gets a `doctype:<class>` tag automatically.
+
+### Android build fix
+
+Root cause: TOML `[target.'cfg(not(android/ios))'.dependencies]`
+section for arboard was placed mid-file, causing ALL subsequent
+deps (rusqlite, sha2, image, etc.) to be excluded on Android.
+Fixed by moving arboard to its own target section.  Also gated
+`feed-rs`, `docx-rs`, and clipboard behind `desktop` feature.
+
+### Test suite
+
+929 tests (was 790 at start of session).  +139 new tests:
+- pdf_ops: 49 total (redaction, PDF/A, sanitise options, remap_refs)
+- doctype: 11 (extension, invoice, receipt, contract, letter, memo,
+  article, report, form, short text, tag format)
+- CLI parse: 14 (parse_page_spec, parse_split_ranges edge cases)
+- clustering: 12 (kmeans edge cases, TF-IDF)
+- synonyms: 15 (operators, wildcards, bidirectional, mixed langs)
+- comparison: 11 (ratios, long text, whitespace)
+- annotations: 8, versioning: 7, retention: 7, audit: 7, feed: 11,
+  export: 5
+
+---
+
+## v0.9.0 — Universal Document Viewer, PDF Toolkit, Discovery & DMS Features (2026-07-02)
+
+Major feature release spanning P24–P27.  25 new features, 101 new unit
+tests (total 891), 3 new Rust modules, 10 new Svelte components.
+
+### Universal Document Viewer (P27.1–P27.2)
+
+Cross-platform document viewer replacing the old `<object>` PDF embed
+and bare `<img>` tags.  New `src/lib/components/viewer/` module with
+format-specific sub-viewers:
+
+- **PdfViewer** — pdfjs-dist canvas rendering, page nav, zoom, text
+  layer for selection, keyboard shortcuts, fit-width/fit-page modes
+- **ImageViewer** — zoom/pan (0.1x–6x), Ctrl+wheel, fit toggle
+- **DocxViewer** — mammoth → HTML with dark-theme CSS
+- **EpubViewer** — chapter navigation sidebar + HTML rendering
+- **TextViewer** — monospace with 512KB truncation
+- **HtmlViewer** — sanitised HTML with charset detection
+- **CsvViewer** — auto-delimiter detection, sticky headers
+- **FallbackViewer** — "Open in app" button
+
+`DocumentViewer.svelte` router dispatches by file extension.  Replaced
+~150 lines of duplicated preview code in IndexIngest + IndexSearch.
+Shared `viewer/types.ts` with `uriToPath()`, `detectKind()`, format
+constants.
+
+### PDF Manipulation Toolkit (P27.1, P27.7, P27.13, P27.14, P26.5, P26.6, P26.7)
+
+`pdf_ops.rs` module — 18 operations via lopdf:
+
+| Operation | Function | CLI |
+|-----------|----------|-----|
+| Get info | `pdf_info` | `pdf info` |
+| Extract pages | `extract_pages` | `pdf extract` |
+| Remove pages | `remove_pages` | `pdf remove` |
+| Reorder pages | `reorder_pages` | `pdf reorder` |
+| Rotate pages | `rotate_pages` | `pdf rotate` |
+| Crop pages | `crop_pages` | `pdf crop` |
+| Merge PDFs | `merge_pdfs` | `pdf merge` |
+| Split PDF | `split_pdf` | `pdf split` |
+| Add page numbers | `add_page_numbers` | `pdf number` |
+| Add watermark | `add_watermark` | `pdf watermark` |
+| Insert blank page | `insert_blank_page` | `pdf insert-blank` |
+| Edit metadata | `edit_metadata` | `pdf metadata` |
+| Decrypt PDF | `decrypt_pdf` | `pdf decrypt` |
+| Encrypt PDF | `encrypt_pdf` | `pdf encrypt` |
+| Sanitise | `sanitise_pdf_with_options` | `pdf sanitise` |
+| Detect signatures | `detect_signatures` | `pdf signatures` |
+| PDF/A conversion | `convert_to_pdfa` | `pdf pdfa` |
+| Redact regions | `redact_regions` | `pdf redact` |
+
+**PdfTools.svelte** tab: page list sidebar, multi-select, operation
+panels for all 18 tools.  Fine-grained `SanitiseOptions` with per-
+category toggles (Info, XMP, JS, files, OpenAction, thumbnails,
+annotations).
+
+40 unit tests covering all operations.
+
+### Discovery & Clustering (P24.1, P24.3, P24.4, P24.5, P24.6)
+
+- **P24.1 — Topical clustering:** K-means++ on dense embeddings with
+  TF-IDF cluster naming.  `LocalIndex::cluster_documents(k)`, Tauri
+  command, CLI `crispsorter index cluster --k 5`, CorpusDashboard
+  panel.  12 unit tests.
+
+- **P24.3 — Knowledge graph:** Entity co-occurrence from NER tags.
+  `index_entity_graph` Tauri command returns nodes + edges.
+
+- **P24.4 — Synonym expansion:** 94 embedded synonym groups (50 EN +
+  44 DE).  `synonym_expand_query()` OR-expands before FTS.  Frontend
+  checkbox.  15 unit tests.
+
+- **P24.5 — RSS/Atom feed ingestion:** `extractors/feed.rs` via
+  `feed-rs`.  RSS 2.0 / Atom / JSON Feed.  11 unit tests.
+
+- **P24.6 — Clipboard/screenshot capture:** `extractors/clipboard.rs`
+  via `arboard`.  Text + image (saved to temp PNG).
+
+### DMS & Compliance (P25.1–P25.9)
+
+- **P25.1 — Document versioning:** `index/versioning.rs`, SHA-256
+  version groups, monotonic seq.  7 unit tests.
+
+- **P25.2 — Audit trail:** `audit/mod.rs`, append-only SQLite.
+  Query with filters.  7 unit tests.
+
+- **P25.3 — Retention policies:** `index/retention.rs`, per-folder/tag
+  rules.  7 unit tests.
+
+- **P25.4 — Stamp on export:** Wired into `tool_ocr_export` +
+  CLI `ocr --render pdf --stamp`.
+
+- **P25.7 — Document comparison:** `index/comparison.rs` via `similar`.
+  Word-level diff.  7 unit tests.
+
+- **P25.8 — Annotation layer:** `index/annotations.rs`, SQLite CRUD +
+  text search.  8 unit tests.
+
+- **P25.9 — Reading queue:** Highlights table, reading list by recency.
+
+### Export (P27.10)
+
+- `extractors/export.rs` — DOCX (via `docx-rs`) and standalone HTML
+  export.  5 unit tests.
+
+### CrispEmbed v0.13.0 Integration
+
+Pulled 37 upstream commits: GLM-OCR, Qwen2.5-VL, PaddleOCR-VL,
+Restormer, InternVL2, Granite-Vision, Qwen3-VL fixes.  No Rust API
+changes.  Fixed `crisp-docx` sibling version pins.
+
+### New Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `feed-rs` | 2 | RSS/Atom feed parsing |
+| `arboard` | 3 | Clipboard access |
+| `similar` | 2 | Text diffing |
+| `docx-rs` | 0.4 | DOCX generation |
+
+### Test Summary
+
+891 tests pass (was 790 at session start).  +101 new tests across
+pdf_ops (40), clustering (12), synonyms (15), annotations (8),
+versioning (7), retention (7), audit (7), feed (11), comparison (7),
+export (5).
+
+---
+
 ## Session log — 2026-06-20 (evening) — Audio omni embedding + build infra fix
 
 Implemented the audio omni embedding pipeline (P17.7 completion) and fixed

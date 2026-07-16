@@ -16,11 +16,15 @@ on:
 # all jobs at once — no more 3-place edits.
 env:
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.11.8
+  CRISPEMBED_REF: v0.13.0
   CRISPASR_REPO: CrispStrobe/CrispASR
-  CRISPASR_REF: v0.6.6
+  CRISPASR_REF: v0.8.6
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
-  CRISPDOCX_REF: c9ec4d8506b3127d792ae2a6f3b2764b447077e2
+  CRISPDOCX_REF: b1de892c6092bdf3306e442138475a7f94c19637
+  # App Store Connect API key (public identifiers — not secrets).
+  # The .p8 private key itself is in APPLE_API_KEY_P8 repo secret (base64).
+  APPLE_API_KEY_ID: 9RMU3C7422
+  APPLE_API_ISSUER_ID: 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
 
 jobs:
   release-required:
@@ -742,18 +746,27 @@ jobs:
             gh release create "${TAG}" --draft --title "${TAG}" --notes "Automated release"
           APK=$(find src-tauri/gen/android -name "*.apk" -type f | head -1)
           if [ -n "$APK" ]; then
-            gh release upload "${TAG}" "$APK" --clobber
-            echo "✓ Uploaded $(basename $APK)"
+            DEST="CrispSorter_${VERSION}_android-aarch64.apk"
+            cp "$APK" "$DEST"
+            gh release upload "${TAG}" "$DEST" --clobber
+            echo "✓ Uploaded $DEST"
           else
             echo "⚠ No APK found"
           fi
 
   # ── iOS aarch64 IPA ──────────────────────────────────────────────────────
   # Builds the Tauri iOS app on a macOS runner with Xcode.
+  # When the APPSTORE_API_KEY_P8 repo secret is set (base64 of the .p8),
+  # are set, archives + exports a signed IPA suitable for App Store /
+  # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
     permissions:
       contents: write
     runs-on: macos-14
+    env:
+      # Step-level `if:` can't reference `secrets.*` directly on
+      # workflow_dispatch — proxy through an env var instead.
+      HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Check out sibling CrispEmbed
@@ -801,58 +814,247 @@ jobs:
       - name: Install protoc
         run: brew install protobuf
 
+      - name: Decode App Store Connect API key
+        if: ${{ env.HAS_SIGNING_KEY }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.APPSTORE_API_KEY_P8 }}" | base64 -d \
+            > ~/.appstoreconnect/private_keys/AuthKey_${{ env.APPLE_API_KEY_ID }}.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{ env.APPLE_API_KEY_ID }}.p8
+          echo "API_KEY_PATH=$HOME/.appstoreconnect/private_keys/AuthKey_${{ env.APPLE_API_KEY_ID }}.p8" >> "$GITHUB_ENV"
+
+      - name: Import Distribution cert + provisioning profile (manual signing)
+        if: ${{ env.HAS_SIGNING_KEY }}
+        env:
+          IOS_DIST_P12: ${{ secrets.IOS_DIST_P12 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          ASC_PROFILE_BASE64: ${{ secrets.ASC_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          # Manual signing: import the Distribution .p12 into a temp keychain and
+          # install the explicit App Store profile. NO -allowProvisioningUpdates
+          # anywhere (it revokes the shared Distribution cert — see appstore.md).
+          KC="$RUNNER_TEMP/cs-signing.keychain-db"
+          KC_PW="ci-$(uuidgen)"
+          echo "$IOS_DIST_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$IOS_DIST_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC" >/dev/null
+          # DEBUG: which Distribution cert did this repo's IOS_DIST_P12 hold?
+          # (sha1 56D3…C632 = L9PHHNLY9Y, 317A15FE…8455 = X48Y45DL9F; the profile
+          # is bound to BOTH so either works.)
+          security find-identity -v -p codesigning | grep -i "distribution" \
+            || { echo "::error::no Distribution identity in keychain — IOS_DIST_P12 bad"; exit 1; }
+          # Install the App Store profile into both provisioning-profile dirs.
+          echo "$ASC_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/cs.mobileprovision"
+          PLIST="$(security cms -D -i "$RUNNER_TEMP/cs.mobileprovision")"
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<<"$PLIST")
+          for DIR in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$DIR"; cp "$RUNNER_TEMP/cs.mobileprovision" "$DIR/$UUID.mobileprovision"
+          done
+          echo "installed profile UUID $UUID"
+
       - name: Init iOS project
         run: npx tauri ios init
+
+      - name: Inject PrivacyInfo.xcprivacy into iOS project
+        run: |
+          # Apple requires this manifest since iOS 17 for apps using
+          # Required Reason APIs (NSUserDefaults, file timestamps, disk space).
+          DEST="src-tauri/gen/apple/crispsorter_iOS/PrivacyInfo.xcprivacy"
+          if [ -d "src-tauri/gen/apple/crispsorter_iOS" ]; then
+            cp src-tauri/PrivacyInfo.xcprivacy "$DEST"
+            echo "✓ Copied PrivacyInfo.xcprivacy"
+          else
+            echo "⚠ iOS project dir not found — PrivacyInfo will be missing"
+          fi
+
+      - name: Strip alpha from App Icon (Apple rejects alpha in the 1024 marketing icon)
+        run: |
+          set -euo pipefail
+          # Tauri's icon set carries an alpha channel; the App Store 1024 icon
+          # (and the home-screen icons) must be opaque or the build is rejected /
+          # ships iconless. sips JPEG-roundtrip removes alpha (transparent→white)
+          # with system tools only — no brew/imagemagick needed.
+          n=0
+          while IFS= read -r f; do
+            if sips -g hasAlpha "$f" 2>/dev/null | grep -q "hasAlpha: yes"; then
+              tmp="$RUNNER_TEMP/$(basename "$f").jpg"
+              sips -s format jpeg "$f" --out "$tmp" >/dev/null
+              sips -s format png "$tmp" --out "$f" >/dev/null
+              n=$((n+1))
+            fi
+          done < <(find src-tauri/gen/apple -path "*AppIcon.appiconset/*.png" 2>/dev/null)
+          echo "flattened $n app-icon png(s) to no-alpha"
+
+      - name: Set export compliance (no non-exempt encryption)
+        run: |
+          # CrispSorter uses only standard HTTPS/TLS — exempt from export
+          # regulations. Setting this in Info.plist prevents App Store
+          # Connect from blocking the build on encryption compliance.
+          PLIST="src-tauri/gen/apple/crispsorter_iOS/Info.plist"
+          if [ -f "$PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$PLIST"
+            echo "✓ Set ITSAppUsesNonExemptEncryption=false"
+            # Purpose strings for frameworks that linked deps REFERENCE, even if
+            # unused at runtime. Apple's async static analysis rejects the build
+            # otherwise (ITMS-90683, emailed after a "successful" upload → the
+            # build never reaches VALID). tauri-plugin-dialog links Photos/
+            # PhotosUI on iOS for file/image picking (same class of dep as the
+            # file_picker plugin that hit CrispCloud with NSPhotoLibrary…).
+            add_str() {
+              /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST" 2>/dev/null \
+                || /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST"
+              echo "✓ Set $1"
+            }
+            add_str NSPhotoLibraryUsageDescription "CrispSorter accesses your photo library only when you pick an image or document to import."
+            add_str NSPhotoLibraryAddUsageDescription "CrispSorter saves exported documents to the location you choose."
+          else
+            echo "⚠ Info.plist not found at $PLIST — will set via API after upload"
+          fi
 
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
 
-      - name: Build iOS app
+      - name: Build iOS app (signed for App Store — manual)
+        if: ${{ env.HAS_SIGNING_KEY }}
         env:
           PROTOC: /opt/homebrew/bin/protoc
         run: |
-          if [ -n "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
-            npx tauri ios build --export-method app-store-connect
-          else
-            echo "No APPLE_DEVELOPMENT_TEAM — building unsigned"
-            # First attempt: let tauri ios build try (it will fail on signing)
-            npx tauri ios build 2>&1 || true
+          set -euo pipefail
+          XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
+          PBX="$XCPROJ/project.pbxproj"
 
-            # Fix the broken workspace file that tauri ios init generates
-            XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
-            WS_DIR="$XCPROJ/project.xcworkspace"
-            mkdir -p "$WS_DIR"
-            cat > "$WS_DIR/contents.xcworkspacedata" << 'WSEOF'
+          # --- Force MANUAL signing for the app target in the Tauri-generated
+          # pbxproj. Insert (not sed-replace) the keys — the generated project
+          # may not contain them (single app target, no Pods, so scoping to the
+          # blocks carrying our bundle id is enough). ---
+          python3 - "$PBX" <<'PY'
+          import sys, re, pathlib
+          p = pathlib.Path(sys.argv[1]); s = p.read_text()
+          want = {
+            "CODE_SIGN_STYLE": "Manual",
+            "DEVELOPMENT_TEAM": "N9XSJ4M3GT",
+            "CODE_SIGN_IDENTITY": '"Apple Distribution"',
+            "PROVISIONING_PROFILE_SPECIFIER": '"CrispSorter AppStore CI"',
+          }
+          def patch(block):
+            body = block
+            for k, v in want.items():
+              esc = re.escape(k)
+              body = re.sub(rf'^\s*{esc}\s*=\s*[^;]*;\s*\n', '', body, flags=re.M)
+            inject = "".join(f"\t\t\t\t{k} = {v};\n" for k, v in want.items())
+            return body.replace("buildSettings = {\n", "buildSettings = {\n"+inject, 1)
+          # patch every buildSettings block that names our app bundle id
+          out, i, n = [], 0, 0
+          for m in re.finditer(r'buildSettings = \{.*?\};', s, flags=re.S):
+            out.append(s[i:m.start()]); blk = m.group(0)
+            if "com.crispstrobe.crispsorter" in blk and "crispsorter.RunnerTests" not in blk:
+              blk = patch(blk); n += 1
+            out.append(blk); i = m.end()
+          out.append(s[i:]); p.write_text("".join(out))
+          print(f"patched {n} buildSettings block(s) for manual signing")
+          PY
+
+          # Build frontend + Rust + archive (manually signed) + export via Tauri.
+          # Tauri runs the build server the Rust "Build Phase" needs; its own
+          # export may or may not produce the IPA — we glob for it and fall back
+          # to our own -exportArchive from the archive if needed.
+          echo "=== tauri ios build (manual signing) ==="
+          npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 || true
+
+          IPA=$(find src-tauri/gen/apple build -name "*.ipa" -type f 2>/dev/null | head -1)
+          if [ -z "$IPA" ]; then
+            echo "=== tauri produced no IPA — exporting archive manually ==="
+            ARCHIVE=$(find src-tauri/gen/apple build -name "*.xcarchive" -type d 2>/dev/null | head -1)
+            [ -n "$ARCHIVE" ] || { echo "::error::no .xcarchive found after tauri ios build"; exit 1; }
+            echo "archive: $ARCHIVE"
+            # Manual export — NO -allowProvisioningUpdates / auth flags.
+            PATH="/usr/bin:$PATH" xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE" \
+              -exportPath build/ios/export \
+              -exportOptionsPlist src-tauri/ExportOptions.plist 2>&1 | tail -40
+            IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
+          fi
+          [ -n "$IPA" ] || { echo "::error::App Store IPA was not produced"; exit 1; }
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          echo "=== signed IPA: $IPA ==="
+          WORK=$(mktemp -d); unzip -q "$IPA" -d "$WORK"
+          codesign --verify --deep --strict --verbose=2 "$WORK"/Payload/*.app 2>&1 | tail -3
+
+      - name: Build iOS app (unsigned fallback)
+        if: ${{ !env.HAS_SIGNING_KEY }}
+        env:
+          PROTOC: /opt/homebrew/bin/protoc
+        run: |
+          echo "No APPLE_API_KEY_P8 secret — building unsigned"
+          npx tauri ios build 2>&1 || true
+
+          XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
+          WS_DIR="$XCPROJ/project.xcworkspace"
+          mkdir -p "$WS_DIR"
+          cat > "$WS_DIR/contents.xcworkspacedata" << 'WSEOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <Workspace version="1.0">
             <FileRef location="self:"/>
           </Workspace>
           WSEOF
 
-            # Now build with xcodebuild directly, unsigned
-            if [ -d "$XCPROJ" ]; then
-              echo "=== Available schemes ==="
-              xcodebuild -project "$XCPROJ" -list 2>&1 || true
-              echo "=== Building unsigned .app ==="
-              xcodebuild \
-                -project "$XCPROJ" \
-                -scheme crispsorter_iOS \
-                -sdk iphoneos \
-                -configuration Release \
-                CODE_SIGNING_ALLOWED=NO \
-                CODE_SIGN_IDENTITY="" \
-                CODE_SIGN_ENTITLEMENTS="" \
-                DEVELOPMENT_TEAM="" \
-                build \
-                CONFIGURATION_BUILD_DIR="$(pwd)/ios-build" \
-                2>&1 | tail -20
-              echo "=== Build dir contents ==="
-              find ios-build -name "*.app" -type d 2>/dev/null || echo "no .app found"
-              find src-tauri/gen/apple -name "*.app" -type d 2>/dev/null || echo "no .app in gen/apple"
-            fi
+          if [ -d "$XCPROJ" ]; then
+            xcodebuild \
+              -project "$XCPROJ" \
+              -scheme crispsorter_iOS \
+              -sdk iphoneos \
+              -configuration Release \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGN_ENTITLEMENTS="" \
+              DEVELOPMENT_TEAM="" \
+              build \
+              CONFIGURATION_BUILD_DIR="$(pwd)/ios-build" \
+              2>&1 | tail -20
           fi
 
-      - name: Upload IPA to release
+      - name: Validate + upload IPA to App Store Connect
+        if: ${{ env.HAS_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          IPA="${IPA:-}"
+          # Fail loud — a green run must never mean "uploaded nothing".
+          [ -n "$IPA" ] && [ -f "$IPA" ] \
+            || { echo "::error::no signed IPA to upload (build step should have failed first)"; exit 1; }
+          # Read the actual CFBundle* from the IPA so altool's cross-check matches.
+          APP=$(unzip -Z1 "$IPA" | grep -oE '^Payload/[^/]+\.app' | head -1)
+          unzip -oq "$IPA" "$APP/Info.plist" -d "$RUNNER_TEMP/ipaplist"
+          BV=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$RUNNER_TEMP/ipaplist/$APP/Info.plist")
+          SV=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$RUNNER_TEMP/ipaplist/$APP/Info.plist")
+          echo "uploading CFBundleShortVersionString=$SV CFBundleVersion=$BV"
+          # altool needs --apple-id or it can't resolve the app from the bundle id
+          # ("Cannot determine the Apple ID from Bundle ID"). Validate is advisory
+          # (the upload re-validates server-side and is the real gate).
+          echo "=== Validating (advisory) ==="
+          xcrun altool --validate-app -f "$IPA" --type ios \
+            --apple-id "${{ secrets.APPSTORE_APP_ID }}" \
+            --api-key "${{ env.APPLE_API_KEY_ID }}" \
+            --api-issuer "${{ env.APPLE_API_ISSUER_ID }}" 2>&1 | tail -15 \
+            || echo "::warning::validate reported issues — proceeding to upload (real gate)"
+          echo "=== Uploading to App Store Connect ==="
+          xcrun altool --upload-package "$IPA" --type ios \
+            --apple-id "${{ secrets.APPSTORE_APP_ID }}" \
+            --bundle-id "com.crispstrobe.crispsorter" \
+            --bundle-version "$BV" \
+            --bundle-short-version-string "$SV" \
+            --api-key "${{ env.APPLE_API_KEY_ID }}" \
+            --api-issuer "${{ env.APPLE_API_ISSUER_ID }}" 2>&1 | tail -25
+          echo "✓ IPA uploaded to App Store Connect"
+
+      - name: Upload IPA to GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -860,17 +1062,21 @@ jobs:
           TAG="v${VERSION}"
           gh release view "${TAG}" &>/dev/null || \
             gh release create "${TAG}" --draft --title "${TAG}" --notes "Automated release"
-          IPA=$(find src-tauri/gen/apple -name "*.ipa" -type f 2>/dev/null | head -1)
+
+          # Prefer signed IPA from export, fall back to unsigned .app
+          IPA=$(find build/ios/export -name "*.ipa" -type f 2>/dev/null | head -1)
           if [ -n "$IPA" ]; then
-            gh release upload "${TAG}" "$IPA" --clobber
-            echo "✓ Uploaded $(basename $IPA)"
+            DEST="CrispSorter_${VERSION}_ios-arm64.ipa"
+            cp "$IPA" "$DEST"
+            gh release upload "${TAG}" "$DEST" --clobber
+            echo "✓ Uploaded $DEST"
           else
-            # No signed IPA — look for unsigned .app and tar it
             APP=$(find ios-build src-tauri/gen/apple -name "*.app" -type d 2>/dev/null | head -1)
             if [ -n "$APP" ]; then
-              tar czf CrispSorter-ios-unsigned.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
-              gh release upload "${TAG}" CrispSorter-ios-unsigned.app.tar.gz --clobber
-              echo "✓ Uploaded unsigned .app (sideload via AltStore/Xcode)"
+              DEST="CrispSorter_${VERSION}_ios-arm64-unsigned.app.tar.gz"
+              tar czf "$DEST" -C "$(dirname "$APP")" "$(basename "$APP")"
+              gh release upload "${TAG}" "$DEST" --clobber
+              echo "✓ Uploaded $DEST (sideload via AltStore/Xcode)"
             else
               echo "⚠ No IPA or .app found"
             fi

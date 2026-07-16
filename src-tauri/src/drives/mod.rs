@@ -18,7 +18,10 @@
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
 pub mod filen;
+pub mod fuse_mount;
+pub mod google_drive;
 pub mod internxt;
+pub mod onedrive;
 pub mod tauri_commands;
 pub mod webdav;
 
@@ -50,6 +53,30 @@ pub trait CloudDrive: Send + Sync {
 
     /// Underlying type for display.
     fn drive_type(&self) -> DriveType;
+
+    // ── P29.5: Share links ───────────────────────────────────────────
+
+    /// Generate a public share link for a file.  Returns `None` when the
+    /// provider does not support sharing.  Default: not supported.
+    fn share_link(&self, _path: &Path) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    // ── P29.6: Version history ───────────────────────────────────────
+
+    /// List version history for a file.  Returns empty when the provider
+    /// does not support versioning.  Default: empty.
+    fn list_versions(&self, _path: &Path) -> Result<Vec<FileVersion>> {
+        Ok(Vec::new())
+    }
+
+    /// Restore a previous version of a file.  Default: not supported.
+    fn restore_version(&self, _path: &Path, _version_id: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "{} does not support version restore",
+            self.drive_type().label()
+        ))
+    }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -68,6 +95,25 @@ pub enum DriveType {
     /// Generic WebDAV server (Nextcloud, ownCloud, mailbox.org,
     /// `filen webdav-start`, `internxt webdav-enable`, Synology DSM, …).
     WebDav,
+    /// Microsoft OneDrive / SharePoint via Microsoft Graph API.
+    OneDrive,
+    /// Google Drive via Drive API v3.
+    GoogleDrive,
+}
+
+impl DriveType {
+    /// Human-readable label for error messages.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Local => "Local",
+            Self::Filen => "Filen",
+            Self::Internxt => "Internxt",
+            Self::Sftp => "SFTP",
+            Self::WebDav => "WebDAV",
+            Self::OneDrive => "OneDrive",
+            Self::GoogleDrive => "Google Drive",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +121,19 @@ pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: Option<u64>,
+}
+
+/// A single version of a file (P29.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileVersion {
+    /// Provider-specific version identifier.
+    pub id: String,
+    /// When this version was last modified (epoch seconds).
+    pub modified_at: Option<i64>,
+    /// Size of this version in bytes.
+    pub size: Option<u64>,
+    /// Name of the person who modified this version (if available).
+    pub modifier_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,10 +148,10 @@ pub struct FileStat {
 /// it back to `read_file` / `stat` directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalkEntry {
-    pub path:        PathBuf,
-    pub is_dir:      bool,
-    pub size:        Option<u64>,
-    pub mtime_unix:  Option<i64>,
+    pub path: PathBuf,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub mtime_unix: Option<i64>,
 }
 
 /// Recursively walk a drive starting at `root`, returning one entry per
@@ -113,11 +172,16 @@ pub fn walk(
 
     while let Some((dir, depth)) = stack.pop() {
         if let Some(max) = max_depth {
-            if depth > max { continue; }
+            if depth > max {
+                continue;
+            }
         }
         let entries = match drive.list_dir(&dir) {
             Ok(e) => e,
-            Err(e) => { on_error(&dir, e); continue; }
+            Err(e) => {
+                on_error(&dir, e);
+                continue;
+            }
         };
         for ent in entries {
             // Build the full path relative to the drive root.
@@ -150,27 +214,37 @@ pub fn walk(
 /// local disks, NFS/SMB/SFTP mounts.
 pub struct LocalDrive {
     label: String,
-    root:  PathBuf,
+    root: PathBuf,
 }
 
 impl LocalDrive {
     pub fn new(label: impl Into<String>, root: impl Into<PathBuf>) -> Self {
-        Self { label: label.into(), root: root.into() }
+        Self {
+            label: label.into(),
+            root: root.into(),
+        }
     }
 
     fn full(&self, rel: &Path) -> PathBuf {
-        if rel.is_absolute() { rel.to_owned() } else { self.root.join(rel) }
+        if rel.is_absolute() {
+            rel.to_owned()
+        } else {
+            self.root.join(rel)
+        }
     }
 }
 
 impl CloudDrive for LocalDrive {
-    fn label(&self) -> &str { &self.label }
-    fn drive_type(&self) -> DriveType { DriveType::Local }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn drive_type(&self) -> DriveType {
+        DriveType::Local
+    }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let p = self.full(path);
-        let rd = std::fs::read_dir(&p)
-            .with_context(|| format!("list_dir: {}", p.display()))?;
+        let rd = std::fs::read_dir(&p).with_context(|| format!("list_dir: {}", p.display()))?;
         let mut entries = Vec::new();
         for e in rd.filter_map(|e| e.ok()) {
             let meta = e.metadata().ok();
@@ -209,12 +283,17 @@ impl CloudDrive for LocalDrive {
 
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let p = self.full(path);
-        let meta = std::fs::metadata(&p)
-            .with_context(|| format!("stat: {}", p.display()))?;
-        let mtime = meta.modified().ok()
+        let meta = std::fs::metadata(&p).with_context(|| format!("stat: {}", p.display()))?;
+        let mtime = meta
+            .modified()
+            .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
-        Ok(FileStat { size: meta.len(), is_dir: meta.is_dir(), mtime_unix: mtime })
+        Ok(FileStat {
+            size: meta.len(),
+            is_dir: meta.is_dir(),
+            mtime_unix: mtime,
+        })
     }
 }
 
@@ -229,15 +308,15 @@ impl CloudDrive for LocalDrive {
 /// `Local` drive on the FUSE path instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveConfig {
-    pub id:    String,
+    pub id: String,
     pub label: String,
-    pub kind:  DriveType,
+    pub kind: DriveType,
     /// For `Local` drives: the root path.
     /// For CLI-based drives: the mount-point path (if OS-mounted) or the
     /// base path used by the CLI tool.
     /// For `WebDav`: the base URL ending in `/` (e.g.
     /// `https://webdav.example.com/dav/`).
-    pub path:  String,
+    pub path: String,
     /// Optional WebDAV basic-auth username.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -250,6 +329,18 @@ pub struct DriveConfig {
     /// cert).  Has no effect on non-WebDAV drives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insecure_tls: Option<bool>,
+    /// OAuth2 access token (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    /// OAuth2 refresh token (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// OAuth2 client ID (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// OAuth2 client secret (OneDrive / Google Drive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 }
 
 /// Loads and saves the list of configured drives.
@@ -273,10 +364,8 @@ impl DriveRegistry {
     }
 
     pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.drives)
-            .context("serialising drives")?;
-        std::fs::write(&self.path, json)
-            .with_context(|| format!("writing {}", self.path.display()))
+        let json = serde_json::to_string_pretty(&self.drives).context("serialising drives")?;
+        std::fs::write(&self.path, json).with_context(|| format!("writing {}", self.path.display()))
     }
 
     pub fn add(&mut self, config: DriveConfig) -> Result<()> {
@@ -289,7 +378,12 @@ impl DriveRegistry {
     pub fn remove(&mut self, id: &str) -> Result<bool> {
         let before = self.drives.len();
         self.drives.retain(|d| d.id != id);
-        if self.drives.len() < before { self.save()?; Ok(true) } else { Ok(false) }
+        if self.drives.len() < before {
+            self.save()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Instantiate a drive from its config.
@@ -298,23 +392,40 @@ impl DriveRegistry {
             DriveType::Local | DriveType::Sftp => {
                 // Local + raw SFTP both go through `LocalDrive` for now;
                 // SFTP relies on the user mounting the share via OS/FUSE.
-                Box::new(LocalDrive::new(config.label.clone(), PathBuf::from(&config.path)))
-            }
-            DriveType::Filen => {
-                Box::new(filen::FilenDrive::new(config.label.clone(), PathBuf::from(&config.path)))
-            }
-            DriveType::Internxt => {
-                Box::new(internxt::InternxtDrive::new(config.label.clone(), PathBuf::from(&config.path)))
-            }
-            DriveType::WebDav => {
-                Box::new(webdav::WebDavDrive::new(
+                Box::new(LocalDrive::new(
                     config.label.clone(),
-                    config.path.clone(),
-                    config.username.clone(),
-                    config.password.clone(),
-                    config.insecure_tls.unwrap_or(false),
+                    PathBuf::from(&config.path),
                 ))
             }
+            DriveType::Filen => Box::new(filen::FilenDrive::new(
+                config.label.clone(),
+                PathBuf::from(&config.path),
+            )),
+            DriveType::Internxt => Box::new(internxt::InternxtDrive::new(
+                config.label.clone(),
+                PathBuf::from(&config.path),
+            )),
+            DriveType::WebDav => Box::new(webdav::WebDavDrive::new(
+                config.label.clone(),
+                config.path.clone(),
+                config.username.clone(),
+                config.password.clone(),
+                config.insecure_tls.unwrap_or(false),
+            )),
+            DriveType::OneDrive => Box::new(onedrive::OneDriveDrive::new(
+                config.label.clone(),
+                config.access_token.clone().unwrap_or_default(),
+                config.refresh_token.clone(),
+                config.client_id.clone(),
+                config.client_secret.clone(),
+            )),
+            DriveType::GoogleDrive => Box::new(google_drive::GoogleDriveDrive::new(
+                config.label.clone(),
+                config.access_token.clone().unwrap_or_default(),
+                config.refresh_token.clone(),
+                config.client_id.clone(),
+                config.client_secret.clone(),
+            )),
         }
     }
 }
@@ -347,8 +458,13 @@ mod tests {
     #[test]
     fn local_drive_creates_parent_dirs_on_write() {
         let (_tmp, drive) = fixture();
-        drive.write_file(Path::new("nested/deep/file.txt"), b"x").unwrap();
-        assert_eq!(drive.read_file(Path::new("nested/deep/file.txt")).unwrap(), b"x");
+        drive
+            .write_file(Path::new("nested/deep/file.txt"), b"x")
+            .unwrap();
+        assert_eq!(
+            drive.read_file(Path::new("nested/deep/file.txt")).unwrap(),
+            b"x"
+        );
     }
 
     #[test]
@@ -365,7 +481,7 @@ mod tests {
         assert!(entries[1].is_dir);
         assert!(!entries[0].is_dir);
         assert_eq!(entries[0].size, Some(1));
-        assert_eq!(entries[1].size, None);  // dirs report no size
+        assert_eq!(entries[1].size, None); // dirs report no size
     }
 
     #[test]
@@ -407,6 +523,10 @@ mod tests {
             username: None,
             password: None,
             insecure_tls: None,
+            access_token: None,
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
         };
         {
             let mut reg = DriveRegistry::open(tmp.path()).unwrap();
@@ -416,9 +536,9 @@ mod tests {
         // Re-open and verify persistence.
         let reg = DriveRegistry::open(tmp.path()).unwrap();
         assert_eq!(reg.drives.len(), 1);
-        assert_eq!(reg.drives[0].id,    "abc-123");
+        assert_eq!(reg.drives[0].id, "abc-123");
         assert_eq!(reg.drives[0].label, "Backup SSD");
-        assert_eq!(reg.drives[0].kind,  DriveType::Local);
+        assert_eq!(reg.drives[0].kind, DriveType::Local);
     }
 
     #[test]
@@ -426,16 +546,34 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut reg = DriveRegistry::open(tmp.path()).unwrap();
         reg.add(DriveConfig {
-            id: "x".into(), label: "v1".into(),
-            kind: DriveType::Local, path: "/a".into(),
-            username: None, password: None, insecure_tls: None,
-        }).unwrap();
+            id: "x".into(),
+            label: "v1".into(),
+            kind: DriveType::Local,
+            path: "/a".into(),
+            username: None,
+            password: None,
+            insecure_tls: None,
+            access_token: None,
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+        })
+        .unwrap();
         // Same id, different label → must replace not duplicate.
         reg.add(DriveConfig {
-            id: "x".into(), label: "v2".into(),
-            kind: DriveType::Local, path: "/b".into(),
-            username: None, password: None, insecure_tls: None,
-        }).unwrap();
+            id: "x".into(),
+            label: "v2".into(),
+            kind: DriveType::Local,
+            path: "/b".into(),
+            username: None,
+            password: None,
+            insecure_tls: None,
+            access_token: None,
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+        })
+        .unwrap();
         assert_eq!(reg.drives.len(), 1);
         assert_eq!(reg.drives[0].label, "v2");
         assert_eq!(reg.drives[0].path, "/b");
@@ -446,11 +584,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut reg = DriveRegistry::open(tmp.path()).unwrap();
         reg.add(DriveConfig {
-            id: "abc".into(), label: "a".into(),
-            kind: DriveType::Local, path: "/a".into(),
-            username: None, password: None, insecure_tls: None,
-        }).unwrap();
-        assert!( reg.remove("abc").unwrap());
+            id: "abc".into(),
+            label: "a".into(),
+            kind: DriveType::Local,
+            path: "/a".into(),
+            username: None,
+            password: None,
+            insecure_tls: None,
+            access_token: None,
+            refresh_token: None,
+            client_id: None,
+            client_secret: None,
+        })
+        .unwrap();
+        assert!(reg.remove("abc").unwrap());
         assert!(!reg.remove("abc").unwrap()); // already gone
         assert!(!reg.remove("never-existed").unwrap());
         assert_eq!(reg.drives.len(), 0);
@@ -474,26 +621,85 @@ mod tests {
         // drives.  This guards against future refactors silently swapping
         // the dispatch back to LocalDrive.
         for (kind, expected) in [
-            (DriveType::Local,    DriveType::Local),
+            (DriveType::Local, DriveType::Local),
             // Sftp piggybacks on LocalDrive (which only knows DriveType::Local),
             // so the instance reports Local even though the config said Sftp.
-            (DriveType::Sftp,     DriveType::Local),
-            (DriveType::Filen,    DriveType::Filen),
+            (DriveType::Sftp, DriveType::Local),
+            (DriveType::Filen, DriveType::Filen),
             (DriveType::Internxt, DriveType::Internxt),
-            (DriveType::WebDav,   DriveType::WebDav),
+            (DriveType::WebDav, DriveType::WebDav),
+            (DriveType::OneDrive, DriveType::OneDrive),
+            (DriveType::GoogleDrive, DriveType::GoogleDrive),
         ] {
             let path = if matches!(kind, DriveType::WebDav) {
                 "https://example.com/dav/".to_owned()
-            } else { "/tmp".to_owned() };
+            } else {
+                "/tmp".to_owned()
+            };
             let cfg = DriveConfig {
-                id: "x".into(), label: "lbl".into(), kind: kind.clone(), path,
-                username: None, password: None, insecure_tls: None,
+                id: "x".into(),
+                label: "lbl".into(),
+                kind: kind.clone(),
+                path,
+                username: None,
+                password: None,
+                insecure_tls: None,
+                access_token: None,
+                refresh_token: None,
+                client_id: None,
+                client_secret: None,
             };
             let drive = DriveRegistry::instantiate(&cfg);
-            assert_eq!(drive.drive_type(), expected,
+            assert_eq!(
+                drive.drive_type(),
+                expected,
                 "DriveType::{:?} should instantiate to a drive that reports drive_type() == {:?}",
-                kind, expected);
+                kind,
+                expected
+            );
             assert_eq!(drive.label(), "lbl");
         }
+    }
+
+    #[test]
+    fn drive_type_label_covers_all_variants() {
+        let labels = vec![
+            (DriveType::Local, "Local"),
+            (DriveType::Filen, "Filen"),
+            (DriveType::Internxt, "Internxt"),
+            (DriveType::Sftp, "SFTP"),
+            (DriveType::WebDav, "WebDAV"),
+            (DriveType::OneDrive, "OneDrive"),
+            (DriveType::GoogleDrive, "Google Drive"),
+        ];
+        for (dt, expected) in labels {
+            assert_eq!(dt.label(), expected);
+        }
+    }
+
+    #[test]
+    fn file_version_serde_round_trips() {
+        let v = FileVersion {
+            id: "v123".into(),
+            modified_at: Some(1720000000),
+            size: Some(12345),
+            modifier_name: Some("Alice".into()),
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        let back: FileVersion = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "v123");
+        assert_eq!(back.modified_at, Some(1720000000));
+        assert_eq!(back.size, Some(12345));
+        assert_eq!(back.modifier_name.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn local_drive_default_version_methods() {
+        let (_tmp, drive) = fixture();
+        // Default implementations should return empty/error.
+        let versions = drive.list_versions(Path::new("any")).unwrap();
+        assert!(versions.is_empty());
+        assert!(drive.restore_version(Path::new("any"), "v1").is_err());
+        assert!(drive.share_link(Path::new("any")).unwrap().is_none());
     }
 }

@@ -4,6 +4,45 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## CI release refs must use tagged releases, not commit SHAs
+
+The release workflow downloads pre-built native libs (libcrispembed,
+libcrispasr) from GitHub Releases.  The download URL is:
+`github.com/<repo>/releases/download/<REF>/lib*.tar.gz`.  This only
+works when `<REF>` is a release tag (e.g. `v0.13.0`), not a raw
+commit SHA — raw SHAs return 404.
+
+**Rule:** Only bump `CRISPEMBED_REF` / `CRISPASR_REF` in
+`release.yml` to tagged releases.  If you need features from HEAD,
+either tag a new release on the sibling repo first, or stub the new
+API calls so the code compiles against the older tagged version.
+
+## TOML target-specific dependency sections (gotcha)
+
+A `[target.'cfg(...)'.dependencies]` section in Cargo.toml extends
+until the next `[section]` header.  If placed mid-file among regular
+`[dependencies]` entries, **all subsequent deps are swallowed into
+the target gate**.  This caused a v0.9.0 Android build failure where
+`rusqlite`, `sha2`, `image`, and 590+ other crates were silently
+excluded from the Android build because a `[target.'cfg(not(android))'
+.dependencies]` section for `arboard` was placed in the middle of the
+dependency list.
+
+**Rule:** Always place target-specific dependency sections at the
+bottom of Cargo.toml, grouped with other target sections — never
+inline them between regular deps.
+
+## lopdf 0.38 API notes
+
+- `as_dict()` returns `Result`, not `Option` — chain with `.ok()`
+- No `merge_document()` method — manual object copying with ID
+  remapping required for PDF merging
+- `CryptFilter` trait is `pub(crate)` — can't use V4/V5 encryption
+  directly; V2 (RC4-128) is the only option from outside the crate
+- `EncryptionVersion::V2` requires `/ID` in the trailer
+
+---
+
 ## CrispEmbed integration (P17)
 
 ### CrispEmbed structs are `Send` but not `Sync`
@@ -766,6 +805,37 @@ availability (e.g. `waitress`, `cheroot`):
 `# type: ignore[import-untyped, unused-ignore]`.  Avoids platform-
 specific `if sys.platform == ...:` guards in source code and avoids a
 Linux-only mypy CI lane.
+
+---
+
+## Performance patterns (P28)
+
+### `to_uppercase()` for operator detection is a hidden allocation
+
+`token.to_uppercase() == "AND"` allocates a new String per token.
+`token.eq_ignore_ascii_case("AND")` is zero-alloc and handles the same
+cases.  Found in `fts_query.rs`, `synonyms.rs`, and `fuzzify_query`.
+
+### Byte-slicing ASCII prefixes on UTF-8 strings panics
+
+`word[..2].eq_ignore_ascii_case("W/")` panics when `word` starts with
+a multi-byte char (e.g. `ü` is 2 bytes in UTF-8, so `word[..2]` lands
+inside the char).  Guard with `word.is_ascii()` first, since `W/` and
+`PRE/` are inherently ASCII.
+
+### `chars().take(N).collect::<String>()` is an allocation you usually don't need
+
+For LID sampling, snippet generation, etc. where the consumer just
+reads the slice — use `char_indices().nth(N)` to find the byte boundary
+and slice the original `&str`.  The `String` collect allocates a copy
+on the heap that's immediately discarded after `.trim()` / `.len()`.
+
+### `Vec::with_capacity` matters for Arrow RecordBatch iteration
+
+Functions that iterate `Vec<RecordBatch>` and push results should
+pre-compute `batches.iter().map(|b| b.num_rows()).sum()` and pass it
+to `Vec::with_capacity`.  Without it, the Vec re-allocates 3–5 times
+for a typical 1000-row result set.
 
 ---
 

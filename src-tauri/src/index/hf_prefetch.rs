@@ -34,7 +34,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use futures_util::StreamExt;
+use futures::StreamExt;
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
 

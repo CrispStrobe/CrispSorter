@@ -1,7 +1,7 @@
 <script lang="ts">
     import { invoke } from '@tauri-apps/api/core';
     import { onMount } from 'svelte';
-    import { Loader2, BarChart3, FileText, Languages, Calendar, Tag, HardDrive } from 'lucide-svelte';
+    import { Loader2, BarChart3, FileText, Languages, Calendar, Tag, HardDrive, Network } from 'lucide-svelte';
 
     interface CorpusStats {
         total_docs: number;
@@ -17,6 +17,47 @@
     let loading = $state(false);
     let error = $state('');
     let selectedYear = $state<number | null>(null);
+
+    // Clustering
+    interface Cluster { id: number; name: string; doc_count: number; top_terms: string[]; sample_titles: string[]; member_doc_ids: string[]; }
+    let clusters = $state<Cluster[]>([]);
+    let clusterLoading = $state(false);
+    let clusterK = $state(5);
+
+    let labelLoading = $state(false);
+
+    async function loadClusters() {
+        clusterLoading = true;
+        try {
+            clusters = await invoke<Cluster[]>('index_cluster_documents', { k: clusterK });
+        } catch (e: any) {
+            console.warn('Clustering failed:', e);
+            clusters = [];
+        }
+        clusterLoading = false;
+    }
+
+    async function labelClustersWithLlm() {
+        if (clusters.length === 0) return;
+        labelLoading = true;
+        try {
+            // Use the configured LLM URL from settings (Ollama default)
+            const { getSetting } = await import('$lib/store');
+            const url = await getSetting('llmUrl', 'http://localhost:11434/v1') as string;
+            const model = await getSetting('llmModel', 'llama3') as string;
+            const labels = await invoke<string[]>('index_label_clusters', {
+                clusters, llmUrl: url, llmModel: model,
+            });
+            // Apply labels to clusters
+            for (let i = 0; i < Math.min(labels.length, clusters.length); i++) {
+                if (labels[i]) clusters[i].name = labels[i];
+            }
+            clusters = [...clusters]; // trigger reactivity
+        } catch (e: any) {
+            console.warn('LLM labelling failed:', e);
+        }
+        labelLoading = false;
+    }
 
     function formatBytes(bytes: number): string {
         if (bytes < 1024) return `${bytes} B`;
@@ -40,6 +81,21 @@
         } finally {
             loading = false;
         }
+    }
+
+    // Knowledge graph
+    interface GraphNode { id: string; label: string; group: string; doc_count: number; }
+    interface GraphEdge { source: string; target: string; weight: number; }
+    interface EntityGraph { nodes: GraphNode[]; edges: GraphEdge[]; }
+    let graph = $state<EntityGraph | null>(null);
+    let graphLoading = $state(false);
+
+    async function loadGraph() {
+        graphLoading = true;
+        try {
+            graph = await invoke<EntityGraph>('index_entity_graph', { minCooccurrence: 2, maxNodes: 50 });
+        } catch { graph = null; }
+        graphLoading = false;
     }
 
     onMount(() => { loadStats(); });
@@ -152,6 +208,74 @@
                     </div>
                 </section>
             {/if}
+
+            <!-- Topical clusters -->
+            <section class="panel">
+                <h3>
+                    <Network size={14} /> Topical Clusters
+                    <span class="cluster-controls">
+                        <label class="k-label">k=<input type="number" bind:value={clusterK} min="2" max="50" class="k-input" /></label>
+                        <button class="cluster-btn" onclick={loadClusters} disabled={clusterLoading}>
+                            {#if clusterLoading}<Loader2 size={12} class="spin" />{:else}Cluster{/if}
+                        </button>
+                        {#if clusters.length > 0}
+                            <button class="cluster-btn" onclick={labelClustersWithLlm} disabled={labelLoading} title="Generate labels with LLM">
+                                {#if labelLoading}<Loader2 size={12} class="spin" />{:else}AI Label{/if}
+                            </button>
+                        {/if}
+                    </span>
+                </h3>
+                {#if clusters.length > 0}
+                    <div class="cluster-list">
+                        {#each clusters as c (c.id)}
+                            <div class="cluster-card">
+                                <div class="cluster-header">
+                                    <strong>{c.name}</strong>
+                                    <span class="cluster-count">{c.doc_count} docs</span>
+                                </div>
+                                {#if c.sample_titles.length > 0}
+                                    <ul class="cluster-titles">
+                                        {#each c.sample_titles as t}
+                                            <li>{t}</li>
+                                        {/each}
+                                    </ul>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {:else if !clusterLoading}
+                    <p class="muted">Click "Cluster" to group documents by embedding similarity.</p>
+                {/if}
+            </section>
+
+            <!-- Knowledge graph -->
+            <section class="panel">
+                <h3>
+                    <Network size={14} /> Entity Graph
+                    <span class="cluster-controls">
+                        <button class="cluster-btn" onclick={loadGraph} disabled={graphLoading}>
+                            {#if graphLoading}<Loader2 size={12} class="spin" />{:else}Build{/if}
+                        </button>
+                    </span>
+                </h3>
+                {#if graph && graph.nodes.length > 0}
+                    <div class="graph-info">
+                        {graph.nodes.length} entities, {graph.edges.length} co-occurrences
+                    </div>
+                    <div class="cluster-list">
+                        {#each graph.nodes.slice(0, 20) as node (node.id)}
+                            <div class="cluster-card">
+                                <div class="cluster-header">
+                                    <strong>{node.label}</strong>
+                                    <span class="cluster-count">{node.group} · {node.doc_count} docs</span>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {:else if !graphLoading}
+                    <p class="muted">Click "Build" to generate entity co-occurrence graph from NER tags.</p>
+                {/if}
+            </section>
         </div>
 
         <button class="refresh-btn" onclick={loadStats} disabled={loading}>
@@ -334,6 +458,26 @@
         color: #71717a;
         font-size: 0.65rem;
     }
+
+    /* Clustering */
+    .cluster-controls { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+    .k-label { font-size: 0.72rem; color: #a1a1aa; font-weight: 400; display: inline-flex; align-items: center; gap: 2px; }
+    .k-input { width: 38px; padding: 2px 4px; background: #18181b; border: 1px solid #3f3f46; border-radius: 3px; color: #d4d4d8; font-size: 0.72rem; text-align: center; }
+    .cluster-btn {
+        padding: 3px 10px; background: #1d4ed8; border: 1px solid #2563eb; border-radius: 4px;
+        color: #fff; font-size: 0.72rem; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .cluster-btn:disabled { opacity: 0.5; cursor: default; }
+    .cluster-list { display: flex; flex-direction: column; gap: 6px; }
+    .cluster-card {
+        background: #18181b; border: 1px solid #27272a; border-radius: 6px; padding: 8px 10px;
+    }
+    .cluster-header { display: flex; justify-content: space-between; align-items: baseline; }
+    .cluster-header strong { font-size: 0.82rem; color: #e4e4e7; }
+    .cluster-count { font-size: 0.7rem; color: #71717a; }
+    .cluster-titles { margin: 4px 0 0; padding-left: 16px; font-size: 0.72rem; color: #a1a1aa; }
+    .cluster-titles li { margin: 1px 0; }
+    .muted { color: #52525b; font-size: 0.75rem; margin: 4px 0; }
 
     .refresh-btn {
         margin-top: 16px;

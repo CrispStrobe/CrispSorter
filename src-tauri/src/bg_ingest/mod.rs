@@ -307,7 +307,16 @@ async fn worker_loop(
         {
             let mut g = state.lock().await;
             match result {
-                Ok(()) => g.done += 1,
+                Ok(()) => {
+                    g.done += 1;
+                    // Audit trail: log successful ingest
+                    let path_str = next.path.to_string_lossy();
+                    if let Ok(data_dir) = app.state::<crate::AppState>().data_dir.lock().await.as_ref().ok_or(()) {
+                        if let Ok(audit) = crate::audit::AuditLog::open_or_create(data_dir) {
+                            let _ = audit.log("ingest", None, &path_str, "bg_ingest");
+                        }
+                    }
+                }
                 Err(e) => {
                     g.errored += 1;
                     g.last_error = Some(e);
@@ -455,8 +464,9 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
     let p = item.path.clone();
 
     // ── mtime-skip + failure-skip (P7.4.3 / P10) ──────────────────────
-    let file_mtime: Option<i64> = std::fs::metadata(&p)
-        .ok()
+    let bg_meta = std::fs::metadata(&p).ok();
+    let file_mtime: Option<i64> = bg_meta
+        .as_ref()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
@@ -522,13 +532,8 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let bg_meta = std::fs::metadata(&p).ok();
-    let mtime_unix = bg_meta
-        .as_ref()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64);
-    let file_size = bg_meta.map(|m| m.len() as i64);
+    let mtime_unix = file_mtime; // reuse mtime already computed above
+    let file_size = bg_meta.as_ref().map(|m| m.len() as i64);
     let volume_id = crate::volume::volume_id_for_path(&p);
     let parent_dir = p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
     let doc_id = uuid::Uuid::new_v4().to_string();
@@ -758,6 +763,15 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                 embedding_omni: None, // populated below
                 embedding_vit: None,  // populated below
             };
+
+            // P26.1 — Document-type classification at ingest
+            let doctype = crate::index::doctype::classify(
+                &raw.ext,
+                &raw.full_text,
+                raw.title.as_deref(),
+                None,
+            );
+            raw.tags.push(doctype.as_tag());
             // ── P17.5 / P17.7 — compute cross-modal embeddings ────────────
             // Run on a blocking thread since both CrispEmbed FFI calls are
             // CPU-bound (model inference). Soft-fail: log and continue with
@@ -778,40 +792,55 @@ async fn ingest_one(item: &PendingIngest, app: &AppHandle) -> Result<(), String>
                     | "m2ts" | "flv" | "wmv" | "3gp"
                 );
 
-                // ViT image embedding (768-D SigLIP/CLIP)
-                if is_image && crate::images::vit_embed::is_vit_available() {
-                    let p2 = p.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        crate::images::vit_embed::embed_image(&p2)
-                    }).await {
-                        Ok(Ok(emb)) => { raw.embedding_vit = Some(emb); }
-                        Ok(Err(e)) => { eprintln!("[bg_ingest] vit embed failed for {}: {e:#}", p.display()); }
-                        Err(e) => { eprintln!("[bg_ingest] vit embed join error: {e}"); }
-                    }
-                }
+                // ViT + Omni image embeddings — fire concurrently when
+                // both are available (independent models, no shared state).
+                let vit_available = is_image && crate::images::vit_embed::is_vit_available();
+                let omni_available = crate::index::omni_embed::is_omni_available();
 
-                // Omni cross-modal embedding (2048-D BidirLM-Omni)
-                if (is_image || is_audio) && crate::index::omni_embed::is_omni_available() {
-                    if is_image {
+                if is_image && (vit_available || omni_available) {
+                    let vit_handle = if vit_available {
                         let p2 = p.clone();
-                        match tokio::task::spawn_blocking(move || {
+                        Some(tokio::task::spawn_blocking(move || {
+                            crate::images::vit_embed::embed_image(&p2)
+                        }))
+                    } else {
+                        None
+                    };
+                    let omni_handle = if omni_available {
+                        let p2 = p.clone();
+                        Some(tokio::task::spawn_blocking(move || {
                             crate::index::omni_embed::encode_image_omni(&p2)
-                        }).await {
+                        }))
+                    } else {
+                        None
+                    };
+                    // Await both — they're already running on the blocking pool.
+                    if let Some(h) = vit_handle {
+                        match h.await {
+                            Ok(Ok(emb)) => { raw.embedding_vit = Some(emb); }
+                            Ok(Err(e)) => { eprintln!("[bg_ingest] vit embed failed for {}: {e:#}", p.display()); }
+                            Err(e) => { eprintln!("[bg_ingest] vit embed join error: {e}"); }
+                        }
+                    }
+                    if let Some(h) = omni_handle {
+                        match h.await {
                             Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
                             Ok(Err(e)) => { eprintln!("[bg_ingest] omni image embed failed for {}: {e:#}", p.display()); }
                             Err(e) => { eprintln!("[bg_ingest] omni image embed join error: {e}"); }
                         }
                     }
-                    if is_audio {
-                        if let Some(ref pcm) = extracted.audio_pcm {
-                            let pcm_clone = pcm.clone();
-                            match tokio::task::spawn_blocking(move || {
-                                crate::index::omni_embed::encode_audio_omni(&pcm_clone)
-                            }).await {
-                                Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
-                                Ok(Err(e)) => { eprintln!("[bg_ingest] omni audio embed failed for {}: {e:#}", p.display()); }
-                                Err(e) => { eprintln!("[bg_ingest] omni audio embed join error: {e}"); }
-                            }
+                }
+
+                // Omni audio embedding (2048-D BidirLM-Omni)
+                if is_audio && omni_available {
+                    if let Some(ref pcm) = extracted.audio_pcm {
+                        let pcm_clone = pcm.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            crate::index::omni_embed::encode_audio_omni(&pcm_clone)
+                        }).await {
+                            Ok(Ok(emb)) => { raw.embedding_omni = Some(emb); }
+                            Ok(Err(e)) => { eprintln!("[bg_ingest] omni audio embed failed for {}: {e:#}", p.display()); }
+                            Err(e) => { eprintln!("[bg_ingest] omni audio embed join error: {e}"); }
                         }
                     }
                 }

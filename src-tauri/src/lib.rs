@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod audit;
 pub mod audio;
 pub mod batch_session;
 pub mod bg_ingest;
@@ -7,6 +8,7 @@ pub mod images;
 /// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
 pub use crispcat as catalog;
 pub mod cli;
+pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
 pub mod sync;
@@ -850,7 +852,7 @@ async fn asr_transcribe(
         .map_err(|e| format!("ASR transcribe failed: {e:#}"))
 }
 
-use futures_util::StreamExt;
+use futures::StreamExt;
 #[cfg(feature = "desktop")]
 use mistralrs::{
     best_device, initialize_logging, GgufModelBuilder, IsqType, Model, PagedAttentionMetaBuilder,
@@ -1553,6 +1555,58 @@ impl PdfMetadata {
             self.producer = other.producer;
         }
     }
+}
+
+/// P27.10 — Export text to DOCX format.
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn export_to_docx(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        extractors::export::export_to_docx(&title, &body, std::path::Path::new(&out_path))
+    }).await.map_err(|e| format!("join: {e}"))?
+}
+
+/// P27.10 — Export text to standalone HTML format.
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn export_to_html(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+    tokio::task::spawn_blocking(move || {
+        extractors::export::export_to_html(&title, &body, std::path::Path::new(&out_path))
+    }).await.map_err(|e| format!("join: {e}"))?
+}
+
+/// P24.6 — Read clipboard content (text or image).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, String> {
+    tokio::task::spawn_blocking(extractors::clipboard::read_clipboard)
+        .await
+        .map_err(|e| format!("join: {e}"))?
+}
+
+/// P24.6 — Save clipboard image to a temp PNG file (for OCR pipeline).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
+    let (path, w, h) = tokio::task::spawn_blocking(extractors::clipboard::save_clipboard_image_to_temp)
+        .await
+        .map_err(|e| format!("join: {e}"))??;
+    Ok((path.to_string_lossy().into_owned(), w, h))
+}
+
+/// P24.5 — Parse an RSS/Atom feed from a URL.
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFeed, String> {
+    extractors::feed::fetch_and_parse(&url).await
+}
+
+/// P24.5 — Parse a local feed file (XML).
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn feed_parse_file(path: String) -> Result<extractors::feed::ParsedFeed, String> {
+    let bytes = tokio::fs::read(&path).await.map_err(|e| format!("read {path}: {e}"))?;
+    extractors::feed::parse_feed(&bytes)
 }
 
 #[tauri::command]
@@ -2715,6 +2769,12 @@ pub fn run() {
             delete_files,
             extract_pdf_native,
             extract_pdf_metadata,
+            feed_fetch_and_parse,
+            feed_parse_file,
+            clipboard_capture,
+            clipboard_save_image,
+            export_to_docx,
+            export_to_html,
             get_app_data_dir,
             index::tauri_commands::index_search,
             index::tauri_commands::index_search_by_image,
@@ -2825,11 +2885,20 @@ pub fn run() {
             index::tauri_commands::tool_table_extract,
             index::tauri_commands::tool_table_to_csv,
             index::tauri_commands::tool_batch_kie,
+            index::tauri_commands::template_create,
+            index::tauri_commands::template_add_zone,
+            index::tauri_commands::template_list,
+            index::tauri_commands::template_get,
+            index::tauri_commands::template_delete,
+            index::tauri_commands::template_apply,
+            index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
+            index::tauri_commands::ocr_detect_page_split,
             index::tauri_commands::ocr_workbench_export,
+            index::tauri_commands::ocr_content_bbox,
             index::tauri_commands::ocr_workbench_sidecar,
             index::tauri_commands::ocr_workbench_reingest,
             index::tauri_commands::index_capabilities,
@@ -2843,6 +2912,29 @@ pub fn run() {
             index::tauri_commands::index_generate_summary,
             index::tauri_commands::index_parse_nl_query,
             index::tauri_commands::index_corpus_stats,
+            index::tauri_commands::index_cluster_documents,
+            index::tauri_commands::index_label_clusters,
+            index::tauri_commands::index_entity_graph,
+            index::comparison::tauri_commands::compare_documents,
+            index::comparison::tauri_commands::compare_texts_raw,
+            index::versioning::tauri_commands::version_record,
+            index::versioning::tauri_commands::version_history,
+            index::versioning::tauri_commands::version_current,
+            index::retention::tauri_commands::retention_add_rule,
+            index::retention::tauri_commands::retention_list_rules,
+            index::retention::tauri_commands::retention_delete_rule,
+            index::retention::tauri_commands::retention_set_enabled,
+            index::annotations::tauri_commands::annotation_add,
+            index::annotations::tauri_commands::annotation_list,
+            index::annotations::tauri_commands::annotation_update,
+            index::annotations::tauri_commands::annotation_delete,
+            index::annotations::tauri_commands::annotation_search,
+            index::annotations::tauri_commands::highlight_add,
+            index::annotations::tauri_commands::highlight_list,
+            index::annotations::tauri_commands::highlight_reading_list,
+            index::annotations::tauri_commands::highlight_update,
+            index::annotations::tauri_commands::highlight_delete,
+            index::annotations::tauri_commands::highlight_count,
             asr_transcribe,
             audio_extract_text,
             audio_metadata,
@@ -2910,6 +3002,14 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            docx_tools::docx_check,
+            docx_tools::docx_analyze,
+            docx_tools::docx_infer_headings,
+            docx_tools::docx_transplant,
+            docx_tools::docx_convert_notes,
+            docx_tools::docx_inject_footnotes,
+            docx_tools::docx_strip_rsids,
+            docx_tools::docx_normalize_quotes,
             secrets::tauri_commands::secret_get,
             secrets::tauri_commands::secret_set,
             secrets::tauri_commands::secret_delete,
@@ -2927,8 +3027,23 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_add_watermark,
             pdf_ops::tauri_commands::pdf_insert_blank_page,
             pdf_ops::tauri_commands::pdf_edit_metadata,
+            pdf_ops::tauri_commands::pdf_decrypt,
+            pdf_ops::tauri_commands::pdf_is_encrypted,
+            pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_redact_regions,
+            pdf_ops::tauri_commands::pdf_sign,
+            pdf_ops::tauri_commands::pdf_redact_text,
+            pdf_ops::tauri_commands::pdf_convert_pdfa,
+            pdf_ops::tauri_commands::pdf_detect_signatures,
+            pdf_ops::tauri_commands::pdf_sanitise,
+            audit::tauri_commands::audit_log_event,
+            audit::tauri_commands::audit_query,
+            audit::tauri_commands::audit_count,
+            audit::tauri_commands::audit_summary,
         ] }
             // ── Mobile build: same commands minus desktop-only sidecars ────
+            // Note: clipboard_capture/clipboard_save_image excluded (arboard
+            // doesn't support Android/iOS).
             #[cfg(not(feature = "desktop"))]
             { tauri::generate_handler![
             get_logs,
@@ -3048,13 +3163,22 @@ pub fn run() {
             index::tauri_commands::tool_table_extract,
             index::tauri_commands::tool_table_to_csv,
             index::tauri_commands::tool_batch_kie,
+            index::tauri_commands::template_create,
+            index::tauri_commands::template_add_zone,
+            index::tauri_commands::template_list,
+            index::tauri_commands::template_get,
+            index::tauri_commands::template_delete,
+            index::tauri_commands::template_apply,
+            index::tauri_commands::omr_detect,
             index::tauri_commands::tool_math_ocr,
             index::tauri_commands::ocr_doc_open,
             index::tauri_commands::ocr_page_regions,
             index::tauri_commands::ocr_page_cleaned,
             index::tauri_commands::ocr_workbench_export,
             index::tauri_commands::ocr_workbench_sidecar,
+            index::tauri_commands::ocr_detect_page_split,
             index::tauri_commands::ocr_workbench_reingest,
+            index::tauri_commands::ocr_content_bbox,
             index::tauri_commands::index_capabilities,
             index::tauri_commands::index_model_download_mb,
             index::tauri_commands::embedder_registry_list,
@@ -3066,6 +3190,29 @@ pub fn run() {
             index::tauri_commands::index_generate_summary,
             index::tauri_commands::index_parse_nl_query,
             index::tauri_commands::index_corpus_stats,
+            index::tauri_commands::index_cluster_documents,
+            index::tauri_commands::index_entity_graph,
+            index::tauri_commands::index_label_clusters,
+            index::comparison::tauri_commands::compare_documents,
+            index::comparison::tauri_commands::compare_texts_raw,
+            index::versioning::tauri_commands::version_record,
+            index::versioning::tauri_commands::version_history,
+            index::versioning::tauri_commands::version_current,
+            index::retention::tauri_commands::retention_add_rule,
+            index::retention::tauri_commands::retention_list_rules,
+            index::retention::tauri_commands::retention_delete_rule,
+            index::retention::tauri_commands::retention_set_enabled,
+            index::annotations::tauri_commands::annotation_add,
+            index::annotations::tauri_commands::annotation_list,
+            index::annotations::tauri_commands::annotation_update,
+            index::annotations::tauri_commands::annotation_delete,
+            index::annotations::tauri_commands::annotation_search,
+            index::annotations::tauri_commands::highlight_add,
+            index::annotations::tauri_commands::highlight_list,
+            index::annotations::tauri_commands::highlight_reading_list,
+            index::annotations::tauri_commands::highlight_update,
+            index::annotations::tauri_commands::highlight_delete,
+            index::annotations::tauri_commands::highlight_count,
             asr_transcribe,
             audio_extract_text,
             audio_metadata,
@@ -3119,6 +3266,14 @@ pub fn run() {
             batch_session::tauri_commands::batch_session_history_count,
             translate::tauri_commands::translate_dry_run,
             translate::tauri_commands::translate_docx,
+            docx_tools::docx_check,
+            docx_tools::docx_analyze,
+            docx_tools::docx_infer_headings,
+            docx_tools::docx_transplant,
+            docx_tools::docx_convert_notes,
+            docx_tools::docx_inject_footnotes,
+            docx_tools::docx_strip_rsids,
+            docx_tools::docx_normalize_quotes,
             secrets::tauri_commands::secret_get,
             secrets::tauri_commands::secret_set,
             secrets::tauri_commands::secret_delete,
@@ -3136,6 +3291,19 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_add_watermark,
             pdf_ops::tauri_commands::pdf_insert_blank_page,
             pdf_ops::tauri_commands::pdf_edit_metadata,
+            pdf_ops::tauri_commands::pdf_decrypt,
+            pdf_ops::tauri_commands::pdf_is_encrypted,
+            pdf_ops::tauri_commands::pdf_encrypt,
+            pdf_ops::tauri_commands::pdf_redact_regions,
+            pdf_ops::tauri_commands::pdf_redact_text,
+            pdf_ops::tauri_commands::pdf_sign,
+            pdf_ops::tauri_commands::pdf_convert_pdfa,
+            pdf_ops::tauri_commands::pdf_detect_signatures,
+            pdf_ops::tauri_commands::pdf_sanitise,
+            audit::tauri_commands::audit_log_event,
+            audit::tauri_commands::audit_query,
+            audit::tauri_commands::audit_count,
+            audit::tauri_commands::audit_summary,
         ] }
         })
         .run(tauri::generate_context!())

@@ -455,6 +455,10 @@ pub struct SearchFilters {
     /// P23 — when true, auto-apply ~1 fuzzy matching to all bare terms.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fuzzy: bool,
+    /// P24.4 — when true, expand query terms with offline synonyms
+    /// (EN + DE) before FTS dispatch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synonyms: bool,
     /// P23 — scope search to a specific set of doc_ids (for "search within results").
     /// Empty Vec == no scope restriction.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

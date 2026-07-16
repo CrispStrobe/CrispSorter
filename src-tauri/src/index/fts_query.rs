@@ -95,23 +95,30 @@ fn lex(input: &str) -> Result<Vec<Token>> {
                     chars.next();
                     word.push(nc);
                 }
-                match word.to_uppercase().as_str() {
-                    "AND" => tokens.push(Token::And),
-                    "OR" => tokens.push(Token::Or),
-                    "NOT" => tokens.push(Token::Not),
-                    upper if upper.starts_with("W/") => {
-                        let n = word[2..]
-                            .parse::<u32>()
-                            .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
-                        tokens.push(Token::Within(n, false));
-                    }
-                    upper if upper.starts_with("PRE/") => {
-                        let n = word[4..]
-                            .parse::<u32>()
-                            .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
-                        tokens.push(Token::Within(n, true));
-                    }
-                    _ => tokens.push(Token::Word(word)),
+                if word.eq_ignore_ascii_case("AND") {
+                    tokens.push(Token::And);
+                } else if word.eq_ignore_ascii_case("OR") {
+                    tokens.push(Token::Or);
+                } else if word.eq_ignore_ascii_case("NOT") {
+                    tokens.push(Token::Not);
+                } else if word.is_ascii()
+                    && word.len() > 2
+                    && word[..2].eq_ignore_ascii_case("W/")
+                {
+                    let n = word[2..]
+                        .parse::<u32>()
+                        .map_err(|_| anyhow!("Invalid w/N operator: {}", word))?;
+                    tokens.push(Token::Within(n, false));
+                } else if word.is_ascii()
+                    && word.len() > 4
+                    && word[..4].eq_ignore_ascii_case("PRE/")
+                {
+                    let n = word[4..]
+                        .parse::<u32>()
+                        .map_err(|_| anyhow!("Invalid pre/N operator: {}", word))?;
+                    tokens.push(Token::Within(n, true));
+                } else {
+                    tokens.push(Token::Word(word));
                 }
             }
         }
@@ -550,9 +557,10 @@ pub fn fuzzify_query(query: &str) -> String {
             }
             continue;
         }
-        // Skip operators
-        let upper = token.to_uppercase();
-        if upper == "AND" || upper == "OR" || upper == "NOT"
+        // Skip operators (avoid to_uppercase() allocation)
+        if token.eq_ignore_ascii_case("AND")
+            || token.eq_ignore_ascii_case("OR")
+            || token.eq_ignore_ascii_case("NOT")
             || token.contains("w/")
             || token.contains("pre/")
         {
@@ -794,5 +802,37 @@ mod tests {
     fn fuzzify_handles_empty() {
         // Empty input must return an empty string without panicking.
         assert_eq!(fuzzify_query(""), "", "empty input must produce empty output");
+    }
+
+    #[test]
+    fn lex_mixed_case_within_pre() {
+        // W/ and PRE/ must be recognised in any casing.
+        let t1 = lex("a W/5 b").unwrap();
+        assert!(t1.iter().any(|t| matches!(t, Token::Within(5, false))));
+        let t2 = lex("a w/5 b").unwrap();
+        assert!(t2.iter().any(|t| matches!(t, Token::Within(5, false))));
+        let t3 = lex("a PRE/3 b").unwrap();
+        assert!(t3.iter().any(|t| matches!(t, Token::Within(3, true))));
+        let t4 = lex("a pre/3 b").unwrap();
+        assert!(t4.iter().any(|t| matches!(t, Token::Within(3, true))));
+    }
+
+    #[test]
+    fn lex_unicode_word_not_panics() {
+        // A multi-byte word like "über" must not panic on the W/ / PRE/
+        // byte-slice check — the `is_ascii()` guard protects it.
+        let tokens = lex("über Müller").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "über")));
+        assert!(tokens.iter().any(|t| matches!(t, Token::Word(w) if w == "Müller")));
+    }
+
+    #[test]
+    fn fuzzify_operators_case_insensitive() {
+        // Operators in any casing must be preserved by fuzzify_query.
+        for op in &["AND", "and", "And", "OR", "or", "NOT", "not"] {
+            let input = format!("climate {} weather", op);
+            let out = fuzzify_query(&input);
+            assert!(out.contains(op), "operator {op} must survive fuzzify: {out}");
+        }
     }
 }

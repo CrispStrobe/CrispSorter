@@ -12,6 +12,17 @@
 /// Default snippet window, in characters (roughly ±150 around the match).
 pub const SNIPPET_WINDOW: usize = 300;
 
+/// Truncate `s` to at most `max_chars` characters by slicing at a char
+/// boundary.  Returns a `&str` — no heap allocation.  Use
+/// `.to_owned()` only when the caller genuinely needs an owned String.
+#[inline]
+pub fn truncate_str(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
+
 /// HTML-escape the five characters that matter inside a `{@html …}` block so
 /// the snippet is safe to render verbatim frontend-side.
 fn escape_html_char(c: char, out: &mut String) {
@@ -39,17 +50,17 @@ fn lower1(c: char) -> char {
 /// fragments); if that leaves nothing, we fall back to the raw non-empty
 /// tokens so a single-character CJK query still highlights.
 fn query_tokens(query: &str) -> Vec<Vec<char>> {
-    let raw: Vec<Vec<char>> = query
+    let mut raw: Vec<Vec<char>> = query
         .split_whitespace()
         .map(|t| t.chars().map(lower1).collect::<Vec<char>>())
         .filter(|t| !t.is_empty())
         .collect();
-    let kept: Vec<Vec<char>> = raw.iter().filter(|t| t.len() >= 2).cloned().collect();
-    if kept.is_empty() {
-        raw
-    } else {
-        kept
+    // Drop single-char tokens (stop-word noise) unless they're all we have.
+    let has_long = raw.iter().any(|t| t.len() >= 2);
+    if has_long {
+        raw.retain(|t| t.len() >= 2);
     }
+    raw
 }
 
 /// Index of the first occurrence of `needle` in `hay[from..]`, or `None`.
@@ -212,5 +223,51 @@ mod tests {
         let s = highlight_snippet(body, "quick fox", SNIPPET_WINDOW).unwrap();
         assert!(s.contains("<mark>quick</mark>"), "got: {s}");
         assert!(s.contains("<mark>fox</mark>"), "got: {s}");
+    }
+
+    #[test]
+    fn single_char_token_retained_when_only_option() {
+        // A single-char CJK query must still highlight (the retain
+        // fallback keeps all tokens when none pass the ≥2 filter).
+        let tokens = query_tokens("x");
+        assert_eq!(tokens.len(), 1, "single-char token must be kept as fallback");
+    }
+
+    #[test]
+    fn short_tokens_dropped_when_long_exist() {
+        let tokens = query_tokens("a hello b world");
+        // "a" and "b" are < 2 chars, dropped; "hello" and "world" survive.
+        assert_eq!(tokens.len(), 2);
+        let strs: Vec<String> = tokens.iter().map(|t| t.iter().collect()).collect();
+        assert!(strs.contains(&"hello".to_string()));
+        assert!(strs.contains(&"world".to_string()));
+    }
+
+    #[test]
+    fn truncate_str_ascii() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+        assert_eq!(truncate_str("hi", 10), "hi");
+        assert_eq!(truncate_str("", 5), "");
+    }
+
+    #[test]
+    fn truncate_str_multibyte() {
+        // "Ü" is 2 bytes, "über" is 5 bytes / 4 chars
+        assert_eq!(truncate_str("über alles", 4), "über");
+        // Must not panic on a boundary inside a multi-byte char
+        assert_eq!(truncate_str("日本語テスト", 3), "日本語");
+    }
+
+    #[test]
+    fn window_larger_than_body() {
+        let s = highlight_snippet("hello", "hello", 10_000).unwrap();
+        assert!(s.contains("<mark>hello</mark>"));
+        assert!(!s.contains('…'), "no ellipsis when window exceeds body: {s}");
+    }
+
+    #[test]
+    fn query_single_char_highlights_in_body() {
+        let s = highlight_snippet("a b c d e", "a", SNIPPET_WINDOW).unwrap();
+        assert!(s.contains("<mark>a</mark>"), "single-char token must highlight: {s}");
     }
 }

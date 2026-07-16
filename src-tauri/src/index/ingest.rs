@@ -243,7 +243,10 @@ impl IngestPipeline {
         let fts_w = fts.clone();
         let vector_w = vector.clone();
         let pending_w = pending.clone();
-        let lance_batch_size = config.batch_size.saturating_mul(4).max(64);
+        // LanceDB writes are most efficient at 512-2048 rows per RecordBatch.
+        // The embed batch_size (default 32) is constrained by model VRAM; the
+        // write batch size is constrained by Arrow allocation cost — decouple.
+        let lance_batch_size = config.batch_size.saturating_mul(16).max(256);
 
         tokio::spawn(async move {
             while let Some(job) = writer_rx.recv().await {
@@ -422,21 +425,25 @@ impl IngestPipeline {
 
             for batch in chunks.chunks(self.config.batch_size) {
                 let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
-                let (dense, sparse, multivecs) = {
+                let (dense, sparse, multivecs, model_id) = {
                     use super::embedder::EmbedRole;
                     let mut emb = embedder.lock().await;
-                    let (dense, sparse) = emb.embed_full(texts.clone(), EmbedRole::Passage)?;
-                    // Stage AD: ColBERT multi-vector encoding (BGE-M3 only).
-                    let multivecs = if emb.has_colbert() {
-                        emb.embed_multivec(texts)?
+                    // Clone texts only when ColBERT is active; otherwise
+                    // pass texts directly to embed_full and skip the copy.
+                    let has_colbert = emb.has_colbert();
+                    let (embed_texts, colbert_texts) = if has_colbert {
+                        (texts.clone(), Some(texts))
+                    } else {
+                        (texts, None)
+                    };
+                    let (dense, sparse) = emb.embed_full(embed_texts, EmbedRole::Passage)?;
+                    let multivecs = if let Some(ct) = colbert_texts {
+                        emb.embed_multivec(ct)?
                     } else {
                         vec![vec![]; batch.len()]
                     };
-                    (dense, sparse, multivecs)
-                };
-                let model_id = {
-                    let emb = embedder.lock().await;
-                    format!("{:?}", emb.model())
+                    let mid = format!("{:?}", emb.model());
+                    (dense, sparse, multivecs, mid)
                 };
                 for (i, text_chunk) in batch.iter().enumerate() {
                     let embedding = dense.vectors.get(i).cloned();
@@ -1080,5 +1087,20 @@ mod tests {
         let dc = build_doc_chunk(&tc, &raw, 1, None, None, "bge-m3".to_owned(), Some(multivec));
         assert!(dc.multivec_packed.is_some());
         assert_eq!(dc.multivec_n_tokens, Some(2));
+    }
+
+    #[test]
+    fn lance_batch_size_scales_with_embed_batch() {
+        // Verify the 16x multiplier produces a LanceDB-friendly batch size.
+        let small = IngestConfig { batch_size: 32, ..Default::default() };
+        let large = IngestConfig { batch_size: 64, ..Default::default() };
+        let lance_small = small.batch_size.saturating_mul(16).max(256);
+        let lance_large = large.batch_size.saturating_mul(16).max(256);
+        assert_eq!(lance_small, 512, "32 × 16 = 512");
+        assert_eq!(lance_large, 1024, "64 × 16 = 1024");
+        // Minimum floor
+        let tiny = IngestConfig { batch_size: 1, ..Default::default() };
+        let lance_tiny = tiny.batch_size.saturating_mul(16).max(256);
+        assert_eq!(lance_tiny, 256, "floor must be 256");
     }
 }

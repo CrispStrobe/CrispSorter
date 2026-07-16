@@ -19,7 +19,7 @@ use arrow_array::{
 };
 use arrow_schema::Schema;
 use async_trait::async_trait;
-use futures_util::TryStreamExt;
+use futures::TryStreamExt;
 use lancedb::{
     connect,
     index::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder, Index},
@@ -47,6 +47,21 @@ pub struct FailedExtractionRow {
     pub retryable:    bool,
 }
 
+/// Columns consumed by `batches_to_search_results_with_scores` and
+/// `record_batches_to_search_results`.  Used by `.select(Select::Columns(…))`
+/// to avoid reading embedding vectors and other large blobs.
+fn search_result_columns() -> lancedb::query::Select {
+    lancedb::query::Select::Columns(vec![
+        "doc_id".into(), "location_uri".into(), "owner_id".into(),
+        "title".into(), "author".into(), "year".into(), "filename".into(),
+        "ext".into(), "language".into(), "chunk_index".into(),
+        "full_text".into(), "metadata_json".into(), "indexed_at".into(),
+        "volume_id".into(), "source_hash".into(), "text_translated".into(),
+        "text_translated_lang".into(), "url".into(), "tags".into(),
+        "summary".into(), "doc_status".into(),
+    ])
+}
+
 // ── Struct ─────────────────────────────────────────────────────────────────
 
 pub struct LocalIndex {
@@ -54,6 +69,9 @@ pub struct LocalIndex {
     _db: Connection,
     table: Table,
     pub dims: usize,
+    /// Cached Arrow schema — built once at construction, reused by every
+    /// `ingest_batch` call instead of re-allocating ~25 Field objects.
+    schema: Arc<Schema>,
 }
 
 // ── Constructor ────────────────────────────────────────────────────────────
@@ -98,10 +116,12 @@ impl LocalIndex {
             .await
             .context("schema v3: adding volume_id column")?;
 
+        let schema = build_schema(dims);
         Ok(LocalIndex {
             _db: db,
             table,
             dims,
+            schema,
         })
     }
 
@@ -118,10 +138,9 @@ impl LocalIndex {
             return Ok(());
         }
 
-        let schema = build_schema(self.dims);
-        let batch = chunks_to_record_batch(chunks, self.dims, &schema)?;
+        let batch = chunks_to_record_batch(chunks, self.dims, &self.schema)?;
 
-        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], Arc::clone(&self.schema));
         self.table
             .add(reader)
             .execute()
@@ -145,6 +164,7 @@ impl LocalIndex {
             .table
             .vector_search(embedding)?
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit);
 
         if let Some(sql) = filters.to_lance_sql() {
@@ -205,6 +225,7 @@ impl LocalIndex {
             .table
             .vector_search(embedding)?
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit)
             .only_if(exclude);
 
@@ -228,6 +249,7 @@ impl LocalIndex {
             .vector_search(embedding)?
             .column(column)
             .distance_type(DistanceType::Cosine)
+            .select(search_result_columns())
             .limit(limit);
 
         if let Some(sql) = filters.to_lance_sql() {
@@ -266,13 +288,12 @@ impl LocalIndex {
 
         // Build `id IN (...)` filter from the candidates' (doc_id,
         // chunk_index) — matches the row-id formula used at ingest.
-        let ids: Vec<String> = candidates
+        let quoted: Vec<String> = candidates
             .iter()
-            .map(|r| chunk_row_id(&r.doc_id, r.chunk_index))
-            .collect();
-        let quoted: Vec<String> = ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .map(|r| {
+                let id = chunk_row_id(&r.doc_id, r.chunk_index);
+                format!("'{}'", id.replace('\'', "''"))
+            })
             .collect();
         let filter = format!("id IN ({})", quoted.join(", "));
 
@@ -368,6 +389,7 @@ impl LocalIndex {
             .table
             .query()
             .only_if(filter)
+            .select(search_result_columns())
             .limit(doc_ids.len() * per_doc)
             .execute()
             .await?
@@ -434,11 +456,20 @@ impl LocalIndex {
             filter = format!("({}) AND ({})", filter, extra);
         }
         // 8 chunks per doc lets us pick the best per-doc chunk without
-        // scanning the full doc.
+        // scanning the full doc. Project to search-result cols +
+        // embedding_sparse (needed for scoring) to avoid reading dense
+        // embedding vectors.
+        let mut sparse_cols = vec![
+            "embedding_sparse".into(),
+        ];
+        if let lancedb::query::Select::Columns(ref cols) = search_result_columns() {
+            sparse_cols.extend(cols.iter().cloned());
+        }
         let batches: Vec<RecordBatch> = self
             .table
             .query()
             .only_if(filter)
+            .select(lancedb::query::Select::Columns(sparse_cols))
             .limit(candidate_doc_ids.len() * 8)
             .execute()
             .await?
@@ -501,7 +532,7 @@ impl LocalIndex {
                     .as_ref()
                     .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                     .unwrap_or("");
-                let snippet = full_text.chars().take(400).collect::<String>();
+                let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
                 let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
                     metadata_col
@@ -994,6 +1025,178 @@ impl LocalIndex {
         })
     }
 
+    // ── Clustering ─────────────────────────────────────────────────────────
+
+    /// K-means clustering on the dense embedding column.  Returns `k`
+    /// clusters, each with its member doc_ids and top TF-IDF terms
+    /// (from `full_text`) as a human-readable name.
+    pub async fn cluster_documents(
+        &self,
+        k: usize,
+    ) -> Result<Vec<super::tauri_commands::Cluster>> {
+        use lancedb::query::Select;
+
+        if k == 0 {
+            return Err(anyhow!("k must be >= 1"));
+        }
+
+        // 1. Fetch all docs with embeddings (one row per document).
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if("chunk_index <= 0 AND embedding IS NOT NULL")
+            .select(Select::Columns(vec![
+                "doc_id".to_owned(),
+                "embedding".to_owned(),
+                "full_text".to_owned(),
+                "title".to_owned(),
+            ]))
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Collect doc_ids, embeddings, texts.
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let mut doc_ids: Vec<String> = Vec::with_capacity(total_rows);
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(total_rows);
+        let mut texts: Vec<String> = Vec::with_capacity(total_rows);
+        let mut titles: Vec<String> = Vec::with_capacity(total_rows);
+
+        for batch in &batches {
+            let n = batch.num_rows();
+            let doc_col = batch.column_by_name("doc_id");
+            let emb_col = batch
+                .column_by_name("embedding")
+                .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>());
+            let text_col = batch.column_by_name("full_text");
+            let title_col = batch.column_by_name("title");
+
+            for i in 0..n {
+                // doc_id
+                let did = doc_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                // embedding
+                let emb = emb_col.and_then(|fsl| {
+                    if fsl.is_null(i) { return None; }
+                    let vals = fsl.value(i);
+                    vals.as_any()
+                        .downcast_ref::<Float32Array>()
+                        .map(|a| a.values().to_vec())
+                });
+                let Some(e) = emb else { continue };
+
+                let txt = text_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                let ttl = title_col
+                    .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+                    .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_owned()) })
+                    .unwrap_or_default();
+
+                doc_ids.push(did);
+                embeddings.push(e);
+                texts.push(txt);
+                titles.push(ttl);
+            }
+        }
+
+        let n = embeddings.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        let actual_k = k.min(n);
+
+        // 2. K-means++ clustering.
+        let dim = embeddings[0].len();
+        let assignments = kmeans_pp(&embeddings, actual_k, dim, 20);
+
+        // 3. Build clusters with top TF-IDF terms for naming.
+        let mut clusters: Vec<super::tauri_commands::Cluster> = Vec::with_capacity(actual_k);
+        for c in 0..actual_k {
+            let member_indices: Vec<usize> = assignments
+                .iter()
+                .enumerate()
+                .filter(|(_, &a)| a == c)
+                .map(|(i, _)| i)
+                .collect();
+            if member_indices.is_empty() { continue; }
+
+            let member_doc_ids: Vec<String> = member_indices.iter().map(|&i| doc_ids[i].clone()).collect();
+            let member_titles: Vec<String> = member_indices.iter()
+                .filter_map(|&i| {
+                    let t = &titles[i];
+                    if t.is_empty() { None } else { Some(t.clone()) }
+                })
+                .take(5)
+                .collect();
+
+            // Simple term-frequency naming: collect words from cluster members,
+            // rank by frequency, pick top 3 distinctive words.
+            let top_terms = cluster_top_terms(&member_indices, &texts, 4);
+            let name = if top_terms.is_empty() {
+                format!("Cluster {}", c + 1)
+            } else {
+                top_terms.join(", ")
+            };
+
+            clusters.push(super::tauri_commands::Cluster {
+                id: c as u32,
+                name,
+                doc_count: member_indices.len(),
+                top_terms,
+                sample_titles: member_titles,
+                member_doc_ids,
+            });
+        }
+
+        // Sort by doc count descending.
+        clusters.sort_by(|a, b| b.doc_count.cmp(&a.doc_count));
+        Ok(clusters)
+    }
+
+    /// P25.7 helper — fetch a document's full_text by doc_id.
+    pub async fn fetch_full_text(&self, doc_id: &str) -> Result<String> {
+        use lancedb::query::Select;
+        let filter = format!("doc_id = '{}' AND chunk_index <= 0", doc_id.replace('\'', "''"));
+        let batches: Vec<RecordBatch> = self.table.query()
+            .only_if(filter)
+            .select(Select::Columns(vec!["full_text".to_owned()]))
+            .limit(1)
+            .execute().await?
+            .try_collect().await?;
+        for batch in &batches {
+            if batch.num_rows() > 0 {
+                if let Some(col) = batch.column_by_name("full_text") {
+                    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
+                        if !arr.is_null(0) {
+                            return Ok(arr.value(0).to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Err(anyhow!("Document not found: {}", doc_id))
+    }
+
+    /// P24.3 helper — fetch the tags column for all documents.
+    pub async fn query_tags_for_graph(&self) -> Result<Vec<RecordBatch>> {
+        use lancedb::query::Select;
+        self.table.query()
+            .only_if("chunk_index <= 0")
+            .select(Select::Columns(vec!["tags".to_owned()]))
+            .execute()
+            .await?
+            .try_collect()
+            .await
+            .map_err(Into::into)
+    }
+
     // ── Purge ──────────────────────────────────────────────────────────────
 
     /// Stage P — LRU purge to keep the lance dir ≤ `max_bytes`.
@@ -1371,6 +1574,21 @@ impl LocalIndex {
         scanner
             .limit(Some(limit as i64), Some(offset as i64))
             .context("scanner limit")?;
+
+        // Project only the columns record_batches_to_search_results reads.
+        // Omits embedding (1024+ f32), embedding_omni (2048 f32),
+        // embedding_vit (768 f32), multivec_packed (LargeBinary),
+        // full_text_md, embedding_sparse, embedding_model, headings_text,
+        // and other large columns the browse view never displays.
+        scanner
+            .project(&[
+                "doc_id", "location_uri", "owner_id", "title", "author",
+                "year", "filename", "ext", "language", "chunk_index",
+                "full_text", "metadata_json", "indexed_at", "volume_id",
+                "source_hash", "text_translated", "text_translated_lang",
+                "url", "tags", "summary", "doc_status", "parent_dir",
+            ])
+            .context("scanner project")?;
 
         let batches: Vec<RecordBatch> = scanner
             .try_into_stream()
@@ -1830,7 +2048,7 @@ impl LocalIndex {
             .try_collect()
             .await?;
 
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(64);
         for batch in &batches {
             let Some(meta_idx) = batch.schema().index_of("metadata_json").ok() else { continue };
             let Some(doc_id_idx) = batch.schema().index_of("doc_id").ok() else { continue };
@@ -2073,7 +2291,7 @@ impl LocalIndex {
         // dims=0: .cidx is read-only; the dim value only matters for new
         // table creation (not applicable here) and embedding operations
         // (not performed on snapshots).
-        Ok(Self { _db: db, table, dims: 0 })
+        Ok(Self { _db: db, table, dims: 0, schema: build_schema(0) })
     }
 }
 
@@ -2137,7 +2355,8 @@ pub fn batches_to_search_results_with_scores(
     batches: &[RecordBatch],
     score_map: &std::collections::HashMap<String, f32>,
 ) -> Result<Vec<SearchResult>> {
-    let mut results = Vec::new();
+    let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let mut results = Vec::with_capacity(total);
 
     for batch in batches {
         let n = batch.num_rows();
@@ -2173,7 +2392,7 @@ pub fn batches_to_search_results_with_scores(
                 .as_ref()
                 .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                 .unwrap_or("");
-            let snippet = full_text.chars().take(400).collect::<String>();
+            let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
             let volume_id = str_col_val_opt(&volume_id_col, i).or_else(|| {
                 metadata_col
@@ -2461,7 +2680,8 @@ fn chunks_to_record_batch(
 /// Extract `SearchResult` values from a stream of `RecordBatch`es returned by
 /// a LanceDB vector query.
 fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<SearchResult>> {
-    let mut results = Vec::new();
+    let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let mut results = Vec::with_capacity(total);
 
     for batch in batches {
         let n = batch.num_rows();
@@ -2505,7 +2725,7 @@ fn record_batches_to_search_results(batches: &[RecordBatch]) -> Result<Vec<Searc
                 .and_then(|c| if c.is_null(i) { None } else { Some(c.value(i)) })
                 .unwrap_or("");
 
-            let snippet = full_text.chars().take(400).collect::<String>();
+            let snippet = super::snippet::truncate_str(full_text, 400).to_owned();
 
             // Convert cosine distance → similarity score (0..1, higher = better).
             let distance = score_col.as_ref().map(|c| c.value(i)).unwrap_or(1.0);
@@ -3003,6 +3223,246 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
 }
 
 /// In-process sort over the candidate window. LanceDB 0.26's public
+// ── K-means++ clustering ──────────────────────────────────────────────
+
+/// K-means++ initialization + Lloyd iterations.  Returns a Vec of
+/// cluster assignments (0..k) for each embedding.
+fn kmeans_pp(embeddings: &[Vec<f32>], k: usize, dim: usize, max_iter: usize) -> Vec<usize> {
+    let n = embeddings.len();
+    if n == 0 || k == 0 { return vec![]; }
+    if k >= n { return (0..n).collect(); }
+
+    // K-means++ seeding
+    let mut rng_state: u64 = 42;
+    let mut next_rand = || -> f64 {
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng_state >> 33) as f64 / (1u64 << 31) as f64
+    };
+
+    let mut centroids: Vec<Vec<f32>> = Vec::with_capacity(k);
+    let first = (next_rand() * n as f64) as usize % n;
+    centroids.push(embeddings[first].clone());
+
+    for _ in 1..k {
+        let dists: Vec<f64> = embeddings
+            .iter()
+            .map(|e| {
+                centroids.iter().map(|c| sq_dist(e, c)).fold(f64::MAX, f64::min)
+            })
+            .collect();
+        let total: f64 = dists.iter().sum();
+        if total <= 0.0 { break; }
+        let threshold = next_rand() * total;
+        let mut cumulative = 0.0;
+        let mut chosen = 0;
+        for (i, d) in dists.iter().enumerate() {
+            cumulative += d;
+            if cumulative >= threshold { chosen = i; break; }
+        }
+        centroids.push(embeddings[chosen].clone());
+    }
+
+    // Lloyd iterations
+    let mut assignments = vec![0usize; n];
+    for _ in 0..max_iter {
+        let mut changed = false;
+        // Assign
+        for (i, e) in embeddings.iter().enumerate() {
+            let best = centroids.iter().enumerate()
+                .map(|(ci, c)| (ci, sq_dist(e, c)))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(ci, _)| ci)
+                .unwrap_or(0);
+            if assignments[i] != best { changed = true; assignments[i] = best; }
+        }
+        if !changed { break; }
+        // Update centroids
+        for ci in 0..centroids.len() {
+            let mut sum = vec![0.0f64; dim];
+            let mut count = 0usize;
+            for (i, &a) in assignments.iter().enumerate() {
+                if a == ci {
+                    for (j, &v) in embeddings[i].iter().enumerate() {
+                        sum[j] += v as f64;
+                    }
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                for j in 0..dim {
+                    centroids[ci][j] = (sum[j] / count as f64) as f32;
+                }
+            }
+        }
+    }
+    assignments
+}
+
+fn sq_dist(a: &[f32], b: &[f32]) -> f64 {
+    a.iter().zip(b.iter()).map(|(x, y)| { let d = (*x as f64) - (*y as f64); d * d }).sum()
+}
+
+/// Extract top distinctive terms from cluster members' texts via simple
+/// TF-IDF-ish scoring (term frequency in cluster / frequency in corpus).
+fn cluster_top_terms(member_indices: &[usize], all_texts: &[String], top_n: usize) -> Vec<String> {
+    use std::collections::HashMap;
+
+    let stop = [
+        "the","a","an","and","or","but","in","on","at","to","for","of","with",
+        "is","it","as","by","that","this","from","are","was","were","be","been",
+        "has","have","had","not","no","all","its","der","die","das","und","ist",
+        "ein","eine","von","den","dem","des","im","zu","auf","mit","sich","als",
+        "für","auch","nach","wie","über","nur","aus","so","noch","bei","er","sie",
+    ];
+    let stop_set: std::collections::HashSet<&str> = stop.iter().copied().collect();
+
+    // Corpus-wide document frequency
+    let mut df: HashMap<String, usize> = HashMap::new();
+    for text in all_texts {
+        let mut seen = std::collections::HashSet::new();
+        for w in text.split_whitespace().take(200) {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            if w.len() >= 3 && !stop_set.contains(w.as_str()) && seen.insert(w.clone()) {
+                *df.entry(w).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Cluster term frequency
+    let mut tf: HashMap<String, usize> = HashMap::new();
+    for &i in member_indices {
+        for w in all_texts[i].split_whitespace().take(200) {
+            let w = w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+            if w.len() >= 3 && !stop_set.contains(w.as_str()) {
+                *tf.entry(w).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let n_docs = all_texts.len().max(1) as f64;
+    let mut scored: Vec<(String, f64)> = tf.into_iter()
+        .map(|(term, count)| {
+            let idf = (n_docs / (*df.get(&term).unwrap_or(&1)) as f64).ln();
+            (term, count as f64 * idf)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().take(top_n).map(|(t, _)| t).collect()
+}
+
+#[cfg(test)]
+mod clustering_tests {
+    use super::*;
+
+    #[test]
+    fn kmeans_empty() {
+        let result = kmeans_pp(&[], 3, 2, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn kmeans_k_zero() {
+        let data = vec![vec![1.0, 2.0]];
+        let result = kmeans_pp(&data, 0, 2, 10);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn kmeans_k_equals_n() {
+        let data = vec![vec![0.0, 0.0], vec![10.0, 10.0], vec![20.0, 20.0]];
+        let result = kmeans_pp(&data, 3, 2, 10);
+        assert_eq!(result.len(), 3);
+        // Each point is its own cluster
+        let mut sorted = result.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3);
+    }
+
+    #[test]
+    fn kmeans_k_greater_than_n() {
+        let data = vec![vec![1.0, 1.0], vec![2.0, 2.0]];
+        let result = kmeans_pp(&data, 5, 2, 10);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn kmeans_two_clusters() {
+        // Two well-separated clusters
+        let data = vec![
+            vec![0.0, 0.0], vec![0.1, 0.1], vec![0.2, 0.0],
+            vec![10.0, 10.0], vec![10.1, 9.9], vec![9.9, 10.1],
+        ];
+        let result = kmeans_pp(&data, 2, 2, 20);
+        assert_eq!(result.len(), 6);
+        // Points 0-2 should be in same cluster, 3-5 in another
+        assert_eq!(result[0], result[1]);
+        assert_eq!(result[1], result[2]);
+        assert_eq!(result[3], result[4]);
+        assert_eq!(result[4], result[5]);
+        assert_ne!(result[0], result[3]);
+    }
+
+    #[test]
+    fn kmeans_single_point() {
+        let data = vec![vec![5.0, 5.0]];
+        let result = kmeans_pp(&data, 1, 2, 10);
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn kmeans_deterministic() {
+        // Same input → same output (fixed seed)
+        let data = vec![
+            vec![0.0, 0.0], vec![1.0, 1.0], vec![10.0, 10.0], vec![11.0, 11.0],
+        ];
+        let r1 = kmeans_pp(&data, 2, 2, 20);
+        let r2 = kmeans_pp(&data, 2, 2, 20);
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn sq_dist_basic() {
+        assert!((sq_dist(&[0.0, 0.0], &[3.0, 4.0]) - 25.0).abs() < 1e-6);
+        assert!((sq_dist(&[1.0, 1.0], &[1.0, 1.0])).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cluster_top_terms_basic() {
+        let texts = vec![
+            "machine learning algorithms neural networks".into(),
+            "deep learning neural networks training".into(),
+            "database queries optimization indexing".into(),
+        ];
+        let members = vec![0, 1]; // cluster of ML docs
+        let terms = cluster_top_terms(&members, &texts, 3);
+        // "neural" and "networks" should be top terms (appear in cluster but not in all docs)
+        assert!(!terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_empty_members() {
+        let texts = vec!["hello world".into()];
+        let terms = cluster_top_terms(&[], &texts, 3);
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_filters_stopwords() {
+        let texts = vec!["the and but for with this that from".into()];
+        let terms = cluster_top_terms(&[0], &texts, 5);
+        // All stopwords should be filtered
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn cluster_top_terms_short_words_skipped() {
+        let texts = vec!["ab cd ef gh ij kl mn".into()];
+        let terms = cluster_top_terms(&[0], &texts, 5);
+        assert!(terms.is_empty()); // all < 3 chars
+    }
+}
+
 /// query API doesn't expose ORDER BY, so we sort client-side after
 /// fetching `[0..offset+limit]`. See `query_documents` for the
 /// scaling envelope and the migration path off this implementation.

@@ -442,4 +442,23 @@ mod tests {
             "should not include raw HTML open-tag: {:?}", doc.full_text
         );
     }
+
+    #[test]
+    fn extract_eml_empty_body() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("empty.eml");
+        std::fs::write(&p, "From: test@example.com\nSubject: Empty\n\n").unwrap();
+        let doc = extract(&p).unwrap();
+        assert!(doc.full_text.trim().is_empty() || doc.full_text.contains("Empty"));
+    }
+
+    #[test]
+    fn extract_eml_no_headers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("noheader.eml");
+        std::fs::write(&p, "Just plain text with no headers at all.").unwrap();
+        let doc = extract(&p).unwrap();
+        // Should not panic — falls back to raw text
+        assert!(!doc.full_text.is_empty());
+    }
 }

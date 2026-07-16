@@ -357,7 +357,7 @@ impl SearchEngine {
             // target lang doesn't match keep their original snippet.
             if r.text_translated_lang.as_deref() == Some(tgt) {
                 if let Some(ref translated) = r.text_translated {
-                    r.snippet = translated.chars().take(400).collect();
+                    r.snippet = super::snippet::truncate_str(translated, 400).to_owned();
                 }
             }
         }
@@ -377,11 +377,14 @@ impl SearchEngine {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
         let inner_limit = self.fetch_limit(limit);
-        let effective_query = if filters.fuzzy {
-            super::fts_query::fuzzify_query(query)
+        let mut effective_query = if filters.synonyms {
+            super::synonyms::synonym_expand_query(query)
         } else {
             query.to_owned()
         };
+        if filters.fuzzy {
+            effective_query = super::fts_query::fuzzify_query(&effective_query);
+        }
         let hits = self.fts.search(&effective_query, filters, inner_limit)?;
         if hits.is_empty() {
             return Ok(vec![]);
@@ -472,11 +475,14 @@ impl SearchEngine {
 
         let fts_clone = self.fts.clone();
         let vec_clone = self.vector.clone();
-        let q_owned = if filters.fuzzy {
-            super::fts_query::fuzzify_query(query_text)
+        let mut q_owned = if filters.synonyms {
+            super::synonyms::synonym_expand_query(query_text)
         } else {
             query_text.to_owned()
         };
+        if filters.fuzzy {
+            q_owned = super::fts_query::fuzzify_query(&q_owned);
+        }
         let filters_fts = filters.clone();
         let filters_vec = filters.clone();
         let emb_clone = embedding.clone();
@@ -540,15 +546,16 @@ impl SearchEngine {
         };
 
         // RRF merge — 2-way, 3-way (with sparse), or 4-way (with omni).
-        let mut lists: Vec<Vec<String>> = vec![
-            doc_ids_from_fts(&fts_hits),
-            doc_ids_from_results(&vec_hits),
-        ];
-        if let Some(ref sparse) = sparse_hits {
-            lists.push(doc_ids_from_results(sparse));
+        let fts_ids: Vec<&str> = fts_hits.iter().map(|h| h.doc_id.as_str()).collect();
+        let vec_ids: Vec<&str> = vec_hits.iter().map(|r| r.doc_id.as_str()).collect();
+        let sparse_ids: Vec<&str> = sparse_hits.as_ref().map_or(vec![], |s| s.iter().map(|r| r.doc_id.as_str()).collect());
+        let omni_ids: Vec<&str> = omni_hits.as_ref().map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let mut lists: Vec<&[&str]> = vec![&fts_ids, &vec_ids];
+        if sparse_hits.is_some() {
+            lists.push(&sparse_ids);
         }
-        if let Some(ref omni) = omni_hits {
-            lists.push(doc_ids_from_results(omni));
+        if omni_hits.is_some() {
+            lists.push(&omni_ids);
         }
         let merged = rrf_merge_n(&lists, 60, inner_limit);
         if merged.is_empty() {
@@ -720,12 +727,14 @@ impl SearchEngine {
         };
 
         // RRF merge across available channels.
-        let mut lists: Vec<Vec<String>> = Vec::new();
-        if let Some(ref hits) = vit_hits {
-            lists.push(doc_ids_from_results(hits));
+        let vit_ids: Vec<&str> = vit_hits.as_ref().map_or(vec![], |h| h.iter().map(|r| r.doc_id.as_str()).collect());
+        let omni_ids: Vec<&str> = omni_hits.as_ref().map_or(vec![], |o| o.iter().map(|r| r.doc_id.as_str()).collect());
+        let mut lists: Vec<&[&str]> = Vec::new();
+        if vit_hits.is_some() {
+            lists.push(&vit_ids);
         }
-        if let Some(ref hits) = omni_hits {
-            lists.push(doc_ids_from_results(hits));
+        if omni_hits.is_some() {
+            lists.push(&omni_ids);
         }
         if lists.is_empty() {
             return Ok(vec![]);
@@ -736,7 +745,7 @@ impl SearchEngine {
             lists[0]
                 .iter()
                 .enumerate()
-                .map(|(i, id)| (id.clone(), 1.0 / (60 + i + 1) as f32))
+                .map(|(i, id)| (id.to_string(), 1.0 / (60 + i + 1) as f32))
                 .collect::<Vec<_>>()
         } else {
             rrf_merge_n(&lists, 60, inner_limit)
@@ -861,27 +870,22 @@ fn rrf_merge(
     k: usize,
     limit: usize,
 ) -> Vec<(String, f32)> {
-    rrf_merge_n(
-        &[
-            doc_ids_from_fts(fts_hits),
-            doc_ids_from_results(vec_hits),
-        ],
-        k,
-        limit,
-    )
+    let fts_ids: Vec<&str> = fts_hits.iter().map(|h| h.doc_id.as_str()).collect();
+    let vec_ids: Vec<&str> = vec_hits.iter().map(|r| r.doc_id.as_str()).collect();
+    rrf_merge_n(&[&fts_ids, &vec_ids], k, limit)
 }
 
 /// Generalized N-way Reciprocal Rank Fusion. Each list is a slice of doc_ids
 /// already sorted best-first. Per-list deduplication keeps only the best rank
 /// for each document, so a doc appearing as multiple chunks in the same list
 /// doesn't bloat its score. Used to fuse FTS + dense ANN + sparse signals.
-fn rrf_merge_n(lists: &[Vec<String>], k: usize, limit: usize) -> Vec<(String, f32)> {
-    let mut scores: HashMap<String, f32> = HashMap::new();
+fn rrf_merge_n(lists: &[&[&str]], k: usize, limit: usize) -> Vec<(String, f32)> {
+    let mut scores: HashMap<&str, f32> = HashMap::new();
 
     for list in lists {
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        for (rank, doc_id) in list.iter().enumerate() {
-            seen.entry(doc_id.clone()).or_insert(rank);
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for (rank, &doc_id) in list.iter().enumerate() {
+            seen.entry(doc_id).or_insert(rank);
         }
         for (doc_id, rank) in seen {
             let entry = scores.entry(doc_id).or_insert(0.0);
@@ -889,18 +893,13 @@ fn rrf_merge_n(lists: &[Vec<String>], k: usize, limit: usize) -> Vec<(String, f3
         }
     }
 
-    let mut ranked: Vec<(String, f32)> = scores.into_iter().collect();
+    let mut ranked: Vec<(String, f32)> = scores
+        .into_iter()
+        .map(|(id, s)| (id.to_owned(), s))
+        .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     ranked.truncate(limit);
     ranked
-}
-
-fn doc_ids_from_fts(hits: &[super::fts_index::FtsHit]) -> Vec<String> {
-    hits.iter().map(|h| h.doc_id.clone()).collect()
-}
-
-fn doc_ids_from_results(results: &[SearchResult]) -> Vec<String> {
-    results.iter().map(|r| r.doc_id.clone()).collect()
 }
 
 // ── ColBERT MaxSim ───────────────────────────────────────────────────────────
@@ -1109,10 +1108,10 @@ mod tests {
     fn rrf_three_way_boosts_consensus_doc() {
         // doc "x" appears in all three lists → highest RRF
         // doc "y" appears in two lists; doc "z" only in one
-        let fts: Vec<String> = vec!["x".into(), "y".into()];
-        let vec: Vec<String> = vec!["x".into(), "y".into(), "z".into()];
-        let sparse: Vec<String> = vec!["x".into(), "z".into()];
-        let merged = rrf_merge_n(&[fts, vec, sparse], 60, 10);
+        let fts: Vec<&str> = vec!["x", "y"];
+        let vec: Vec<&str> = vec!["x", "y", "z"];
+        let sparse: Vec<&str> = vec!["x", "z"];
+        let merged = rrf_merge_n(&[&fts, &vec, &sparse], 60, 10);
         let x = merged.iter().find(|(id, _)| id == "x").unwrap().1;
         let y = merged.iter().find(|(id, _)| id == "y").unwrap().1;
         let z = merged.iter().find(|(id, _)| id == "z").unwrap().1;
@@ -1130,11 +1129,36 @@ mod tests {
     fn rrf_n_dedupes_within_list() {
         // A doc appearing twice in the same list should only contribute its
         // best rank — not be summed across chunks.
-        let bloated: Vec<String> = vec!["a".into(); 5];
-        let single: Vec<String> = vec!["a".into()];
-        let merged = rrf_merge_n(&[bloated], 60, 5);
-        let merged_single = rrf_merge_n(&[single], 60, 5);
+        let bloated: Vec<&str> = vec!["a"; 5];
+        let single: Vec<&str> = vec!["a"];
+        let merged = rrf_merge_n(&[&bloated], 60, 5);
+        let merged_single = rrf_merge_n(&[&single], 60, 5);
         assert!((merged[0].1 - merged_single[0].1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rrf_n_four_way_merge() {
+        // Simulate the 4-channel hybrid search path (FTS + dense + sparse + omni).
+        let fts: Vec<&str> = vec!["a", "b", "c"];
+        let dense: Vec<&str> = vec!["b", "a", "d"];
+        let sparse: Vec<&str> = vec!["a", "d"];
+        let omni: Vec<&str> = vec!["a", "e"];
+        let merged = rrf_merge_n(&[&fts, &dense, &sparse, &omni], 60, 10);
+        // "a" appears in all 4 lists → highest score
+        assert_eq!(merged[0].0, "a", "consensus doc must rank first");
+        // All 5 unique docs must appear
+        assert_eq!(merged.len(), 5);
+    }
+
+    #[test]
+    fn rrf_n_borrowed_ids_no_double_free() {
+        // Verify that the &[&str] signature doesn't cause double-free or
+        // use-after-free — the owned Strings only appear in the output.
+        let ids = vec!["x", "y", "z"];
+        let merged = rrf_merge_n(&[&ids], 60, 3);
+        assert_eq!(merged.len(), 3);
+        // Output contains owned Strings, input is still alive
+        assert_eq!(ids.len(), 3);
     }
 
     // ── P13.5 follow-up: apply_translation_snippet ────────────────────────

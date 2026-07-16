@@ -234,6 +234,10 @@ enum Command {
         /// OutputIntent). Only affects `--render pdf`; ignored otherwise.
         #[arg(long)]
         pdfa: bool,
+        /// Stamp text to overlay on each page of the exported PDF. Only affects
+        /// `--render pdf`; ignored otherwise. Example: `--stamp "CONFIDENTIAL"`.
+        #[arg(long)]
+        stamp: Option<String>,
         /// Pre-processor: super-resolve low-resolution pages (PAN 4×) before
         /// OCR — helps small scans / screenshots / faxes. Needs `crispembed`.
         #[arg(long)]
@@ -338,6 +342,17 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Apply a zoned OCR template to an image — crop + OCR each named zone.
+    Zone {
+        /// Image file to process (PNG/JPG/TIFF/…).
+        file: PathBuf,
+        /// Template name (as created via the GUI or `template_create` command).
+        #[arg(long)]
+        template: String,
+        /// App data directory (to locate templates.db).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Emit shell-completion scripts to stdout.
     Completion {
         /// Target shell.
@@ -388,6 +403,11 @@ enum Command {
     Pdf {
         #[command(subcommand)]
         cmd: PdfCmd,
+    },
+    /// DOCX surgery — validate, analyze, headings, restyle, notes.
+    Docx {
+        #[command(subcommand)]
+        cmd: DocxCmd,
     },
     /// Watch a folder for new files and print detected paths to stdout.
     /// Headless equivalent of the GUI folder-watcher. Runs until interrupted
@@ -1276,6 +1296,132 @@ enum PdfCmd {
         #[arg(long)]
         keywords: Option<String>,
     },
+    /// Decrypt a password-protected PDF.
+    Decrypt {
+        file: PathBuf,
+        /// Password to unlock the PDF.
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Encrypt a PDF with password protection and permissions.
+    Encrypt {
+        file: PathBuf,
+        /// Owner password (full access).
+        #[arg(long)]
+        owner_password: String,
+        /// User password (restricted access). Empty = no user password needed to view.
+        #[arg(long, default_value = "")]
+        user_password: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Disable printing.
+        #[arg(long)]
+        no_print: bool,
+        /// Disable text/image copying.
+        #[arg(long)]
+        no_copy: bool,
+        /// Disable content modification.
+        #[arg(long)]
+        no_modify: bool,
+    },
+    /// Strip all hidden metadata, JavaScript, thumbnails, annotations.
+    Sanitise {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check if a PDF is encrypted.
+    IsEncrypted {
+        file: PathBuf,
+    },
+    /// Detect digital signatures in a PDF.
+    Signatures {
+        file: PathBuf,
+    },
+    /// Redact text patterns from PDF metadata.
+    Redact {
+        file: PathBuf,
+        /// Comma-separated text patterns to redact.
+        #[arg(long)]
+        patterns: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Sign a PDF with a PKCS#12 certificate.
+    Sign {
+        file: PathBuf,
+        /// Path to PFX/P12 certificate file.
+        #[arg(long)]
+        cert: PathBuf,
+        /// Password for the certificate.
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// Reason for signing.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Location.
+        #[arg(long)]
+        location: Option<String>,
+    },
+    /// Add PDF/A-2b conformance metadata to an existing PDF.
+    Pdfa {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DocxCmd {
+    /// Validate DOCX internal structure (7 checks).
+    Check { file: PathBuf },
+    /// Show document properties — page geometry, fonts, styles.
+    Info { file: PathBuf },
+    /// Infer heading levels from direct formatting.
+    Headings { file: PathBuf },
+    /// Restyle: graft source body into blueprint template.
+    Restyle {
+        /// Source document with the content.
+        #[arg(long)]
+        source: PathBuf,
+        /// Blueprint document with styles/headers/footers.
+        #[arg(long)]
+        blueprint: PathBuf,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Convert footnotes ↔ endnotes.
+    ConvertNotes {
+        file: PathBuf,
+        /// Target kind: "footnotes" or "endnotes".
+        #[arg(long)]
+        to: String,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Strip revision tracking attributes (rsids, paraIds, textIds).
+    StripRsids {
+        file: PathBuf,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Normalize quote marks to a specific style.
+    NormalizeQuotes {
+        file: PathBuf,
+        /// Quote style: german, english, french, swiss, german_guillemets.
+        #[arg(long, default_value = "english")]
+        style: String,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// Parse a page-range string like "1,3,5-7" into 0-based indices.
@@ -1405,6 +1551,7 @@ pub fn run() -> ExitCode {
         Command::Images { data_dir, cmd } => cmd_images(cli.format, data_dir, cmd),
         Command::Sync { data_dir, cmd } => cmd_sync(cli.format, data_dir, cmd),
         Command::Pdf { cmd } => cmd_pdf(cli.format, cmd),
+        Command::Docx { cmd } => cmd_docx(cli.format, cmd),
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
@@ -1427,14 +1574,14 @@ pub fn run() -> ExitCode {
         Command::Ocr {
             file, engine, source_type, det_model, rec_model, cleanup, denoise,
             nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa,
+            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
         } => cmd_ocr(
             cli.format, file, engine, source_type, det_model, rec_model, cleanup,
             denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa,
+            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
             sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
             restore_engine, restore_task, dewarp_engine,
             vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
@@ -1445,6 +1592,9 @@ pub fn run() -> ExitCode {
         Command::MathOcr { file, model } => cmd_math_ocr(file, model),
         Command::Table { file, ocr_model, grid, out } => {
             cmd_table(cli.format, file, ocr_model, grid, out)
+        }
+        Command::Zone { file, template, data_dir } => {
+            cmd_zone(cli.format, file, template, data_dir)
         }
     };
 
@@ -1482,6 +1632,7 @@ fn cmd_ocr(
     render: String,
     out_path: Option<PathBuf>,
     pdfa: bool,
+    stamp: Option<String>,
     sr: bool,
     sr_model: Option<String>,
     sr_max_px: i32,
@@ -1636,6 +1787,17 @@ fn cmd_ocr(
             print!("{}", String::from_utf8_lossy(&bytes));
         }
     }
+    // Apply stamp to the output PDF if requested.
+    if let (Some(ref text), Some(ref p)) = (&stamp, &out_path) {
+        if !text.is_empty() && fmt == OcrOutputFormat::Pdf {
+            let config = crate::pdf_ops::WatermarkConfig {
+                text: text.clone(), font_size: 10.0, angle: 0.0,
+                opacity: 0.5, color: [0.3, 0.3, 0.3],
+            };
+            crate::pdf_ops::add_watermark(p, &config, None, p)?;
+            eprintln!("Stamp applied: {text}");
+        }
+    }
     Ok(())
 }
 
@@ -1775,6 +1937,60 @@ fn cmd_table(
     Ok(())
 }
 
+
+fn cmd_zone(
+    out: OutFormat,
+    file: PathBuf,
+    template_name: String,
+    data_dir: Option<PathBuf>,
+) -> Result<(), String> {
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+    let data_dir = data_dir.unwrap_or_else(|| {
+        // Same fallback as other CLI commands that need the data dir.
+        #[cfg(target_os = "macos")]
+        let base = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("Library/Application Support"))
+            .unwrap_or_else(|_| PathBuf::from("."));
+        #[cfg(not(target_os = "macos"))]
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+        base.join("com.crispstrobe.crispsorter")
+    });
+    let store = crate::index::templates::TemplateStore::open_or_create(&data_dir)
+        .map_err(|e| format!("opening template store: {e}"))?;
+    let template = store.get_template_by_name(&template_name)
+        .map_err(|e| format!("looking up template: {e}"))?
+        .ok_or_else(|| format!("template '{}' not found", template_name))?;
+
+    let results = crate::index::zone_ocr::extract_zones(&file, &template)
+        .map_err(|e| format!("zone extraction: {e:#}"))?;
+
+    match out {
+        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&results).unwrap_or_default()),
+        OutFormat::Text => {
+            if results.is_empty() {
+                println!("No zones in template '{}'.", template_name);
+            } else {
+                for r in &results {
+                    let text = r.text.trim();
+                    if text.is_empty() {
+                        println!("  {}: (empty)", r.label);
+                    } else {
+                        println!("  {}: {}", r.label, text);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 // ── version + doctor ────────────────────────────────────────────────────────
 
@@ -2260,6 +2476,12 @@ enum IndexCmd {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    /// Cluster documents by embedding similarity (K-means).
+    Cluster {
+        /// Number of clusters.
+        #[arg(long, default_value_t = 5)]
+        k: usize,
+    },
     /// List the most common tags in the index as a faceted count.
     TagFacets {
         /// Maximum tags to return.
@@ -2283,6 +2505,70 @@ enum IndexCmd {
     },
     /// List available embedder models from the CrispEmbed registry.
     ListModels,
+    /// Show version history for a document.
+    Versions {
+        /// Document ID or file path.
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Query the audit trail.
+    AuditLog {
+        /// Filter by action type (search, open, delete, ingest, export).
+        #[arg(long)]
+        action: Option<String>,
+        /// Filter by document ID.
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// List retention policy rules.
+    RetentionRules,
+    /// Add a retention policy rule.
+    RetentionAdd {
+        #[arg(long)]
+        name: String,
+        /// "folder" or "tag"
+        #[arg(long, default_value = "folder")]
+        match_type: String,
+        #[arg(long)]
+        match_value: String,
+        #[arg(long)]
+        archive_after_days: Option<i64>,
+        #[arg(long)]
+        delete_after_days: Option<i64>,
+    },
+    /// Compare two documents by their doc_ids.
+    Compare {
+        #[arg(long)]
+        doc_id_a: String,
+        #[arg(long)]
+        doc_id_b: String,
+    },
+    /// Build the entity co-occurrence knowledge graph.
+    EntityGraph {
+        #[arg(long, default_value_t = 2)]
+        min_cooccurrence: usize,
+        #[arg(long, default_value_t = 100)]
+        max_nodes: usize,
+    },
+    /// Fetch and parse an RSS/Atom feed.
+    Feed {
+        /// Feed URL to fetch and parse.
+        url: String,
+    },
+    /// Export a document's text to DOCX or HTML.
+    Export {
+        /// Document ID to export.
+        doc_id: String,
+        /// Output format: docx or html.
+        #[arg(long, default_value = "html")]
+        format: String,
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 /// Return the OS-default app data dir for CrispSorter, or the override.
@@ -3469,6 +3755,31 @@ async fn cmd_index_async(
                 }
             }
         }
+        IndexCmd::Cluster { k } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await
+                .map_err(|e| e.to_string())?;
+            let clusters = local.cluster_documents(k)
+                .await
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&clusters).unwrap_or_default());
+                }
+                OutFormat::Text => {
+                    if clusters.is_empty() {
+                        println!("No documents with embeddings to cluster.");
+                    } else {
+                        for c in &clusters {
+                            println!("Cluster {} — {} ({} docs)", c.id + 1, c.name, c.doc_count);
+                            for t in &c.sample_titles {
+                                println!("  · {}", t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         IndexCmd::TagFacets { limit } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
@@ -3579,6 +3890,146 @@ async fn cmd_index_async(
                     OutFormat::Text => println!("CrispEmbed not compiled in; no model registry available."),
                 }
             }
+        }
+        IndexCmd::Versions { doc_id, path } => {
+            let store = crate::index::versioning::VersionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let versions = store.get_versions(doc_id.as_deref(), path.as_deref())
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&versions).unwrap_or_default()),
+                OutFormat::Text => {
+                    if versions.is_empty() { println!("No version history found."); }
+                    else {
+                        for v in &versions {
+                            println!("v{} — {} ({})", v.version_seq, v.doc_id,
+                                v.title.as_deref().unwrap_or("untitled"));
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::AuditLog { action, doc_id, limit } => {
+            let log = crate::audit::AuditLog::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let entries = log.query(None, action.as_deref(), doc_id.as_deref(), limit, 0)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entries).unwrap_or_default()),
+                OutFormat::Text => {
+                    if entries.is_empty() { println!("No audit entries."); }
+                    else {
+                        for e in &entries {
+                            println!("[{}] {} {} — {}",
+                                e.user_agent, e.action,
+                                e.doc_id.as_deref().unwrap_or(""),
+                                e.detail);
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::RetentionRules => {
+            let store = crate::index::retention::RetentionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let rules = store.list_rules().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rules).unwrap_or_default()),
+                OutFormat::Text => {
+                    if rules.is_empty() { println!("No retention rules."); }
+                    else {
+                        for r in &rules {
+                            println!("{}: {} match={} archive={}d delete={}d {}",
+                                r.id, r.name, r.match_value,
+                                r.archive_after_days.unwrap_or(-1),
+                                r.delete_after_days.unwrap_or(-1),
+                                if r.enabled { "ON" } else { "OFF" });
+                        }
+                    }
+                }
+            }
+        }
+        IndexCmd::RetentionAdd { name, match_type, match_value, archive_after_days, delete_after_days } => {
+            let store = crate::index::retention::RetentionStore::open_or_create(&data_dir)
+                .map_err(|e| e.to_string())?;
+            let id = store.add_rule(&name, &match_type, &match_value, archive_after_days, delete_after_days)
+                .map_err(|e| e.to_string())?;
+            eprintln!("Added retention rule #{id}: {name}");
+        }
+        IndexCmd::Compare { doc_id_a, doc_id_b } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let text_a = local.fetch_full_text(&doc_id_a).await.map_err(|e| e.to_string())?;
+            let text_b = local.fetch_full_text(&doc_id_b).await.map_err(|e| e.to_string())?;
+            let result = crate::index::comparison::compare_texts(&text_a, &text_b);
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default()),
+                OutFormat::Text => {
+                    println!("Words A: {} | Words B: {} | Added: {} | Removed: {} | Changed: {:.1}%",
+                        result.total_words_a, result.total_words_b,
+                        result.added_words, result.removed_words,
+                        result.changed_ratio * 100.0);
+                }
+            }
+        }
+        IndexCmd::EntityGraph { min_cooccurrence: _, max_nodes } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let facets = local.tag_facets(&Default::default(), 500)
+                .await.map_err(|e| e.to_string())?;
+            // Filter to entity tags
+            let entity_tags: Vec<_> = facets.into_iter()
+                .filter(|f| f.tag.contains(':') && matches!(f.tag.split(':').next().unwrap_or(""), "person" | "org" | "loc" | "date"))
+                .take(max_nodes)
+                .collect();
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entity_tags).unwrap_or_default()),
+                OutFormat::Text => {
+                    if entity_tags.is_empty() { println!("No entity tags found (run NER at ingest)."); }
+                    else {
+                        for t in &entity_tags { println!("  {} ({})", t.tag, t.count); }
+                    }
+                }
+            }
+        }
+        #[cfg(feature = "desktop")]
+        IndexCmd::Feed { url } => {
+            let feed = crate::extractors::feed::fetch_and_parse(&url).await
+                .map_err(|e| format!("feed: {e}"))?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&feed).unwrap_or_default()),
+                OutFormat::Text => {
+                    println!("Feed: {}", feed.feed_title.as_deref().unwrap_or("(untitled)"));
+                    println!("{} entries", feed.entries.len());
+                    for e in feed.entries.iter().take(10) {
+                        println!("  · {} — {}", e.title, e.url.as_deref().unwrap_or(""));
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "desktop"))]
+        IndexCmd::Feed { .. } => {
+            return Err("feed command requires --features desktop".into());
+        }
+        IndexCmd::Export { doc_id, format, out: out_path } => {
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+                .await.map_err(|e| e.to_string())?;
+            let text = local.fetch_full_text(&doc_id).await.map_err(|e| e.to_string())?;
+            let title = doc_id.clone(); // Use doc_id as fallback title
+            match format.as_str() {
+                #[cfg(feature = "desktop")]
+                "docx" => {
+                    crate::extractors::export::export_to_docx(&title, &text, &out_path)
+                        .map_err(|e| format!("docx export: {e}"))?;
+                }
+                #[cfg(feature = "desktop")]
+                "html" => {
+                    crate::extractors::export::export_to_html(&title, &text, &out_path)
+                        .map_err(|e| format!("html export: {e}"))?;
+                }
+                _ => return Err(format!("Unknown export format: {format}. Use docx or html.")),
+            }
+            eprintln!("Exported → {}", out_path.display());
         }
     }
     Ok(())
@@ -3775,6 +4226,88 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             let edits = pdf_ops::MetadataEdit { title, author, subject, keywords };
             pdf_ops::edit_metadata(&file, &edits, &out_path)?;
             eprintln!("Updated metadata → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Decrypt { file, password, out: out_path } => {
+            pdf_ops::decrypt_pdf(&file, &password, &out_path)?;
+            eprintln!("Decrypted → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Encrypt { file, owner_password, user_password, out: out_path, no_print, no_copy, no_modify } => {
+            let config = pdf_ops::EncryptConfig {
+                owner_password,
+                user_password,
+                allow_print: !no_print,
+                allow_copy: !no_copy,
+                allow_modify: !no_modify,
+                allow_annotate: !no_modify,
+                allow_fill_forms: true,
+                allow_assemble: !no_modify,
+                allow_high_quality_print: !no_print,
+            };
+            pdf_ops::encrypt_pdf(&file, &config, &out_path)?;
+            eprintln!("Encrypted → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Sanitise { file, out: out_path } => {
+            let stripped = pdf_ops::sanitise_pdf(&file, &out_path)?;
+            if stripped.is_empty() {
+                eprintln!("No hidden metadata found → {}", out_path.display());
+            } else {
+                eprintln!("Stripped: {} → {}", stripped.join(", "), out_path.display());
+            }
+            Ok(())
+        }
+        PdfCmd::IsEncrypted { file } => {
+            let enc = pdf_ops::is_encrypted(&file)?;
+            println!("{}", if enc { "encrypted" } else { "not encrypted" });
+            Ok(())
+        }
+        PdfCmd::Redact { file, patterns, out: out_path } => {
+            let pats: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
+            let count = pdf_ops::redact_text_patterns(&file, &pats, &out_path)?;
+            eprintln!("Redacted {count} patterns → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Sign { file, cert, password, out: out_path, reason, location } => {
+            let config = pdf_ops::SignConfig {
+                cert_path: cert.to_string_lossy().into_owned(),
+                cert_password: password,
+                reason,
+                location,
+                contact: None,
+            };
+            pdf_ops::sign_pdf(&file, &config, &out_path)?;
+            eprintln!("Signed → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Pdfa { file, out: out_path } => {
+            pdf_ops::convert_to_pdfa(&file, &out_path)?;
+            eprintln!("PDF/A-2b metadata added → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Signatures { file } => {
+            let sigs = pdf_ops::detect_signatures(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&sigs).unwrap_or_default()),
+                OutFormat::Text => {
+                    if sigs.is_empty() {
+                        println!("No digital signatures found.");
+                    } else {
+                        for (i, s) in sigs.iter().enumerate() {
+                            println!("Signature {}:", i + 1);
+                            if let Some(ref n) = s.name { println!("  Signer:     {n}"); }
+                            if let Some(ref r) = s.reason { println!("  Reason:     {r}"); }
+                            if let Some(ref l) = s.location { println!("  Location:   {l}"); }
+                            if let Some(ref d) = s.date { println!("  Date:       {d}"); }
+                            if let Some(ref f) = s.filter { println!("  Filter:     {f}"); }
+                            if let Some(ref sf) = s.sub_filter { println!("  Sub-filter: {sf}"); }
+                            if let Some(p) = s.page { println!("  Page:       {p}"); }
+                            println!("  ByteRange:  {}", if s.has_byte_range { "yes" } else { "no" });
+                        }
+                    }
+                }
+            }
             Ok(())
         }
     }
@@ -7796,6 +8329,143 @@ fn chrono_like(epoch_secs: u32) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+// ── P30 — DOCX surgery CLI ──────────────────────────────────────────────
+
+fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
+    match cmd {
+        DocxCmd::Check { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let report = crisp_docx_core::check_package(&pkg).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let result = crate::docx_tools::DocxCheckResult {
+                        valid: report.issues.is_empty(),
+                        ok: report.ok,
+                        issues: report.issues,
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                }
+                OutFormat::Text => {
+                    for item in &report.ok {
+                        println!("  ✓ {item}");
+                    }
+                    for item in &report.issues {
+                        println!("  ✗ {item}");
+                    }
+                    if report.issues.is_empty() {
+                        println!("Valid.");
+                    } else {
+                        println!("{} issue(s) found.", report.issues.len());
+                    }
+                }
+            }
+            if report.issues.is_empty() { Ok(()) } else {
+                Err(format!("{} issue(s)", report.issues.len()))
+            }
+        }
+        DocxCmd::Info { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let schema = crisp_docx_core::analyze_blueprint(&pkg).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let bp = crate::docx_tools::DocxBlueprint {
+                        sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
+                            page_width_pt: s.page_width_pt,
+                            page_height_pt: s.page_height_pt,
+                            left_margin_pt: s.left_margin_pt,
+                            right_margin_pt: s.right_margin_pt,
+                            top_margin_pt: s.top_margin_pt,
+                            bottom_margin_pt: s.bottom_margin_pt,
+                            orientation: s.orientation.clone(),
+                        }).collect(),
+                        default_font: schema.default_font.clone(),
+                        default_font_size_pt: schema.default_font_size_pt,
+                        style_count: schema.styles.styles.len(),
+                    };
+                    println!("{}", serde_json::to_string_pretty(&bp).unwrap());
+                }
+                OutFormat::Text => {
+                    println!("Font:     {} {:.0}pt", schema.default_font, schema.default_font_size_pt);
+                    println!("Styles:   {}", schema.styles.styles.len());
+                    println!("Sections: {}", schema.sections.len());
+                    for (i, s) in schema.sections.iter().enumerate() {
+                        let orient = s.orientation.as_deref().unwrap_or("portrait");
+                        println!(
+                            "  §{}: {:.0}×{:.0} pt ({orient}), margins L{:.0} R{:.0} T{:.0} B{:.0}",
+                            i + 1, s.page_width_pt, s.page_height_pt,
+                            s.left_margin_pt, s.right_margin_pt,
+                            s.top_margin_pt, s.bottom_margin_pt,
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        DocxCmd::Headings { file } => {
+            let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let inferences = crisp_docx_core::infer_heading_levels(&pkg, None)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => {
+                    let items: Vec<crate::docx_tools::InferredHeading> = inferences.iter().map(|h| {
+                        crate::docx_tools::InferredHeading { level: h.heading_level, text: h.preview.clone() }
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&items).unwrap());
+                }
+                OutFormat::Text => {
+                    if inferences.is_empty() {
+                        println!("No headings inferred (document may already have explicit heading styles).");
+                    } else {
+                        for h in &inferences {
+                            let indent = "  ".repeat(h.heading_level.saturating_sub(1) as usize);
+                            println!("{indent}H{} {}", h.heading_level, h.preview);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        DocxCmd::Restyle { source, blueprint, out: out_path } => {
+            let source_pkg = crisp_docx_core::open(&source).map_err(|e| e.to_string())?;
+            let mut blueprint_pkg = crisp_docx_core::open(&blueprint).map_err(|e| e.to_string())?;
+            crisp_docx_core::transplant_body(&mut blueprint_pkg, &source_pkg)
+                .map_err(|e| format!("transplant: {e}"))?;
+            crisp_docx_core::save(&blueprint_pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Restyled → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::ConvertNotes { file, to, out: out_path } => {
+            let target = match to.to_ascii_lowercase().as_str() {
+                "footnotes" | "footnote" => crisp_docx_core::NotesKind::Footnotes,
+                "endnotes" | "endnote" => crisp_docx_core::NotesKind::Endnotes,
+                other => return Err(format!("unknown target '{other}', expected 'footnotes' or 'endnotes'")),
+            };
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            crisp_docx_core::convert_notes_kind(&mut pkg, target).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Converted notes → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::StripRsids { file, out: out_path } => {
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let count = crisp_docx_core::strip_rsids(&mut pkg).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Stripped {count} rsid attributes → {}", out_path.display());
+            Ok(())
+        }
+        DocxCmd::NormalizeQuotes { file, style, out: out_path } => {
+            let qs = crate::docx_tools::parse_quote_style(&style)?;
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            crisp_docx_core::normalize_quotes_in_package(
+                &mut pkg, qs, crisp_docx_core::QuoteOptions::default(),
+            ).map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!("Normalized quotes → {}", out_path.display());
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8516,5 +9186,65 @@ mod tests {
         assert_eq!(body, "hi\n");
 
         let _ = std::fs::remove_file(&base);
+    }
+
+    // ── parse_page_spec tests ─────────────────────────────────────────
+    #[test]
+    fn parse_page_spec_single() {
+        assert_eq!(super::parse_page_spec("3", 10).unwrap(), vec![2]);
+    }
+    #[test]
+    fn parse_page_spec_multiple() {
+        assert_eq!(super::parse_page_spec("1,3,5", 10).unwrap(), vec![0, 2, 4]);
+    }
+    #[test]
+    fn parse_page_spec_range() {
+        assert_eq!(super::parse_page_spec("2-4", 10).unwrap(), vec![1, 2, 3]);
+    }
+    #[test]
+    fn parse_page_spec_mixed() {
+        assert_eq!(super::parse_page_spec("1,3-5,7", 10).unwrap(), vec![0, 2, 3, 4, 6]);
+    }
+    #[test]
+    fn parse_page_spec_out_of_range() {
+        assert!(super::parse_page_spec("11", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_zero() {
+        assert!(super::parse_page_spec("0", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_bad_input() {
+        assert!(super::parse_page_spec("abc", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_reversed_range() {
+        assert!(super::parse_page_spec("5-3", 10).is_err());
+    }
+    #[test]
+    fn parse_page_spec_whitespace() {
+        assert_eq!(super::parse_page_spec(" 1 , 3 ", 10).unwrap(), vec![0, 2]);
+    }
+
+    // ── parse_split_ranges tests ──────────────────────────────────────
+    #[test]
+    fn parse_split_ranges_single() {
+        assert_eq!(super::parse_split_ranges("1-5", 10).unwrap(), vec![(0, 5)]);
+    }
+    #[test]
+    fn parse_split_ranges_multiple() {
+        assert_eq!(super::parse_split_ranges("1-5,6-10", 10).unwrap(), vec![(0, 5), (5, 10)]);
+    }
+    #[test]
+    fn parse_split_ranges_out_of_range() {
+        assert!(super::parse_split_ranges("1-15", 10).is_err());
+    }
+    #[test]
+    fn parse_split_ranges_missing_end() {
+        assert!(super::parse_split_ranges("5", 10).is_err());
+    }
+    #[test]
+    fn parse_split_ranges_bad_input() {
+        assert!(super::parse_split_ranges("a-b", 10).is_err());
     }
 }

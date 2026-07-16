@@ -24,7 +24,8 @@
 //! * **HTML** — basic tag-stripping via the regex crate. Lower
 //!   fidelity than scraper but zero new heavy deps.
 //!
-//! Deferred to follow-ups (heavier deps): docx (zip + xml-rs), epub
+//! Deferred to follow-ups (heavier deps): epub
+//! P30.2: docx now handled via crisp-docx-core (extract + heading inference)
 //! (epub crate), rtf (rtf-grimoire). Once those land, this module
 //! grows new dispatch arms; the public API stays the same.
 
@@ -32,7 +33,13 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 pub mod audio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod clipboard;
 pub mod eml;
+#[cfg(feature = "desktop")]
+pub mod export;
+#[cfg(feature = "desktop")]
+pub mod feed;
 pub mod html;
 pub mod layout;
 pub mod math_ocr;
@@ -143,6 +150,8 @@ pub fn supported(ext: &str) -> bool {
             // HTML gets its own arm (tag-strip), but list it here too
             // so callers can pre-filter accept lists with `supported`.
             | "html" | "htm"
+            // Word documents (crisp-docx-core)
+            | "docx"
             // Email formats
             | "eml" | "mbox"
             // Source code (UTF-8 read)
@@ -376,6 +385,18 @@ pub struct OcrCleanupSpec {
     pub deskew_max_angle: f32,
     #[serde(default)]
     pub denoise: bool, // NAFNet tier-2
+    /// CrispEmbed v0.13.0+ — remove speckle noise (salt-and-pepper).
+    #[serde(default)]
+    pub despeckle: bool,
+    /// CrispEmbed v0.13.0+ — remove black borders/edges from scans.
+    #[serde(default)]
+    pub blackfilter: bool,
+    /// CrispEmbed v0.13.0+ — detect and split two-up book spreads.
+    #[serde(default)]
+    pub page_split: bool,
+    /// CrispEmbed v0.13.0+ — auto-crop to content bounding box.
+    #[serde(default)]
+    pub auto_crop: bool,
 }
 
 fn default_sauvola_k() -> f32 { 0.2 }
@@ -399,6 +420,10 @@ impl Default for OcrCleanupSpec {
             border_threshold: 0.15,
             deskew_max_angle: 15.0,
             denoise: false,
+            despeckle: false,
+            blackfilter: false,
+            page_split: false,
+            auto_crop: false,
         }
     }
 }
@@ -634,6 +659,60 @@ impl Default for ExtractOptions {
             ocr_pipeline: OcrPipelineConfig::default(),
         }
     }
+}
+
+/// P30.2 — Extract text + heading structure from a `.docx` file via
+/// `crisp-docx-core`.  Infers heading levels from bold/font-size
+/// formatting when explicit heading styles are absent.
+fn extract_docx(path: &Path, ext: &str) -> Result<ExtractedDocument> {
+    let pkg = crisp_docx_core::open(path)
+        .with_context(|| format!("opening DOCX: {}", path.display()))?;
+
+    let paragraphs = crisp_docx_core::extract_paragraph_texts(&pkg)
+        .with_context(|| format!("extracting paragraphs: {}", path.display()))?;
+
+    let full_text = paragraphs.join("\n");
+
+    // Infer heading structure from direct formatting.
+    let inferred = crisp_docx_core::infer_heading_levels(&pkg, None).unwrap_or_default();
+    let headings: Vec<String> = inferred.iter().map(|h| h.preview.clone()).collect();
+
+    // Prepend Markdown-style heading markers to the full text for BM25 boost.
+    let heading_prefix = if inferred.is_empty() {
+        String::new()
+    } else {
+        let mut buf = String::new();
+        for h in &inferred {
+            for _ in 0..h.heading_level {
+                buf.push('#');
+            }
+            buf.push(' ');
+            buf.push_str(&h.preview);
+            buf.push('\n');
+        }
+        buf.push('\n');
+        buf
+    };
+
+    let enriched_text = if heading_prefix.is_empty() {
+        full_text
+    } else {
+        format!("{heading_prefix}{full_text}")
+    };
+
+    Ok(ExtractedDocument {
+        full_text: enriched_text,
+        headings,
+        ext: ext.to_string(),
+        language: None,
+        translated_text: None,
+        translated_to_lang: None,
+        audio: None,
+        image_exif: None,
+        source_url: None,
+        tags: vec![],
+        audio_pcm: None,
+    })
 }
 
 /// Run the appropriate extractor for `path`. Returns an empty
@@ -956,6 +1035,7 @@ pub fn extract_text_from_path_with_opts(
         }),
         "eml" => eml::extract(path),
         "mbox" => eml::extract_mbox(path),
+        "docx" => extract_docx(path, &ext),
         e if OCR_IMAGE_EXTS.contains(&e) => {
             // PLAN P7.8 — tiered OCR for images.
             // P13.7 Step 1+3 — image-side L1/L2/L3 + master-switch
@@ -1144,8 +1224,12 @@ pub fn extract_text_from_path_with_opts(
             // EPUBs with all chapters concatenated).  A min-length
             // check skips tiny inputs where LID would be unreliable
             // anyway.
-            let sample: String = doc.full_text.chars().take(2000).collect();
-            let trimmed = sample.trim();
+            // Slice at a char boundary near 2000 chars to avoid allocating.
+            let byte_end = doc.full_text.char_indices()
+                .nth(2000)
+                .map(|(i, _)| i)
+                .unwrap_or(doc.full_text.len());
+            let trimmed = doc.full_text[..byte_end].trim();
             if trimmed.len() >= 20 {
                 match text_lid::detect_language(trimmed, model_path, 2) {
                     Ok(r) => {
@@ -1469,7 +1553,7 @@ mod tests {
         assert!(supported("md"));
         assert!(supported("rs"));
         assert!(supported("HTML")); // case-insensitive
-        assert!(!supported("docx")); // deferred
+        assert!(supported("docx")); // P30.2: now handled via crisp-docx-core
         assert!(!supported("zip"));
         assert!(!supported(""));
     }
