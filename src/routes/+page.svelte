@@ -13,6 +13,7 @@
     import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
     import { CORE_TABS } from '$lib/tabs';
+    import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
@@ -318,9 +319,9 @@
             {#each CORE_TABS as tab (tab.id)}
                 {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
                 {@const Icon = tab.icon}
-                <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={(i18n.t.nav as Record<string, string>)[tab.id]}>
+                <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}>
                     <Icon size={20} />
-                    {#if !navCollapsed}<span>{(i18n.t.nav as Record<string, string>)[tab.id]}</span>{/if}
+                    {#if !navCollapsed}<span>{((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}</span>{/if}
                 </button>
             {/each}
         </div>
@@ -445,6 +446,8 @@
                 <OcrWorkbench />
             {:else if activeTab === 'pdf'}
                 <PdfTools />
+            {:else if activeTab === 'aitoolkit'}
+                <AIToolkitView />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />

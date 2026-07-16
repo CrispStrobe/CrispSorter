@@ -13,11 +13,14 @@ import {
 	ListChecks,
 	MessageSquare,
 	ScanText,
+	Sparkles,
 } from 'lucide-svelte';
 
 export interface TabDef {
 	id: string;
 	icon: Component<any>;
+	/** Fallback label when i18n.t.nav[id] is absent (e.g. grafted tabs). */
+	label?: string;
 	/** Render a divider before this tab. */
 	separatorBefore?: boolean;
 	/** Capabilities required to show this tab; undefined/empty = always visible. */
@@ -33,6 +36,7 @@ export const CORE_TABS: TabDef[] = [
 	{ id: 'translate', icon: Languages },
 	{ id: 'ocr', icon: ScanText },
 	{ id: 'pdf', icon: FileText },
+	{ id: 'aitoolkit', icon: Sparkles, label: 'AIToolkit', separatorBefore: true },
 ];
 
 /** Tabs whose required capabilities are all present. */
