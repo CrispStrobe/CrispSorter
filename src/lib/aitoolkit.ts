@@ -65,7 +65,13 @@ export class AIToolkitClient {
 		return out;
 	}
 	providers() {
-		return this.req<{ chat: string[] }>('/api/providers');
+		return this.req<{
+			chat: string[];
+			transcription: string[];
+			vision: string[];
+			image: string[];
+			ocr: string[];
+		}>('/api/providers');
 	}
 	chat(provider: string, model: string, text: string) {
 		return this.req<{ content: string }>('/api/chat/completions', {
@@ -73,13 +79,30 @@ export class AIToolkitClient {
 			body: JSON.stringify({ provider, model, messages: [{ role: 'user', content: text }] }),
 		});
 	}
-	async extract(file: File): Promise<{ text: string; extractor: string }> {
+	translate(provider: string, model: string, text: string, target: string) {
+		return this.req<{ text: string }>('/api/translate/text', {
+			method: 'POST',
+			body: JSON.stringify({ provider, model, text, target }),
+		});
+	}
+
+	private async multipart<T>(path: string, file: File, fields: Record<string, string>): Promise<T> {
 		const fd = new FormData();
 		fd.append('file', file);
+		for (const [k, v] of Object.entries(fields)) fd.append(k, v);
 		const headers = new Headers();
 		if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
-		const res = await fetch(`${this.baseUrl}/api/extract`, { method: 'POST', body: fd, headers });
+		const res = await fetch(`${this.baseUrl}${path}`, { method: 'POST', body: fd, headers });
 		if (!res.ok) throw new Error((await res.text()) || res.statusText);
 		return res.json();
+	}
+	extract(file: File) {
+		return this.multipart<{ text: string; extractor: string }>('/api/extract', file, {});
+	}
+	vision(provider: string, model: string, file: File, prompt: string) {
+		return this.multipart<{ text: string }>('/api/vision/analyze', file, { provider, model, prompt });
+	}
+	ocr(provider: string, model: string, file: File) {
+		return this.multipart<{ text: string }>('/api/ocr', file, { provider, model });
 	}
 }
