@@ -12,6 +12,7 @@
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
+    import { CORE_TABS } from '$lib/tabs';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
@@ -314,42 +315,14 @@
                 {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
             
-            <button class="nav-item" class:active={activeTab === 'batch'} onclick={() => activeTab = 'batch'} title={i18n.t.nav.batch}>
-                <ListChecks size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.batch}</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'} title={i18n.t.nav.chat}>
-                <MessageSquare size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.chat}</span>{/if}
-            </button>
-            
-            <button class="nav-item" class:active={activeTab === 'history'} onclick={() => activeTab = 'history'} title={i18n.t.nav.history}>
-                <Database size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.history}</span>{/if}
-            </button>
-
-            <div class="nav-separator"></div>
-
-            <button class="nav-item" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'} title={i18n.t.nav.catalog}>
-                <Library size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.catalog}</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'translate'} onclick={() => activeTab = 'translate'} title={i18n.t.nav.translate}>
-                <Languages size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.translate}</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'ocr'} onclick={() => activeTab = 'ocr'} title={i18n.t.nav.ocr}>
-                <ScanText size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.ocr}</span>{/if}
-            </button>
-
-            <button class="nav-item" class:active={activeTab === 'pdf'} onclick={() => activeTab = 'pdf'} title={i18n.t.nav.pdf}>
-                <FileText size={20} />
-                {#if !navCollapsed}<span>{i18n.t.nav.pdf}</span>{/if}
-            </button>
+            {#each CORE_TABS as tab (tab.id)}
+                {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
+                {@const Icon = tab.icon}
+                <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={(i18n.t.nav as Record<string, string>)[tab.id]}>
+                    <Icon size={20} />
+                    {#if !navCollapsed}<span>{(i18n.t.nav as Record<string, string>)[tab.id]}</span>{/if}
+                </button>
+            {/each}
         </div>
 
         <div class="nav-bottom">
