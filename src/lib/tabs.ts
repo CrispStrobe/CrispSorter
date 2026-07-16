@@ -7,13 +7,17 @@
 import type { Component } from 'svelte';
 import {
 	Database,
+	Eye,
 	FileText,
+	Image,
 	Languages,
 	Library,
 	ListChecks,
 	MessageSquare,
+	Mic,
 	ScanText,
 	Sparkles,
+	Volume2,
 } from 'lucide-svelte';
 
 export interface TabDef {
@@ -37,6 +41,22 @@ export const CORE_TABS: TabDef[] = [
 	{ id: 'ocr', icon: ScanText },
 	{ id: 'pdf', icon: FileText },
 	{ id: 'aitoolkit', icon: Sparkles, label: 'AIToolkit', separatorBefore: true },
+];
+
+/**
+ * AIToolkit sidecar capabilities as first-class tabs. Ids are namespaced `ai:<cap>`
+ * and gated by the `service:<cap>` capability the backend advertises, so they only
+ * appear when connected + the feature is enabled.
+ */
+export const AITOOLKIT_TABS: TabDef[] = [
+	{ id: 'ai:chat', icon: MessageSquare, label: 'AI Chat', requires: ['service:chat'], separatorBefore: true },
+	{ id: 'ai:translate', icon: Languages, label: 'AI Translate', requires: ['service:translate'] },
+	{ id: 'ai:vision', icon: Eye, label: 'AI Vision', requires: ['service:vision'] },
+	{ id: 'ai:ocr', icon: ScanText, label: 'AI OCR', requires: ['service:ocr'] },
+	{ id: 'ai:transcription', icon: Mic, label: 'AI Transcribe', requires: ['service:transcription'] },
+	{ id: 'ai:tts', icon: Volume2, label: 'AI Speak', requires: ['service:tts'] },
+	{ id: 'ai:images', icon: Image, label: 'AI Images', requires: ['service:images'] },
+	{ id: 'ai:extract', icon: FileText, label: 'AI Extract', requires: ['service:extract'] },
 ];
 
 /** Tabs whose required capabilities are all present. */

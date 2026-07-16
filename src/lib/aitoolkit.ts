@@ -27,6 +27,9 @@ aitoolkit.subscribe((s) => {
 	if (typeof localStorage !== 'undefined') localStorage.setItem(KEY, JSON.stringify(s));
 });
 
+/** Capabilities advertised by the connected backend (drives which AI tabs show). */
+export const aitoolkitCaps = writable<Set<string>>(new Set());
+
 export function capabilitiesFromFeatures(features: Record<string, boolean>): Set<string> {
 	const caps = new Set<string>();
 	for (const [k, v] of Object.entries(features)) if (v) caps.add(`service:${k}`);
@@ -104,5 +107,25 @@ export class AIToolkitClient {
 	}
 	ocr(provider: string, model: string, file: File) {
 		return this.multipart<{ text: string }>('/api/ocr', file, { provider, model });
+	}
+	transcribe(provider: string, model: string, file: File) {
+		return this.multipart<{ text: string }>('/api/transcription/sync', file, { provider, model });
+	}
+	generateImage(provider: string, model: string, prompt: string) {
+		return this.req<{ images: { url?: string; b64_json?: string }[] }>('/api/images/generate', {
+			method: 'POST',
+			body: JSON.stringify({ provider, model, prompt }),
+		});
+	}
+	async tts(provider: string, model: string, voice: string, text: string): Promise<Blob> {
+		const headers = new Headers({ 'Content-Type': 'application/json' });
+		if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
+		const res = await fetch(`${this.baseUrl}/api/tts/synthesize`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ provider, model, voice, text }),
+		});
+		if (!res.ok) throw new Error((await res.text()) || res.statusText);
+		return res.blob();
 	}
 }

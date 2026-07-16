@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { aitoolkit, AIToolkitClient, capabilitiesFromFeatures } from '$lib/aitoolkit';
+	import { aitoolkit, aitoolkitCaps, AIToolkitClient, capabilitiesFromFeatures } from '$lib/aitoolkit';
 
 	let baseUrl = $state($aitoolkit.baseUrl);
 	let token = $state<string | null>($aitoolkit.token);
@@ -32,6 +32,7 @@
 			const h = await c.health();
 			info = `${h.backend} v${h.version}`;
 			caps = capabilitiesFromFeatures((await c.config()).features ?? {});
+			aitoolkitCaps.set(caps); // surface capabilities as first-class nav tabs
 			connected = true;
 			aitoolkit.set({ baseUrl: baseUrl.replace(/\/+$/, ''), token });
 			if (token) await loadProviders();

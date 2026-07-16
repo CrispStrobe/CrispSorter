@@ -12,8 +12,10 @@
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
-    import { CORE_TABS } from '$lib/tabs';
+    import { CORE_TABS, AITOOLKIT_TABS, visibleTabs } from '$lib/tabs';
+    import { aitoolkitCaps } from '$lib/aitoolkit';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
+    import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
@@ -316,7 +318,7 @@
                 {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
             
-            {#each CORE_TABS as tab (tab.id)}
+            {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], $aitoolkitCaps) as tab (tab.id)}
                 {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
                 {@const Icon = tab.icon}
                 <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}>
@@ -448,6 +450,8 @@
                 <PdfTools />
             {:else if activeTab === 'aitoolkit'}
                 <AIToolkitView />
+            {:else if activeTab.startsWith('ai:')}
+                <AIToolkitCapability capability={activeTab.slice(3)} />
             {/if}
             <div class="persistent-chat" style:display={activeTab === 'chat' ? 'block' : 'none'}>
                 <Chat />
