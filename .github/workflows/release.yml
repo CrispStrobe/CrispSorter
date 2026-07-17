@@ -1164,6 +1164,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+      # Cache the cargo registry + build products. The full --features desktop
+      # build (candle/mistralrs/lance/…) is ~70 min from scratch; caching makes
+      # subsequent iterations minutes.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: mac-appstore
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -1251,7 +1257,9 @@ jobs:
           # compiled but ungranted (App-Sandbox-clean); no llama-server is
           # bundled (bin/* dropped) so nothing spawns.
           npx tauri build --target aarch64-apple-darwin --bundles app --features desktop 2>&1 | tail -50
-          APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1)
+          # `find` over a non-existent path (src-tauri/target) exits non-zero and
+          # would trip `set -e` AFTER the .app was already built — tolerate it.
+          APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)
           [ -n "$APP" ] || { echo "::error::no .app produced"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
           echo "built $APP"
