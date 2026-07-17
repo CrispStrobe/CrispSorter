@@ -1199,6 +1199,18 @@ jobs:
           #     unused in the cloud-only build; drop it so cargo resolves.
           perl -ni -e 'print unless /^crisp-docx-align\s*=/' src-tauri/Cargo.toml
           perl -0pi -e 's/^translate-align = .*$/# translate-align disabled (mac appstore)/m' src-tauri/Cargo.toml
+          # (4) drop the `bin/*` bundle resource — the cloud-only variant stages
+          #     nothing into bin/ (those are the desktop native libs), and tauri's
+          #     build.rs fails the glob ("bin/* path not found") on an empty dir.
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('src-tauri/tauri.conf.json'); c = json.loads(p.read_text())
+          b = c.get('bundle', {})
+          if 'resources' in b:
+              del b['resources']
+          p.write_text(json.dumps(c, indent=2))
+          print('tauri.conf: dropped bin/* resources')
+          PY
           echo "sandbox variant patched"
       - name: Import signing certs (Apple Distribution + Installer)
         env:
