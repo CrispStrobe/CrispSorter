@@ -27,21 +27,26 @@ export interface TabDef {
 	label?: string;
 	/** Render a divider before this tab. */
 	separatorBefore?: boolean;
+	/** Show in the compact mobile bottom bar. */
+	mobile?: boolean;
 	/** Capabilities required to show this tab; undefined/empty = always visible. */
 	requires?: string[];
 }
 
 /** CrispSorter's built-in tabs, in nav order (settings lives in nav-bottom). */
 export const CORE_TABS: TabDef[] = [
-	{ id: 'batch', icon: ListChecks },
-	{ id: 'chat', icon: MessageSquare },
+	{ id: 'batch', icon: ListChecks, mobile: true },
+	{ id: 'chat', icon: MessageSquare, mobile: true },
 	{ id: 'history', icon: Database },
-	{ id: 'catalog', icon: Library, separatorBefore: true },
-	{ id: 'translate', icon: Languages },
-	{ id: 'ocr', icon: ScanText },
+	{ id: 'catalog', icon: Library, separatorBefore: true, mobile: true },
+	{ id: 'translate', icon: Languages, mobile: true },
+	{ id: 'ocr', icon: ScanText, mobile: true },
 	{ id: 'pdf', icon: FileText },
 	{ id: 'aitoolkit', icon: Sparkles, label: 'AIToolkit', separatorBefore: true },
 ];
+
+/** Core tabs shown in the compact mobile bottom bar (settings is added separately). */
+export const MOBILE_TABS: TabDef[] = CORE_TABS.filter((t) => t.mobile);
 
 /**
  * AIToolkit sidecar capabilities as first-class tabs. Ids are namespaced `ai:<cap>`

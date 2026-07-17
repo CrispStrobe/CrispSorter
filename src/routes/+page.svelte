@@ -12,7 +12,7 @@
     import { getSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
-    import { CORE_TABS, AITOOLKIT_TABS, visibleTabs } from '$lib/tabs';
+    import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
@@ -466,21 +466,12 @@
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">
-        <button class="mobile-tab" class:active={activeTab === 'batch'} onclick={() => activeTab = 'batch'}>
-            <ListChecks size={20} /><span>{i18n.t.nav.batch}</span>
-        </button>
-        <button class="mobile-tab" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>
-            <MessageSquare size={20} /><span>{i18n.t.nav.chat}</span>
-        </button>
-        <button class="mobile-tab" class:active={activeTab === 'catalog'} onclick={() => activeTab = 'catalog'}>
-            <Library size={20} /><span>{i18n.t.nav.catalog}</span>
-        </button>
-        <button class="mobile-tab" class:active={activeTab === 'ocr'} onclick={() => activeTab = 'ocr'}>
-            <ScanText size={20} />
-        </button>
-        <button class="mobile-tab" class:active={activeTab === 'translate'} onclick={() => activeTab = 'translate'}>
-            <Languages size={20} /><span>{i18n.t.nav.translate}</span>
-        </button>
+        {#each MOBILE_TABS as tab (tab.id)}
+            {@const Icon = tab.icon}
+            <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
+                <Icon size={20} /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>
+            </button>
+        {/each}
         <button class="mobile-tab" class:active={activeTab === 'settings'} onclick={() => activeTab = 'settings'}>
             <SettingsIcon size={20} /><span>{i18n.t.nav.settings}</span>
         </button>
