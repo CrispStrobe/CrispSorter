@@ -8340,8 +8340,8 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                 OutFormat::Json => {
                     let result = crate::docx_tools::DocxCheckResult {
                         valid: report.issues.is_empty(),
-                        ok: report.ok,
-                        issues: report.issues,
+                        ok: report.ok.clone(),
+                        issues: report.issues.clone(),
                     };
                     println!("{}", serde_json::to_string_pretty(&result).unwrap());
                 }

@@ -72,12 +72,12 @@ pub async fn docx_analyze(path: String) -> Result<DocxBlueprint, String> {
         .sections
         .iter()
         .map(|s| DocxSection {
-            page_width_pt: s.page_width_pt,
-            page_height_pt: s.page_height_pt,
-            left_margin_pt: s.left_margin_pt,
-            right_margin_pt: s.right_margin_pt,
-            top_margin_pt: s.top_margin_pt,
-            bottom_margin_pt: s.bottom_margin_pt,
+            page_width_pt: s.page_width_pt.unwrap_or(0.0),
+            page_height_pt: s.page_height_pt.unwrap_or(0.0),
+            left_margin_pt: s.left_margin_pt.unwrap_or(0.0),
+            right_margin_pt: s.right_margin_pt.unwrap_or(0.0),
+            top_margin_pt: s.top_margin_pt.unwrap_or(0.0),
+            bottom_margin_pt: s.bottom_margin_pt.unwrap_or(0.0),
             orientation: s.orientation.clone(),
         })
         .collect();
