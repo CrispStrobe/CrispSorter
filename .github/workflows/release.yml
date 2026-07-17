@@ -1195,11 +1195,13 @@ jobs:
           #     native-tls = Secure Transport, sandbox-safe)
           perl -0pi -e 's/(reqwest = \{ version = "0\.13\.2", features = \[)("json")/$1"native-tls", $2/' src-tauri/Cargo.toml
           grep -q '"native-tls"' src-tauri/Cargo.toml || { echo "::error::reqwest native-tls patch failed"; exit 1; }
-          # (3) crisp-docx-align pins crispembed ^0.4 (sibling skew) — optional,
-          #     unused in the cloud-only build; drop it so cargo resolves.
-          perl -ni -e 'print unless /^crisp-docx-align\s*=/' src-tauri/Cargo.toml
-          perl -0pi -e 's/^translate-align = .*$/# translate-align disabled (mac appstore)/m' src-tauri/Cargo.toml
-          # (4) drop the `bin/*` bundle resource — the cloud-only variant stages
+          # NOTE: do NOT drop crisp-docx-align / translate-align here. At the
+          # pinned CRISPDOCX_REF (b1de892) crisp-docx-align references crispembed
+          # by path with NO version pin, so it resolves fine against CrispEmbed
+          # v0.13.0 (the ^0.4 skew is only in newer local crisp-docx checkouts).
+          # Deleting the translate-align feature makes its #[cfg] blocks an
+          # unexpected-cfg (E0433) — leave the feature defined but unbuilt.
+          # (3) drop the `bin/*` bundle resource — the cloud-only variant stages
           #     nothing into bin/ (those are the desktop native libs), and tauri's
           #     build.rs fails the glob ("bin/* path not found") on an empty dir.
           python3 - <<'PY'
