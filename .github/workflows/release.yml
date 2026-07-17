@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Flip the built draft to the PUBLIC Latest release. Leave OFF to only build/test (e.g. exercise the crispembed compile) and keep the draft unpublished.'
+        description: 'Flip the built draft to the PUBLIC Latest release. Leave OFF to only build/test (e.g. exercise the crispembed compile) and keep the draft unpublished. Also gates the REAL App Store upload (off = validate-only dry run).'
+        type: boolean
+        default: false
+      mac_appstore:
+        description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
         default: false
 
@@ -28,6 +32,8 @@ env:
 
 jobs:
   release-required:
+    # Skip the heavy desktop matrix on a macOS-App-Store-only dispatch.
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
     permissions:
       contents: write
     strategy:
@@ -647,6 +653,7 @@ jobs:
   # Separate job because `tauri android build` uses a different flow from
   # tauri-action. Runs on ubuntu with JDK 17 + Android SDK/NDK.
   release-android:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -760,6 +767,7 @@ jobs:
   # are set, archives + exports a signed IPA suitable for App Store /
   # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.mac_appstore }}
     permissions:
       contents: write
     # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
@@ -1117,6 +1125,165 @@ jobs:
               echo "⚠ No IPA or .app found"
             fi
           fi
+
+  # ── macOS App Store (.pkg) — cloud-only sandbox variant ─────────────────────
+  # Manually dispatched (mac_appstore=true). Builds the no-desktop sandbox build
+  # (no llama-server sidecar, no shell/process subprocess plugins), signs the
+  # .app for App Sandbox + wraps a signed .pkg, validates, and uploads to App
+  # Store Connect only when publish=true (else validate-only dry run). See
+  # ../appstore.md § "Addendum: macOS (Tauri) — Brickwright".
+  release-macos-appstore:
+    name: macOS App Store (.pkg)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_appstore }}
+    permissions:
+      contents: write
+    runs-on: macos-15
+    env:
+      TEAM_ID: N9XSJ4M3GT
+      BUNDLE_ID: com.crispstrobe.crispsorter
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out sibling CrispEmbed
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: _sibling/CrispEmbed
+      - name: Check out sibling CrispASR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: _sibling/CrispASR
+      - name: Check out sibling crisp-docx
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: _sibling/crisp-docx
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install npm deps
+        run: npm ci
+      - name: Rewrite sibling path deps for CI layout
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path('src-tauri/Cargo.toml'); s = p.read_text()
+          s = re.sub(r'path\s*=\s*"\.\./\.\./CrispEmbed/([\w-]+)"', r'path = "../_sibling/CrispEmbed/\1"', s)
+          s = re.sub(r'path\s*=\s*"\.\./\.\./CrispASR/([\w-]+)"', r'path = "../_sibling/CrispASR/\1"', s)
+          s = re.sub(r'path\s*=\s*"\.\./\.\./crisp-docx/crates/([\w-]+)"', r'path = "../_sibling/crisp-docx/crates/\1"', s)
+          p.write_text(s)
+          PY
+      - name: Patch to cloud-only sandbox variant
+        run: |
+          set -euo pipefail
+          # (1) capabilities: drop shell:default + process:default (subprocess
+          #     spawners — not compiled without `desktop`, forbidden by App Sandbox)
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('src-tauri/capabilities/default.json'); d = json.loads(p.read_text())
+          d['permissions'] = [x for x in d['permissions'] if x not in ('shell:default', 'process:default')]
+          p.write_text(json.dumps(d, indent=2))
+          print('capabilities: dropped shell/process')
+          PY
+          # (2) reqwest needs a TLS backend without the `desktop` feature (macOS
+          #     native-tls = Secure Transport, sandbox-safe)
+          perl -0pi -e 's/(reqwest = \{ version = "0\.13\.2", features = \[)("json")/$1"native-tls", $2/' src-tauri/Cargo.toml
+          grep -q '"native-tls"' src-tauri/Cargo.toml || { echo "::error::reqwest native-tls patch failed"; exit 1; }
+          # (3) crisp-docx-align pins crispembed ^0.4 (sibling skew) — optional,
+          #     unused in the cloud-only build; drop it so cargo resolves.
+          perl -ni -e 'print unless /^crisp-docx-align\s*=/' src-tauri/Cargo.toml
+          perl -0pi -e 's/^translate-align = .*$/# translate-align disabled (mac appstore)/m' src-tauri/Cargo.toml
+          echo "sandbox variant patched"
+      - name: Import signing certs (Apple Distribution + Installer)
+        env:
+          DIST_CERT_P12_BASE64: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/cs-mac.keychain-db"; KP="ci-$(uuidgen)"
+          echo "$DIST_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$DIST_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC" >/dev/null
+          security find-identity -v "$KC" | grep -E "Apple Distribution" || { echo "::error::Apple Distribution cert missing"; exit 1; }
+          security find-identity -v "$KC" | grep -E "3rd Party Mac Developer Installer" || { echo "::error::Installer cert missing"; exit 1; }
+          echo "KC=$KC" >> "$GITHUB_ENV"
+      - name: Install provisioning profile
+        env:
+          MAC_PROFILE_BASE64: ${{ secrets.MAC_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo "$MAC_PROFILE_BASE64" | base64 -d > "$RUNNER_TEMP/cs.provisionprofile"
+          echo "PROFILE=$RUNNER_TEMP/cs.provisionprofile" >> "$GITHUB_ENV"
+      - name: Build cloud-only .app
+        run: |
+          set -euo pipefail
+          npx tauri build --target aarch64-apple-darwin --bundles app 2>&1 | tail -50
+          APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1)
+          [ -n "$APP" ] || { echo "::error::no .app produced"; exit 1; }
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "built $APP"
+      - name: Sign .app (App Sandbox) + build signed .pkg
+        run: |
+          set -euo pipefail
+          APP_CERT="Apple Distribution: Christian Ströbele ($TEAM_ID)"
+          INST_CERT="3rd Party Mac Developer Installer: Christian Ströbele ($TEAM_ID)"
+          # Embed the App Store provisioning profile.
+          cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+          # Sign nested code inside-out (dylibs/frameworks first), then the app
+          # bundle with the App Sandbox entitlements + hardened runtime.
+          while IFS= read -r -d '' f; do
+            codesign --force --timestamp --options runtime --keychain "$KC" --sign "$APP_CERT" "$f"
+          done < <(find "$APP/Contents" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 2>/dev/null)
+          find "$APP/Contents" -type d -name "*.framework" -print0 2>/dev/null | while IFS= read -r -d '' fw; do
+            codesign --force --timestamp --options runtime --keychain "$KC" --sign "$APP_CERT" "$fw"
+          done
+          codesign --force --timestamp --options runtime \
+            --entitlements src-tauri/entitlements.plist \
+            --keychain "$KC" --sign "$APP_CERT" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          VERSION=$(node -p "require('./package.json').version")
+          productbuild --component "$APP" /Applications --sign "$INST_CERT" "CrispSorter_${VERSION}.pkg"
+          echo "PKG=CrispSorter_${VERSION}.pkg" >> "$GITHUB_ENV"
+          echo "SV=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")" >> "$GITHUB_ENV"
+          echo "BV=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Contents/Info.plist")" >> "$GITHUB_ENV"
+          ls -la "CrispSorter_${VERSION}.pkg"
+      - name: Validate (always) + upload to App Store Connect (only if publish=true)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "${{ secrets.APPSTORE_API_KEY_P8 }}" | base64 -d \
+            > ~/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          echo "=== validate (dry run) ==="
+          xcrun altool --validate-app -f "$PKG" --type macos \
+            --apple-id "${{ secrets.APPSTORE_APP_ID }}" \
+            --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25 \
+            || { echo "::error::validation failed"; exit 1; }
+          if [ "${{ inputs.publish }}" = "true" ]; then
+            echo "=== uploading to App Store Connect ==="
+            xcrun altool --upload-package "$PKG" --type macos \
+              --apple-id "${{ secrets.APPSTORE_APP_ID }}" --bundle-id "$BUNDLE_ID" \
+              --bundle-version "$BV" --bundle-short-version-string "$SV" \
+              --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25
+            echo "✓ uploaded"
+          else
+            echo "publish=false → validate-only dry run, not uploading"
+          fi
+      - name: Upload .pkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crispsorter-macos-pkg
+          path: CrispSorter_*.pkg
+          retention-days: 14
 
   # Publish the draft once the 3 required platforms finish (success OR failure).
   # Mobile jobs (Android/iOS) also don't block — they may need extra setup.
