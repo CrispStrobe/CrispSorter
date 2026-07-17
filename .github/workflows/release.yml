@@ -1297,14 +1297,14 @@ jobs:
           echo "=== validate (dry run) ==="
           xcrun altool --validate-app -f "$PKG" --type macos \
             --apple-id "${{ secrets.APPSTORE_APP_ID }}" \
-            --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25 \
+            --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25 \
             || { echo "::error::validation failed"; exit 1; }
           if [ "${{ inputs.publish }}" = "true" ]; then
             echo "=== uploading to App Store Connect ==="
             xcrun altool --upload-package "$PKG" --type macos \
               --apple-id "${{ secrets.APPSTORE_APP_ID }}" --bundle-id "$BUNDLE_ID" \
               --bundle-version "$BV" --bundle-short-version-string "$SV" \
-              --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25
+              --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER_ID" 2>&1 | tail -25
             echo "✓ uploaded"
           else
             echo "publish=false → validate-only dry run, not uploading"
