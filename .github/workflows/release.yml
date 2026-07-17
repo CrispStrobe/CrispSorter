@@ -1271,6 +1271,11 @@ jobs:
           INST_CERT="3rd Party Mac Developer Installer: Christian Ströbele ($TEAM_ID)"
           # Embed the App Store provisioning profile.
           cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+          # Bump CFBundleVersion to a unique, monotonic value BEFORE signing
+          # (codesign seals Info.plist). Apple rejects a duplicate build number;
+          # the run number always increases and is > any prior "0.x.y".
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" "$APP/Contents/Info.plist"
+          echo "CFBundleVersion set to ${{ github.run_number }}"
           # Sign nested code inside-out (dylibs/frameworks first), then the app
           # bundle with the App Sandbox entitlements + hardened runtime.
           while IFS= read -r -d '' f; do
