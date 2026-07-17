@@ -4,7 +4,7 @@
 // without editing the nav markup. Labels resolve via i18n.t.nav[id]; icons are
 // lucide-svelte components.
 
-import type { Component } from 'svelte';
+import type { ComponentType } from 'svelte';
 import {
 	Database,
 	Eye,
@@ -22,7 +22,7 @@ import {
 
 export interface TabDef {
 	id: string;
-	icon: Component<any>;
+	icon: ComponentType;
 	/** Fallback label when i18n.t.nav[id] is absent (e.g. grafted tabs). */
 	label?: string;
 	/** Render a divider before this tab. */

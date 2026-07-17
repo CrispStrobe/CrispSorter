@@ -3,7 +3,7 @@ import { AIToolkitClient, capabilitiesFromFeatures } from './aitoolkit';
 
 function stubFetch(status: number, body: unknown) {
 	const fn = vi.fn(
-		async () =>
+		async (_input: RequestInfo | URL, _init?: RequestInit) =>
 			new Response(body === null ? '' : JSON.stringify(body), {
 				status,
 				headers: { 'content-type': 'application/json' },
