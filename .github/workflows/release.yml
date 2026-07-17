@@ -1224,6 +1224,8 @@ jobs:
           set -euo pipefail
           echo "$MAC_PROFILE_BASE64" | base64 -d > "$RUNNER_TEMP/cs.provisionprofile"
           echo "PROFILE=$RUNNER_TEMP/cs.provisionprofile" >> "$GITHUB_ENV"
+      - name: Install protoc (lance-encoding build script needs it)
+        run: brew install protobuf
       - name: Build cloud-only .app
         run: |
           set -euo pipefail
