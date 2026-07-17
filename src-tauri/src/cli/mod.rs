@@ -8370,12 +8370,12 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                 OutFormat::Json => {
                     let bp = crate::docx_tools::DocxBlueprint {
                         sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
-                            page_width_pt: s.page_width_pt,
-                            page_height_pt: s.page_height_pt,
-                            left_margin_pt: s.left_margin_pt,
-                            right_margin_pt: s.right_margin_pt,
-                            top_margin_pt: s.top_margin_pt,
-                            bottom_margin_pt: s.bottom_margin_pt,
+                            page_width_pt: s.page_width_pt.unwrap_or(0.0),
+                            page_height_pt: s.page_height_pt.unwrap_or(0.0),
+                            left_margin_pt: s.left_margin_pt.unwrap_or(0.0),
+                            right_margin_pt: s.right_margin_pt.unwrap_or(0.0),
+                            top_margin_pt: s.top_margin_pt.unwrap_or(0.0),
+                            bottom_margin_pt: s.bottom_margin_pt.unwrap_or(0.0),
                             orientation: s.orientation.clone(),
                         }).collect(),
                         default_font: schema.default_font.clone(),
@@ -8392,9 +8392,9 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                         let orient = s.orientation.as_deref().unwrap_or("portrait");
                         println!(
                             "  §{}: {:.0}×{:.0} pt ({orient}), margins L{:.0} R{:.0} T{:.0} B{:.0}",
-                            i + 1, s.page_width_pt, s.page_height_pt,
-                            s.left_margin_pt, s.right_margin_pt,
-                            s.top_margin_pt, s.bottom_margin_pt,
+                            i + 1, s.page_width_pt.unwrap_or(0.0), s.page_height_pt.unwrap_or(0.0),
+                            s.left_margin_pt.unwrap_or(0.0), s.right_margin_pt.unwrap_or(0.0),
+                            s.top_margin_pt.unwrap_or(0.0), s.bottom_margin_pt.unwrap_or(0.0),
                         );
                     }
                 }
