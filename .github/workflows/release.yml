@@ -931,18 +931,27 @@ jobs:
           XCPROJ="src-tauri/gen/apple/crispsorter.xcodeproj"
           PBX="$XCPROJ/project.pbxproj"
 
-          # --- Force MANUAL signing for the app target in the Tauri-generated
-          # pbxproj. Insert (not sed-replace) the keys — the generated project
-          # may not contain them (single app target, no Pods, so scoping to the
-          # blocks carrying our bundle id is enough). ---
+          # --- Archive UNSIGNED, then sign at export (-exportArchive). This is
+          # the fleet-canonical manual flow (appstore.md: "archive-unsigned →
+          # -exportArchive manual signing"). Tauri CLI 2.10 bakes
+          # `-allowProvisioningUpdates` into its internal `xcodebuild` call with
+          # no opt-out; building the archive with CODE_SIGNING_ALLOWED=NO means
+          # that flag has *nothing to provision*, so it can never mint a
+          # Development cert or revoke the shared fleet Distribution cert (the
+          # footgun appstore.md's HARD constraint #1 forbids). Distribution
+          # signing is applied afterwards by `xcodebuild -exportArchive` from
+          # ExportOptions.plist (manual, no auth flags). Insert (not sed-replace)
+          # the keys — the Tauri-generated project may not contain them (single
+          # app target, no Pods, so scoping to our-bundle-id blocks is enough). ---
           python3 - "$PBX" <<'PY'
           import sys, re, pathlib
           p = pathlib.Path(sys.argv[1]); s = p.read_text()
           want = {
             "CODE_SIGN_STYLE": "Manual",
             "DEVELOPMENT_TEAM": "N9XSJ4M3GT",
-            "CODE_SIGN_IDENTITY": '"Apple Distribution"',
-            "PROVISIONING_PROFILE_SPECIFIER": '"CrispSorter AppStore CI"',
+            "CODE_SIGNING_ALLOWED": "NO",
+            "CODE_SIGN_IDENTITY": '""',
+            "PROVISIONING_PROFILE_SPECIFIER": '""',
           }
           def patch(block):
             body = block
@@ -959,14 +968,31 @@ jobs:
               blk = patch(blk); n += 1
             out.append(blk); i = m.end()
           out.append(s[i:]); p.write_text("".join(out))
-          print(f"patched {n} buildSettings block(s) for manual signing")
+          print(f"patched {n} buildSettings block(s) for unsigned archive")
           PY
 
-          # Build frontend + Rust + archive (manually signed) + export via Tauri.
-          # Tauri runs the build server the Rust "Build Phase" needs; its own
-          # export may or may not produce the IPA — we glob for it and fall back
-          # to our own -exportArchive from the archive if needed.
-          echo "=== tauri ios build (manual signing) ==="
+          # `tauri ios init` generates the .xcodeproj but not a usable
+          # project.xcworkspace; `tauri ios build` then invokes `xcodebuild
+          # -workspace <proj>/project.xcworkspace` and dies with "Unable to load
+          # workspace" (the real cause of the 2026-07-15 CI failure). Create the
+          # minimal self-referential workspace so the build can load it.
+          WS_DIR="$XCPROJ/project.xcworkspace"
+          if [ ! -f "$WS_DIR/contents.xcworkspacedata" ]; then
+            mkdir -p "$WS_DIR"
+            cat > "$WS_DIR/contents.xcworkspacedata" <<'WSEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Workspace version="1.0">
+            <FileRef location="self:"/>
+          </Workspace>
+          WSEOF
+            echo "created $WS_DIR/contents.xcworkspacedata"
+          fi
+
+          # Build frontend + Rust + archive (UNSIGNED) via Tauri. Tauri runs the
+          # build server the Rust "Build Phase" needs; its own app-store export
+          # can't sign an unsigned archive and is expected to no-op/fail here — we
+          # glob for the .xcarchive and do our own manual -exportArchive below.
+          echo "=== tauri ios build (unsigned archive) ==="
           npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 || true
 
           IPA=$(find src-tauri/gen/apple build -name "*.ipa" -type f 2>/dev/null | head -1)
