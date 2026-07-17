@@ -1241,7 +1241,14 @@ jobs:
       - name: Build cloud-only .app
         run: |
           set -euo pipefail
-          npx tauri build --target aarch64-apple-darwin --bundles app 2>&1 | tail -50
+          # Build WITH the `desktop` feature: the no-feature path has 14 compile
+          # errors in cli/mod.rs's untested `#[cfg(not(feature="desktop"))]`
+          # branches. `desktop` compiles the tested branch, supplies reqwest
+          # native-tls, and lets shell:default resolve. The capabilities patch
+          # above still drops the shell/process *grants*, so the plugins are
+          # compiled but ungranted (App-Sandbox-clean); no llama-server is
+          # bundled (bin/* dropped) so nothing spawns.
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop 2>&1 | tail -50
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1)
           [ -n "$APP" ] || { echo "::error::no .app produced"; exit 1; }
           echo "APP=$APP" >> "$GITHUB_ENV"
