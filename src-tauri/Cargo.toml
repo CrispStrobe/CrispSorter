@@ -43,7 +43,10 @@ crisp-docx-llm   = { path = "../../crisp-docx/crates/crisp-docx-llm", default-fe
 # Alignment + format-transfer optional: only pulled in when the
 # `translate-align` Cargo feature is on (it pulls in CrispEmbed which
 # compiles the ggml C++ runtime — adds minutes to first build).
-crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features = ["crispembed"], optional = true }
+# MAS sandbox build: crisp-docx-align pins crispembed ^0.4 but the local
+# CrispEmbed checkout is 0.15.0 (sibling skew) — it's optional + unused in the
+# cloud-only variant, so drop it here to let cargo resolve. (translate-align off.)
+# crisp-docx-align = { path = "../../crisp-docx/crates/crisp-docx-align", features = ["crispembed"], optional = true }
 # (crispembed itself is declared as `[dependencies.crispembed]` lower
 # down — already optional, shared with the legacy embedder feature.)
 futures          = "0.3"
@@ -58,7 +61,7 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
 # default-features=false drops the native-tls (OpenSSL) backend.
 # Desktop gets native-tls (best perf), mobile gets rustls (no system OpenSSL needed).
-reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart"] }
+reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart", "native-tls"] }
 # Vendored OpenSSL: cross-compiles OpenSSL from source so Android / iOS
 # builds don't need a pre-installed system OpenSSL.  On desktop the
 # system libssl is still preferred (vendored only kicks in when the
@@ -216,7 +219,7 @@ crispembed-cuda   = ["crispembed", "crispembed/cuda", "crispembed-sys/cuda"]
 # command can take a `preserve_formatting=true` option that runs
 # SimAlign over each paragraph's source ↔ translation pair and
 # redistributes the source runs' rPr onto the target text.
-translate-align = ["dep:crisp-docx-align", "crispembed"]
+# translate-align = ["dep:crisp-docx-align", "crispembed"]  # disabled in MAS sandbox build (see dep above)
 # P29.9 — FUSE mounting for cloud drive indexing.  Linux/macOS only.
 # Requires libfuse3-dev (Linux) or macFUSE/FUSE-T (macOS) at runtime.
 fuse = ["dep:fuser"]
