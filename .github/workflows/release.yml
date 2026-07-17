@@ -762,7 +762,10 @@ jobs:
   release-ios:
     permissions:
       contents: write
-    runs-on: macos-14
+    # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
+    # emits an objectVersion-77 project that Xcode 15 (the macos-14 default)
+    # refuses to open ("future Xcode project file format (77)").
+    runs-on: macos-15
     env:
       # Step-level `if:` can't reference `secrets.*` directly on
       # workflow_dispatch — proxy through an env var instead.
@@ -795,6 +798,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+
+      - name: Select newest Xcode (Tauri 2.10 emits objectVersion-77 projects)
+        run: |
+          set -euo pipefail
+          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          xcodebuild -version
 
       - name: Install npm deps
         run: npm ci
