@@ -88,6 +88,10 @@ jobs:
         working-directory: repos/CrispSorter
         run: npm run check
 
+      - name: Unit tests (vitest)
+        working-directory: repos/CrispSorter
+        run: npm test
+
       - name: Regenerate licenses.json
         working-directory: repos/CrispSorter
         run: |

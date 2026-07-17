@@ -1,0 +1,44 @@
+import { describe, expect, it, vi } from 'vitest';
+
+// lucide-svelte icons need the svelte plugin to resolve; visibleTabs never
+// renders them, so stub the icon imports tabs.ts uses.
+vi.mock('lucide-svelte', () => ({
+	Database: 'i',
+	FileText: 'i',
+	Languages: 'i',
+	Library: 'i',
+	ListChecks: 'i',
+	MessageSquare: 'i',
+	ScanText: 'i',
+	Sparkles: 'i',
+	Eye: 'i',
+	Image: 'i',
+	Mic: 'i',
+	Volume2: 'i',
+}));
+
+import { AITOOLKIT_TABS, CORE_TABS, MOBILE_TABS, visibleTabs } from './tabs';
+
+describe('tab registry', () => {
+	it('core tabs are always visible (no requires)', () => {
+		const ids = visibleTabs(CORE_TABS, new Set()).map((t) => t.id);
+		expect(ids).toContain('batch');
+		expect(ids).toContain('aitoolkit');
+	});
+
+	it('AIToolkit tabs are gated by service:* capabilities', () => {
+		expect(visibleTabs(AITOOLKIT_TABS, new Set()).length).toBe(0);
+		const ids = visibleTabs(AITOOLKIT_TABS, new Set(['service:chat', 'service:extract'])).map(
+			(t) => t.id,
+		);
+		expect(ids).toContain('ai:chat');
+		expect(ids).toContain('ai:extract');
+		expect(ids).not.toContain('ai:vision');
+	});
+
+	it('MOBILE_TABS is the core mobile subset', () => {
+		const ids = MOBILE_TABS.map((t) => t.id);
+		expect(ids).toEqual(['batch', 'chat', 'catalog', 'translate', 'ocr']);
+		expect(ids).not.toContain('history');
+	});
+});
