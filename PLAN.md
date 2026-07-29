@@ -1833,3 +1833,114 @@ the existing unsigned build.
 - [ ] **Screenshot generation in CI.**  Boot iOS Simulator, install
   debug `.app`, capture screenshots via `xcrun simctl io`, upload to
   App Store Connect API — per `appstore.md` Step 11.
+
+---
+
+### P32 — PDF read/edit completion (planned, 2026-07-29)
+
+Closes the four gaps left after P27 shipped the one-shot PDF operations,
+and puts a direct-manipulation editor in front of them.
+
+#### Licence constraint (applies to every item below)
+
+Third-party PDF dependencies **must be permissive** (MIT / Apache-2.0 /
+BSD / Zlib / MPL-2.0).  Our own crates are AGPL-3.0-or-later and we hold
+the copyright, so we can grant Apple the extra terms AGPLv3 §7 would
+otherwise forbid — that is what makes AGPL + App Store work here.  We
+cannot do that for code we do not own, so any third-party GPL/AGPL
+dependency permanently blocks App Store distribution.  LGPL is also out:
+iOS static-only linking defeats the relink provision.  Apache-2.0 flows
+one-way into AGPLv3, so Apache dependencies are safe.
+
+Ruled out for this reason, despite being the obvious reaches: MuPDF
+(AGPL), Ghostscript (AGPL), Poppler (GPL-2/3), PDFtk (GPL), iText
+(AGPL), Xpdf (GPL).
+
+Verified permissive and approved for use (checked 2026-07-29):
+
+| Library | Licence | Role |
+|---|---|---|
+| `lopdf` 0.44 | MIT | already in tree — annotations, forms, outlines |
+| `qpdf` 0.3.5 → QPDF C++ | MIT/Apache-2.0 → Apache-2.0 | AES-256, linearize, repair |
+| `krilla` 0.8 | MIT/Apache-2.0 | tagged PDF/UA output (feeds P27.5) |
+| `hayro` 0.7 | Apache-2.0/MIT | pure-Rust rasterizer, no libpdfium binary |
+| `printpdf` 0.12 / `pdf-writer` 0.15 | MIT / MIT-Apache | page composition |
+| PDFium (bundled) | Apache-2.0 + BSD-3 | already used via `pdfium-render` |
+
+#### Items
+
+- [x] **P32.1a — PDF edit-session backend.**  ✅ SHIPPED (2026-07-29).  Today every `pdf_ops`
+  command is one-shot `path → out_path`, so each edit forces its own
+  save dialog.  Add a session held in Tauri state: open a document into
+  an in-memory `lopdf::Document`, apply ops against it, keep an op log
+  for undo/redo, save/save-as once.  Session commands wrap the existing
+  pure functions so the CLI and one-shot paths keep working unchanged.
+
+- [x] **P32.1b — Page editor GUI.**  ✅ SHIPPED (2026-07-29).  `PdfTools.svelte` currently renders
+  pages as a text list (number + dimensions).  Replace with a pdf.js
+  thumbnail grid: multi-select (click / shift / cmd), drag-to-reorder,
+  delete, rotate in place, extract and insert page ranges, visual crop
+  with an apply-to-all-pages toggle, live page-number preview, and text
+  box placement.  Undo/redo wired to P32.1a.
+
+- [x] **P32.2 — Print + native share seam.**  ✅ SHIPPED (2026-07-29;
+  macOS share sheet live, Windows/Linux reveal-in-file-manager fallback,
+  iOS impl still to write against the same trait).  Platform trait, desktop
+  implementations now, iOS-ready.  macOS `NSSharingServicePicker`
+  (AirDrop, Mail, Messages) + `NSPrintOperation`; Windows
+  `IDataTransferManager` + ShellExecute print; Linux
+  xdg-desktop-portal + `lp`.  The iOS implementation
+  (`UIActivityViewController` / `UIPrintInteractionController`) slots in
+  behind the same trait without touching call sites.  No iOS
+  scaffolding in this scope — see P31.
+
+- [x] **P32.3 — In-PDF annotations round-trip + export.**  ✅ SHIPPED
+  (2026-07-29; backend + store bridge, no GUI surface yet).
+  `index/annotations.rs` stores highlights and notes in SQLite keyed by
+  `doc_id` + page + bbox, but nothing writes `/Annots`, so our markup is
+  invisible outside the app and dies on export.  Both directions, pure
+  `lopdf`: read `/Annots` from incoming PDFs into the same tables (which
+  makes third-party markup FTS-searchable), and write the tables back
+  out as real `/Annot` objects (Highlight / Text / Square / FreeText).
+  Export to Markdown, CSV, JSON, and highlighted DOCX via `docx-rs`.
+
+- [x] **P32.4 — Kindle clippings import with document matching.**
+  ✅ SHIPPED (2026-07-29). Parser, match cascade and store wiring, with
+  `kindle_list_books` + `kindle_import`. Upstream tier 3 (Calibre,
+  highlighted DOCX) stays out of scope. No GUI surface yet.  Port
+  tiers 1+2 of `CrispStrobe/highlighter` (Python, MIT).  Parse
+  `My Clippings.txt` into the annotation tables, then locate each
+  highlight in the real document text via a match cascade: exact/regex →
+  normalised fuzzy (`similar` + `deunicode`) → embedding similarity over
+  chunks (fastembed / CrispEmbed) → offset refinement through
+  `crisp-docx-align::align_texts`.  Anchoring to real offsets is what
+  makes imported highlights render in the viewer rather than float free.
+  Calibre library integration and the DOCX generation path are the
+  upstream tier-3 features and stay out of this slice.
+
+- [ ] **P32.5 — AcroForm read / fill / flatten.**  No form support
+  exists today (zero `/AcroForm` or `/Widget` references in tree).
+  Traverse the field tree, read types and values, set `/V`, flatten to
+  static page content.  First cut sets `NeedAppearances true` rather
+  than generating `/AP` streams.  Pure `lopdf`, no new dependency.
+
+- [ ] **P32.6 — qpdf backend.**  Unblocks the P27.13 deferral:
+  `encrypt_pdf` ships RC4-128 because lopdf does not expose
+  `CryptFilter` publicly, and RC4 is broken.  QPDF gives AES-256 today,
+  plus linearization for fast web view, object-stream compression, and
+  structural repair of damaged files.  One Apache-2.0 C++ dependency,
+  statically linked.
+
+- [x] **P32.7 — Redaction hardening.**  ✅ SHIPPED (2026-07-29).  `pdf_ops::redact_regions` only
+  overlays black rectangles; the text objects survive underneath and are
+  recoverable by copy/paste or `pdf-extract`.  The doc comment says so
+  but the command is named `pdf_redact_regions` and the UI offers it as
+  Redact.  Immediate: relabel command and UI as black-out / visual-only.
+  Then: scrub the intersecting `Tj`/`TJ` operators so it is real.
+
+- [ ] **P32.8 — On-page text editing.**  Tier 1: cover-and-overprint,
+  using the black-rect primitive from `redact_regions` and the base-14
+  Helvetica text drawing already in `add_watermark`.  Tier 2: `Tj`/`TJ`
+  string substitution via `lopdf`, restricted to same-font same-metrics
+  replacements.  Tier 3 (full reflow with font subsetting and line
+  breaking) is a substantially larger project and is deferred.

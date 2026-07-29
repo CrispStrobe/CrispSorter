@@ -20,7 +20,7 @@
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
-    import PdfTools from '$lib/components/PdfTools.svelte';
+    import PdfWorkspace from '$lib/components/PdfWorkspace.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
@@ -447,7 +447,7 @@
             {:else if activeTab === 'ocr'}
                 <OcrWorkbench />
             {:else if activeTab === 'pdf'}
-                <PdfTools />
+                <PdfWorkspace />
             {:else if activeTab === 'aitoolkit'}
                 <AIToolkitView />
             {:else if activeTab.startsWith('ai:')}

@@ -19,7 +19,14 @@ pub mod secrets;
 pub mod translate;
 #[cfg(feature = "desktop")]
 pub mod tts;
+pub mod kindle_clippings;
+pub mod kindle_import;
+pub mod kindle_match;
+pub mod pdf_annots;
 pub mod pdf_ops;
+pub mod pdf_redact;
+pub mod platform_share;
+pub mod pdf_session;
 pub mod volume;
 #[cfg(feature = "desktop")]
 pub mod watcher;
@@ -2746,6 +2753,8 @@ pub fn run() {
             batch_session_store: Arc::new(std::sync::Mutex::new(None)),
             data_dir: tokio::sync::Mutex::new(None),
         })
+        // P32.1a — open PDF editing sessions, keyed by session id.
+        .manage(pdf_session::PdfSessions::default())
         .invoke_handler({
             // Desktop-only commands are gated behind `feature = "desktop"`.
             // Mobile builds register only the common set.
@@ -3036,6 +3045,32 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_convert_pdfa,
             pdf_ops::tauri_commands::pdf_detect_signatures,
             pdf_ops::tauri_commands::pdf_sanitise,
+            pdf_ops::tauri_commands::pdf_add_text_box,
+            // P32.1a — stateful editing session (open / mutate / undo / save).
+            pdf_session::tauri_commands::pdf_session_open,
+            pdf_session::tauri_commands::pdf_session_apply,
+            pdf_session::tauri_commands::pdf_session_undo,
+            pdf_session::tauri_commands::pdf_session_redo,
+            pdf_session::tauri_commands::pdf_session_state,
+            pdf_session::tauri_commands::pdf_session_save,
+            pdf_session::tauri_commands::pdf_session_export_temp,
+            pdf_session::tauri_commands::pdf_session_close,
+            // P32.3 — in-PDF annotation round-trip + export.
+            pdf_annots::tauri_commands::pdf_read_annotations,
+            pdf_annots::tauri_commands::pdf_write_annotations,
+            pdf_annots::tauri_commands::pdf_export_annotations,
+            pdf_annots::tauri_commands::pdf_import_annotations,
+            pdf_annots::tauri_commands::pdf_stamp_annotations,
+            // P32.7 — true redaction (scrub the content stream, then cover).
+            pdf_redact::tauri_commands::pdf_redact_hard,
+            // P32.2 — print + native share, desktop now / iOS-ready seam.
+            platform_share::tauri_commands::platform_capabilities,
+            platform_share::tauri_commands::platform_print,
+            platform_share::tauri_commands::platform_open_external,
+            platform_share::tauri_commands::platform_share,
+            // P32.4 — Kindle clippings import.
+            kindle_import::tauri_commands::kindle_list_books,
+            kindle_import::tauri_commands::kindle_import,
             audit::tauri_commands::audit_log_event,
             audit::tauri_commands::audit_query,
             audit::tauri_commands::audit_count,
@@ -3300,6 +3335,32 @@ pub fn run() {
             pdf_ops::tauri_commands::pdf_convert_pdfa,
             pdf_ops::tauri_commands::pdf_detect_signatures,
             pdf_ops::tauri_commands::pdf_sanitise,
+            pdf_ops::tauri_commands::pdf_add_text_box,
+            // P32.1a — stateful editing session (open / mutate / undo / save).
+            pdf_session::tauri_commands::pdf_session_open,
+            pdf_session::tauri_commands::pdf_session_apply,
+            pdf_session::tauri_commands::pdf_session_undo,
+            pdf_session::tauri_commands::pdf_session_redo,
+            pdf_session::tauri_commands::pdf_session_state,
+            pdf_session::tauri_commands::pdf_session_save,
+            pdf_session::tauri_commands::pdf_session_export_temp,
+            pdf_session::tauri_commands::pdf_session_close,
+            // P32.3 — in-PDF annotation round-trip + export.
+            pdf_annots::tauri_commands::pdf_read_annotations,
+            pdf_annots::tauri_commands::pdf_write_annotations,
+            pdf_annots::tauri_commands::pdf_export_annotations,
+            pdf_annots::tauri_commands::pdf_import_annotations,
+            pdf_annots::tauri_commands::pdf_stamp_annotations,
+            // P32.7 — true redaction (scrub the content stream, then cover).
+            pdf_redact::tauri_commands::pdf_redact_hard,
+            // P32.2 — print + native share, desktop now / iOS-ready seam.
+            platform_share::tauri_commands::platform_capabilities,
+            platform_share::tauri_commands::platform_print,
+            platform_share::tauri_commands::platform_open_external,
+            platform_share::tauri_commands::platform_share,
+            // P32.4 — Kindle clippings import.
+            kindle_import::tauri_commands::kindle_list_books,
+            kindle_import::tauri_commands::kindle_import,
             audit::tauri_commands::audit_log_event,
             audit::tauri_commands::audit_query,
             audit::tauri_commands::audit_count,

@@ -1340,12 +1340,28 @@ enum PdfCmd {
     Signatures {
         file: PathBuf,
     },
-    /// Redact text patterns from PDF metadata.
+    /// Black out text patterns. VISUAL ONLY — page text is not removed.
+    ///
+    /// Strips matches from the /Info dictionary and draws boxes over
+    /// approximate positions on the page. The page's own text objects
+    /// survive and remain extractable. For real removal use
+    /// `pdf redact-regions`.
     Redact {
         file: PathBuf,
-        /// Comma-separated text patterns to redact.
+        /// Comma-separated text patterns to black out.
         #[arg(long)]
         patterns: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Redact rectangles for real: remove the text, then cover the area.
+    ///
+    /// Each --rect is `page,x,y,w,h` with a 1-based page and points from
+    /// the bottom-left. Repeatable.
+    RedactRegions {
+        file: PathBuf,
+        #[arg(long = "rect", required = true)]
+        rects: Vec<String>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -4266,7 +4282,52 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
         PdfCmd::Redact { file, patterns, out: out_path } => {
             let pats: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
             let count = pdf_ops::redact_text_patterns(&file, &pats, &out_path)?;
-            eprintln!("Redacted {count} patterns → {}", out_path.display());
+            eprintln!("Blacked out {count} pattern(s) → {}", out_path.display());
+            eprintln!(
+                "WARNING: visual only. The page text was NOT removed and is still \
+                 extractable. Use `pdf redact-regions` to remove it."
+            );
+            Ok(())
+        }
+        PdfCmd::RedactRegions { file, rects, out: out_path } => {
+            let mut specs = Vec::with_capacity(rects.len());
+            for r in &rects {
+                let parts: Vec<&str> = r.split(',').map(|s| s.trim()).collect();
+                if parts.len() != 5 {
+                    return Err(format!(
+                        "--rect must be page,x,y,w,h (got {:?})", r
+                    ));
+                }
+                let num = |s: &str| -> Result<f64, String> {
+                    s.parse::<f64>().map_err(|_| format!("not a number: {s:?}"))
+                };
+                let page: usize = parts[0]
+                    .parse::<usize>()
+                    .map_err(|_| format!("not a page number: {:?}", parts[0]))?;
+                if page == 0 {
+                    return Err("pages are 1-based".into());
+                }
+                specs.push(pdf_ops::RedactionSpec {
+                    page: page - 1,
+                    x: num(parts[1])?,
+                    y: num(parts[2])?,
+                    w: num(parts[3])?,
+                    h: num(parts[4])?,
+                });
+            }
+            let report = crate::pdf_redact::redact_regions_hard(&file, &specs, &out_path)?;
+            eprintln!(
+                "Removed {} glyph(s) across {} page(s) → {}",
+                report.glyphs_removed,
+                report.pages_changed,
+                out_path.display()
+            );
+            if report.runs_dropped > 0 {
+                eprintln!("{} composite-font run(s) removed whole.", report.runs_dropped);
+            }
+            for w in &report.warnings {
+                eprintln!("WARNING: {w}");
+            }
             Ok(())
         }
         PdfCmd::Sign { file, cert, password, out: out_path, reason, location } => {
@@ -8340,8 +8401,10 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                 OutFormat::Json => {
                     let result = crate::docx_tools::DocxCheckResult {
                         valid: report.issues.is_empty(),
-                        ok: report.ok,
-                        issues: report.issues,
+                        ok: report.ok.clone(),
+                        // Cloned rather than moved: the exit status below
+                        // still needs to inspect the issue list.
+                        issues: report.issues.clone(),
                     };
                     println!("{}", serde_json::to_string_pretty(&result).unwrap());
                 }
@@ -8388,13 +8451,20 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                     println!("Font:     {} {:.0}pt", schema.default_font, schema.default_font_size_pt);
                     println!("Styles:   {}", schema.styles.styles.len());
                     println!("Sections: {}", schema.sections.len());
+                    // Section geometry is optional: a `w:sectPr` may omit
+                    // `w:pgSz` / `w:pgMar` entirely.  Print an em dash for
+                    // what the document does not state rather than a
+                    // plausible-looking default.
+                    let pt = |v: Option<f64>| {
+                        v.map(|x| format!("{x:.0}")).unwrap_or_else(|| "—".to_string())
+                    };
                     for (i, s) in schema.sections.iter().enumerate() {
                         let orient = s.orientation.as_deref().unwrap_or("portrait");
                         println!(
-                            "  §{}: {:.0}×{:.0} pt ({orient}), margins L{:.0} R{:.0} T{:.0} B{:.0}",
-                            i + 1, s.page_width_pt, s.page_height_pt,
-                            s.left_margin_pt, s.right_margin_pt,
-                            s.top_margin_pt, s.bottom_margin_pt,
+                            "  §{}: {}×{} pt ({orient}), margins L{} R{} T{} B{}",
+                            i + 1, pt(s.page_width_pt), pt(s.page_height_pt),
+                            pt(s.left_margin_pt), pt(s.right_margin_pt),
+                            pt(s.top_margin_pt), pt(s.bottom_margin_pt),
                         );
                     }
                 }

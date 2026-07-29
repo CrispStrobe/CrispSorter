@@ -50,14 +50,21 @@ pub struct DocxBlueprint {
 }
 
 /// One section's page geometry.
+///
+/// Every measurement is optional because a DOCX section may simply not
+/// state it — `w:sectPr` can omit `w:pgSz` or `w:pgMar` entirely, and the
+/// reader reports that as absent rather than guessing.  Substituting a
+/// default here would make "the document says nothing about page width"
+/// indistinguishable from "the document says A4", which is exactly the
+/// distinction a blueprint view exists to show.  Serialises as `null`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocxSection {
-    pub page_width_pt: f64,
-    pub page_height_pt: f64,
-    pub left_margin_pt: f64,
-    pub right_margin_pt: f64,
-    pub top_margin_pt: f64,
-    pub bottom_margin_pt: f64,
+    pub page_width_pt: Option<f64>,
+    pub page_height_pt: Option<f64>,
+    pub left_margin_pt: Option<f64>,
+    pub right_margin_pt: Option<f64>,
+    pub top_margin_pt: Option<f64>,
+    pub bottom_margin_pt: Option<f64>,
     pub orientation: Option<String>,
 }
 
@@ -357,12 +364,12 @@ mod tests {
     fn docx_blueprint_serde() {
         let b = DocxBlueprint {
             sections: vec![DocxSection {
-                page_width_pt: 595.0,
-                page_height_pt: 842.0,
-                left_margin_pt: 72.0,
-                right_margin_pt: 72.0,
-                top_margin_pt: 72.0,
-                bottom_margin_pt: 72.0,
+                page_width_pt: Some(595.0),
+                page_height_pt: Some(842.0),
+                left_margin_pt: Some(72.0),
+                right_margin_pt: Some(72.0),
+                top_margin_pt: Some(72.0),
+                bottom_margin_pt: Some(72.0),
                 orientation: None,
             }],
             default_font: "Calibri".into(),
@@ -373,6 +380,31 @@ mod tests {
         let back: DocxBlueprint = serde_json::from_str(&json).unwrap();
         assert_eq!(back.default_font, "Calibri");
         assert_eq!(back.sections.len(), 1);
+        assert_eq!(back.sections[0].page_width_pt, Some(595.0));
+    }
+
+    #[test]
+    fn docx_section_with_unstated_geometry_serialises_as_null() {
+        // A `w:sectPr` that omits `w:pgSz`/`w:pgMar` must stay
+        // distinguishable from one that states a size.
+        let b = DocxBlueprint {
+            sections: vec![DocxSection {
+                page_width_pt: None,
+                page_height_pt: None,
+                left_margin_pt: None,
+                right_margin_pt: None,
+                top_margin_pt: None,
+                bottom_margin_pt: None,
+                orientation: None,
+            }],
+            default_font: "Calibri".into(),
+            default_font_size_pt: 11.0,
+            style_count: 1,
+        };
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(json.contains("\"page_width_pt\":null"));
+        let back: DocxBlueprint = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sections[0].page_width_pt, None);
     }
 
     #[test]

@@ -149,7 +149,7 @@ pub async fn translate_docx(
                 report.issues.len(),
                 report.issues.join("; ")
             );
-            log::warn!("{warning}");
+            crate::app_log!("warn", "{warning}");
             let _ = app.emit("translate://warning", warning);
         }
     }

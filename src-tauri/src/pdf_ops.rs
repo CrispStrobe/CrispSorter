@@ -68,6 +68,123 @@ fn page_dims(dict: &lopdf::Dictionary) -> (f64, f64) {
     }
 }
 
+/// Resolve a possibly-indirect object to a Dictionary clone.
+fn as_dict(doc: &Document, obj: &Object) -> Option<lopdf::Dictionary> {
+    match obj {
+        Object::Dictionary(d) => Some(d.clone()),
+        Object::Reference(r) => match doc.get_object(*r) {
+            Ok(Object::Dictionary(d)) => Some(d.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The /Resources dictionary in effect for a page.
+///
+/// /Resources is an *inheritable* page-tree attribute: a page may omit it
+/// and rely on an ancestor /Pages node.  Writing a fresh dictionary onto
+/// the page in that case shadows the inherited one, which silently strips
+/// the fonts the page's existing content stream refers to.  So walk the
+/// /Parent chain and start from whatever is actually in effect.
+fn effective_resources(doc: &Document, page_id: ObjectId) -> lopdf::Dictionary {
+    let mut cur = page_id;
+    // Bounded: a malformed file can have a /Parent cycle.
+    for _ in 0..32 {
+        let d = match doc.get_object(cur) {
+            Ok(Object::Dictionary(d)) => d,
+            _ => break,
+        };
+        if let Ok(r) = d.get(b"Resources") {
+            if let Some(rd) = as_dict(doc, r) {
+                return rd;
+            }
+        }
+        match d.get(b"Parent") {
+            Ok(Object::Reference(p)) => cur = *p,
+            _ => break,
+        }
+    }
+    lopdf::Dictionary::new()
+}
+
+/// Append a content stream to a page, merging in the font / ExtGState
+/// resources it needs.  Centralises the /Contents append that page
+/// numbers, watermarks, text boxes and black-out overlays all perform.
+fn append_content(
+    doc: &mut Document,
+    page_id: ObjectId,
+    content: Vec<u8>,
+    font: Option<(&str, ObjectId)>,
+    ext_gstate: Option<(&str, ObjectId)>,
+) {
+    // Resolve inherited resources before taking the mutable borrow.
+    let mut res = if font.is_some() || ext_gstate.is_some() {
+        Some(effective_resources(doc, page_id))
+    } else {
+        None
+    };
+    if let Some(ref mut res) = res {
+        if let Some((name, id)) = font {
+            let mut fonts = res.get(b"Font").ok().and_then(|f| as_dict(doc, f)).unwrap_or_default();
+            fonts.set(name, Object::Reference(id));
+            res.set("Font", Object::Dictionary(fonts));
+        }
+        if let Some((name, id)) = ext_gstate {
+            let mut gs = res.get(b"ExtGState").ok().and_then(|g| as_dict(doc, g)).unwrap_or_default();
+            gs.set(name, Object::Reference(id));
+            res.set("ExtGState", Object::Dictionary(gs));
+        }
+    }
+
+    let content_id = doc.add_object(Object::Stream(
+        lopdf::Stream::new(lopdf::Dictionary::new(), content),
+    ));
+    if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(page_id) {
+        if let Some(res) = res {
+            page.set("Resources", Object::Dictionary(res));
+        }
+        match page.get(b"Contents") {
+            Ok(Object::Reference(r)) => {
+                let r = *r;
+                page.set("Contents", Object::Array(vec![Object::Reference(r), Object::Reference(content_id)]));
+            }
+            Ok(Object::Array(arr)) => {
+                let mut a = arr.clone();
+                a.push(Object::Reference(content_id));
+                page.set("Contents", Object::Array(a));
+            }
+            _ => { page.set("Contents", Object::Reference(content_id)); }
+        }
+    }
+}
+
+/// Add a base-14 Helvetica font object and return its id.
+fn add_helvetica(doc: &mut Document) -> ObjectId {
+    doc.add_object(Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+        ("Type", Object::Name(b"Font".to_vec())),
+        ("Subtype", Object::Name(b"Type1".to_vec())),
+        ("BaseFont", Object::Name(b"Helvetica".to_vec())),
+    ])))
+}
+
+/// Escape a string for use inside a PDF literal string `( … )`.
+fn escape_pdf_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            '\\' => out.push_str("\\\\"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 // ── Info / metadata ────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,7 +209,14 @@ pub struct PdfInfo {
 
 pub fn pdf_info(path: &Path) -> Result<PdfInfo, String> {
     let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+    Ok(pdf_info_from_doc(&doc))
+}
+
+/// Same as [`pdf_info`] against an already-loaded document — used by the
+/// editing session, which reports on an in-memory document that has no
+/// file on disk yet.
+pub fn pdf_info_from_doc(doc: &Document) -> PdfInfo {
+    let ids = page_ids(doc);
     let mut pages = Vec::with_capacity(ids.len());
     for (i, &id) in ids.iter().enumerate() {
         let (w, h, rot) = match doc.get_object(id) {
@@ -130,7 +254,7 @@ pub fn pdf_info(path: &Path) -> Result<PdfInfo, String> {
         } else {
             (None, None, None, None, None, None)
         };
-    Ok(PdfInfo {
+    PdfInfo {
         page_count: ids.len(),
         pages,
         title,
@@ -139,67 +263,86 @@ pub fn pdf_info(path: &Path) -> Result<PdfInfo, String> {
         keywords,
         producer,
         creator,
-    })
+    }
 }
 
 // ── Reorder pages ──────────────────────────────────────────────────────
 
-pub fn reorder_pages(path: &Path, new_order: &[usize], out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+/// In-memory reorder.  The `_doc` variants exist so the editing session
+/// (`pdf_session`) can apply a stack of operations to one loaded document
+/// instead of round-tripping through the filesystem per edit.  The
+/// path-taking wrappers below are load → apply → save.
+pub fn reorder_pages_doc(doc: &mut Document, new_order: &[usize]) -> Result<(), String> {
+    let ids = page_ids(doc);
     let n = ids.len();
     for &idx in new_order {
         if idx >= n { return Err(format!("page index {idx} out of range (0..{n})")); }
     }
     let reordered: Vec<ObjectId> = new_order.iter().map(|&i| ids[i]).collect();
-    let pid = pages_ref(&doc)?;
+    let pid = pages_ref(doc)?;
     if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(pid) {
         d.set("Kids", Object::Array(reordered.iter().map(|id| Object::Reference(*id)).collect()));
         d.set("Count", Object::Integer(reordered.len() as i64));
     }
+    Ok(())
+}
+
+pub fn reorder_pages(path: &Path, new_order: &[usize], out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    reorder_pages_doc(&mut doc, new_order)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
 
 // ── Extract pages ──────────────────────────────────────────────────────
 
-pub fn extract_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+pub fn extract_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<(), String> {
+    let ids = page_ids(doc);
     let n = ids.len();
     let keep: Vec<ObjectId> = page_indices
         .iter()
         .map(|&i| if i >= n { Err(format!("page {i} out of range")) } else { Ok(ids[i]) })
         .collect::<Result<_, _>>()?;
-    let pid = pages_ref(&doc)?;
+    let pid = pages_ref(doc)?;
     if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(pid) {
         d.set("Kids", Object::Array(keep.iter().map(|id| Object::Reference(*id)).collect()));
         d.set("Count", Object::Integer(keep.len() as i64));
     }
+    Ok(())
+}
+
+pub fn extract_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    extract_pages_doc(&mut doc, page_indices)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
 
 // ── Remove pages ───────────────────────────────────────────────────────
 
-pub fn remove_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = page_ids(&doc).len();
+pub fn remove_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<(), String> {
+    let n = page_ids(doc).len();
     let remove: std::collections::HashSet<usize> = page_indices.iter().copied().collect();
     for &idx in &remove { if idx >= n { return Err(format!("page {idx} out of range")); } }
     let keep: Vec<usize> = (0..n).filter(|i| !remove.contains(i)).collect();
     if keep.is_empty() { return Err("Cannot remove all pages".into()); }
-    extract_pages(path, &keep, out_path)
+    extract_pages_doc(doc, &keep)
+}
+
+pub fn remove_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    remove_pages_doc(&mut doc, page_indices)?;
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
 }
 
 // ── Rotate pages ───────────────────────────────────────────────────────
 
-pub fn rotate_pages(path: &Path, page_indices: &[usize], degrees: i64, out_path: &Path) -> Result<(), String> {
+pub fn rotate_pages_doc(doc: &mut Document, page_indices: &[usize], degrees: i64) -> Result<(), String> {
     if ![0, 90, 180, 270].contains(&degrees) {
         return Err(format!("degrees must be 0/90/180/270, got {degrees}"));
     }
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+    let ids = page_ids(doc);
     let n = ids.len();
     for &idx in page_indices {
         if idx >= n { return Err(format!("page {idx} out of range")); }
@@ -208,18 +351,23 @@ pub fn rotate_pages(path: &Path, page_indices: &[usize], degrees: i64, out_path:
                 Ok(Object::Integer(v)) => *v,
                 _ => 0,
             };
-            d.set("Rotate", Object::Integer((cur + degrees) % 360));
+            d.set("Rotate", Object::Integer(((cur + degrees) % 360 + 360) % 360));
         }
     }
+    Ok(())
+}
+
+pub fn rotate_pages(path: &Path, page_indices: &[usize], degrees: i64, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    rotate_pages_doc(&mut doc, page_indices, degrees)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
 
 // ── Crop pages ─────────────────────────────────────────────────────────
 
-pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h: f64, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+pub fn crop_pages_doc(doc: &mut Document, page_indices: &[usize], x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    let ids = page_ids(doc);
     let n = ids.len();
     let crop = Object::Array(vec![
         Object::Real(x as f32), Object::Real(y as f32),
@@ -231,6 +379,12 @@ pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h
             d.set("CropBox", crop.clone());
         }
     }
+    Ok(())
+}
+
+pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h: f64, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    crop_pages_doc(&mut doc, page_indices, x, y, w, h)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
@@ -360,9 +514,8 @@ fn to_roman(mut n: usize) -> String {
     s
 }
 
-pub fn add_page_numbers(path: &Path, config: &PageNumberConfig, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+pub fn add_page_numbers_doc(doc: &mut Document, config: &PageNumberConfig) -> Result<(), String> {
+    let ids = page_ids(doc);
     let total = ids.len();
 
     for (i, &id) in ids.iter().enumerate() {
@@ -393,46 +546,19 @@ pub fn add_page_numbers(path: &Path, config: &PageNumberConfig, out_path: &Path)
                     else if config.position.contains("right") { x - approx_w }
                     else { x };
 
-        let content = format!("BT /F1 {fs} Tf {adj_x:.1} {y:.1} Td ({label}) Tj ET");
-        let font_dict = lopdf::Dictionary::from_iter(vec![
-            ("Type", Object::Name(b"Font".to_vec())),
-            ("Subtype", Object::Name(b"Type1".to_vec())),
-            ("BaseFont", Object::Name(b"Helvetica".to_vec())),
-        ]);
-        let font_id = doc.add_object(Object::Dictionary(font_dict));
-        let content_id = doc.add_object(Object::Stream(
-            lopdf::Stream::new(lopdf::Dictionary::new(), content.into_bytes()),
-        ));
-
-        if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(id) {
-            // Build resources with font
-            let mut res = match page.get(b"Resources") {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => lopdf::Dictionary::new(),
-            };
-            let mut fonts = match res.get(b"Font") {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => lopdf::Dictionary::new(),
-            };
-            fonts.set("F1", Object::Reference(font_id));
-            res.set("Font", Object::Dictionary(fonts));
-            page.set("Resources", Object::Dictionary(res));
-
-            // Append content stream
-            match page.get(b"Contents") {
-                Ok(Object::Reference(r)) => {
-                    let r = *r;
-                    page.set("Contents", Object::Array(vec![Object::Reference(r), Object::Reference(content_id)]));
-                }
-                Ok(Object::Array(arr)) => {
-                    let mut a = arr.clone();
-                    a.push(Object::Reference(content_id));
-                    page.set("Contents", Object::Array(a));
-                }
-                _ => { page.set("Contents", Object::Reference(content_id)); }
-            }
-        }
+        let content = format!(
+            "q BT /F1 {fs} Tf {adj_x:.1} {y:.1} Td ({}) Tj ET Q",
+            escape_pdf_literal(&label),
+        );
+        let font_id = add_helvetica(doc);
+        append_content(doc, id, content.into_bytes(), Some(("F1", font_id)), None);
     }
+    Ok(())
+}
+
+pub fn add_page_numbers(path: &Path, config: &PageNumberConfig, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    add_page_numbers_doc(&mut doc, config)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
@@ -454,9 +580,8 @@ impl Default for WatermarkConfig {
     }
 }
 
-pub fn add_watermark(path: &Path, config: &WatermarkConfig, page_indices: Option<&[usize]>, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+pub fn add_watermark_doc(doc: &mut Document, config: &WatermarkConfig, page_indices: Option<&[usize]>) -> Result<(), String> {
+    let ids = page_ids(doc);
     let n = ids.len();
     let apply_to: Vec<usize> = page_indices.map(|pi| pi.to_vec()).unwrap_or_else(|| (0..n).collect());
 
@@ -474,8 +599,8 @@ pub fn add_watermark(path: &Path, config: &WatermarkConfig, page_indices: Option
         let (cos, sin) = (rad.cos(), rad.sin());
         let [r, g, b] = config.color;
         let fs = config.font_size;
-        let esc = config.text.replace('(', "\\(").replace(')', "\\)");
-        let aw = config.text.len() as f64 * fs * 0.5;
+        let esc = escape_pdf_literal(&config.text);
+        let aw = config.text.chars().count() as f64 * fs * 0.5;
 
         let content = format!(
             "q /GS0 gs {r:.3} {g:.3} {b:.3} rg BT /F1 {fs} Tf {:.4} {:.4} {:.4} {:.4} {:.1} {:.1} Tm ({esc}) Tj ET Q",
@@ -484,66 +609,30 @@ pub fn add_watermark(path: &Path, config: &WatermarkConfig, page_indices: Option
             cy - aw / 2.0 * sin - fs / 2.0 * cos,
         );
 
-        let gs_dict = lopdf::Dictionary::from_iter(vec![
+        let gs_id = doc.add_object(Object::Dictionary(lopdf::Dictionary::from_iter(vec![
             ("Type", Object::Name(b"ExtGState".to_vec())),
             ("ca", Object::Real(config.opacity as f32)),
             ("CA", Object::Real(config.opacity as f32)),
-        ]);
-        let gs_id = doc.add_object(Object::Dictionary(gs_dict));
-        let font_dict = lopdf::Dictionary::from_iter(vec![
-            ("Type", Object::Name(b"Font".to_vec())),
-            ("Subtype", Object::Name(b"Type1".to_vec())),
-            ("BaseFont", Object::Name(b"Helvetica".to_vec())),
-        ]);
-        let font_id = doc.add_object(Object::Dictionary(font_dict));
-        let content_id = doc.add_object(Object::Stream(
-            lopdf::Stream::new(lopdf::Dictionary::new(), content.into_bytes()),
-        ));
-
-        if let Ok(Object::Dictionary(ref mut page)) = doc.get_object_mut(id) {
-            let mut res = match page.get(b"Resources") {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => lopdf::Dictionary::new(),
-            };
-            let mut fonts = match res.get(b"Font") {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => lopdf::Dictionary::new(),
-            };
-            fonts.set("F1", Object::Reference(font_id));
-            res.set("Font", Object::Dictionary(fonts));
-            let mut gs = match res.get(b"ExtGState") {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => lopdf::Dictionary::new(),
-            };
-            gs.set("GS0", Object::Reference(gs_id));
-            res.set("ExtGState", Object::Dictionary(gs));
-            page.set("Resources", Object::Dictionary(res));
-
-            match page.get(b"Contents") {
-                Ok(Object::Reference(r)) => {
-                    let r = *r;
-                    page.set("Contents", Object::Array(vec![Object::Reference(r), Object::Reference(content_id)]));
-                }
-                Ok(Object::Array(arr)) => {
-                    let mut a = arr.clone();
-                    a.push(Object::Reference(content_id));
-                    page.set("Contents", Object::Array(a));
-                }
-                _ => { page.set("Contents", Object::Reference(content_id)); }
-            }
-        }
+        ])));
+        let font_id = add_helvetica(doc);
+        append_content(doc, id, content.into_bytes(), Some(("F1", font_id)), Some(("GS0", gs_id)));
     }
+    Ok(())
+}
+
+pub fn add_watermark(path: &Path, config: &WatermarkConfig, page_indices: Option<&[usize]>, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    add_watermark_doc(&mut doc, config, page_indices)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
 
 // ── Insert blank pages ─────────────────────────────────────────────────
 
-pub fn insert_blank_page(path: &Path, position: usize, width: f64, height: f64, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = page_ids(&doc).len();
+pub fn insert_blank_page_doc(doc: &mut Document, position: usize, width: f64, height: f64) -> Result<(), String> {
+    let n = page_ids(doc).len();
     if position > n { return Err(format!("position {position} out of range (0..={n})")); }
-    let pid = pages_ref(&doc)?;
+    let pid = pages_ref(doc)?;
     let page_dict = lopdf::Dictionary::from_iter(vec![
         ("Type", Object::Name(b"Page".to_vec())),
         ("Parent", Object::Reference(pid)),
@@ -553,15 +642,145 @@ pub fn insert_blank_page(path: &Path, position: usize, width: f64, height: f64, 
         ])),
     ]);
     let new_page_id = doc.add_object(Object::Dictionary(page_dict));
+    // Flatten first: /Kids on the root /Pages node is not necessarily the
+    // page order when the tree is nested, and positional insert into a
+    // nested tree would land in the wrong place.
+    let flat: Vec<Object> = page_ids(doc).iter().map(|id| Object::Reference(*id)).collect();
     if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(pid) {
-        let mut kids = match d.get(b"Kids") {
-            Ok(Object::Array(a)) => a.clone(),
-            _ => vec![],
-        };
+        let mut kids = flat;
         kids.insert(position, Object::Reference(new_page_id));
         d.set("Kids", Object::Array(kids));
         d.set("Count", Object::Integer((n + 1) as i64));
     }
+    Ok(())
+}
+
+pub fn insert_blank_page(path: &Path, position: usize, width: f64, height: f64, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    insert_blank_page_doc(&mut doc, position, width, height)?;
+    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    Ok(())
+}
+
+// ── Insert pages from another document ─────────────────────────────────
+
+/// Insert a page range from `src_path` into `doc` at `position`.
+///
+/// `src_pages` is a list of 0-based page indices in the source document;
+/// an empty list means every page.  Objects are deep-copied with remapped
+/// ids (same approach as `merge_pdfs`) so the two documents stay
+/// independent.
+pub fn insert_pages_from_doc(
+    doc: &mut Document,
+    src_path: &Path,
+    src_pages: &[usize],
+    position: usize,
+) -> Result<usize, String> {
+    let n = page_ids(doc).len();
+    if position > n { return Err(format!("position {position} out of range (0..={n})")); }
+
+    let src = Document::load(src_path).map_err(|e| format!("load {}: {e}", src_path.display()))?;
+    let src_ids = src.page_iter().collect::<Vec<_>>();
+    let wanted: Vec<ObjectId> = if src_pages.is_empty() {
+        src_ids.clone()
+    } else {
+        src_pages
+            .iter()
+            .map(|&i| src_ids.get(i).copied().ok_or_else(|| format!("source page {i} out of range")))
+            .collect::<Result<_, _>>()?
+    };
+    if wanted.is_empty() { return Err("no source pages selected".into()); }
+
+    // Copy every source object under an offset id, then remap references.
+    // Same scheme as `merge_pdfs`: shift by our max_id, keep the generation.
+    let max_id = doc.max_id;
+    let mut map = std::collections::HashMap::<ObjectId, ObjectId>::new();
+    for (&old_id, obj) in &src.objects {
+        let new_id = (old_id.0 + max_id, old_id.1);
+        map.insert(old_id, new_id);
+        doc.objects.insert(new_id, obj.clone());
+    }
+    doc.max_id = max_id + src.max_id;
+    let new_ids: Vec<ObjectId> = map.values().copied().collect();
+    for &nid in &new_ids {
+        if let Some(obj) = doc.objects.get_mut(&nid) {
+            remap_refs(obj, &map);
+        }
+    }
+
+    let pid = pages_ref(doc)?;
+    let mut inserted = Vec::with_capacity(wanted.len());
+    for old in &wanted {
+        let new_id = map[old];
+        // Reparent onto our page tree so /Resources inheritance resolves here.
+        if let Some(Object::Dictionary(ref mut d)) = doc.objects.get_mut(&new_id) {
+            d.set("Parent", Object::Reference(pid));
+        }
+        inserted.push(Object::Reference(new_id));
+    }
+
+    let count = inserted.len();
+    let mut kids: Vec<Object> = page_ids(doc).iter().map(|id| Object::Reference(*id)).collect();
+    let at = position.min(kids.len());
+    for (i, obj) in inserted.into_iter().enumerate() {
+        kids.insert(at + i, obj);
+    }
+    let total = kids.len();
+    if let Ok(Object::Dictionary(ref mut d)) = doc.get_object_mut(pid) {
+        d.set("Kids", Object::Array(kids));
+        d.set("Count", Object::Integer(total as i64));
+    }
+    Ok(count)
+}
+
+// ── Text box ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TextBoxConfig {
+    /// 0-based page index.
+    pub page: usize,
+    /// Lower-left corner of the first line's baseline, in points.
+    pub x: f64,
+    pub y: f64,
+    pub text: String,
+    pub font_size: f64,
+    /// RGB, each component 0.0–1.0.
+    pub color: [f64; 3],
+    /// Leading between lines; defaults to 1.2 × font_size when None.
+    pub line_height: Option<f64>,
+}
+
+/// Draw a text box onto a page as page content (not an annotation).
+///
+/// Newlines in `text` become separate lines via the `TD`/`Td` leading.
+/// Base-14 Helvetica, so this is WinAnsi-limited — characters outside
+/// that repertoire are dropped rather than rendered as garbage.
+pub fn add_text_box_doc(doc: &mut Document, config: &TextBoxConfig) -> Result<(), String> {
+    let ids = page_ids(doc);
+    let id = *ids.get(config.page).ok_or_else(|| format!("page {} out of range", config.page))?;
+
+    let [r, g, b] = config.color;
+    let fs = config.font_size;
+    let leading = config.line_height.unwrap_or(fs * 1.2);
+
+    let mut content = format!(
+        "q {r:.3} {g:.3} {b:.3} rg BT /F1 {fs} Tf {:.2} TL {:.2} {:.2} Td",
+        leading, config.x, config.y,
+    );
+    for (i, line) in config.text.split('\n').enumerate() {
+        if i > 0 { content.push_str(" T*"); }
+        content.push_str(&format!(" ({}) Tj", escape_pdf_literal(line)));
+    }
+    content.push_str(" ET Q");
+
+    let font_id = add_helvetica(doc);
+    append_content(doc, id, content.into_bytes(), Some(("F1", font_id)), None);
+    Ok(())
+}
+
+pub fn add_text_box(path: &Path, config: &TextBoxConfig, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    add_text_box_doc(&mut doc, config)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
@@ -576,8 +795,7 @@ pub struct MetadataEdit {
     pub keywords: Option<String>,
 }
 
-pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Result<(), String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+pub fn edit_metadata_doc(doc: &mut Document, edits: &MetadataEdit) -> Result<(), String> {
     let info_id = match doc.trailer.get(b"Info") {
         Ok(Object::Reference(r)) => *r,
         _ => {
@@ -592,6 +810,12 @@ pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Resu
         if let Some(ref v) = edits.subject { d.set("Subject", Object::String(v.as_bytes().to_vec(), lopdf::StringFormat::Literal)); }
         if let Some(ref v) = edits.keywords { d.set("Keywords", Object::String(v.as_bytes().to_vec(), lopdf::StringFormat::Literal)); }
     }
+    Ok(())
+}
+
+pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Result<(), String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    edit_metadata_doc(&mut doc, edits)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())
 }
@@ -1008,17 +1232,19 @@ pub struct RedactionSpec {
     pub h: f64,
 }
 
-/// Redact regions in a PDF by overlaying black rectangles.  The
-/// rectangles are drawn on top of existing content, covering the
-/// text visually.  For true content-stream text removal, a more
-/// complex approach is needed (deferred to a future phase).
-pub fn redact_regions(
-    path: &Path,
+/// Black out regions by overlaying opaque rectangles.
+///
+/// **This is not redaction.**  The rectangles are drawn on top of the
+/// existing content: the text objects survive underneath and come back
+/// out through copy/paste, `pdf-extract`, or any other extractor.  Use
+/// [`crate::pdf_redact::redact_regions_hard`] when the content must
+/// actually be removed — it scrubs the content stream *and* calls this
+/// to cover whatever it could not reach.
+pub fn black_out_regions_doc(
+    doc: &mut Document,
     regions: &[RedactionSpec],
-    out_path: &Path,
 ) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let ids = page_ids(&doc);
+    let ids = page_ids(doc);
     let n = ids.len();
 
     // Group regions by page
@@ -1058,17 +1284,45 @@ pub fn redact_regions(
             }
         }
     }
+    Ok(count)
+}
+
+/// Path-taking wrapper for [`black_out_regions_doc`].
+///
+/// **Visual only — the text underneath survives.** See that function.
+pub fn black_out_regions(
+    path: &Path,
+    regions: &[RedactionSpec],
+    out_path: &Path,
+) -> Result<usize, String> {
+    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+    let count = black_out_regions_doc(&mut doc, regions)?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(count)
 }
 
-/// Redact text by searching for specific strings in the document and
-/// replacing them with black boxes.  This is a visual-only redaction
-/// (overlay approach).  Returns the number of regions redacted.
+/// Deprecated alias kept so existing callers keep compiling.
 ///
-/// Note: this does a text-level search and creates approximate boxes
-/// based on assumed character dimensions.  For precise redaction,
-/// OCR bounding boxes should be used.
+/// The name is a lie — this never redacted anything, it drew rectangles.
+/// New code should call [`crate::pdf_redact::redact_regions_hard`] for
+/// real redaction, or [`black_out_regions`] when covering is genuinely
+/// what is wanted.
+#[deprecated(note = "visual-only; use pdf_redact::redact_regions_hard for real redaction")]
+pub fn redact_regions(
+    path: &Path,
+    regions: &[RedactionSpec],
+    out_path: &Path,
+) -> Result<usize, String> {
+    black_out_regions(path, regions, out_path)
+}
+
+/// Black out text by searching for specific strings and covering them.
+///
+/// **Visual only**, and doubly approximate: the boxes are derived from
+/// assumed character dimensions, not real glyph positions.
+///
+/// Strips matches from the `/Info` dictionary and draws boxes on the
+/// page. The page text itself is not removed.
 pub fn redact_text_patterns(
     path: &Path,
     patterns: &[String],
@@ -1312,7 +1566,7 @@ pub mod tauri_commands {
 
     #[tauri::command]
     pub async fn pdf_redact_regions(path: String, regions: Vec<RedactionSpec>, out_path: String) -> Result<usize, String> {
-        tokio::task::spawn_blocking(move || super::redact_regions(Path::new(&path), &regions, Path::new(&out_path)))
+        tokio::task::spawn_blocking(move || super::black_out_regions(Path::new(&path), &regions, Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 
@@ -1338,6 +1592,12 @@ pub mod tauri_commands {
     pub async fn pdf_sanitise(path: String, options: Option<SanitiseOptions>, out_path: String) -> Result<Vec<String>, String> {
         let opts = options.unwrap_or_default();
         tokio::task::spawn_blocking(move || super::sanitise_pdf_with_options(Path::new(&path), &opts, Path::new(&out_path)))
+            .await.map_err(|e| format!("join: {e}"))?
+    }
+
+    #[tauri::command]
+    pub async fn pdf_add_text_box(path: String, config: TextBoxConfig, out_path: String) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || super::add_text_box(Path::new(&path), &config, Path::new(&out_path)))
             .await.map_err(|e| format!("join: {e}"))?
     }
 }
@@ -1830,7 +2090,7 @@ mod tests {
             RedactionSpec { page: 0, x: 50.0, y: 50.0, w: 100.0, h: 20.0 },
             RedactionSpec { page: 1, x: 10.0, y: 10.0, w: 50.0, h: 50.0 },
         ];
-        let count = redact_regions(&pdf, &regions, &out).unwrap();
+        let count = black_out_regions(&pdf, &regions, &out).unwrap();
         assert_eq!(count, 2);
         let info = pdf_info(&out).unwrap();
         assert_eq!(info.page_count, 2);
@@ -1842,7 +2102,7 @@ mod tests {
         let pdf = create_test_pdf(dir.path());
         let out = dir.path().join("bad.pdf");
         let regions = vec![RedactionSpec { page: 5, x: 0.0, y: 0.0, w: 10.0, h: 10.0 }];
-        assert!(redact_regions(&pdf, &regions, &out).is_err());
+        assert!(black_out_regions(&pdf, &regions, &out).is_err());
     }
 
     #[test]
@@ -1850,7 +2110,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pdf = create_test_pdf(dir.path());
         let out = dir.path().join("empty.pdf");
-        let count = redact_regions(&pdf, &[], &out).unwrap();
+        let count = black_out_regions(&pdf, &[], &out).unwrap();
         assert_eq!(count, 0);
     }
 
@@ -2058,7 +2318,7 @@ mod tests {
             RedactionSpec { page: 0, x: 100.0, y: 100.0, w: 80.0, h: 30.0 },
             RedactionSpec { page: 0, x: 200.0, y: 200.0, w: 60.0, h: 15.0 },
         ];
-        let count = redact_regions(&pdf, &regions, &out).unwrap();
+        let count = black_out_regions(&pdf, &regions, &out).unwrap();
         assert_eq!(count, 3);
     }
 }
