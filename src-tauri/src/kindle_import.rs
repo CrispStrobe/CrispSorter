@@ -156,24 +156,30 @@ pub mod tauri_commands {
         AnnotationStore::open_or_create(dir).map_err(|e| e.to_string())
     }
 
+    /// Distinct book titles in a `My Clippings.txt`, sorted.
+    ///
+    /// Shared by the Tauri command and the CLI so both list the same
+    /// thing from the same parse.
+    pub fn kindle_list_books_sync(path: &Path) -> Result<Vec<String>, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut titles: Vec<String> = Vec::new();
+        for c in parse_clippings(&text) {
+            if !titles.contains(&c.title) {
+                titles.push(c.title);
+            }
+        }
+        titles.sort();
+        Ok(titles)
+    }
+
     /// List the distinct books in a `My Clippings.txt`, so the UI can ask
     /// which one to import before doing any work.
     #[tauri::command]
     pub async fn kindle_list_books(clippings_path: String) -> Result<Vec<String>, String> {
-        tokio::task::spawn_blocking(move || {
-            let text = std::fs::read_to_string(&clippings_path)
-                .map_err(|e| format!("read {clippings_path}: {e}"))?;
-            let mut titles: Vec<String> = Vec::new();
-            for c in parse_clippings(&text) {
-                if !titles.contains(&c.title) {
-                    titles.push(c.title);
-                }
-            }
-            titles.sort();
-            Ok(titles)
-        })
-        .await
-        .map_err(|e| format!("join: {e}"))?
+        tokio::task::spawn_blocking(move || kindle_list_books_sync(Path::new(&clippings_path)))
+            .await
+            .map_err(|e| format!("join: {e}"))?
     }
 
     /// Import a `My Clippings.txt` into the annotation store.

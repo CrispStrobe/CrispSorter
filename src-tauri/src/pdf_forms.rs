@@ -94,7 +94,12 @@ fn obj_f64(doc: &Document, o: &Object) -> f64 {
     }
 }
 
-/// The `/AcroForm` dictionary's object id, if the document has one.
+/// The `/AcroForm` dictionary's object id, when it is stored indirectly.
+///
+/// `None` does **not** mean the document has no form: the catalog may hold
+/// `/AcroForm` as a direct dictionary, which is legal and is what MuPDF
+/// writes. Use [`acroform_dict`] to read it and
+/// [`set_acroform_flag`] to modify it.
 fn acroform_id(doc: &Document) -> Option<ObjectId> {
     let cat = doc.catalog().ok()?;
     match cat.get(b"AcroForm").ok()? {
@@ -103,10 +108,32 @@ fn acroform_id(doc: &Document) -> Option<ObjectId> {
     }
 }
 
+/// The `/AcroForm` dictionary, however the catalog stores it.
 fn acroform_dict(doc: &Document) -> Option<lopdf::Dictionary> {
-    match doc.get_object(acroform_id(doc)?) {
-        Ok(Object::Dictionary(d)) => Some(d.clone()),
+    let cat = doc.catalog().ok()?;
+    match cat.get(b"AcroForm").ok()? {
+        Object::Dictionary(d) => Some(d.clone()),
+        Object::Reference(r) => match doc.get_object(*r) {
+            Ok(Object::Dictionary(d)) => Some(d.clone()),
+            _ => None,
+        },
         _ => None,
+    }
+}
+
+/// Set a boolean on the form dictionary, wherever it lives.
+fn set_acroform_flag(doc: &mut Document, key: &str, value: bool) {
+    if let Some(id) = acroform_id(doc) {
+        if let Ok(Object::Dictionary(ref mut f)) = doc.get_object_mut(id) {
+            f.set(key, Object::Boolean(value));
+        }
+        return;
+    }
+    // Direct dictionary: mutate it in place on the catalog.
+    if let Ok(cat) = doc.catalog_mut() {
+        if let Ok(Object::Dictionary(ref mut f)) = cat.get_mut(b"AcroForm") {
+            f.set(key, Object::Boolean(value));
+        }
     }
 }
 
@@ -388,11 +415,7 @@ pub fn fill_fields_doc(
     }
 
     // Without this the viewer renders the old (or empty) appearance.
-    if let Some(form_id) = acroform_id(doc) {
-        if let Ok(Object::Dictionary(ref mut f)) = doc.get_object_mut(form_id) {
-            f.set("NeedAppearances", Object::Boolean(true));
-        }
-    }
+    set_acroform_flag(doc, "NeedAppearances", true);
     Ok(set)
 }
 
@@ -673,6 +696,52 @@ mod tests {
 
     fn field<'a>(fs: &'a [FormField], name: &str) -> &'a FormField {
         fs.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no field {name:?} in {:?}", fs.iter().map(|f| &f.name).collect::<Vec<_>>()))
+    }
+
+    /// Rebuild the fixture with /AcroForm stored *directly* in the
+    /// catalog rather than as a reference.
+    fn form_doc_direct_acroform() -> Document {
+        let mut doc = form_doc();
+        let form = acroform_dict(&doc).expect("fixture should have a form");
+        if let Ok(cat) = doc.catalog_mut() {
+            cat.set("AcroForm", Object::Dictionary(form));
+        }
+        doc
+    }
+
+    #[test]
+    fn reads_a_form_stored_as_a_direct_dictionary() {
+        // The catalog may hold /AcroForm either way; MuPDF writes it
+        // direct, and only handling the reference made such forms
+        // invisible — found by verifying against a MuPDF-authored file.
+        let doc = form_doc_direct_acroform();
+        let fs = read_fields(&doc);
+        assert_eq!(fs.len(), 3, "direct /AcroForm was not read");
+        assert_eq!(field(&fs, "fullName").kind, FieldKind::Text);
+    }
+
+    #[test]
+    fn filling_a_direct_acroform_still_requests_appearances() {
+        let mut doc = form_doc_direct_acroform();
+        let mut vals = HashMap::new();
+        vals.insert("fullName".to_string(), "Grace Hopper".to_string());
+        assert_eq!(fill_fields_doc(&mut doc, &vals).unwrap(), 1);
+        let form = acroform_dict(&doc).unwrap();
+        assert!(
+            matches!(form.get(b"NeedAppearances"), Ok(Object::Boolean(true))),
+            "NeedAppearances not set on a direct /AcroForm"
+        );
+    }
+
+    #[test]
+    fn flattening_a_direct_acroform_removes_it() {
+        let mut doc = form_doc_direct_acroform();
+        let mut vals = HashMap::new();
+        vals.insert("fullName".to_string(), "Grace Hopper".to_string());
+        fill_fields_doc(&mut doc, &vals).unwrap();
+        flatten_form_doc(&mut doc).unwrap();
+        assert!(read_fields(&doc).is_empty());
+        assert!(doc.catalog().unwrap().get(b"AcroForm").is_err());
     }
 
     #[test]

@@ -20,7 +20,7 @@
     import {
         FileUp, Save, Undo2, Redo2, Trash2, RotateCw, RotateCcw, Crop,
         Hash, Type, FilePlus2, FileOutput, Loader2, Check, X, Copy,
-        Printer, Share2, EyeOff, AlertTriangle, MessageSquare,
+        Printer, Share2, EyeOff, AlertTriangle, MessageSquare, ClipboardList, BookOpen, PenLine,
     } from 'lucide-svelte';
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
@@ -64,7 +64,7 @@
     /** Bumped whenever the edited-document preview is refreshed. */
     let previewEpoch = $state(0);
 
-    let activePanel = $state<'numbers' | 'crop' | 'textbox' | 'insert' | 'redact' | 'annots' | null>(null);
+    let activePanel = $state<'numbers' | 'crop' | 'textbox' | 'insert' | 'redact' | 'annots' | 'form' | 'kindle' | 'overprint' | null>(null);
     let dragFrom = $state<number | null>(null);
     let dragOver = $state<number | null>(null);
 
@@ -280,6 +280,173 @@
                 success = i18n.t.pdfeditor.annots_stamped
                     .replace('{n}', String(n)).replace('{path}', out);
             }
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    // ── Forms ───────────────────────────────────────────────────────────
+    interface FormField {
+        name: string;
+        kind: string;
+        value: string | null;
+        on_value: string | null;
+        options: string[];
+        read_only: boolean;
+        required: boolean;
+        page: number | null;
+        rect: [number, number, number, number] | null;
+    }
+
+    let formFields = $state<FormField[]>([]);
+    let formEdits = $state<Record<string, string>>({});
+    let formLoaded = $state(false);
+
+    async function loadForm() {
+        if (!session) return;
+        busy = true;
+        error = '';
+        try {
+            const tmp = await currentTempCopy();
+            if (tmp) {
+                formFields = await invoke<FormField[]>('pdf_read_form_fields', { path: tmp });
+                formEdits = Object.fromEntries(
+                    formFields.map((f) => [f.name, f.value ?? ''])
+                );
+                formLoaded = true;
+                if (formFields.length === 0) success = i18n.t.pdfeditor.form_none;
+            }
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    /** Only send fields the user actually changed. */
+    function changedFormValues(): Record<string, string> {
+        const out: Record<string, string> = {};
+        for (const f of formFields) {
+            const now = formEdits[f.name] ?? '';
+            if (now !== (f.value ?? '')) out[f.name] = now;
+        }
+        return out;
+    }
+
+    async function doFillForm(flatten: boolean) {
+        if (!session) return;
+        const values = changedFormValues();
+        if (!flatten && Object.keys(values).length === 0) {
+            error = i18n.t.pdfeditor.form_no_changes;
+            return;
+        }
+        const out = await saveDialog({
+            filters: [{ name: 'PDF', extensions: ['pdf'] }],
+            defaultPath: flatten ? 'filled-flat.pdf' : 'filled.pdf',
+        }) as string | null;
+        if (!out) return;
+        busy = true;
+        error = '';
+        try {
+            const tmp = await currentTempCopy();
+            if (!tmp) return;
+            let n = 0;
+            if (Object.keys(values).length > 0) {
+                n = await invoke<number>('pdf_fill_form', { path: tmp, values, outPath: out });
+            }
+            if (flatten) {
+                // Flatten the filled result, not the original.
+                const src = Object.keys(values).length > 0 ? out : tmp;
+                const k = await invoke<number>('pdf_flatten_form', { path: src, outPath: out });
+                success = i18n.t.pdfeditor.form_flattened
+                    .replace('{n}', String(k)).replace('{path}', out);
+            } else {
+                success = i18n.t.pdfeditor.form_filled
+                    .replace('{n}', String(n)).replace('{path}', out);
+            }
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    // ── Kindle clippings ────────────────────────────────────────────────
+    interface ImportSummary {
+        parsed: number; deduped: number; imported: number;
+        matched: number; fuzzy_matched: number;
+        titles: string[]; duplicates_skipped: number;
+    }
+
+    let clippingsPath = $state('');
+    let kindleBooks = $state<string[]>([]);
+    let kindleTitle = $state('');
+    let kindleAnchor = $state(true);
+    let kindleSummary = $state<ImportSummary | null>(null);
+
+    async function pickClippings() {
+        const p = await openDialog({
+            filters: [{ name: 'Kindle clippings', extensions: ['txt'] }],
+            multiple: false,
+        });
+        if (!p) return;
+        clippingsPath = p as string;
+        busy = true;
+        error = '';
+        kindleSummary = null;
+        try {
+            kindleBooks = await invoke<string[]>('kindle_list_books', { clippingsPath });
+            kindleTitle = kindleBooks[0] ?? '';
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    async function doKindleImport() {
+        if (!session || !clippingsPath) { error = i18n.t.pdfeditor.kindle_pick_first; return; }
+        busy = true;
+        error = '';
+        try {
+            // Anchoring needs a document; without one the highlights still
+            // import, they just carry no offsets.
+            const documentPath = kindleAnchor ? await currentTempCopy() : null;
+            kindleSummary = await invoke<ImportSummary>('kindle_import', {
+                clippingsPath,
+                docId: session.source,
+                titleFilter: kindleTitle || null,
+                documentPath,
+                minScore: null,
+            });
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    // ── Overprint (tier 1 text edit) ────────────────────────────────────
+    let overprintText = $state('');
+    let overprintSize = $state(11);
+
+    async function doOverprint() {
+        if (!session || !cropBox) { error = i18n.t.pdfeditor.overprint_drag_first; return; }
+        const out = await saveDialog({
+            filters: [{ name: 'PDF', extensions: ['pdf'] }],
+            defaultPath: 'overprinted.pdf',
+        }) as string | null;
+        if (!out) return;
+        const pageH = stagePageHeightPt();
+        busy = true;
+        error = '';
+        try {
+            const tmp = await currentTempCopy();
+            if (!tmp) return;
+            await invoke<number>('pdf_overprint', {
+                path: tmp,
+                specs: [{
+                    page: stagePage,
+                    x: cropBox.x / stageScale,
+                    y: pageH - (cropBox.y + cropBox.h) / stageScale,
+                    w: cropBox.w / stageScale,
+                    h: cropBox.h / stageScale,
+                    text: overprintText,
+                    font_size: overprintSize,
+                    color: [0, 0, 0],
+                    background: [1, 1, 1],
+                }],
+                outPath: out,
+            });
+            success = `${i18n.t.pdfeditor.overprinted} ${out}`;
+            cropBox = null;
         } catch (e: any) { error = e?.message ?? String(e); }
         busy = false;
     }
@@ -570,7 +737,7 @@
         const p = stageLocal(ev);
         // Redaction drags the same rectangle as crop; only what happens on
         // release differs.
-        if (activePanel === 'crop' || activePanel === 'redact') {
+        if (activePanel === 'crop' || activePanel === 'redact' || activePanel === 'overprint') {
             cropDragging = true;
             cropStart = p;
             cropBox = { x: p.x, y: p.y, w: 0, h: 0 };
@@ -920,6 +1087,21 @@
                     title={i18n.t.pdfeditor.annotations}>
                 <MessageSquare size={14} />
             </button>
+            <button class="pe-btn" class:active={activePanel === 'form'} disabled={busy}
+                    onclick={() => { activePanel = activePanel === 'form' ? null : 'form'; if (activePanel === 'form' && !formLoaded) loadForm(); }}
+                    title={i18n.t.pdfeditor.form}>
+                <ClipboardList size={14} />
+            </button>
+            <button class="pe-btn" class:active={activePanel === 'overprint'} disabled={busy}
+                    onclick={() => { activePanel = activePanel === 'overprint' ? null : 'overprint'; cropBox = null; }}
+                    title={i18n.t.pdfeditor.overprint}>
+                <PenLine size={14} />
+            </button>
+            <button class="pe-btn" class:active={activePanel === 'kindle'} disabled={busy}
+                    onclick={() => activePanel = activePanel === 'kindle' ? null : 'kindle'}
+                    title={i18n.t.pdfeditor.kindle}>
+                <BookOpen size={14} />
+            </button>
 
             <span class="pe-spacer"></span>
 
@@ -1008,6 +1190,77 @@
                     <span class="pe-hint">{i18n.t.pdfeditor.annots_in_store}: {annotCount}</span>
                 {/if}
 
+            {:else if activePanel === 'form'}
+                {#if formFields.length === 0}
+                    <span class="pe-hint">{i18n.t.pdfeditor.form_none}</span>
+                    <button class="pe-btn" disabled={busy} onclick={loadForm}>{i18n.t.pdfeditor.form_reload}</button>
+                {:else}
+                    <div class="pe-formgrid">
+                        {#each formFields as f (f.name)}
+                            <label class="pe-formrow">
+                                <span class="pe-formname" title={f.name}>
+                                    {f.name}{#if f.required}<span class="pe-req">*</span>{/if}
+                                </span>
+                                {#if f.kind === 'checkbox' || f.kind === 'radio'}
+                                    <input type="checkbox" disabled={f.read_only}
+                                        checked={!!formEdits[f.name] && formEdits[f.name].toLowerCase() !== 'off'}
+                                        onchange={(e) => formEdits[f.name] = (e.currentTarget as HTMLInputElement).checked ? 'true' : 'false'} />
+                                {:else if f.options.length > 0}
+                                    <select class="pe-input" disabled={f.read_only} bind:value={formEdits[f.name]}>
+                                        {#each f.options as o}<option value={o}>{o}</option>{/each}
+                                    </select>
+                                {:else}
+                                    <input type="text" class="pe-input" disabled={f.read_only}
+                                        bind:value={formEdits[f.name]} />
+                                {/if}
+                            </label>
+                        {/each}
+                    </div>
+                    <button class="pe-btn pe-go" disabled={busy} onclick={() => doFillForm(false)}>
+                        {i18n.t.pdfeditor.form_save}
+                    </button>
+                    <button class="pe-btn" disabled={busy} onclick={() => doFillForm(true)}
+                            title={i18n.t.pdfeditor.form_flatten_hint}>
+                        {i18n.t.pdfeditor.form_flatten}
+                    </button>
+                {/if}
+
+            {:else if activePanel === 'overprint'}
+                <label class="pe-grow">{i18n.t.pdfeditor.text}
+                    <input type="text" class="pe-input" bind:value={overprintText} /></label>
+                <label>{i18n.t.pdfeditor.size}
+                    <input type="number" min="4" max="96" bind:value={overprintSize} class="pe-input-sm" /></label>
+                <button class="pe-btn pe-go" disabled={busy || !cropBox} onclick={doOverprint}>
+                    {i18n.t.pdfeditor.apply}
+                </button>
+                <span class="pe-hint pe-warn">{i18n.t.pdfeditor.overprint_caveat}</span>
+
+            {:else if activePanel === 'kindle'}
+                <button class="pe-btn" disabled={busy} onclick={pickClippings}>
+                    {i18n.t.pdfeditor.kindle_choose}
+                </button>
+                <span class="pe-hint">{clippingsPath || i18n.t.pdfeditor.no_file}</span>
+                {#if kindleBooks.length > 0}
+                    <label>{i18n.t.pdfeditor.kindle_book}
+                        <select class="pe-input" bind:value={kindleTitle}>
+                            {#each kindleBooks as b}<option value={b}>{b}</option>{/each}
+                        </select>
+                    </label>
+                    <label><input type="checkbox" bind:checked={kindleAnchor} />
+                        {i18n.t.pdfeditor.kindle_anchor}</label>
+                    <button class="pe-btn pe-go" disabled={busy} onclick={doKindleImport}>
+                        {i18n.t.pdfeditor.kindle_import}
+                    </button>
+                {/if}
+                {#if kindleSummary}
+                    <span class="pe-hint">
+                        {i18n.t.pdfeditor.kindle_result
+                            .replace('{imported}', String(kindleSummary.imported))
+                            .replace('{matched}', String(kindleSummary.matched))
+                            .replace('{dupes}', String(kindleSummary.duplicates_skipped))}
+                    </span>
+                {/if}
+
             {:else if activePanel === 'redact'}
                 <span class="pe-hint">{i18n.t.pdfeditor.redact_marked}: {redactRects.length}</span>
                 <button class="pe-btn" disabled={redactRects.length === 0} onclick={clearRedactRects}>
@@ -1029,7 +1282,7 @@
     {/if}
 
     <!-- Interactive stage: drag a crop rectangle / click to place text -->
-    {#if session && (activePanel === 'crop' || activePanel === 'textbox' || activePanel === 'redact')}
+    {#if session && (activePanel === 'crop' || activePanel === 'textbox' || activePanel === 'redact' || activePanel === 'overprint')}
         <div class="pe-stage-wrap">
             <div class="pe-stage-bar">
                 <span class="pe-hint">
@@ -1037,7 +1290,9 @@
                         ? i18n.t.pdfeditor.drag_crop_hint
                         : activePanel === 'redact'
                             ? i18n.t.pdfeditor.drag_redact_hint
-                            : i18n.t.pdfeditor.click_text_hint}
+                            : activePanel === 'overprint'
+                                ? i18n.t.pdfeditor.drag_overprint_hint
+                                : i18n.t.pdfeditor.click_text_hint}
                 </span>
                 <span class="pe-spacer"></span>
                 <button class="pe-mini" disabled={stagePage === 0}
@@ -1056,7 +1311,7 @@
                 onmouseleave={onStageMouseUp}
             >
                 <canvas bind:this={stageCanvas} class="pe-stage-canvas"></canvas>
-                {#if (activePanel === 'crop' || activePanel === 'redact') && cropBox}
+                {#if (activePanel === 'crop' || activePanel === 'redact' || activePanel === 'overprint') && cropBox}
                     <div class="pe-croprect"
                          style:left="{cropBox.x}px" style:top="{cropBox.y}px"
                          style:width="{cropBox.w}px" style:height="{cropBox.h}px"></div>
@@ -1248,6 +1503,18 @@
         background: #1a1206; color: #fcd34d;
     }
     .pe-warn { display: inline-flex; align-items: center; gap: 4px; color: #fbbf24; }
+
+    .pe-formgrid {
+        display: flex; flex-direction: column; gap: 4px;
+        max-height: 220px; overflow-y: auto; flex: 1 1 320px; min-width: 260px;
+    }
+    .pe-formrow { display: flex; align-items: center; gap: 8px; }
+    .pe-formname {
+        flex: 0 0 150px; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; color: #a1a1aa;
+    }
+    .pe-formrow .pe-input { flex: 1; }
+    .pe-req { color: #f87171; margin-left: 2px; }
 
     .pe-textpin { position: absolute; pointer-events: none; }
     .pe-textpin-dot {

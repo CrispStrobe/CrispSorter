@@ -1370,6 +1370,98 @@ enum PdfCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Replace text in place, keeping the original font (P32.8 tier 2).
+    SubstituteText {
+        file: PathBuf,
+        /// Text to find.
+        #[arg(long)]
+        find: String,
+        /// Replacement. Empty deletes the match.
+        #[arg(long, default_value = "")]
+        replace: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// List a PDF's own annotations.
+    Annotations { file: PathBuf },
+    /// Export annotations to markdown / csv / json.
+    ExportAnnotations {
+        file: PathBuf,
+        /// Named `--to` rather than `--format`: `--format` is a global
+        /// option on this CLI, and clap panics on the id collision.
+        #[arg(long, default_value = "markdown", value_parser = ["markdown", "csv", "json"])]
+        to: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// List AcroForm fields.
+    FormFields { file: PathBuf },
+    /// Flatten an AcroForm: draw the values, remove the fields.
+    FlattenForm {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Fill AcroForm fields. Repeat --set for each field.
+    FillForm {
+        file: PathBuf,
+        /// `name=value`, repeatable. Names are fully qualified (`a.b`).
+        #[arg(long = "set", required = true)]
+        set: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Cover a region and draw replacement text over it (P32.8 tier 1).
+    Overprint {
+        file: PathBuf,
+        /// `page,x,y,w,h` with a 1-based page, points from bottom-left.
+        #[arg(long)]
+        rect: String,
+        #[arg(long, default_value = "")]
+        text: String,
+        #[arg(long, default_value_t = 11.0)]
+        font_size: f64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Read a PDF's /Annots into the annotation store (FTS-searchable).
+    ImportAnnotations {
+        file: PathBuf,
+        /// Identifier the annotations are stored under. Defaults to the path.
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// Write the store's annotations for a document into a PDF.
+    StampAnnotations {
+        file: PathBuf,
+        #[arg(long)]
+        doc_id: Option<String>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// List the books in a Kindle `My Clippings.txt`.
+    KindleBooks { file: PathBuf },
+    /// Import Kindle clippings into the annotation store.
+    KindleImport {
+        /// Path to `My Clippings.txt`.
+        file: PathBuf,
+        /// Identifier the highlights are stored under.
+        #[arg(long)]
+        doc_id: String,
+        /// Only import clippings whose book title contains this.
+        #[arg(long)]
+        title: Option<String>,
+        /// Document to anchor the passages in. Without it they import
+        /// unpositioned rather than not at all.
+        #[arg(long)]
+        document: Option<PathBuf>,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Sign a PDF with a PKCS#12 certificate.
     Sign {
         file: PathBuf,
@@ -4338,6 +4430,167 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             }
             for w in &report.warnings {
                 eprintln!("WARNING: {w}");
+            }
+            Ok(())
+        }
+        PdfCmd::SubstituteText { file, find, replace, out: out_path } => {
+            let subs = vec![crate::pdf_text_edit::Substitution { find, replace }];
+            let report = crate::pdf_text_edit::substitute_text(&file, &subs, &out_path)?;
+            eprintln!(
+                "Replaced {} occurrence(s) across {} page(s) → {}",
+                report.replacements, report.pages_changed, out_path.display()
+            );
+            if report.skipped > 0 {
+                eprintln!("{} occurrence(s) left alone.", report.skipped);
+            }
+            for w in &report.warnings {
+                eprintln!("WARNING: {w}");
+            }
+            Ok(())
+        }
+        PdfCmd::Annotations { file } => {
+            let annots = crate::pdf_annots::read_annotations_from_path(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&annots).unwrap()),
+                OutFormat::Text => {
+                    println!("{} annotation(s)", annots.len());
+                    for a in &annots {
+                        println!(
+                            "  p{} {:<10} {:>7.1},{:<7.1} {}",
+                            a.page + 1, a.ann_type, a.x, a.y,
+                            a.text.lines().next().unwrap_or("")
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::ExportAnnotations { file, to, out: out_path } => {
+            let annots = crate::pdf_annots::read_annotations_from_path(&file)?;
+            let title = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let body = match to.as_str() {
+                "csv" => crate::pdf_annots::to_csv(&annots),
+                "json" => serde_json::to_string_pretty(&annots).map_err(|e| e.to_string())?,
+                _ => crate::pdf_annots::to_markdown(&annots, &title),
+            };
+            std::fs::write(&out_path, body).map_err(|e| e.to_string())?;
+            eprintln!("Exported {} annotation(s) → {}", annots.len(), out_path.display());
+            Ok(())
+        }
+        PdfCmd::FormFields { file } => {
+            let fields = crate::pdf_forms::read_fields_from_path(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&fields).unwrap()),
+                OutFormat::Text => {
+                    println!("{} field(s)", fields.len());
+                    for f in &fields {
+                        println!(
+                            "  {:<28} {:<9} {}",
+                            f.name,
+                            format!("{:?}", f.kind).to_lowercase(),
+                            f.value.as_deref().unwrap_or("")
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::FlattenForm { file, out: out_path } => {
+            let n = crate::pdf_forms::flatten_form(&file, &out_path)?;
+            eprintln!("Flattened {n} field(s) → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::FillForm { file, set, out: out_path } => {
+            let mut values = std::collections::HashMap::new();
+            for pair in &set {
+                let (k, v) = pair.split_once('=').ok_or_else(|| {
+                    format!("--set expects name=value (got {pair:?})")
+                })?;
+                values.insert(k.trim().to_string(), v.to_string());
+            }
+            let n = crate::pdf_forms::fill_fields(&file, &values, &out_path)?;
+            eprintln!("Filled {n} field(s) → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Overprint { file, rect, text, font_size, out: out_path } => {
+            let parts: Vec<&str> = rect.split(',').map(|s| s.trim()).collect();
+            if parts.len() != 5 {
+                return Err(format!("--rect expects page,x,y,w,h (got {rect:?})"));
+            }
+            let num = |s: &str| s.parse::<f64>().map_err(|_| format!("not a number: {s:?}"));
+            let page: usize = parts[0].parse().map_err(|_| format!("bad page: {:?}", parts[0]))?;
+            if page == 0 {
+                return Err("pages are 1-based".into());
+            }
+            let spec = crate::pdf_text_edit::OverprintSpec {
+                page: page - 1,
+                x: num(parts[1])?, y: num(parts[2])?,
+                w: num(parts[3])?, h: num(parts[4])?,
+                text, font_size,
+                ..Default::default()
+            };
+            let n = crate::pdf_text_edit::overprint(&file, &[spec], &out_path)?;
+            eprintln!("Overprinted {n} region(s) → {}", out_path.display());
+            eprintln!("NOTE: this covers the old text; it is still in the file. \
+Use `pdf redact-regions` first if it must be removed.");
+            Ok(())
+        }
+        PdfCmd::ImportAnnotations { file, doc_id, data_dir } => {
+            let dir = resolve_data_dir(data_dir)?;
+            let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
+                .map_err(|e| e.to_string())?;
+            let id = doc_id.unwrap_or_else(|| file.to_string_lossy().to_string());
+            let annots = crate::pdf_annots::read_annotations_from_path(&file)?;
+            let n = crate::pdf_annots::import_into_store(&store, &id, &annots)?;
+            eprintln!("Imported {n} of {} annotation(s) under {id}", annots.len());
+            Ok(())
+        }
+        PdfCmd::StampAnnotations { file, doc_id, out: out_path, data_dir } => {
+            let dir = resolve_data_dir(data_dir)?;
+            let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
+                .map_err(|e| e.to_string())?;
+            let id = doc_id.unwrap_or_else(|| file.to_string_lossy().to_string());
+            let n = crate::pdf_annots::export_from_store(&store, &id, &file, &out_path)?;
+            eprintln!("Wrote {n} annotation(s) → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::KindleBooks { file } => {
+            let titles = crate::kindle_import::tauri_commands::kindle_list_books_sync(&file)?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&titles).unwrap()),
+                OutFormat::Text => {
+                    println!("{} book(s)", titles.len());
+                    for t in &titles { println!("  {t}"); }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::KindleImport { file, doc_id, title, document, data_dir } => {
+            let dir = resolve_data_dir(data_dir)?;
+            let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
+                .map_err(|e| e.to_string())?;
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| format!("read {}: {e}", file.display()))?;
+            let doc_text = match &document {
+                Some(p) => Some(crate::kindle_import::document_text_for(p)?),
+                None => None,
+            };
+            let summary = crate::kindle_import::import_clippings(
+                &store, &text, &doc_id, title.as_deref(), doc_text.as_deref(),
+                crate::kindle_import::DEFAULT_MIN_SCORE,
+            )?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&summary).unwrap()),
+                OutFormat::Text => {
+                    eprintln!(
+                        "Parsed {} → {} after dedupe → imported {} ({} matched, {} fuzzy, {} already present)",
+                        summary.parsed, summary.deduped, summary.imported,
+                        summary.matched, summary.fuzzy_matched, summary.duplicates_skipped
+                    );
+                    if document.is_none() {
+                        eprintln!("NOTE: no --document given, so highlights import unpositioned.");
+                    }
+                }
             }
             Ok(())
         }
