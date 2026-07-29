@@ -121,6 +121,10 @@ md-5        = "0.10"
 sha1        = "0.10"
 sha2        = "0.10"
 hex         = "0.4"
+# CSPRNG for the PDF 2.0 (AESV3) file encryption key. Already in the tree
+# via uuid/ring; declared directly because a predictable key would defeat
+# the security handler no matter how strong the password.
+getrandom   = "0.2"
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

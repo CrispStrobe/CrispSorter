@@ -26,6 +26,7 @@ pub mod pdf_annots;
 pub mod pdf_forms;
 pub mod pdf_ops;
 pub mod pdf_redact;
+pub mod pdf_text_edit;
 pub mod platform_share;
 pub mod pdf_session;
 pub mod volume;
@@ -3068,6 +3069,9 @@ pub fn run() {
             pdf_forms::tauri_commands::pdf_read_form_fields,
             pdf_forms::tauri_commands::pdf_fill_form,
             pdf_forms::tauri_commands::pdf_flatten_form,
+            // P32.8 — on-page text editing (tier 1 overprint, tier 2 substitution).
+            pdf_text_edit::tauri_commands::pdf_overprint,
+            pdf_text_edit::tauri_commands::pdf_substitute_text,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,
@@ -3362,6 +3366,9 @@ pub fn run() {
             pdf_forms::tauri_commands::pdf_read_form_fields,
             pdf_forms::tauri_commands::pdf_fill_form,
             pdf_forms::tauri_commands::pdf_flatten_form,
+            // P32.8 — on-page text editing (tier 1 overprint, tier 2 substitution).
+            pdf_text_edit::tauri_commands::pdf_overprint,
+            pdf_text_edit::tauri_commands::pdf_substitute_text,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,

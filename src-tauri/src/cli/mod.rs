@@ -1325,6 +1325,11 @@ enum PdfCmd {
         /// Disable content modification.
         #[arg(long)]
         no_modify: bool,
+        /// Use the legacy RC4-128 handler instead of AES-256.
+        ///
+        /// RC4 is broken; only for readers too old to understand AESV3.
+        #[arg(long)]
+        legacy_rc4: bool,
     },
     /// Strip all hidden metadata, JavaScript, thumbnails, annotations.
     Sanitise {
@@ -4249,7 +4254,7 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             eprintln!("Decrypted → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Encrypt { file, owner_password, user_password, out: out_path, no_print, no_copy, no_modify } => {
+        PdfCmd::Encrypt { file, owner_password, user_password, out: out_path, no_print, no_copy, no_modify, legacy_rc4 } => {
             let config = pdf_ops::EncryptConfig {
                 owner_password,
                 user_password,
@@ -4260,6 +4265,12 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
                 allow_fill_forms: true,
                 allow_assemble: !no_modify,
                 allow_high_quality_print: !no_print,
+                // AES-256 unless the caller asks for the legacy handler.
+                algorithm: if legacy_rc4 {
+                    pdf_ops::EncryptionAlgorithm::Rc4_128
+                } else {
+                    pdf_ops::EncryptionAlgorithm::Aes256
+                },
             };
             pdf_ops::encrypt_pdf(&file, &config, &out_path)?;
             eprintln!("Encrypted → {}", out_path.display());

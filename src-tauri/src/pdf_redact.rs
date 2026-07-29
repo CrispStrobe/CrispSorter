@@ -96,12 +96,12 @@ impl Matrix {
 // ── Fonts ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct FontInfo {
+pub(crate) struct FontInfo {
     /// Glyph widths in 1/1000 em, keyed by single-byte code.
-    widths: HashMap<u8, f64>,
-    default_width: f64,
+    pub(crate) widths: HashMap<u8, f64>,
+    pub(crate) default_width: f64,
     /// Type0/CID — multi-byte codes we decline to split.
-    composite: bool,
+    pub(crate) composite: bool,
 }
 
 impl Default for FontInfo {
@@ -113,7 +113,7 @@ impl Default for FontInfo {
 }
 
 impl FontInfo {
-    fn width(&self, code: u8) -> f64 {
+    pub(crate) fn width(&self, code: u8) -> f64 {
         self.widths.get(&code).copied().unwrap_or(self.default_width)
     }
 }
@@ -125,7 +125,7 @@ fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     }
 }
 
-fn obj_num(doc: &Document, o: &Object) -> f64 {
+pub(crate) fn obj_num(doc: &Document, o: &Object) -> f64 {
     match resolve(doc, o) {
         Some(Object::Integer(n)) => *n as f64,
         Some(Object::Real(n)) => *n as f64,
@@ -134,7 +134,7 @@ fn obj_num(doc: &Document, o: &Object) -> f64 {
 }
 
 /// Read the `/Font` entries reachable from a page's effective resources.
-fn load_fonts(doc: &Document, page_id: ObjectId) -> HashMap<Vec<u8>, FontInfo> {
+pub(crate) fn load_fonts(doc: &Document, page_id: ObjectId) -> HashMap<Vec<u8>, FontInfo> {
     let mut out = HashMap::new();
 
     // Walk the /Parent chain: /Resources is inheritable.

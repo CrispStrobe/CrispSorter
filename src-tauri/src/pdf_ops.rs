@@ -843,6 +843,22 @@ pub fn is_encrypted(path: &Path) -> Result<bool, String> {
 
 // ── Encrypt (set password + permissions) ────────────────────────────
 
+/// Which security handler to write.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptionAlgorithm {
+    /// PDF 2.0 AESV3, 256-bit. The default, and the only one to choose
+    /// for new documents.
+    #[default]
+    Aes256,
+    /// PDF 1.4 RC4, 128-bit.
+    ///
+    /// RC4 is broken and this is here only for readers too old to
+    /// understand AESV3. It offers obfuscation, not security.
+    #[serde(rename = "rc4_128")]
+    Rc4_128,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EncryptConfig {
     /// Owner password (full access).
@@ -857,6 +873,9 @@ pub struct EncryptConfig {
     pub allow_fill_forms: bool,
     pub allow_assemble: bool,
     pub allow_high_quality_print: bool,
+    /// Security handler. Defaults to AES-256.
+    #[serde(default)]
+    pub algorithm: EncryptionAlgorithm,
 }
 
 impl Default for EncryptConfig {
@@ -871,6 +890,7 @@ impl Default for EncryptConfig {
             allow_fill_forms: true,
             allow_assemble: true,
             allow_high_quality_print: true,
+            algorithm: EncryptionAlgorithm::default(),
         }
     }
 }
@@ -893,19 +913,51 @@ pub fn encrypt_pdf(path: &Path, config: &EncryptConfig, out_path: &Path) -> Resu
     if config.allow_assemble           { perms |= Permissions::ASSEMBLABLE; }
     if config.allow_high_quality_print { perms |= Permissions::PRINTABLE_IN_HIGH_QUALITY; }
 
-    // Use V2 (RC4 with configurable key length, widely compatible).
-    // V4/V5 (AES) would be stronger but requires private CryptFilter types
-    // in lopdf 0.38; upgrade when lopdf exposes them publicly.
-    let enc_version = EncryptionVersion::V2 {
-        document: &doc,
-        owner_password: &config.owner_password,
-        user_password: &config.user_password,
-        key_length: 128,
-        permissions: perms,
+    let state = match config.algorithm {
+        EncryptionAlgorithm::Aes256 => {
+            // PDF 2.0 / AESV3. The file encryption key is ours to choose;
+            // V5 derives the password hashes from it rather than the other
+            // way round, so it must come from a CSPRNG — a predictable key
+            // defeats the whole scheme regardless of password strength.
+            let mut file_key = [0u8; 32];
+            getrandom::getrandom(&mut file_key)
+                .map_err(|e| format!("could not obtain a random encryption key: {e}"))?;
+
+            let mut crypt_filters: std::collections::BTreeMap<
+                Vec<u8>,
+                std::sync::Arc<dyn lopdf::encryption::crypt_filters::CryptFilter>,
+            > = std::collections::BTreeMap::new();
+            crypt_filters.insert(
+                b"StdCF".to_vec(),
+                std::sync::Arc::new(lopdf::encryption::crypt_filters::Aes256CryptFilter),
+            );
+
+            let version = EncryptionVersion::V5 {
+                encrypt_metadata: true,
+                crypt_filters,
+                file_encryption_key: &file_key,
+                stream_filter: b"StdCF".to_vec(),
+                string_filter: b"StdCF".to_vec(),
+                owner_password: &config.owner_password,
+                user_password: &config.user_password,
+                permissions: perms,
+            };
+            lopdf::encryption::EncryptionState::try_from(version)
+                .map_err(|e| format!("encryption setup: {e}"))?
+        }
+        EncryptionAlgorithm::Rc4_128 => {
+            let version = EncryptionVersion::V2 {
+                document: &doc,
+                owner_password: &config.owner_password,
+                user_password: &config.user_password,
+                key_length: 128,
+                permissions: perms,
+            };
+            lopdf::encryption::EncryptionState::try_from(version)
+                .map_err(|e| format!("encryption setup: {e}"))?
+        }
     };
 
-    let state = lopdf::encryption::EncryptionState::try_from(enc_version)
-        .map_err(|e| format!("encryption setup: {e}"))?;
     doc.encrypt(&state).map_err(|e| format!("encrypt: {e}"))?;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     Ok(())

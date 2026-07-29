@@ -1924,7 +1924,14 @@ Verified permissive and approved for use (checked 2026-07-29):
   static page content.  First cut sets `NeedAppearances true` rather
   than generating `/AP` streams.  Pure `lopdf`, no new dependency.
 
-- [ ] **P32.6 — qpdf backend.**  Unblocks the P27.13 deferral:
+- [~] **P32.6 — qpdf backend.**  RESCOPED (2026-07-29). AES-256 and
+  object-stream compression turned out to be available in pure Rust —
+  lopdf 0.38 already ships `EncryptionVersion::V5` (AESV3) and
+  `Aes256CryptFilter`, so the P27.13 note about waiting for lopdf to
+  expose CryptFilter was stale. AES-256 is now the default handler.
+  Only linearization and xref repair still need qpdf; deferred, since
+  they are conveniences rather than correctness and qpdf is the only
+  non-Rust dependency in the whole plan.  Unblocks the P27.13 deferral:
   `encrypt_pdf` ships RC4-128 because lopdf does not expose
   `CryptFilter` publicly, and RC4 is broken.  QPDF gives AES-256 today,
   plus linearization for fast web view, object-stream compression, and
@@ -1938,7 +1945,8 @@ Verified permissive and approved for use (checked 2026-07-29):
   Redact.  Immediate: relabel command and UI as black-out / visual-only.
   Then: scrub the intersecting `Tj`/`TJ` operators so it is real.
 
-- [ ] **P32.8 — On-page text editing.**  Tier 1: cover-and-overprint,
+- [x] **P32.8 — On-page text editing.**  ✅ SHIPPED tiers 1-2
+  (2026-07-29). Tier 3 (reflow) still deferred.  Tier 1: cover-and-overprint,
   using the black-rect primitive from `redact_regions` and the base-14
   Helvetica text drawing already in `add_watermark`.  Tier 2: `Tj`/`TJ`
   string substitution via `lopdf`, restricted to same-font same-metrics
