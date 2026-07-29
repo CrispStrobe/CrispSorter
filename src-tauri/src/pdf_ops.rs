@@ -823,6 +823,25 @@ pub fn edit_metadata(path: &Path, edits: &MetadataEdit, out_path: &Path) -> Resu
 // ── Decrypt (password-protected PDFs) ───────────────────────────────
 
 /// Decrypt a password-protected PDF and save the unprotected version.
+/// Decrypt a password-protected PDF.
+///
+/// # A hard limitation of lopdf 0.38
+///
+/// lopdf decrypts *during load*, and its reader only ever tries the empty
+/// password — there is no public API to hand one to `Document::load`. So:
+///
+/// * Empty user password (owner-password-only protection): the document
+///   arrives already decrypted, and calling `decrypt()` on it fails with
+///   "invalid ciphertext length" because it would decrypt twice.
+/// * Real user password: the loader cannot parse the objects at all and
+///   returns a near-empty document. `decrypt()` then reports success
+///   having decrypted nothing, and saving produced a ~170-byte file with
+///   no `/Root`.
+///
+/// That last case is what this function used to do silently. It now
+/// detects both, and refuses rather than writing a corrupt file — found
+/// by verifying output with qpdf rather than by trusting the return
+/// value.
 pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
     let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
     if !doc.is_encrypted() {
@@ -830,8 +849,122 @@ pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), S
         doc.save(out_path).map_err(|e| format!("save: {e}"))?;
         return Ok(());
     }
+
+    // Did the loader already manage it? A document with a real object
+    // graph and a reachable catalog is decrypted; anything else is the
+    // stub the loader produces when it could not.
+    let loaded_ok = doc.catalog().is_ok() && doc.objects.len() > 1;
+
+    if loaded_ok {
+        // Already plaintext in memory. Calling decrypt() here would
+        // double-decrypt; just drop the security handler and save.
+        doc.trailer.remove(b"Encrypt");
+        doc.encryption_state = None;
+        doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+        return verify_decrypted(path, out_path);
+    }
+
     doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
+    if doc.catalog().is_err() || doc.objects.len() <= 1 {
+        // lopdf could not do it. Fall back to a library that can.
+        #[cfg(feature = "pdf-decrypt-full")]
+        {
+            return decrypt_via_oxide(path, password, out_path);
+        }
+        #[cfg(not(feature = "pdf-decrypt-full"))]
+        return Err(format!(
+            "cannot decrypt {}: it is protected with a non-empty user password, \
+             which lopdf cannot supply at load time. The file was left \
+             untouched. Rebuild with `--features pdf-decrypt-full` to handle \
+             this case, or use `qpdf --decrypt --password=…`.",
+            path.display()
+        ));
+    }
+    doc.trailer.remove(b"Encrypt");
+    doc.encryption_state = None;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+    verify_decrypted(path, out_path)
+}
+
+/// Decrypt via `pdf_oxide`, which can authenticate *after* load.
+///
+/// # Status: does not currently produce a usable file
+///
+/// `pdf_oxide` genuinely decrypts — authenticating with a real user
+/// password and calling `extract_text()` in-process returns the right
+/// text, on both our AES-256 (V5/R6) output and qpdf's, and a wrong
+/// password is correctly rejected.
+///
+/// But writing the result back out through `DocumentEditor` emits stream
+/// bytes that are still encrypted. The file parses, reports the right
+/// page count and claims not to be encrypted, while every content stream
+/// fails to inflate. [`verify_decrypted`] catches that and discards the
+/// output, so this path currently *fails loudly* rather than producing
+/// anything.
+///
+/// Kept, behind an off-by-default feature, because the reading half works
+/// and is the harder half — a future version that wires decryption into
+/// the writer, or an explicit stream-rewrite here, would finish the job.
+/// Do not present this as working decryption until the content check
+/// above passes.
+#[cfg(feature = "pdf-decrypt-full")]
+fn decrypt_via_oxide(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
+    use pdf_oxide::PdfDocument;
+
+    let doc = PdfDocument::open(path).map_err(|e| format!("pdf_oxide open: {e}"))?;
+    match doc.authenticate(password.as_bytes()) {
+        Ok(true) => {}
+        // Distinguish a wrong password from a broken file: the caller can
+        // reasonably retry the first and not the second.
+        Ok(false) => return Err("wrong password".into()),
+        Err(e) => return Err(format!("authentication failed: {e}")),
+    }
+    // PdfDocument is read-only; the editor is what can write it back.
+    let mut editor = pdf_oxide::editor::DocumentEditor::from_document(doc)
+        .map_err(|e| format!("pdf_oxide editor: {e}"))?;
+    let bytes = editor
+        .save_to_bytes()
+        .map_err(|e| format!("pdf_oxide save: {e}"))?;
+    std::fs::write(out_path, bytes).map_err(|e| format!("write {}: {e}", out_path.display()))?;
+    verify_decrypted(path, out_path)
+}
+
+/// Re-open what we just wrote and confirm it is genuinely usable.
+///
+/// Structure alone is not enough. A decrypt that leaves stream *contents*
+/// encrypted yields a file that parses, reports the right page count and
+/// says it is not encrypted — while every content stream is garbage
+/// ("zlib error: incorrect header check" in a viewer). An earlier version
+/// of this check passed such a file. So when the input had extractable
+/// text, the output must too.
+fn verify_decrypted(src_path: &Path, out_path: &Path) -> Result<(), String> {
+    let discard = |msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_file(out_path);
+        Err(msg)
+    };
+
+    let out = match Document::load(out_path) {
+        Ok(d) => d,
+        Err(e) => return discard(format!(
+            "decryption produced an unreadable document ({e}); output discarded"
+        )),
+    };
+    if out.catalog().is_err() || out.page_iter().count() == 0 {
+        return discard("decryption produced a document with no pages; output discarded".into());
+    }
+
+    // Content check: if the source yielded text, so must the result.
+    let src_text = pdf_extract::extract_text(src_path).unwrap_or_default();
+    if src_text.trim().is_empty() {
+        return Ok(()); // nothing to compare against
+    }
+    let out_text = pdf_extract::extract_text(out_path).unwrap_or_default();
+    if out_text.trim().is_empty() {
+        return discard(
+            "decryption produced a document whose content streams do not decode —              the structure is intact but the page content is still encrypted.              Output discarded rather than handing back a file that looks fine              and is not."
+                .into(),
+        );
+    }
     Ok(())
 }
 

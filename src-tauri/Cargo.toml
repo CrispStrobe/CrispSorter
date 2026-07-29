@@ -125,6 +125,20 @@ hex         = "0.4"
 # via uuid/ring; declared directly because a predictable key would defeat
 # the security handler no matter how strong the password.
 getrandom   = "0.2"
+# P32.6 — decrypting a PDF that has a non-empty *user* password.
+#
+# lopdf cannot: its reader decrypts during load and only ever tries the
+# empty password, with no public way to supply one (verified against
+# lopdf 0.38's source and by instrumenting it — a real user password
+# yields a 1-object document). pdf_oxide takes the password *after* load
+# via `authenticate()`, and implements R6/Algorithm 2.B properly;
+# verified against both our own AES-256 output and qpdf's.
+#
+# MIT OR Apache-2.0, so no licence problem. Optional because it is a
+# second complete PDF stack — ~170 transitive crates for one capability —
+# and 0.3.x is young enough that the API will move. Enable with
+# `--features pdf-decrypt-full`.
+pdf_oxide = { version = "0.3", default-features = false, optional = true }
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.
@@ -207,6 +221,9 @@ desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plu
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]
+# Full PDF decryption, including a non-empty user password. See the
+# pdf_oxide dependency comment for why this is not on by default.
+pdf-decrypt-full  = ["dep:pdf_oxide"]
 # PLAN P7.8 Tier 3 — PaddleOCR text detection + recognition via usls + ort.
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]

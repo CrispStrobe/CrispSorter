@@ -1245,9 +1245,13 @@ enum PdfCmd {
         /// Font size in points.
         #[arg(long, default_value_t = 10.0)]
         font_size: f64,
-        /// Format: arabic (default), roman, page-of.
+        /// Numbering style: arabic (default), roman, page-of.
+        ///
+        /// Named `--style`, not `--format`: `--format` is a global flag,
+        /// and clap panics at *runtime* when a subcommand redefines a
+        /// global's field name.
         #[arg(long, default_value = "arabic")]
-        format: String,
+        style: String,
         /// Start numbering from this value.
         #[arg(long, default_value_t = 1)]
         start: usize,
@@ -2676,9 +2680,11 @@ enum IndexCmd {
     Export {
         /// Document ID to export.
         doc_id: String,
-        /// Output format: docx or html.
+        /// Output kind: docx or html.
+        ///
+        /// Named `--to` for the same reason as `number --style`.
         #[arg(long, default_value = "html")]
-        format: String,
+        to: String,
         #[arg(long)]
         out: std::path::PathBuf,
     },
@@ -4124,12 +4130,12 @@ async fn cmd_index_async(
         IndexCmd::Feed { .. } => {
             return Err("feed command requires --features desktop".into());
         }
-        IndexCmd::Export { doc_id, format, out: out_path } => {
+        IndexCmd::Export { doc_id, to, out: out_path } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await.map_err(|e| e.to_string())?;
             let text = local.fetch_full_text(&doc_id).await.map_err(|e| e.to_string())?;
             let title = doc_id.clone(); // Use doc_id as fallback title
-            match format.as_str() {
+            match to.as_str() {
                 #[cfg(feature = "desktop")]
                 "docx" => {
                     crate::extractors::export::export_to_docx(&title, &text, &out_path)
@@ -4140,7 +4146,7 @@ async fn cmd_index_async(
                     crate::extractors::export::export_to_html(&title, &text, &out_path)
                         .map_err(|e| format!("html export: {e}"))?;
                 }
-                _ => return Err(format!("Unknown export format: {format}. Use docx or html.")),
+                _ => return Err(format!("Unknown export format: {to}. Use docx or html.")),
             }
             eprintln!("Exported → {}", out_path.display());
         }
@@ -4317,8 +4323,8 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             eprintln!("Cropped {} pages → {}", indices.len(), out_path.display());
             Ok(())
         }
-        PdfCmd::Number { file, out: out_path, position, font_size, format, start, skip_first } => {
-            let config = pdf_ops::PageNumberConfig { position, font_size, format, start_number: start, skip_first };
+        PdfCmd::Number { file, out: out_path, position, font_size, style, start, skip_first } => {
+            let config = pdf_ops::PageNumberConfig { position, font_size, format: style, start_number: start, skip_first };
             pdf_ops::add_page_numbers(&file, &config, &out_path)?;
             eprintln!("Added page numbers → {}", out_path.display());
             Ok(())
@@ -9580,5 +9586,69 @@ mod tests {
     #[test]
     fn parse_split_ranges_bad_input() {
         assert!(super::parse_split_ranges("a-b", 10).is_err());
+    }
+}
+
+/// Guards against a clap failure mode that only shows up at runtime.
+///
+/// A global argument is matched against a subcommand's argument map by
+/// its *field name*, not its long flag. When a subcommand defines an
+/// argument with the same field name and a different type, clap panics
+/// the first time that subcommand is invoked:
+///
+/// ```text
+/// Mismatch between definition and access of `format`. Could not
+/// downcast to OutFormat, need to downcast to alloc::string::String
+/// ```
+///
+/// Nothing catches this at build time, and the subcommand's own `--help`
+/// works fine, so it survives review easily. This crate has now hit it
+/// twice: once when the global was named `out` (colliding with
+/// `catalog scan --out`), and again after renaming it to `format`, which
+/// silently broke `pdf number --format` and `index export --format`.
+/// Both were found by running the binary, not by the test suite.
+#[cfg(test)]
+mod global_arg_collision_tests {
+    use clap::CommandFactory;
+
+    fn collect(cmd: &clap::Command, globals: &[String], path: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let sub_path = format!("{path} {}", sub.get_name());
+            for arg in sub.get_arguments() {
+                let id = arg.get_id().to_string();
+                if globals.iter().any(|g| g == &id) {
+                    out.push(format!("`{sub_path}` defines `{id}`"));
+                }
+            }
+            collect(sub, globals, &sub_path, out);
+        }
+    }
+
+    #[test]
+    fn no_subcommand_shadows_a_global_argument() {
+        let cmd = super::Cli::command();
+        let globals: Vec<String> = cmd
+            .get_arguments()
+            .filter(|a| a.is_global_set())
+            .map(|a| a.get_id().to_string())
+            .collect();
+        assert!(!globals.is_empty(), "expected at least one global argument");
+
+        let mut clashes = Vec::new();
+        collect(&cmd, &globals, "crispsorter", &mut clashes);
+
+        assert!(
+            clashes.is_empty(),
+            "these subcommand arguments shadow a global argument ({globals:?}) and will \
+             panic at runtime when the subcommand is invoked — rename the field:\n  {}",
+            clashes.join("\n  ")
+        );
+    }
+
+    /// Every subcommand should at least be constructible; this walks the
+    /// whole tree so a malformed definition surfaces in CI.
+    #[test]
+    fn the_command_tree_builds() {
+        super::Cli::command().debug_assert();
     }
 }

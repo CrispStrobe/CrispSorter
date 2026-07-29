@@ -23,10 +23,13 @@ pub mod kindle_clippings;
 pub mod kindle_import;
 pub mod kindle_match;
 pub mod pdf_annots;
+pub mod pdf_base14;
+pub mod pdf_compress;
 pub mod pdf_forms;
 pub mod pdf_ops;
 pub mod pdf_redact;
 pub mod pdf_text_edit;
+pub mod pdf_text_region;
 pub mod platform_share;
 pub mod pdf_session;
 pub mod volume;
@@ -3072,6 +3075,10 @@ pub fn run() {
             // P32.8 — on-page text editing (tier 1 overprint, tier 2 substitution).
             pdf_text_edit::tauri_commands::pdf_overprint,
             pdf_text_edit::tauri_commands::pdf_substitute_text,
+            // P32.6 — size reduction; P32.9 — text regions.
+            pdf_compress::tauri_commands::pdf_compress,
+            pdf_text_region::tauri_commands::pdf_draw_text_regions,
+            pdf_text_region::tauri_commands::pdf_measure_text_region,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,
@@ -3369,6 +3376,10 @@ pub fn run() {
             // P32.8 — on-page text editing (tier 1 overprint, tier 2 substitution).
             pdf_text_edit::tauri_commands::pdf_overprint,
             pdf_text_edit::tauri_commands::pdf_substitute_text,
+            // P32.6 — size reduction; P32.9 — text regions.
+            pdf_compress::tauri_commands::pdf_compress,
+            pdf_text_region::tauri_commands::pdf_draw_text_regions,
+            pdf_text_region::tauri_commands::pdf_measure_text_region,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,
