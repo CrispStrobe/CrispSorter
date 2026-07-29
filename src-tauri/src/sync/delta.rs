@@ -34,27 +34,51 @@ use std::path::Path;
 /// file differently produce maps that cannot be compared.
 pub const DEFAULT_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
-/// Smallest block size we will actually use.
+/// Smallest block size we will accept.
 ///
 /// A tiny block size on a large file is pathological — 4-byte blocks over
-/// a gigabyte is 268 million blocks, each with an Adler-32 and a SHA-256.
-/// The floor exists to stop that.
+/// a gigabyte is 268 million blocks, each carrying an Adler-32 and a
+/// SHA-256. Since the size arrives from a peer (see below), that is also a
+/// cheap denial-of-service, so there has to be a limit somewhere.
 ///
-/// It is applied through [`effective_block_size`] by *both* map
-/// constructors, and the clamped value is what gets recorded in
-/// [`Blockmap::block_size`], so a map never misreports how it was chunked.
-/// A peer that honoured a smaller size will therefore produce a map with a
-/// different `block_size`, and [`diff_blockmaps`] rejects the comparison
-/// rather than silently diffing mis-aligned blocks.
+/// This limit is ours alone: **no other implementation in this protocol
+/// clamps or floors the block size.** Verified against the sources, not
+/// the docs — `BlockMapService.php`, `ocis/internal/blockmap/blockmap.go`,
+/// `client/lib/delta_sync.dart` and `deltasyncutils.cpp` in both desktop
+/// forks all use the requested value as-is.
 pub const MIN_BLOCK_SIZE: usize = 1024;
 
-/// The block size that will actually be used for a requested one.
+/// Validate a requested block size, returning it unchanged.
 ///
-/// Both constructors must agree here. They did not: the file-based path
-/// clamped to 1 KB while the in-memory path clamped to 1 byte, so the same
-/// file chunked through the two paths produced different maps.
-pub fn effective_block_size(requested: usize) -> usize {
-    requested.max(MIN_BLOCK_SIZE)
+/// # Why this rejects instead of clamping
+///
+/// Block size is a *negotiated protocol value*, not a local preference.
+/// The desktop clients adopt whatever the server advertises:
+///
+/// ```text
+/// // propagateuploaddelta.cpp:108 (ownCloud fork), :128 (Nextcloud fork)
+/// qint64 blockSize = _remoteBlockMap.blockSize > 0
+///     ? _remoteBlockMap.blockSize : DefaultBlockSize;
+/// _localBlockMap = DeltaSyncUtils::computeLocalBlockMap(localPath, blockSize);
+/// ```
+///
+/// That is why the C++ side needs no compatibility check: it computes its
+/// local map with the *remote's* size, so the two always align by
+/// construction.
+///
+/// Silently clamping would break exactly that. If a server advertised a
+/// size below our floor, every other client would honour it and we would
+/// quietly chunk differently — producing a map that claims to describe the
+/// file and does not agree with anyone else's. Refusing is worse for that
+/// one file and better for every other, because the failure is legible.
+pub fn validate_block_size(requested: usize) -> Result<usize> {
+    if requested < MIN_BLOCK_SIZE {
+        anyhow::bail!(
+            "block size {requested} is below our minimum of {MIN_BLOCK_SIZE}; \
+             refusing rather than silently using a different size from the peer"
+        );
+    }
+    Ok(requested)
 }
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -132,7 +156,7 @@ pub fn adler32(data: &[u8]) -> u32 {
 
 /// Compute a blockmap for a file on disk.
 pub fn compute_blockmap(path: &Path, block_size: usize) -> Result<Blockmap> {
-    let block_size = effective_block_size(block_size);
+    let block_size = validate_block_size(block_size)?;
     let mut file =
         std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let file_size = file.metadata()?.len();
@@ -170,8 +194,8 @@ pub fn compute_blockmap(path: &Path, block_size: usize) -> Result<Blockmap> {
 
 /// Compute a blockmap from an in-memory byte slice (useful for testing
 /// and for small files).
-pub fn compute_blockmap_from_bytes(data: &[u8], block_size: usize) -> Blockmap {
-    let block_size = effective_block_size(block_size);
+pub fn compute_blockmap_from_bytes(data: &[u8], block_size: usize) -> Result<Blockmap> {
+    let block_size = validate_block_size(block_size)?;
     let mut blocks = Vec::new();
     let mut offset: u64 = 0;
 
@@ -187,11 +211,11 @@ pub fn compute_blockmap_from_bytes(data: &[u8], block_size: usize) -> Blockmap {
         offset += chunk.len() as u64;
     }
 
-    Blockmap {
+    Ok(Blockmap {
         file_size: data.len() as u64,
         block_size: block_size as u32,
         blocks,
-    }
+    })
 }
 
 // ── Diff ─────────────────────────────────────────────────────────────────
@@ -307,7 +331,7 @@ mod tests {
     #[test]
     fn blockmap_from_bytes_single_block() {
         let data = b"hello world";
-        let map = compute_blockmap_from_bytes(data, 1024);
+        let map = compute_blockmap_from_bytes(data, 1024).unwrap();
         assert_eq!(map.file_size, 11);
         assert_eq!(map.blocks.len(), 1);
         assert_eq!(map.blocks[0].offset, 0);
@@ -321,7 +345,7 @@ mod tests {
         // stop testing the chunking at all.
         const KB: usize = 1024;
         let data = vec![0u8; 100 * KB];
-        let map = compute_blockmap_from_bytes(&data, 30 * KB);
+        let map = compute_blockmap_from_bytes(&data, 30 * KB).unwrap();
         assert_eq!(map.blocks.len(), 4); // 30+30+30+10
         assert_eq!(map.blocks[0].size as usize, 30 * KB);
         assert_eq!(map.blocks[3].size as usize, 10 * KB);
@@ -330,42 +354,65 @@ mod tests {
 
     #[test]
     fn blockmap_from_bytes_empty() {
-        let map = compute_blockmap_from_bytes(b"", 1024);
+        let map = compute_blockmap_from_bytes(b"", 1024).unwrap();
         assert_eq!(map.file_size, 0);
         assert!(map.blocks.is_empty());
     }
 
     #[test]
-    fn both_constructors_apply_the_same_floor() {
+    fn both_constructors_agree_for_every_accepted_size() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.bin");
-        let data = vec![7u8; 4096];
+        let data = vec![7u8; 8192];
         std::fs::write(&path, &data).unwrap();
-        for requested in [1usize, 4, 512, MIN_BLOCK_SIZE, 4096] {
+        for requested in [MIN_BLOCK_SIZE, 2048, 4096, 8192, DEFAULT_BLOCK_SIZE] {
             let a = compute_blockmap(&path, requested).unwrap();
-            let b = compute_blockmap_from_bytes(&data, requested);
+            let b = compute_blockmap_from_bytes(&data, requested).unwrap();
             assert_eq!(a.block_size, b.block_size, "disagreed at requested={requested}");
             assert_eq!(a.blocks.len(), b.blocks.len(), "disagreed at requested={requested}");
         }
     }
 
     #[test]
-    fn effective_block_size_never_returns_below_the_floor() {
-        assert_eq!(effective_block_size(0), MIN_BLOCK_SIZE);
-        assert_eq!(effective_block_size(1), MIN_BLOCK_SIZE);
-        assert_eq!(effective_block_size(MIN_BLOCK_SIZE), MIN_BLOCK_SIZE);
-        // Above the floor, the request is honoured — it is a protocol
-        // value, so we must not quietly round it.
-        assert_eq!(effective_block_size(DEFAULT_BLOCK_SIZE), DEFAULT_BLOCK_SIZE);
+    fn both_constructors_reject_the_same_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.bin");
+        std::fs::write(&path, vec![7u8; 4096]).unwrap();
+        for requested in [0usize, 1, 4, 512, MIN_BLOCK_SIZE - 1] {
+            assert!(compute_blockmap(&path, requested).is_err(), "file path accepted {requested}");
+            assert!(
+                compute_blockmap_from_bytes(&[7u8; 4096], requested).is_err(),
+                "bytes path accepted {requested}"
+            );
+        }
     }
 
     #[test]
-    fn the_recorded_block_size_is_the_one_actually_used() {
+    fn an_accepted_block_size_is_returned_untouched() {
+        // The peer dictates this value; rounding it would silently
+        // desynchronise us from every other implementation.
+        assert_eq!(validate_block_size(MIN_BLOCK_SIZE).unwrap(), MIN_BLOCK_SIZE);
+        assert_eq!(validate_block_size(1500).unwrap(), 1500);
+        assert_eq!(validate_block_size(DEFAULT_BLOCK_SIZE).unwrap(), DEFAULT_BLOCK_SIZE);
+    }
+
+    #[test]
+    fn a_too_small_block_size_is_refused_not_rounded_up() {
+        // Clamping here would produce a map that disagrees with the server
+        // while claiming to describe the same file.
+        for bad in [0usize, 1, 512, MIN_BLOCK_SIZE - 1] {
+            let err = validate_block_size(bad).unwrap_err().to_string();
+            assert!(err.contains("below our minimum"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_recorded_block_size_is_the_one_requested() {
         // A peer reads `block_size` off the wire to decide comparability,
         // so a map must never misreport how it was chunked.
-        let map = compute_blockmap_from_bytes(&[0u8; 100], 4);
-        assert_eq!(map.block_size as usize, MIN_BLOCK_SIZE);
-        assert_eq!(map.blocks.len(), 1, "100 bytes at a 1 KB block is one block");
+        let map = compute_blockmap_from_bytes(&[0u8; 100], 4096).unwrap();
+        assert_eq!(map.block_size, 4096);
+        assert_eq!(map.blocks.len(), 1, "100 bytes at a 4 KB block is one block");
     }
 
     #[test]
@@ -374,8 +421,8 @@ mod tests {
         // block 0 with block 0 and hand back a ChangedBlock whose offset
         // and size belong to a different layout. Corruption, not waste.
         let data = vec![1u8; 8192];
-        let local = compute_blockmap_from_bytes(&data, 1024);
-        let remote = compute_blockmap_from_bytes(&data, 2048);
+        let local = compute_blockmap_from_bytes(&data, 1024).unwrap();
+        let remote = compute_blockmap_from_bytes(&data, 2048).unwrap();
         assert_ne!(local.block_size, remote.block_size);
         let err = diff_blockmaps(&local, &remote).unwrap_err().to_string();
         assert!(err.contains("block size mismatch"), "{err}");
@@ -384,8 +431,8 @@ mod tests {
     #[test]
     fn matching_block_sizes_still_diff_normally() {
         let data = vec![1u8; 8192];
-        let local = compute_blockmap_from_bytes(&data, 2048);
-        let remote = compute_blockmap_from_bytes(&data, 2048);
+        let local = compute_blockmap_from_bytes(&data, 2048).unwrap();
+        let remote = compute_blockmap_from_bytes(&data, 2048).unwrap();
         assert!(diff_blockmaps(&local, &remote).unwrap().is_empty());
     }
 
@@ -399,8 +446,11 @@ mod tests {
         let data = b"abcdefghij"; // 10 bytes
         std::fs::write(&path, data).unwrap();
 
-        let from_file = compute_blockmap(&path, 4).unwrap();
-        let from_bytes = compute_blockmap_from_bytes(data, 4);
+        // 4 KB, not 4 bytes: sizes below MIN_BLOCK_SIZE are now refused
+        // outright rather than clamped, so the constructors can only be
+        // compared at a size both will accept.
+        let from_file = compute_blockmap(&path, 4 * 1024).unwrap();
+        let from_bytes = compute_blockmap_from_bytes(data, 4 * 1024).unwrap();
 
         assert_eq!(
             from_file.block_size, from_bytes.block_size,
@@ -419,7 +469,7 @@ mod tests {
     #[test]
     fn diff_identical_files_is_empty() {
         let data = vec![42u8; 200];
-        let map = compute_blockmap_from_bytes(&data, 50);
+        let map = compute_blockmap_from_bytes(&data, 50 * 1024).unwrap();
         let changed = diff_blockmaps(&map, &map).unwrap();
         assert!(changed.is_empty());
     }
@@ -428,11 +478,11 @@ mod tests {
     fn diff_detects_single_block_change() {
         const KB: usize = 1024;
         let mut data = vec![0u8; 200 * KB];
-        let remote = compute_blockmap_from_bytes(&data, 50 * KB);
+        let remote = compute_blockmap_from_bytes(&data, 50 * KB).unwrap();
 
         // Modify the 3rd block (offset 100..150 KB).
         data[120 * KB] = 0xFF;
-        let local = compute_blockmap_from_bytes(&data, 50 * KB);
+        let local = compute_blockmap_from_bytes(&data, 50 * KB).unwrap();
 
         let changed = diff_blockmaps(&local, &remote).unwrap();
         assert_eq!(changed.len(), 1);
@@ -446,8 +496,8 @@ mod tests {
         const KB: usize = 1024;
         let small = vec![0u8; 100 * KB];
         let large = vec![0u8; 200 * KB];
-        let remote = compute_blockmap_from_bytes(&small, 50 * KB);
-        let local = compute_blockmap_from_bytes(&large, 50 * KB);
+        let remote = compute_blockmap_from_bytes(&small, 50 * KB).unwrap();
+        let local = compute_blockmap_from_bytes(&large, 50 * KB).unwrap();
 
         let changed = diff_blockmaps(&local, &remote).unwrap();
         // Blocks 0 and 1 are identical; blocks 2 and 3 are new.
@@ -460,7 +510,7 @@ mod tests {
     fn diff_all_changed_when_remote_empty() {
         const KB: usize = 1024;
         let data = vec![1u8; 100 * KB];
-        let local = compute_blockmap_from_bytes(&data, 50 * KB);
+        let local = compute_blockmap_from_bytes(&data, 50 * KB).unwrap();
         let remote = Blockmap {
             file_size: 0,
             // Must match the local map's block size, or the diff is
@@ -477,7 +527,7 @@ mod tests {
     fn delta_summary_computes_savings() {
         const KB: usize = 1024;
         let data = vec![0u8; 500 * KB];
-        let local = compute_blockmap_from_bytes(&data, 100 * KB);
+        let local = compute_blockmap_from_bytes(&data, 100 * KB).unwrap();
 
         // Simulate: only 1 of 5 blocks changed.
         let changed = vec![ChangedBlock {
@@ -496,7 +546,7 @@ mod tests {
 
     #[test]
     fn delta_summary_empty_file() {
-        let local = compute_blockmap_from_bytes(b"", 100);
+        let local = compute_blockmap_from_bytes(b"", 100 * 1024).unwrap();
         let summary = delta_summary(&local, &[]);
         assert_eq!(summary.savings_ratio, 1.0);
     }
@@ -504,7 +554,7 @@ mod tests {
     #[test]
     fn blockmap_serde_round_trips() {
         let data = b"test data for serde";
-        let map = compute_blockmap_from_bytes(data, 8);
+        let map = compute_blockmap_from_bytes(data, 8 * 1024).unwrap();
         let json = serde_json::to_string(&map).unwrap();
         let back: Blockmap = serde_json::from_str(&json).unwrap();
         assert_eq!(back.file_size, map.file_size);
@@ -517,7 +567,7 @@ mod tests {
     #[test]
     fn file_smaller_than_one_block() {
         let data = b"tiny";
-        let map = compute_blockmap_from_bytes(data, DEFAULT_BLOCK_SIZE);
+        let map = compute_blockmap_from_bytes(data, DEFAULT_BLOCK_SIZE).unwrap();
         assert_eq!(map.blocks.len(), 1);
         assert_eq!(map.blocks[0].size, 4);
         assert_eq!(map.blocks[0].offset, 0);
