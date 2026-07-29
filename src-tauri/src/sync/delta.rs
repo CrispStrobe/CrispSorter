@@ -218,6 +218,56 @@ pub fn compute_blockmap_from_bytes(data: &[u8], block_size: usize) -> Result<Blo
     })
 }
 
+// ── Block size negotiation ───────────────────────────────────────────────
+
+/// The block size to use when computing a local map to compare against
+/// `remote`.
+///
+/// The server dictates it and the client adopts it. This mirrors the
+/// desktop clients exactly — `propagateuploaddelta.cpp:108` (ownCloud
+/// fork), `:128` (Nextcloud fork):
+///
+/// ```text
+/// qint64 blockSize = _remoteBlockMap.blockSize > 0
+///     ? _remoteBlockMap.blockSize : DefaultBlockSize;
+/// ```
+///
+/// A map with `block_size == 0` means the peer did not state one, so we
+/// fall back to [`DEFAULT_BLOCK_SIZE`] as they do.
+pub fn negotiated_block_size(remote: &Blockmap) -> Result<usize> {
+    let requested = if remote.block_size > 0 {
+        remote.block_size as usize
+    } else {
+        DEFAULT_BLOCK_SIZE
+    };
+    validate_block_size(requested).with_context(|| {
+        format!(
+            "peer advertised a block size of {} which we cannot honour",
+            remote.block_size
+        )
+    })
+}
+
+/// Compute a local blockmap laid out to match `remote`.
+///
+/// **This is the function a sync driver should call**, not
+/// [`compute_blockmap`] with [`DEFAULT_BLOCK_SIZE`]. Chunking to our own
+/// preferred size and then diffing against a peer that chose differently
+/// is the mistake [`diff_blockmaps`] exists to catch — and catching it
+/// means refusing to sync. Adopting the peer's size means the diff simply
+/// works.
+pub fn compute_local_blockmap_against(path: &Path, remote: &Blockmap) -> Result<Blockmap> {
+    compute_blockmap(path, negotiated_block_size(remote)?)
+}
+
+/// In-memory counterpart of [`compute_local_blockmap_against`].
+pub fn compute_local_blockmap_from_bytes_against(
+    data: &[u8],
+    remote: &Blockmap,
+) -> Result<Blockmap> {
+    compute_blockmap_from_bytes(data, negotiated_block_size(remote)?)
+}
+
 // ── Diff ─────────────────────────────────────────────────────────────────
 
 /// Compare local and remote blockmaps and return the list of blocks that
@@ -357,6 +407,59 @@ mod tests {
         let map = compute_blockmap_from_bytes(b"", 1024).unwrap();
         assert_eq!(map.file_size, 0);
         assert!(map.blocks.is_empty());
+    }
+
+    #[test]
+    fn negotiation_adopts_the_peers_block_size() {
+        // The server dictates; we follow. Mirrors propagateuploaddelta.cpp.
+        let remote = compute_blockmap_from_bytes(&vec![0u8; 8192], 2048).unwrap();
+        assert_eq!(negotiated_block_size(&remote).unwrap(), 2048);
+    }
+
+    #[test]
+    fn negotiation_falls_back_when_the_peer_states_nothing() {
+        // blockSize == 0 is the "not stated" case the C++ ternary handles.
+        let remote = Blockmap { file_size: 0, block_size: 0, blocks: Vec::new() };
+        assert_eq!(negotiated_block_size(&remote).unwrap(), DEFAULT_BLOCK_SIZE);
+    }
+
+    #[test]
+    fn negotiation_refuses_a_peer_size_we_cannot_honour() {
+        let remote = Blockmap { file_size: 10, block_size: 8, blocks: Vec::new() };
+        let err = negotiated_block_size(&remote).unwrap_err().to_string();
+        assert!(err.contains("cannot honour"), "{err}");
+    }
+
+    #[test]
+    fn adopting_the_peers_size_makes_the_diff_succeed() {
+        // The whole point: chunking to our own preference and then diffing
+        // is what the block-size guard refuses. Adopting theirs works.
+        let data = vec![3u8; 16384];
+        let remote = compute_blockmap_from_bytes(&data, 2048).unwrap();
+
+        let wrong = compute_blockmap_from_bytes(&data, DEFAULT_BLOCK_SIZE).unwrap();
+        assert!(
+            diff_blockmaps(&wrong, &remote).is_err(),
+            "using our own block size should be refused"
+        );
+
+        let right = compute_local_blockmap_from_bytes_against(&data, &remote).unwrap();
+        assert_eq!(right.block_size, remote.block_size);
+        assert!(diff_blockmaps(&right, &remote).unwrap().is_empty());
+    }
+
+    #[test]
+    fn adopting_from_a_file_matches_the_peer_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        let data = vec![9u8; 12288];
+        std::fs::write(&path, &data).unwrap();
+        let remote = compute_blockmap_from_bytes(&data, 4096).unwrap();
+
+        let local = compute_local_blockmap_against(&path, &remote).unwrap();
+        assert_eq!(local.block_size, 4096);
+        assert_eq!(local.blocks.len(), remote.blocks.len());
+        assert!(diff_blockmaps(&local, &remote).unwrap().is_empty());
     }
 
     #[test]
