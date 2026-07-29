@@ -111,7 +111,7 @@ fn effective_resources(doc: &Document, page_id: ObjectId) -> lopdf::Dictionary {
 /// Append a content stream to a page, merging in the font / ExtGState
 /// resources it needs.  Centralises the /Contents append that page
 /// numbers, watermarks, text boxes and black-out overlays all perform.
-fn append_content(
+pub(crate) fn append_content(
     doc: &mut Document,
     page_id: ObjectId,
     content: Vec<u8>,
@@ -160,7 +160,7 @@ fn append_content(
 }
 
 /// Add a base-14 Helvetica font object and return its id.
-fn add_helvetica(doc: &mut Document) -> ObjectId {
+pub(crate) fn add_helvetica(doc: &mut Document) -> ObjectId {
     doc.add_object(Object::Dictionary(lopdf::Dictionary::from_iter(vec![
         ("Type", Object::Name(b"Font".to_vec())),
         ("Subtype", Object::Name(b"Type1".to_vec())),
@@ -169,7 +169,7 @@ fn add_helvetica(doc: &mut Document) -> ObjectId {
 }
 
 /// Escape a string for use inside a PDF literal string `( … )`.
-fn escape_pdf_literal(s: &str) -> String {
+pub(crate) fn escape_pdf_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {

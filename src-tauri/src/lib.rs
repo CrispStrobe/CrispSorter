@@ -23,6 +23,7 @@ pub mod kindle_clippings;
 pub mod kindle_import;
 pub mod kindle_match;
 pub mod pdf_annots;
+pub mod pdf_forms;
 pub mod pdf_ops;
 pub mod pdf_redact;
 pub mod platform_share;
@@ -3063,6 +3064,10 @@ pub fn run() {
             pdf_annots::tauri_commands::pdf_stamp_annotations,
             // P32.7 — true redaction (scrub the content stream, then cover).
             pdf_redact::tauri_commands::pdf_redact_hard,
+            // P32.5 — AcroForm read / fill / flatten.
+            pdf_forms::tauri_commands::pdf_read_form_fields,
+            pdf_forms::tauri_commands::pdf_fill_form,
+            pdf_forms::tauri_commands::pdf_flatten_form,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,
@@ -3353,6 +3358,10 @@ pub fn run() {
             pdf_annots::tauri_commands::pdf_stamp_annotations,
             // P32.7 — true redaction (scrub the content stream, then cover).
             pdf_redact::tauri_commands::pdf_redact_hard,
+            // P32.5 — AcroForm read / fill / flatten.
+            pdf_forms::tauri_commands::pdf_read_form_fields,
+            pdf_forms::tauri_commands::pdf_fill_form,
+            pdf_forms::tauri_commands::pdf_flatten_form,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             platform_share::tauri_commands::platform_print,

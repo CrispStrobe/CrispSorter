@@ -1918,7 +1918,7 @@ Verified permissive and approved for use (checked 2026-07-29):
   Calibre library integration and the DOCX generation path are the
   upstream tier-3 features and stay out of this slice.
 
-- [ ] **P32.5 — AcroForm read / fill / flatten.**  No form support
+- [x] **P32.5 — AcroForm read / fill / flatten.**  ✅ SHIPPED (2026-07-29).  No form support
   exists today (zero `/AcroForm` or `/Widget` references in tree).
   Traverse the field tree, read types and values, set `/V`, flatten to
   static page content.  First cut sets `NeedAppearances true` rather
