@@ -15143,7 +15143,7 @@ dependencies = [
 [[package]]
 name = "zpdf"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "zpdf-color",
  "zpdf-content",
@@ -15160,7 +15160,7 @@ dependencies = [
 [[package]]
 name = "zpdf-color"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "moxcms",
  "tracing",
@@ -15170,7 +15170,7 @@ dependencies = [
 [[package]]
 name = "zpdf-content"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "tracing",
  "zpdf-color",
@@ -15185,7 +15185,7 @@ dependencies = [
 [[package]]
 name = "zpdf-core"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "smallvec 1.15.2",
  "thiserror 2.0.18",
@@ -15194,7 +15194,7 @@ dependencies = [
 [[package]]
 name = "zpdf-display-list"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "smallvec 1.15.2",
  "zpdf-core",
@@ -15203,7 +15203,7 @@ dependencies = [
 [[package]]
 name = "zpdf-document"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "p256",
  "p384",
@@ -15219,7 +15219,7 @@ dependencies = [
 [[package]]
 name = "zpdf-font"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "tracing",
  "ttf-parser",
@@ -15229,7 +15229,7 @@ dependencies = [
 [[package]]
 name = "zpdf-image"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "hayro-jpeg2000",
  "tracing",
@@ -15241,7 +15241,7 @@ dependencies = [
 [[package]]
 name = "zpdf-parser"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
@@ -15257,7 +15257,7 @@ dependencies = [
 [[package]]
 name = "zpdf-render"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "zpdf-core",
  "zpdf-display-list",
@@ -15266,7 +15266,7 @@ dependencies = [
 [[package]]
 name = "zpdf-writer"
 version = "0.11.0"
-source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
+source = "git+https://github.com/CrispStrobe/zpdf?rev=eacd155806545017f536d9a5d1b0aef937da753d#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",

@@ -171,9 +171,17 @@ pdf_oxide = { version = "0.3", default-features = false, optional = true }
 # dependencies at the fork keeps one copy of every zpdf-* crate, since the
 # fork's facade resolves its siblings through workspace paths.
 #
-# Switch back to `version = "0.11.x"` once the PR lands.
-zpdf        = { git = "https://github.com/CrispStrobe/zpdf", branch = "fix-linearize-xref-coverage", default-features = false, optional = true }
-zpdf-writer = { git = "https://github.com/CrispStrobe/zpdf", branch = "fix-linearize-xref-coverage", optional = true }
+# Pinned to a revision, not a branch. `Cargo.lock` records the resolved commit
+# either way, but a branch reference lets `cargo update` silently move the
+# dependency to whatever the branch head has become; a `rev` cannot move. This
+# is our own fork, so nothing forces us back to crates.io — when
+# Xero-Team/zpdf#4 lands, switch to `version = "0.11.x"` and delete the fork
+# reference, or bump the rev if we carry further patches.
+#
+# `rev = eacd155` = "fix(linearize): the main xref must cover the objects the
+# first-page one does not" + the integration test the feature lacked.
+zpdf        = { git = "https://github.com/CrispStrobe/zpdf", rev = "eacd155806545017f536d9a5d1b0aef937da753d", default-features = false, optional = true }
+zpdf-writer = { git = "https://github.com/CrispStrobe/zpdf", rev = "eacd155806545017f536d9a5d1b0aef937da753d", optional = true }
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

@@ -60,7 +60,17 @@ jobs:
             # capabilities/default.json `shell:default` permission fails to
             # resolve in build.rs ("shell:default not found") — which is what
             # broke every v0.5.0 desktop build and published an empty release.
-            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render'
+            # pdf-zpdf ships on desktop from v0.11.0: user-password
+            # decryption, damaged-xref repair and fast web view, all verified
+            # against qpdf/poppler/MuPDF/pikepdf. Pinned to a rev of our fork
+            # (Xero-Team/zpdf#4 upstream), so the build is reproducible.
+            #
+            # Deliberately NOT on iOS/Android: those jobs pass no --features
+            # at all, so they take defaults, and adding a new pure-Rust crate
+            # family (ttf-parser, rsa, p256, zune-jpeg) to a cross-compile
+            # that only started working today is a risk worth taking
+            # separately, not as a side effect of this flip.
+            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -88,7 +98,7 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render'
+            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
             pdfium_asset: pdfium-win-x64.tgz
@@ -100,7 +110,7 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render'
+            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
             pdfium_asset: pdfium-linux-x64.tgz
@@ -1281,7 +1291,7 @@ jobs:
           # above still drops the shell/process *grants*, so the plugins are
           # compiled but ungranted (App-Sandbox-clean); no llama-server is
           # bundled (bin/* dropped) so nothing spawns.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop 2>&1 | tail -50
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop,pdf-zpdf 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)
