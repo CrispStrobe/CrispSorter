@@ -21,6 +21,7 @@
         FileUp, Save, Undo2, Redo2, Trash2, RotateCw, RotateCcw, Crop,
         Hash, Type, FilePlus2, FileOutput, Loader2, Check, X, Copy,
         Printer, Share2, EyeOff, AlertTriangle, MessageSquare, ClipboardList, BookOpen, PenLine,
+        LayoutTemplate, Shrink,
     } from 'lucide-svelte';
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js';
@@ -64,7 +65,14 @@
     /** Bumped whenever the edited-document preview is refreshed. */
     let previewEpoch = $state(0);
 
-    let activePanel = $state<'numbers' | 'crop' | 'textbox' | 'insert' | 'redact' | 'annots' | 'form' | 'kindle' | 'overprint' | null>(null);
+    let activePanel = $state<'numbers' | 'crop' | 'textbox' | 'insert' | 'redact' | 'annots' | 'form' | 'kindle' | 'overprint' | 'region' | 'compress' | null>(null);
+
+    /** Panels that drive the interactive page stage. */
+    const STAGE_PANELS = ['crop', 'textbox', 'redact', 'overprint', 'region'] as const;
+    /** Panels whose gesture is dragging a rectangle. */
+    const RECT_PANELS = ['crop', 'redact', 'overprint', 'region'] as const;
+    const usesStage = (p: typeof activePanel) => STAGE_PANELS.includes(p as any);
+    const usesRect = (p: typeof activePanel) => RECT_PANELS.includes(p as any);
     let dragFrom = $state<number | null>(null);
     let dragOver = $state<number | null>(null);
 
@@ -424,7 +432,7 @@
             defaultPath: 'overprinted.pdf',
         }) as string | null;
         if (!out) return;
-        const pageH = stagePageHeightPt();
+        const rect = stageRectToPt(cropBox);
         busy = true;
         error = '';
         try {
@@ -434,10 +442,7 @@
                 path: tmp,
                 specs: [{
                     page: stagePage,
-                    x: cropBox.x / stageScale,
-                    y: pageH - (cropBox.y + cropBox.h) / stageScale,
-                    w: cropBox.w / stageScale,
-                    h: cropBox.h / stageScale,
+                    ...rect,
                     text: overprintText,
                     font_size: overprintSize,
                     color: [0, 0, 0],
@@ -449,6 +454,144 @@
             cropBox = null;
         } catch (e: any) { error = e?.message ?? String(e); }
         busy = false;
+    }
+
+    // ── Text regions (P32.9) ────────────────────────────────────────────
+    // Unlike the text box, which places a line at a point, a region lays
+    // the text out inside the dragged rectangle: it wraps, aligns and can
+    // justify. The backend measures the same layout it draws, so the panel
+    // previews the fit — line count and overflow — before anything is
+    // written. Overflow is never drawn, so seeing it in advance matters.
+    interface LayoutReport {
+        lines: number;
+        lines_dropped: number;
+        overflow: boolean;
+        unsupported_chars: string[];
+    }
+
+    /** The base-14 faces the backend has width tables for (kebab wire names). */
+    const REGION_FONTS = [
+        'helvetica', 'helvetica-bold', 'helvetica-oblique', 'helvetica-bold-oblique',
+        'times-roman', 'times-bold', 'times-italic', 'times-bold-italic',
+        'courier', 'courier-bold',
+    ];
+
+    let regionText = $state('');
+    let regionFont = $state('helvetica');
+    let regionSize = $state(11);
+    let regionAlign = $state<'left' | 'center' | 'right' | 'justify'>('left');
+    let regionVAlign = $state<'top' | 'middle' | 'bottom'>('top');
+    let regionLineHeight = $state(1.2);
+    let regionColor = $state('#000000');
+    let regionBorder = $state(false);
+    let regionReport = $state<LayoutReport | null>(null);
+
+    function hexToRgb(hex: string): [number, number, number] {
+        const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
+        if (!m) return [0, 0, 0];
+        return [
+            parseInt(m[1], 16) / 255,
+            parseInt(m[2], 16) / 255,
+            parseInt(m[3], 16) / 255,
+        ];
+    }
+
+    /** The region the panel currently describes, in PDF user space. */
+    function buildRegion(box: { x: number; y: number; w: number; h: number }) {
+        return {
+            page: stagePage,
+            ...stageRectToPt(box),
+            text: regionText,
+            font: regionFont,
+            font_size: regionSize,
+            color: hexToRgb(regionColor),
+            align: regionAlign,
+            vertical_align: regionVAlign,
+            line_height: regionLineHeight,
+            padding: null,
+            draw_border: regionBorder,
+        };
+    }
+
+    // Live fit preview. Measuring is pure layout — no file is touched — so
+    // it can run on every keystroke.
+    $effect(() => {
+        if (activePanel !== 'region' || !cropBox) { regionReport = null; return; }
+        const region = buildRegion(cropBox);
+        let stale = false;
+        invoke<LayoutReport>('pdf_measure_text_region', { region })
+            .then((r) => { if (!stale) regionReport = r; })
+            .catch(() => { /* the commit path reports layout errors */ });
+        return () => { stale = true; };
+    });
+
+    async function doDrawRegion() {
+        if (!session || !cropBox) { error = i18n.t.pdfeditor.region_drag_first; return; }
+        if (!regionText.trim()) { error = i18n.t.pdfeditor.text_required; return; }
+        const out = await saveDialog({
+            filters: [{ name: 'PDF', extensions: ['pdf'] }],
+            defaultPath: 'text-region.pdf',
+        }) as string | null;
+        if (!out) return;
+        const region = buildRegion(cropBox);
+        busy = true;
+        error = '';
+        try {
+            const tmp = await currentTempCopy();
+            if (!tmp) return;
+            const reports = await invoke<LayoutReport[]>('pdf_draw_text_regions', {
+                path: tmp,
+                regions: [region],
+                outPath: out,
+            });
+            regionReport = reports[0] ?? null;
+            success = `${i18n.t.pdfeditor.region_written} ${out}`;
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    // ── Compression (P32.6) ─────────────────────────────────────────────
+    interface CompressReport {
+        bytes_before: number;
+        bytes_after: number;
+        streams_compressed: number;
+        used_object_streams: boolean;
+    }
+
+    let compressObjectStreams = $state(true);
+    let compressReport = $state<CompressReport | null>(null);
+
+    async function doCompress() {
+        if (!session) return;
+        const out = await saveDialog({
+            filters: [{ name: 'PDF', extensions: ['pdf'] }],
+            defaultPath: 'compressed.pdf',
+        }) as string | null;
+        if (!out) return;
+        busy = true;
+        error = '';
+        compressReport = null;
+        try {
+            const tmp = await currentTempCopy();
+            if (!tmp) return;
+            compressReport = await invoke<CompressReport>('pdf_compress', {
+                path: tmp,
+                options: {
+                    compress_streams: true,
+                    use_object_streams: compressObjectStreams,
+                    max_objects_per_stream: null,
+                },
+                outPath: out,
+            });
+            success = `${i18n.t.pdfeditor.compressed} ${out}`;
+        } catch (e: any) { error = e?.message ?? String(e); }
+        busy = false;
+    }
+
+    function formatBytes(n: number): string {
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
+        return `${(n / (1024 * 1024)).toFixed(2)} MB`;
     }
 
     // ── Redaction ───────────────────────────────────────────────────────
@@ -470,14 +613,7 @@
 
     function addRedactRect() {
         if (!cropBox || cropBox.w < 4 || cropBox.h < 4) return;
-        const pageH = stagePageHeightPt();
-        redactRects = [...redactRects, {
-            page: stagePage,
-            x: cropBox.x / stageScale,
-            y: pageH - (cropBox.y + cropBox.h) / stageScale,
-            w: cropBox.w / stageScale,
-            h: cropBox.h / stageScale,
-        }];
+        redactRects = [...redactRects, { page: stagePage, ...stageRectToPt(cropBox) }];
         cropBox = null;
     }
 
@@ -710,9 +846,10 @@
     }
 
     // Re-render whenever the stage becomes visible or its page changes.
+    // Every panel that *shows* the stage must be listed here — a panel that
+    // is shown but not rendered leaves the user dragging on a blank canvas.
     $effect(() => {
-        const needsStage = activePanel === 'crop' || activePanel === 'textbox';
-        if (!needsStage || !stageCanvas || !session) return;
+        if (!usesStage(activePanel) || !stageCanvas || !session) return;
         // Touch the reactive deps so the effect re-runs on change.
         void stagePage;
         void session.ops.length;
@@ -722,6 +859,21 @@
     /** Page height in points, for the y-axis flip. */
     function stagePageHeightPt(): number {
         return session?.info.pages[stagePage]?.height_pt ?? 792;
+    }
+
+    /**
+     * Convert a stage rectangle (CSS pixels, origin top-left) to PDF user
+     * space (points, origin bottom-left). Every rectangle tool needs
+     * exactly this, so they share it rather than each flipping y again.
+     */
+    function stageRectToPt(box: { x: number; y: number; w: number; h: number }) {
+        const pageH = stagePageHeightPt();
+        return {
+            x: box.x / stageScale,
+            y: pageH - (box.y + box.h) / stageScale,
+            w: box.w / stageScale,
+            h: box.h / stageScale,
+        };
     }
 
     function stageLocal(ev: MouseEvent): { x: number; y: number } {
@@ -737,7 +889,7 @@
         const p = stageLocal(ev);
         // Redaction drags the same rectangle as crop; only what happens on
         // release differs.
-        if (activePanel === 'crop' || activePanel === 'redact' || activePanel === 'overprint') {
+        if (usesRect(activePanel)) {
             cropDragging = true;
             cropStart = p;
             cropBox = { x: p.x, y: p.y, w: 0, h: 0 };
@@ -1097,6 +1249,21 @@
                     title={i18n.t.pdfeditor.overprint}>
                 <PenLine size={14} />
             </button>
+            <button class="pe-btn" class:active={activePanel === 'region'} disabled={busy}
+                    onclick={() => {
+                        activePanel = activePanel === 'region' ? null : 'region';
+                        cropBox = null;
+                        regionReport = null;
+                        if (activePanel === 'region' && selected.size > 0) stagePage = selectedSorted()[0];
+                    }}
+                    title={i18n.t.pdfeditor.region}>
+                <LayoutTemplate size={14} />
+            </button>
+            <button class="pe-btn" class:active={activePanel === 'compress'} disabled={busy}
+                    onclick={() => { activePanel = activePanel === 'compress' ? null : 'compress'; compressReport = null; }}
+                    title={i18n.t.pdfeditor.compress}>
+                <Shrink size={14} />
+            </button>
             <button class="pe-btn" class:active={activePanel === 'kindle'} disabled={busy}
                     onclick={() => activePanel = activePanel === 'kindle' ? null : 'kindle'}
                     title={i18n.t.pdfeditor.kindle}>
@@ -1235,6 +1402,81 @@
                 </button>
                 <span class="pe-hint pe-warn">{i18n.t.pdfeditor.overprint_caveat}</span>
 
+            {:else if activePanel === 'region'}
+                <label class="pe-grow">{i18n.t.pdfeditor.text}
+                    <textarea class="pe-input pe-textarea" rows="2" bind:value={regionText}></textarea>
+                </label>
+                <label>{i18n.t.pdfeditor.region_font}
+                    <select class="pe-input" bind:value={regionFont}>
+                        {#each REGION_FONTS as f}<option value={f}>{f}</option>{/each}
+                    </select>
+                </label>
+                <label>{i18n.t.pdfeditor.size}
+                    <input type="number" min="4" max="96" step="0.5" bind:value={regionSize} class="pe-input-sm" /></label>
+                <label>{i18n.t.pdfeditor.region_align}
+                    <select class="pe-input" bind:value={regionAlign}>
+                        <option value="left">left</option>
+                        <option value="center">center</option>
+                        <option value="right">right</option>
+                        <option value="justify">justify</option>
+                    </select>
+                </label>
+                <label>{i18n.t.pdfeditor.region_valign}
+                    <select class="pe-input" bind:value={regionVAlign}>
+                        <option value="top">top</option>
+                        <option value="middle">middle</option>
+                        <option value="bottom">bottom</option>
+                    </select>
+                </label>
+                <label>{i18n.t.pdfeditor.region_line_height}
+                    <input type="number" min="0.8" max="3" step="0.1" bind:value={regionLineHeight} class="pe-input-sm" /></label>
+                <label>{i18n.t.pdfeditor.region_color}
+                    <input type="color" bind:value={regionColor} class="pe-input-color" /></label>
+                <label><input type="checkbox" bind:checked={regionBorder} />
+                    {i18n.t.pdfeditor.region_border}</label>
+                <button class="pe-btn pe-go" disabled={busy || !cropBox} onclick={doDrawRegion}>
+                    {i18n.t.pdfeditor.region_apply}
+                </button>
+                {#if regionReport}
+                    <span class="pe-hint">
+                        {i18n.t.pdfeditor.region_fit.replace('{n}', String(regionReport.lines))}
+                    </span>
+                    {#if regionReport.overflow}
+                        <span class="pe-hint pe-warn">
+                            <AlertTriangle size={12} />
+                            {i18n.t.pdfeditor.region_overflow
+                                .replace('{n}', String(regionReport.lines_dropped))}
+                        </span>
+                    {/if}
+                    {#if regionReport.unsupported_chars.length > 0}
+                        <span class="pe-hint pe-warn">
+                            <AlertTriangle size={12} />
+                            {i18n.t.pdfeditor.region_unsupported
+                                .replace('{chars}', regionReport.unsupported_chars.join(' '))}
+                        </span>
+                    {/if}
+                {/if}
+
+            {:else if activePanel === 'compress'}
+                <label><input type="checkbox" bind:checked={compressObjectStreams} />
+                    {i18n.t.pdfeditor.compress_object_streams}</label>
+                <button class="pe-btn pe-go" disabled={busy} onclick={doCompress}>
+                    {i18n.t.pdfeditor.compress_apply}
+                </button>
+                <span class="pe-hint">{i18n.t.pdfeditor.compress_images_hint}</span>
+                {#if compressReport}
+                    <span class="pe-hint">
+                        {#if compressReport.bytes_after < compressReport.bytes_before}
+                            {i18n.t.pdfeditor.compress_result
+                                .replace('{before}', formatBytes(compressReport.bytes_before))
+                                .replace('{after}', formatBytes(compressReport.bytes_after))
+                                .replace('{pct}', (100 * (1 - compressReport.bytes_after / compressReport.bytes_before)).toFixed(1))}
+                        {:else}
+                            {i18n.t.pdfeditor.compress_no_gain}
+                        {/if}
+                    </span>
+                {/if}
+
             {:else if activePanel === 'kindle'}
                 <button class="pe-btn" disabled={busy} onclick={pickClippings}>
                     {i18n.t.pdfeditor.kindle_choose}
@@ -1282,7 +1524,7 @@
     {/if}
 
     <!-- Interactive stage: drag a crop rectangle / click to place text -->
-    {#if session && (activePanel === 'crop' || activePanel === 'textbox' || activePanel === 'redact' || activePanel === 'overprint')}
+    {#if session && usesStage(activePanel)}
         <div class="pe-stage-wrap">
             <div class="pe-stage-bar">
                 <span class="pe-hint">
@@ -1292,7 +1534,9 @@
                             ? i18n.t.pdfeditor.drag_redact_hint
                             : activePanel === 'overprint'
                                 ? i18n.t.pdfeditor.drag_overprint_hint
-                                : i18n.t.pdfeditor.click_text_hint}
+                                : activePanel === 'region'
+                                    ? i18n.t.pdfeditor.drag_region_hint
+                                    : i18n.t.pdfeditor.click_text_hint}
                 </span>
                 <span class="pe-spacer"></span>
                 <button class="pe-mini" disabled={stagePage === 0}
@@ -1311,7 +1555,7 @@
                 onmouseleave={onStageMouseUp}
             >
                 <canvas bind:this={stageCanvas} class="pe-stage-canvas"></canvas>
-                {#if (activePanel === 'crop' || activePanel === 'redact' || activePanel === 'overprint') && cropBox}
+                {#if usesRect(activePanel) && cropBox}
                     <div class="pe-croprect"
                          style:left="{cropBox.x}px" style:top="{cropBox.y}px"
                          style:width="{cropBox.w}px" style:height="{cropBox.h}px"></div>
@@ -1462,6 +1706,11 @@
         color: #e4e4e7; padding: 4px 7px; font-size: 12px;
     }
     .pe-input-sm { width: 68px; }
+    .pe-textarea { resize: vertical; min-height: 32px; font-family: inherit; }
+    .pe-input-color {
+        width: 34px; height: 24px; padding: 1px; cursor: pointer;
+        background: #18181b; border: 1px solid #27272a; border-radius: 5px;
+    }
     .pe-hint { color: #71717a; font-size: 11px; }
 
     .pe-status {

@@ -88,7 +88,10 @@ def text_poppler(path):
 
 def text_pypdf(path):
     import pypdf
-    return "".join((pg.extract_text() or "") for pg in pypdf.PdfReader(str(path)).pages)
+    # Joined with a newline, not "": pypdf yields per-page strings that do not
+    # end in one, so concatenating them fuses the last word of a page to the
+    # first of the next ("survivePage") and no reader would ever produce that.
+    return "\n".join((pg.extract_text() or "") for pg in pypdf.PdfReader(str(path)).pages)
 
 
 def page_count(path):
@@ -504,6 +507,348 @@ def verify_kindle(fx):
         check("kindle: re-import adds nothing (sqlite3)", after == before, f"{before} → {after}")
 
 
+def stream_filters(path):
+    """Every stream's /Filter names, one list per stream, as pikepdf sees them."""
+    import pikepdf
+    out = []
+    with pikepdf.open(str(path)) as pdf:
+        for obj in pdf.objects:
+            try:
+                f = obj.get("/Filter")
+            except Exception:
+                continue  # not a dictionary-like object
+            if f is None:
+                continue
+            out.append(re.findall(r"/\w+", str(f)))
+    return out
+
+
+def pikepdf_page_count(path):
+    import pikepdf
+    with pikepdf.open(str(path)) as pdf:
+        return len(pdf.pages)
+
+
+def raw_stream_bodies(path):
+    """Every stream's bytes as stored, without decoding. [] if none."""
+    import pikepdf
+    out = []
+    with pikepdf.open(str(path)) as pdf:
+        for obj in pdf.objects:
+            try:
+                out.append(bytes(obj.read_raw_bytes()))
+            except Exception:
+                continue  # not a stream
+    return out or [b""]
+
+
+def make_compress_fixture():
+    """A document with long, uncompressed, deflatable content streams.
+
+    Two properties have to hold at once and neither is free:
+
+    * **Uncompressed.** MuPDF deflates content streams on save, so a fixture
+      it wrote proves nothing about stream compression — every "the streams
+      are deflated" check would already hold. qpdf uncompresses them for us.
+    * **Long enough to be worth deflating.** lopdf declines to deflate a
+      stream unless the result is at least 19 bytes smaller, so a one-line
+      page is *correctly* left alone. A short fixture would make "0 streams
+      compressed" the right answer and the check meaningless.
+    """
+    import fitz
+    doc = fitz.open()
+    # One insert_text call per page, not one per line: MuPDF appends a
+    # *separate* content stream per call, so 40 calls give 40 short streams
+    # and nothing worth deflating. Passing the lines as a sequence puts them
+    # all in one stream.
+    body = [MARKER] + [f"{BODY} line {k}" for k in range(40)]
+    for i in range(4):
+        pg = doc.new_page()
+        pg.insert_text((72, 60), [f"Page {i + 1} heading"] + body, fontsize=10)
+    fat = WORK / "fat.pdf"
+    doc.save(str(fat))
+    doc.close()
+    out = WORK / "uncompressed.pdf"
+    p = subprocess.run(["qpdf", "--stream-data=uncompress", str(fat), str(out)],
+                       capture_output=True, text=True)
+    return out if (p.returncode in (0, 3) and out.exists()) else None
+
+
+def verify_compression(fx):
+    print("\n-- compression (P32.6) --")
+    src = make_compress_fixture()
+    if not check("compress: qpdf produced an uncompressed input", src is not None):
+        return
+    if not check("compress: that input really has no filtered streams (pikepdf)",
+                 not any(fs for fs in stream_filters(src)),
+                 "without this every deflation check below passes trivially"):
+        return
+    longest = max(len(s) for s in raw_stream_bodies(src))
+    if not check("compress: its streams are long enough to be worth deflating",
+                 longest > 2000,
+                 f"longest stream is {longest} B; lopdf declines to deflate a stream that "
+                 "would not shrink by 19 bytes, so a short fixture would make "
+                 "'0 compressed' the correct answer"):
+        return
+
+    o = WORK / "compressed.pdf"
+    p = run(["--format", "json", "pdf", "compress", str(src), "--out", str(o)])
+    if ran("compress", p):
+        rep = json.loads(p.stdout)
+        check("compress: valid (qpdf)", qpdf_ok(o))
+        check("compress: page count unchanged (MuPDF)",
+              page_count(o) == page_count(src),
+              f"{page_count(src)} → {page_count(o)}")
+        check("compress: smaller on disk (os.stat, not our report)",
+              o.stat().st_size < src.stat().st_size,
+              f"{src.stat().st_size} → {o.stat().st_size}")
+        check("compress: reported size is the real size",
+              rep["bytes_after"] == o.stat().st_size,
+              f"reported {rep['bytes_after']}, actual {o.stat().st_size}")
+        check("compress: it reports the streams it deflated",
+              rep["streams_compressed"] >= page_count(src),
+              f"{rep['streams_compressed']} for {page_count(src)} pages")
+        # Content preservation, from two readers that share no code with us.
+        check("compress: text intact (MuPDF)",
+              MARKER in all_text(o) and BODY in all_text(o))
+        check("compress: text intact (poppler)", MARKER in text_poppler(o))
+        check("compress: text identical to the input (poppler, word-for-word)",
+              text_poppler(o).split() == text_poppler(src).split())
+        # Object streams only pay off if the packed objects stay reachable —
+        # which is exactly what broke once (8 pages → 0).
+        raw = o.read_bytes()
+        check("compress: object streams were written", b"/ObjStm" in raw)
+        check("compress: xref stream accompanies them", b"/XRef" in raw,
+              "packed objects are unreachable from a classic xref table")
+        check("compress: pikepdf reaches every page through them",
+              pikepdf_page_count(o) == page_count(src))
+        flat = [f for fs in stream_filters(o) for f in fs]
+        check("compress: streams that were raw are now deflated (pikepdf)",
+              flat.count("/FlateDecode") >= page_count(src), str(flat[:6]))
+
+    # Opting out must actually opt out. This variant also lets the reported
+    # count be compared exactly: without object streams the writer invents no
+    # streams of its own, so pikepdf's tally and ours must agree.
+    plain = WORK / "compressed-classic.pdf"
+    p3 = run(["--format", "json", "pdf", "compress", str(src), "--out", str(plain),
+              "--no-object-streams"])
+    if ran("compress --no-object-streams", p3):
+        raw = plain.read_bytes()
+        check("compress: --no-object-streams writes none", b"/ObjStm" not in raw)
+        check("compress: --no-object-streams still valid (qpdf)", qpdf_ok(plain))
+        check("compress: --no-object-streams keeps the text (MuPDF)",
+              MARKER in all_text(plain))
+        deflated = sum(1 for fs in stream_filters(plain) if "/FlateDecode" in fs)
+        reported = json.loads(p3.stdout)["streams_compressed"]
+        check("compress: the reported count is what pikepdf finds deflated",
+              reported == deflated, f"reported {reported}, pikepdf sees {deflated}")
+
+    # Honesty on a document with nothing to gain: the original fixture's
+    # streams are a line or two long, so lopdf rightly declines to deflate
+    # them — and the report must say 0, not one per stream it merely tried.
+    short = WORK / "uncompressed-short.pdf"
+    q = subprocess.run(["qpdf", "--stream-data=uncompress", str(fx), str(short)],
+                       capture_output=True, text=True)
+    if q.returncode in (0, 3) and short.exists():
+        so = WORK / "short-compressed.pdf"
+        p4 = run(["--format", "json", "pdf", "compress", str(short), "--out", str(so),
+                  "--no-object-streams"])
+        if ran("compress (nothing to gain)", p4):
+            reported = json.loads(p4.stdout)["streams_compressed"]
+            deflated = sum(1 for fs in stream_filters(so) if "/FlateDecode" in fs)
+            check("compress: streams too short to deflate are reported as untouched",
+                  reported == deflated == 0, f"reported {reported}, pikepdf sees {deflated}")
+            check("compress: and the text is still there (poppler)",
+                  MARKER in text_poppler(so))
+
+    nostream = WORK / "compressed-nostream.pdf"
+    p2 = run(["--format", "json", "pdf", "compress", str(src), "--out", str(nostream),
+              "--no-stream-compression", "--no-object-streams"])
+    if ran("compress --no-stream-compression", p2):
+        check("compress: --no-stream-compression deflates nothing",
+              json.loads(p2.stdout)["streams_compressed"] == 0)
+        check("compress: --no-stream-compression leaves the streams raw (pikepdf)",
+              not any("/FlateDecode" in fs for fs in stream_filters(nostream)))
+
+    # Running it twice must not deflate anything twice: a /Filter array with
+    # two FlateDecode entries is data compressed on top of itself.
+    twice = WORK / "compressed-twice.pdf"
+    if o.exists() and ran("compress (second pass)",
+                          run(["pdf", "compress", str(o), "--out", str(twice)])):
+        doubled = [fs for fs in stream_filters(twice) if fs.count("/FlateDecode") > 1]
+        check("compress: nothing is deflated twice (pikepdf)", not doubled, str(doubled[:2]))
+        check("compress: second pass keeps every page (MuPDF)",
+              page_count(twice) == page_count(src))
+        check("compress: second pass keeps the text (poppler)",
+              MARKER in text_poppler(twice))
+
+
+REGION_BODY = (
+    "The quick brown fox jumps over the lazy dog and then keeps running "
+    "across the page until the words have to wrap several times over."
+)
+
+
+def region_lines(path, box, page=0):
+    """Lines MuPDF finds inside `box` (PDF y-up coords), via a clip."""
+    import fitz
+    d = mupdf_doc(path)
+    pg = d[page]
+    h = pg.rect.height
+    x, y, w, hh = box
+    clip = fitz.Rect(x - 1, h - (y + hh) - 1, x + w + 1, h - y + 1)
+    txt = pg.get_text("text", clip=clip)
+    d.close()
+    return [ln for ln in txt.splitlines() if ln.strip()]
+
+
+def word_rects(path, needle, page=0):
+    """Every hit for `needle`, in PDF y-up coords."""
+    d = mupdf_doc(path)
+    pg = d[page]
+    h = pg.rect.height
+    hits = [(r.x0, h - r.y1, r.x1, h - r.y0) for r in pg.search_for(needle)]
+    d.close()
+    return hits
+
+
+def verify_text_region(fx):
+    print("\n-- text regions (P32.9) --")
+    # A box in empty space on page 1, well clear of the fixture's own text
+    # (which sits at y-up ≈ 130–220 on an A4 page). Never guess a coordinate
+    # that has to be *empty* either: the clip below would otherwise pick up
+    # the fixture's lines and the line-count check would pass by accident.
+    box = (72.0, 400.0, 220.0, 120.0)
+    rect = f"1,{box[0]},{box[1]},{box[2]},{box[3]}"
+    check("region: the target box starts empty (MuPDF)", not region_lines(fx, box),
+          "a box that already holds text makes every count below meaningless")
+    o = WORK / "region.pdf"
+    p = run(["--format", "json", "pdf", "text-region", str(fx), "--rect", rect,
+             "--text", REGION_BODY, "--font", "helvetica", "--size", "10",
+             "--align", "left", "--out", str(o)])
+    if ran("text-region", p):
+        rep = json.loads(p.stdout)
+        check("region: valid (qpdf)", qpdf_ok(o))
+        check("region: text is on the page (MuPDF)", "quick brown fox" in page_text(o, 0))
+        check("region: text is on the page (poppler)", "quick brown fox" in text_poppler(o))
+        check("region: the fixture's own text survived", MARKER in page_text(o, 0))
+        check("region: no overflow for a box this size", not rep["overflow"], str(rep))
+
+        lines = region_lines(o, box)
+        check("region: MuPDF counts the lines the layout reported",
+              len(lines) == rep["lines"], f"MuPDF {len(lines)} vs reported {rep['lines']}")
+        check("region: it did wrap (more than one line)", len(lines) > 1, str(len(lines)))
+
+        # The whole point of the width tables: nothing may sit outside the box.
+        x0, y0, w, h = box
+        outside = []
+        for word in ("quick", "brown", "running", "several", "wrap"):
+            for (wx0, wy0, wx1, wy1) in word_rects(o, word):
+                if wx0 < x0 - 1 or wx1 > x0 + w + 1 or wy0 < y0 - 1 or wy1 > y0 + h + 1:
+                    outside.append((word, round(wx0, 1), round(wx1, 1)))
+        check("region: every word MuPDF finds is inside the box", not outside, str(outside[:3]))
+
+    # Overflow must be reported and *not* drawn.
+    tiny = (300.0, 500.0, 120.0, 22.0)
+    check("region: the overflow box starts empty (MuPDF)", not region_lines(fx, tiny))
+    o2 = WORK / "region-overflow.pdf"
+    p = run(["--format", "json", "pdf", "text-region", str(fx),
+             "--rect", f"1,{tiny[0]},{tiny[1]},{tiny[2]},{tiny[3]}",
+             "--text", REGION_BODY, "--size", "10", "--out", str(o2)])
+    if ran("text-region (overflow)", p):
+        rep = json.loads(p.stdout)
+        check("region: overflow reported", rep["overflow"] and rep["lines_dropped"] > 0, str(rep))
+        check("region: overflow is not drawn (MuPDF finds no tail words)",
+              "several times over" not in page_text(o2, 0).replace("\n", " "))
+        check("region: only the fitting lines were drawn",
+              len(region_lines(o2, tiny)) == rep["lines"],
+              f"MuPDF {len(region_lines(o2, tiny))} vs reported {rep['lines']}")
+
+    # Alignment is geometry, so a reader can check it.
+    xs = {}
+    for align in ("left", "right"):
+        oa = WORK / f"region-{align}.pdf"
+        if ran(f"text-region --align {align}",
+               run(["pdf", "text-region", str(fx), "--rect", rect, "--text", "short line",
+                    "--align", align, "--size", "10", "--out", str(oa)])):
+            hits = word_rects(oa, "short")
+            xs[align] = hits[0][0] if hits else None
+    if xs.get("left") is not None and xs.get("right") is not None:
+        check("region: right-aligned text starts further right (MuPDF)",
+              xs["right"] > xs["left"] + 10, f"{xs['left']:.1f} vs {xs['right']:.1f}")
+
+    # Latin-1 accents: trap 4 seen from the outside. If the width tables were
+    # keyed by the AFM's Adobe-Standard codes again, these would be reported
+    # unsupported and never drawn.
+    o3 = WORK / "region-accents.pdf"
+    p = run(["--format", "json", "pdf", "text-region", str(fx), "--rect", rect,
+             "--text", "Übermäßig café naïve", "--size", "12", "--out", str(o3)])
+    if ran("text-region (accents)", p):
+        rep = json.loads(p.stdout)
+        check("region: accents are not reported unsupported",
+              rep["unsupported_chars"] == [], str(rep["unsupported_chars"]))
+        got = page_text(o3, 0)
+        check("region: MuPDF reads the accents back", "Übermäßig" in got,
+              repr([ln for ln in got.splitlines() if "berm" in ln][:1]))
+        check("region: poppler reads the accents back", "café" in text_poppler(o3))
+
+    # A character the face has no glyph for is reported, not silently dropped.
+    o4 = WORK / "region-cjk.pdf"
+    p = run(["--format", "json", "pdf", "text-region", str(fx), "--rect", rect,
+             "--text", "hello 日本語 world", "--size", "12", "--out", str(o4)])
+    if ran("text-region (unsupported)", p):
+        rep = json.loads(p.stdout)
+        check("region: unsupported characters are reported",
+              "日" in rep["unsupported_chars"], str(rep["unsupported_chars"]))
+        check("region: and are absent from the page (MuPDF)", "日" not in page_text(o4, 0))
+        check("region: the renderable rest is still drawn", "hello" in page_text(o4, 0))
+
+    # --border draws a real stroked rectangle, which MuPDF can enumerate.
+    o5 = WORK / "region-border.pdf"
+    if ran("text-region --border",
+           run(["pdf", "text-region", str(fx), "--rect", rect, "--text", "boxed",
+                "--border", "--out", str(o5)])):
+        d = mupdf_doc(o5)
+        pg = d[0]
+        ph = pg.rect.height
+        near = []
+        for dr in pg.get_drawings():
+            r = dr["rect"]
+            if (abs(r.x0 - box[0]) < 2 and abs(r.width - box[2]) < 2
+                    and abs((ph - r.y1) - box[1]) < 2 and abs(r.height - box[3]) < 2):
+                near.append(dr.get("type"))
+        d.close()
+        check("region: --border strokes the box (MuPDF get_drawings)",
+              any(t in ("s", "fs") for t in near), str(near[:3]))
+
+    # A face with no width table must be refused, not silently substituted.
+    bad = run(["pdf", "text-region", str(fx), "--rect", rect, "--text", "x",
+               "--font", "comic-sans", "--out", str(WORK / "nope.pdf")])
+    check("region: an unknown --font is refused", bad.returncode != 0,
+          (bad.stderr or "").strip()[:80])
+
+
+def verify_text_extraction(fx):
+    print("\n-- text extraction (pdf text) --")
+    p = run(["--format", "json", "pdf", "text", str(fx)])
+    if ran("pdf text", p):
+        got = json.loads(p.stdout)["text"]
+        check("text: marker extracted", MARKER in got)
+        check("text: body extracted", BODY in got)
+        check("text: every word poppler finds we find too",
+              set(text_poppler(fx).split()) <= set(got.split()),
+              str(sorted(set(text_poppler(fx).split()) - set(got.split()))[:5]))
+        check("text: every word pypdf finds we find too",
+              set(text_pypdf(fx).split()) <= set(got.split()),
+              str(sorted(set(text_pypdf(fx).split()) - set(got.split()))[:5]))
+
+        o = WORK / "extracted.txt"
+        if ran("pdf text --out", run(["pdf", "text", str(fx), "--out", str(o)])):
+            check("text: --out writes the same text",
+                  o.read_text(encoding="utf-8") == got,
+                  f"{len(o.read_text(encoding='utf-8'))} vs {len(got)} chars")
+
+
 def verify_sanitise():
     print("\n-- sanitise --")
     src = WORK / "meta.pdf"
@@ -536,6 +881,9 @@ def main():
     verify_forms(fx)
     verify_annotations(fx)
     verify_kindle(fx)
+    verify_compression(fx)
+    verify_text_region(fx)
+    verify_text_extraction(fx)
     verify_sanitise()
 
     print()

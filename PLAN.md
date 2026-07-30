@@ -1924,11 +1924,20 @@ Verified permissive and approved for use (checked 2026-07-29):
   static page content.  First cut sets `NeedAppearances true` rather
   than generating `/AP` streams.  Pure `lopdf`, no new dependency.
 
-- [~] **P32.6 — qpdf backend.**  RESCOPED (2026-07-29). AES-256 and
+- [~] **P32.6 — qpdf backend.**  RESCOPED (2026-07-29); compression
+  SHIPPED end-to-end (2026-07-30). AES-256 and
   object-stream compression turned out to be available in pure Rust —
   lopdf 0.38 already ships `EncryptionVersion::V5` (AESV3) and
   `Aes256CryptFilter`, so the P27.13 note about waiting for lopdf to
   expose CryptFilter was stale. AES-256 is now the default handler.
+  `pdf_compress` deflates unfiltered streams and packs objects into
+  `/ObjStm` + an xref stream (both are needed — packed objects are
+  unreachable from a classic xref table), verifying page count and
+  catalog reachability before reporting success. Surfaces: Tauri
+  `pdf_compress`, CLI `pdf compress [--no-object-streams]
+  [--no-stream-compression] [--max-objects-per-stream N]`, and a
+  Reduce-file-size panel in `PdfEditor.svelte`. Images are deliberately
+  untouched.
   Only linearization and xref repair still need qpdf; deferred, since
   they are conveniences rather than correctness and qpdf is the only
   non-Rust dependency in the whole plan.  Unblocks the P27.13 deferral:
@@ -1952,3 +1961,32 @@ Verified permissive and approved for use (checked 2026-07-29):
   string substitution via `lopdf`, restricted to same-font same-metrics
   replacements.  Tier 3 (full reflow with font subsetting and line
   breaking) is a substantially larger project and is deferred.
+
+- [x] **P32.9 — Text regions.**  ✅ SHIPPED (2026-07-29; CLI + GUI
+  2026-07-30).  `pdf_ops::add_text_box_doc` places text at a point and
+  breaks only where the caller already put a newline, so laying out a
+  paragraph meant knowing in advance where every line ends.
+  `pdf_text_region` takes a rectangle instead and wraps into it, with
+  horizontal alignment (including justification via `Tw`), vertical
+  alignment, line spacing, colour and an optional positioning border.
+  Wrapping needs real glyph widths, so `pdf_base14` carries per-glyph
+  widths for the base-14 faces keyed by **WinAnsi code via glyph name** —
+  the AFM metrics are Adobe-Standard-encoded, and indexing them by code
+  made every accented character (`Ü ä ß ï`) look unsupported.
+  Overflow is reported and *not* drawn, and characters the face has no
+  glyph for are reported rather than silently dropped.  Surfaces: Tauri
+  `pdf_draw_text_regions` + `pdf_measure_text_region` (the measure half
+  is what lets the GUI preview the fit before committing), CLI
+  `pdf text-region --rect page,x,y,w,h --text T [--font …] [--size N]
+  [--align left|center|right|justify] [--valign …] [--line-height N]
+  [--color r,g,b] [--border]`, and a Text-region panel in
+  `PdfEditor.svelte` with a live line-count / overflow preview.
+  Tier 3 reflow (line breaking across existing content, font subsetting)
+  remains out of scope.
+
+- [x] **P32.10 — Plain text extraction surface.**  ✅ SHIPPED
+  (2026-07-30).  Text extraction existed only behind `crispsorter ocr`,
+  which reads an embedded text layer when there is one but is named for
+  the job it does when there is not.  `pdf text <file> [--out F]` reads
+  the text layer through `extractors::extract_text_from_path` and says
+  so when it finds none, pointing at `ocr` for scans.

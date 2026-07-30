@@ -37,9 +37,92 @@ inline them between regular deps.
 - `as_dict()` returns `Result`, not `Option` — chain with `.ok()`
 - No `merge_document()` method — manual object copying with ID
   remapping required for PDF merging
-- `CryptFilter` trait is `pub(crate)` — can't use V4/V5 encryption
-  directly; V2 (RC4-128) is the only option from outside the crate
+- ~~`CryptFilter` is `pub(crate)`, so V2 (RC4-128) is the only handler~~ —
+  **stale**. 0.38 ships `EncryptionVersion::V5` + `Aes256CryptFilter`, and
+  AES-256 is now our default. RC4 remains only behind `--legacy-rc4`.
 - `EncryptionVersion::V2` requires `/ID` in the trailer
+- **`Document::load` decrypts eagerly, and only with the empty password.**
+  There is no public way to pass one. Given a real user password you get a
+  1-object document, `decrypt()` then reports success having decrypted
+  nothing, and `save` writes ~170 bytes with no `/Root`. Detect both cases;
+  do not report success (`pdf_ops::decrypt_pdf`).
+- **`Stream::compress()` returns `Ok(())` without compressing** in two
+  cases: a `/Filter` is already set, or deflate would not save at least 19
+  bytes — which is the normal outcome for a one-line page's content stream.
+  Count the `/Filter` the call leaves behind, never the call: counting calls
+  made `pdf compress` report 12 streams deflated on a file it had left in
+  plaintext. Also skip `/Type/XRef` and `/Type/ObjStm` streams — the writer
+  rebuilds them, so work there never reaches the file.
+- **Object streams need xref streams.** Packing objects into an `/ObjStm`
+  and then saving with a classic xref table makes them unreachable (page
+  count went 8 → 0). Use `save_with_options` with `use_object_streams(true)`
+  *and* `use_xref_streams(true)`, and let lopdf do the packing.
+
+---
+
+## PDF structure gotchas (P32)
+
+Independent of lopdf — these are things the format does, not the crate.
+
+### `/AcroForm` may be a *direct* dictionary in the catalog
+
+Handling only the indirect-reference form made MuPDF-authored forms
+invisible: `read_fields` returned nothing and `flatten` did nothing while
+reporting success. Resolve both shapes (`pdf_forms::acroform_dict`).
+Related: a checkbox's "on" value is whatever its widget's `/AP` says, not
+necessarily `/Yes` — a German form uses `/Ja`.
+
+### Base-14 AFM metrics are Adobe-Standard-encoded
+
+The AFMs' own `C` codes are *not* WinAnsi. Indexing the width tables by
+Latin-1 code while declaring `/WinAnsiEncoding` made every accented
+character (`Ü ä ß ï`) report as unsupported by fonts that plainly have it.
+Key the tables by **glyph name** through the Adobe Glyph List
+(`pdf_base14.rs`); the header comment carries the regeneration snippet.
+
+### Text extraction has two different jobs
+
+`pdf text` reads the text layer; `ocr` reads pixels. A scan gives the first
+one nothing, so it says which command the caller wanted rather than
+printing an empty string that looks like a failure.
+
+---
+
+## clap: a subcommand that shadows a global arg panics at *runtime*
+
+Not at build time, and not in `--help` — the subcommand's own help renders
+fine, so it survives review and blows up when someone invokes it. This
+crate hit it twice (`--format` and a `--out`/`format` field-name clash).
+The field *name* is what collides, not the long flag. `cli::global_arg_collision_tests`
+now walks the whole command tree and fails on any shadowing; it was verified
+to fire by injecting a collision. Rename the field
+(`pdf export-annotations --to`, `pdf number --style`).
+
+---
+
+## Verification: assert the premise, or the check cannot fail
+
+`scripts/verify_pdf_independent.py` produced two false passes, both from
+trusting a fixture instead of interrogating it:
+
+- A hard-coded rectangle redacted **empty space** (MuPDF's `insert_text` is
+  y-down from the top, and the pages are A4, not Letter), so every "the text
+  is gone" assertion held trivially. Ask the reader where the text is
+  (`page.search_for`) and derive the rectangle from that.
+- "Streams are deflated" passed because **MuPDF's own save had already
+  deflated them**. The compression input is now built with
+  `qpdf --stream-data=uncompress`, and the harness asserts *no* `/Filter`
+  exists — and that the streams exceed 2 kB, since lopdf correctly declines
+  to deflate a short one — before testing the claim. That premise check
+  immediately caught the next mistake: PyMuPDF appends a separate content
+  stream per `insert_text` call, so 40 calls give 40 short streams; pass the
+  lines as one sequence instead.
+
+The general rule: a claim about a change needs both sides asserted (changed
+here, unchanged there), and any state the claim depends on has to be
+verified rather than assumed. Cross-check the tool's own report against what
+an independent reader sees — that is what caught the compression
+mis-reporting that every in-process unit test had missed.
 
 ---
 

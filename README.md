@@ -83,6 +83,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 - **Schema-migration framework** — versioned `Migration` async trait with SQLite ledger at `<data-dir>/.crispsorter_migrations.db`.  Gap detection, duplicate-version rejection, downgrade guard (ledger says vN applied but no matching migration registered → refuse to proceed), failure isolation (mid-run failure leaves the ledger consistent for resume).  Three real consumers landed: `AddTextTranslatedColumns` (v100, P13.5), `AddAudioMetadataColumns` (v101, P13.6), `AddImageMetadataColumns` (v102, P13.7).
 - **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
 - **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs
+- **PDF editor** (P27 + P32, complete) — a direct-manipulation page editor (thumbnail grid, drag-reorder, rotate, crop, insert, page numbers, watermark) on one undoable edit session, plus the read/edit operations that usually need qpdf or Ghostscript and here need neither: **real redaction** (the intersecting glyphs are removed from the content stream, then the area is covered — the covering rectangle stays because composite fonts, form XObjects and raster content are out of the scrub's reach, and all three are counted in the report), **text editing** tiers 1–2 (cover-and-retype, or in-place `Tj`/`TJ` substitution), **text regions** that wrap and align inside a dragged box using real base-14 glyph widths (overflow is reported and never drawn), **AcroForm** read / fill / flatten (fill refuses an unknown field name rather than producing a form that looks filled), **annotation round-trip** into the FTS-searchable store plus Kindle-clippings import with document anchoring, **AES-256 encryption**, and **size reduction** via stream deflation + object streams.  Every one of them has a CLI verb and a GUI panel; `scripts/verify_pdf_independent.py` checks 140 claims about the output with qpdf, poppler, MuPDF, pypdf and pikepdf, on fixtures those tools authored.
 - **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
 - **Script export** — generate a `.bat` / `.sh` script to review moves before executing them
 - **JSON sort plans** — `batch process` → `batch apply` pipeline produces a structured plan you can audit before applying
@@ -137,6 +138,39 @@ crispsorter table invoice-table.png                                # → HTML <t
 crispsorter table receipt.png --grid                               # just rows × cols (no OCR)
 #   engines: dbnet_trocr|surya|tesseract|got|glm|qwen2vl|internvl2
 #   --render: text(default)|hocr|alto|pdf   ·  full flag list: crispsorter ocr --help
+
+# PDF read / edit (P27 + P32) — pure Rust, no qpdf or Ghostscript needed.
+crispsorter pdf info report.pdf                        # pages, size, metadata
+crispsorter pdf text report.pdf                        # the text layer (use `ocr` for scans)
+crispsorter pdf merge a.pdf b.pdf --out both.pdf
+crispsorter pdf extract book.pdf --pages 3,7-9 --out excerpt.pdf
+crispsorter pdf compress scan.pdf --out smaller.pdf    # deflate streams + pack objects
+#   Images are never recompressed; reports what it actually deflated, and
+#   discards the output if the page count or catalog changed.
+
+# Real redaction — removes the glyphs, then covers the area.
+crispsorter pdf redact-regions contract.pdf --rect 1,72,640,220,14 --out clean.pdf
+#   `pdf redact --patterns …` is the older, VISUAL-ONLY blackout and says so.
+
+# Text editing (tiers 1–2): cover-and-retype, or substitute in place.
+crispsorter pdf overprint form.pdf --rect 2,72,300,180,16 --text "Grace Hopper" --out fixed.pdf
+crispsorter pdf substitute-text draft.pdf --find 2025 --replace 2026 --out final.pdf
+
+# Text regions — wrap and align inside a box, with real base-14 glyph widths.
+crispsorter pdf text-region page.pdf --rect 1,72,400,220,120 \
+    --text "$(cat note.txt)" --font times-roman --size 10 --align justify --out noted.pdf
+#   Overflow is reported and NOT drawn; characters the face lacks are listed.
+
+# AcroForms + annotations
+crispsorter pdf form-fields tax.pdf -f json
+crispsorter pdf fill-form tax.pdf --set "fullName=Ada Lovelace" --out filled.pdf
+crispsorter pdf flatten-form filled.pdf --out flat.pdf
+crispsorter pdf annotations paper.pdf                  # the PDF's own /Annots
+crispsorter pdf export-annotations paper.pdf --to markdown --out notes.md
+crispsorter pdf import-annotations paper.pdf           # into the FTS-searchable store
+crispsorter pdf kindle-import "My Clippings.txt" --doc-id book --document book.pdf
+#   full verb list: crispsorter pdf --help
+
 crispsorter index search "karl barth"                  # BM25 FTS
 
 # Richer search (P13.7) — cloud-backup parity filter set

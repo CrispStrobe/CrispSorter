@@ -77,14 +77,34 @@ impl CompressReport {
 }
 
 /// Deflate every stream that does not already declare a `/Filter`.
+///
+/// Counts streams that came out deflated, not calls that returned `Ok`.
+/// `Stream::compress()` is a no-op in *two* cases and reports success in
+/// both: when a `/Filter` is already set, and — the one that is easy to
+/// miss — when deflating would not save at least 19 bytes, which is the
+/// normal outcome for the short content streams a one-line page has. An
+/// earlier version counted the call and reported 12 streams compressed on
+/// a document where it had compressed none.
 fn compress_streams(doc: &mut Document) -> usize {
     let ids: Vec<ObjectId> = doc.objects.keys().copied().collect();
     let mut n = 0;
     for id in ids {
         if let Some(Object::Stream(ref mut s)) = doc.objects.get_mut(&id) {
-            // compress() is a no-op when /Filter is already set; check
-            // first so the count reflects real work.
-            if s.dict.get(b"Filter").is_err() && s.compress().is_ok() {
+            if s.dict.get(b"Filter").is_ok() {
+                continue;
+            }
+            // The cross-reference and object streams are rebuilt by the
+            // writer, which throws away whatever we did to them — so
+            // deflating one is work that never reaches the file, and
+            // counting it is a report of something that did not happen.
+            if matches!(
+                s.dict.get(b"Type").and_then(|t| t.as_name()),
+                Ok(b"XRef") | Ok(b"ObjStm")
+            ) {
+                continue;
+            }
+            let _ = s.compress();
+            if s.dict.get(b"Filter").is_ok() {
                 n += 1;
             }
         }
@@ -316,6 +336,81 @@ mod tests {
         let r = compress_pdf(&src, &opts, &out).unwrap();
         assert_eq!(r.streams_compressed, 0);
         assert!(!r.used_object_streams);
+    }
+
+    #[test]
+    fn a_stream_too_short_to_benefit_is_reported_as_untouched() {
+        // lopdf refuses to deflate when the result would not be at least 19
+        // bytes smaller — and says Ok. Counting the call rather than the
+        // filter made this document report every stream as compressed while
+        // the output stayed plaintext, which an independent reader caught.
+        let dir = TempDir::new().unwrap();
+        // 1.4 deliberately: at 1.5 lopdf saves an xref *stream*, which is
+        // repetitive enough to deflate, and this test is about the short
+        // content streams.
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+        let mut kids = Vec::new();
+        for _ in 0..3 {
+            let cid = doc.add_object(Object::Stream(lopdf::Stream::new(
+                lopdf::Dictionary::new(),
+                b"BT 72 700 Td (hi) Tj ET".to_vec(),
+            )));
+            kids.push(Object::Reference(doc.add_object(Object::Dictionary(
+                lopdf::Dictionary::from_iter(vec![
+                    ("Type", Object::Name(b"Page".to_vec())),
+                    ("Parent", Object::Reference(pages_id)),
+                    ("MediaBox", Object::Array(vec![
+                        Object::Integer(0), Object::Integer(0),
+                        Object::Integer(612), Object::Integer(792),
+                    ])),
+                    ("Contents", Object::Reference(cid)),
+                ]),
+            ))));
+        }
+        doc.objects.insert(pages_id, Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Pages".to_vec())),
+            ("Count", Object::Integer(3)),
+            ("Kids", Object::Array(kids)),
+        ])));
+        let cat = doc.add_object(Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+            ("Type", Object::Name(b"Catalog".to_vec())),
+            ("Pages", Object::Reference(pages_id)),
+        ])));
+        doc.trailer.set("Root", Object::Reference(cat));
+        let src = write(&mut doc, &dir, "short.pdf");
+
+        let out = dir.path().join("short-out.pdf");
+        let opts = CompressOptions { use_object_streams: false, ..Default::default() };
+        let r = compress_pdf(&src, &opts, &out).unwrap();
+        let check = Document::load(&out).unwrap();
+
+        // Each page's content is ~23 bytes, far short of the 19-byte saving
+        // lopdf requires, so every one of them must come out raw.
+        for page_id in check.page_iter() {
+            if let Ok(Object::Dictionary(p)) = check.get_object(page_id) {
+                if let Ok(Object::Reference(cid)) = p.get(b"Contents") {
+                    if let Ok(Object::Stream(s)) = check.get_object(*cid) {
+                        assert!(
+                            s.dict.get(b"Filter").is_err(),
+                            "a 23-byte stream was marked filtered"
+                        );
+                    }
+                }
+            }
+        }
+
+        // And the report may not claim more than the file shows: the old code
+        // counted every *attempt*, so it reported one per stream while the
+        // page content stayed plaintext.
+        let filtered = check.objects.values().filter(|o| {
+            matches!(o, Object::Stream(st) if st.dict.get(b"Filter").is_ok())
+        }).count();
+        assert!(
+            r.streams_compressed <= filtered,
+            "reported {} deflated, output has {filtered} filtered stream(s): {r:?}",
+            r.streams_compressed
+        );
     }
 
     #[test]

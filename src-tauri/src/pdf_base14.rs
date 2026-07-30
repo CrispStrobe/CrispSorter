@@ -34,6 +34,51 @@ pub enum Base14 {
 }
 
 impl Base14 {
+    /// Every face, in declaration order. `NAMES[i]` names `ALL[i]`.
+    pub const ALL: [Base14; 10] = [
+        Base14::Helvetica,
+        Base14::HelveticaBold,
+        Base14::HelveticaOblique,
+        Base14::HelveticaBoldOblique,
+        Base14::TimesRoman,
+        Base14::TimesBold,
+        Base14::TimesItalic,
+        Base14::TimesBoldItalic,
+        Base14::Courier,
+        Base14::CourierBold,
+    ];
+
+    /// The spellings [`Base14::from_name`] accepts — the same kebab-case
+    /// names serde puts on the wire, so the CLI's `--font` and the GUI's
+    /// font picker name a face identically. A test asserts that.
+    pub const NAMES: [&'static str; 10] = [
+        "helvetica",
+        "helvetica-bold",
+        "helvetica-oblique",
+        "helvetica-bold-oblique",
+        "times-roman",
+        "times-bold",
+        "times-italic",
+        "times-bold-italic",
+        "courier",
+        "courier-bold",
+    ];
+
+    /// Parse a face name. Accepts the kebab-case wire name and, because
+    /// it costs nothing, the PDF `/BaseFont` spelling (`Times-Roman`).
+    pub fn from_name(name: &str) -> Option<Self> {
+        let want = name.trim().to_ascii_lowercase();
+        Self::ALL.iter().enumerate().find_map(|(i, &face)| {
+            (Self::NAMES[i] == want || face.base_font().to_ascii_lowercase() == want)
+                .then_some(face)
+        })
+    }
+
+    /// The kebab-case wire name of this face.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[Self::ALL.iter().position(|f| *f == self).expect("face in ALL")]
+    }
+
     /// The PDF `/BaseFont` name.
     pub fn base_font(self) -> &'static str {
         match self {
@@ -258,3 +303,42 @@ static COURIERBOLD_WIDTHS: [u16; 256] = [
     600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600, 600,
 ];
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_name_parses_back_to_its_face() {
+        for (i, &face) in Base14::ALL.iter().enumerate() {
+            assert_eq!(Base14::from_name(Base14::NAMES[i]), Some(face));
+            assert_eq!(face.name(), Base14::NAMES[i]);
+        }
+    }
+
+    #[test]
+    fn names_are_the_serde_wire_names() {
+        // The CLI's `--font` and the GUI's picker must agree, or a font
+        // chosen in one surface is unnamed in the other.
+        for (i, &face) in Base14::ALL.iter().enumerate() {
+            let wire = serde_json::to_string(&face).unwrap();
+            assert_eq!(wire, format!("\"{}\"", Base14::NAMES[i]), "{face:?}");
+        }
+    }
+
+    #[test]
+    fn basefont_spellings_and_case_are_accepted_too() {
+        assert_eq!(Base14::from_name("Times-Roman"), Some(Base14::TimesRoman));
+        assert_eq!(Base14::from_name("  HELVETICA-BOLD "), Some(Base14::HelveticaBold));
+        assert_eq!(Base14::from_name("Helvetica-BoldOblique"),
+                   Some(Base14::HelveticaBoldOblique));
+    }
+
+    #[test]
+    fn an_unknown_face_is_rejected_not_defaulted() {
+        // Silently falling back to Helvetica would lay text out with the
+        // wrong widths and wrap in the wrong places.
+        assert_eq!(Base14::from_name("comic-sans"), None);
+        assert_eq!(Base14::from_name(""), None);
+    }
+}

@@ -1490,6 +1490,82 @@ enum PdfCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Reduce file size: deflate streams, pack objects into /ObjStm (P32.6).
+    ///
+    /// Images are left alone — recompressing them is either
+    /// lossless-and-pointless or lossy-and-surprising.
+    Compress {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Write one `obj`/`endobj` pair per object, as PDF 1.4 did.
+        ///
+        /// Object streams need a PDF 1.5 reader. Every mainstream viewer
+        /// since ~2003 qualifies, so they are on by default; this opts out.
+        #[arg(long)]
+        no_object_streams: bool,
+        /// Leave unfiltered streams uncompressed.
+        #[arg(long)]
+        no_stream_compression: bool,
+        /// Objects per object stream (lopdf's default when unset).
+        #[arg(long)]
+        max_objects_per_stream: Option<usize>,
+    },
+    /// Fill a rectangle with wrapped, formatted text (P32.9).
+    ///
+    /// Unlike `pdf overprint`, lines are broken to fit the box. Text that
+    /// does not fit is reported and not drawn.
+    TextRegion {
+        file: PathBuf,
+        /// `page,x,y,w,h` with a 1-based page, points from bottom-left.
+        #[arg(long)]
+        rect: String,
+        /// Text to lay out. A newline starts a new paragraph.
+        #[arg(long)]
+        text: String,
+        /// Base-14 face. Only these have width tables, so only these wrap
+        /// correctly.
+        #[arg(long, default_value = "helvetica",
+              value_parser = clap::builder::PossibleValuesParser::new(
+                  crate::pdf_base14::Base14::NAMES))]
+        font: String,
+        /// Font size in points.
+        #[arg(long, default_value_t = 11.0)]
+        size: f64,
+        /// Horizontal alignment.
+        #[arg(long, default_value = "left",
+              value_parser = ["left", "center", "right", "justify"])]
+        align: String,
+        /// Vertical alignment of the text block within the box.
+        #[arg(long = "valign", default_value = "top",
+              value_parser = ["top", "middle", "bottom"])]
+        vertical_align: String,
+        /// Baseline-to-baseline distance as a multiple of the font size
+        /// (default 1.2).
+        #[arg(long)]
+        line_height: Option<f64>,
+        /// Inset from the box edges, in points (default 2).
+        #[arg(long)]
+        padding: Option<f64>,
+        /// Text colour as `r,g,b`, each 0.0–1.0.
+        #[arg(long, default_value = "0,0,0")]
+        color: String,
+        /// Stroke the rectangle — useful while positioning it.
+        #[arg(long)]
+        border: bool,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Extract a document's text layer.
+    ///
+    /// Reads the text that is already in the file. Use `crispsorter ocr`
+    /// instead when there is no text layer to read.
+    Text {
+        file: PathBuf,
+        /// Write the text here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -4243,6 +4319,45 @@ fn cmd_watch(_folder: PathBuf, _all_exts: bool) -> Result<(), String> {
 
 // ── pdf — page-level PDF manipulation ────────────────────────────────────
 
+/// Parse a `page,x,y,w,h` rectangle spec into a **0-based** page index plus
+/// the geometry in points from the page's bottom-left corner.
+///
+/// Shared by every `--rect`-taking pdf subcommand so they agree on what a
+/// rectangle is and reject the same mistakes.
+fn parse_page_rect(spec: &str) -> Result<(usize, f64, f64, f64, f64), String> {
+    let parts: Vec<&str> = spec.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 5 {
+        return Err(format!("--rect expects page,x,y,w,h (got {spec:?})"));
+    }
+    let num = |s: &str| -> Result<f64, String> {
+        s.parse::<f64>().map_err(|_| format!("not a number: {s:?}"))
+    };
+    let page: usize = parts[0]
+        .parse::<usize>()
+        .map_err(|_| format!("not a page number: {:?}", parts[0]))?;
+    if page == 0 {
+        return Err("pages are 1-based".into());
+    }
+    Ok((page - 1, num(parts[1])?, num(parts[2])?, num(parts[3])?, num(parts[4])?))
+}
+
+/// Parse `r,g,b` with each component in 0.0–1.0.
+fn parse_rgb(spec: &str) -> Result<[f64; 3], String> {
+    let parts: Vec<&str> = spec.split(',').map(|s| s.trim()).collect();
+    if parts.len() != 3 {
+        return Err(format!("--color expects r,g,b (got {spec:?})"));
+    }
+    let mut rgb = [0.0f64; 3];
+    for (i, p) in parts.iter().enumerate() {
+        let v: f64 = p.parse().map_err(|_| format!("not a number: {p:?}"))?;
+        if !(0.0..=1.0).contains(&v) {
+            return Err(format!("colour components run 0.0–1.0 (got {v})"));
+        }
+        rgb[i] = v;
+    }
+    Ok(rgb)
+}
+
 fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
     use crate::pdf_ops;
     match cmd {
@@ -4401,28 +4516,8 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
         PdfCmd::RedactRegions { file, rects, out: out_path } => {
             let mut specs = Vec::with_capacity(rects.len());
             for r in &rects {
-                let parts: Vec<&str> = r.split(',').map(|s| s.trim()).collect();
-                if parts.len() != 5 {
-                    return Err(format!(
-                        "--rect must be page,x,y,w,h (got {:?})", r
-                    ));
-                }
-                let num = |s: &str| -> Result<f64, String> {
-                    s.parse::<f64>().map_err(|_| format!("not a number: {s:?}"))
-                };
-                let page: usize = parts[0]
-                    .parse::<usize>()
-                    .map_err(|_| format!("not a page number: {:?}", parts[0]))?;
-                if page == 0 {
-                    return Err("pages are 1-based".into());
-                }
-                specs.push(pdf_ops::RedactionSpec {
-                    page: page - 1,
-                    x: num(parts[1])?,
-                    y: num(parts[2])?,
-                    w: num(parts[3])?,
-                    h: num(parts[4])?,
-                });
+                let (page, x, y, w, h) = parse_page_rect(r)?;
+                specs.push(pdf_ops::RedactionSpec { page, x, y, w, h });
             }
             let report = crate::pdf_redact::redact_regions_hard(&file, &specs, &out_path)?;
             eprintln!(
@@ -4519,19 +4614,9 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             Ok(())
         }
         PdfCmd::Overprint { file, rect, text, font_size, out: out_path } => {
-            let parts: Vec<&str> = rect.split(',').map(|s| s.trim()).collect();
-            if parts.len() != 5 {
-                return Err(format!("--rect expects page,x,y,w,h (got {rect:?})"));
-            }
-            let num = |s: &str| s.parse::<f64>().map_err(|_| format!("not a number: {s:?}"));
-            let page: usize = parts[0].parse().map_err(|_| format!("bad page: {:?}", parts[0]))?;
-            if page == 0 {
-                return Err("pages are 1-based".into());
-            }
+            let (page, x, y, w, h) = parse_page_rect(&rect)?;
             let spec = crate::pdf_text_edit::OverprintSpec {
-                page: page - 1,
-                x: num(parts[1])?, y: num(parts[2])?,
-                w: num(parts[3])?, h: num(parts[4])?,
+                page, x, y, w, h,
                 text, font_size,
                 ..Default::default()
             };
@@ -4615,6 +4700,157 @@ Use `pdf redact-regions` first if it must be removed.");
         PdfCmd::Pdfa { file, out: out_path } => {
             pdf_ops::convert_to_pdfa(&file, &out_path)?;
             eprintln!("PDF/A-2b metadata added → {}", out_path.display());
+            Ok(())
+        }
+        PdfCmd::Compress {
+            file, out: out_path, no_object_streams, no_stream_compression,
+            max_objects_per_stream,
+        } => {
+            let options = crate::pdf_compress::CompressOptions {
+                compress_streams: !no_stream_compression,
+                use_object_streams: !no_object_streams,
+                max_objects_per_stream,
+            };
+            let report = crate::pdf_compress::compress_pdf(&file, &options, &out_path)?;
+            match out {
+                OutFormat::Json => {
+                    let payload = serde_json::json!({
+                        "bytes_before": report.bytes_before,
+                        "bytes_after": report.bytes_after,
+                        "streams_compressed": report.streams_compressed,
+                        "used_object_streams": report.used_object_streams,
+                        "savings_ratio": report.savings_ratio(),
+                        "out": out_path.display().to_string(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                }
+                OutFormat::Text => {
+                    eprintln!(
+                        "{} → {} bytes ({:.1}% smaller), {} stream(s) deflated{} → {}",
+                        report.bytes_before,
+                        report.bytes_after,
+                        report.savings_ratio() * 100.0,
+                        report.streams_compressed,
+                        if report.used_object_streams { ", object streams used" } else { "" },
+                        out_path.display()
+                    );
+                    if report.bytes_after >= report.bytes_before {
+                        eprintln!(
+                            "NOTE: the file did not shrink — its streams were already \
+                             compressed. The original is unchanged."
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::TextRegion {
+            file, rect, text, font, size, align, vertical_align, line_height,
+            padding, color, border, out: out_path,
+        } => {
+            use crate::pdf_text_region::{Align, TextRegion, VerticalAlign};
+            let (page, x, y, w, h) = parse_page_rect(&rect)?;
+            let region = TextRegion {
+                page, x, y, w, h,
+                text,
+                font: crate::pdf_base14::Base14::from_name(&font).ok_or_else(|| {
+                    format!(
+                        "unknown --font {font:?} — one of: {}",
+                        crate::pdf_base14::Base14::NAMES.join(", ")
+                    )
+                })?,
+                font_size: size,
+                color: parse_rgb(&color)?,
+                align: match align.as_str() {
+                    "left" => Align::Left,
+                    "center" => Align::Center,
+                    "right" => Align::Right,
+                    "justify" => Align::Justify,
+                    other => return Err(format!("unknown --align {other:?}")),
+                },
+                vertical_align: match vertical_align.as_str() {
+                    "top" => VerticalAlign::Top,
+                    "middle" => VerticalAlign::Middle,
+                    "bottom" => VerticalAlign::Bottom,
+                    other => return Err(format!("unknown --valign {other:?}")),
+                },
+                line_height,
+                padding,
+                draw_border: border,
+            };
+            let reports =
+                crate::pdf_text_region::draw_region(&file, &[region], &out_path)?;
+            let report = reports.into_iter().next().unwrap_or_default();
+            match out {
+                OutFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                }
+                OutFormat::Text => {
+                    eprintln!(
+                        "Drew {} line(s) → {}",
+                        report.lines,
+                        out_path.display()
+                    );
+                    if report.overflow {
+                        eprintln!(
+                            "WARNING: {} line(s) did not fit and were NOT drawn — \
+                             enlarge the box or reduce --size.",
+                            report.lines_dropped
+                        );
+                    }
+                    if !report.unsupported_chars.is_empty() {
+                        let chars: String = report.unsupported_chars.iter().collect();
+                        eprintln!(
+                            "WARNING: {font} has no glyph for: {chars} — those \
+                             characters were not drawn."
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        PdfCmd::Text { file, out: out_path } => {
+            let doc = crate::extractors::extract_text_from_path(&file)
+                .map_err(|e| format!("extract {}: {e:#}", file.display()))?;
+            // An empty result from a scan is the normal case, not an error —
+            // but silently printing nothing looks like a failure, so say
+            // which command does read pixels.
+            if doc.full_text.trim().is_empty() {
+                eprintln!(
+                    "NOTE: no text layer found. If this is a scan, run \
+                     `crispsorter ocr {}` instead.",
+                    file.display()
+                );
+            }
+            if let Some(p) = out_path {
+                std::fs::write(&p, doc.full_text.as_bytes())
+                    .map_err(|e| format!("writing {}: {e}", p.display()))?;
+                eprintln!(
+                    "{} char(s) → {}",
+                    doc.full_text.chars().count(),
+                    p.display()
+                );
+                return Ok(());
+            }
+            match out {
+                OutFormat::Json => {
+                    let payload = serde_json::json!({
+                        "file": file.display().to_string(),
+                        "ext": doc.ext,
+                        "language": doc.language,
+                        "chars": doc.full_text.chars().count(),
+                        "headings": doc.headings,
+                        "text": doc.full_text,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                }
+                OutFormat::Text => {
+                    print!("{}", doc.full_text);
+                    if !doc.full_text.ends_with('\n') {
+                        println!();
+                    }
+                }
+            }
             Ok(())
         }
         PdfCmd::Signatures { file } => {
@@ -9526,6 +9762,138 @@ mod tests {
         assert_eq!(body, "hi\n");
 
         let _ = std::fs::remove_file(&base);
+    }
+
+    // ── parse_page_rect / parse_rgb (pdf --rect, --color) ─────────────
+    #[test]
+    fn page_rect_is_parsed_one_based_into_zero_based() {
+        let (page, x, y, w, h) = super::parse_page_rect("3,72,100.5,200,50").unwrap();
+        assert_eq!(page, 2);
+        assert_eq!((x, y, w, h), (72.0, 100.5, 200.0, 50.0));
+        // Whitespace around the components is normal from a shell.
+        assert_eq!(super::parse_page_rect(" 1 , 0 , 0 , 10 , 10 ").unwrap().0, 0);
+    }
+
+    #[test]
+    fn page_rect_rejects_page_zero_and_malformed_specs() {
+        // Page 0 would silently mean "page 1" if we let it through.
+        assert!(super::parse_page_rect("0,0,0,10,10").is_err());
+        assert!(super::parse_page_rect("1,0,0,10").is_err(), "too few fields");
+        assert!(super::parse_page_rect("1,0,0,10,10,10").is_err(), "too many fields");
+        assert!(super::parse_page_rect("1,x,0,10,10").is_err(), "non-numeric");
+        assert!(super::parse_page_rect("").is_err());
+    }
+
+    #[test]
+    fn rgb_is_parsed_and_range_checked() {
+        assert_eq!(super::parse_rgb("0,0,0").unwrap(), [0.0, 0.0, 0.0]);
+        assert_eq!(super::parse_rgb("1, 0.5,0").unwrap(), [1.0, 0.5, 0.0]);
+        // 0–255 is the other common convention; taking it would draw the
+        // wrong colour silently, so it must be rejected.
+        assert!(super::parse_rgb("255,0,0").is_err());
+        assert!(super::parse_rgb("0,0").is_err());
+        assert!(super::parse_rgb("a,b,c").is_err());
+    }
+
+    // ── the new pdf surfaces parse (P32.6 / P32.9 / text) ─────────────
+    #[test]
+    fn pdf_compress_parses_with_its_opt_outs() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "crispsorter", "pdf", "compress", "in.pdf", "--out", "out.pdf",
+            "--no-object-streams", "--max-objects-per-stream", "50",
+        ])
+        .expect("compress should parse");
+        match cli.command {
+            super::Command::Pdf { cmd: super::PdfCmd::Compress {
+                no_object_streams, no_stream_compression, max_objects_per_stream, ..
+            } } => {
+                assert!(no_object_streams);
+                assert!(!no_stream_compression);
+                assert_eq!(max_objects_per_stream, Some(50));
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pdf_text_region_parses_and_validates_its_enums() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "crispsorter", "pdf", "text-region", "in.pdf",
+            "--rect", "1,72,600,300,120", "--text", "hello",
+            "--font", "times-italic", "--size", "9", "--align", "justify",
+            "--valign", "middle", "--out", "out.pdf",
+        ])
+        .expect("text-region should parse");
+        match cli.command {
+            super::Command::Pdf { cmd: super::PdfCmd::TextRegion {
+                font, align, vertical_align, size, ..
+            } } => {
+                assert_eq!(font, "times-italic");
+                assert_eq!(align, "justify");
+                assert_eq!(vertical_align, "middle");
+                assert_eq!(size, 9.0);
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
+        // A face with no width table would wrap wrongly, so clap must
+        // refuse it rather than let it reach the layout code.
+        assert!(super::Cli::try_parse_from([
+            "crispsorter", "pdf", "text-region", "in.pdf",
+            "--rect", "1,0,0,10,10", "--text", "x", "--font", "comic-sans",
+            "--out", "o.pdf",
+        ]).is_err(), "unknown --font must be rejected");
+        assert!(super::Cli::try_parse_from([
+            "crispsorter", "pdf", "text-region", "in.pdf",
+            "--rect", "1,0,0,10,10", "--text", "x", "--align", "middle",
+            "--out", "o.pdf",
+        ]).is_err(), "--align does not take a vertical alignment");
+    }
+
+    #[test]
+    fn every_text_region_font_name_the_cli_accepts_is_a_known_face() {
+        use clap::Parser;
+        for name in crate::pdf_base14::Base14::NAMES {
+            let cli = super::Cli::try_parse_from([
+                "crispsorter", "pdf", "text-region", "in.pdf",
+                "--rect", "1,0,0,100,100", "--text", "x", "--font", name,
+                "--out", "o.pdf",
+            ])
+            .unwrap_or_else(|e| panic!("clap rejected {name}: {e}"));
+            match cli.command {
+                super::Command::Pdf { cmd: super::PdfCmd::TextRegion { font, .. } } => {
+                    assert!(
+                        crate::pdf_base14::Base14::from_name(&font).is_some(),
+                        "clap accepts {font} but from_name does not"
+                    );
+                }
+                other => panic!("wrong subcommand: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn pdf_text_parses_with_and_without_an_output_file() {
+        use clap::Parser;
+        let to_stdout = super::Cli::try_parse_from(
+            ["crispsorter", "pdf", "text", "in.pdf"],
+        ).expect("pdf text should parse");
+        match to_stdout.command {
+            super::Command::Pdf { cmd: super::PdfCmd::Text { out, .. } } => {
+                assert!(out.is_none());
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
+        let to_file = super::Cli::try_parse_from(
+            ["crispsorter", "pdf", "text", "in.pdf", "--out", "t.txt"],
+        ).expect("pdf text --out should parse");
+        match to_file.command {
+            super::Command::Pdf { cmd: super::PdfCmd::Text { out, .. } } => {
+                assert_eq!(out.as_deref(), Some(std::path::Path::new("t.txt")));
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
     }
 
     // ── parse_page_spec tests ─────────────────────────────────────────
