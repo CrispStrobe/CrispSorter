@@ -2029,9 +2029,46 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
   Follow-ups: report upstream, re-test on the next release, keep the verb
   behind the feature until then.
 
-- [ ] **Z4b. Re-test linearization on the next zpdf release.** The harness
-  section exists and currently fails for the right reason; nothing else to
-  write. `scripts/verify_zpdf_claims.py` (scratchpad) encrypts the fixture
+- [x] **Z4b. Linearization fixed in our fork.** ✅ (2026-07-30) The defect was
+  one hunk: the **main** cross-reference table emitted `xref 0 3` + `/Size 3`,
+  repeating objects 1–2 that the *first-page* table already covers, so every
+  object after the first-page section (11..25 on a four-page file) existed in
+  the body and in no table at all. Annex F splits it the other way — the
+  front table covers the first-page section, the main table the remainder.
+
+  Diagnosed by reading the emitted bytes, after ruling out misuse: our call
+  matches their CLI and docs, and the failure is identical on a raw MuPDF
+  file, a `qpdf --object-streams=disable` normalisation, and `rewrite_pdf`
+  output. `github.com/CrispStrobe/zpdf`, branch
+  `fix-linearize-xref-coverage`; upstream PR **Xero-Team/zpdf#4**.
+
+  After the fix: qpdf reports "File is linearized" with no structural
+  errors, pikepdf `is_linearized`, MuPDF and poppler text identical to
+  source. `pdf linearize` works.
+
+  **Packaging note.** `[patch.crates-io] zpdf-writer` does not work: patching
+  one member of a workspace family leaves two copies of its siblings in the
+  graph (the patched writer used the fork's `zpdf-parser`, the facade
+  crates.io's), so `doc.file()` returns a `PdfFile` of the wrong identity.
+  Both direct deps come from the fork instead. Revert to
+  `version = "0.11.x"` when the PR lands.
+
+- [x] **Z7. xref repair.** ✅ SHIPPED (2026-07-30). `pdf repair` recovers a
+  file whose cross-reference data is damaged, verified across three modes — a
+  `startxref` pointing at nonsense, a tail truncated before the xref *and*
+  trailer, and a corrupted offset — each recovering all 4 pages and the
+  intact file's text, with `qpdf --check` confirming the input really was
+  damaged. Refuses a file with nothing recoverable rather than writing an
+  empty document.
+
+- [ ] **Z10. Real hint tables for linearization.** The one remaining gap:
+  zpdf writes a placeholder hint stream (4 zero bytes), so
+  `qpdf --check-linearization` reports `overflow reading bit stream`. Hints
+  are advisory — every other reader is satisfied and qpdf's own `--check`
+  says the file is linearized — so this is a polish item, not a blocker.
+  Scope: bit-packed page-offset and shared-object hint tables per Annex F.
+  The harness already asserts that this is the *only* remaining complaint, so
+  a regression elsewhere fails rather than hiding behind it. `scripts/verify_zpdf_claims.py` (scratchpad) encrypts the fixture
   **two ways** — our CLI's AES-256 *and* `qpdf --encrypt … 256`, so the
   result is not graded on our own writer — then judges the output with
   `qpdf --show-encryption`, `pikepdf.is_encrypted`, MuPDF-without-password,
@@ -2047,10 +2084,7 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
 - [ ] **Z6. Retire `pdf-decrypt-full`** — Z4 confirmed the decrypt half: pdf_oxide's reading
   half is redundant then, and its writing half never worked. Removes ~170
   transitive crates. Keep the LEARNINGS entry.
-- [ ] **Z7. xref repair.** zpdf claims lazy xref repair, object scanning and
-  page-tree synthesis. Scope: a `pdf repair` verb, plus harness fixtures with
-  a deliberately corrupted startxref / truncated tail / broken object offset,
-  graded on whether MuPDF and qpdf can then read what the original held.
+
 - [ ] **Z8. Font subsetting → tier-3 text editing.** `subset.rs` is the
   prerequisite that made P32.8 tier 3 out of scope. Re-scope tier 3 only
   after Z4/Z7 land; line breaking is still ours to write.

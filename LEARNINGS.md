@@ -100,6 +100,40 @@ to fire by injecting a collision. Rename the field
 
 ---
 
+## Read the exit status. Do not grep the output.
+
+Four times in one session, a check reported success that the underlying tool
+had not given:
+
+1. `cargo build … | tail -8` — the pipeline's status is `tail`'s, so a build
+   that died with `SIGBUS` on a full disk reported exit 0, and the stale
+   binary silently stayed in place.
+2. `git push … | tail -2` — a push rejected with `403` printed a cheerful
+   "pushed to fork" from the next `echo` in the chain.
+3. `cargo check … ; echo "exit=$?" ; grep … | head` — the *background task's*
+   status came from the final `grep`, so a compile with six `E0308` errors was
+   reported as passing. This one caused a broken merge to reach `main`.
+4. `grep -c "^error" build.log` returned 0 through an entire failing build,
+   because **cargo colourises its output**: the line begins with an ANSI
+   escape, not with `e`, so an anchored pattern can never match. This one had
+   me reporting "0 errors" repeatedly while the build was failing.
+
+The rule: capture the tool's own exit status as the *last* thing in the
+command, on its own —
+
+```bash
+cargo build --features … > /tmp/build.log 2>&1
+echo "CARGO EXIT: $?"
+```
+
+— and if you must scan the log, use a pattern that survives formatting
+(`error\[E`, with `grep -a`, and strip escapes with
+`sed 's/\x1b\[[0-9;]*m//g'`). Every one of these was a check that could not
+fail, which is the same defect this file keeps documenting in other people's
+code.
+
+---
+
 ## "The code is real" is not "the code is right" — and tolerant readers hide it
 
 `pdf_oxide`'s linearizer was a 696-line **no-op** whose own docs said
