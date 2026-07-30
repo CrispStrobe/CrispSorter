@@ -817,6 +817,24 @@ jobs:
         with:
           node-version: lts/*
 
+      # Deployment target, set for every toolchain in this job — cargo's
+      # clang/swiftc invocations as well as xcodebuild's.
+      #
+      # iOS 15.0 made swiftc emit `__swift_FORCE_LOAD_$_swiftCompatibility56`,
+      # a Swift 5.6 back-deployment shim that Xcode 26 no longer ships, so the
+      # link failed with "library 'swiftCompatibility56' not found" after a
+      # 35-minute compile. Downgrading Xcode is not an option here: the job
+      # selects the newest deliberately, because Tauri 2.10 emits
+      # objectVersion-77 projects an older Xcode cannot open. Raising the floor
+      # to 16.0 removes the need for the shim instead — and iOS 16 is a
+      # conservative floor in 2026.
+      #
+      # It should also clear the "object file was built for newer 'iOS'
+      # version than being linked" warnings, which are the same mismatch seen
+      # from the other side.
+      - name: Set the iOS deployment target for every toolchain
+        run: echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
+
       - name: Select newest Xcode (Tauri 2.10 emits objectVersion-77 projects)
         run: |
           set -euo pipefail

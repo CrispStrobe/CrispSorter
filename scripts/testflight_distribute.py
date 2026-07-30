@@ -72,18 +72,50 @@ def log(msg):
 
 # ── Auth ────────────────────────────────────────────────────────────────
 def make_token(key_id: str, issuer_id: str, p8: bytes) -> str:
-    """ES256 JWT, 20-minute expiry (Apple rejects longer)."""
+    """ES256 JWT for the App Store Connect API.
+
+    `exp` is 15 minutes, not the maximum 20: Apple rejects anything over 20
+    and has been observed to reject exactly-20 depending on clock skew
+    between the runner and their edge.
+
+    Everything about the inputs is logged except the inputs themselves —
+    lengths, PEM header, and the decoded JWT header/claims. A 401 from Apple
+    says only "provide a properly configured and signed bearer token", which
+    is indistinguishable between a wrong key id, an empty issuer, a p8 that
+    decoded to garbage, and a malformed claim set; this narrows it without
+    printing a private key into a public log.
+    """
     try:
         import jwt  # PyJWT
     except ImportError:
         sys.exit("need PyJWT with crypto: pip install 'pyjwt[crypto]'")
+
+    pem = p8.decode() if isinstance(p8, bytes) else p8
+    first = pem.strip().splitlines()[0] if pem.strip() else "<empty>"
+    log(f"   key id: {len(key_id)} chars ({key_id[:4]}…)  "
+        f"issuer: {len(issuer_id)} chars  p8: {len(pem)} chars, starts {first!r}")
+    if "BEGIN" not in first:
+        sys.exit("the decoded key is not a PEM — check that the secret holds "
+                 "base64 of the .p8 file, not the raw file or a path")
+
     now = int(time.time())
-    return jwt.encode(
-        {"iss": issuer_id, "iat": now, "exp": now + 20 * 60, "aud": "appstoreconnect-v1"},
-        p8.decode() if isinstance(p8, bytes) else p8,
-        algorithm="ES256",
-        headers={"kid": key_id, "typ": "JWT"},
-    )
+    claims = {"iss": issuer_id, "iat": now, "exp": now + 15 * 60,
+              "aud": "appstoreconnect-v1"}
+    token = jwt.encode(claims, pem, algorithm="ES256",
+                       headers={"kid": key_id, "typ": "JWT"})
+    # Echo back what we actually signed, decoded from the token itself rather
+    # than from the variables we think we passed.
+    try:
+        import base64 as _b64, json as _json
+        h, c, _ = token.split(".")
+        pad = lambda x: x + "=" * (-len(x) % 4)
+        log(f"   jwt header: {_json.loads(_b64.urlsafe_b64decode(pad(h)))}")
+        decoded = _json.loads(_b64.urlsafe_b64decode(pad(c)))
+        log(f"   jwt claims: iss={decoded['iss'][:8]}… aud={decoded['aud']} "
+            f"ttl={decoded['exp'] - decoded['iat']}s")
+    except Exception as e:  # never fail the run over diagnostics
+        log(f"   (could not decode our own token for logging: {e})")
+    return token
 
 
 class Asc:
@@ -150,6 +182,16 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
     seen = None
     while True:
         payload, status = asc.get(f"/builds?{q}")
+        if status == 401:
+            sys.exit(
+                "App Store Connect rejected the token (401). The key itself is "
+                "probably fine — altool in the preceding step uses the same "
+                "secret — so suspect the claim set or the key/issuer pairing. "
+                "Compare the jwt header and claims logged above against the "
+                "key in App Store Connect → Users and Access → Integrations: "
+                f"kid must be that key's ID and iss its issuer ID. Apple said: "
+                f"{errors_of(payload)}"
+            )
         if status != 200:
             sys.exit(f"listing builds failed ({status}): {errors_of(payload)}")
         builds = payload.get("data", [])
