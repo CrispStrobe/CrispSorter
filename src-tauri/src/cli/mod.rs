@@ -1583,6 +1583,16 @@ enum PdfCmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Recover a PDF with damaged cross-reference data.
+    ///
+    /// Handles a `startxref` pointing nowhere, a truncated tail with no xref
+    /// or trailer, and wrong object offsets — by scanning for objects and
+    /// rebuilding. Needs `--features pdf-zpdf`.
+    Repair {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -4883,6 +4893,30 @@ Use `pdf redact-regions` first if it must be removed.");
                 let _ = out_path;
                 Err(format!(
                     "linearizing {} needs a build with `--features pdf-zpdf`. \
+                     Nothing was written.",
+                    file.display()
+                ))
+            }
+        }
+        PdfCmd::Repair { file, out: out_path } => {
+            #[cfg(feature = "pdf-zpdf")]
+            {
+                let pages = pdf_ops::repair_pdf(&file, &out_path)?;
+                eprintln!(
+                    "Recovered {pages} page(s) → {}",
+                    out_path.display()
+                );
+                eprintln!(
+                    "NOTE: recovery is best-effort. Compare the page count and the text \
+                     against what you expect before discarding the original."
+                );
+                Ok(())
+            }
+            #[cfg(not(feature = "pdf-zpdf"))]
+            {
+                let _ = out_path;
+                Err(format!(
+                    "repairing {} needs a build with `--features pdf-zpdf`. \
                      Nothing was written.",
                     file.display()
                 ))
@@ -9017,13 +9051,19 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             match out {
                 OutFormat::Json => {
                     let bp = crate::docx_tools::DocxBlueprint {
+                        // Passed through as Option: a `w:sectPr` that states
+                        // no page size must serialise as null, not as 0.
+                        // (Third site of the same merge resolution — git
+                        // reported no conflict here because our side had not
+                        // touched these lines, and the Android build is what
+                        // caught it.)
                         sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
-                            page_width_pt: s.page_width_pt.unwrap_or(0.0),
-                            page_height_pt: s.page_height_pt.unwrap_or(0.0),
-                            left_margin_pt: s.left_margin_pt.unwrap_or(0.0),
-                            right_margin_pt: s.right_margin_pt.unwrap_or(0.0),
-                            top_margin_pt: s.top_margin_pt.unwrap_or(0.0),
-                            bottom_margin_pt: s.bottom_margin_pt.unwrap_or(0.0),
+                            page_width_pt: s.page_width_pt,
+                            page_height_pt: s.page_height_pt,
+                            left_margin_pt: s.left_margin_pt,
+                            right_margin_pt: s.right_margin_pt,
+                            top_margin_pt: s.top_margin_pt,
+                            bottom_margin_pt: s.bottom_margin_pt,
                             orientation: s.orientation.clone(),
                         }).collect(),
                         default_font: schema.default_font.clone(),

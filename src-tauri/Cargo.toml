@@ -158,8 +158,22 @@ pdf_oxide = { version = "0.3", default-features = false, optional = true }
 # cpu-render/gpu-render features are what pull tiny-skia and wgpu, and
 # zpdf-render itself is only traits. Optional because this is a second PDF
 # stack and 0.11 is young; enable with `--features pdf-zpdf`.
-zpdf        = { version = "0.11", default-features = false, optional = true }
-zpdf-writer = { version = "0.11", optional = true }
+# Taken from our fork, not crates.io, for the linearizer fix (upstream PR
+# Xero-Team/zpdf#4): 0.11.0's main cross-reference table repeats the objects
+# the first-page table already covers, so everything after the first-page
+# section exists in the body and in no table at all — `/N does not match
+# number of pages`, and MuPDF reporting `object out of range (11 0 R)`.
+#
+# Both crates come from the fork deliberately. Patching only `zpdf-writer`
+# (via [patch.crates-io]) puts two copies of `zpdf-parser` in the graph — the
+# fork's, used by the patched writer, and crates.io's, used by the facade —
+# and `doc.file()` then returns the wrong `PdfFile` type. Pointing both direct
+# dependencies at the fork keeps one copy of every zpdf-* crate, since the
+# fork's facade resolves its siblings through workspace paths.
+#
+# Switch back to `version = "0.11.x"` once the PR lands.
+zpdf        = { git = "https://github.com/CrispStrobe/zpdf", branch = "fix-linearize-xref-coverage", default-features = false, optional = true }
+zpdf-writer = { git = "https://github.com/CrispStrobe/zpdf", branch = "fix-linearize-xref-coverage", optional = true }
 
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.

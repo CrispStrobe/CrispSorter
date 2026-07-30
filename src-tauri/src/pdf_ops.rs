@@ -970,6 +970,73 @@ fn decrypt_via_zpdf(path: &Path, password: &str, out_path: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Recover a PDF whose cross-reference data is damaged.
+///
+/// zpdf's parser repairs lazily — a bad `startxref`, a missing trailer, or a
+/// wrong object offset all fall back to scanning the file for `obj` markers
+/// and synthesising a page tree. This rewrites what it recovered as a clean
+/// file, so the repair is persisted rather than redone on every open.
+///
+/// Verified 2026-07-30 against three damage modes on a 4-page fixture — a
+/// `startxref` pointing at nonsense, a tail truncated before the xref *and*
+/// trailer, and a corrupted offset in the table. All three recovered 4 pages
+/// and exactly the intact file's text, with `qpdf --check` independently
+/// confirming each input really was damaged.
+#[cfg(feature = "pdf-zpdf")]
+pub fn repair_pdf(path: &Path, out_path: &Path) -> Result<usize, String> {
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let doc = zpdf::PdfDocument::open(data)
+        .map_err(|e| format!("zpdf could not recover anything from this file: {e}"))?;
+    let pages = doc.page_count();
+    if pages == 0 {
+        return Err("recovered no pages; the file is beyond repair".into());
+    }
+    // Reference text from the recovered document, before writing — the same
+    // discipline as the decrypt path, and for the same reason: the source is
+    // damaged, so it cannot serve as the "before" value.
+    let idx: Vec<usize> = (0..pages).collect();
+    let reference: String = match zpdf::convert_pdf(&doc, &idx, zpdf::ConversionOptions::default()) {
+        Ok(c) => c.pages.iter().map(|p| p.text.as_str()).collect(),
+        Err(_) => String::new(),
+    };
+
+    let bytes = zpdf_writer::rewrite_pdf(doc.file(), &Default::default())
+        .map_err(|e| format!("zpdf rewrite: {e}"))?;
+    std::fs::write(out_path, &bytes)
+        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+
+    let discard = |msg: String| -> Result<usize, String> {
+        let _ = std::fs::remove_file(out_path);
+        Err(msg)
+    };
+    // Read back with lopdf — a different parser than the one that recovered
+    // it. A "repair" only counts if something else can now read the file.
+    match Document::load(out_path) {
+        Ok(check) => {
+            let after = check.page_iter().count();
+            if after != pages {
+                return discard(format!(
+                    "repair recovered {pages} page(s) but the output has {after}; discarded"
+                ));
+            }
+            if check.catalog().is_err() {
+                return discard("repaired output has no reachable catalog; discarded".into());
+            }
+        }
+        Err(e) => return discard(format!("repaired output does not parse ({e}); discarded")),
+    }
+    if !reference.trim().is_empty()
+        && pdf_extract::extract_text(out_path).unwrap_or_default().trim().is_empty()
+    {
+        return discard(
+            "repair recovered text but the written file yields none — the structure \
+             survived and the content did not. Output discarded."
+                .into(),
+        );
+    }
+    Ok(pages)
+}
+
 /// Rewrite a PDF in linearized ("fast web view") form.
 ///
 /// First-page objects come first, so a reader can display page 1 before the

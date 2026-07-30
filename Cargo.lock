@@ -2042,7 +2042,7 @@ dependencies = [
 
 [[package]]
 name = "crispsorter"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -15143,8 +15143,7 @@ dependencies = [
 [[package]]
 name = "zpdf"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eae9b549abb81e668bf0abdcb928e6640499f0d7d6c9cab7a410cb713e35c851"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "zpdf-color",
  "zpdf-content",
@@ -15161,8 +15160,7 @@ dependencies = [
 [[package]]
 name = "zpdf-color"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea29c5dc02d6875ce2e43bc9b6862132f78953d7a871484ac4866a1c21d879f6"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "moxcms",
  "tracing",
@@ -15172,8 +15170,7 @@ dependencies = [
 [[package]]
 name = "zpdf-content"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba6d5666c682e938f066cf137686dae208dbcbea5a5706304e1b6b2acf5601ed"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "tracing",
  "zpdf-color",
@@ -15188,8 +15185,7 @@ dependencies = [
 [[package]]
 name = "zpdf-core"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dd12b2ae5d7c6be9c32e2d844b63ea6f11025700c0841621c120d54f7b10600"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "smallvec 1.15.2",
  "thiserror 2.0.18",
@@ -15198,8 +15194,7 @@ dependencies = [
 [[package]]
 name = "zpdf-display-list"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "657fd1d5cfd20945e241aef4b17e66f79f59af2faea1fe63972bcc07a9eb101d"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "smallvec 1.15.2",
  "zpdf-core",
@@ -15208,8 +15203,7 @@ dependencies = [
 [[package]]
 name = "zpdf-document"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "341e10e4c59d3b1fde72d9ad4aa14c7941da3a3aa5850151677b83ae969255f9"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "p256",
  "p384",
@@ -15225,8 +15219,7 @@ dependencies = [
 [[package]]
 name = "zpdf-font"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f339710b34adb01b480683944926b89812a3039a2c7cfeab39c680c1a4b5058"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "tracing",
  "ttf-parser",
@@ -15236,8 +15229,7 @@ dependencies = [
 [[package]]
 name = "zpdf-image"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f14ed54f4ffb5e3b45b8f9fc11c8bb915babf9894f3b570edbdf17dcb19db7"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "hayro-jpeg2000",
  "tracing",
@@ -15249,8 +15241,7 @@ dependencies = [
 [[package]]
 name = "zpdf-parser"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbaade434bd3a9498ac23793560c39a1e12a8406ef98e051ac6a74fbe2ebb0aa"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
@@ -15266,8 +15257,7 @@ dependencies = [
 [[package]]
 name = "zpdf-render"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f23f99e49e94a76f2d0542b2c33cf46e95e792d511f2b0ae7bb86fb03361744"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "zpdf-core",
  "zpdf-display-list",
@@ -15276,8 +15266,7 @@ dependencies = [
 [[package]]
 name = "zpdf-writer"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8623fec0dc76b8f88976943fcfa9a991bc08f24b1a06467340616728a1e3707f"
+source = "git+https://github.com/CrispStrobe/zpdf?branch=fix-linearize-xref-coverage#eacd155806545017f536d9a5d1b0aef937da753d"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",

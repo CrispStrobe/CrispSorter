@@ -34,8 +34,17 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
 
-    if target_arch == "aarch64" && target_os == "macos" {
-        // Build a version with NEON
+    if target_arch == "aarch64" && (target_os == "macos" || target_os == "ios") {
+        // Build a version with NEON. iOS is grouped with macOS rather than
+        // with linux/android: both are Apple aarch64 with the same
+        // clang-flag expectations, and `-march=armv8.2-a+fp16` is rejected by
+        // Apple's clang for the ios triples.
+        //
+        // Without the `ios` arm this fell through to the error below, and the
+        // iOS release job died at "Unable to build f16 kernels on given
+        // target_arch" — before it ever reached signing. That is why the iOS
+        // build had never succeeded: the failure looked like an App Store
+        // problem and was a build-script one.
         build_f16_with_flags("neon", &["-mtune=apple-m1"]).unwrap();
     } else if target_arch == "aarch64" && (target_os == "linux" || target_os == "android") {
         // Build a version with NEON (also covers Android aarch64)
