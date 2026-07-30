@@ -1152,7 +1152,13 @@ jobs:
   # ../appstore.md § "Addendum: macOS (Tauri) — Brickwright".
   release-macos-appstore:
     name: macOS App Store (.pkg)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_appstore }}
+    # Manual dispatch with mac_appstore=true, *or* any version tag. Without
+    # the tag arm this job is unreachable from a release: `git push --tags`
+    # skipped it entirely, so a tagged release produced no App Store build
+    # and therefore nothing for the macOS TestFlight step to distribute —
+    # silently, since a skipped job is not a failed one.
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore)
+            || startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: write
     runs-on: macos-15
