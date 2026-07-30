@@ -129,23 +129,8 @@ hex         = "0.4"
 # via uuid/ring; declared directly because a predictable key would defeat
 # the security handler no matter how strong the password.
 getrandom   = "0.2"
-# P32.6 — decrypting a PDF that has a non-empty *user* password.
-#
-# lopdf cannot: its reader decrypts during load and only ever tries the
-# empty password, with no public way to supply one (verified against
-# lopdf 0.38's source and by instrumenting it — a real user password
-# yields a 1-object document). pdf_oxide takes the password *after* load
-# via `authenticate()`, and implements R6/Algorithm 2.B properly;
-# verified against both our own AES-256 output and qpdf's.
-#
-# MIT OR Apache-2.0, so no licence problem. Optional because it is a
-# second complete PDF stack — ~170 transitive crates for one capability —
-# and 0.3.x is young enough that the API will move. Enable with
-# `--features pdf-decrypt-full`.
-pdf_oxide = { version = "0.3", default-features = false, optional = true }
 
-# P32.11 — zpdf: the pure-Rust stack that covers what pdf_oxide and lopdf
-# cannot. Read before trusting: `zpdf-parser/src/crypt.rs` implements the
+# P32.11 — zpdf: the pure-Rust stack that covers what lopdf cannot. Read before trusting: `zpdf-parser/src/crypt.rs` implements the
 # Standard security handler including AES-256 V5 R5/R6 per ISO 32000-2
 # Algorithm 2.A with the 2.B hardened hash, authenticating against both /U
 # and /O and returning WrongPassword rather than falling back to the empty
@@ -264,13 +249,15 @@ desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plu
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]
-# Full PDF decryption, including a non-empty user password. See the
-# pdf_oxide dependency comment for why this is not on by default.
-pdf-decrypt-full  = ["dep:pdf_oxide"]
-# P32.11 — decryption with a real user password, plus linearization, via
-# zpdf. Preferred over pdf-decrypt-full: pdf_oxide reads correctly but its
-# writer emits still-encrypted streams, so that path fails its own
-# verification. Enable with `--features pdf-zpdf`.
+# P32.11 — decryption with a real user password, damaged-xref repair, and
+# linearization, via zpdf. On for desktop release builds.
+#
+# This replaced `pdf-decrypt-full` (pdf_oxide), removed in the same change:
+# pdf_oxide's *reading* half worked — it authenticated a real user password
+# and extracted the right text — but its writer emitted still-encrypted
+# stream bytes, so the path always failed its own verification and never
+# produced a usable file. Carrying a second complete PDF stack (~170
+# transitive crates) for a capability that never worked was not worth it.
 pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # PLAN P7.8 Tier 3 — PaddleOCR text detection + recognition via usls + ort.
 # Build with: cargo build --features paddle-ocr

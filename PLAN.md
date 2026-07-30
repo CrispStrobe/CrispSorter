@@ -2081,9 +2081,17 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
 - [ ] **Z5. Tauri command + GUI.** `pdf_linearize` command and a Linearize
   button in `PdfTools.svelte`, next to the existing decrypt panel (which
   gains a working path for the first time). en+de i18n.
-- [ ] **Z6. Retire `pdf-decrypt-full`** — Z4 confirmed the decrypt half: pdf_oxide's reading
-  half is redundant then, and its writing half never worked. Removes ~170
-  transitive crates. Keep the LEARNINGS entry.
+- [x] **Z6. Retired `pdf-decrypt-full` / `pdf_oxide`.** ✅ (2026-07-30) Z4
+  confirmed zpdf's decrypt half against third-party tools, so pdf_oxide had
+  nothing left to offer: its *reading* half worked (it authenticated a real
+  user password and extracted correct text) but its writer emitted
+  still-encrypted stream bytes, so the path always failed its own
+  verification and never produced a usable file. Removed the dependency, the
+  feature, and `decrypt_via_oxide` (43 lines). The fallback chain is now
+  lopdf → zpdf → a clear error naming `--features pdf-zpdf`. Drops ~170
+  transitive crates. The prose explaining *why* the design looks like this is
+  kept in the Cargo.toml and pdf_ops comments — the reasoning is the valuable
+  part, not the code.
 
 - [ ] **Z8. Font subsetting → tier-3 text editing.** `subset.rs` is the
   prerequisite that made P32.8 tier 3 out of scope. Re-scope tier 3 only

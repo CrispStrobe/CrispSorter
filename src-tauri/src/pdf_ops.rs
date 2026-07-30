@@ -866,18 +866,14 @@ pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), S
 
     doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
     if doc.catalog().is_err() || doc.objects.len() <= 1 {
-        // lopdf could not do it. Fall back to a library that can. zpdf is
-        // tried first: it both reads *and* writes the decrypted result,
-        // where pdf_oxide only reads.
+        // lopdf could not do it. zpdf both reads *and* writes the decrypted
+        // result, which is the combination that matters — see
+        // `decrypt_via_zpdf`.
         #[cfg(feature = "pdf-zpdf")]
         {
             return decrypt_via_zpdf(path, password, out_path);
         }
-        #[cfg(all(not(feature = "pdf-zpdf"), feature = "pdf-decrypt-full"))]
-        {
-            return decrypt_via_oxide(path, password, out_path);
-        }
-        #[cfg(all(not(feature = "pdf-zpdf"), not(feature = "pdf-decrypt-full")))]
+        #[cfg(not(feature = "pdf-zpdf"))]
         return Err(format!(
             "cannot decrypt {}: it is protected with a non-empty user password, \
              which lopdf cannot supply at load time. The file was left \
@@ -1107,49 +1103,6 @@ pub fn linearize_pdf(path: &Path, out_path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Decrypt via `pdf_oxide`, which can authenticate *after* load.
-///
-/// # Status: does not currently produce a usable file
-///
-/// `pdf_oxide` genuinely decrypts — authenticating with a real user
-/// password and calling `extract_text()` in-process returns the right
-/// text, on both our AES-256 (V5/R6) output and qpdf's, and a wrong
-/// password is correctly rejected.
-///
-/// But writing the result back out through `DocumentEditor` emits stream
-/// bytes that are still encrypted. The file parses, reports the right
-/// page count and claims not to be encrypted, while every content stream
-/// fails to inflate. [`verify_decrypted`] catches that and discards the
-/// output, so this path currently *fails loudly* rather than producing
-/// anything.
-///
-/// Kept, behind an off-by-default feature, because the reading half works
-/// and is the harder half — a future version that wires decryption into
-/// the writer, or an explicit stream-rewrite here, would finish the job.
-/// Do not present this as working decryption until the content check
-/// above passes.
-#[cfg(feature = "pdf-decrypt-full")]
-fn decrypt_via_oxide(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
-    use pdf_oxide::PdfDocument;
-
-    let doc = PdfDocument::open(path).map_err(|e| format!("pdf_oxide open: {e}"))?;
-    match doc.authenticate(password.as_bytes()) {
-        Ok(true) => {}
-        // Distinguish a wrong password from a broken file: the caller can
-        // reasonably retry the first and not the second.
-        Ok(false) => return Err("wrong password".into()),
-        Err(e) => return Err(format!("authentication failed: {e}")),
-    }
-    // PdfDocument is read-only; the editor is what can write it back.
-    let mut editor = pdf_oxide::editor::DocumentEditor::from_document(doc)
-        .map_err(|e| format!("pdf_oxide editor: {e}"))?;
-    let bytes = editor
-        .save_to_bytes()
-        .map_err(|e| format!("pdf_oxide save: {e}"))?;
-    std::fs::write(out_path, bytes).map_err(|e| format!("write {}: {e}", out_path.display()))?;
-    verify_decrypted(path, out_path)
 }
 
 /// Re-open what we just wrote and confirm it is genuinely usable.
