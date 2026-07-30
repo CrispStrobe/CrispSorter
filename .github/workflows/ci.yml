@@ -219,11 +219,17 @@ jobs:
 
       - name: Library tests
         working-directory: repos/CrispSorter
-        run: cargo test -p crispsorter --lib --features desktop
+        # `pdf-zpdf` is included so the feature-gated code compiles here too;
+        # a `#[cfg(feature = …)]` block that nobody builds is a block nobody
+        # checks.
+        run: cargo test -p crispsorter --lib --features desktop,pdf-zpdf
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
-        run: cargo build --bin crispsorter -p crispsorter --features desktop
+        # With `pdf-zpdf`, so the harness's decrypt-with-a-user-password and
+        # linearize section runs instead of skipping. That section is the
+        # gate on P32.11 Z4 — the claims zpdf is adopted for.
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,pdf-zpdf
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF

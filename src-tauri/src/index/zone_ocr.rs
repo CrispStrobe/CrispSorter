@@ -186,4 +186,110 @@ mod tests {
         ]);
         assert!(extract_zones(Path::new("/nonexistent/img.png"), &t).is_err());
     }
+
+    // ── The zone→result path with actual content ──────────────────────
+    //
+    // The tests above cover the refusals (empty template, out of bounds,
+    // clamping, missing file) but never that a zone reads what is inside
+    // it. Checkbox zones dispatch to OMR, which is pure pixel arithmetic
+    // with no OCR engine behind it, so they can be asserted exactly.
+
+    /// A white page with a filled black square in the top-left quadrant and
+    /// an empty (outline-only) square in the top-right.
+    fn page_with_two_boxes(dir: &std::path::Path) -> std::path::PathBuf {
+        let (w, h) = (200u32, 200u32);
+        let mut img = image::RgbImage::from_fn(w, h, |_, _| image::Rgb([255u8, 255, 255]));
+        // Filled box: x 10..90, y 10..90 → normalised 0.05..0.45.
+        for y in 10..90 {
+            for x in 10..90 {
+                img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+            }
+        }
+        // Outline-only box: x 110..190, y 10..90 — a 2 px border, so its
+        // fill ratio stays well under the 0.15 threshold.
+        for y in 10..90u32 {
+            for x in 110..190u32 {
+                let edge = y < 12 || y >= 88 || x < 112 || x >= 188;
+                if edge {
+                    img.put_pixel(x, y, image::Rgb([0, 0, 0]));
+                }
+            }
+        }
+        let p = dir.join("boxes.png");
+        img.save(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn checkbox_zones_report_filled_and_empty_from_the_pixels() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let img = page_with_two_boxes(dir.path());
+        let t = dummy_template(vec![
+            Zone { id: 1, label: "agreed".into(),  x: 0.05, y: 0.05, w: 0.40, h: 0.40,
+                   zone_type: "checkbox".into() },
+            Zone { id: 2, label: "declined".into(), x: 0.55, y: 0.05, w: 0.40, h: 0.40,
+                   zone_type: "checkbox".into() },
+        ]);
+        let r = extract_zones(&img, &t).unwrap();
+        assert_eq!(r.len(), 2, "{r:?}");
+        // Both directions asserted: a detector that always says "true" (or
+        // always "false") fails one of these.
+        assert_eq!(r[0].label, "agreed");
+        assert_eq!(r[0].text, "true", "filled box read as empty: {r:?}");
+        assert_eq!(r[1].label, "declined");
+        assert_eq!(r[1].text, "false", "outline-only box read as filled: {r:?}");
+    }
+
+    #[test]
+    fn zone_order_and_labels_follow_the_template() {
+        // The caller matches results to fields by position and label, so a
+        // reordering or a dropped zone is a silent data corruption.
+        let dir = tempfile::TempDir::new().unwrap();
+        let img = page_with_two_boxes(dir.path());
+        let labels = ["first", "second", "third"];
+        let t = dummy_template(
+            labels.iter().enumerate().map(|(i, l)| Zone {
+                id: i as i64 + 1,
+                label: (*l).into(),
+                x: 0.05, y: 0.05, w: 0.40, h: 0.40,
+                zone_type: "checkbox".into(),
+            }).collect(),
+        );
+        let r = extract_zones(&img, &t).unwrap();
+        assert_eq!(
+            r.iter().map(|z| z.label.as_str()).collect::<Vec<_>>(),
+            labels,
+            "zones came back in a different order or count"
+        );
+    }
+
+    #[test]
+    fn a_template_round_trips_through_the_store_into_zone_extraction() {
+        // This is exactly what `crispsorter zone` does: read a template out
+        // of templates.db by name, then run it over an image. It is the one
+        // path the CLI verb depends on, and nothing covered it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let img = page_with_two_boxes(dir.path());
+
+        let store = crate::index::templates::TemplateStore::open_or_create(dir.path()).unwrap();
+        let id = store.create_template("consent-form", 200, 200).unwrap();
+        store.add_zone(id, "agreed", 0.05, 0.05, 0.40, 0.40, Some("checkbox")).unwrap();
+        store.add_zone(id, "declined", 0.55, 0.05, 0.40, 0.40, Some("checkbox")).unwrap();
+
+        let loaded = store
+            .get_template_by_name("consent-form")
+            .unwrap()
+            .expect("template should be found by name");
+        assert_eq!(loaded.zones.len(), 2, "zones lost on the way out of SQLite");
+
+        let r = extract_zones(&img, &loaded).unwrap();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].text, "true");
+        assert_eq!(r[1].text, "false");
+
+        // And the name lookup must not match a template that isn't there —
+        // the CLI turns None into "template 'x' not found" rather than
+        // silently running zero zones.
+        assert!(store.get_template_by_name("no-such-form").unwrap().is_none());
+    }
 }

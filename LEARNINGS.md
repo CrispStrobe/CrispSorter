@@ -100,6 +100,58 @@ to fire by injecting a collision. Rename the field
 
 ---
 
+## A verification guard can skip exactly the case it exists for
+
+`pdf_ops::verify_decrypted` is the guard that caught `pdf_oxide` writing
+still-encrypted streams: it re-reads the output and requires text if the
+source had text. But its reference is the **source** —
+
+```rust
+let src_text = pdf_extract::extract_text(src_path).unwrap_or_default();
+if src_text.trim().is_empty() { return Ok(()); }   // nothing to compare
+```
+
+— and `pdf_extract` cannot read a file protected by a non-empty **user**
+password. So for the hardest case, the one where a decryptor is most likely
+to hand back ciphertext, `src_text` comes back empty and the content check
+*silently returns Ok*. It works for owner-password-only files (which
+pdf_extract can open) and skips for the rest. That is why the zpdf path takes
+its reference from the in-memory decrypted document instead, before writing.
+
+Generalisation: when a guard needs a "before" value, check that the before
+value is *obtainable* in the case that matters. A guard whose premise fails
+open is worse than no guard, because it reports a pass.
+
+---
+
+## An embedder's width is not a constant — and a lying exit code hides it
+
+`crispsorter index ingest` hardcoded `LocalIndex::open_or_create(&data_dir,
+1024)` — bge-m3's width — for **every** `--model`. Any narrower model
+(MiniLM and both e5-small variants are 384, nomic is 768) built a 1024-wide
+LanceDB table and then **panicked inside arrow** on the first write:
+`Length of the child array (384) must be the multiple of the value length
+(1024)`. The panic killed the writer task, so every later file failed with
+"Writer task has stopped — index may need re-init".
+
+Two lessons, and the second is the dangerous one:
+
+1. Derive the width from the model (`Embedder::dims()`), and for a table that
+   already exists read the width **off the table** rather than trusting the
+   caller — `open_or_create` used the caller's guess to build the schema, so
+   a wrong guess silently produced mismatched record batches. There is now a
+   guard in `chunks_to_record_batch` that refuses a mismatched embedding with
+   both numbers in the message instead of letting arrow panic.
+2. **The command printed "0 ingested, 4 errors" and exited 0.** Every file had
+   failed and the exit status said success — so the live harness recorded a
+   pass for ingest and only the *search* assertions failed, which sent the
+   investigation to the wrong place. Any command that counts failures must
+   fold them into its exit status. This is the same family as the compression
+   report that counted attempts instead of results: the code knew, and did
+   not say.
+
+---
+
 ## A GUI/CLI dispatcher fails *silently* — guard the verb list with a test
 
 `main.rs` decides CLI-vs-GUI by scanning argv for a name in

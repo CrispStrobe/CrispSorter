@@ -140,6 +140,23 @@ getrandom   = "0.2"
 # `--features pdf-decrypt-full`.
 pdf_oxide = { version = "0.3", default-features = false, optional = true }
 
+# P32.11 — zpdf: the pure-Rust stack that covers what pdf_oxide and lopdf
+# cannot. Read before trusting: `zpdf-parser/src/crypt.rs` implements the
+# Standard security handler including AES-256 V5 R5/R6 per ISO 32000-2
+# Algorithm 2.A with the 2.B hardened hash, authenticating against both /U
+# and /O and returning WrongPassword rather than falling back to the empty
+# password; `zpdf-writer/src/rewrite.rs` drops /Encrypt and writes streams
+# in the clear (the step pdf_oxide's writer gets wrong); and
+# `zpdf-writer/src/linearize.rs` is a real 449-line linearizer, unlike
+# pdf_oxide's no-op. MIT.
+#
+# `default-features = false` keeps the rasterizers out: the facade's
+# cpu-render/gpu-render features are what pull tiny-skia and wgpu, and
+# zpdf-render itself is only traits. Optional because this is a second PDF
+# stack and 0.11 is young; enable with `--features pdf-zpdf`.
+zpdf        = { version = "0.11", default-features = false, optional = true }
+zpdf-writer = { version = "0.11", optional = true }
+
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.
 # 0.27.0-beta.5 is git-only and adds nothing relevant (JS native arrays, Lance rc bump).
@@ -224,6 +241,11 @@ pdf-render        = ["dep:pdfium-render"]
 # Full PDF decryption, including a non-empty user password. See the
 # pdf_oxide dependency comment for why this is not on by default.
 pdf-decrypt-full  = ["dep:pdf_oxide"]
+# P32.11 — decryption with a real user password, plus linearization, via
+# zpdf. Preferred over pdf-decrypt-full: pdf_oxide reads correctly but its
+# writer emits still-encrypted streams, so that path fails its own
+# verification. Enable with `--features pdf-zpdf`.
+pdf-zpdf          = ["dep:zpdf", "dep:zpdf-writer"]
 # PLAN P7.8 Tier 3 — PaddleOCR text detection + recognition via usls + ort.
 # Build with: cargo build --features paddle-ocr
 paddle-ocr        = ["dep:usls"]

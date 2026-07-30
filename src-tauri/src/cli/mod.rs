@@ -1574,6 +1574,15 @@ enum PdfCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Rewrite a PDF for fast web view (linearized).
+    ///
+    /// Needs `--features pdf-zpdf`; without it the command says so rather
+    /// than pretending to have done something.
+    Linearize {
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -3227,10 +3236,22 @@ async fn cmd_index_async(
             eprintln!("loading embedder model ({})…", model);
             let embedder = crate::index::embedder::Embedder::new(embedder_config)
                 .await.map_err(|e| e.to_string())?;
+            // The table has to be as wide as the model that fills it. This was
+            // hardcoded to 1024 (bge-m3's width), so every narrower model —
+            // MiniLM and both e5-small variants are 384, nomic is 768 — built a
+            // 1024-wide table and then panicked arrow on the first write.
+            let dims = embedder.dims();
             let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
 
-            let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
+            let local = crate::index::LocalIndex::open_or_create(&data_dir, dims)
                 .await.map_err(|e| e.to_string())?;
+            if local.dims != dims {
+                return Err(format!(
+                    "this index stores {}-dim embeddings but --model {model} produces {dims}. \
+                     Re-init the index for the new model, or ingest with a {}-dim one.",
+                    local.dims, local.dims
+                ));
+            }
             let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
                 .map_err(|e| e.to_string())?;
             // P19 — honour the persisted NER config (off by default).
@@ -3332,6 +3353,17 @@ async fn cmd_index_async(
                 }
             }
             eprintln!("{ok} ingested, {errs} errors");
+            // Exit status has to reflect the outcome: this printed
+            // "0 ingested, 4 errors" and returned success, so a script (and
+            // this project's own live harness) read a total failure as a pass.
+            if ok == 0 && errs > 0 {
+                return Err(format!(
+                    "nothing was ingested ({errs} file(s) failed) — see the errors above"
+                ));
+            }
+            if errs > 0 {
+                eprintln!("WARNING: {errs} file(s) failed; the index holds the other {ok}.");
+            }
         }
 
         IndexCmd::Init { model, device } => {
@@ -4829,6 +4861,32 @@ Use `pdf redact-regions` first if it must be removed.");
                 }
             }
             Ok(())
+        }
+        PdfCmd::Linearize { file, out: out_path } => {
+            #[cfg(feature = "pdf-zpdf")]
+            {
+                let before = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+                pdf_ops::linearize_pdf(&file, &out_path)?;
+                let after = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+                eprintln!(
+                    "Linearized {before} → {after} bytes → {}",
+                    out_path.display()
+                );
+                eprintln!(
+                    "NOTE: the hint stream carries valid offsets but no per-page detail; \
+                     readers treat hints as advisory."
+                );
+                Ok(())
+            }
+            #[cfg(not(feature = "pdf-zpdf"))]
+            {
+                let _ = out_path;
+                Err(format!(
+                    "linearizing {} needs a build with `--features pdf-zpdf`. \
+                     Nothing was written.",
+                    file.display()
+                ))
+            }
         }
         PdfCmd::Text { file, out: out_path } => {
             let doc = crate::extractors::extract_text_from_path(&file)

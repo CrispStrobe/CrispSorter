@@ -866,17 +866,23 @@ pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), S
 
     doc.decrypt(password).map_err(|e| format!("decrypt: {e}"))?;
     if doc.catalog().is_err() || doc.objects.len() <= 1 {
-        // lopdf could not do it. Fall back to a library that can.
-        #[cfg(feature = "pdf-decrypt-full")]
+        // lopdf could not do it. Fall back to a library that can. zpdf is
+        // tried first: it both reads *and* writes the decrypted result,
+        // where pdf_oxide only reads.
+        #[cfg(feature = "pdf-zpdf")]
+        {
+            return decrypt_via_zpdf(path, password, out_path);
+        }
+        #[cfg(all(not(feature = "pdf-zpdf"), feature = "pdf-decrypt-full"))]
         {
             return decrypt_via_oxide(path, password, out_path);
         }
-        #[cfg(not(feature = "pdf-decrypt-full"))]
+        #[cfg(all(not(feature = "pdf-zpdf"), not(feature = "pdf-decrypt-full")))]
         return Err(format!(
             "cannot decrypt {}: it is protected with a non-empty user password, \
              which lopdf cannot supply at load time. The file was left \
-             untouched. Rebuild with `--features pdf-decrypt-full` to handle \
-             this case, or use `qpdf --decrypt --password=…`.",
+             untouched. Rebuild with `--features pdf-zpdf` to handle this \
+             case, or use `qpdf --decrypt --password=…`.",
             path.display()
         ));
     }
@@ -884,6 +890,127 @@ pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), S
     doc.encryption_state = None;
     doc.save(out_path).map_err(|e| format!("save: {e}"))?;
     verify_decrypted(path, out_path)
+}
+
+/// Decrypt via `zpdf`, which authenticates after load *and* writes the
+/// result in the clear.
+///
+/// The two halves matter separately. `pdf_oxide` does the first
+/// (`authenticate()` + `extract_text()` both work) and fails the second,
+/// emitting stream bytes that are still ciphertext. zpdf's writer drops
+/// `/Encrypt` and re-serialises the decrypted objects
+/// (`zpdf-writer/src/rewrite.rs`), which is the step that was missing.
+///
+/// The result is verified against text zpdf read *before* writing, not
+/// against the encrypted source. [`verify_decrypted`]'s content check
+/// silently short-circuits for exactly this case — `pdf_extract` cannot
+/// read an encrypted source, so `src_text` comes back empty and the
+/// comparison is skipped — which is the one case where a
+/// still-encrypted-streams output must not slip through.
+#[cfg(feature = "pdf-zpdf")]
+fn decrypt_via_zpdf(path: &Path, password: &str, out_path: &Path) -> Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+
+    let doc = zpdf::PdfDocument::open_with_password(data, password.as_bytes())
+        .map_err(|e| format!("zpdf open: {e}"))?;
+    let pages_before = doc.page_count();
+
+    // Reference text, taken from the in-memory decrypted document. This is
+    // what the written file has to reproduce.
+    let pages: Vec<usize> = (0..pages_before).collect();
+    let reference: String =
+        match zpdf::convert_pdf(&doc, &pages, zpdf::ConversionOptions::default()) {
+            Ok(conv) => conv.pages.iter().map(|p| p.text.as_str()).collect(),
+            // No text layer (a scan) is legitimate; the page-count check
+            // below still applies.
+            Err(_) => String::new(),
+        };
+
+    let bytes = zpdf_writer::rewrite_pdf(doc.file(), &Default::default())
+        .map_err(|e| format!("zpdf rewrite: {e}"))?;
+    std::fs::write(out_path, &bytes)
+        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+
+    let discard = |msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_file(out_path);
+        Err(msg)
+    };
+
+    // Structure, read back with a *different* library than the one that
+    // wrote it.
+    let out = match Document::load(out_path) {
+        Ok(d) => d,
+        Err(e) => return discard(format!(
+            "decryption produced a document lopdf cannot read ({e}); output discarded"
+        )),
+    };
+    if out.trailer.get(b"Encrypt").is_ok() {
+        return discard("decryption left an /Encrypt dictionary behind; output discarded".into());
+    }
+    let pages_after = out.page_iter().count();
+    if pages_after != pages_before {
+        return discard(format!(
+            "decryption changed the page count ({pages_before} → {pages_after}); output discarded"
+        ));
+    }
+    // Content: a document that had text must still have it. This is the
+    // check that catches "structure intact, streams still ciphertext".
+    if !reference.trim().is_empty() {
+        let out_text = pdf_extract::extract_text(out_path).unwrap_or_default();
+        if out_text.trim().is_empty() {
+            return discard(
+                "decryption produced a document whose content streams do not decode — \
+                 the structure is intact but the page content is still encrypted. \
+                 Output discarded rather than handing back a file that looks fine \
+                 and is not."
+                    .into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite a PDF in linearized ("fast web view") form.
+///
+/// First-page objects come first, so a reader can display page 1 before the
+/// whole file has arrived. The hint stream zpdf emits is minimal — valid
+/// offsets, no per-page detail — which the spec permits, since hints are an
+/// optimisation a reader must tolerate the absence of.
+#[cfg(feature = "pdf-zpdf")]
+pub fn linearize_pdf(path: &Path, out_path: &Path) -> Result<(), String> {
+    let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let doc = zpdf::PdfDocument::open(data).map_err(|e| format!("zpdf open: {e}"))?;
+    let pages_before = doc.page_count();
+
+    let bytes = zpdf_writer::linearize_pdf(doc.file())
+        .map_err(|e| format!("zpdf linearize: {e}"))?;
+    std::fs::write(out_path, &bytes)
+        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+
+    // Same discipline as compression: verify with another library before
+    // reporting success, and discard rather than hand back a smaller file
+    // that no longer works.
+    match Document::load(out_path) {
+        Ok(check) => {
+            let pages_after = check.page_iter().count();
+            if pages_after != pages_before {
+                let _ = std::fs::remove_file(out_path);
+                return Err(format!(
+                    "linearization changed the page count ({pages_before} → {pages_after}); \
+                     output discarded"
+                ));
+            }
+            if check.catalog().is_err() {
+                let _ = std::fs::remove_file(out_path);
+                return Err("linearized output has no reachable catalog; discarded".into());
+            }
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(out_path);
+            return Err(format!("linearized output does not parse ({e}); discarded"));
+        }
+    }
+    Ok(())
 }
 
 /// Decrypt via `pdf_oxide`, which can authenticate *after* load.

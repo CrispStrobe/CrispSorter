@@ -116,6 +116,23 @@ impl LocalIndex {
             .await
             .context("schema v3: adding volume_id column")?;
 
+        // `dims` describes the table we would *create*. For a table that
+        // already exists, the width on disk is the truth: building our schema
+        // from the caller's guess instead is how a 384-dim model came to write
+        // into a 1024-dim table and panic arrow. Read it back and use it.
+        let dims = match table_embedding_dims(&table).await {
+            Some(actual) => {
+                if actual != dims {
+                    eprintln!(
+                        "[warn] LanceDB table stores {actual}-dim embeddings, not {dims}; \
+                         using {actual}. Embedding with a different model will be refused."
+                    );
+                }
+                actual
+            }
+            None => dims,
+        };
+
         let schema = build_schema(dims);
         Ok(LocalIndex {
             _db: db,
@@ -2449,6 +2466,24 @@ fn chunks_to_record_batch(
 ) -> Result<RecordBatch> {
     let n = chunks.len();
 
+    // A vector whose length is not the table's width would reach arrow's
+    // FixedSizeListBuilder and *panic* ("Length of the child array (384) must
+    // be the multiple of the value length (1024)"), taking the writer task
+    // with it — after which every subsequent write fails with "Writer task
+    // has stopped". Refuse it here with the numbers the caller needs.
+    if let Some((i, got)) = chunks
+        .iter()
+        .enumerate()
+        .find_map(|(i, c)| c.embedding.as_ref().map(|v| (i, v.len())).filter(|(_, l)| *l != dims))
+    {
+        anyhow::bail!(
+            "embedding width mismatch: chunk {i} ({}) has {got} dimensions but this index \
+             stores {dims}. The index was created for a {dims}-dim model; either re-init it \
+             for the new model or embed with a {dims}-dim one.",
+            chunks[i].id
+        );
+    }
+
     // ── Identity ─────────────────────────────────────────────────────────
     let ids: StringArray = chunks.iter().map(|c| Some(c.id.as_str())).collect();
     let doc_ids: StringArray = chunks.iter().map(|c| Some(c.doc_id.as_str())).collect();
@@ -3069,6 +3104,19 @@ fn record_batches_to_embedding_candidates(
 fn is_table_not_found(e: &lancedb::Error) -> bool {
     // LanceDB returns TableNotFound when the table doesn't exist yet.
     matches!(e, lancedb::Error::TableNotFound { .. })
+}
+
+/// The width of the `embedding` column as the existing table declares it.
+///
+/// `None` when the table has no such column or its type is unexpected — in
+/// which case the caller's requested width is all we have to go on.
+async fn table_embedding_dims(table: &lancedb::Table) -> Option<usize> {
+    let schema = table.schema().await.ok()?;
+    let field = schema.field_with_name("embedding").ok()?;
+    match field.data_type() {
+        arrow_schema::DataType::FixedSizeList(_, n) if *n > 0 => Some(*n as usize),
+        _ => None,
+    }
 }
 
 /// Recursively sum file sizes under `dir` (for on-disk size measurement).

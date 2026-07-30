@@ -1955,6 +1955,132 @@ Verified permissive and approved for use (checked 2026-07-29):
   static page content.  First cut sets `NeedAppearances true` rather
   than generating `/AP` streams.  Pure `lopdf`, no new dependency.
 
+#### P32.11 — Evaluate three new pure-Rust PDF crates (2026-07-30)
+
+Surveyed on request; all three are MIT, so the permissive-only constraint is
+satisfied in every case.  The interesting question is whether any removes a
+deferral.
+
+##### Source review (2026-07-30) — what is actually implemented
+
+Cloned and read, because a feature list is not evidence and this project has
+already been burned by one (`pdf_oxide`'s `writer/linearization.rs`: 696
+lines, own docs say "reserved, no-op", `options.linearize` never read):
+
+* **Decryption is real.** `zpdf-parser/src/crypt.rs` implements the Standard
+  security handler — RC4, AESV2, and **AES-256 V5 R5/R6 via ISO 32000-2
+  Algorithm 2.A**, recovering the file key from `/UE`/`/OE`, with `hash_r6`
+  implementing the Algorithm 2.B hardened hash (iterated AES-128-CBC over 64
+  repetitions). Authenticates against both `/U` and `/O`; a non-empty
+  password matching neither returns `WrongPassword` instead of falling back
+  to the empty-password path, which is lopdf's failure mode.
+* **The decrypted *write* exists** — the half pdf_oxide gets wrong.
+  `zpdf-writer/src/rewrite.rs`: opening with a password and rewriting
+  "produces a plain-text equivalent — `/Encrypt` is dropped".
+* **Linearization is wired**: `linearize_pdf` is exported from the crate
+  root, called from their CLI, and the 449-line implementation writes a real
+  `/Linearized` parameter dictionary with patched `/L /H /O /E /T`, a
+  first-page xref, hint stream, main xref and `startxref`. Its doc comment is
+  honest that the hint stream carries generic offsets rather than per-page
+  detail — which the spec permits, hints being advisory.
+* Also present: `subset.rs` (font subsetting → the tier-3 reflow
+  prerequisite), `redact.rs`, `sign.rs`, `merge.rs`, `forms.rs`.
+* **`wgpu` and `tiny-skia` are behind the facade's `cpu-render` /
+  `gpu-render` features**; `zpdf-render` itself is only traits. With
+  `default-features = false` no rasterizer is pulled in.
+
+##### Scoped tasks — zpdf
+
+- [x] **Z1. Optional dependency + feature.** ✅ (2026-07-30) `zpdf` (with
+  `default-features = false`) and `zpdf-writer` 0.11 behind `pdf-zpdf`.
+- [x] **Z2. Decrypt with a user password.** ✅ (2026-07-30)
+  `pdf_ops::decrypt_via_zpdf`, first in the fallback chain (lopdf → zpdf →
+  pdf_oxide → clear error). Verified against text read from the in-memory
+  decrypted document *before* writing — because
+  `verify_decrypted`'s content check silently short-circuits for an
+  encrypted source (`pdf_extract` cannot read it, `src_text` comes back
+  empty, the comparison is skipped), which is precisely the case where
+  still-encrypted streams must not slip through. Also asserts no `/Encrypt`
+  survives and the page count is unchanged, read back with lopdf rather than
+  with the library that wrote it.
+- [x] **Z3. `crispsorter pdf linearize`.** ✅ (2026-07-30) With the same
+  discard-on-failure discipline as compression, and an honest error when the
+  feature is off.
+- [ ] **Z4. Verify the claims with the independent harness.** Blocked on a
+  build. `scripts/verify_zpdf_claims.py` (scratchpad) encrypts the fixture
+  **two ways** — our CLI's AES-256 *and* `qpdf --encrypt … 256`, so the
+  result is not graded on our own writer — then judges the output with
+  `qpdf --show-encryption`, `pikepdf.is_encrypted`, MuPDF-without-password,
+  and a word-for-word `pdftotext` comparison against the pre-encryption
+  text. That last check is where pdf_oxide died: its output parsed, claimed
+  not to be encrypted, and every content stream failed to inflate.
+  Linearization is judged by `qpdf --check-linearization`, not by zpdf.
+  **Promote into `scripts/verify_pdf_independent.py` once green**, gated on
+  the feature being compiled in.
+- [ ] **Z5. Tauri command + GUI.** `pdf_linearize` command and a Linearize
+  button in `PdfTools.svelte`, next to the existing decrypt panel (which
+  gains a working path for the first time). en+de i18n.
+- [ ] **Z6. Retire `pdf-decrypt-full`** once Z4 is green: pdf_oxide's reading
+  half is redundant then, and its writing half never worked. Removes ~170
+  transitive crates. Keep the LEARNINGS entry.
+- [ ] **Z7. xref repair.** zpdf claims lazy xref repair, object scanning and
+  page-tree synthesis. Scope: a `pdf repair` verb, plus harness fixtures with
+  a deliberately corrupted startxref / truncated tail / broken object offset,
+  graded on whether MuPDF and qpdf can then read what the original held.
+- [ ] **Z8. Font subsetting → tier-3 text editing.** `subset.rs` is the
+  prerequisite that made P32.8 tier 3 out of scope. Re-scope tier 3 only
+  after Z4/Z7 land; line breaking is still ours to write.
+- [ ] **Z9. Evaluate replacing PDFium for `pdf-render`.** zpdf's CPU
+  rasterizer (tiny-skia) would drop a per-platform native binary from the
+  bundle. Compare page images against PDFium's on the OCR corpus before
+  believing it; this is a quality question, not a licence one.
+
+##### Scoped tasks — pdfk (reference only, never a dependency)
+
+- [ ] **K1. Own the decrypt path.** If Z4 fails, or to drop the zpdf
+  dependency later: derive the file key from `/Encrypt` with the RustCrypto
+  primitives already in the tree (`aes`, `sha2`, `md-5`, `rc4`, `cbc`),
+  decrypt streams and strings, strip `/Encrypt`, let lopdf write. pdfk does
+  this in ~2,000 lines with `lopdf` 0.39, which is proof the shape works —
+  read `github.com/anistark/pdfk`, do not link it (CLI-only, no `[lib]`).
+- [ ] **K2. Password-rotation verb.** pdfk's `change-password` is decrypt +
+  re-encrypt, both of which we would then have. Cheap once K1 or Z2 lands.
+- [ ] **K3. `pdf audit`.** pdfk's directory scan for encryption compliance
+  maps onto our batch surface: report which files in a tree are encrypted,
+  with which handler and permissions. `detect_signatures` and `is_encrypted`
+  already exist; this is a walker plus a report.
+
+- [ ] **`zpdf` 0.11.0** (MIT, pure Rust, 576 downloads, updated 2026-07-26;
+  `github.com/Xero-Team/zpdf`).  Its README claims, in one crate, most of
+  what we deferred: **linearization** ("fast web view"), **lazy xref repair +
+  malformed-file recovery**, **AES-256 R5/R6 + RC4 encrypt *and* decrypt**,
+  **font subsetting**, incremental updates, true redaction, AcroForm
+  appearance generation, signature byte-range verification, PDF/A-1b/2b
+  validation, and both a CPU (tiny-skia) and GPU (wgpu) renderer.  If the
+  first three hold it retires the qpdf plan *and* the pdf_oxide writer gap,
+  and the renderer could replace the bundled PDFium for `pdf-render`.
+  **Verify before believing any of it**: `pdf_oxide`'s
+  `writer/linearization.rs` is 696 lines whose own docs say "reserved,
+  no-op", with `options.linearize` never read.  Plan: wire it behind an
+  off-by-default feature and point `scripts/verify_pdf_independent.py` at
+  the four claims that matter — decrypt with a real user password (content
+  compared, not just "parses"), linearize and have `qpdf --check` confirm it,
+  repair a deliberately-corrupted xref, subset a font and confirm the glyphs
+  still render.  A feature list is not evidence; the harness is.
+- [x] **`pdfk` 0.3.0** (MIT, 81 downloads) — **read, do not link.**  CLI-only
+  (no `[lib]`), so it cannot be a dependency.  Its value is its manifest:
+  `lopdf` 0.39 + raw `aes`/`sha2`/`md-5`/`rc4`/`cbc`/`ecb`, and it claims
+  working `unlock` for user passwords including AES-256 in ~2,000 lines.
+  That is the item we recorded as blocked — and it says the way through is
+  *not* lopdf's own decryption (which only ever tries the empty password
+  during `load`) but deriving the key from `/Encrypt` ourselves, decrypting
+  the streams and strings, stripping `/Encrypt`, then letting lopdf write.
+  No new dependency required: every crypto primitive is already in the tree
+  for our AES-256 *encryption* path.
+- [x] **`pdfbull` 0.10.5** (MIT) — **rejected.**  "A lightweight PDF reader",
+  first published 2026-07-28, **8 downloads total**.  We already read PDFs
+  three ways (lopdf, pdf-extract, PDFium).  Nothing to gain.
+
 - [~] **P32.6 — qpdf backend.**  RESCOPED (2026-07-29); compression
   SHIPPED end-to-end (2026-07-30). AES-256 and
   object-stream compression turned out to be available in pure Rust —

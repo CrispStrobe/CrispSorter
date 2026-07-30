@@ -843,6 +843,108 @@ def verify_text_region(fx):
           (bad.stderr or "").strip()[:80])
 
 
+def has_zpdf():
+    """True when the binary was built with `--features pdf-zpdf`.
+
+    Detected by behaviour, not by a version string: without the feature the
+    command refuses with a message naming the feature, and writes nothing.
+    """
+    out = WORK / "_featuretest.pdf"
+    p = run(["pdf", "linearize", str(WORK / "fixture.pdf"), "--out", str(out)])
+    blob = (p.stderr or "") + (p.stdout or "")
+    if "features pdf-zpdf" in blob:
+        return False
+    return p.returncode == 0
+
+
+def verify_zpdf_decrypt_and_linearize(fx):
+    """P32.11 Z4 — the two capabilities zpdf is supposed to unblock.
+
+    Nothing here trusts zpdf's own reader. Encrypted inputs are produced two
+    ways (our AES-256 writer *and* qpdf's, so the result is not graded on our
+    own encryption), and every assertion about the output comes from qpdf,
+    poppler, MuPDF or pikepdf. The decisive check is that poppler extracts
+    the original text word-for-word: `pdf_oxide` got as far as producing a
+    file that parsed and claimed not to be encrypted, while every content
+    stream failed to inflate.
+    """
+    print("\n-- decrypt with a user password + linearize (P32.11, needs pdf-zpdf) --")
+    if not has_zpdf():
+        print("   (binary built without --features pdf-zpdf — section skipped)")
+        return
+
+    plain_text = text_poppler(fx)
+    pw = "s3cret-user-pw"
+
+    def decrypt_case(label, enc):
+        # Premise first: the input must really be encrypted and really
+        # unreadable without the password, or every check below is vacuous.
+        enc_state = subprocess.run(["qpdf", "--show-encryption", str(enc)],
+                                   capture_output=True, text=True)
+        blob = (enc_state.stdout or "") + (enc_state.stderr or "")
+        check(f"{label}: the input really is encrypted (qpdf)",
+              "not encrypted" not in blob.lower(), blob.strip()[:90])
+        check(f"{label}: and unreadable without the password (poppler)",
+              MARKER not in text_poppler(enc))
+
+        out = WORK / f"decrypted-{label}.pdf"
+        p = run(["pdf", "decrypt", str(enc), "--password", pw, "--out", str(out)])
+        if not ran(f"pdf decrypt ({label})", p):
+            return
+        check(f"{label}: output is valid (qpdf)", qpdf_ok(out))
+        st = subprocess.run(["qpdf", "--show-encryption", str(out)],
+                            capture_output=True, text=True)
+        check(f"{label}: output is NOT encrypted (qpdf)",
+              "not encrypted" in ((st.stdout or "") + (st.stderr or "")).lower())
+        import pikepdf
+        with pikepdf.open(str(out)) as pdf:
+            check(f"{label}: pikepdf agrees it is not encrypted", not pdf.is_encrypted)
+        got = text_poppler(out)
+        check(f"{label}: poppler extracts the marker", MARKER in got, f"{len(got)} chars")
+        check(f"{label}: text matches the original word-for-word",
+              got.split() == plain_text.split(),
+              f"{len(got.split())} vs {len(plain_text.split())} words")
+        check(f"{label}: MuPDF opens it with no password", MARKER in all_text(out))
+
+    # (a) encrypted by us …
+    ours = WORK / "enc-ours.pdf"
+    if ran("encrypt (ours, AES-256)",
+           run(["pdf", "encrypt", str(fx), "--owner-password", "owner-pw",
+                "--user-password", pw, "--out", str(ours)])):
+        decrypt_case("ours", ours)
+
+    # … and (b) encrypted by qpdf, so our own writer is not the grader.
+    theirs = WORK / "enc-qpdf.pdf"
+    q = subprocess.run(["qpdf", "--encrypt", pw, "owner-pw", "256", "--",
+                        str(fx), str(theirs)], capture_output=True, text=True)
+    if check("encrypt (qpdf, AES-256)", q.returncode in (0, 3) and theirs.exists(),
+             (q.stderr or "").strip()[:120]):
+        decrypt_case("qpdf", theirs)
+
+    # A wrong password must be refused, and must not leave a file behind.
+    bad_out = WORK / "decrypted-wrongpw.pdf"
+    p = run(["pdf", "decrypt", str(ours), "--password", "definitely-wrong",
+             "--out", str(bad_out)])
+    check("decrypt: a wrong password is refused", p.returncode != 0,
+          (p.stderr or "").strip()[:100])
+    check("decrypt: and no output file is left behind", not bad_out.exists())
+
+    # Linearization, judged by qpdf rather than by us.
+    lin = WORK / "linearized.pdf"
+    if ran("pdf linearize", run(["pdf", "linearize", str(fx), "--out", str(lin)])):
+        check("linearize: output is valid (qpdf)", qpdf_ok(lin))
+        lp = subprocess.run(["qpdf", "--check-linearization", str(lin)],
+                            capture_output=True, text=True)
+        blob = (lp.stdout or "") + (lp.stderr or "")
+        check("linearize: qpdf confirms the file is linearized",
+              lp.returncode in (0, 3) and "no linearization errors" in blob.lower(),
+              blob.strip()[:140])
+        check("linearize: page count unchanged (MuPDF)",
+              page_count(lin) == page_count(fx))
+        check("linearize: text survives word-for-word (poppler)",
+              text_poppler(lin).split() == plain_text.split())
+
+
 def verify_text_extraction(fx):
     print("\n-- text extraction (pdf text) --")
     p = run(["--format", "json", "pdf", "text", str(fx)])
@@ -898,6 +1000,7 @@ def main():
     verify_kindle(fx)
     verify_compression(fx)
     verify_text_region(fx)
+    verify_zpdf_decrypt_and_linearize(fx)
     verify_text_extraction(fx)
     verify_sanitise()
 
