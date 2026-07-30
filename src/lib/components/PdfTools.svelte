@@ -6,7 +6,7 @@
     import {
         FileUp, FilePlus2, Scissors, Trash2, RotateCw, Crop, Hash,
         Stamp, FileText, Merge, ChevronLeft, ChevronRight, Check,
-        Loader2, X, Info, Download, Plus, Lock, Unlock, Shield
+        Loader2, X, Info, Download, Plus, Lock, Unlock, Shield, Gauge, Wrench
     } from 'lucide-svelte';
 
     // ── Types ──────────────────────────────────────────────────────────
@@ -352,6 +352,38 @@
         loading = false;
     }
 
+    // ── P32.11 — fast web view and damaged-file recovery ────────────────
+    // Both need `--features pdf-zpdf`; the backend says so rather than
+    // failing obscurely, and that message lands in `error` below.
+
+    async function doLinearize() {
+        const out = await pickSavePath('linearized.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            await invoke('pdf_linearize', { path: filePath, outPath: out });
+            success = `${i18n.t.pdftools.linearized} → ${out}`;
+            loadPdf(out);
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
+    async function doRepair() {
+        const out = await pickSavePath('repaired.pdf');
+        if (!out) return;
+        loading = true; error = ''; success = '';
+        try {
+            const pages = await invoke<number>('pdf_repair', { path: filePath, outPath: out });
+            // The page count is the point: recovery is best-effort, so the
+            // user needs the number to compare against what they expected,
+            // not just the word "repaired".
+            success = i18n.t.pdftools.repaired
+                .replace('{n}', String(pages)).replace('{path}', out);
+            loadPdf(out);
+        } catch (e: any) { error = String(e); }
+        loading = false;
+    }
+
     async function doSanitise() {
         const out = await pickSavePath('sanitised.pdf');
         if (!out) return;
@@ -430,6 +462,12 @@
             </button>
             <button class="pt-btn" onclick={doDetectSignatures} title="Detect digital signatures">
                 ✎
+            </button>
+            <button class="pt-btn" onclick={doLinearize} title={i18n.t.pdftools.linearize_hint}>
+                <Gauge size={14} /> {i18n.t.pdftools.linearize}
+            </button>
+            <button class="pt-btn" onclick={doRepair} title={i18n.t.pdftools.repair_hint}>
+                <Wrench size={14} /> {i18n.t.pdftools.repair}
             </button>
             <button class="pt-btn" onclick={doPdfa} title="Convert to PDF/A-2b">
                 A

@@ -1954,6 +1954,54 @@ pub mod tauri_commands {
             .await.map_err(|e| format!("join: {e}"))?
     }
 
+    /// Rewrite for fast web view. P32.11 Z5.
+    ///
+    /// Declared unconditionally, with the feature gate *inside*: a
+    /// `#[cfg]`-ed entry in `generate_handler!` would make the command
+    /// vanish from the frontend's point of view, and "command not found" is
+    /// a worse message than the one below.
+    #[tauri::command]
+    pub async fn pdf_linearize(path: String, out_path: String) -> Result<(), String> {
+        #[cfg(feature = "pdf-zpdf")]
+        {
+            tokio::task::spawn_blocking(move || {
+                super::linearize_pdf(Path::new(&path), Path::new(&out_path))
+            })
+            .await
+            .map_err(|e| format!("join: {e}"))?
+        }
+        #[cfg(not(feature = "pdf-zpdf"))]
+        {
+            let _ = (path, out_path);
+            Err("Fast web view needs a build with --features pdf-zpdf. \
+                 Nothing was written."
+                .to_string())
+        }
+    }
+
+    /// Recover a PDF with damaged cross-reference data. P32.11 Z7.
+    ///
+    /// Returns the number of pages recovered, so the caller can compare it
+    /// against what they expected rather than trusting the word "repaired".
+    #[tauri::command]
+    pub async fn pdf_repair(path: String, out_path: String) -> Result<usize, String> {
+        #[cfg(feature = "pdf-zpdf")]
+        {
+            tokio::task::spawn_blocking(move || {
+                super::repair_pdf(Path::new(&path), Path::new(&out_path))
+            })
+            .await
+            .map_err(|e| format!("join: {e}"))?
+        }
+        #[cfg(not(feature = "pdf-zpdf"))]
+        {
+            let _ = (path, out_path);
+            Err("Repairing a damaged PDF needs a build with --features \
+                 pdf-zpdf. Nothing was written."
+                .to_string())
+        }
+    }
+
     #[tauri::command]
     pub async fn pdf_is_encrypted(path: String) -> Result<bool, String> {
         tokio::task::spawn_blocking(move || super::is_encrypted(Path::new(&path)))
