@@ -1569,6 +1569,44 @@ mod tests {
     }
 
     #[test]
+    fn docx_extraction_prepends_inferred_headings_to_the_text() {
+        // P30.2: a scanned→OCR→DOCX file has no heading styles, so the
+        // structure has to be inferred from formatting and folded into the
+        // indexed text — that is what gives headings their BM25 boost.
+        // Both halves matter: the markers must appear *and* the body must
+        // survive underneath them.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("headed.docx");
+        std::fs::write(&p, crate::docx_tools::fixtures::with_headings()).unwrap();
+
+        let doc = extract_text_from_path(&p).unwrap();
+        assert_eq!(doc.ext, "docx");
+        assert_eq!(doc.headings, vec!["Chapter One", "Section A"], "{:?}", doc.headings);
+        assert!(
+            doc.full_text.starts_with("# Chapter One\n## Section A\n"),
+            "heading prefix missing or mis-levelled: {:?}",
+            &doc.full_text[..doc.full_text.len().min(80)]
+        );
+        assert!(
+            doc.full_text.contains("body sentence 1 of the chapter"),
+            "body text lost"
+        );
+    }
+
+    #[test]
+    fn docx_without_headings_extracts_plain_text_only() {
+        // The inverse: no inferred structure means no invented markers.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("flat.docx");
+        std::fs::write(&p, crate::docx_tools::fixtures::plain()).unwrap();
+
+        let doc = extract_text_from_path(&p).unwrap();
+        assert!(doc.headings.is_empty(), "{:?}", doc.headings);
+        assert_eq!(doc.full_text.trim(), "a perfectly ordinary paragraph");
+        assert!(!doc.full_text.starts_with('#'), "invented a heading marker");
+    }
+
+    #[test]
     fn unknown_extension_errors() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = tmp.path().join("file.xyz");

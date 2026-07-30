@@ -100,6 +100,47 @@ to fire by injecting a collision. Rename the field
 
 ---
 
+## A GUI/CLI dispatcher fails *silently* — guard the verb list with a test
+
+`main.rs` decides CLI-vs-GUI by scanning argv for a name in
+`cli::SUBCOMMANDS`, a hand-written list, and falls through to the GUI on no
+match. So a verb missing from that list does not produce "unknown command" —
+**the app opens its window and ignores the command line**, while the verb's
+own `crispsorter <verb> --help` renders perfectly (clap is reached in that
+path). Three whole families sat like that: `docx`, `zone` and `search`, each
+fully implemented, CLI-documented, and unreachable. The symptom when I ran
+one was a process hanging for ten minutes; `sample <pid>` showed
+`NSApplication run` at the bottom of the stack, which is the tell.
+
+Fixed by `cli_mode_detection_tests`, which derives the real names (plus
+aliases) from `Cli::command()` and fails in both directions — a verb absent
+from the list, or a stale name left after a rename. Any hand-maintained
+mirror of a derivable set wants exactly this kind of test; the same applies
+to the Tauri `invoke_handler` list, which is also written out by hand.
+
+---
+
+## Binary test fixtures can usually be authored instead of committed
+
+The P30 DOCX tests sat deferred for months behind "needs test .docx
+fixtures in the repo". But a `.docx` is a zip of a few XML parts, so the
+fixtures can be *written*: `docx_tools::fixtures` builds them in memory with
+the `zip` crate (`[Content_Types].xml` + `word/document.xml` +
+`word/_rels/document.xml.rels` is enough for `crisp_docx_core::open`), and
+each fixture is a readable string showing exactly the shape its test depends
+on. No binaries in git, no external corpus, and a reviewer can see why a
+test passes. `crisp-docx`'s own integration tests do the same. The same
+trick applies to any zip-container format (EPUB, ODF, XLSX) and to PDF.
+
+Corollary for the tests themselves: serde round-trip tests on a result
+struct pass just as well when the command returns an empty struct. Assert on
+behaviour — that transplant kept the *blueprint's* page size and dropped the
+blueprint's body text, that quote normalisation produces *different* bytes
+for German and English (a normaliser ignoring its style argument would
+otherwise pass), that footnote injection removed the literal `[1]`.
+
+---
+
 ## Verification: assert the premise, or the check cannot fail
 
 `scripts/verify_pdf_independent.py` produced two false passes, both from

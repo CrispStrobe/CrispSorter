@@ -1,16 +1,19 @@
 <script lang="ts">
-    // The PDF tab hosts two surfaces: the P32.1b page editor (arrange,
-    // crop, number, annotate — direct manipulation over an edit session)
-    // and the existing one-shot tool panel (merge, split, encrypt, sign,
-    // sanitise, PDF/A).  They operate on different mental models, so they
-    // get a segmented control rather than being crammed into one toolbar.
+    // The document tab hosts three surfaces: the P32.1b page editor
+    // (arrange, crop, number, annotate — direct manipulation over an edit
+    // session), the one-shot PDF tool panel (merge, split, encrypt, sign,
+    // sanitise, PDF/A), and the P30 DOCX surgery panel (validate, page
+    // geometry, restyle to a template, notes, quotes).  They operate on
+    // different mental models — and on different file formats — so they get
+    // a segmented control rather than being crammed into one toolbar.
 
     import { i18n } from '$lib/i18n.svelte';
     import PdfEditor from './PdfEditor.svelte';
     import PdfTools from './PdfTools.svelte';
-    import { LayoutGrid, Wrench } from 'lucide-svelte';
+    import DocxTools from './DocxTools.svelte';
+    import { LayoutGrid, Wrench, FileType2 } from 'lucide-svelte';
 
-    let mode = $state<'edit' | 'tools'>('edit');
+    let mode = $state<'edit' | 'tools' | 'docx'>('edit');
 </script>
 
 <div class="pw">
@@ -21,14 +24,20 @@
         <button class="pw-mode" class:active={mode === 'tools'} onclick={() => mode = 'tools'}>
             <Wrench size={13} /> {i18n.t.pdfeditor.mode_tools}
         </button>
+        <button class="pw-mode" class:active={mode === 'docx'} onclick={() => mode = 'docx'}>
+            <FileType2 size={13} /> {i18n.t.docxtools.mode_docx}
+        </button>
     </div>
-    <!-- Both stay mounted: switching modes must not discard an open edit
-         session or a half-filled tool panel. -->
+    <!-- All three stay mounted: switching modes must not discard an open
+         edit session, a half-filled tool panel, or a loaded DOCX report. -->
     <div class="pw-pane" style:display={mode === 'edit' ? 'flex' : 'none'}>
         <PdfEditor />
     </div>
     <div class="pw-pane" style:display={mode === 'tools' ? 'flex' : 'none'}>
         <PdfTools />
+    </div>
+    <div class="pw-pane" style:display={mode === 'docx' ? 'flex' : 'none'}>
+        <DocxTools />
     </div>
 </div>
 

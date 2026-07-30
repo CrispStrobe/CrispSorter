@@ -44,8 +44,23 @@ def check(name, ok, detail=""):
     return bool(ok)
 
 
-def run(args):
-    return subprocess.run([CLI] + args, capture_output=True, text=True)
+class Hung:
+    """Stand-in for a call that never returned."""
+    returncode = -1
+    stdout = ""
+    stderr = "the process did not exit — a verb missing from cli::SUBCOMMANDS " \
+             "launches the GUI instead of running"
+
+
+def run(args, timeout=120):
+    # Always bounded. `main.rs` falls through to the GUI for any argv it does
+    # not recognise, so a mistyped or unlisted verb opens an event loop and
+    # waits forever; an unbounded call turns that into a hung harness rather
+    # than a failed check.
+    try:
+        return subprocess.run([CLI] + args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return Hung()
 
 
 def ran(name, p):

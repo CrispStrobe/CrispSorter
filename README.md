@@ -83,6 +83,7 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 - **Schema-migration framework** — versioned `Migration` async trait with SQLite ledger at `<data-dir>/.crispsorter_migrations.db`.  Gap detection, duplicate-version rejection, downgrade guard (ledger says vN applied but no matching migration registered → refuse to proceed), failure isolation (mid-run failure leaves the ledger consistent for resume).  Three real consumers landed: `AddTextTranslatedColumns` (v100, P13.5), `AddAudioMetadataColumns` (v101, P13.6), `AddImageMetadataColumns` (v102, P13.7).
 - **Folder watcher** — watch one or more folders; new files dropped in get auto-added to the batch (no auto-move — you still review and press Start)
 - **PDF metadata pre-fill** — read Title / Author / Year from a PDF's `/Info` dict and XMP packet before the LLM runs
+- **DOCX surgery** (P30, complete) — OOXML-level operations on `.docx` files, in the document tab's DOCX panel and as CLI verbs: **validate** (seven structural checks — the report lists what passed as well as what failed, because a report with no passes is indistinguishable from a check that never ran), **properties** (page geometry, margins, default font, sections — a measurement the document does not state reads as "not stated", never as 0), **heading inference** from bold + font size for scanned→OCR→DOCX files with no heading styles (these also feed the search index, where they earn a term-frequency boost), **restyle to a template** (graft a document's body into another's styles, headers and footers, with semantic style remapping), **footnotes ⇄ endnotes**, **inline `[N]` markers → real Word footnotes**, **quote normalisation** in five national styles, and **revision-ID stripping**.  Every operation writes a new file; none overwrites the input.
 - **PDF editor** (P27 + P32, complete) — a direct-manipulation page editor (thumbnail grid, drag-reorder, rotate, crop, insert, page numbers, watermark) on one undoable edit session, plus the read/edit operations that usually need qpdf or Ghostscript and here need neither: **real redaction** (the intersecting glyphs are removed from the content stream, then the area is covered — the covering rectangle stays because composite fonts, form XObjects and raster content are out of the scrub's reach, and all three are counted in the report), **text editing** tiers 1–2 (cover-and-retype, or in-place `Tj`/`TJ` substitution), **text regions** that wrap and align inside a dragged box using real base-14 glyph widths (overflow is reported and never drawn), **AcroForm** read / fill / flatten (fill refuses an unknown field name rather than producing a form that looks filled), **annotation round-trip** into the FTS-searchable store plus Kindle-clippings import with document anchoring, **AES-256 encryption**, and **size reduction** via stream deflation + object streams.  Every one of them has a CLI verb and a GUI panel; `scripts/verify_pdf_independent.py` checks 140 claims about the output with qpdf, poppler, MuPDF, pypdf and pikepdf, on fixtures those tools authored.
 - **BibTeX export** — generate a `.bib` file from sorted batch metadata; LaTeX-escaped, deduplicated citation keys
 - **Script export** — generate a `.bat` / `.sh` script to review moves before executing them
@@ -170,6 +171,17 @@ crispsorter pdf export-annotations paper.pdf --to markdown --out notes.md
 crispsorter pdf import-annotations paper.pdf           # into the FTS-searchable store
 crispsorter pdf kindle-import "My Clippings.txt" --doc-id book --document book.pdf
 #   full verb list: crispsorter pdf --help
+
+# DOCX surgery (P30) — OOXML-level operations via crisp-docx.
+crispsorter docx check contract.docx                    # 7 structural checks, exit 1 on issues
+crispsorter docx info contract.docx                     # page geometry, default font, styles
+crispsorter docx headings scanned.docx                  # infer H1/H2/H3 from bold + font size
+crispsorter docx restyle --source draft.docx --blueprint house-style.docx --out final.docx
+crispsorter docx convert-notes paper.docx --to endnotes --out paper-endnotes.docx
+crispsorter docx inject-footnotes paper.docx \
+    --note '1=See Barth, KD II/2' --note '2=ibid.' --out annotated.docx
+crispsorter docx normalize-quotes text.docx --style german --out text-de.docx
+crispsorter docx strip-rsids bloated.docx --out clean.docx
 
 crispsorter index search "karl barth"                  # BM25 FTS
 

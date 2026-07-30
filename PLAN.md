@@ -1637,9 +1637,15 @@ translated output is more robust.
   `QuoteStyle::English` (uniform `"…"` for LLM input).  Also
   available standalone via `docx_normalize_quotes(path, style, output)`
   Tauri command.
-- [ ] **Tests.**  ✅ 6 unit tests shipped in `docx_tools.rs` (quote
-  style parsing, notes kind parsing, serde round-trips).  Fixture-
-  based tests (rsid strip, check_package with bad input) deferred.
+- [x] **Tests.**  ✅ SHIPPED (2026-07-30).  The fixture-based tests are
+  no longer deferred: `docx_tools::fixtures` *authors* minimal `.docx`
+  packages in memory (a docx is a zip of a few XML parts), so no binary
+  fixtures enter the repo and the shape each test depends on is visible
+  in the test.  15 behavioural tests now cover rsid stripping,
+  `check_package` on a package with a dangling relationship, page
+  geometry in points, unstated-vs-stated geometry, heading inference,
+  transplant, notes conversion, footnote injection and quote styles —
+  alongside the 6 original serde tests.
 
 #### P30.2 — Heading inference at index time
 
@@ -1648,20 +1654,22 @@ Many scanned→OCR→DOCX documents have no explicit heading styles.
 (bold + font size clustering), giving the search index structural
 metadata.
 
-- [ ] **Wire into DOCX extractor.**  In `extractors/mod.rs` (the
-  DOCX arm), after text extraction: `open()` the DOCX, call
-  `infer_heading_levels(&pkg, None)`, use the inferred levels to
-  generate a Markdown-style heading prefix (`# Title`, `## Section`,
-  etc.) prepended to the extracted text.  Improves BM25 ranking
-  (headings get term-frequency boost) and snippet quality.
+- [x] **Wire into DOCX extractor.**  ✅ SHIPPED (2026-07-05; tested
+  2026-07-30).  `extractors::extract_docx` calls
+  `infer_heading_levels(&pkg, None)`, fills `ExtractedDocument.headings`
+  and prepends Markdown-style markers (`# Title`, `## Section`) to the
+  indexed text, so headings get their term-frequency boost.  Two tests
+  pin both directions: a formatted fixture yields `# Chapter One` /
+  `## Section A` with the body intact underneath, and ordinary prose
+  yields no invented markers.
 - [x] **`docx_infer_headings(path)` Tauri command.**  ✅ SHIPPED
   (2026-07-05).  `docx_tools.rs::docx_infer_headings` returns
   `Vec<InferredHeading { level, text }>`.
 - [x] **CLI: `crispsorter docx headings <FILE>`.**  ✅ SHIPPED
   (2026-07-05).  Prints indented `H1`/`H2`/`H3` labels in text mode,
   JSON array in `--format json`.
-- [ ] **Tests.**  Fixture-based DOCX tests deferred (need test .docx
-  fixtures in the repo).
+- [x] **Tests.**  ✅ SHIPPED (2026-07-30) — see P30.1; fixtures are
+  authored in memory rather than committed.
 
 #### P30.3 — Blueprint analysis + document properties
 
@@ -1671,9 +1679,12 @@ see page geometry, default font, section info at a glance.
 - [x] **`docx_analyze(path)` Tauri command.**  ✅ SHIPPED (2026-07-05).
   `docx_tools.rs::docx_analyze` returns `DocxBlueprint { sections,
   default_font, default_font_size_pt, style_count }`.
-- [ ] **Viewer sidebar: "Document Properties" panel.**  When viewing a
-  DOCX, show: page size (A4/Letter/custom), orientation, margins,
-  default font + size, number of sections, footnote format.
+- [x] **"Document Properties" panel.**  ✅ SHIPPED (2026-07-30) — in
+  the new `DocxTools.svelte` panel rather than the viewer sidebar: the
+  other seven DOCX operations needed a home of their own, and reading a
+  document's geometry belongs next to the operations that change it.
+  Shows page size, orientation, margins, default font + size and section
+  count.  An unstated measurement renders as "not stated", never as 0.
 - [x] **CLI: `crispsorter docx info <FILE>`.**  ✅ SHIPPED
   (2026-07-05).  Prints font, style count, section geometry in text
   mode; full `DocxBlueprint` JSON in `--format json`.
@@ -1687,7 +1698,9 @@ in translation.
 - [x] **`docx_check(path)` Tauri command.**  ✅ SHIPPED (2026-07-05).
   `docx_tools.rs::docx_check` returns `DocxCheckResult { ok, issues,
   valid }`.
-- [ ] **PDF Tools tab: "Validate DOCX" button.**  Frontend pending.
+- [x] **"Validate DOCX" button.**  ✅ SHIPPED (2026-07-30) in the DOCX
+  panel: lists the issues found and the checks that passed (a report
+  with no `ok` lines is indistinguishable from a check that never ran).
 - [x] **CLI: `crispsorter docx check <FILE>`.**  ✅ SHIPPED
   (2026-07-05).  Prints ✓/✗ per axis in text mode; `DocxCheckResult`
   JSON in `--format json`.  Exit code 1 on issues.
@@ -1703,7 +1716,9 @@ another document into it.
   ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_transplant` opens
   both, calls `transplant_body`, returns `TransplantResult { output_path,
   source_paragraphs, blueprint_styles }`.
-- [ ] **PDF Tools tab: "Restyle" panel.**  Frontend pending.
+- [x] **"Restyle" panel.**  ✅ SHIPPED (2026-07-30) in the DOCX panel:
+  pick a template, write a new file, and see paragraphs moved /
+  template styles / styles remapped.
 - [x] **CLI: `crispsorter docx restyle --source doc.docx --blueprint
   template.docx --out restyled.docx`.**  ✅ SHIPPED (2026-07-05).
 - [x] **Style mapping.**  ✅ SHIPPED (2026-07-05).
@@ -1718,7 +1733,8 @@ another document into it.
 - [x] **`docx_convert_notes(path, target_kind, output)` Tauri
   command.**  ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_convert_notes`
   accepts `"footnotes"` or `"endnotes"`.
-- [ ] **PDF Tools tab: "Convert Notes" button.**  Frontend pending.
+- [x] **"Convert Notes" button.**  ✅ SHIPPED (2026-07-30) in the DOCX
+  panel (footnotes ⇄ endnotes).
 - [x] **CLI: `crispsorter docx convert-notes --to endnotes doc.docx
   --out converted.docx`.**  ✅ SHIPPED (2026-07-05).
 - [ ] **Tests.**  Fixture-based tests deferred.
@@ -1734,8 +1750,17 @@ When the LLM (or OCR) produces text with inline `[N]` markers,
 - [ ] **Post-process hook in translate pipeline.**  After LLM
   translation, scan the output for `[N]` patterns, extract note texts,
   call `inject_footnotes`.  Opt-in via `IndexConfig.inject_footnotes`.
-- [ ] **Tests.**  Unit: text with `[1]` and `[2]` markers → DOCX with
-  2 real footnotes.  2+ tests.
+- [x] **Tests.**  ✅ SHIPPED (2026-07-30).
+  `inline_markers_become_real_footnotes` runs the command on an authored
+  fixture with `[1]`/`[2]` markers and asserts two footnotes exist, the
+  note text is in `word/footnotes.xml`, a `footnoteReference` is in the
+  body, and the literal `[1]` is *gone* — a document showing both the
+  marker and the footnote mark is worse than either.
+- [x] **CLI + GUI.**  ✅ SHIPPED (2026-07-30).  `crispsorter docx
+  inject-footnotes <FILE> --note '1=text' --out F` (repeatable; a marker
+  given twice is refused rather than silently overwritten, and unmatched
+  markers are counted in the summary), plus an "Add footnotes" panel in
+  `DocxTools.svelte`.
 
 #### P30.8 — Corpus-wide quote normalization
 
@@ -1749,7 +1774,13 @@ styles in the corpus.
 - [x] **`docx_normalize_quotes(path, style, output)` Tauri command.**
   ✅ SHIPPED (2026-07-05).  `docx_tools.rs::docx_normalize_quotes`
   accepts style name string.
-- [ ] **Tests.**  Unit: mixed-quote input → uniform output.  2+ tests.
+- [x] **Tests.**  ✅ SHIPPED (2026-07-30).
+  `quotes_are_curled_in_the_requested_style` asserts the German and
+  English styles produce *different* bytes (a normaliser that ignores the
+  style argument would otherwise pass), each with its own opener, and
+  that the straight quotes are gone.
+- [x] **GUI.**  ✅ SHIPPED (2026-07-30) — quote-style picker in
+  `DocxTools.svelte`; the CLI verb shipped 2026-07-05.
 
 ### P31 — App Store submission readiness (2026-07-10)
 

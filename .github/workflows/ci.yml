@@ -123,7 +123,134 @@ jobs:
           path: repos/CrispSorter/static/licenses.json
           retention-days: 14
 
-  # Rust / Tauri compile coverage is already done by release.yml; a separate
-  # `cargo check` step was tried but Tauri's build script requires the
-  # llama-server sidecars under src-tauri/bin/ which only the release build
-  # downloads. Not worth duplicating that download just for CI.
+  # Rust library tests + the CLI binary, plus the two independent
+  # verification harnesses run against that binary.
+  #
+  # An earlier note here said Rust coverage in CI was impractical because
+  # "Tauri's build script requires the llama-server sidecars under
+  # src-tauri/bin/". That is only true of *bundling*: there is no
+  # `externalBin` in tauri.conf.json, and the `resources: ["bin/*"]` glob is
+  # satisfied by an empty directory — which is exactly what release.yml's
+  # Android job does with its `bin/.gitkeep` placeholder. `cargo test --lib`
+  # and `cargo build --bin` need neither the sidecar nor the bundle.
+  #
+  # Why it is worth the runner minutes: the harnesses have caught three real
+  # bugs that the in-process tests missed, including a `docx` verb family
+  # that was unreachable from the command line entirely. They only ever ran
+  # on one developer's machine, against a target directory on a disk that
+  # periodically fills up.
+  rust:
+    name: Rust tests + CLI verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      PROTOC: /usr/bin/protoc
+      # Sibling path deps resolve relative to repos/CrispSorter/src-tauri,
+      # so the repos/ layout below needs no Cargo.toml rewriting.
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
+
+      - name: Install system deps
+        # webkit2gtk/gtk are needed at *link* time — the test binary links the
+        # lib, which links tao/wry. qpdf + poppler-utils are two of the
+        # independent checkers the PDF harness grades against.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            protobuf-compiler \
+            libssl-dev \
+            qpdf \
+            poppler-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+
+      - name: Build the frontend
+        # tauri-build reads `frontendDist: ../build`; the directory has to
+        # exist even though nothing here bundles it.
+        working-directory: repos/CrispSorter
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create bin placeholder for the resources glob
+        working-directory: repos/CrispSorter
+        run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
+
+      - name: Library tests
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop
+
+      - name: Build the CLI binary
+        working-directory: repos/CrispSorter
+        run: cargo build --bin crispsorter -p crispsorter --features desktop
+
+      - name: Install the independent checkers
+        # None of these share code with what they are checking: MuPDF
+        # (pymupdf), pypdf, pikepdf and python-docx are separate
+        # implementations, and they also author the fixtures.
+        run: python3 -m pip install --break-system-packages --quiet
+             pymupdf pypdf pikepdf python-docx
+
+      - name: Verify the PDF surface against qpdf / poppler / MuPDF / pypdf / pikepdf
+        working-directory: repos/CrispSorter
+        run: |
+          CRISP_CLI="$PWD/target/debug/crispsorter" \
+          CRISP_WORK="${RUNNER_TEMP}/pdfverify" \
+            python3 scripts/verify_pdf_independent.py
+
+      - name: Verify the DOCX surface against python-docx
+        working-directory: repos/CrispSorter
+        run: |
+          CRISP_CLI="$PWD/target/debug/crispsorter" \
+          CRISP_WORK="${RUNNER_TEMP}/docxverify" \
+            python3 scripts/verify_docx_independent.py
+
+      - name: Upload the CLI binary
+        # So a full local disk is never the reason a verified binary is
+        # unavailable.
+        uses: actions/upload-artifact@v4
+        with:
+          name: crispsorter-cli-linux-x64
+          path: repos/CrispSorter/target/debug/crispsorter
+          retention-days: 7

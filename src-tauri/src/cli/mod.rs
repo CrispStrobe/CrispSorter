@@ -40,12 +40,20 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Subcommand names our CLI knows about. main.rs uses this for the
-/// argv[1] sniff so we can fall through to the GUI for anything
+/// argv sniff so we can fall through to the GUI for anything
 /// unrecognised (including no args at all, the typical GUI launch).
+///
+/// **A verb missing from this list does not error — it launches the GUI**,
+/// which looks like the binary ignoring the command line. `docx`, `zone`
+/// and `search` were all unreachable this way, each having shipped with a
+/// working implementation and a `--help` that renders correctly.
+/// `cli_mode_detection_tests` derives the real set from the clap tree and
+/// fails on any name that is in one and not the other, so the list cannot
+/// drift again.
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie", "table", "math-ocr", "pdf", "watch",
-    "manpage", "completion", "help", "--help", "-h",
+    "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx",
+    "search", "watch", "manpage", "completion", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -1611,6 +1619,19 @@ enum DocxCmd {
         /// Quote style: german, english, french, swiss, german_guillemets.
         #[arg(long, default_value = "english")]
         style: String,
+        /// Output path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Turn inline `[N]` markers into real Word footnotes.
+    ///
+    /// Useful after an LLM or OCR pass that wrote bracketed references into
+    /// the text. Markers with no matching --note are left alone.
+    InjectFootnotes {
+        file: PathBuf,
+        /// `N=text`, repeatable — e.g. `--note '1=See Barth, KD II/2'`.
+        #[arg(long = "note", required = true)]
+        notes: Vec<String>,
         /// Output path.
         #[arg(long)]
         out: PathBuf,
@@ -9039,6 +9060,41 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             eprintln!("Normalized quotes → {}", out_path.display());
             Ok(())
         }
+        DocxCmd::InjectFootnotes { file, notes, out: out_path } => {
+            let mut map: std::collections::BTreeMap<u32, String> = Default::default();
+            for pair in &notes {
+                let (n, text) = pair.split_once('=').ok_or_else(|| {
+                    format!("--note expects N=text (got {pair:?})")
+                })?;
+                let n: u32 = n.trim().parse().map_err(|_| {
+                    format!("not a marker number: {:?}", n.trim())
+                })?;
+                if map.insert(n, text.to_string()).is_some() {
+                    // Two texts for one marker means one of them was going
+                    // to be dropped; say which rather than picking.
+                    return Err(format!("--note {n} given twice"));
+                }
+            }
+            let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
+            let refs: std::collections::BTreeMap<u32, &str> =
+                map.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let report = crisp_docx_core::inject_footnotes(&mut pkg, &refs)
+                .map_err(|e| e.to_string())?;
+            crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+            eprintln!(
+                "Injected {} of {} note(s) → {}",
+                report.inserted,
+                map.len(),
+                out_path.display()
+            );
+            if report.inserted < map.len() {
+                eprintln!(
+                    "NOTE: {} marker(s) were not found in the text and were left out.",
+                    map.len() - report.inserted
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -9896,6 +9952,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn docx_inject_footnotes_parses_repeated_notes() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "crispsorter", "docx", "inject-footnotes", "in.docx",
+            "--note", "1=See Barth, KD II/2", "--note", "2=ibid.",
+            "--out", "out.docx",
+        ])
+        .expect("inject-footnotes should parse");
+        match cli.command {
+            super::Command::Docx { cmd: super::DocxCmd::InjectFootnotes { notes, .. } } => {
+                assert_eq!(notes.len(), 2);
+                assert_eq!(notes[0], "1=See Barth, KD II/2");
+            }
+            other => panic!("wrong subcommand: {other:?}"),
+        }
+        // A note without any text to insert is a mistake worth catching.
+        assert!(super::Cli::try_parse_from([
+            "crispsorter", "docx", "inject-footnotes", "in.docx", "--out", "o.docx",
+        ]).is_err(), "--note is required");
+    }
+
     // ── parse_page_spec tests ─────────────────────────────────────────
     #[test]
     fn parse_page_spec_single() {
@@ -10018,5 +10096,88 @@ mod global_arg_collision_tests {
     #[test]
     fn the_command_tree_builds() {
         super::Cli::command().debug_assert();
+    }
+}
+
+/// `SUBCOMMANDS` is what decides CLI-vs-GUI in `main.rs`, and it is written
+/// by hand. A verb absent from it does not produce an error the author
+/// would notice — the binary opens the GUI and ignores the command line,
+/// while the subcommand's own `--help` keeps working. That is how `docx`,
+/// `zone` and `search` all ended up unreachable.
+#[cfg(test)]
+mod cli_mode_detection_tests {
+    use clap::CommandFactory;
+
+    /// Every name clap will accept at the top level, aliases included.
+    fn real_names() -> Vec<String> {
+        let cmd = super::Cli::command();
+        let mut names = Vec::new();
+        for sub in cmd.get_subcommands() {
+            names.push(sub.get_name().to_string());
+            for alias in sub.get_all_aliases() {
+                names.push(alias.to_string());
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_verb_is_detected_as_cli_mode() {
+        let missing: Vec<String> = real_names()
+            .into_iter()
+            .filter(|n| !super::SUBCOMMANDS.contains(&n.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these verbs exist in the clap tree but are NOT in cli::SUBCOMMANDS, so \
+             `crispsorter <verb> …` will silently launch the GUI instead of running \
+             them — add them to the list:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn the_detection_list_has_no_stale_entries() {
+        // The inverse direction: a name left behind after a rename would
+        // claim CLI mode for a verb clap then rejects, turning a GUI launch
+        // into a usage error. `help`/`-h` are clap's own and have no
+        // subcommand of their own to match.
+        let real = real_names();
+        let stale: Vec<&str> = super::SUBCOMMANDS
+            .iter()
+            .copied()
+            .filter(|n| !matches!(*n, "help" | "--help" | "-h"))
+            .filter(|n| !real.iter().any(|r| r == n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "cli::SUBCOMMANDS names verbs the clap tree does not have: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn a_global_flag_before_the_verb_still_selects_cli_mode() {
+        // main.rs scans every argument rather than only argv[1], because
+        // `--format json pdf info x.pdf` puts a flag first. Pin that: the
+        // scan must find the verb anywhere in the list.
+        for argv in [
+            vec!["crispsorter", "docx", "check", "a.docx"],
+            vec!["crispsorter", "--format", "json", "docx", "check", "a.docx"],
+            vec!["crispsorter", "-f", "text", "search", "query"],
+        ] {
+            assert!(
+                argv.iter()
+                    .skip(1)
+                    .any(|a| super::SUBCOMMANDS.contains(a)),
+                "{argv:?} would have launched the GUI"
+            );
+        }
+        // And the GUI launch paths must stay GUI launches.
+        for argv in [vec!["crispsorter"], vec!["crispsorter", "--debug"]] {
+            assert!(
+                !argv.iter().skip(1).any(|a| super::SUBCOMMANDS.contains(a)),
+                "{argv:?} was claimed by the CLI"
+            );
+        }
     }
 }
