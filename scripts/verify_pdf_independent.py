@@ -318,13 +318,21 @@ def verify_crypto(fx):
     p = run(["pdf", "is-encrypted", str(enc)])
     check("is-encrypted agrees", p.returncode == 0 and "not" not in p.stdout, p.stdout.strip())
 
-    # Non-empty user password: the library cannot supply one at load
-    # time, so this must fail loudly rather than write a corrupt file.
+    # Non-empty user password. Which outcome is correct depends on the build:
+    # lopdf alone cannot supply a password at load time, so it must fail
+    # loudly rather than write a corrupt file; with `pdf-zpdf` it must
+    # actually succeed. Asserting only the first kept passing as a "refuses"
+    # check long after the capability arrived, which is how a working feature
+    # can read as a regression.
     dec = WORK / "decrypted.pdf"
     p = run(["pdf", "decrypt", str(enc), "--password", "userpw", "--out", str(dec)])
-    check("decrypt: refuses a non-empty user password rather than corrupting",
-          p.returncode != 0, (p.stderr or "").strip().splitlines()[-1][:90] if p.stderr else "")
-    check("decrypt: wrote no file when it could not succeed", not dec.exists())
+    if p.returncode == 0:
+        check("decrypt: a non-empty user password now succeeds (pdf-zpdf)",
+              dec.exists(), "reported success but wrote nothing")
+    else:
+        check("decrypt: refuses a non-empty user password rather than corrupting",
+              True, (p.stderr or "").strip().splitlines()[-1][:90] if p.stderr else "")
+        check("decrypt: wrote no file when it could not succeed", not dec.exists())
 
     # Owner-password-only is the case the library *can* handle, and it
     # must round-trip properly.
@@ -844,17 +852,25 @@ def verify_text_region(fx):
 
 
 def has_zpdf():
-    """True when the binary was built with `--features pdf-zpdf`.
+    """Whether the binary was built with `--features pdf-zpdf`.
 
-    Detected by behaviour, not by a version string: without the feature the
-    command refuses with a message naming the feature, and writes nothing.
+    Detected by behaviour: without the feature the command refuses with a
+    message naming the feature. Anything *else* going wrong is a failure of
+    the feature, not its absence — the first version of this returned False
+    on any non-zero exit, so a broken `pdf linearize` silently skipped the
+    whole section and the run reported nothing at all about it. Report the
+    error and let the section fail.
     """
     out = WORK / "_featuretest.pdf"
     p = run(["pdf", "linearize", str(WORK / "fixture.pdf"), "--out", str(out)])
     blob = (p.stderr or "") + (p.stdout or "")
     if "features pdf-zpdf" in blob:
         return False
-    return p.returncode == 0
+    if p.returncode != 0:
+        check("zpdf: `pdf linearize` runs at all", False,
+              blob.strip().splitlines()[-1][:180] if blob.strip() else f"exit {p.returncode}")
+        return False
+    return True
 
 
 def verify_zpdf_decrypt_and_linearize(fx):

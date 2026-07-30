@@ -1,6 +1,6 @@
 [package]
 name = "crispsorter"
-version = "0.10.0"
+version = "0.11.0"
 description = "CrispSorter — local-first AI document organizer"
 authors = ["CrispSorter contributors"]
 license = "AGPL-3.0-or-later"
@@ -80,6 +80,10 @@ tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "sync", "
 # pin just makes the `io` feature directly usable.
 tokio-util = { version = "0.7", features = ["io"] }
 anyhow = "1.0.102"
+# `log` facade — used directly (e.g. translate::tauri_commands log::warn!).
+# Already in the tree transitively (tauri/reqwest/…); pin it as a direct dep
+# so the `log::` path resolves regardless of feature set.
+log = "0.4"
 pdf-extract = "0.10.0"
 # Used by the L2 metadata reader to crack open DOCX (.docx) and EPUB
 # archives without a full-DOM XML parser. zip 7 matches the version

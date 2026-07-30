@@ -21,5 +21,12 @@
     <!-- Downloads folder: batch export, translated DOCX output -->
     <key>com.apple.security.files.downloads.read-write</key>
     <true/>
+
+    <!-- App Store / TestFlight identity: must match the embedded provisioning
+         profile's app id, or altool warns (90886) "not TestFlight-eligible". -->
+    <key>com.apple.application-identifier</key>
+    <string>N9XSJ4M3GT.com.crispstrobe.crispsorter</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>N9XSJ4M3GT</string>
 </dict>
 </plist>

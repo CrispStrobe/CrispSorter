@@ -79,6 +79,12 @@ pub async fn docx_analyze(path: String) -> Result<DocxBlueprint, String> {
         .sections
         .iter()
         .map(|s| DocxSection {
+            // Passed through as Option, not defaulted: main's
+            // `unwrap_or(0.0)` would make "the document states nothing about
+            // page width" indistinguishable from "the page is 0 pt wide",
+            // which is the distinction `DocxSection`'s doc comment and
+            // `analyze_reports_unstated_geometry_as_none_not_a_default` exist
+            // to protect. (Merge resolution, 2026-07-30.)
             page_width_pt: s.page_width_pt,
             page_height_pt: s.page_height_pt,
             left_margin_pt: s.left_margin_pt,

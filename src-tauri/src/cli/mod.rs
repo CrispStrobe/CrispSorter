@@ -9018,12 +9018,12 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                 OutFormat::Json => {
                     let bp = crate::docx_tools::DocxBlueprint {
                         sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
-                            page_width_pt: s.page_width_pt,
-                            page_height_pt: s.page_height_pt,
-                            left_margin_pt: s.left_margin_pt,
-                            right_margin_pt: s.right_margin_pt,
-                            top_margin_pt: s.top_margin_pt,
-                            bottom_margin_pt: s.bottom_margin_pt,
+                            page_width_pt: s.page_width_pt.unwrap_or(0.0),
+                            page_height_pt: s.page_height_pt.unwrap_or(0.0),
+                            left_margin_pt: s.left_margin_pt.unwrap_or(0.0),
+                            right_margin_pt: s.right_margin_pt.unwrap_or(0.0),
+                            top_margin_pt: s.top_margin_pt.unwrap_or(0.0),
+                            bottom_margin_pt: s.bottom_margin_pt.unwrap_or(0.0),
                             orientation: s.orientation.clone(),
                         }).collect(),
                         default_font: schema.default_font.clone(),
