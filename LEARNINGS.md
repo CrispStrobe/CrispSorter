@@ -100,6 +100,33 @@ to fire by injecting a collision. Rename the field
 
 ---
 
+## "The code is real" is not "the code is right" — and tolerant readers hide it
+
+`pdf_oxide`'s linearizer was a 696-line **no-op** whose own docs said
+"reserved". The lesson drawn from that was *read the source*. zpdf 0.11.0
+then taught the follow-up: its linearizer is 449 lines that genuinely walk
+the object graph, emit a `/Linearized` dict and patch `/L /H /O /E /T`
+offsets in a second pass — and the file it produces is malformed.
+
+On a 4-page fixture: the cross-reference table omits objects 11–13 that the
+page tree references (`MuPDF: object out of range (11 0 R); xref size 11`,
+hundreds of times), the object count disagrees with the highest object
+number, and `/N` disagrees with the page count.
+
+What makes this worth writing down is **how nearly it passed**: MuPDF and
+poppler both recover the page text from the broken file, so "extract the
+text and compare it" — the check that caught pdf_oxide — says *pass* here.
+Only `qpdf --check-linearization`, a check specific to the claim being made,
+names the `/N` defect. Generalisation: verify the *property you claim*, not
+just that the output is still readable; readers are built to paper over
+damage, which is exactly what makes them poor judges of structural
+correctness.
+
+Our own page-count/catalog guard did reject it, which is why
+`pdf linearize` fails loudly instead of writing a plausible file.
+
+---
+
 ## A verification guard can skip exactly the case it exists for
 
 `pdf_ops::verify_decrypted` is the guard that caught `pdf_oxide` writing

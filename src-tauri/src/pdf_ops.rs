@@ -976,6 +976,29 @@ fn decrypt_via_zpdf(path: &Path, password: &str, out_path: &Path) -> Result<(), 
 /// whole file has arrived. The hint stream zpdf emits is minimal — valid
 /// offsets, no per-page detail — which the spec permits, since hints are an
 /// optimisation a reader must tolerate the absence of.
+///
+/// # Status: zpdf 0.11.0's linearizer emits a malformed file
+///
+/// Verified 2026-07-30 on a 4-page MuPDF fixture, with tools that share no
+/// code with zpdf:
+///
+/// * `qpdf --check-linearization` → `/N does not match number of pages`;
+/// * `qpdf --check` → "reported number of objects (26) is not one plus the
+///   highest object number (10)" plus three "Pages tree includes
+///   non-dictionary object";
+/// * MuPDF → hundreds of `object out of range (11 0 R); xref size 11` —
+///   objects 11–13 are referenced from the page tree but absent from the
+///   cross-reference table.
+///
+/// MuPDF and poppler still recover the page text, which is precisely how
+/// this would ship unnoticed; only qpdf's linearization-specific check names
+/// the `/N` defect. The verification below rejects the output, so this
+/// function fails loudly rather than writing a file that looks fine.
+///
+/// The implementation is real (449 lines, patched `/L /H /O /E /T` offsets,
+/// first-page xref, hint stream) — unlike pdf_oxide's no-op — it is simply
+/// buggy. Re-test on the next zpdf release before enabling; the harness
+/// section is already written.
 #[cfg(feature = "pdf-zpdf")]
 pub fn linearize_pdf(path: &Path, out_path: &Path) -> Result<(), String> {
     let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -1007,7 +1030,13 @@ pub fn linearize_pdf(path: &Path, out_path: &Path) -> Result<(), String> {
         }
         Err(e) => {
             let _ = std::fs::remove_file(out_path);
-            return Err(format!("linearized output does not parse ({e}); discarded"));
+            return Err(format!(
+                "linearized output does not parse ({e}); discarded. This is a known \
+                 defect in zpdf 0.11.0's linearizer, not in the input: it writes a \
+                 cross-reference table that omits objects the page tree references, \
+                 and a /N that disagrees with the page count (both confirmed with \
+                 qpdf --check-linearization). Nothing was written."
+            ));
         }
     }
     Ok(())

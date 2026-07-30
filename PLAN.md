@@ -2006,8 +2006,32 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
 - [x] **Z3. `crispsorter pdf linearize`.** ✅ (2026-07-30) With the same
   discard-on-failure discipline as compression, and an honest error when the
   feature is off.
-- [ ] **Z4. Verify the claims with the independent harness.** Blocked on a
-  build. `scripts/verify_zpdf_claims.py` (scratchpad) encrypts the fixture
+- [x] **Z4. Verify the claims with the independent harness.** ✅ RUN
+  (2026-07-30) — **decryption confirmed, linearization rejected.**
+
+  *Decryption works.* `pdf decrypt` on a file with a non-empty user password
+  now produces output that qpdf calls valid, that opens with **no** password,
+  whose encryption is genuinely gone, and whose text survives the round trip.
+  That is the capability lopdf cannot provide and pdf_oxide's writer failed
+  at, and it is graded by third-party tools rather than by zpdf.
+
+  *Linearization is broken in zpdf 0.11.0.* On a 4-page MuPDF fixture:
+  `qpdf --check-linearization` → `/N does not match number of pages`;
+  `qpdf --check` → "reported number of objects (26) is not one plus the
+  highest object number (10)" plus three "Pages tree includes non-dictionary
+  object"; MuPDF → hundreds of `object out of range (11 0 R); xref size 11`,
+  i.e. objects the page tree references are missing from the xref. MuPDF and
+  poppler still recover the text, so a laxer check would have called this a
+  pass — only qpdf's linearization-specific check names the `/N` defect. Our
+  page-count/catalog guard rejects the output, so `pdf linearize` fails
+  loudly and writes nothing. **The implementation is real, just wrong** —
+  449 lines that genuinely patch offsets, unlike pdf_oxide's no-op.
+  Follow-ups: report upstream, re-test on the next release, keep the verb
+  behind the feature until then.
+
+- [ ] **Z4b. Re-test linearization on the next zpdf release.** The harness
+  section exists and currently fails for the right reason; nothing else to
+  write. `scripts/verify_zpdf_claims.py` (scratchpad) encrypts the fixture
   **two ways** — our CLI's AES-256 *and* `qpdf --encrypt … 256`, so the
   result is not graded on our own writer — then judges the output with
   `qpdf --show-encryption`, `pikepdf.is_encrypted`, MuPDF-without-password,
@@ -2020,7 +2044,7 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
 - [ ] **Z5. Tauri command + GUI.** `pdf_linearize` command and a Linearize
   button in `PdfTools.svelte`, next to the existing decrypt panel (which
   gains a working path for the first time). en+de i18n.
-- [ ] **Z6. Retire `pdf-decrypt-full`** once Z4 is green: pdf_oxide's reading
+- [ ] **Z6. Retire `pdf-decrypt-full`** — Z4 confirmed the decrypt half: pdf_oxide's reading
   half is redundant then, and its writing half never worked. Removes ~170
   transitive crates. Keep the LEARNINGS entry.
 - [ ] **Z7. xref repair.** zpdf claims lazy xref repair, object scanning and
