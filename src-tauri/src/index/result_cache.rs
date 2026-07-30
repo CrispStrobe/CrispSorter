@@ -35,6 +35,17 @@ pub struct ResultCache {
     entries: HashMap<u64, CacheEntry>,
     order: VecDeque<u64>,
     capacity: usize,
+    /// Test-only: freeze the generation this cache stamps and compares.
+    ///
+    /// The generation counter is process-global and `invalidate()` bumps it
+    /// after every ingest batch — correct in production, but it means a test
+    /// exercising LRU eviction on its *own* cache instance still fails when
+    /// any other test in the suite ingests between its `put` and `get`.
+    /// `lru_touch_prevents_eviction` failed exactly that way in CI while
+    /// passing locally. Pinning removes the shared dependency instead of
+    /// papering over it with retries or `--test-threads=1`.
+    #[cfg(test)]
+    pinned_generation: Option<u64>,
 }
 
 impl ResultCache {
@@ -43,7 +54,26 @@ impl ResultCache {
             entries: HashMap::with_capacity(capacity),
             order: VecDeque::with_capacity(capacity),
             capacity,
+            #[cfg(test)]
+            pinned_generation: None,
         }
+    }
+
+    /// The generation this cache stamps entries with and compares against.
+    fn generation(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(g) = self.pinned_generation {
+            return g;
+        }
+        current_gen()
+    }
+
+    /// Test-only constructor whose generation never moves under it.
+    #[cfg(test)]
+    fn new_pinned(capacity: usize) -> Self {
+        let mut c = Self::new(capacity);
+        c.pinned_generation = Some(current_gen());
+        c
     }
 
     fn make_key(query: &str, mode: &str, filters_hash: u64) -> u64 {
@@ -64,7 +94,7 @@ impl ResultCache {
 
     pub fn get(&mut self, query: &str, mode: &str, filters_hash: u64) -> Option<Vec<SearchResult>> {
         let key = Self::make_key(query, mode, filters_hash);
-        let gen = current_gen();
+        let gen = self.generation();
         // Check + clone before mutating to avoid borrow-checker conflict.
         let hit = self
             .entries
@@ -86,7 +116,7 @@ impl ResultCache {
 
     pub fn put(&mut self, query: &str, mode: &str, filters_hash: u64, results: Vec<SearchResult>) {
         let key = Self::make_key(query, mode, filters_hash);
-        let gen = current_gen();
+        let gen = self.generation();
         // Evict oldest if at capacity
         while self.entries.len() >= self.capacity {
             if let Some(oldest) = self.order.pop_front() {
@@ -138,7 +168,7 @@ mod tests {
 
     #[test]
     fn cache_hit_and_miss() {
-        let mut cache = ResultCache::new(4);
+        let mut cache = ResultCache::new_pinned(4);
         cache.put("hello", "hybrid", 0, vec![]);
         assert!(cache.get("hello", "hybrid", 0).is_some());
         assert!(cache.get("world", "hybrid", 0).is_none());
@@ -146,6 +176,13 @@ mod tests {
 
     #[test]
     fn invalidation_clears_stale() {
+        // Deliberately NOT pinned: this test's subject *is* the global
+        // generation, so freezing it would make the assertion below
+        // unfalsifiable. It is also inherently safe under parallelism —
+        // a concurrent `invalidate()` can only reinforce the expected miss,
+        // never turn it into a hit. That asymmetry is the rule for the rest
+        // of this module: tests asserting a *hit* need pinning, tests
+        // asserting a miss-after-invalidate do not.
         let mut cache = ResultCache::new(4);
         cache.put("hello", "hybrid", 0, vec![]);
         assert!(cache.get("hello", "hybrid", 0).is_some());
@@ -155,7 +192,7 @@ mod tests {
 
     #[test]
     fn evicts_oldest_at_capacity() {
-        let mut cache = ResultCache::new(2);
+        let mut cache = ResultCache::new_pinned(2);
         cache.put("a", "hybrid", 0, vec![]);
         cache.put("b", "hybrid", 0, vec![]);
         cache.put("c", "hybrid", 0, vec![]);
@@ -167,7 +204,7 @@ mod tests {
     #[test]
     fn different_modes_are_different_keys() {
         // Same query + filters_hash, different mode → two independent cache slots.
-        let mut cache = ResultCache::new(10);
+        let mut cache = ResultCache::new_pinned(10);
         cache.put("query", "text", 0, vec![]);
         // "vector" mode was never inserted → cache miss.
         assert!(
@@ -184,7 +221,7 @@ mod tests {
     #[test]
     fn different_filters_are_different_keys() {
         // Same query + mode, different filters_hash → independent slots.
-        let mut cache = ResultCache::new(10);
+        let mut cache = ResultCache::new_pinned(10);
         cache.put("hello", "hybrid", 111, vec![]);
         // filters_hash=222 was never inserted.
         assert!(
@@ -201,7 +238,7 @@ mod tests {
     #[test]
     fn lru_touch_prevents_eviction() {
         // Access "a" after inserting "b" → "a" is promoted, "b" is evicted.
-        let mut cache = ResultCache::new(2);
+        let mut cache = ResultCache::new_pinned(2);
         cache.put("a", "h", 0, vec![]);
         cache.put("b", "h", 0, vec![]);
         // Touch "a" to promote it to MRU
@@ -266,7 +303,7 @@ mod tests {
 
     #[test]
     fn put_same_key_twice_no_duplicate() {
-        let mut cache = ResultCache::new(4);
+        let mut cache = ResultCache::new_pinned(4);
         cache.put("q", "h", 0, vec![]);
         cache.put("q", "h", 0, vec![]);
         // Internal deque should deduplicate — adding 3 more should not evict "q"
@@ -278,7 +315,7 @@ mod tests {
 
     #[test]
     fn capacity_one_works() {
-        let mut cache = ResultCache::new(1);
+        let mut cache = ResultCache::new_pinned(1);
         cache.put("a", "h", 0, vec![]);
         assert!(cache.get("a", "h", 0).is_some());
         cache.put("b", "h", 0, vec![]);
