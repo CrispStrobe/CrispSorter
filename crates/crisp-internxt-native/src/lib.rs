@@ -18,7 +18,10 @@ use sha2::{Sha256, Sha512};
 use std::fs::{self, File};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
 
@@ -265,17 +268,53 @@ pub struct TransferStats {
     pub skipped: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferProgress {
+    pub path: PathBuf,
+    pub completed_bytes: u64,
+    pub total_bytes: u64,
+    pub files_completed: u64,
+    pub folders_completed: u64,
+}
+
+pub type ProgressCallback = Arc<dyn Fn(TransferProgress) + Send + Sync>;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransferFilter {
     pub includes: Vec<String>,
     pub excludes: Vec<String>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct TransferOptions {
     pub filter: TransferFilter,
     pub preserve_timestamps: bool,
     pub skip_unchanged: bool,
+    pub cancellation: Option<Arc<AtomicBool>>,
+    pub progress: Option<ProgressCallback>,
+}
+
+fn check_cancelled(options: &TransferOptions) -> Result<()> {
+    if options
+        .cancellation
+        .as_ref()
+        .is_some_and(|token| token.load(Ordering::Relaxed))
+    {
+        return Err(anyhow!("transfer cancelled"));
+    }
+    Ok(())
+}
+
+fn report_progress(options: &TransferOptions, path: &Path, stats: &TransferStats, total: u64) {
+    if let Some(callback) = &options.progress {
+        callback(TransferProgress {
+            path: path.to_owned(),
+            completed_bytes: stats.bytes,
+            total_bytes: total,
+            files_completed: stats.files,
+            folders_completed: stats.folders,
+        });
+    }
 }
 
 impl TransferFilter {
@@ -2332,7 +2371,8 @@ impl InternxtNativeClient {
         policy: ConflictPolicy,
         options: TransferOptions,
     ) -> Result<TransferStats> {
-        inspect_local_directory(local_root)?;
+        let local_summary = inspect_local_directory(local_root)?;
+        check_cancelled(&options)?;
         let mut stats = TransferStats::default();
         self.upload_directory_contents(
             session,
@@ -2342,6 +2382,7 @@ impl InternxtNativeClient {
             &options,
             &mut stats,
         )?;
+        report_progress(&options, local_root, &stats, local_summary.bytes);
         Ok(stats)
     }
 
@@ -2354,11 +2395,13 @@ impl InternxtNativeClient {
         options: &TransferOptions,
         stats: &mut TransferStats,
     ) -> Result<()> {
+        check_cancelled(options)?;
         let mut entries = fs::read_dir(local_root)
             .with_context(|| format!("reading local directory {}", local_root.display()))?
             .collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
+            check_cancelled(options)?;
             let local = entry.path();
             let name = sanitize_filename(&entry.file_name().to_string_lossy());
             let metadata = entry.metadata()?;
@@ -2380,6 +2423,7 @@ impl InternxtNativeClient {
                     }
                 }
                 stats.folders += 1;
+                report_progress(options, &local, stats, 0);
                 self.upload_directory_contents(
                     session,
                     &local,
@@ -2434,6 +2478,7 @@ impl InternxtNativeClient {
                 }
                 stats.files += 1;
                 stats.bytes += metadata.len();
+                report_progress(options, &local, stats, 0);
             }
         }
         self.clear_listing_cache();
@@ -2485,6 +2530,7 @@ impl InternxtNativeClient {
         policy: ConflictPolicy,
         options: TransferOptions,
     ) -> Result<TransferStats> {
+        check_cancelled(&options)?;
         fs::create_dir_all(local_root)?;
         let mut stats = TransferStats::default();
         self.download_directory_contents(
@@ -2507,7 +2553,9 @@ impl InternxtNativeClient {
         options: &TransferOptions,
         stats: &mut TransferStats,
     ) -> Result<()> {
+        check_cancelled(options)?;
         for item in self.list_folder_cached(remote_folder_uuid)? {
+            check_cancelled(options)?;
             let local = local_root.join(sanitize_filename(&item.name));
             if item.is_dir {
                 if local.exists() {
@@ -2550,6 +2598,7 @@ impl InternxtNativeClient {
                 }
                 stats.files += 1;
                 stats.bytes += item.size;
+                report_progress(options, &local, stats, 0);
             }
         }
         Ok(())
@@ -2910,6 +2959,60 @@ mod tests {
         assert_eq!(stats.bytes, 6);
         assert!(inspect_local_directory(&root.join("a.txt")).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recursive_transfer_honors_cooperative_cancellation_before_network_io() {
+        let root = std::env::temp_dir().join(format!("crispsorter-cancel-{}", now_seconds()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file.txt"), b"payload").unwrap();
+        let cancellation = Arc::new(AtomicBool::new(true));
+        let client = InternxtNativeClient::new("http://127.0.0.1:1", "token").unwrap();
+        let session = InternxtSession {
+            drive_api_url: String::new(),
+            network_url: String::new(),
+            email: String::new(),
+            token: String::new(),
+            new_token: String::new(),
+            mnemonic: MNEMONIC.into(),
+            user_id: String::new(),
+            root_folder_id: String::new(),
+            bridge_user: String::new(),
+            bucket_id: "00".repeat(12),
+        };
+        let result = client.upload_directory_with_options(
+            &session,
+            &root,
+            "remote-root",
+            ConflictPolicy::Overwrite,
+            TransferOptions {
+                cancellation: Some(cancellation),
+                ..TransferOptions::default()
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn progress_callback_receives_completed_transfer_stats() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let copy = Arc::clone(&seen);
+        let options = TransferOptions {
+            progress: Some(Arc::new(move |progress| {
+                copy.lock().unwrap().push(progress);
+            })),
+            ..TransferOptions::default()
+        };
+        let mut stats = TransferStats::default();
+        stats.files = 1;
+        stats.bytes = 42;
+        report_progress(&options, Path::new("file.txt"), &stats, 42);
+        let progress = seen.lock().unwrap().pop().unwrap();
+        assert_eq!(progress.path, PathBuf::from("file.txt"));
+        assert_eq!(progress.completed_bytes, 42);
+        assert_eq!(progress.total_bytes, 42);
+        assert_eq!(progress.files_completed, 1);
     }
 
     #[test]
