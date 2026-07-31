@@ -2991,6 +2991,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Mutex};
     use std::thread;
 
     fn test_session(gateway_url: String) -> FilenSession {
@@ -3029,6 +3030,35 @@ mod tests {
 
     fn spawn_http_server(responses: Vec<String>) -> String {
         spawn_status_server(responses.into_iter().map(|body| (200, body)).collect())
+    }
+
+    fn spawn_login_capture_server() -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        thread::spawn(move || {
+            for body in [
+                r#"{"status":true,"data":{"authVersion":2,"salt":"salt"}}"#,
+                r#"{"status":false,"code":"wrong_2fa","message":"Invalid code"}"#,
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 8192];
+                let size = stream.read(&mut request).unwrap_or(0);
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&request[..size]).into_owned());
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        (address, requests)
     }
 
     fn spawn_status_server(responses: Vec<(u16, String)>) -> String {
@@ -3148,6 +3178,27 @@ mod tests {
                 .to_string();
         assert!(error.contains("wrong_2fa"), "unexpected error: {error}");
         assert!(error.contains("Invalid code"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn login_sends_reference_compatible_2fa_values() {
+        let (gateway, requests) = spawn_login_capture_server();
+        let _ =
+            FilenNativeClient::login(&gateway, "test@example.test", "password", None).unwrap_err();
+        let body = requests.lock().unwrap().join("\n");
+        assert!(
+            body.contains(r#""twoFactorCode":"XXXXXX""#),
+            "missing disabled-2FA sentinel in login request: {body}"
+        );
+
+        let (gateway, requests) = spawn_login_capture_server();
+        let _ = FilenNativeClient::login(&gateway, "test@example.test", "password", Some("123456"))
+            .unwrap_err();
+        let body = requests.lock().unwrap().join("\n");
+        assert!(
+            body.contains(r#""twoFactorCode":"123456""#),
+            "missing supplied 2FA code in login request: {body}"
+        );
     }
 
     #[test]
