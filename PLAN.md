@@ -1329,8 +1329,9 @@ independently with no shared concurrency limit or retry policy.
   gdrive}.rs` upload/download methods with `TransferQueue::submit`.
   Each connector still owns its auth + endpoint logic; the queue only
   gates concurrency and retries. The GUI cloud-backup upload/restore path
-  is now queue-backed for every configured provider; direct drive commands
-  remain to be wired.
+  is now queue-backed for every configured provider. New GUI
+  `drive_read_file` / `drive_write_file` commands also use the queue;
+  lower-level FUSE and provider-call sites remain to be audited.
 - [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button).  Listens to `transfer://progress` events.

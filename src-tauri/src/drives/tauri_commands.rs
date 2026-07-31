@@ -180,6 +180,79 @@ pub async fn drive_stat(
         .map_err(|e| e.to_string())
 }
 
+/// Read a file through the shared transfer queue.
+#[tauri::command]
+pub async fn drive_read_file(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    use crate::sync::transfer_queue::TransferQueue;
+    use std::sync::Arc;
+
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
+    let path = std::path::PathBuf::from(path);
+    let path_for_transfer = path.clone();
+    let transfer = TransferQueue::new().submit_download(
+        drive_id,
+        path,
+        None,
+        move |_| drive.read_file(&path_for_transfer),
+    );
+    match transfer.handle.await {
+        Ok(Ok(data)) => Ok(data),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(format!("transfer queue task failed: {error}")),
+    }
+}
+
+/// Write a file through the shared transfer queue.
+#[tauri::command]
+pub async fn drive_write_file(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    use crate::sync::transfer_queue::TransferQueue;
+    use std::sync::Arc;
+
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
+    let path = std::path::PathBuf::from(path);
+    let transfer = TransferQueue::new().submit_upload(drive_id, path, data, move |path, data| {
+        drive.write_file(path, data)
+    });
+    match transfer.handle.await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(error) => Err(format!("transfer queue task failed: {error}")),
+    }
+}
+
 /// Log a native Internxt drive in without persisting the password or
 /// mnemonic. The resulting session is stored under the registered drive id
 /// in the OS keychain. This command is available in all builds so the UI can
