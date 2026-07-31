@@ -2622,6 +2622,9 @@ a transfer without leaving the search/catalog workflow.
     semantics covered by mock-server unit tests. ✅ 2026-07-31
   - [x] Google Drive now advertises and implements folder creation, rename/
     move, and copy through Drive API v3 `files` mutations. ✅ 2026-07-31
+  - [x] OneDrive now advertises and implements folder creation and
+    rename/move through Graph mutations. Copy remains explicitly unsupported
+    because Graph exposes it as an asynchronous operation. ✅ 2026-07-31
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.

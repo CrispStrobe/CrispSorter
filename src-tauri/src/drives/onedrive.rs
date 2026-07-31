@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat, FileVersion};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 
@@ -33,7 +33,14 @@ impl OneDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
-        Self::with_graph_base(label, access_token, refresh_token, client_id, client_secret, GRAPH_BASE)
+        Self::with_graph_base(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            GRAPH_BASE,
+        )
     }
 
     fn with_graph_base(
@@ -91,6 +98,17 @@ impl CloudDrive for OneDriveDrive {
     }
     fn drive_type(&self) -> DriveType {
         DriveType::OneDrive
+    }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            share_links: true,
+            versions: true,
+            ..DriveCapabilities::basic()
+        }
     }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
@@ -159,6 +177,69 @@ impl CloudDrive for OneDriveDrive {
         Ok(())
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        let name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("OneDrive create_dir requires a directory name"))?;
+        let parent_url = self.graph_url(path.parent().unwrap_or_else(|| Path::new("")));
+        let response = self
+            .client
+            .post(&parent_url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({
+                "name": name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail"
+            }))
+            .send()
+            .with_context(|| format!("OneDrive create_dir: {}", path.display()))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("OneDrive create_dir: HTTP {}", response.status()));
+        }
+        Ok(())
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let name = destination
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("OneDrive move requires a destination name"))?;
+        let source_parent = source.parent().unwrap_or_else(|| Path::new(""));
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new(""));
+        let mut update = serde_json::json!({ "name": name });
+        if source_parent != destination_parent {
+            let clean = destination_parent
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .to_owned();
+            let parent_path = if clean.is_empty() {
+                "/drive/root:".to_owned()
+            } else {
+                format!("/drive/root:/{clean}")
+            };
+            update["parentReference"] = serde_json::json!({ "path": parent_path });
+        }
+        let url = self.item_url(source);
+        let response = self
+            .client
+            .patch(&url)
+            .header("Authorization", self.auth_header())
+            .json(&update)
+            .send()
+            .with_context(|| {
+                format!(
+                    "OneDrive move: {} -> {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        if !response.status().is_success() {
+            return Err(anyhow!("OneDrive move: HTTP {}", response.status()));
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         let url = self.item_url(path);
         let resp = self
@@ -223,9 +304,7 @@ impl CloudDrive for OneDriveDrive {
             return Err(anyhow!("OneDrive share_link: HTTP {}", resp.status()));
         }
 
-        let body: serde_json::Value = resp
-            .json()
-            .context("OneDrive share_link: parse JSON")?;
+        let body: serde_json::Value = resp.json().context("OneDrive share_link: parse JSON")?;
         Ok(body["link"]["webUrl"].as_str().map(str::to_owned))
     }
 
@@ -376,6 +455,52 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_include_graph_mutations_but_not_copy() {
+        let d = OneDriveDrive::new("test".into(), "tok".into(), None, None, None);
+        let capabilities = d.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(!capabilities.copy);
+        assert!(capabilities.share_links);
+        assert!(capabilities.versions);
+    }
+
+    #[test]
+    fn graph_mutations_use_expected_endpoints() {
+        let mut server = Server::new();
+        let create = server
+            .mock("POST", "/v1.0/me/drive/root/children")
+            .match_header("authorization", "Bearer tok")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"@microsoft.graph.conflictBehavior":"fail","folder":{},"name":"Archive"}"#
+                    .into(),
+            ))
+            .with_status(201)
+            .create();
+        let move_mock = server
+            .mock("PATCH", "/v1.0/me/drive/root:/old.txt")
+            .match_header("authorization", "Bearer tok")
+            .match_body(mockito::Matcher::JsonString(r#"{"name":"new.txt"}"#.into()))
+            .with_status(200)
+            .create();
+        let drive = OneDriveDrive::with_graph_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/v1.0", server.url()),
+        );
+        drive.create_dir(Path::new("Archive")).unwrap();
+        drive
+            .move_path(Path::new("old.txt"), Path::new("new.txt"))
+            .unwrap();
+        create.assert();
+        move_mock.assert();
+    }
+
+    #[test]
     fn share_link_url_targets_graph_create_link() {
         let d = OneDriveDrive::new("test".into(), "tok".into(), None, None, None);
         assert_eq!(
@@ -402,7 +527,10 @@ mod tests {
             format!("{}/v1.0", server.url()),
         );
         assert_eq!(
-            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            drive
+                .share_link(Path::new("report.pdf"))
+                .unwrap()
+                .as_deref(),
             Some("https://onedrive.example/s/abc")
         );
         mock.assert();
