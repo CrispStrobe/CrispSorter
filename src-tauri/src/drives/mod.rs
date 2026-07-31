@@ -714,6 +714,46 @@ mod tests {
     }
 
     #[test]
+    fn provider_capability_matrix_is_explicit_without_network_or_keychain() {
+        // Instantiate every non-native provider with inert configuration and
+        // inspect only its declaration.  This is deliberately a pure contract
+        // test: capability discovery must not spawn a CLI, make HTTP calls,
+        // or consult credentials/keychain state.
+        let cases = [
+            (DriveType::Local, true, true, true, true, false, false),
+            (DriveType::Filen, true, true, true, true, false, false),
+            (DriveType::Internxt, true, true, true, false, false, false),
+            (DriveType::WebDav, true, true, true, true, false, false),
+            (DriveType::OneDrive, true, true, true, false, true, true),
+            (DriveType::GoogleDrive, true, true, true, true, true, true),
+        ];
+
+        for (kind, create_dir, rename, move_path, copy, share_links, versions) in cases {
+            let config = DriveConfig {
+                id: format!("capability-{kind:?}"),
+                label: format!("capability-{kind:?}"),
+                kind,
+                path: "https://example.invalid/drive/".to_owned(),
+                username: None,
+                password: None,
+                insecure_tls: None,
+                access_token: Some("unit-test-token".to_owned()),
+                refresh_token: None,
+                client_id: None,
+                client_secret: None,
+            };
+            let caps = DriveRegistry::instantiate(&config).capabilities();
+            assert_eq!(caps.create_dir, create_dir, "{kind:?} create_dir");
+            assert_eq!(caps.rename, rename, "{kind:?} rename");
+            assert_eq!(caps.move_path, move_path, "{kind:?} move_path");
+            assert_eq!(caps.copy, copy, "{kind:?} copy");
+            assert_eq!(caps.share_links, share_links, "{kind:?} share_links");
+            assert_eq!(caps.versions, versions, "{kind:?} versions");
+            assert!(!caps.streaming, "{kind:?} streaming is not implemented yet");
+        }
+    }
+
+    #[test]
     fn local_drive_mutations_cover_directory_move_and_recursive_copy() {
         let (_tmp, drive) = fixture();
         drive.create_dir(Path::new("source/nested")).unwrap();

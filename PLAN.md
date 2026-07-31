@@ -2675,6 +2675,9 @@ a transfer without leaving the search/catalog workflow.
   resume, expired auth, share/version behavior, and unsupported operations.
   Keep CZE live tests for Internxt and the configured Filen account gated by
   explicit environment variables; never use keychain discovery in unit tests.
+  - [x] Added a pure provider capability-matrix contract covering all
+    non-native drive constructors without network, subprocess, or credential
+    access. ✅ 2026-07-31
 - [ ] **Offline queue integration.** On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
