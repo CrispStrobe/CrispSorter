@@ -2685,9 +2685,9 @@ a transfer without leaving the search/catalog workflow.
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
   shared queue with exponential polling backoff.
-  - [x] Added Tauri commands for offline queue listing, stats, enqueue,
-    cancellation, failed-retry, and age-based purge; cancelled records remain
-    inspectable for diagnostics. ✅ 2026-08-01
+  - [x] Durable inspect/list/retry-failed/purge-failed Tauri commands now
+    expose the SQLite offline queue without requiring keychain or network
+    access. ✅ 2026-08-01
 
 #### P34.2 — Core file-manager surface, P1
 
