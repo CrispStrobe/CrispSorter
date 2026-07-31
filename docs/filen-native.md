@@ -15,6 +15,8 @@ cross-checks.
   six-character code is passed through unchanged.
 - Listings are cached per folder and invalidated after mutations. Path search
   supports literal components and recursive `**`, plus `*` and `?` wildcards.
+  `list_folder_cached` and `list_folder_with_paths` match the native Internxt
+  client naming and support bounded recursive inventories.
 - Upload/download concurrency is bounded independently at chunk and file
   levels. `TransferConfig` exposes `chunk_size`, `workers`, `file_workers`,
   `retries`, and `retry_backoff_ms`.
@@ -24,7 +26,12 @@ cross-checks.
   verification. `upload_file_from_reader` avoids buffering a complete upload,
   while the `_with_progress` upload/download variants report `(completed,
   total)` bytes. `get_file` fetches and decrypts one file's metadata without a
-  parent listing.
+  parent listing. `upload_path` and `download_path` recursively bridge local
+  files/directories without materializing whole files.
+
+- Login preserves gateway error codes such as `enter_2fa` and `wrong_2fa` in
+  the returned error while still sending Filen's `XXXXXX` sentinel when no
+  code is supplied.
 
 ## Supported mutations
 
@@ -36,8 +43,9 @@ are accepted for successful empty mutations.
 ## Verification
 
 Hermetic tests exercise gateway parsing, cache invalidation, retries,
-concurrency ceilings, wildcard search, resumable gaps, reader uploads,
-streaming/progress downloads, range downloads, and crypto vectors. The ignored live suite uses unique folders and verifies both
+concurrency ceilings, wildcard/path search, resumable gaps, reader/path
+uploads, streaming/progress downloads, range downloads, 2FA error handling,
+and crypto vectors. The ignored live suite uses unique folders and verifies both
 directions with `../filen-python`:
 
 ```bash

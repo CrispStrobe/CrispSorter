@@ -18,6 +18,7 @@ use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -311,6 +312,12 @@ pub struct NativeItem {
     pub hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePathListing {
+    pub path: PathBuf,
+    pub item: NativeItem,
+}
+
 #[derive(Debug, Clone)]
 pub struct UploadJob {
     pub parent: String,
@@ -359,6 +366,8 @@ struct ApiEnvelope<T> {
     status: bool,
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    code: String,
     data: Option<T>,
 }
 
@@ -586,6 +595,11 @@ impl FilenNativeClient {
         Ok(items)
     }
 
+    /// Compatibility alias shared with the native Internxt client.
+    pub fn list_folder_cached(&self, uuid: &str) -> Result<Vec<NativeItem>> {
+        self.list_folder(uuid)
+    }
+
     pub fn file_exists(&self, parent: &str, name: &str) -> Result<bool> {
         #[derive(Deserialize)]
         struct Exists {
@@ -762,6 +776,49 @@ impl FilenNativeClient {
         Ok(results)
     }
 
+    /// List every item below a folder together with its path relative to the
+    /// requested folder. `max_depth` is relative to that folder; negative
+    /// values mean unlimited recursion.
+    pub fn list_folder_with_paths(
+        &self,
+        session: &FilenSession,
+        folder_path: &Path,
+        max_depth: isize,
+    ) -> Result<Vec<NativePathListing>> {
+        let folder = self.resolve_path(session, folder_path)?;
+        anyhow::ensure!(folder.is_dir, "listing starting path is not a folder");
+        let base = if folder_path == Path::new(".") {
+            Path::new("")
+        } else {
+            folder_path
+        };
+        let mut output = Vec::new();
+        self.list_paths_recursive(&folder.uuid, base, max_depth, 0, &mut output)?;
+        output.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(output)
+    }
+
+    fn list_paths_recursive(
+        &self,
+        folder_uuid: &str,
+        parent_path: &Path,
+        max_depth: isize,
+        depth: isize,
+        output: &mut Vec<NativePathListing>,
+    ) -> Result<()> {
+        for item in self.list_folder_cached(folder_uuid)? {
+            let path = parent_path.join(&item.name);
+            output.push(NativePathListing {
+                path: path.clone(),
+                item: item.clone(),
+            });
+            if item.is_dir && (max_depth < 0 || depth < max_depth) {
+                self.list_paths_recursive(&item.uuid, &path, max_depth, depth + 1, output)?;
+            }
+        }
+        Ok(())
+    }
+
     fn search_folder_depth(
         &self,
         uuid: &str,
@@ -846,6 +903,16 @@ impl FilenNativeClient {
             serde_json::json!({"email": email}),
             TransferConfig::default(),
         )?;
+        anyhow::ensure!(
+            auth.status,
+            "Filen auth info failed{}: {}",
+            if auth.code.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", auth.code)
+            },
+            auth.message
+        );
         let auth = auth
             .data
             .ok_or_else(|| anyhow!("Filen auth info missing"))?;
@@ -875,6 +942,16 @@ impl FilenNativeClient {
             login_body,
             TransferConfig::default(),
         )?;
+        anyhow::ensure!(
+            login.status,
+            "Filen login failed{}: {}",
+            if login.code.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", login.code)
+            },
+            login.message
+        );
         let api = login
             .data
             .ok_or_else(|| anyhow!("Filen login response missing"))?;
@@ -1457,6 +1534,34 @@ impl FilenNativeClient {
         Ok(())
     }
 
+    /// Upload a local file or directory below `parent` using its local name.
+    /// Files are streamed through the reader-based transfer path.
+    pub fn upload_path(
+        &self,
+        parent: &str,
+        name: &str,
+        mime: &str,
+        local_path: &Path,
+    ) -> Result<()> {
+        let metadata = std::fs::metadata(local_path)
+            .with_context(|| format!("reading local Filen source {}", local_path.display()))?;
+        if metadata.is_dir() {
+            let folder = self.create_folder(parent, name)?;
+            let mut entries: Vec<_> = std::fs::read_dir(local_path)
+                .with_context(|| format!("listing local Filen source {}", local_path.display()))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let child_name = entry.file_name().to_string_lossy().into_owned();
+                self.upload_path(&folder, &child_name, mime, &entry.path())?;
+            }
+            return Ok(());
+        }
+        let file = std::fs::File::open(local_path)
+            .with_context(|| format!("opening local Filen source {}", local_path.display()))?;
+        self.upload_file_from_reader(parent, name, mime, metadata.len(), file)
+    }
+
     fn upload_chunks(
         &self,
         uuid: &str,
@@ -1598,6 +1703,31 @@ impl FilenNativeClient {
             writer,
             Some(&mut progress),
         )
+    }
+
+    /// Download a remote file or directory to a local path. Directory
+    /// contents are recreated recursively; files stream directly to disk.
+    pub fn download_path(&self, item: &NativeItem, local_path: &Path) -> Result<()> {
+        if item.is_dir {
+            std::fs::create_dir_all(local_path).with_context(|| {
+                format!("creating local Filen destination {}", local_path.display())
+            })?;
+            for child in self.list_folder(&item.uuid)? {
+                self.download_path(&child, &local_path.join(&child.name))?;
+            }
+            return Ok(());
+        }
+        if let Some(parent) = local_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(local_path).with_context(|| {
+            format!("creating local Filen destination {}", local_path.display())
+        })?;
+        self.download_file_to_writer(item, &mut file)?;
+        Ok(())
     }
 
     /// Download only the byte range requested. Only the necessary encrypted
@@ -2029,6 +2159,33 @@ mod tests {
     }
 
     #[test]
+    fn login_preserves_enter_2fa_error_code() {
+        let gateway = spawn_http_server(vec![
+            r#"{"status":true,"data":{"authVersion":2,"salt":"salt"}}"#.into(),
+            r#"{"status":false,"code":"enter_2fa","message":"2FA required"}"#.into(),
+        ]);
+        let error = FilenNativeClient::login(&gateway, "test@example.test", "password", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("enter_2fa"), "unexpected error: {error}");
+        assert!(error.contains("2FA required"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn login_preserves_wrong_2fa_error_code() {
+        let gateway = spawn_http_server(vec![
+            r#"{"status":true,"data":{"authVersion":2,"salt":"salt"}}"#.into(),
+            r#"{"status":false,"code":"wrong_2fa","message":"Invalid code"}"#.into(),
+        ]);
+        let error =
+            FilenNativeClient::login(&gateway, "test@example.test", "password", Some("000000"))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("wrong_2fa"), "unexpected error: {error}");
+        assert!(error.contains("Invalid code"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn v2_filename_hash_matches_vendor_vectors() {
         // FilenCloudDienste/filen-sdk-go/filen/crypto_test.go.
         assert_eq!(v2_hash(b"abc"), "5c5a4ad792911a5a58741e16257f62b664aa2df3");
@@ -2256,6 +2413,48 @@ mod tests {
     }
 
     #[test]
+    fn path_listing_returns_sorted_recursive_paths_with_depth_limit() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let folder_name =
+            v2_encrypt_metadata(r#"{"name":"nested","creation":1}"#, key, *b"abcdefghijkl")
+                .unwrap();
+        let file_metadata = v2_encrypt_metadata(
+            r#"{"name":"inside.txt","size":5,"mime":"text/plain","key":"0123456789abcdef0123456789abcdef","creation":1,"lastModified":2,"blake3":"hash"}"#,
+            key,
+            *b"mnopqrstuvwx",
+        )
+        .unwrap();
+        let gateway = spawn_http_server(vec![
+            serde_json::json!({
+                "status": true,
+                "data": {"folders": [{"uuid":"nested-1","name":folder_name,"parent":"root"}], "uploads": []}
+            })
+            .to_string(),
+            serde_json::json!({
+                "status": true,
+                "data": {"folders": [], "uploads": [{"uuid":"file-1","metadata":file_metadata,"parent":"nested-1","size":5,"bucket":"b","region":"r","chunks":1,"version":2}]}
+            })
+            .to_string(),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        let session = test_session("http://127.0.0.1:1".into());
+        let shallow = client
+            .list_folder_with_paths(&session, Path::new("."), 0)
+            .unwrap();
+        assert_eq!(shallow.len(), 1);
+        assert_eq!(shallow[0].path, Path::new("nested"));
+        let deep = client
+            .list_folder_with_paths(&session, Path::new("."), -1)
+            .unwrap();
+        assert_eq!(
+            deep.iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
+            vec![PathBuf::from("nested"), PathBuf::from("nested/inside.txt")]
+        );
+    }
+
+    #[test]
     fn hermetic_empty_mutation_accepts_success_without_data() {
         let gateway =
             spawn_http_server(vec![r#"{"status":true,"message":"ok","data":null}"#.into()]);
@@ -2459,5 +2658,51 @@ mod tests {
         );
         assert_eq!(output, b"hello");
         assert_eq!(progress.last(), Some(&(5, 5)));
+    }
+
+    #[test]
+    fn upload_path_recurses_local_directories_without_buffering_files() {
+        let gateway = spawn_http_server(vec![
+            r#"{"status":true,"data":{"uuid":"remote-folder"}}"#.into(),
+            r#"{"status":true,"data":{"uuid":"remote-nested"}}"#.into(),
+            r#"{"status":true,"data":{}}"#.into(),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        let local = tempfile::tempdir().unwrap();
+        std::fs::create_dir(local.path().join("nested")).unwrap();
+        std::fs::write(local.path().join("nested").join("empty.txt"), b"").unwrap();
+        client
+            .upload_path("root", "folder", "application/octet-stream", local.path())
+            .unwrap();
+    }
+
+    #[test]
+    fn download_path_streams_file_to_local_destination() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            bucket: "bucket".into(),
+            region: "region".into(),
+            chunks: 1,
+            version: 2,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+            hash: String::new(),
+        };
+        let local = tempfile::tempdir().unwrap();
+        let destination = local.path().join("nested/file.txt");
+        client.download_path(&item, &destination).unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), b"hello");
     }
 }
