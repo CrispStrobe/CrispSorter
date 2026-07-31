@@ -30,11 +30,7 @@ impl NativeFilenDrive {
     fn resolve(
         &self,
         path: &Path,
-    ) -> Result<(
-        FilenSession,
-        FilenNativeClient,
-        crisp_filen::NativeItem,
-    )> {
+    ) -> Result<(FilenSession, FilenNativeClient, crisp_filen::NativeItem)> {
         let (session, client) = self.parts()?;
         let item = client.resolve_path(session, path)?;
         Ok((session.clone(), client, item))
@@ -130,6 +126,7 @@ mod tests {
     use super::*;
     #[test]
     fn missing_session_is_reported_without_network() {
+        super::secret::install_mock_for_tests();
         let drive = NativeFilenDrive::from_keychain("Native Filen", "missing-filendrive");
         assert_eq!(drive.drive_type(), DriveType::Filen);
         assert!(format!("{}", drive.list_dir(Path::new("/")).unwrap_err())

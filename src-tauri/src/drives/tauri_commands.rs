@@ -336,7 +336,7 @@ pub async fn drive_native_refresh(
             .map_err(|error| format!("parsing native Internxt session failed: {error:#}"))?;
         let client = super::internxt_native::InternxtNativeClient::new(
             &session.drive_api_url,
-            &session.token,
+            session.active_token(),
         )
         .map_err(|error| format!("creating native Internxt client failed: {error:#}"))?;
         let refreshed = client

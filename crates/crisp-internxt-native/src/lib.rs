@@ -194,6 +194,15 @@ impl InternxtSession {
         hex::encode(Sha256::digest(self.user_id.as_bytes()))
     }
 
+    /// Bearer credential currently preferred by the gateway after refresh.
+    pub fn active_token(&self) -> &str {
+        if self.new_token.is_empty() {
+            &self.token
+        } else {
+            &self.new_token
+        }
+    }
+
     pub fn bucket_bytes(&self) -> Result<[u8; 12]> {
         let bytes = hex::decode(&self.bucket_id).context("decoding Internxt bucket id")?;
         bytes
@@ -951,11 +960,7 @@ impl InternxtNativeClient {
     /// replaces the bearer tokens returned by `/users/refresh`.
     pub fn refresh_session(&self, session: &InternxtSession) -> Result<InternxtSession> {
         let url = format!("{}/users/refresh", self.base_url);
-        let token = if session.new_token.is_empty() {
-            &session.token
-        } else {
-            &session.new_token
-        };
+        let token = session.active_token();
         let response = self
             .http
             .get(&url)
@@ -3676,6 +3681,25 @@ mod tests {
             InternxtSession::decode(&session.encode().unwrap()).unwrap(),
             session
         );
+    }
+
+    #[test]
+    fn active_token_prefers_refreshed_credential() {
+        let mut session = InternxtSession {
+            drive_api_url: String::new(),
+            network_url: String::new(),
+            email: String::new(),
+            token: "old-token".into(),
+            new_token: "refreshed-token".into(),
+            mnemonic: String::new(),
+            user_id: String::new(),
+            root_folder_id: String::new(),
+            bridge_user: String::new(),
+            bucket_id: String::new(),
+        };
+        assert_eq!(session.active_token(), "refreshed-token");
+        session.new_token.clear();
+        assert_eq!(session.active_token(), "old-token");
     }
 
     #[test]

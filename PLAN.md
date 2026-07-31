@@ -2332,7 +2332,7 @@ a trap:
   missing path; UI options hidden on mobile; WebDAV named in the error as
   the mobile route to the same storage.
 
-- [ ] **P33.1 — Internxt native: continue on our own
+- [>] **P33.1 — Internxt native: continue on our own
   `crates/crisp-internxt-native`.**
 
   *Settled 2026-07-31 after reading both implementations.* This item was
@@ -2387,6 +2387,9 @@ a trap:
   OpenSSL in.
 
   `../internxt-dart` stays the **oracle** (P33.2), not a port source.
+
+  (This pass fixes active-token selection after refresh and makes native
+  overwrite resolution use the complete parent path.)
 
 - [x] **P33.2 — Verify the crypto against the reference client, not our own
   tests.**  `internxt-core` claims byte-for-byte compatibility with the

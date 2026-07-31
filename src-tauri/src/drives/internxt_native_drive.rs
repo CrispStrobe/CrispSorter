@@ -27,12 +27,7 @@ impl NativeInternxtDrive {
             .session
             .as_ref()
             .map_err(|error| anyhow!("native Internxt session unavailable: {error:#}"))?;
-        let bearer = if session.new_token.is_empty() {
-            &session.token
-        } else {
-            &session.new_token
-        };
-        let client = InternxtNativeClient::new(&session.drive_api_url, bearer)?;
+        let client = InternxtNativeClient::new(&session.drive_api_url, session.active_token())?;
         Ok((session, client))
     }
 
@@ -114,16 +109,16 @@ impl CloudDrive for NativeInternxtDrive {
             .to_string_lossy();
         let parent = path.parent().unwrap_or_else(|| Path::new("/"));
         let (session, client, folder_uuid) = self.resolve_parent(parent, true)?;
-        let path = PathBuf::from(filename.as_ref());
-        let plain_name = path
+        let filename_path = PathBuf::from(filename.as_ref());
+        let plain_name = filename_path
             .file_stem()
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_else(|| filename.to_string());
-        let file_type = path
+        let file_type = filename_path
             .extension()
             .map(|value| value.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if let Ok(existing) = client.resolve_path(&session, &path) {
+        if let Ok(existing) = client.resolve_path(&session, path) {
             if existing.is_dir {
                 return Err(anyhow!(
                     "Internxt write path is a directory: {}",
@@ -172,6 +167,7 @@ mod tests {
 
     #[test]
     fn drive_metadata_is_available_without_a_session() {
+        super::secret::install_mock_for_tests();
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
         assert_eq!(drive.label(), "Native Internxt");
         assert_eq!(drive.drive_type(), DriveType::Internxt);
@@ -179,6 +175,7 @@ mod tests {
 
     #[test]
     fn missing_session_is_reported_before_network_access() {
+        super::secret::install_mock_for_tests();
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
         let error = drive
             .list_dir(Path::new("/"))

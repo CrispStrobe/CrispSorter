@@ -40,14 +40,14 @@ mod tests {
     use keyring::mock::default_credential_builder;
     use std::sync::Once;
 
-    fn install_mock() {
+    pub(crate) fn install_mock_for_tests() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| keyring::set_default_credential_builder(default_credential_builder()));
     }
 
     #[test]
     fn session_entry_round_trips() {
-        install_mock();
+        install_mock_for_tests();
         set_session("test-drive-session", "{\"token\":\"test\"}").unwrap();
         assert_eq!(
             get_session("test-drive-session").unwrap().as_deref(),
