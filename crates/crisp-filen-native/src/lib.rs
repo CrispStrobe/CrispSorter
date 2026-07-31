@@ -451,6 +451,12 @@ pub struct FilenNativeClient {
     transfer_config: TransferConfig,
 }
 
+/// Preferred provider-specific client name.
+///
+/// `FilenNativeClient` remains available for source compatibility with 0.x
+/// callers; new code should use `FilenClient`.
+pub type FilenClient = FilenNativeClient;
+
 #[derive(Debug, Clone)]
 struct CachedListing {
     loaded_at: Instant,

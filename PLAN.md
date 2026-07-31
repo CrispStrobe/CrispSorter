@@ -2484,7 +2484,7 @@ a trap:
     behavior where supported by the Filen API.
   - [ ] Add a provider-neutral metadata/path result model or conversion layer
     so callers do not have to translate `NativeItem` and `PathListing` by hand.
-  - [ ] Rename remaining public `FilenNativeClient`/native wording where this
+  - [>] Rename remaining public `FilenNativeClient`/native wording where this
     is source-compatible, while preserving a deprecation path for users of
     0.x APIs.
   - [ ] Run the ignored Rust↔Python live matrix against v1/v2/v3 accounts,
