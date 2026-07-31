@@ -1323,7 +1323,7 @@ impl InternxtNativeClient {
         path: &Path,
         state_path: &Path,
     ) -> Result<()> {
-        self.upload_path_with_resume_state_with_workers(
+        self.upload_path_with_resume_state_with_workers_and_multipart(
             session,
             parent_folder_uuid,
             plain_name,
@@ -1331,6 +1331,7 @@ impl InternxtNativeClient {
             path,
             state_path,
             1,
+            false,
         )
     }
 
@@ -1351,12 +1352,38 @@ impl InternxtNativeClient {
         state_path: &Path,
         workers: usize,
     ) -> Result<()> {
+        self.upload_path_with_resume_state_with_workers_and_multipart(
+            session,
+            parent_folder_uuid,
+            plain_name,
+            file_type,
+            path,
+            state_path,
+            workers,
+            true,
+        )
+    }
+
+    /// Upload a local file with an explicit worker count and multipart choice.
+    /// The ordinary public upload API is single-part by default; this is the
+    /// opt-in path used by multipart tests and callers.
+    pub fn upload_path_with_resume_state_with_workers_and_multipart(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        path: &Path,
+        state_path: &Path,
+        workers: usize,
+        multipart: bool,
+    ) -> Result<()> {
         let workers = workers.clamp(1, 10);
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading upload metadata for {}", path.display()))?;
         let file_size = metadata.len();
         let modified_ns = file_modified_ns(path)?;
-        let mut part_size = if file_size < MULTIPART_MIN_SIZE as u64 {
+        let mut part_size = if !multipart || file_size < MULTIPART_MIN_SIZE as u64 {
             file_size.max(1) as usize
         } else {
             UPLOAD_PART_SIZE

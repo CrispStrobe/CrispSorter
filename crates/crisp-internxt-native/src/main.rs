@@ -51,6 +51,9 @@ enum Command {
         remote: PathBuf,
         #[arg(long)]
         resume_state: Option<PathBuf>,
+        /// Opt in to true S3 multipart for files >= 100 MiB.
+        #[arg(long)]
+        multipart: bool,
         /// Concurrent multipart PUT workers; 1 is the gateway-safe default.
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(usize).range(1..=10))]
         multipart_workers: usize,
@@ -238,6 +241,7 @@ fn run() -> Result<()> {
             local,
             remote,
             resume_state,
+            multipart,
             multipart_workers,
         } => {
             let (client, value) = open(&session)?;
@@ -254,17 +258,28 @@ fn run() -> Result<()> {
                 .to_string_lossy();
             let (stem, ext) = split_name(&name);
             if let Some(state_path) = resume_state {
-                client.upload_path_with_resume_state_with_workers(
-                    &value,
-                    &folder.uuid,
-                    stem,
-                    ext,
-                    &local,
-                    &state_path,
-                    multipart_workers,
-                )?;
+                if multipart {
+                    client.upload_path_with_resume_state_with_workers(
+                        &value,
+                        &folder.uuid,
+                        stem,
+                        ext,
+                        &local,
+                        &state_path,
+                        multipart_workers,
+                    )?;
+                } else {
+                    client.upload_path_with_resume_state(
+                        &value,
+                        &folder.uuid,
+                        stem,
+                        ext,
+                        &local,
+                        &state_path,
+                    )?;
+                }
             } else {
-                if multipart_workers == 1 {
+                if !multipart {
                     client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
                 } else {
                     let state_path = client.default_upload_resume_state_path(&value, &local);
