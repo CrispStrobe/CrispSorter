@@ -2627,8 +2627,9 @@ a transfer without leaving the search/catalog workflow.
     because Graph exposes it as an asynchronous operation. ✅ 2026-07-31
   - [x] Filen’s Python CLI adapter now exposes folder creation, rename,
     move, and copy using its `mkdir`/`rename`/`mv`/`cp` commands. Internxt’s
-    adapter exposes only the CLI’s `mkdir`; move/rename/copy remain false
-    until its CLI provides compatible path semantics. ✅ 2026-07-31
+    Python CLI now exposes `rename` and `mv`; the Rust subprocess adapter
+    advertises create/rename/move, while copy remains false because neither
+    the Python CLI nor the official Go adapter provides native copy. ✅ 2026-07-31
   - [x] **Official Internxt adapter comparison.** The official Go
     [`internxt/rclone-adapter`](https://github.com/internxt/rclone-adapter)
     implements file/folder create, delete, rename, and move, but has no
@@ -2637,8 +2638,9 @@ a transfer without leaving the search/catalog workflow.
     [`internxt/rclone`](https://github.com/internxt/rclone) fork supplies
     generic rclone `copy`/`sync` orchestration; that does not mean Internxt’s
     provider API has native copy. Our Python and Dart Internxt clients do
-    expose copy, so the Rust subprocess adapter is currently the lagging
-    layer and should gain create/rename/move before copy.
+    expose copy, so the Rust subprocess adapter now matches create/rename/
+    move; copy remains the next intentional gap if we choose to add
+    client-side orchestration.
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.

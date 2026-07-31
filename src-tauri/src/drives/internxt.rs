@@ -206,6 +206,8 @@ impl CloudDrive for InternxtDrive {
     fn capabilities(&self) -> DriveCapabilities {
         DriveCapabilities {
             create_dir: true,
+            rename: true,
+            move_path: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -350,6 +352,42 @@ impl CloudDrive for InternxtDrive {
         Ok(())
     }
 
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let source_parent = source.parent().unwrap_or_else(|| Path::new(""));
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new(""));
+        let source_name = source
+            .file_name()
+            .ok_or_else(|| anyhow!("move source has no filename: {}", source.display()))?;
+        let destination_name = destination.file_name().ok_or_else(|| {
+            anyhow!(
+                "move destination has no filename: {}",
+                destination.display()
+            )
+        })?;
+
+        // `rename` changes the leaf name; compose it with `mv` when the
+        // destination directory also changes.
+        let mut renamed_source = source.to_path_buf();
+        if source_name != destination_name {
+            let source_string = source.to_string_lossy();
+            let new_name = destination_name.to_string_lossy();
+            self.run(&["rename", &source_string, &new_name])?;
+            renamed_source = source_parent.join(destination_name);
+        }
+        if source_parent != destination_parent {
+            let source_string = renamed_source.to_string_lossy();
+            let target_string = destination_parent.to_string_lossy();
+            self.run(&[
+                "mv",
+                &source_string,
+                &target_string,
+                "--on-conflict",
+                "overwrite",
+            ])?;
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         self.run(&["trash-path", &path.to_string_lossy(), "--force"])?;
         Ok(())
@@ -366,7 +404,8 @@ mod tests {
         assert_eq!(drive.label(), "My Internxt");
         assert_eq!(drive.drive_type(), DriveType::Internxt);
         assert!(drive.capabilities().create_dir);
-        assert!(!drive.capabilities().move_path);
+        assert!(drive.capabilities().rename);
+        assert!(drive.capabilities().move_path);
         assert!(!drive.capabilities().copy);
     }
 
