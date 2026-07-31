@@ -95,6 +95,11 @@ preserves Filen's `enter_2fa` or `wrong_2fa` code.
 `FilenNativeClient` is retained as a compatibility name for existing 0.x
 callers; it is an alias of `FilenClient`.
 
+Filen uses long-lived API keys and does not expose token refresh. The
+`refresh_session()` hook validates that the loaded session still has an API
+key, but does not make a network request; an authentication failure requires
+logging in again and replacing the stored session.
+
 ## Testing
 
 Fast unit and hermetic HTTP coverage requires no credentials:

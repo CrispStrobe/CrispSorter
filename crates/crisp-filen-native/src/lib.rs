@@ -552,6 +552,20 @@ impl FilenNativeClient {
         Self::new_inner(session)
     }
 
+    /// Validate the long-lived Filen API-key session.
+    ///
+    /// Filen does not expose a token-refresh endpoint: its API key is
+    /// intentionally long-lived. This hook mirrors the Python and Dart
+    /// clients so shared callers can invoke refresh uniformly; it performs
+    /// no network mutation. Authentication failures require a fresh login.
+    pub fn refresh_session(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.api_key.is_empty(),
+            "Filen session has no API key; login again"
+        );
+        Ok(())
+    }
+
     pub fn from_session_with_config(
         session: &FilenSession,
         transfer_config: TransferConfig,
@@ -1958,11 +1972,7 @@ impl FilenNativeClient {
     /// List recoverable trash entries with an optional kind filter and a
     /// caller-supplied maximum. `kind` accepts `file` or `folder`; `None`
     /// returns both kinds. A zero limit returns no entries.
-    pub fn list_trash_filtered(
-        &self,
-        kind: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<NativeItem>> {
+    pub fn list_trash_filtered(&self, kind: Option<&str>, limit: usize) -> Result<Vec<NativeItem>> {
         filter_trash_items(self.list_trash()?, kind, limit)
     }
 
@@ -3004,6 +3014,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn refresh_session_validates_long_lived_api_key_without_network() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        client.refresh_session().unwrap();
+
+        let mut invalid = test_session("http://127.0.0.1:1".into());
+        invalid.api_key.clear();
+        let client = FilenNativeClient::from_session(&invalid).unwrap();
+        let error = client.refresh_session().unwrap_err().to_string();
+        assert!(error.contains("login again"));
+    }
+
     fn spawn_http_server(responses: Vec<String>) -> String {
         spawn_status_server(responses.into_iter().map(|body| (200, body)).collect())
     }
@@ -3307,8 +3330,17 @@ mod tests {
             modified: 0,
             hash: String::new(),
         };
-        let items = vec![item("file-1", false), item("folder-1", true), item("file-2", false)];
-        assert_eq!(filter_trash_items(items.clone(), Some("file"), 1).unwrap().len(), 1);
+        let items = vec![
+            item("file-1", false),
+            item("folder-1", true),
+            item("file-2", false),
+        ];
+        assert_eq!(
+            filter_trash_items(items.clone(), Some("file"), 1)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(
             filter_trash_items(items.clone(), Some("folder"), usize::MAX)
                 .unwrap()
@@ -3323,7 +3355,12 @@ mod tests {
     #[test]
     fn hermetic_empty_trash_lists_and_permanently_deletes_entries() {
         let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let metadata = v2_encrypt_metadata(r#"{"name":"old-folder","creation":1}"#, key, *b"abcdefghijkl").unwrap();
+        let metadata = v2_encrypt_metadata(
+            r#"{"name":"old-folder","creation":1}"#,
+            key,
+            *b"abcdefghijkl",
+        )
+        .unwrap();
         let gateway = spawn_http_server(vec![
             format!(
                 r#"{{"status":true,"data":{{"folders":[{{"uuid":"trashed-folder","name":"{}","parent":"trash"}}],"uploads":[]}}}}"#,
