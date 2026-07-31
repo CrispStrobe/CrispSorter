@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crisp_internxt_native::{
     inspect_local_directory, ConflictPolicy, InternxtNativeClient, InternxtSession, NativeItem,
-    DEFAULT_DRIVE_API_URL,
+    TransferFilter, TransferOptions, DEFAULT_DRIVE_API_URL,
 };
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -61,6 +61,14 @@ enum Command {
         on_conflict: String,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        preserve_timestamps: bool,
+        #[arg(long)]
+        skip_unchanged: bool,
+        #[arg(long = "include")]
+        includes: Vec<String>,
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
     },
     /// Recursively download a remote folder into a local directory.
     ReadTree {
@@ -69,6 +77,12 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "fail")]
         on_conflict: String,
+        #[arg(long = "include")]
+        includes: Vec<String>,
+        #[arg(long = "exclude")]
+        excludes: Vec<String>,
+        #[arg(long)]
+        preserve_timestamps: bool,
     },
     /// Search recursively using a shell-style filename pattern.
     Search {
@@ -255,6 +269,10 @@ fn run() -> Result<()> {
             remote,
             on_conflict,
             dry_run,
+            preserve_timestamps,
+            skip_unchanged,
+            includes,
+            excludes,
         } => {
             if dry_run {
                 let stats = inspect_local_directory(&local)?;
@@ -266,11 +284,17 @@ fn run() -> Result<()> {
                 let (client, value) = open(&session)?;
                 let folder = client.resolve_path(&value, &remote)?;
                 anyhow::ensure!(folder.is_dir, "remote path is not a folder");
-                let stats = client.upload_directory(
+                let options = TransferOptions {
+                    filter: TransferFilter { includes, excludes },
+                    preserve_timestamps,
+                    skip_unchanged,
+                };
+                let stats = client.upload_directory_with_options(
                     &value,
                     &local,
                     &folder.uuid,
                     parse_conflict_policy(&on_conflict)?,
+                    options,
                 )?;
                 println!(
                     "uploaded {} file(s), {} folder(s), {} bytes ({} skipped)",
@@ -283,15 +307,24 @@ fn run() -> Result<()> {
             remote,
             out,
             on_conflict,
+            includes,
+            excludes,
+            preserve_timestamps,
         } => {
             let (client, value) = open(&session)?;
             let folder = client.resolve_path(&value, &remote)?;
             anyhow::ensure!(folder.is_dir, "remote path is not a folder");
-            let stats = client.download_directory(
+            let options = TransferOptions {
+                filter: TransferFilter { includes, excludes },
+                preserve_timestamps,
+                ..TransferOptions::default()
+            };
+            let stats = client.download_directory_with_options(
                 &value,
                 &folder.uuid,
                 &out,
                 parse_conflict_policy(&on_conflict)?,
+                options,
             )?;
             println!(
                 "downloaded {} file(s), {} folder(s), {} bytes ({} skipped)",
@@ -512,5 +545,28 @@ fn parse_conflict_policy(value: &str) -> Result<ConflictPolicy> {
         other => Err(anyhow::anyhow!(
             "unknown conflict policy '{other}' (expected fail, skip, or overwrite)"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_conflict_policies_case_insensitively() {
+        assert_eq!(parse_conflict_policy("FAIL").unwrap(), ConflictPolicy::Fail);
+        assert_eq!(parse_conflict_policy("skip").unwrap(), ConflictPolicy::Skip);
+        assert_eq!(
+            parse_conflict_policy("Overwrite").unwrap(),
+            ConflictPolicy::Overwrite
+        );
+        assert!(parse_conflict_policy("merge").is_err());
+    }
+
+    #[test]
+    fn splits_extensionless_and_dotted_names_safely() {
+        assert_eq!(split_name("photo.jpg"), ("photo", "jpg"));
+        assert_eq!(split_name("README"), ("README", "file"));
+        assert_eq!(split_name(".profile"), (".profile", "file"));
     }
 }

@@ -229,6 +229,7 @@ pub struct NativeItem {
     pub uuid: String,
     pub is_dir: bool,
     pub size: u64,
+    pub modified_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,6 +263,36 @@ pub struct TransferStats {
     pub folders: u64,
     pub bytes: u64,
     pub skipped: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TransferFilter {
+    pub includes: Vec<String>,
+    pub excludes: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TransferOptions {
+    pub filter: TransferFilter,
+    pub preserve_timestamps: bool,
+    pub skip_unchanged: bool,
+}
+
+impl TransferFilter {
+    fn accepts(&self, name: &str) -> bool {
+        if self
+            .excludes
+            .iter()
+            .any(|pattern| wildcard_matches(name, pattern, false))
+        {
+            return false;
+        }
+        self.includes.is_empty()
+            || self
+                .includes
+                .iter()
+                .any(|pattern| wildcard_matches(name, pattern, false))
+    }
 }
 
 /// Inspect a local tree without contacting Internxt. Symlinks are rejected
@@ -688,6 +719,11 @@ impl InternxtNativeClient {
                     .get("size")
                     .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
                     .unwrap_or(0),
+                modified_at: item
+                    .get("modificationTime")
+                    .or_else(|| item.get("updatedAt"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
             })
             .collect())
     }
@@ -921,6 +957,7 @@ impl InternxtNativeClient {
                 uuid: new_uuid,
                 is_dir: true,
                 size: 0,
+                modified_at: None,
             },
             stats,
         ))
@@ -2015,6 +2052,7 @@ impl InternxtNativeClient {
             uuid: session.root_folder_id.clone(),
             is_dir: true,
             size: 0,
+            modified_at: None,
         };
         for component in path.components() {
             let component = component.as_os_str().to_string_lossy();
@@ -2225,6 +2263,11 @@ impl InternxtNativeClient {
                             .and_then(|value| value.as_str())
                             .unwrap_or_default()
                             .to_owned(),
+                        modified_at: item
+                            .get("modificationTime")
+                            .or_else(|| item.get("updatedAt"))
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
                         is_dir: requested_kind == "folders",
                         size: item
                             .get("size")
@@ -2252,6 +2295,43 @@ impl InternxtNativeClient {
         remote_parent_uuid: &str,
         policy: ConflictPolicy,
     ) -> Result<TransferStats> {
+        self.upload_directory_filtered(
+            session,
+            local_root,
+            remote_parent_uuid,
+            policy,
+            &TransferFilter::default(),
+        )
+    }
+
+    pub fn upload_directory_filtered(
+        &self,
+        session: &InternxtSession,
+        local_root: &Path,
+        remote_parent_uuid: &str,
+        policy: ConflictPolicy,
+        filter: &TransferFilter,
+    ) -> Result<TransferStats> {
+        self.upload_directory_with_options(
+            session,
+            local_root,
+            remote_parent_uuid,
+            policy,
+            TransferOptions {
+                filter: filter.clone(),
+                ..TransferOptions::default()
+            },
+        )
+    }
+
+    pub fn upload_directory_with_options(
+        &self,
+        session: &InternxtSession,
+        local_root: &Path,
+        remote_parent_uuid: &str,
+        policy: ConflictPolicy,
+        options: TransferOptions,
+    ) -> Result<TransferStats> {
         inspect_local_directory(local_root)?;
         let mut stats = TransferStats::default();
         self.upload_directory_contents(
@@ -2259,6 +2339,7 @@ impl InternxtNativeClient {
             local_root,
             remote_parent_uuid,
             policy,
+            &options,
             &mut stats,
         )?;
         Ok(stats)
@@ -2270,6 +2351,7 @@ impl InternxtNativeClient {
         local_root: &Path,
         remote_parent_uuid: &str,
         policy: ConflictPolicy,
+        options: &TransferOptions,
         stats: &mut TransferStats,
     ) -> Result<()> {
         let mut entries = fs::read_dir(local_root)
@@ -2282,6 +2364,7 @@ impl InternxtNativeClient {
             let metadata = entry.metadata()?;
             if metadata.is_dir() {
                 let remote = self.existing_child(remote_parent_uuid, &name, true)?;
+                let folder_was_created = remote.is_none();
                 let folder_uuid = match remote {
                     Some(item) => match policy {
                         ConflictPolicy::Fail => {
@@ -2291,9 +2374,25 @@ impl InternxtNativeClient {
                     },
                     None => self.create_folder(remote_parent_uuid, &name)?,
                 };
+                if options.preserve_timestamps && folder_was_created {
+                    if let Ok(timestamp) = local_timestamp(&metadata) {
+                        self.set_folder_timestamp(&folder_uuid, &timestamp)?;
+                    }
+                }
                 stats.folders += 1;
-                self.upload_directory_contents(session, &local, &folder_uuid, policy, stats)?;
+                self.upload_directory_contents(
+                    session,
+                    &local,
+                    &folder_uuid,
+                    policy,
+                    options,
+                    stats,
+                )?;
             } else if metadata.is_file() {
+                if !options.filter.accepts(&name) {
+                    stats.skipped += 1;
+                    continue;
+                }
                 let (stem, extension) = split_remote_name(&name);
                 let remote = self.existing_child(
                     remote_parent_uuid,
@@ -2301,6 +2400,13 @@ impl InternxtNativeClient {
                     false,
                 )?;
                 if let Some(item) = remote {
+                    if options.skip_unchanged
+                        && policy != ConflictPolicy::Fail
+                        && item.size == metadata.len()
+                    {
+                        stats.skipped += 1;
+                        continue;
+                    }
                     match policy {
                         ConflictPolicy::Fail => {
                             return Err(anyhow!("remote file already exists: {name}"))
@@ -2315,6 +2421,17 @@ impl InternxtNativeClient {
                     }
                 }
                 self.upload_path(session, remote_parent_uuid, stem, extension, &local)?;
+                if options.preserve_timestamps {
+                    if let Some(item) = self.wait_for_child(
+                        remote_parent_uuid,
+                        &format_remote_name(stem, extension),
+                        false,
+                    )? {
+                        if let Ok(timestamp) = local_timestamp(&metadata) {
+                            self.set_file_timestamp(&item.uuid, &timestamp)?;
+                        }
+                    }
+                }
                 stats.files += 1;
                 stats.bytes += metadata.len();
             }
@@ -2331,6 +2448,43 @@ impl InternxtNativeClient {
         local_root: &Path,
         policy: ConflictPolicy,
     ) -> Result<TransferStats> {
+        self.download_directory_filtered(
+            session,
+            remote_folder_uuid,
+            local_root,
+            policy,
+            &TransferFilter::default(),
+        )
+    }
+
+    pub fn download_directory_filtered(
+        &self,
+        session: &InternxtSession,
+        remote_folder_uuid: &str,
+        local_root: &Path,
+        policy: ConflictPolicy,
+        filter: &TransferFilter,
+    ) -> Result<TransferStats> {
+        self.download_directory_with_options(
+            session,
+            remote_folder_uuid,
+            local_root,
+            policy,
+            TransferOptions {
+                filter: filter.clone(),
+                ..TransferOptions::default()
+            },
+        )
+    }
+
+    pub fn download_directory_with_options(
+        &self,
+        session: &InternxtSession,
+        remote_folder_uuid: &str,
+        local_root: &Path,
+        policy: ConflictPolicy,
+        options: TransferOptions,
+    ) -> Result<TransferStats> {
         fs::create_dir_all(local_root)?;
         let mut stats = TransferStats::default();
         self.download_directory_contents(
@@ -2338,6 +2492,7 @@ impl InternxtNativeClient {
             remote_folder_uuid,
             local_root,
             policy,
+            &options,
             &mut stats,
         )?;
         Ok(stats)
@@ -2349,6 +2504,7 @@ impl InternxtNativeClient {
         remote_folder_uuid: &str,
         local_root: &Path,
         policy: ConflictPolicy,
+        options: &TransferOptions,
         stats: &mut TransferStats,
     ) -> Result<()> {
         for item in self.list_folder_cached(remote_folder_uuid)? {
@@ -2366,8 +2522,14 @@ impl InternxtNativeClient {
                     fs::create_dir_all(&local)?;
                 }
                 stats.folders += 1;
-                self.download_directory_contents(session, &item.uuid, &local, policy, stats)?;
+                self.download_directory_contents(
+                    session, &item.uuid, &local, policy, options, stats,
+                )?;
             } else {
+                if !options.filter.accepts(&item.name) {
+                    stats.skipped += 1;
+                    continue;
+                }
                 if local.exists() {
                     match policy {
                         ConflictPolicy::Fail => {
@@ -2381,6 +2543,11 @@ impl InternxtNativeClient {
                     }
                 }
                 self.download_file_to_path_ranged(session, &item.uuid, &local)?;
+                if options.preserve_timestamps {
+                    if let Some(timestamp) = item.modified_at.as_deref() {
+                        set_local_timestamp(&local, timestamp)?;
+                    }
+                }
                 stats.files += 1;
                 stats.bytes += item.size;
             }
@@ -2473,6 +2640,25 @@ fn wildcard_matches(value: &str, pattern: &str, case_sensitive: bool) -> bool {
         previous = current;
     }
     previous[pattern.len()]
+}
+
+fn local_timestamp(metadata: &fs::Metadata) -> Result<String> {
+    let modified = metadata
+        .modified()
+        .context("reading local modification time")?;
+    Ok(chrono::DateTime::<chrono::Utc>::from(modified).to_rfc3339())
+}
+
+fn set_local_timestamp(path: &Path, timestamp: &str) -> Result<()> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp)
+        .with_context(|| format!("parsing remote modification time {timestamp}"))?;
+    let seconds = parsed.timestamp();
+    let nanos = parsed.timestamp_subsec_nanos();
+    if seconds < 0 {
+        return Err(anyhow!("remote modification time is before the Unix epoch"));
+    }
+    filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(seconds, nanos))
+        .with_context(|| format!("setting modification time on {}", path.display()))
 }
 
 fn split_remote_name(name: &str) -> (&str, &str) {
@@ -2689,6 +2875,27 @@ mod tests {
         assert!(wildcard_matches("abc", "a*c", true));
         assert!(wildcard_matches("abc", "*", true));
         assert!(wildcard_matches("abc", "***", true));
+    }
+
+    #[test]
+    fn transfer_filter_applies_includes_and_excludes() {
+        let empty = TransferFilter::default();
+        assert!(empty.accepts("photo.JPG"));
+
+        let include = TransferFilter {
+            includes: vec!["*.jpg".into(), "*.png".into()],
+            excludes: vec![],
+        };
+        assert!(include.accepts("photo.JPG"));
+        assert!(!include.accepts("notes.txt"));
+
+        let exclude = TransferFilter {
+            includes: vec!["*".into()],
+            excludes: vec!["*.tmp".into(), "secret*".into()],
+        };
+        assert!(exclude.accepts("photo.jpg"));
+        assert!(!exclude.accepts("cache.tmp"));
+        assert!(!exclude.accepts("secret-notes.txt"));
     }
 
     #[test]
