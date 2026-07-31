@@ -515,12 +515,23 @@ impl<R: Read> Read for EncryptReader<R> {
 
 impl InternxtNativeClient {
     pub fn new(base_url: impl Into<String>, bearer_token: impl Into<String>) -> Result<Self> {
+        Self::new_with_timeout(base_url, bearer_token, Duration::from_secs(300))
+    }
+
+    /// Construct a client with an explicit total HTTP request timeout.
+    /// This is useful for callers that need a tighter bound than the
+    /// production default while retaining the same blocking API.
+    pub fn new_with_timeout(
+        base_url: impl Into<String>,
+        bearer_token: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         reqwest::Url::parse(&base_url)
             .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(300))
+            .timeout(timeout)
             .build()
             .context("building Internxt HTTP client")?;
         Ok(Self {
