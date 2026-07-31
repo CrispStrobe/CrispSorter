@@ -26,6 +26,8 @@ consumers that need encrypted Filen transfers without spawning Python.
 - Resumable uploads with durable checkpoints and reader-based continuation
 - Resumable recursive downloads with conflict policies and byte progress
 - Batch upload/download progress callbacks, including aggregate byte totals
+- Cooperative cancellation for batch file transfers; queued work is not
+  claimed after cancellation
 - Standalone `crisp-filen` CLI for smoke testing and diagnostics
 
 ## Basic usage
@@ -63,6 +65,20 @@ For large local files use `upload_file_from_reader`,
 `resume_upload_from_reader`, `download_file_to_writer`, or
 `download_path_with_timestamps`. The batch APIs add durable per-file state,
 conflict handling, and serialized progress callbacks.
+
+Batch transfers can also receive a shared cancellation flag:
+
+```rust,no_run
+use std::sync::{atomic::AtomicBool, Arc};
+use crisp_filen::{FilenNativeClient, TransferOptions, UploadJob};
+
+fn cancelable_upload(client: &FilenNativeClient, jobs: Vec<UploadJob>) -> anyhow::Result<()> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let options = TransferOptions { cancellation: Some(Arc::clone(&cancelled)) };
+    // Another thread may call cancelled.store(true, Ordering::Release).
+    client.upload_files_with_byte_progress_options(jobs, options, |_, _, _, _| {})
+}
+```
 
 ## Authentication and session storage
 
