@@ -2497,7 +2497,7 @@ a trap:
   - [x] Define a small provider-neutral `CloudDrive` capability trait for
     path resolution, listing, transfers, progress, and mutations; keep
     provider-specific crypto and advanced operations outside the trait.
-  - [ ] Add shared transfer types for conflict policy, filters, progress,
+  - [x] Add shared transfer types for conflict policy, filters, progress,
     cancellation, resume state, and structured error classification.
   - [ ] Add cooperative cancellation and bounded concurrency guarantees to
     both backends, with identical progress semantics.
