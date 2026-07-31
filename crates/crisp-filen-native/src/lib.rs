@@ -326,6 +326,28 @@ pub struct UploadJob {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchConflictPolicy {
+    Fail,
+    Skip,
+    Replace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchTransferState {
+    pub version: u8,
+    pub completed: Vec<String>,
+}
+
+impl Default for BatchTransferState {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            completed: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UploadResumeState {
     pub uuid: String,
@@ -509,6 +531,104 @@ impl FilenNativeClient {
             }
             Ok(())
         })
+    }
+
+    /// Batch upload with durable per-file completion state. A failed batch
+    /// leaves completed jobs checkpointed so the same input can be retried.
+    /// Conflict handling is explicit and compatible with the Python/Dart
+    /// clients: `Skip`, `Replace`, or `Fail`.
+    pub fn upload_files_resumable<F: FnMut(usize, usize)>(
+        &self,
+        jobs: Vec<UploadJob>,
+        state_path: &Path,
+        conflict: BatchConflictPolicy,
+        mut progress: F,
+    ) -> Result<()> {
+        let mut state = Self::load_batch_transfer_state(state_path)?.unwrap_or_default();
+        anyhow::ensure!(state.version == 1, "unsupported Filen batch state version");
+        state.completed.sort_unstable();
+        Self::save_batch_transfer_state(state_path, &state)?;
+        let shared_state = Arc::new(Mutex::new(state));
+        let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
+        let total = jobs.len();
+        let jobs = jobs.as_slice();
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        let state_path = state_path.to_owned();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                let shared_state = Arc::clone(&shared_state);
+                let state_path = state_path.clone();
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= jobs.len() {
+                        break;
+                    }
+                    let job = &jobs[index];
+                    let key = format!("{}/{}", job.parent, job.name);
+                    let result = (|| {
+                        {
+                            let state = shared_state
+                                .lock()
+                                .map_err(|_| anyhow!("batch state poisoned"))?;
+                            if state.completed.binary_search(&key).is_ok() {
+                                return Ok(());
+                            }
+                        }
+                        let existing = self
+                            .list_folder(&job.parent)?
+                            .into_iter()
+                            .find(|item| item.name == job.name && !item.is_dir);
+                        if let Some(existing) = existing {
+                            match conflict {
+                                BatchConflictPolicy::Fail => {
+                                    return Err(anyhow!("Filen batch conflict at {key}"));
+                                }
+                                BatchConflictPolicy::Skip => {}
+                                BatchConflictPolicy::Replace => {
+                                    self.trash(&existing.uuid, "file")?;
+                                }
+                            }
+                            if conflict == BatchConflictPolicy::Skip {
+                                let mut state = shared_state
+                                    .lock()
+                                    .map_err(|_| anyhow!("batch state poisoned"))?;
+                                if state.completed.binary_search(&key).is_err() {
+                                    state.completed.push(key.clone());
+                                    state.completed.sort_unstable();
+                                    Self::save_batch_transfer_state(&state_path, &state)?;
+                                }
+                                return Ok(());
+                            }
+                        }
+                        self.upload_file(&job.parent, &job.name, &job.mime, &job.data)?;
+                        let mut state = shared_state
+                            .lock()
+                            .map_err(|_| anyhow!("batch state poisoned"))?;
+                        if state.completed.binary_search(&key).is_err() {
+                            state.completed.push(key);
+                            state.completed.sort_unstable();
+                            Self::save_batch_transfer_state(&state_path, &state)?;
+                        }
+                        Ok(())
+                    })();
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(sender);
+            let mut completed = 0;
+            for result in receiver {
+                result?;
+                completed += 1;
+                progress(completed, total);
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Self::clear_batch_transfer_state(&state_path)
     }
 
     /// Drop all cached directory listings. Every tree mutation calls this so
@@ -1111,6 +1231,35 @@ impl FilenNativeClient {
         if path.exists() {
             std::fs::remove_file(path)
                 .with_context(|| format!("removing Filen upload checkpoint {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    pub fn save_batch_transfer_state(path: &Path, state: &BatchTransferState) -> Result<()> {
+        let encoded = serde_json::to_vec_pretty(state)?;
+        let temporary = path.with_extension("filen-batch.tmp");
+        std::fs::write(&temporary, encoded)
+            .with_context(|| format!("writing Filen batch checkpoint {}", path.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("installing Filen batch checkpoint {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load_batch_transfer_state(path: &Path) -> Result<Option<BatchTransferState>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading Filen batch checkpoint {}", path.display()))?;
+        Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!("parsing Filen batch checkpoint {}", path.display())
+        })?))
+    }
+
+    pub fn clear_batch_transfer_state(path: &Path) -> Result<()> {
+        if path.exists() {
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing Filen batch checkpoint {}", path.display()))?;
         }
         Ok(())
     }
@@ -2438,6 +2587,43 @@ mod tests {
             FilenNativeClient::load_upload_resume_state(&path).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn resumable_batch_upload_skips_existing_file_and_cleans_state() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata = v2_encrypt_metadata(
+            r#"{"name":"same.txt","size":0,"mime":"text/plain","key":"0123456789abcdef0123456789abcdef","creation":1,"lastModified":2,"blake3":"hash"}"#,
+            key,
+            *b"abcdefghijkl",
+        )
+        .unwrap();
+        let gateway = spawn_http_server(vec![
+            serde_json::json!({
+                "status": true,
+                "data": {"folders": [], "uploads": [{"uuid":"existing","metadata":metadata,"parent":"root","size":0,"bucket":"b","region":"r","chunks":0,"version":2}]}
+            })
+            .to_string(),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("batch.json");
+        let mut progress = Vec::new();
+        client
+            .upload_files_resumable(
+                vec![UploadJob {
+                    parent: "root".into(),
+                    name: "same.txt".into(),
+                    mime: "text/plain".into(),
+                    data: b"new".to_vec(),
+                }],
+                &state_path,
+                BatchConflictPolicy::Skip,
+                |done, total| progress.push((done, total)),
+            )
+            .unwrap();
+        assert_eq!(progress, vec![(1, 1)]);
+        assert!(!state_path.exists());
     }
 
     #[test]
