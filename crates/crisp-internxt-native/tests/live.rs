@@ -5,11 +5,11 @@
 //! loading the developer's external `../.env`; values are never printed.
 
 use anyhow::{Context, Result};
-use crisp_internxt::{InternxtNativeClient, InternxtSession, DEFAULT_DRIVE_API_URL};
+use crisp_internxt::{InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LARGE_FILE_SIZE: usize = 100 * 1024 * 1024 + 1;
 
@@ -109,6 +109,9 @@ fn live_cross_client_python_rust_round_trip() {
             "txt",
             &rust_source,
         )?;
+        let rust_item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{rust_name}.txt")))?;
+        let rust_remote_path = format!("/{}", rust_item.name);
         run_python_cli(
             &python,
             &python_cli,
@@ -116,7 +119,7 @@ fn live_cross_client_python_rust_round_trip() {
             &password,
             [
                 "download-path",
-                &format!("/{rust_name}.txt"),
+                &rust_remote_path,
                 "--destination",
                 python_download_dir.to_str().unwrap(),
                 "--on-conflict",
@@ -124,7 +127,7 @@ fn live_cross_client_python_rust_round_trip() {
             ],
         )?;
         assert_eq!(
-            std::fs::read(python_download_dir.join(format!("{rust_name}.txt")))?,
+            std::fs::read(python_download_dir.join(&rust_item.name))?,
             b"written by Rust; read by Python\n"
         );
 
@@ -142,7 +145,8 @@ fn live_cross_client_python_rust_round_trip() {
                 "overwrite",
             ],
         )?;
-        let item = client.resolve_path(&session, Path::new(&format!("/{python_name}.txt")))?;
+        let item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{python_name}.txt")))?;
         let downloaded = python_download_dir.join(format!("{python_name}-rust.txt"));
         client.download_file_to_path(&session, &item.uuid, &downloaded)?;
         assert_eq!(
@@ -167,6 +171,30 @@ fn live_cross_client_python_rust_round_trip() {
     result.unwrap();
 }
 
+fn wait_for_remote_path(
+    client: &InternxtNativeClient,
+    session: &InternxtSession,
+    path: &Path,
+) -> Result<NativeItem> {
+    let mut last_error = None;
+    for attempt in 0..60 {
+        // The first Rust-side lookup may have cached the folder before the
+        // Python process uploaded its file. Refresh the cache on every poll
+        // so this actually tests cross-client visibility.
+        client.clear_listing_cache();
+        match client.resolve_path(session, path) {
+            Ok(item) => return Ok(item),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 59 {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    Err(last_error.expect("remote path polling made no attempts"))
+}
+
 fn run_python_cli<const N: usize>(
     python: &std::ffi::OsStr,
     cli: &Path,
@@ -174,16 +202,26 @@ fn run_python_cli<const N: usize>(
     password: &str,
     args: [&str; N],
 ) -> Result<()> {
+    // The Python CLI persists its bearer session under ~/.internxt-cli. Use
+    // an isolated HOME so a developer's unrelated cached account (for
+    // example CSTR) cannot override the explicitly supplied test account.
+    let isolated_home = std::env::temp_dir().join(format!(
+        "crispsorter-internxt-python-home-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&isolated_home).context("creating isolated Python CLI home")?;
     let mut command = Command::new(python);
     command
         .arg(cli)
         .args(args)
+        .env("HOME", &isolated_home)
         .env("INTERNXT_EMAIL", email)
         .env("INTERNXT_PASSWORD", password);
     if let Ok(secret) = std::env::var("INTERNXT_TFA_SECRET") {
         command.env("INTERNXT_TFA_SECRET", secret);
     }
     let output = command.output().context("running Python Internxt CLI")?;
+    let _ = std::fs::remove_dir_all(&isolated_home);
     anyhow::ensure!(
         output.status.success(),
         "Python CLI failed ({}): {}",
