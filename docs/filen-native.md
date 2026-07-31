@@ -13,7 +13,9 @@ cross-checks.
 - Login supports the Filen v2 PBKDF2 flow and v3 Argon2id flow. When 2FA is
   disabled, the API receives Filen's six-character `XXXXXX` sentinel; a real
   six-character code is passed through unchanged.
-- Listings are cached per folder and invalidated after mutations. Path search
+- Listings are cached per folder for 10 minutes by default and invalidated after
+  mutations. `set_listing_cache_ttl` configures freshness and
+  `list_folder_fresh` bypasses reuse for a single read. Path search
   supports literal components and recursive `**`, plus `*` and `?` wildcards.
   `list_folder_cached` and `list_folder_with_paths` match the native Internxt
   client naming and support bounded recursive inventories.
@@ -62,7 +64,7 @@ FILEN_EMAIL="$FILEN_LOGIN" FILEN_PASSWORD="$FILEN_PW" \
   -- --ignored --nocapture --test-threads=1
 ```
 
-Current suite counts: Rust native unit/hermetic tests 30 passing; Python
+Current suite counts: Rust native unit/hermetic tests 31 passing; Python
 suite 30 passing; Dart suite 244 passing with 3 expected live-suite skips when
 credentials are absent. The Rust live cross-client suite has 3 authenticated
 tests covering mutations and both transfer directions.

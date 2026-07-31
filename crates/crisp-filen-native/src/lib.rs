@@ -21,13 +21,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_GATEWAY_URL: &str = "https://gateway.filen.io";
 pub const DEFAULT_INGEST_URL: &str = "https://ingest.filen.io";
 pub const DEFAULT_EGEST_URL: &str = "https://egest.filen.io";
 pub const CHUNK_SIZE: usize = 1024 * 1024;
 pub const TRANSFER_CONCURRENCY: usize = 4;
+pub const LISTING_CACHE_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransferConfig {
@@ -385,8 +386,15 @@ pub struct FilenNativeClient {
     master_key: Option<Vec<u8>>,
     dek: Option<[u8; 32]>,
     hmac_key: Option<[u8; 32]>,
-    listing_cache: Mutex<HashMap<String, Vec<NativeItem>>>,
+    listing_cache: Mutex<HashMap<String, CachedListing>>,
+    listing_cache_ttl: Duration,
     transfer_config: TransferConfig,
+}
+
+#[derive(Debug, Clone)]
+struct CachedListing {
+    loaded_at: Instant,
+    items: Vec<NativeItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -469,6 +477,7 @@ impl FilenNativeClient {
             dek: session.dek,
             hmac_key: session.hmac_key,
             listing_cache: Mutex::new(HashMap::new()),
+            listing_cache_ttl: LISTING_CACHE_TTL,
             transfer_config: TransferConfig::default(),
         })
     }
@@ -489,6 +498,14 @@ impl FilenNativeClient {
     pub fn set_transfer_config(&mut self, transfer_config: TransferConfig) -> Result<()> {
         self.transfer_config = transfer_config.validate()?;
         Ok(())
+    }
+
+    /// Configure listing freshness independently from transfer tuning.
+    /// `Duration::ZERO` disables cache reuse while retaining invalidation
+    /// behavior for callers that need a fresh read on every request.
+    pub fn set_listing_cache_ttl(&mut self, ttl: Duration) {
+        self.listing_cache_ttl = ttl;
+        self.invalidate_listings();
     }
 
     pub fn upload_files(&self, jobs: Vec<UploadJob>) -> Result<()> {
@@ -724,15 +741,27 @@ impl FilenNativeClient {
             .lock()
             .map_err(|_| anyhow!("listing cache poisoned"))?
             .get(uuid)
-            .cloned()
+            .filter(|entry| entry.loaded_at.elapsed() < self.listing_cache_ttl)
+            .map(|entry| entry.items.clone())
         {
             return Ok(items);
         }
+        self.list_folder_fresh(uuid)
+    }
+
+    /// Bypass the listing cache and refresh the folder from the gateway.
+    pub fn list_folder_fresh(&self, uuid: &str) -> Result<Vec<NativeItem>> {
         let items = self.list_folder_uncached(uuid)?;
         self.listing_cache
             .lock()
             .map_err(|_| anyhow!("listing cache poisoned"))?
-            .insert(uuid.to_owned(), items.clone());
+            .insert(
+                uuid.to_owned(),
+                CachedListing {
+                    loaded_at: Instant::now(),
+                    items: items.clone(),
+                },
+            );
         Ok(items)
     }
 
@@ -2788,6 +2817,29 @@ mod tests {
         assert_eq!(client.list_folder("root").unwrap()[0].name, "cached.txt");
         client.invalidate_listings();
         assert_eq!(client.list_folder("root").unwrap()[0].uuid, "file-1");
+    }
+
+    #[test]
+    fn listing_cache_expires_and_fresh_listing_bypasses_cache() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata = v2_encrypt_metadata(
+            r#"{"name":"fresh.txt","size":5,"mime":"text/plain","key":"0123456789abcdef0123456789abcdef","creation":1,"lastModified":2,"blake3":"hash"}"#,
+            key,
+            *b"abcdefghijkl",
+        )
+        .unwrap();
+        let body = serde_json::json!({
+            "status": true,
+            "data": {"folders": [], "uploads": [{"uuid":"fresh-file","metadata":metadata,"parent":"root","size":5,"bucket":"b","region":"r","chunks":1,"version":2}]}
+        })
+        .to_string();
+        let gateway = spawn_http_server(vec![body.clone(), body.clone(), body]);
+        let mut client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        client.set_listing_cache_ttl(Duration::from_millis(1));
+        client.list_folder("root").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        client.list_folder("root").unwrap();
+        client.list_folder_fresh("root").unwrap();
     }
 
     #[test]
