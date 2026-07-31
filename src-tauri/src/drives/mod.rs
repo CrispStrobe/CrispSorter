@@ -23,6 +23,8 @@ pub mod google_drive;
 pub mod internxt;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native;
+#[cfg(feature = "drive-internxt-native")]
+pub mod internxt_native_drive;
 pub mod onedrive;
 pub(crate) mod secret;
 pub mod tauri_commands;

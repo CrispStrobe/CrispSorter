@@ -401,7 +401,8 @@ impl InternxtNativeClient {
         &self,
         session: &InternxtSession,
         parent_folder_uuid: &str,
-        name: &str,
+        plain_name: &str,
+        file_type: &str,
         data: &[u8],
     ) -> Result<()> {
         const SINGLE_UPLOAD_LIMIT: usize = 100 * 1024 * 1024;
@@ -477,8 +478,8 @@ impl InternxtNativeClient {
         let create_url = format!("{}/files", self.base_url);
         let create_body = serde_json::to_vec(&serde_json::json!({
             "folderUuid": parent_folder_uuid,
-            "plainName": name,
-            "type": "",
+            "plainName": plain_name,
+            "type": file_type,
             "size": data.len(),
             "bucket": session.bucket_id,
             "fileId": network_file_id,
@@ -525,6 +526,66 @@ impl InternxtNativeClient {
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
+    }
+
+    pub fn resolve_path(
+        &self,
+        session: &InternxtSession,
+        path: &std::path::Path,
+    ) -> Result<NativeItem> {
+        let mut current = NativeItem {
+            name: "Root".to_owned(),
+            uuid: session.root_folder_id.clone(),
+            is_dir: true,
+            size: 0,
+        };
+        for component in path.components() {
+            let component = component.as_os_str().to_string_lossy();
+            if component.is_empty() || component == "." || component == "/" {
+                continue;
+            }
+            if !current.is_dir {
+                return Err(anyhow!("Internxt path traverses through a file"));
+            }
+            current = self
+                .list_folder(&current.uuid)?
+                .into_iter()
+                .find(|item| item.name == component)
+                .ok_or_else(|| anyhow!("Internxt path component not found: {component}"))?;
+        }
+        Ok(current)
+    }
+
+    pub fn create_folder(&self, parent_uuid: &str, name: &str) -> Result<String> {
+        let url = format!("{}/folders", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "plainName": name,
+            "parentFolderUuid": parent_uuid
+        }))?;
+        let value = self.json_response(
+            self.bearer_request(reqwest::Method::POST, &url, body)?,
+            &url,
+        )?;
+        value
+            .get("uuid")
+            .or_else(|| value.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("Internxt folder creation returned no UUID"))
+    }
+
+    pub fn trash(&self, uuid: &str, kind: &str) -> Result<()> {
+        let url = format!("{}/storage/trash/add", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "items": [{"uuid": uuid, "type": kind}]
+        }))?;
+        let response = self.bearer_request(reqwest::Method::POST, &url, body)?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!("Internxt trash endpoint returned {status}: {body}"));
+        }
+        Ok(())
     }
 }
 
