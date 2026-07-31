@@ -1455,20 +1455,21 @@ them via CrispSorter, "share this document" from the search results is
 a natural feature.
 
 - [ ] **`CloudDrive` trait: `share_link(path) → Option<String>`
-  method** (default impl returns `None`).  Override in
+  method** (default impl returns `None`).  The trait and unsupported-provider
+  behavior are now covered by the drive tests.  Override in
   `OneDriveDrive` (Graph API `POST /me/drive/items/{id}/createLink`
   with `type: "view"`, `scope: "anonymous"`), `GDriveDrive` (Drive
   API `POST /files/{id}/permissions` + `webViewLink`), and
   `WebDavDrive` (Nextcloud OCS sharing API, if detected).  Internxt
   and Filen: stub until their public-link APIs are documented.
-- [ ] **Tauri command `drive_share_link(drive_id, path)`.**
+- [x] **Tauri command `drive_share_link(drive_id, path)`.**
   Resolves the drive, calls `share_link`, returns the URL or an
-  error if the provider doesn't support sharing.
-- [ ] **Frontend: share button on search results.**  When a result's
+  error if the provider doesn't support sharing. ✅ Shipped 2026-07-31.
+- [x] **Frontend: share button on search results.**  When a result's
   `location_uri` starts with `crisp+drive://`, show a share icon.
-  Click → calls `drive_share_link` → copies URL to clipboard with a
-  toast notification.  Disabled (greyed out) for providers that return
-  `None`.
+  Click → calls `drive_share_link` → copies URL to clipboard with an
+  inline notification. ✅ Shipped 2026-07-31. Provider-specific links
+  and disabled-state discovery remain pending.
 - [ ] **Tests.**  Unit: URL format validation per provider, unsupported
   provider returns None, error handling for expired tokens.  4+ tests.
 

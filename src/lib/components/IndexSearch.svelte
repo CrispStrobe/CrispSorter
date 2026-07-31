@@ -9,7 +9,7 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag,
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2,
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
@@ -78,6 +78,7 @@
     let results     = $state<SearchResult[]>([]);
     let loading     = $state(false);
     let error       = $state('');
+    let shareBusy    = $state<string | null>(null);
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
@@ -967,6 +968,32 @@
         } catch (e) {
             console.error('[IndexSearch] openUrl failed:', e, 'url:', url);
             error = `Konnte Quelle nicht öffnen: ${url}`;
+        }
+    }
+
+    function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
+        if (!uri.startsWith('crisp+drive://')) return null;
+        const rest = uri.slice('crisp+drive://'.length);
+        const slash = rest.indexOf('/');
+        if (slash < 0) return null;
+        return {
+            driveId: rest.slice(0, slash),
+            remotePath: decodeURIComponent(rest.slice(slash)),
+        };
+    }
+
+    async function shareDriveFile(uri: string) {
+        const parts = driveUriParts(uri);
+        if (!parts) return;
+        shareBusy = uri;
+        try {
+            const link = await invoke<string>('drive_share_link', parts);
+            await navigator.clipboard.writeText(link);
+            error = 'Share link copied to clipboard.';
+        } catch (e: any) {
+            error = `Share link unavailable: ${String(e?.message ?? e)}`;
+        } finally {
+            shareBusy = null;
         }
     }
 

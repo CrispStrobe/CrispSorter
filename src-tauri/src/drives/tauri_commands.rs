@@ -180,6 +180,34 @@ pub async fn drive_stat(
         .map_err(|e| e.to_string())
 }
 
+/// Generate a public share link for a file on a registered drive.
+/// Providers without a public-link implementation return a clear error
+/// rather than silently returning an unusable local URL.
+#[tauri::command]
+pub async fn drive_share_link(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+) -> Result<String, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    drive
+        .share_link(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{} does not support public share links", drive.drive_type().label()))
+}
+
 /// Read a file through the shared transfer queue.
 #[tauri::command]
 pub async fn drive_read_file(
