@@ -237,6 +237,12 @@ pub struct SearchResult {
     pub item: NativeItem,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathListing {
+    pub path: PathBuf,
+    pub item: NativeItem,
+}
+
 #[derive(Debug, Clone)]
 struct CachedListing {
     expires_at: Instant,
@@ -684,7 +690,7 @@ impl InternxtNativeClient {
         let temporary_name = format!(".crispsorter-update-{}", transfer_token());
         self.upload_path(session, parent, &temporary_name, file_type, replacement)?;
         let temporary = self
-            .existing_child(
+            .wait_for_child(
                 parent,
                 &format_remote_name(&temporary_name, file_type),
                 false,
@@ -708,6 +714,23 @@ impl InternxtNativeClient {
         destination_folder_uuid: &str,
         name_override: Option<&str>,
     ) -> Result<NativeItem> {
+        self.copy_file_with_policy(
+            session,
+            file_uuid,
+            destination_folder_uuid,
+            name_override,
+            ConflictPolicy::Fail,
+        )
+    }
+
+    pub fn copy_file_with_policy(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        destination_folder_uuid: &str,
+        name_override: Option<&str>,
+        policy: ConflictPolicy,
+    ) -> Result<NativeItem> {
         let metadata = self.file_metadata(file_uuid)?;
         let name = name_override
             .or_else(|| metadata.get("plainName").and_then(|value| value.as_str()))
@@ -716,8 +739,21 @@ impl InternxtNativeClient {
             .get("type")
             .and_then(|value| value.as_str())
             .unwrap_or("file");
+        let remote_name = format_remote_name(name, file_type);
+        if let Some(existing) = self.existing_child(destination_folder_uuid, &remote_name, false)? {
+            match policy {
+                ConflictPolicy::Fail => {
+                    return Err(anyhow!("destination file already exists: {remote_name}"));
+                }
+                ConflictPolicy::Skip => return Ok(existing),
+                ConflictPolicy::Overwrite => self.trash(&existing.uuid, "file")?,
+            }
+        }
         let temporary = std::env::temp_dir().join(format!("crispsorter-copy-{}", transfer_token()));
-        self.download_file_to_path_ranged(session, file_uuid, &temporary)?;
+        // The gateway's presigned shard URLs are not consistently range-aware
+        // in production. Copy still remains streaming/bounded, but uses the
+        // broadly supported sequential downloader here.
+        self.download_file_to_path(session, file_uuid, &temporary)?;
         let result = (|| {
             self.upload_path(
                 session,
@@ -726,12 +762,8 @@ impl InternxtNativeClient {
                 file_type,
                 &temporary,
             )?;
-            self.existing_child(
-                destination_folder_uuid,
-                &format_remote_name(name, file_type),
-                false,
-            )?
-            .ok_or_else(|| anyhow!("copied file was not visible in destination folder"))
+            self.wait_for_child(destination_folder_uuid, &remote_name, false)?
+                .ok_or_else(|| anyhow!("copied file was not visible in destination folder"))
         })();
         let _ = fs::remove_file(&temporary);
         result
@@ -745,24 +777,65 @@ impl InternxtNativeClient {
         destination_parent_uuid: &str,
         name_override: Option<&str>,
     ) -> Result<(NativeItem, TransferStats)> {
+        self.copy_folder_with_policy(
+            session,
+            source_folder_uuid,
+            destination_parent_uuid,
+            name_override,
+            ConflictPolicy::Fail,
+        )
+    }
+
+    pub fn copy_folder_with_policy(
+        &self,
+        session: &InternxtSession,
+        source_folder_uuid: &str,
+        destination_parent_uuid: &str,
+        name_override: Option<&str>,
+        policy: ConflictPolicy,
+    ) -> Result<(NativeItem, TransferStats)> {
         let source = self.folder_metadata(source_folder_uuid)?;
         let name = name_override
             .or_else(|| source.get("plainName").and_then(|value| value.as_str()))
             .ok_or_else(|| anyhow!("Internxt folder metadata has no plain name"))?;
-        let new_uuid = self.create_folder(destination_parent_uuid, name)?;
+        let new_uuid =
+            if let Some(existing) = self.existing_child(destination_parent_uuid, name, true)? {
+                match policy {
+                    ConflictPolicy::Fail => {
+                        return Err(anyhow!("destination folder already exists: {name}"));
+                    }
+                    ConflictPolicy::Skip => {
+                        return Ok((
+                            existing,
+                            TransferStats {
+                                skipped: 1,
+                                ..TransferStats::default()
+                            },
+                        ));
+                    }
+                    ConflictPolicy::Overwrite => {
+                        self.trash(&existing.uuid, "folder")?;
+                        self.create_folder(destination_parent_uuid, name)?
+                    }
+                }
+            } else {
+                self.create_folder(destination_parent_uuid, name)?
+            };
         let mut stats = TransferStats {
             folders: 1,
             ..TransferStats::default()
         };
         for item in self.list_folder_cached(source_folder_uuid)? {
             if item.is_dir {
-                let (_, child) = self.copy_folder(session, &item.uuid, &new_uuid, None)?;
+                let (_, child) =
+                    self.copy_folder_with_policy(session, &item.uuid, &new_uuid, None, policy)?;
                 stats.files += child.files;
                 stats.folders += child.folders;
                 stats.bytes += child.bytes;
                 stats.skipped += child.skipped;
             } else {
-                let copied = self.copy_file(session, &item.uuid, &new_uuid, None)?;
+                let copied =
+                    self.copy_file_with_policy(session, &item.uuid, &new_uuid, None, policy)?;
                 stats.files += 1;
                 stats.bytes += copied.size;
             }
@@ -1718,10 +1791,29 @@ impl InternxtNativeClient {
         case_sensitive: bool,
         max_depth: isize,
     ) -> Result<Vec<SearchResult>> {
+        self.search_files_from(session, Path::new("."), pattern, case_sensitive, max_depth)
+    }
+
+    pub fn search_files_from(
+        &self,
+        session: &InternxtSession,
+        folder_path: &Path,
+        pattern: &str,
+        case_sensitive: bool,
+        max_depth: isize,
+    ) -> Result<Vec<SearchResult>> {
+        let folder = self.resolve_path(session, folder_path)?;
+        if !folder.is_dir {
+            return Err(anyhow!("search starting path is not a folder"));
+        }
         let mut results = Vec::new();
         self.search_folder(
-            &session.root_folder_id,
-            Path::new(""),
+            &folder.uuid,
+            if folder_path == Path::new(".") {
+                Path::new("")
+            } else {
+                folder_path
+            },
             pattern,
             case_sensitive,
             max_depth,
@@ -1730,6 +1822,50 @@ impl InternxtNativeClient {
         )?;
         results.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(results)
+    }
+
+    /// Return every item below a folder with its remote path, including
+    /// directories. `max_depth` is relative to the requested folder.
+    pub fn list_folder_with_paths(
+        &self,
+        session: &InternxtSession,
+        folder_path: &Path,
+        max_depth: isize,
+    ) -> Result<Vec<PathListing>> {
+        let folder = self.resolve_path(session, folder_path)?;
+        if !folder.is_dir {
+            return Err(anyhow!("listing starting path is not a folder"));
+        }
+        let base = if folder_path == Path::new(".") {
+            Path::new("")
+        } else {
+            folder_path
+        };
+        let mut output = Vec::new();
+        self.list_paths_recursive(&folder.uuid, base, max_depth, 0, &mut output)?;
+        output.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(output)
+    }
+
+    fn list_paths_recursive(
+        &self,
+        folder_uuid: &str,
+        parent_path: &Path,
+        max_depth: isize,
+        depth: isize,
+        output: &mut Vec<PathListing>,
+    ) -> Result<()> {
+        for item in self.list_folder_cached(folder_uuid)? {
+            let path = parent_path.join(&item.name);
+            output.push(PathListing {
+                path: path.clone(),
+                item: item.clone(),
+            });
+            if item.is_dir && (max_depth < 0 || depth < max_depth) {
+                self.list_paths_recursive(&item.uuid, &path, max_depth, depth + 1, output)?;
+            }
+        }
+        Ok(())
     }
 
     fn search_folder(
@@ -2157,6 +2293,24 @@ impl InternxtNativeClient {
             .list_folder_cached(parent_uuid)?
             .into_iter()
             .find(|item| item.is_dir == is_dir && item.name == name))
+    }
+
+    fn wait_for_child(
+        &self,
+        parent_uuid: &str,
+        name: &str,
+        is_dir: bool,
+    ) -> Result<Option<NativeItem>> {
+        for attempt in 0..10 {
+            self.clear_listing_cache();
+            if let Some(item) = self.existing_child(parent_uuid, name, is_dir)? {
+                return Ok(Some(item));
+            }
+            if attempt < 9 {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+        Ok(None)
     }
 }
 

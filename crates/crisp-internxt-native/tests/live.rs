@@ -70,13 +70,36 @@ fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Res
     std::fs::write(&source_path, b"before")?;
     std::fs::write(&replacement_path, b"after")?;
     let result = (|| -> Result<()> {
+        eprintln!("live lifecycle: upload");
         client.upload_path(&session, &source_uuid, "lifecycle", "txt", &source_path)?;
+        eprintln!("live lifecycle: resolve");
         let item = client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
-        let matches = client.search_files(&session, "lifecycle.*", true, -1)?;
+        eprintln!("live lifecycle: search");
+        let matches =
+            client.search_files_from(&session, Path::new(&source_name), "lifecycle.*", true, 1)?;
         assert!(matches.iter().any(|entry| entry.item.uuid == item.uuid));
+        eprintln!("live lifecycle: copy");
         let copied = client.copy_file(&session, &item.uuid, &target_uuid, Some("copied"))?;
         assert_eq!(copied.name, "copied.txt");
+        let skipped = client.copy_file_with_policy(
+            &session,
+            &item.uuid,
+            &target_uuid,
+            Some("copied"),
+            crisp_internxt_native::ConflictPolicy::Skip,
+        )?;
+        assert_eq!(skipped.uuid, copied.uuid);
+        let overwritten = client.copy_file_with_policy(
+            &session,
+            &item.uuid,
+            &target_uuid,
+            Some("copied"),
+            crisp_internxt_native::ConflictPolicy::Overwrite,
+        )?;
+        assert_eq!(overwritten.name, "copied.txt");
+        eprintln!("live lifecycle: update");
         client.update_file(&session, &item.uuid, &replacement_path)?;
+        eprintln!("live lifecycle: download verification");
         let updated =
             client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
         let downloaded = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-download"));

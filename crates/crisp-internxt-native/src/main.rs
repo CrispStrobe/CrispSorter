@@ -69,6 +69,8 @@ enum Command {
     Search {
         session: PathBuf,
         pattern: String,
+        #[arg(long, default_value = ".")]
+        folder: PathBuf,
         #[arg(long)]
         case_sensitive: bool,
         #[arg(long, default_value_t = -1)]
@@ -81,6 +83,8 @@ enum Command {
         destination: PathBuf,
         #[arg(long)]
         name: Option<String>,
+        #[arg(long, default_value = "fail")]
+        on_conflict: String,
     },
     /// Replace a remote file's content from a local path.
     Update {
@@ -271,11 +275,14 @@ fn run() -> Result<()> {
         Command::Search {
             session,
             pattern,
+            folder,
             case_sensitive,
             max_depth,
         } => {
             let (client, value) = open(&session)?;
-            for result in client.search_files(&value, &pattern, case_sensitive, max_depth)? {
+            for result in
+                client.search_files_from(&value, &folder, &pattern, case_sensitive, max_depth)?
+            {
                 println!(
                     "{}\t{}\t{}",
                     result.item.uuid,
@@ -289,21 +296,33 @@ fn run() -> Result<()> {
             remote,
             destination,
             name,
+            on_conflict,
         } => {
             let (client, value) = open(&session)?;
             let source = client.resolve_path(&value, &remote)?;
             let target = client.resolve_path(&value, &destination)?;
             anyhow::ensure!(target.is_dir, "copy destination is not a folder");
+            let policy = parse_conflict_policy(&on_conflict)?;
             if source.is_dir {
-                let (_, stats) =
-                    client.copy_folder(&value, &source.uuid, &target.uuid, name.as_deref())?;
+                let (_, stats) = client.copy_folder_with_policy(
+                    &value,
+                    &source.uuid,
+                    &target.uuid,
+                    name.as_deref(),
+                    policy,
+                )?;
                 println!(
                     "copied {} file(s), {} folder(s), {} bytes",
                     stats.files, stats.folders, stats.bytes
                 );
             } else {
-                let copied =
-                    client.copy_file(&value, &source.uuid, &target.uuid, name.as_deref())?;
+                let copied = client.copy_file_with_policy(
+                    &value,
+                    &source.uuid,
+                    &target.uuid,
+                    name.as_deref(),
+                    policy,
+                )?;
                 println!("copied {}", copied.name);
             }
         }
