@@ -130,8 +130,7 @@ fn run() -> Result<()> {
                 "remote path is a folder: {}",
                 remote.display()
             );
-            std::fs::write(&out, client.download_file(&value, &item.uuid)?)
-                .with_context(|| format!("writing {}", out.display()))?;
+            client.download_file_to_path(&value, &item.uuid, &out)?;
             println!("downloaded {}", out.display());
         }
         Command::Write {
@@ -151,10 +150,8 @@ fn run() -> Result<()> {
                 .file_name()
                 .context("remote path has no file name")?
                 .to_string_lossy();
-            let data =
-                std::fs::read(&local).with_context(|| format!("reading {}", local.display()))?;
             let (stem, ext) = split_name(&name);
-            client.upload_file(&value, &folder.uuid, stem, ext, &data)?;
+            client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
             println!("uploaded {}", remote.display());
         }
         Command::Delete { session, remote } => {

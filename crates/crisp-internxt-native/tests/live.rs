@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use crisp_internxt_native::{InternxtNativeClient, InternxtSession, DEFAULT_DRIVE_API_URL};
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,19 +65,25 @@ fn run_small_round_trip(email: &str, password: &str, tfa: Option<&str>) -> Resul
         .context("creating second live folder")?;
     let result = (|| -> Result<()> {
         let payload = b"CrispSorter native Internxt live round-trip\n\xE2\x9C\x93";
+        let local = std::env::temp_dir().join(unique_name("crispsorter-live-upload"));
+        std::fs::write(&local, payload).context("writing small live source")?;
         client
-            .upload_file(&session, &folder_uuid, "round-trip", "txt", payload)
+            .upload_path(&session, &folder_uuid, "round-trip", "txt", &local)
             .context("uploading small live file")?;
         let path = Path::new(&folder_name).join("round-trip.txt");
         let item = client
             .resolve_path(&session, &path)
             .context("resolving upload")?;
+        let downloaded = std::env::temp_dir().join(unique_name("crispsorter-live-download"));
+        client
+            .download_file_to_path(&session, &item.uuid, &downloaded)
+            .context("downloading small live file")?;
         assert_eq!(
-            client
-                .download_file(&session, &item.uuid)
-                .context("downloading small live file")?,
+            std::fs::read(&downloaded).context("reading small live result")?,
             payload
         );
+        let _ = std::fs::remove_file(local);
+        let _ = std::fs::remove_file(downloaded);
 
         client
             .rename_file(&item.uuid, "renamed", "txt")
@@ -90,12 +97,12 @@ fn run_small_round_trip(email: &str, password: &str, tfa: Option<&str>) -> Resul
         let moved = client
             .resolve_path(&session, &Path::new(&moved_name).join("renamed.txt"))
             .context("resolving moved live file")?;
-        assert_eq!(
-            client
-                .download_file(&session, &moved.uuid)
-                .context("downloading moved live file")?,
-            payload
-        );
+        let moved_download = std::env::temp_dir().join(unique_name("crispsorter-live-moved"));
+        client
+            .download_file_to_path(&session, &moved.uuid, &moved_download)
+            .context("downloading moved live file")?;
+        assert_eq!(std::fs::read(&moved_download)?, payload);
+        let _ = std::fs::remove_file(moved_download);
 
         let refreshed = client
             .refresh_session(&session)
@@ -115,22 +122,28 @@ fn run_multipart(
     folder_uuid: &str,
     folder_name: &str,
 ) -> Result<()> {
-    let mut payload = vec![0u8; LARGE_FILE_SIZE];
-    for (index, byte) in payload.iter_mut().enumerate() {
-        *byte = (index as u64).wrapping_mul(31) as u8;
+    let source = std::env::temp_dir().join(unique_name("crispsorter-multipart-source"));
+    {
+        let mut file = std::fs::File::create(&source)?;
+        let mut chunk = vec![0u8; 1024 * 1024];
+        for (index, byte) in chunk.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(31) as u8;
+        }
+        let mut remaining = LARGE_FILE_SIZE;
+        while remaining > 0 {
+            let length = remaining.min(chunk.len());
+            file.write_all(&chunk[..length])?;
+            remaining -= length;
+        }
     }
-    client.upload_file(
-        session,
-        folder_uuid,
-        "multipart-round-trip",
-        "bin",
-        &payload,
-    )?;
+    client.upload_path(session, folder_uuid, "multipart-round-trip", "bin", &source)?;
     let path = Path::new(folder_name).join("multipart-round-trip.bin");
     let item = client.resolve_path(session, &path)?;
-    let downloaded = client.download_file(session, &item.uuid)?;
-    assert_eq!(downloaded.len(), payload.len());
-    assert_eq!(downloaded, payload);
+    let downloaded = std::env::temp_dir().join(unique_name("crispsorter-multipart-download"));
+    client.download_file_to_path(session, &item.uuid, &downloaded)?;
+    assert_eq!(std::fs::read(&downloaded)?, std::fs::read(&source)?);
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(downloaded);
     Ok(())
 }
 

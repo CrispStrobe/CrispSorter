@@ -15,6 +15,10 @@ use reqwest::blocking::{Client, Response};
 use ripemd::Digest as RipemdDigest;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
@@ -26,6 +30,9 @@ const OPENSSL_MAGIC: &[u8; 8] = b"Salted__";
 const INTERNXT_APP_SECRET: &str = "6KYQBP847D4ATSFA";
 const MULTIPART_MIN_SIZE: usize = 100 * 1024 * 1024;
 const UPLOAD_PART_SIZE: usize = 30 * 1024 * 1024;
+const MAX_MULTIPARTS: usize = 10_000;
+const MAX_UPLOAD_RETRIES: usize = 3;
+const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
@@ -173,6 +180,29 @@ pub fn crypt(data: &mut [u8], mnemonic: &str, bucket_id: &[u8; 12], index: &[u8;
     cipher.apply_keystream(data);
 }
 
+/// Encrypt/decrypt a block at an aligned byte offset in the same continuous
+/// AES-CTR stream used for the complete file. This is the key primitive for
+/// bounded multipart uploads and ranged downloads: each block can be
+/// regenerated independently without buffering or reprocessing the prefix.
+pub fn crypt_at(
+    data: &mut [u8],
+    mnemonic: &str,
+    bucket_id: &[u8; 12],
+    index: &[u8; 32],
+    offset: u64,
+) -> Result<()> {
+    if offset % 16 != 0 {
+        return Err(anyhow!("AES-CTR offset must be 16-byte aligned: {offset}"));
+    }
+    let key = file_key(mnemonic, bucket_id, index);
+    let counter = u128::from_be_bytes(index[..16].try_into().expect("16-byte IV"))
+        .wrapping_add(u128::from(offset / 16));
+    let iv = counter.to_be_bytes();
+    let mut cipher = Aes256Ctr::new((&key).into(), (&iv).into());
+    cipher.apply_keystream(data);
+    Ok(())
+}
+
 /// Encrypt a payload and return the 32-byte file index plus ciphertext.
 pub fn encrypt(data: &[u8], mnemonic: &str, bucket_id: &[u8; 12]) -> ([u8; 32], Vec<u8>) {
     let mut index = [0u8; 32];
@@ -217,6 +247,113 @@ pub struct InternxtNativeClient {
     base_url: String,
     bearer_token: String,
     http: Client,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UploadCheckpoint {
+    version: u8,
+    path: String,
+    bucket_id: String,
+    file_size: u64,
+    modified_ns: u128,
+    part_size: usize,
+    parts: usize,
+    index: String,
+    uuid: String,
+    upload_id: String,
+    urls: Vec<String>,
+    etags: Vec<Option<String>>,
+    created: u64,
+}
+
+fn checkpoint_path(path: &Path, bucket_id: &str) -> PathBuf {
+    let mut key = Sha256::new();
+    key.update(path.to_string_lossy().as_bytes());
+    key.update(b"|");
+    key.update(bucket_id.as_bytes());
+    let name = hex::encode(key.finalize());
+    std::env::temp_dir()
+        .join("crispsorter-internxt-upload-checkpoints")
+        .join(format!("{}.json", name))
+}
+
+fn file_modified_ns(path: &Path) -> Result<u128> {
+    Ok(path
+        .metadata()
+        .with_context(|| format!("reading metadata for {}", path.display()))?
+        .modified()
+        .context("reading file modification time")?
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("file modification time predates Unix epoch")?
+        .as_nanos())
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
+fn save_checkpoint(path: &Path, checkpoint: &UploadCheckpoint) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating checkpoint directory {}", parent.display()))?;
+    }
+    let temporary = path.with_extension("tmp");
+    let bytes = serde_json::to_vec(checkpoint).context("serializing upload checkpoint")?;
+    {
+        let mut file = File::create(&temporary)
+            .with_context(|| format!("creating checkpoint {}", temporary.display()))?;
+        file.write_all(&bytes)
+            .context("writing upload checkpoint")?;
+        file.sync_data().context("flushing upload checkpoint")?;
+    }
+    fs::rename(&temporary, path)
+        .with_context(|| format!("installing upload checkpoint {}", path.display()))?;
+    Ok(())
+}
+
+fn load_checkpoint(path: &Path) -> Result<Option<UploadCheckpoint>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    let checkpoint = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing upload checkpoint {}", path.display()))?;
+    Ok(Some(checkpoint))
+}
+
+fn remove_checkpoint(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+struct EncryptReader<R> {
+    reader: R,
+    cipher: Aes256Ctr,
+    remaining: u64,
+    hash: Arc<Mutex<Sha256>>,
+}
+
+impl<R: Read> Read for EncryptReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let limit = buffer.len().min(self.remaining as usize);
+        let read = self.reader.read(&mut buffer[..limit])?;
+        if read == 0 {
+            return Ok(0);
+        }
+        self.cipher.apply_keystream(&mut buffer[..read]);
+        self.hash
+            .lock()
+            .map_err(|_| std::io::Error::other("upload hash mutex poisoned"))?
+            .update(&buffer[..read]);
+        self.remaining -= read as u64;
+        Ok(read)
+    }
 }
 
 impl InternxtNativeClient {
@@ -715,6 +852,416 @@ impl InternxtNativeClient {
         Ok(())
     }
 
+    /// Stream a local file into Internxt without buffering the complete
+    /// plaintext or ciphertext. Multipart parts are regenerated from the
+    /// same CTR stream, retried independently, and checkpointed after each
+    /// successful ETag so an interrupted process can resume.
+    pub fn upload_path(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        path: &Path,
+    ) -> Result<()> {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("reading upload metadata for {}", path.display()))?;
+        let file_size = metadata.len();
+        let modified_ns = file_modified_ns(path)?;
+        let mut part_size = if file_size < MULTIPART_MIN_SIZE as u64 {
+            file_size.max(1) as usize
+        } else {
+            UPLOAD_PART_SIZE
+        };
+        let mut parts = file_size.div_ceil(part_size as u64) as usize;
+        if parts > MAX_MULTIPARTS {
+            parts = MAX_MULTIPARTS;
+            part_size = file_size
+                .div_ceil(parts as u64)
+                .div_ceil(16)
+                .saturating_mul(16) as usize;
+        }
+        let cp_path = checkpoint_path(path, &session.bucket_id);
+        let mut checkpoint = load_checkpoint(&cp_path)?.filter(|value| {
+            value.version == 1
+                && value.path == path.to_string_lossy()
+                && value.bucket_id == session.bucket_id
+                && value.file_size == file_size
+                && value.modified_ns == modified_ns
+                && value.part_size == part_size
+                && value.parts == parts
+                && value.urls.len() >= parts
+                && value.etags.len() == parts
+                && hex::decode(&value.index)
+                    .map(|v| v.len() == 32)
+                    .unwrap_or(false)
+        });
+        if checkpoint.is_none() {
+            remove_checkpoint(&cp_path);
+        }
+
+        let mut index = [0u8; 32];
+        let (uuid, upload_id, urls, mut etags) = if let Some(value) = checkpoint.as_ref() {
+            index.copy_from_slice(&hex::decode(&value.index)?);
+            (
+                value.uuid.clone(),
+                value.upload_id.clone(),
+                value.urls.clone(),
+                value.etags.clone(),
+            )
+        } else {
+            getrandom::getrandom(&mut index).context("generating upload file index")?;
+            let start_url = format!(
+                "{}/v2/buckets/{}/files/start?multiparts={parts}",
+                session.network_url.trim_end_matches('/'),
+                session.bucket_id
+            );
+            let start_body = serde_json::to_vec(&serde_json::json!({
+                "uploads": [{"index": 0, "size": file_size}]
+            }))?;
+            let started = self.json_response(
+                self.bridge_response(reqwest::Method::POST, &start_url, session, Some(start_body))?,
+                &start_url,
+            )?;
+            let upload = started
+                .get("uploads")
+                .and_then(|value| value.as_array())
+                .and_then(|value| value.first())
+                .ok_or_else(|| anyhow!("Internxt upload start returned no upload"))?;
+            let uuid = upload
+                .get("uuid")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow!("Internxt upload start returned no shard UUID"))?
+                .to_owned();
+            let urls = if parts == 1 {
+                vec![upload
+                    .get("url")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow!("Internxt upload start returned no upload URL"))?
+                    .to_owned()]
+            } else {
+                let values = upload
+                    .get("urls")
+                    .and_then(|value| value.as_array())
+                    .ok_or_else(|| anyhow!("Internxt multipart start returned no part URLs"))?;
+                if values.len() < parts {
+                    return Err(anyhow!(
+                        "Internxt multipart start returned {} URLs for {parts} parts",
+                        values.len()
+                    ));
+                }
+                values
+                    .iter()
+                    .take(parts)
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| anyhow!("Internxt multipart URL is not text"))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            };
+            let upload_id = if parts == 1 {
+                String::new()
+            } else {
+                upload
+                    .get("UploadId")
+                    .or_else(|| upload.get("uploadId"))
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow!("Internxt multipart start returned no UploadId"))?
+                    .to_owned()
+            };
+            let etags = vec![None; parts];
+            if parts > 1 {
+                let value = UploadCheckpoint {
+                    version: 1,
+                    path: path.to_string_lossy().into_owned(),
+                    bucket_id: session.bucket_id.clone(),
+                    file_size,
+                    modified_ns,
+                    part_size,
+                    parts,
+                    index: hex::encode(index),
+                    uuid: uuid.clone(),
+                    upload_id: upload_id.clone(),
+                    urls: urls.clone(),
+                    etags: etags.clone(),
+                    created: now_seconds(),
+                };
+                save_checkpoint(&cp_path, &value)?;
+                checkpoint = Some(value);
+            }
+            (uuid, upload_id, urls, etags)
+        };
+
+        let mut sha = Sha256::new();
+        if parts == 1 {
+            sha = self.put_file_with_retry(
+                &urls[0],
+                path,
+                file_size,
+                &session.mnemonic,
+                &session.bucket_bytes()?,
+                &index,
+            )?;
+        } else {
+            let mut file = File::open(path)
+                .with_context(|| format!("opening upload file {}", path.display()))?;
+            for part in 0..parts {
+                let offset = part as u64 * part_size as u64;
+                let length = ((file_size - offset) as usize).min(part_size);
+                let mut encrypted = vec![0u8; length];
+                file.read_exact(&mut encrypted)
+                    .with_context(|| format!("reading upload part {}", part + 1))?;
+                crypt_at(
+                    &mut encrypted,
+                    &session.mnemonic,
+                    &session.bucket_bytes()?,
+                    &index,
+                    offset,
+                )?;
+                sha.update(&encrypted);
+                if etags[part].is_some() {
+                    continue;
+                }
+                let response = self.put_with_retry(&urls[part], encrypted, part + 1, parts)?;
+                let etag = response
+                    .headers()
+                    .get("etag")
+                    .or_else(|| response.headers().get("ETag"))
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.trim_matches('"').to_owned())
+                    .ok_or_else(|| anyhow!("Internxt part {} returned no ETag", part + 1))?;
+                etags[part] = Some(etag);
+                if let Some(value) = checkpoint.as_mut() {
+                    value.etags[part] = etags[part].clone();
+                    save_checkpoint(&cp_path, value)?;
+                }
+            }
+        }
+
+        let hash = hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha.finalize()));
+        let finish_url = format!(
+            "{}/v2/buckets/{}/files/finish",
+            session.network_url.trim_end_matches('/'),
+            session.bucket_id
+        );
+        let mut shard = serde_json::json!({"hash": hash, "uuid": uuid});
+        if parts > 1 {
+            shard["UploadId"] = serde_json::json!(upload_id);
+            shard["parts"] = serde_json::json!(etags
+                .iter()
+                .enumerate()
+                .map(|(part, etag)| serde_json::json!({
+                    "PartNumber": part + 1,
+                    "ETag": etag.as_ref().expect("all upload parts completed")
+                }))
+                .collect::<Vec<_>>());
+        }
+        let finished = self.json_response(
+            self.bridge_response(
+                reqwest::Method::POST,
+                &finish_url,
+                session,
+                Some(serde_json::to_vec(&serde_json::json!({
+                    "index": hex::encode(index),
+                    "shards": [shard]
+                }))?),
+            )?,
+            &finish_url,
+        )?;
+        let network_file_id = finished
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload finish returned no file id"))?;
+        let create_url = format!("{}/files", self.base_url);
+        self.json_response(
+            self.bearer_request(
+                reqwest::Method::POST,
+                &create_url,
+                serde_json::to_vec(&serde_json::json!({
+                    "folderUuid": parent_folder_uuid,
+                    "plainName": plain_name,
+                    "type": file_type,
+                    "size": file_size,
+                    "bucket": session.bucket_id,
+                    "fileId": network_file_id,
+                    "encryptVersion": "Aes03",
+                    "name": ""
+                }))?,
+            )?,
+            &create_url,
+        )?;
+        remove_checkpoint(&cp_path);
+        Ok(())
+    }
+
+    /// Stream-decrypt a remote file directly to disk. The output is
+    /// truncated only after metadata is validated, and the AES-CTR state is
+    /// advanced incrementally so memory stays bounded by the read buffer.
+    pub fn download_file_to_path(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        path: &Path,
+    ) -> Result<()> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let bucket = metadata
+            .get("bucket")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no bucket"))?;
+        let network_id = metadata
+            .get("fileId")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no network file id"))?;
+        let (url, index_hex) = self.download_links(session, bucket, network_id)?;
+        let index: [u8; 32] = hex::decode(index_hex)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt file index must contain 32 bytes"))?;
+        let bucket: [u8; 12] = hex::decode(bucket)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket must contain 12 bytes"))?;
+        let expected = metadata
+            .get("size")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
+        let mut response = self
+            .http
+            .get(url)
+            .send()
+            .context("streaming encrypted Internxt file")?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!("Internxt shard download returned {status}"));
+        }
+        let temporary = path.with_extension("crispsorter-partial");
+        let mut output = File::create(&temporary)
+            .with_context(|| format!("creating {}", temporary.display()))?;
+        let key = file_key(&session.mnemonic, &bucket, &index);
+        let mut cipher = Aes256Ctr::new((&key).into(), (&index[..16]).into());
+        let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
+        let mut total = 0u64;
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .context("reading encrypted shard")?;
+            if read == 0 {
+                break;
+            }
+            cipher.apply_keystream(&mut buffer[..read]);
+            output
+                .write_all(&buffer[..read])
+                .context("writing decrypted Internxt file")?;
+            total = total.saturating_add(read as u64);
+            if total > expected {
+                return Err(anyhow!("Internxt download exceeds its metadata size"));
+            }
+        }
+        if total != expected {
+            return Err(anyhow!(
+                "Internxt download is incomplete: got {total} bytes, expected {expected}"
+            ));
+        }
+        output
+            .sync_all()
+            .context("flushing decrypted Internxt file")?;
+        drop(output);
+        if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&temporary, path)
+            .with_context(|| format!("installing downloaded file {}", path.display()))?;
+        Ok(())
+    }
+
+    fn put_with_retry(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        part: usize,
+        total: usize,
+    ) -> Result<Response> {
+        let mut last_error = None;
+        for attempt in 0..MAX_UPLOAD_RETRIES {
+            match self
+                .http
+                .put(url)
+                .header("content-type", "application/octet-stream")
+                .body(body.clone())
+                .send()
+            {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) if response.status().as_u16() == 403 => {
+                    return Err(anyhow!(
+                        "Internxt part {part}/{total} upload URL expired (HTTP 403)"
+                    ));
+                }
+                Ok(response) => {
+                    last_error = Some(anyhow!(
+                        "Internxt part {part}/{total} returned {}",
+                        response.status()
+                    ));
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
+            if attempt + 1 < MAX_UPLOAD_RETRIES {
+                std::thread::sleep(Duration::from_secs(1u64 << attempt));
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("Internxt part {part}/{total} failed")))
+    }
+
+    fn put_file_with_retry(
+        &self,
+        url: &str,
+        path: &Path,
+        file_size: u64,
+        mnemonic: &str,
+        bucket: &[u8; 12],
+        index: &[u8; 32],
+    ) -> Result<Sha256> {
+        let mut last_error = None;
+        for attempt in 0..MAX_UPLOAD_RETRIES {
+            let hash = Arc::new(Mutex::new(Sha256::new()));
+            let key = file_key(mnemonic, bucket, index);
+            let reader = EncryptReader {
+                reader: File::open(path)
+                    .with_context(|| format!("opening upload file {}", path.display()))?,
+                cipher: Aes256Ctr::new((&key).into(), (&index[..16]).into()),
+                remaining: file_size,
+                hash: Arc::clone(&hash),
+            };
+            match self
+                .http
+                .put(url)
+                .header("content-type", "application/octet-stream")
+                .body(reqwest::blocking::Body::sized(reader, file_size))
+                .send()
+            {
+                Ok(response) if response.status().is_success() => {
+                    return Ok(hash
+                        .lock()
+                        .map_err(|_| anyhow!("upload hash mutex poisoned"))?
+                        .clone());
+                }
+                Ok(response) if response.status().as_u16() == 403 => {
+                    return Err(anyhow!("Internxt upload URL expired (HTTP 403)"));
+                }
+                Ok(response) => {
+                    last_error = Some(anyhow!(
+                        "Internxt shard upload returned {}",
+                        response.status()
+                    ));
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
+            if attempt + 1 < MAX_UPLOAD_RETRIES {
+                std::thread::sleep(Duration::from_secs(1u64 << attempt));
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("Internxt shard upload failed")))
+    }
+
     fn bearer_request(
         &self,
         method: reqwest::Method,
@@ -1039,6 +1586,60 @@ mod tests {
         let folder = serde_json::json!({"plainName": "Documents"});
         assert_eq!(item_name(&file, "files"), "report.pdf");
         assert_eq!(item_name(&folder, "folders"), "Documents");
+    }
+
+    #[test]
+    fn ctr_at_and_streaming_reader_match_whole_file_encryption() {
+        let plaintext = (0..131_071).map(|value| value as u8).collect::<Vec<_>>();
+        let (index, expected) = encrypt(&plaintext, MNEMONIC, &BUCKET);
+        let hash = Arc::new(Mutex::new(Sha256::new()));
+        let key = file_key(MNEMONIC, &BUCKET, &index);
+        let mut reader = EncryptReader {
+            reader: std::io::Cursor::new(plaintext.clone()),
+            cipher: Aes256Ctr::new((&key).into(), (&index[..16]).into()),
+            remaining: plaintext.len() as u64,
+            hash: Arc::clone(&hash),
+        };
+        let mut streamed = Vec::new();
+        reader.read_to_end(&mut streamed).unwrap();
+        assert_eq!(streamed, expected);
+        assert_eq!(
+            hex::encode(hash.lock().unwrap().clone().finalize()),
+            hex::encode(Sha256::digest(&expected))
+        );
+
+        let mut split = plaintext[16..16 + 4096].to_vec();
+        crypt_at(&mut split, MNEMONIC, &BUCKET, &index, 16).unwrap();
+        assert_eq!(split, expected[16..16 + 4096]);
+    }
+
+    #[test]
+    fn upload_checkpoint_round_trips_and_is_atomic_shape() {
+        let path =
+            std::env::temp_dir().join(format!("crispsorter-checkpoint-test-{}", now_seconds()));
+        let checkpoint = checkpoint_path(&path, "00".repeat(12).as_str());
+        let value = UploadCheckpoint {
+            version: 1,
+            path: path.to_string_lossy().into_owned(),
+            bucket_id: "00".repeat(12),
+            file_size: 123,
+            modified_ns: 456,
+            part_size: UPLOAD_PART_SIZE,
+            parts: 1,
+            index: "11".repeat(32),
+            uuid: "uuid".to_owned(),
+            upload_id: "upload".to_owned(),
+            urls: vec!["https://part".to_owned()],
+            etags: vec![Some("etag".to_owned())],
+            created: now_seconds(),
+        };
+        save_checkpoint(&checkpoint, &value).unwrap();
+        assert_eq!(
+            load_checkpoint(&checkpoint).unwrap().unwrap().index,
+            value.index
+        );
+        assert!(!checkpoint.with_extension("tmp").exists());
+        remove_checkpoint(&checkpoint);
     }
 
     #[test]
