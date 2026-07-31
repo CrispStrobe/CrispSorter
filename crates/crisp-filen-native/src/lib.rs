@@ -1067,6 +1067,39 @@ impl FilenNativeClient {
         })
     }
 
+    /// Persist a resumable upload checkpoint atomically enough for callers to
+    /// recover after a process interruption.
+    pub fn save_upload_resume_state(&self, path: &Path, state: &UploadResumeState) -> Result<()> {
+        let encoded = serde_json::to_vec_pretty(state)?;
+        let temporary = path.with_extension("filen-upload.tmp");
+        std::fs::write(&temporary, encoded)
+            .with_context(|| format!("writing Filen upload checkpoint {}", path.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("installing Filen upload checkpoint {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Load a resumable upload checkpoint, returning `None` when absent.
+    pub fn load_upload_resume_state(path: &Path) -> Result<Option<UploadResumeState>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading Filen upload checkpoint {}", path.display()))?;
+        Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!("parsing Filen upload checkpoint {}", path.display())
+        })?))
+    }
+
+    /// Remove a completed or abandoned resumable upload checkpoint.
+    pub fn clear_upload_resume_state(path: &Path) -> Result<()> {
+        if path.exists() {
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing Filen upload checkpoint {}", path.display()))?;
+        }
+        Ok(())
+    }
+
     /// Continue an upload from its caller-owned state. On a transient or
     /// permanent failure, completed_chunks remains updated and the same state
     /// can be passed back after the caller reconnects.
@@ -2350,6 +2383,27 @@ mod tests {
             serde_json::from_str::<UploadResumeState>(&serde_json::to_string(&state).unwrap())
                 .unwrap(),
             state
+        );
+    }
+
+    #[test]
+    fn upload_resume_state_persists_and_clears_checkpoint_file() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        let state = client
+            .begin_upload("root", "checkpoint.txt", "text/plain", 5)
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("upload.json");
+        client.save_upload_resume_state(&path, &state).unwrap();
+        assert_eq!(
+            FilenNativeClient::load_upload_resume_state(&path).unwrap(),
+            Some(state)
+        );
+        FilenNativeClient::clear_upload_resume_state(&path).unwrap();
+        assert_eq!(
+            FilenNativeClient::load_upload_resume_state(&path).unwrap(),
+            None
         );
     }
 

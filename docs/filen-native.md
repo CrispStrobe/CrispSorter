@@ -27,7 +27,9 @@ cross-checks.
   while the `_with_progress` upload/download variants report `(completed,
   total)` bytes. `get_file` fetches and decrypts one file's metadata without a
   parent listing. `upload_path` and `download_path` recursively bridge local
-  files/directories without materializing whole files.
+  files/directories without materializing whole files. Resumable checkpoints
+  can be persisted with `save_upload_resume_state`, restored with
+  `load_upload_resume_state`, and removed with `clear_upload_resume_state`.
 
 - Login preserves gateway error codes such as `enter_2fa` and `wrong_2fa` in
   the returned error while still sending Filen's `XXXXXX` sentinel when no
@@ -49,11 +51,16 @@ and crypto vectors. The ignored live suite uses unique folders and verifies both
 directions with `../filen-python`:
 
 ```bash
-source <(sed '/^2CAP=/d' /Users/you/code/.env)
+source <(sed '/^2CAP=/d' /Users/christianstrobele/code/.env)
 FILEN_EMAIL="$FILEN_LOGIN" FILEN_PASSWORD="$FILEN_PW" \
   cargo test -p crisp-filen-native --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```
+
+Current suite counts: Rust native unit/hermetic tests 28 passing; Python
+suite 30 passing; Dart suite 244 passing with 3 expected live-suite skips when
+credentials are absent. The Rust live cross-client suite has 3 authenticated
+tests covering mutations and both transfer directions.
 
 The Tauri integration is checked with:
 
