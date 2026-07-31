@@ -21,6 +21,8 @@ pub mod filen;
 pub mod fuse_mount;
 pub mod google_drive;
 pub mod internxt;
+#[cfg(feature = "drive-internxt-native")]
+pub mod internxt_native;
 pub mod onedrive;
 pub mod tauri_commands;
 pub mod webdav;

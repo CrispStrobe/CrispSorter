@@ -1974,6 +1974,7 @@ dependencies = [
 name = "crispsorter"
 version = "0.11.0"
 dependencies = [
+ "aes",
  "anyhow",
  "arboard",
  "arrow",
@@ -1981,6 +1982,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "async-trait",
+ "cipher",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -1994,6 +1996,7 @@ dependencies = [
  "crispembed",
  "crispembed-sys",
  "crisplens-protocol",
+ "ctr",
  "deunicode",
  "docx-rs",
  "fastembed",
@@ -2024,6 +2027,7 @@ dependencies = [
  "ocrs",
  "openssl",
  "ort",
+ "pbkdf2",
  "pdf-extract",
  "pdfium-render",
  "protoc-bin-vendored",
@@ -2230,6 +2234,15 @@ name = "ctor-proc-macro"
 version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
+
+[[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
+]
 
 [[package]]
 name = "darling"

@@ -124,6 +124,10 @@ rayon       = "1.10"
 md-5        = "0.10"
 sha1        = "0.10"
 sha2        = "0.10"
+aes         = { version = "0.8", optional = true }
+cipher      = { version = "0.4", optional = true }
+ctr         = { version = "0.9", optional = true }
+pbkdf2      = { version = "0.12", optional = true }
 hex         = "0.4"
 # CSPRNG for the PDF 2.0 (AESV3) file encryption key. Already in the tree
 # via uuid/ring; declared directly because a predictable key would defeat
@@ -246,6 +250,9 @@ default = []
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
 desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
+# P33.1 — native Internxt protocol. Kept opt-in while the client is being
+# verified against the vendor's Python CLI in both directions.
+drive-internxt-native = ["dep:aes", "dep:cipher", "dep:ctr", "dep:pbkdf2"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]
@@ -394,4 +401,3 @@ optional = true
 # avoids the dep-surface complexity of rubato 0.16's `SincFixedIn`
 # API.  TODO: swap in `rubato` for the few cases (extreme rate ratios)
 # where linear interpolation has audible artifacts.
-
