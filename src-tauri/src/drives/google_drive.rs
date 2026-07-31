@@ -11,7 +11,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat, FileVersion};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
 const API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
@@ -34,7 +34,14 @@ impl GoogleDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
-        Self::with_api_base(label, access_token, refresh_token, client_id, client_secret, API_BASE)
+        Self::with_api_base(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            API_BASE,
+        )
     }
 
     fn with_api_base(
@@ -127,6 +134,18 @@ impl CloudDrive for GoogleDriveDrive {
     }
     fn drive_type(&self) -> DriveType {
         DriveType::GoogleDrive
+    }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
+            share_links: true,
+            versions: true,
+            ..DriveCapabilities::basic()
+        }
     }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
@@ -234,6 +253,94 @@ impl CloudDrive for GoogleDriveDrive {
         Ok(())
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        let name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("Google Drive create_dir requires a directory name"))?;
+        let parent_id = self.resolve_id(path.parent().unwrap_or_else(|| Path::new("")))?;
+        let url = format!("{}/files?fields=id", self.api_base);
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id]
+            }))
+            .send()
+            .with_context(|| format!("Google Drive create_dir: {}", path.display()))?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive create_dir: HTTP {}",
+                response.status()
+            ));
+        }
+        Ok(())
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let file_id = self.resolve_id(source)?;
+        let old_parent = self.resolve_id(source.parent().unwrap_or_else(|| Path::new("")))?;
+        let new_parent = self.resolve_id(destination.parent().unwrap_or_else(|| Path::new("")))?;
+        let name = destination
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("Google Drive move requires a destination name"))?;
+        let url = format!(
+            "{}/files/{}?addParents={}&removeParents={}&fields=id",
+            self.api_base,
+            file_id,
+            encode_query_param(&new_parent),
+            encode_query_param(&old_parent)
+        );
+        let response = self
+            .client
+            .patch(&url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .with_context(|| {
+                format!(
+                    "Google Drive move: {} -> {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        if !response.status().is_success() {
+            return Err(anyhow!("Google Drive move: HTTP {}", response.status()));
+        }
+        Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let file_id = self.resolve_id(source)?;
+        let parent_id = self.resolve_id(destination.parent().unwrap_or_else(|| Path::new("")))?;
+        let name = destination
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .ok_or_else(|| anyhow!("Google Drive copy requires a destination name"))?;
+        let url = format!("{}/files/{}/copy?fields=id", self.api_base, file_id);
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({ "name": name, "parents": [parent_id] }))
+            .send()
+            .with_context(|| {
+                format!(
+                    "Google Drive copy: {} -> {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        if !response.status().is_success() {
+            return Err(anyhow!("Google Drive copy: HTTP {}", response.status()));
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         let file_id = self.resolve_id(path)?;
         let url = format!("{}/files/{}", API_BASE, file_id);
@@ -288,10 +395,7 @@ impl CloudDrive for GoogleDriveDrive {
 
     fn share_link(&self, path: &Path) -> Result<Option<String>> {
         let file_id = self.resolve_id(path)?;
-        let permission_url = format!(
-            "{}/files/{}/permissions?fields=id",
-            self.api_base, file_id
-        );
+        let permission_url = format!("{}/files/{}/permissions?fields=id", self.api_base, file_id);
         let resp = self
             .client
             .post(&permission_url)
@@ -301,16 +405,10 @@ impl CloudDrive for GoogleDriveDrive {
             .context("Google Drive share_link: create permission")?;
 
         if !resp.status().is_success() {
-            return Err(anyhow!(
-                "Google Drive share_link: HTTP {}",
-                resp.status()
-            ));
+            return Err(anyhow!("Google Drive share_link: HTTP {}", resp.status()));
         }
 
-        let metadata_url = format!(
-            "{}/files/{}?fields=webViewLink",
-            self.api_base, file_id
-        );
+        let metadata_url = format!("{}/files/{}?fields=webViewLink", self.api_base, file_id);
         let resp = self
             .client
             .get(&metadata_url)
@@ -324,9 +422,7 @@ impl CloudDrive for GoogleDriveDrive {
             ));
         }
 
-        let body: serde_json::Value = resp
-            .json()
-            .context("Google Drive share_link: parse JSON")?;
+        let body: serde_json::Value = resp.json().context("Google Drive share_link: parse JSON")?;
         Ok(body["webViewLink"].as_str().map(str::to_owned))
     }
 
@@ -461,6 +557,19 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_include_drive_mutations_and_versions() {
+        let d = GoogleDriveDrive::new("test".into(), "tok".into(), None, None, None);
+        let capabilities = d.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(capabilities.copy);
+        assert!(capabilities.share_links);
+        assert!(capabilities.versions);
+        assert!(!capabilities.streaming);
+    }
+
+    #[test]
     fn share_permission_contract_uses_anonymous_reader() {
         let body = serde_json::json!({"type": "anyone", "role": "reader"});
         assert_eq!(body["type"], "anyone");
@@ -501,7 +610,10 @@ mod tests {
             format!("{}/drive/v3", server.url()),
         );
         assert_eq!(
-            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            drive
+                .share_link(Path::new("report.pdf"))
+                .unwrap()
+                .as_deref(),
             Some("https://drive.example/file-1")
         );
         list.assert();
