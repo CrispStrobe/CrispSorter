@@ -2339,7 +2339,7 @@ a trap:
   missing path; UI options hidden on mobile; WebDAV named in the error as
   the mobile route to the same storage.
 
-- [>] **P33.1 — Internxt native: continue on our own
+- [x] **P33.1 — Internxt native: continue on our own
   `crates/crisp-internxt-native`.**
 
   *Settled 2026-07-31 after reading both implementations.* This item was
@@ -2350,7 +2350,7 @@ a trap:
   matters:
 
   **What `crisp-internxt-native` already has** (840 LOC + a 190 LOC CLI,
-  10 tests): the full three-step login (`/auth/login` → `/auth/login/access`
+  29 unit tests plus HTTP-harness coverage): the full three-step login (`/auth/login` → `/auth/login/access`
   with 2FA → `/users/refresh`), the OpenSSL `EVP_BytesToKey`/MD5 `Salted__`
   envelope, password→mnemonic decryption, an `InternxtSession` shaped for the
   keychain, `bridge_pass = sha256(user_id)`, NFKD-normalised BIP-39 seed
@@ -2387,11 +2387,11 @@ a trap:
   progress reporting.  It is MIT, so reading and lifting individual
   functions is unencumbered.
 
-  Remaining work here: wire `InternxtDrive` to the crate behind
-  `drive-internxt-native`, put the session in the OS keychain rather than
-  `drives.json`, close the streaming/refresh gaps above, and confirm the
-  crate builds for `aarch64-apple-ios` with rustls rather than dragging
-  OpenSSL in.
+  The implementation now wires `InternxtDrive` to the crate behind
+  `drive-internxt-native`, stores the native session through the OS-keychain
+  adapter, supports streaming and multipart transfers with refresh/retry,
+  caches and invalidates path listings, and builds with rustls for desktop
+  and `aarch64-apple-ios` without OpenSSL.
 
   `../internxt-dart` stays the **oracle** (P33.2), not a port source.
 
@@ -2399,7 +2399,8 @@ a trap:
   overwrite resolution use the complete parent path. The desktop
   `desktop,drive-internxt-native` Tauri check passes; omitting `desktop` is
   intentionally unsupported because the desktop capability owns shell/process
-  permissions.)
+  permissions. The corresponding iOS check also passes with
+  `--no-default-features,drive-internxt-native`.)
 
 - [x] **P33.2 — Verify the crypto against the reference client, not our own
   tests.**  `internxt-core` claims byte-for-byte compatibility with the
