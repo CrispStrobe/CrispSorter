@@ -36,6 +36,7 @@ members  = [
     "crates/crispcat-cli",
     "crates/crisplens-protocol",
     "crates/crisp-internxt-native",
+    "crates/crisp-filen-native",
     "crates/internxt-core",
 ]
 # release.yml extracts sibling repos (CrispEmbed / CrispASR / crisp-docx)

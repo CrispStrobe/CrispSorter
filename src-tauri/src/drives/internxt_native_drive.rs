@@ -27,7 +27,12 @@ impl NativeInternxtDrive {
             .session
             .as_ref()
             .map_err(|error| anyhow!("native Internxt session unavailable: {error:#}"))?;
-        let client = InternxtNativeClient::new(&session.drive_api_url, &session.token)?;
+        let bearer = if session.new_token.is_empty() {
+            &session.token
+        } else {
+            &session.new_token
+        };
+        let client = InternxtNativeClient::new(&session.drive_api_url, bearer)?;
         Ok((session, client))
     }
 

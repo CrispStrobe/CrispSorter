@@ -2140,6 +2140,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisp-filen-native"
+version = "0.1.0"
+dependencies = [
+ "aes 0.8.4",
+ "aes-gcm 0.10.3",
+ "anyhow",
+ "argon2",
+ "base64 0.22.1",
+ "blake3",
+ "cbc 0.1.2",
+ "chrono",
+ "cipher 0.4.4",
+ "clap",
+ "getrandom 0.2.17",
+ "hex",
+ "hkdf",
+ "hmac 0.12.1",
+ "md-5 0.10.6",
+ "pbkdf2 0.12.2",
+ "reqwest 0.13.4",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid 1.23.3",
+]
+
+[[package]]
 name = "crisp-index-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2280,6 +2310,7 @@ dependencies = [
  "crisp-docx-align",
  "crisp-docx-core",
  "crisp-docx-llm",
+ "crisp-filen-native",
  "crisp-index-protocol",
  "crisp-internxt-native",
  "crispasr",
@@ -10524,6 +10555,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
+ "sha2 0.10.9",
  "signature",
  "spki",
  "subtle",

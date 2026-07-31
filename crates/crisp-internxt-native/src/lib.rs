@@ -15,6 +15,7 @@ use reqwest::blocking::{Client, Response};
 use ripemd::Digest as RipemdDigest;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
+use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
@@ -23,6 +24,8 @@ type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 const OPENSSL_MAGIC: &[u8; 8] = b"Salted__";
 const INTERNXT_APP_SECRET: &str = "6KYQBP847D4ATSFA";
+const MULTIPART_MIN_SIZE: usize = 100 * 1024 * 1024;
+const UPLOAD_PART_SIZE: usize = 30 * 1024 * 1024;
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
@@ -221,10 +224,15 @@ impl InternxtNativeClient {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         reqwest::Url::parse(&base_url)
             .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
+        let http = Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(300))
+            .build()
+            .context("building Internxt HTTP client")?;
         Ok(Self {
             base_url,
             bearer_token: bearer_token.into(),
-            http: Client::new(),
+            http,
         })
     }
 
@@ -246,7 +254,7 @@ impl InternxtNativeClient {
         let security = http
             .post(&security_url)
             .header("content-type", "application/json")
-            .header("internxt-client", "cli")
+            .header("internxt-client", "internxt-cli")
             .json(&serde_json::json!({"email": email}))
             .send()
             .context("requesting Internxt login security details")?;
@@ -271,7 +279,7 @@ impl InternxtNativeClient {
         let access = http
             .post(&access_url)
             .header("content-type", "application/json")
-            .header("internxt-client", "cli")
+            .header("internxt-client", "internxt-cli")
             .json(&serde_json::json!({
                 "email": email,
                 "password": encrypted_password,
@@ -297,7 +305,7 @@ impl InternxtNativeClient {
             .get(&refresh_url)
             .bearer_auth(temporary_token)
             .header("content-type", "application/json")
-            .header("internxt-client", "cli")
+            .header("internxt-client", "internxt-cli")
             .send()
             .context("hydrating Internxt login session")?;
         let refresh_status = refresh.status();
@@ -358,7 +366,7 @@ impl InternxtNativeClient {
             .get(&url)
             .bearer_auth(token)
             .header("content-type", "application/json")
-            .header("internxt-client", "cli")
+            .header("internxt-client", "internxt-cli")
             .send()
             .context("refreshing Internxt session")?;
         let value = self.json_response(response, &url)?;
@@ -378,17 +386,23 @@ impl InternxtNativeClient {
     }
 
     fn list_page(&self, folder_uuid: &str, kind: &str, offset: usize) -> Result<Vec<NativeItem>> {
-        let url = format!("{}/folders/content/{}/{}", self.base_url, folder_uuid, kind);
+        let url = format!(
+            "{}/folders/content/{}/{}/",
+            self.base_url, folder_uuid, kind
+        );
         let mut url = reqwest::Url::parse(&url).context("building Internxt listing URL")?;
         url.query_pairs_mut()
             .append_pair("offset", &offset.to_string())
             .append_pair("limit", "50")
             .append_pair("sort", "plainName")
-            .append_pair("direction", "ASC");
+            .append_pair("order", "ASC");
+        let url_text = url.to_string();
         let response = self
             .http
             .get(url)
             .bearer_auth(&self.bearer_token)
+            .header("accept", "application/json")
+            .header("internxt-client", "internxt-cli")
             .send()
             .context("requesting Internxt folder contents")?;
         let status = response.status();
@@ -396,7 +410,9 @@ impl InternxtNativeClient {
             .text()
             .context("reading Internxt folder response")?;
         if !status.is_success() {
-            return Err(anyhow!("Internxt gateway returned {status}: {body}"));
+            return Err(anyhow!(
+                "Internxt gateway returned {status} for {url_text}: {body}"
+            ));
         }
         let page: ContentPage = serde_json::from_str(&body)
             .with_context(|| format!("parsing Internxt folder response: {body}"))?;
@@ -410,12 +426,7 @@ impl InternxtNativeClient {
         Ok(values
             .into_iter()
             .map(|item| NativeItem {
-                name: item
-                    .get("plainName")
-                    .or_else(|| item.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?")
-                    .to_owned(),
+                name: item_name(&item, kind),
                 uuid: item
                     .get("uuid")
                     .or_else(|| item.get("id"))
@@ -435,7 +446,8 @@ impl InternxtNativeClient {
         self.http
             .request(method, url)
             .bearer_auth(&self.bearer_token)
-            .header("internxt-client", "cli")
+            .header("accept", "application/json")
+            .header("internxt-client", "internxt-cli")
             .send()
             .with_context(|| format!("requesting Internxt drive endpoint: {url}"))
     }
@@ -451,7 +463,9 @@ impl InternxtNativeClient {
             .http
             .request(method, url)
             .basic_auth(&session.bridge_user, Some(session.bridge_pass()))
-            .header("x-api-version", "2");
+            .header("x-api-version", "2")
+            .header("accept", "application/json")
+            .header("internxt-client", "internxt-cli");
         if let Some(body) = body {
             request = request
                 .header("content-type", "application/json")
@@ -474,7 +488,7 @@ impl InternxtNativeClient {
             .text()
             .with_context(|| format!("reading Internxt response: {url}"))?;
         if !status.is_success() {
-            return Err(anyhow!("Internxt endpoint returned {status}: {body}"));
+            return Err(anyhow!("Internxt endpoint {url} returned {status}: {body}"));
         }
         serde_json::from_str(&body).with_context(|| format!("parsing Internxt response: {body}"))
     }
@@ -563,13 +577,7 @@ impl InternxtNativeClient {
         let bucket = session.bucket_bytes()?;
         let (index, encrypted) = encrypt(data, &session.mnemonic, &bucket);
         let index_hex = hex::encode(index);
-        const MULTIPART_MIN_SIZE: usize = 100 * 1024 * 1024;
-        const PART_SIZE: usize = 30 * 1024 * 1024;
-        let parts = if data.len() >= MULTIPART_MIN_SIZE {
-            data.len().div_ceil(PART_SIZE)
-        } else {
-            1
-        };
+        let parts = multipart_part_count(data.len());
         let start_url = format!(
             "{}/v2/buckets/{}/files/start?multiparts={parts}",
             session.network_url.trim_end_matches('/'),
@@ -626,7 +634,7 @@ impl InternxtNativeClient {
                     urls.len()
                 ));
             }
-            for (part_number, chunk) in encrypted.chunks(PART_SIZE).enumerate() {
+            for (part_number, chunk) in encrypted.chunks(UPLOAD_PART_SIZE).enumerate() {
                 let url = urls[part_number]
                     .as_str()
                     .ok_or_else(|| anyhow!("Internxt multipart URL is not text"))?;
@@ -661,8 +669,7 @@ impl InternxtNativeClient {
                 "parts": manifest,
             })];
         }
-        let sha = sha2::Sha256::digest(&encrypted);
-        let hash = hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha));
+        let hash = shard_hash(&encrypted);
         let finish_url = format!(
             "{}/v2/buckets/{}/files/finish",
             session.network_url.trim_end_matches('/'),
@@ -717,7 +724,8 @@ impl InternxtNativeClient {
         self.http
             .request(method, url)
             .bearer_auth(&self.bearer_token)
-            .header("internxt-client", "cli")
+            .header("accept", "application/json")
+            .header("internxt-client", "internxt-cli")
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -853,6 +861,33 @@ impl InternxtNativeClient {
     }
 }
 
+fn multipart_part_count(size: usize) -> usize {
+    if size >= MULTIPART_MIN_SIZE {
+        size.div_ceil(UPLOAD_PART_SIZE)
+    } else {
+        1
+    }
+}
+
+fn shard_hash(encrypted: &[u8]) -> String {
+    let sha = sha2::Sha256::digest(encrypted);
+    hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha))
+}
+
+fn item_name(item: &serde_json::Value, kind: &str) -> String {
+    let plain_name = item
+        .get("plainName")
+        .or_else(|| item.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let file_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if kind == "files" && !file_type.is_empty() {
+        format!("{plain_name}.{file_type}")
+    } else {
+        plain_name.to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -980,6 +1015,30 @@ mod tests {
             mnemonic_seed("cafe\u{301}", "pass"),
             mnemonic_seed("caf\u{e9}", "pass")
         );
+    }
+
+    #[test]
+    fn multipart_layout_matches_internxt_threshold() {
+        assert_eq!(multipart_part_count(MULTIPART_MIN_SIZE - 1), 1);
+        assert_eq!(multipart_part_count(MULTIPART_MIN_SIZE), 4);
+        assert_eq!(multipart_part_count(MULTIPART_MIN_SIZE + 1), 4);
+        assert_eq!(multipart_part_count(4 * UPLOAD_PART_SIZE), 4);
+    }
+
+    #[test]
+    fn shard_hash_is_ripemd160_of_sha256() {
+        assert_eq!(
+            shard_hash(b"internxt shard"),
+            "30b546838b1dfabb91afdde3cf09661657aee40d"
+        );
+    }
+
+    #[test]
+    fn listing_composes_file_extension_for_path_resolution() {
+        let file = serde_json::json!({"plainName": "report", "type": "pdf"});
+        let folder = serde_json::json!({"plainName": "Documents"});
+        assert_eq!(item_name(&file, "files"), "report.pdf");
+        assert_eq!(item_name(&folder, "folders"), "Documents");
     }
 
     #[test]

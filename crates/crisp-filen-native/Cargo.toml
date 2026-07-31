@@ -1,0 +1,43 @@
+[package]
+name = "crisp-filen-native"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable native Filen Cloud Drive protocol client and test CLI"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/CrispStrobe/CrispSorter"
+
+[lib]
+name = "crisp_filen_native"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crisp-filen"
+path = "src/main.rs"
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+anyhow = "1.0.102"
+argon2 = "0.5"
+base64 = "0.22"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+cipher = "0.4"
+cbc = "0.1"
+clap = { version = "4.6", features = ["derive"] }
+getrandom = "0.2"
+hkdf = "0.12"
+hmac = "0.12"
+hex = "0.4"
+md-5 = "0.10"
+pbkdf2 = "0.12"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "blocking", "rustls"] }
+rsa = { version = "0.9", features = ["sha2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

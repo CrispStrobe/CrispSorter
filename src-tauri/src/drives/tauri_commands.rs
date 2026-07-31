@@ -235,6 +235,57 @@ pub async fn drive_native_login(
     }
 }
 
+/// Log in a native Filen drive and store its encrypted session in the OS
+/// keychain.  The password is never written to DriveConfig/drives.json.
+#[tauri::command]
+pub async fn drive_filen_native_login(
+    state: State<'_, AppState>,
+    drive_id: String,
+    email: String,
+    password: String,
+    tfa_code: Option<String>,
+    gateway_url: Option<String>,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg
+        .drives
+        .iter()
+        .find(|drive| drive.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    if config.kind != DriveType::Filen {
+        return Err("native Filen login requires a Filen drive".to_owned());
+    }
+    #[cfg(feature = "drive-filen-native")]
+    {
+        let url = gateway_url
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| crisp_filen_native::DEFAULT_GATEWAY_URL.to_owned());
+        let session = crisp_filen_native::FilenNativeClient::login(
+            &url,
+            &email,
+            &password,
+            tfa_code.as_deref(),
+        )
+        .map_err(|e| format!("native Filen login failed: {e:#}"))?;
+        let serialized = session
+            .encode()
+            .map_err(|e| format!("serializing native Filen session failed: {e:#}"))?;
+        super::secret::set_session(&drive_id, &serialized)
+            .map_err(|e| format!("storing native Filen session failed: {e:#}"))
+    }
+    #[cfg(not(feature = "drive-filen-native"))]
+    {
+        let _ = (email, password, tfa_code, gateway_url);
+        Err("native Filen support is not enabled in this build".to_owned())
+    }
+}
+
 /// Remove the native Internxt session from the OS keychain.
 #[tauri::command]
 pub async fn drive_native_logout(

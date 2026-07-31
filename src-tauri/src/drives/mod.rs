@@ -18,6 +18,8 @@
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
 pub mod filen;
+#[cfg(feature = "drive-filen-native")]
+pub mod filen_native_drive;
 pub mod fuse_mount;
 pub mod google_drive;
 pub mod internxt;
@@ -442,10 +444,22 @@ impl DriveRegistry {
                     PathBuf::from(&config.path),
                 ))
             }
-            DriveType::Filen => Box::new(filen::FilenDrive::new(
-                config.label.clone(),
-                PathBuf::from(&config.path),
-            )),
+            DriveType::Filen => {
+                #[cfg(feature = "drive-filen-native")]
+                {
+                    Box::new(filen_native_drive::NativeFilenDrive::from_keychain(
+                        config.label.clone(),
+                        &config.id,
+                    ))
+                }
+                #[cfg(not(feature = "drive-filen-native"))]
+                {
+                    Box::new(filen::FilenDrive::new(
+                        config.label.clone(),
+                        PathBuf::from(&config.path),
+                    ))
+                }
+            }
             DriveType::Internxt => {
                 #[cfg(feature = "drive-internxt-native")]
                 {

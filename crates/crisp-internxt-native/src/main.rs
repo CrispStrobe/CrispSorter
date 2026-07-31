@@ -212,7 +212,12 @@ fn open(path: &Path) -> Result<(InternxtNativeClient, InternxtSession)> {
         &std::fs::read_to_string(path)
             .with_context(|| format!("reading session {}", path.display()))?,
     )?;
-    let client = InternxtNativeClient::new(&value.drive_api_url, &value.token)?;
+    let bearer = if value.new_token.is_empty() {
+        &value.token
+    } else {
+        &value.new_token
+    };
+    let client = InternxtNativeClient::new(&value.drive_api_url, bearer)?;
     Ok((client, value))
 }
 
