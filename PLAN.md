@@ -2499,7 +2499,7 @@ a trap:
     provider-specific crypto and advanced operations outside the trait.
   - [x] Add shared transfer types for conflict policy, filters, progress,
     cancellation, resume state, and structured error classification.
-  - [ ] Add cooperative cancellation and bounded concurrency guarantees to
+  - [x] Add cooperative cancellation and bounded concurrency guarantees to
     both backends, with identical progress semantics.
   - [ ] Add an async API or an explicitly documented blocking-only boundary;
     do not let the facade imply async portability it does not provide.

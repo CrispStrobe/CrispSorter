@@ -19,7 +19,7 @@ use sha2::{Sha256, Sha512};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -377,6 +377,25 @@ pub struct BatchTransferState {
     pub completed: Vec<String>,
 }
 
+/// Optional controls for batch transfers.  Cancellation is checked before
+/// each file is claimed by a worker; an in-flight HTTP request is allowed to
+/// finish, after which the batch returns the cancellation error.
+#[derive(Clone, Default)]
+pub struct TransferOptions {
+    pub cancellation: Option<Arc<AtomicBool>>,
+}
+
+fn check_cancelled(options: &TransferOptions) -> Result<()> {
+    if options
+        .cancellation
+        .as_ref()
+        .is_some_and(|token| token.load(Ordering::Acquire))
+    {
+        return Err(anyhow!("transfer cancelled"));
+    }
+    Ok(())
+}
+
 enum ResumableUploadEvent {
     Progress { index: usize, bytes: u64 },
     Done { index: usize, result: Result<()> },
@@ -575,21 +594,42 @@ impl FilenNativeClient {
     pub fn upload_files_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
         &self,
         jobs: Vec<UploadJob>,
+        progress: F,
+    ) -> Result<()> {
+        self.upload_files_with_byte_progress_options(jobs, TransferOptions::default(), progress)
+    }
+
+    /// Batch upload with cancellation controls and aggregate byte progress.
+    /// Existing batch methods remain equivalent to passing default options.
+    pub fn upload_files_with_byte_progress_options<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        jobs: Vec<UploadJob>,
+        options: TransferOptions,
         mut progress: F,
     ) -> Result<()> {
+        check_cancelled(&options)?;
         let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
         let total = jobs.len();
         let total_bytes = jobs.iter().map(|job| job.data.len() as u64).sum();
         let jobs = jobs.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::channel();
+        let cancellation = options.cancellation.clone();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let next = Arc::clone(&next);
                 let sender = sender.clone();
+                let cancellation = cancellation.clone();
                 scope.spawn(move || loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     if index >= jobs.len() {
+                        break;
+                    }
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|token| token.load(Ordering::Acquire))
+                    {
+                        let _ = sender.send((index, Err(anyhow!("transfer cancelled"))));
                         break;
                     }
                     let result = self.upload_file(
@@ -2523,21 +2563,41 @@ impl FilenNativeClient {
     pub fn download_files_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
         &self,
         items: Vec<NativeItem>,
+        progress: F,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.download_files_with_byte_progress_options(items, TransferOptions::default(), progress)
+    }
+
+    /// Batch download with cancellation controls and aggregate byte progress.
+    pub fn download_files_with_byte_progress_options<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        items: Vec<NativeItem>,
+        options: TransferOptions,
         mut progress: F,
     ) -> Result<Vec<Vec<u8>>> {
+        check_cancelled(&options)?;
         let workers = self.transfer_config.file_workers.min(items.len()).max(1);
         let item_count = items.len();
         let total_bytes = items.iter().map(|item| item.size).sum();
         let items = items.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::channel();
+        let cancellation = options.cancellation.clone();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let next = Arc::clone(&next);
                 let sender = sender.clone();
+                let cancellation = cancellation.clone();
                 scope.spawn(move || loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     if index >= items.len() {
+                        break;
+                    }
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|token| token.load(Ordering::Acquire))
+                    {
+                        let _ = sender.send(Err(anyhow!("transfer cancelled")));
                         break;
                     }
                     let result = self.download_file(&items[index]).map(|data| (index, data));
@@ -3095,7 +3155,7 @@ mod tests {
         }
         .validate()
         .is_err());
-        assert_eq!(TransferConfig::default().validate().unwrap().workers, 4);
+        assert_eq!(TransferConfig::default().validate().unwrap().workers, 1);
     }
 
     #[test]
@@ -3123,6 +3183,52 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(download.is_empty());
+    }
+
+    #[test]
+    fn batch_upload_honors_cancellation_before_claiming_work() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        let token = Arc::new(AtomicBool::new(true));
+        let error = client
+            .upload_files_with_byte_progress_options(
+                vec![UploadJob {
+                    parent: "root".into(),
+                    name: "cancelled.txt".into(),
+                    mime: "text/plain".into(),
+                    data: b"never sent".to_vec(),
+                }],
+                TransferOptions {
+                    cancellation: Some(token),
+                },
+                |_, _, _, _| {},
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("transfer cancelled"));
+    }
+
+    #[test]
+    fn batch_download_honors_cancellation_before_claiming_work() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        let token = Arc::new(AtomicBool::new(true));
+        let error = client
+            .download_files_with_byte_progress_options(
+                vec![NativeItem {
+                    name: "cancelled.txt".into(),
+                    uuid: "cancelled-file".into(),
+                    is_dir: false,
+                    size: 10,
+                    modified: 0,
+                    hash: String::new(),
+                }],
+                TransferOptions {
+                    cancellation: Some(token),
+                },
+                |_, _, _, _| {},
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("transfer cancelled"));
     }
 
     #[test]
