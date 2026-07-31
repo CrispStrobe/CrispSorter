@@ -37,7 +37,8 @@ cross-checks.
   files/directories without materializing whole files. The
   `upload_path_with_timestamps` and `download_path_with_timestamps` variants
   preserve source/remote timestamps; local timestamp application is best
-  effort. `replace_file_from_reader` and `replace_file_from_path` provide
+  effort. `resume_upload_from_reader`, `replace_file_from_reader`, and
+  `replace_file_from_path` provide
   bounded replacement uploads, and `copy_file` stages on disk instead of
   materializing the complete plaintext. Resumable checkpoints
   can be persisted with `save_upload_resume_state`, restored with

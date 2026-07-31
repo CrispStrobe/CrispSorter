@@ -1445,6 +1445,112 @@ impl FilenNativeClient {
         Ok(())
     }
 
+    /// Continue a resumable upload from an exact-size reader. The reader is
+    /// consumed chunk-by-chunk, so large interrupted uploads do not require a
+    /// second complete plaintext allocation.
+    pub fn resume_upload_from_reader<R: std::io::Read>(
+        &self,
+        state: &mut UploadResumeState,
+        mut reader: R,
+    ) -> Result<()> {
+        anyhow::ensure!(state.chunk_size > 0, "resume state has invalid chunk size");
+        let total = (state.size as usize).div_ceil(state.chunk_size);
+        let completed: std::collections::HashSet<usize> =
+            state.completed_chunks.iter().copied().collect();
+        let mut hasher = blake3::Hasher::new();
+        for index in 0..total {
+            let remaining = state.size as usize - index * state.chunk_size;
+            let length = remaining.min(state.chunk_size);
+            let mut chunk = vec![0u8; length];
+            reader
+                .read_exact(&mut chunk)
+                .with_context(|| format!("reading resumable Filen upload chunk {index}"))?;
+            hasher.update(&chunk);
+            if completed.contains(&index) {
+                continue;
+            }
+            let mut nonce = [0u8; 12];
+            getrandom::getrandom(&mut nonce)?;
+            let encrypted = encrypt_file_chunk(&chunk, &state.file_key, nonce)?;
+            let hash = hex::encode(Sha512::digest(&encrypted));
+            let value = upload_chunk_request(
+                &self.http,
+                &self.api_key,
+                format!(
+                    "{}/v3/upload?uuid={}&index={index}&parent={}&uploadKey={}&hash={hash}",
+                    self.ingest_url, state.uuid, state.parent, state.upload_key
+                ),
+                &encrypted,
+                self.transfer_config.retries,
+                self.transfer_config.retry_backoff_ms,
+            )?;
+            state.bucket = value.bucket;
+            state.region = value.region;
+            state.completed_chunks.push(index);
+            state.completed_chunks.sort_unstable();
+            state.completed_chunks.dedup();
+        }
+        anyhow::ensure!(
+            reader.read(&mut [0u8; 1])? == 0,
+            "resume reader has extra data"
+        );
+        if state.size == 0 {
+            let _: serde_json::Value = self.request(
+                reqwest::Method::POST,
+                format!("{}/v3/upload/empty", self.gateway_url),
+                Some(serde_json::json!({
+                    "uuid": state.uuid,
+                    "name": self.encrypt_metadata(&state.name)?,
+                    "nameHashed": self.hash_name(&state.name)?,
+                    "size": self.encrypt_metadata("0")?,
+                    "parent": state.parent,
+                    "mime": self.encrypt_metadata(&state.mime)?,
+                    "metadata": self.encrypt_metadata("{}")?,
+                    "version": if self.mode == CryptoMode::V3 { 3 } else { 2 }
+                })),
+            )?;
+            self.invalidate_listings();
+            return Ok(());
+        }
+        let key_string = if self.mode == CryptoMode::V3 {
+            hex::encode(state.file_key)
+        } else {
+            String::from_utf8_lossy(&state.file_key).into_owned()
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let metadata = serde_json::json!({
+            "name": state.name,
+            "size": state.size,
+            "mime": state.mime,
+            "key": key_string,
+            "creation": now,
+            "lastModified": now,
+            "blake3": hasher.finalize().to_hex().to_string()
+        })
+        .to_string();
+        let _: serde_json::Value = self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/upload/done", self.gateway_url),
+            Some(serde_json::json!({
+                "uuid": state.uuid,
+                "name": self.encrypt_metadata(&state.name)?,
+                "nameHashed": self.hash_name(&state.name)?,
+                "size": self.encrypt_metadata(&state.size.to_string())?,
+                "parent": state.parent,
+                "mime": self.encrypt_metadata(&state.mime)?,
+                "metadata": self.encrypt_metadata(&metadata)?,
+                "version": if self.mode == CryptoMode::V3 { 3 } else { 2 },
+                "chunks": total,
+                "rm": "0",
+                "uploadKey": state.upload_key,
+                "bucket": state.bucket,
+                "region": state.region
+            })),
+        )?;
+        self.invalidate_listings();
+        Ok(())
+    }
+
     pub fn create_folder(&self, parent: &str, name: &str) -> Result<String> {
         let metadata =
             serde_json::json!({"name": name, "creation": chrono::Utc::now().timestamp_millis()})
@@ -2950,9 +3056,13 @@ mod tests {
         let mut state = client
             .begin_upload("root", "resume.txt", "text/plain", 5)
             .unwrap();
-        assert!(client.resume_upload(&mut state, b"hello").is_err());
+        assert!(client
+            .resume_upload_from_reader(&mut state, std::io::Cursor::new(b"hello"))
+            .is_err());
         assert!(state.completed_chunks.is_empty());
-        client.resume_upload(&mut state, b"hello").unwrap();
+        client
+            .resume_upload_from_reader(&mut state, std::io::Cursor::new(b"hello"))
+            .unwrap();
         assert_eq!(state.completed_chunks, vec![0]);
     }
 

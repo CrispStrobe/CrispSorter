@@ -196,7 +196,7 @@ fn filen_live_native_mutations() {
         .begin_upload(&folder_uuid, "before.txt", "text/plain", 16)
         .unwrap();
     client
-        .resume_upload(&mut resumable, b"mutation fixture")
+        .resume_upload_from_reader(&mut resumable, std::io::Cursor::new(b"mutation fixture"))
         .unwrap();
     let before = client
         .resolve_path(
