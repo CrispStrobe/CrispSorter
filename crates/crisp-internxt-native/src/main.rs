@@ -288,6 +288,7 @@ fn run() -> Result<()> {
                     filter: TransferFilter { includes, excludes },
                     preserve_timestamps,
                     skip_unchanged,
+                    ..TransferOptions::default()
                 };
                 let stats = client.upload_directory_with_options(
                     &value,
