@@ -145,6 +145,29 @@ fn filen_live_native_mutations() {
         .create_folder(&session.root_folder_uuid, &folder)
         .unwrap();
     let nested_uuid = client.create_folder(&folder_uuid, "nested").unwrap();
+    let local_tree = tempfile::tempdir().unwrap();
+    std::fs::create_dir(local_tree.path().join("subdir")).unwrap();
+    std::fs::write(
+        local_tree.path().join("subdir").join("path.txt"),
+        b"path transfer fixture",
+    )
+    .unwrap();
+    client
+        .upload_path(&folder_uuid, "path-tree", "text/plain", local_tree.path())
+        .unwrap();
+    let path_root = client
+        .resolve_path(
+            &session,
+            std::path::Path::new(&format!("/{folder}/path-tree")),
+        )
+        .unwrap();
+    let local_download = tempfile::tempdir().unwrap();
+    let downloaded_tree = local_download.path().join("path-tree");
+    client.download_path(&path_root, &downloaded_tree).unwrap();
+    assert_eq!(
+        fs::read(downloaded_tree.join("subdir/path.txt")).unwrap(),
+        b"path transfer fixture"
+    );
     let mut resumable = client
         .begin_upload(&folder_uuid, "before.txt", "text/plain", 16)
         .unwrap();
