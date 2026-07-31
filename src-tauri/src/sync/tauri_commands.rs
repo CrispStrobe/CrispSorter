@@ -36,6 +36,76 @@ pub async fn transfer_queue_cancel(
     Ok(state.transfer_queue.cancel(job_id))
 }
 
+/// Inspect the durable cloud-operation offline queue.
+#[tauri::command]
+pub async fn offline_queue_status(
+    state: State<'_, AppState>,
+) -> Result<super::offline_queue::QueueStats, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    super::offline_queue::OfflineQueue::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .stats()
+        .map_err(|e| e.to_string())
+}
+
+/// Return pending offline operations in FIFO order.
+#[tauri::command]
+pub async fn offline_queue_list(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<super::offline_queue::QueuedOp>, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    super::offline_queue::OfflineQueue::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .dequeue_batch(limit.unwrap_or(100).min(1000))
+        .map_err(|e| e.to_string())
+}
+
+/// Reset permanently failed offline operations for another replay attempt.
+#[tauri::command]
+pub async fn offline_queue_retry_failed(
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    super::offline_queue::OfflineQueue::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .retry_all_failed()
+        .map_err(|e| e.to_string())
+}
+
+/// Purge failed offline operations older than the requested number of days.
+#[tauri::command]
+pub async fn offline_queue_purge_failed(
+    state: State<'_, AppState>,
+    older_than_days: u64,
+) -> Result<usize, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    super::offline_queue::OfflineQueue::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .purge_old(std::time::Duration::from_secs(older_than_days.saturating_mul(86_400)))
+        .map_err(|e| e.to_string())
+}
+
 /// Return sync status: pending count, last push/pull timestamps, online state.
 #[tauri::command]
 pub async fn sync_status(
