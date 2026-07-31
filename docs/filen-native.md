@@ -20,6 +20,8 @@ cross-checks.
 - Upload/download concurrency is bounded independently at chunk and file
   levels. `TransferConfig` exposes `chunk_size`, `workers`, `file_workers`,
   `retries`, and `retry_backoff_ms`.
+  `upload_files_with_progress` and `download_files_with_progress` report
+  serialized file-completion progress for batch consumers.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
   byte ranges, direct-to-writer streaming, and post-transfer hash

@@ -464,7 +464,19 @@ impl FilenNativeClient {
     }
 
     pub fn upload_files(&self, jobs: Vec<UploadJob>) -> Result<()> {
+        self.upload_files_with_progress(jobs, |_, _| {})
+    }
+
+    /// Batch upload with `(completed_files, total_files)` progress. Files
+    /// still complete out of order, while callbacks are serialized by the
+    /// receiver and therefore safe for ordinary UI state.
+    pub fn upload_files_with_progress<F: FnMut(usize, usize)>(
+        &self,
+        jobs: Vec<UploadJob>,
+        mut progress: F,
+    ) -> Result<()> {
         let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
+        let total = jobs.len();
         let jobs = jobs.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::channel();
@@ -489,8 +501,11 @@ impl FilenNativeClient {
                 });
             }
             drop(sender);
+            let mut completed = 0;
             for result in receiver {
                 result?;
+                completed += 1;
+                progress(completed, total);
             }
             Ok(())
         })
@@ -1899,6 +1914,15 @@ impl FilenNativeClient {
     }
 
     pub fn download_files(&self, items: Vec<NativeItem>) -> Result<Vec<Vec<u8>>> {
+        self.download_files_with_progress(items, |_, _| {})
+    }
+
+    /// Batch download with `(completed_files, total_files)` progress.
+    pub fn download_files_with_progress<F: FnMut(usize, usize)>(
+        &self,
+        items: Vec<NativeItem>,
+        mut progress: F,
+    ) -> Result<Vec<Vec<u8>>> {
         let workers = self.transfer_config.file_workers.min(items.len()).max(1);
         let item_count = items.len();
         let items = items.as_slice();
@@ -1921,9 +1945,12 @@ impl FilenNativeClient {
             }
             drop(sender);
             let mut results = vec![None; item_count];
+            let mut completed = 0;
             for result in receiver {
                 let (index, data) = result?;
                 results[index] = Some(data);
+                completed += 1;
+                progress(completed, item_count);
             }
             results
                 .into_iter()
@@ -2329,10 +2356,16 @@ mod tests {
                 data: Vec::new(),
             })
             .collect();
-        client.upload_files(jobs).unwrap();
+        let mut progress = Vec::new();
+        client
+            .upload_files_with_progress(jobs, |completed, total| progress.push((completed, total)))
+            .unwrap();
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert!(peak.load(Ordering::SeqCst) <= 2);
         assert!(peak.load(Ordering::SeqCst) >= 2);
+        assert_eq!(progress.len(), 6);
+        assert!(progress.iter().all(|(_, total)| *total == 6));
+        assert_eq!(progress.last(), Some(&(6, 6)));
     }
 
     #[test]
