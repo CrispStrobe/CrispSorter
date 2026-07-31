@@ -51,6 +51,9 @@ enum Command {
         remote: PathBuf,
         #[arg(long)]
         resume_state: Option<PathBuf>,
+        /// Concurrent multipart PUT workers; 1 is the gateway-safe default.
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(usize).range(1..=10))]
+        multipart_workers: usize,
     },
     /// Recursively upload a local directory into a remote folder.
     WriteTree {
@@ -235,6 +238,7 @@ fn run() -> Result<()> {
             local,
             remote,
             resume_state,
+            multipart_workers,
         } => {
             let (client, value) = open(&session)?;
             let parent = remote.parent().unwrap_or_else(|| Path::new("."));
@@ -250,16 +254,30 @@ fn run() -> Result<()> {
                 .to_string_lossy();
             let (stem, ext) = split_name(&name);
             if let Some(state_path) = resume_state {
-                client.upload_path_with_resume_state(
+                client.upload_path_with_resume_state_with_workers(
                     &value,
                     &folder.uuid,
                     stem,
                     ext,
                     &local,
                     &state_path,
+                    multipart_workers,
                 )?;
             } else {
-                client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
+                if multipart_workers == 1 {
+                    client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
+                } else {
+                    let state_path = client.default_upload_resume_state_path(&value, &local);
+                    client.upload_path_with_resume_state_with_workers(
+                        &value,
+                        &folder.uuid,
+                        stem,
+                        ext,
+                        &local,
+                        &state_path,
+                        multipart_workers,
+                    )?;
+                }
             }
             println!("uploaded {}", remote.display());
         }

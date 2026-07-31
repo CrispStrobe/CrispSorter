@@ -1323,6 +1323,35 @@ impl InternxtNativeClient {
         path: &Path,
         state_path: &Path,
     ) -> Result<()> {
+        self.upload_path_with_resume_state_with_workers(
+            session,
+            parent_folder_uuid,
+            plain_name,
+            file_type,
+            path,
+            state_path,
+            1,
+        )
+    }
+
+    /// Upload a local file with an explicit multipart worker count.
+    ///
+    /// A worker count of one is the reliable gateway-safe default. Larger
+    /// values use the same bounded producer/queue protocol as Internxt's
+    /// official client: encryption is performed once, only a small number of
+    /// encrypted parts are buffered, and each part independently reports its
+    /// ETag and retry result. Values are capped at ten to match that client.
+    pub fn upload_path_with_resume_state_with_workers(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        path: &Path,
+        state_path: &Path,
+        workers: usize,
+    ) -> Result<()> {
+        let workers = workers.clamp(1, 10);
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading upload metadata for {}", path.display()))?;
         let file_size = metadata.len();
@@ -1467,12 +1496,10 @@ impl InternxtNativeClient {
         } else {
             let mut file = File::open(path)
                 .with_context(|| format!("opening upload file {}", path.display()))?;
-            // Multipart PUTs are deliberately serialized. The live
-            // gateway/S3 endpoint resets one of several simultaneous 30 MiB
-            // connections (the pre-parallel implementation was reliable),
-            // so retrying a single presigned URL at a time is the safe
-            // default. Ranged downloads remain independently parallel.
-            let workers = 1usize;
+            // Multipart PUTs are bounded by `workers`. The default API path
+            // passes one because the live gateway has reset simultaneous
+            // connections; callers can opt into the official client's
+            // concurrent-stream protocol when the endpoint supports it.
             let (job_tx, job_rx) = mpsc::sync_channel::<(usize, String, Vec<u8>)>(workers * 2);
             let job_rx = Arc::new(Mutex::new(job_rx));
             let (result_tx, result_rx) = mpsc::channel::<(usize, Result<String>)>();

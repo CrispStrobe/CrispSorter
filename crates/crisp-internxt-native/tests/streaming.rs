@@ -314,8 +314,9 @@ fn interrupted_multipart_upload_reuses_checkpoint_and_skips_completed_parts() {
         bucket_id: "00".repeat(12),
     };
     let client = InternxtNativeClient::new(&base, "token").unwrap();
-    let first =
-        client.upload_path_with_resume_state(&session, "folder", "resume", "bin", &path, &state);
+    let first = client.upload_path_with_resume_state_with_workers(
+        &session, "folder", "resume", "bin", &path, &state, 4,
+    );
     assert!(first.is_err());
     let checkpoint = client.load_upload_resume_state(&state).unwrap().unwrap();
     assert_eq!(checkpoint.uuid, "shard");
@@ -329,7 +330,9 @@ fn interrupted_multipart_upload_reuses_checkpoint_and_skips_completed_parts() {
         3
     );
     client
-        .upload_path_with_resume_state(&session, "folder", "resume", "bin", &path, &state)
+        .upload_path_with_resume_state_with_workers(
+            &session, "folder", "resume", "bin", &path, &state, 4,
+        )
         .unwrap();
     server.join().unwrap();
     assert_eq!(attempts.lock().unwrap()[0], 1);
