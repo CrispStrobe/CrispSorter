@@ -118,7 +118,7 @@ impl CloudDrive for NativeInternxtDrive {
             .into_owned();
         let parent = path.parent().unwrap_or_else(|| Path::new("/"));
         let (session, client, folder_uuid) = self.resolve_parent(parent, true)?;
-        let filename_path = PathBuf::from(filename.as_ref());
+        let filename_path = PathBuf::from(filename.to_string());
         let plain_name = filename_path
             .file_stem()
             .map(|value| value.to_string_lossy().into_owned())
@@ -150,6 +150,7 @@ impl CloudDrive for NativeInternxtDrive {
             rename: true,
             move_path: true,
             copy: true,
+            streaming: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -249,13 +250,6 @@ impl CloudDrive for NativeInternxtDrive {
 
     fn drive_type(&self) -> DriveType {
         DriveType::Internxt
-    }
-
-    fn capabilities(&self) -> DriveCapabilities {
-        DriveCapabilities {
-            streaming: true,
-            ..DriveCapabilities::basic()
-        }
     }
 
     fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {

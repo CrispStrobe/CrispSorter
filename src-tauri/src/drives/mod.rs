@@ -777,7 +777,7 @@ mod tests {
             let config = DriveConfig {
                 id: format!("capability-{kind:?}"),
                 label: format!("capability-{kind:?}"),
-                kind,
+                kind: kind.clone(),
                 path: "https://example.invalid/drive/".to_owned(),
                 username: None,
                 password: None,
