@@ -264,6 +264,47 @@ pub struct TransferStats {
     pub skipped: u64,
 }
 
+/// Inspect a local tree without contacting Internxt. Symlinks are rejected
+/// deliberately so an upload cannot escape the requested source directory.
+pub fn inspect_local_directory(root: &Path) -> Result<TransferStats> {
+    let metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("reading local source {}", root.display()))?;
+    if !metadata.is_dir() {
+        return Err(anyhow!(
+            "local upload source is not a directory: {}",
+            root.display()
+        ));
+    }
+    let mut stats = TransferStats::default();
+    inspect_local_directory_contents(root, &mut stats)?;
+    Ok(stats)
+}
+
+fn inspect_local_directory_contents(root: &Path, stats: &mut TransferStats) -> Result<()> {
+    let mut entries = fs::read_dir(root)
+        .with_context(|| format!("reading local directory {}", root.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(anyhow!(
+                "refusing symlink in upload source: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            stats.folders += 1;
+            inspect_local_directory_contents(&path, stats)?;
+        } else if metadata.is_file() {
+            stats.files += 1;
+            stats.bytes = stats.bytes.saturating_add(metadata.len());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct ContentPage {
     #[serde(default)]
@@ -2148,6 +2189,7 @@ impl InternxtNativeClient {
         remote_parent_uuid: &str,
         policy: ConflictPolicy,
     ) -> Result<TransferStats> {
+        inspect_local_directory(local_root)?;
         let mut stats = TransferStats::default();
         self.upload_directory_contents(
             session,
@@ -2584,6 +2626,20 @@ mod tests {
         assert!(wildcard_matches("abc", "a*c", true));
         assert!(wildcard_matches("abc", "*", true));
         assert!(wildcard_matches("abc", "***", true));
+    }
+
+    #[test]
+    fn local_tree_inspection_counts_bytes_and_rejects_non_directories() {
+        let root = std::env::temp_dir().join(format!("crispsorter-inspect-{}", now_seconds()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("a.txt"), b"1234").unwrap();
+        fs::write(root.join("nested").join("b.txt"), b"12").unwrap();
+        let stats = inspect_local_directory(&root).unwrap();
+        assert_eq!(stats.files, 2);
+        assert_eq!(stats.folders, 1);
+        assert_eq!(stats.bytes, 6);
+        assert!(inspect_local_directory(&root.join("a.txt")).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

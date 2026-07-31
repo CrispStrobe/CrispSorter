@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crisp_internxt_native::{
-    ConflictPolicy, InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL,
+    inspect_local_directory, ConflictPolicy, InternxtNativeClient, InternxtSession, NativeItem,
+    DEFAULT_DRIVE_API_URL,
 };
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -56,6 +57,8 @@ enum Command {
         remote: PathBuf,
         #[arg(long, default_value = "fail")]
         on_conflict: String,
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Recursively download a remote folder into a local directory.
     ReadTree {
@@ -237,20 +240,29 @@ fn run() -> Result<()> {
             local,
             remote,
             on_conflict,
+            dry_run,
         } => {
-            let (client, value) = open(&session)?;
-            let folder = client.resolve_path(&value, &remote)?;
-            anyhow::ensure!(folder.is_dir, "remote path is not a folder");
-            let stats = client.upload_directory(
-                &value,
-                &local,
-                &folder.uuid,
-                parse_conflict_policy(&on_conflict)?,
-            )?;
-            println!(
-                "uploaded {} file(s), {} folder(s), {} bytes ({} skipped)",
-                stats.files, stats.folders, stats.bytes, stats.skipped
-            );
+            if dry_run {
+                let stats = inspect_local_directory(&local)?;
+                println!(
+                    "would upload {} file(s), {} folder(s), {} bytes",
+                    stats.files, stats.folders, stats.bytes
+                );
+            } else {
+                let (client, value) = open(&session)?;
+                let folder = client.resolve_path(&value, &remote)?;
+                anyhow::ensure!(folder.is_dir, "remote path is not a folder");
+                let stats = client.upload_directory(
+                    &value,
+                    &local,
+                    &folder.uuid,
+                    parse_conflict_policy(&on_conflict)?,
+                )?;
+                println!(
+                    "uploaded {} file(s), {} folder(s), {} bytes ({} skipped)",
+                    stats.files, stats.folders, stats.bytes, stats.skipped
+                );
+            }
         }
         Command::ReadTree {
             session,
