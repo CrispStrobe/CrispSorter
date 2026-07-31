@@ -345,6 +345,9 @@ pub struct NativePathListing {
     pub item: NativeItem,
 }
 
+/// Compatibility name shared with the native Internxt client.
+pub type SearchResult = NativePathListing;
+
 #[derive(Debug, Clone)]
 pub struct UploadJob {
     pub parent: String,
@@ -970,6 +973,24 @@ impl FilenNativeClient {
             &mut results,
         )?;
         Ok(results)
+    }
+
+    /// Search recursively and return path-qualified results, matching the
+    /// native Internxt client's `search_files` result shape. The original
+    /// `search` API remains available for callers that only need items.
+    pub fn search_files(
+        &self,
+        session: &FilenSession,
+        pattern: &str,
+        max_depth: Option<usize>,
+    ) -> Result<Vec<SearchResult>> {
+        let pattern = pattern.trim_matches('/');
+        let depth = max_depth.map(|value| value as isize).unwrap_or(-1);
+        Ok(self
+            .list_folder_with_paths(session, Path::new("."), depth)?
+            .into_iter()
+            .filter(|entry| glob_match(pattern, &entry.path.to_string_lossy()))
+            .collect())
     }
 
     /// List every item below a folder together with its path relative to the
@@ -1647,6 +1668,12 @@ impl FilenNativeClient {
             self.copy_item(&child, &copied)?;
         }
         Ok(copied)
+    }
+
+    /// Compatibility name shared with the native Internxt client.
+    pub fn copy_folder(&self, item: &NativeItem, destination_parent: &str) -> Result<String> {
+        anyhow::ensure!(item.is_dir, "cannot copy a file with copy_folder");
+        self.copy_item(item, destination_parent)
     }
 
     pub fn trash(&self, uuid: &str, kind: &str) -> Result<()> {
