@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use crisp_filen::{
     FilenNativeClient, FilenSession, NativeItem, TransferConfig, DEFAULT_GATEWAY_URL,
 };
@@ -11,6 +11,13 @@ use std::path::{Path, PathBuf};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ConflictArg {
+    Fail,
+    Skip,
+    Replace,
 }
 
 #[derive(Subcommand)]
@@ -70,6 +77,8 @@ enum Command {
         dry_run: bool,
         #[arg(short, long)]
         verbose: bool,
+        #[arg(long, value_enum)]
+        conflict: Option<ConflictArg>,
         #[arg(long, default_value_t = 1)]
         workers: usize,
         #[arg(long, default_value_t = 1)]
@@ -85,6 +94,8 @@ enum Command {
         dry_run: bool,
         #[arg(short, long)]
         verbose: bool,
+        #[arg(long, value_enum)]
+        conflict: Option<ConflictArg>,
         #[arg(long, default_value_t = 1)]
         workers: usize,
         #[arg(long, default_value_t = 1)]
@@ -296,11 +307,17 @@ fn run() -> Result<()> {
             preserve_timestamps,
             dry_run,
             verbose,
+            conflict,
             workers,
             file_workers,
         } => {
             let (mut client, value) = open(&session)?;
             configure_workers(&mut client, workers, file_workers)?;
+            if let Some(conflict) = conflict {
+                if apply_remote_conflict(&client, &value, &remote, conflict)? {
+                    return Ok(());
+                }
+            }
             let parent = remote.parent().unwrap_or_else(|| Path::new("."));
             let folder = client.resolve_path(&value, parent)?;
             let name = remote
@@ -332,11 +349,17 @@ fn run() -> Result<()> {
             preserve_timestamps,
             dry_run,
             verbose,
+            conflict,
             workers,
             file_workers,
         } => {
             let (mut client, value) = open(&session)?;
             configure_workers(&mut client, workers, file_workers)?;
+            if let Some(conflict) = conflict {
+                if apply_local_conflict(&out, conflict)? {
+                    return Ok(());
+                }
+            }
             let item = client.resolve_path(&value, &remote)?;
             if dry_run {
                 println!("would download {} to {}", remote.display(), out.display());
@@ -464,6 +487,49 @@ fn configure_workers(
         ..TransferConfig::default()
     };
     client.set_transfer_config(config)
+}
+
+fn apply_remote_conflict(
+    client: &FilenNativeClient,
+    session: &FilenSession,
+    remote: &Path,
+    conflict: ConflictArg,
+) -> Result<bool> {
+    let Ok(item) = client.resolve_path(session, remote) else {
+        return Ok(false);
+    };
+    match conflict {
+        ConflictArg::Fail => anyhow::bail!("remote path already exists: {}", remote.display()),
+        ConflictArg::Skip => {
+            println!("skipping existing remote path: {}", remote.display());
+            Ok(true)
+        }
+        ConflictArg::Replace => {
+            client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })?;
+            Ok(false)
+        }
+    }
+}
+
+fn apply_local_conflict(path: &Path, conflict: ConflictArg) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    match conflict {
+        ConflictArg::Fail => anyhow::bail!("local path already exists: {}", path.display()),
+        ConflictArg::Skip => {
+            println!("skipping existing local path: {}", path.display());
+            Ok(true)
+        }
+        ConflictArg::Replace => {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)?;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+            Ok(false)
+        }
+    }
 }
 fn write_session(path: &Path, value: &FilenSession) -> Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
