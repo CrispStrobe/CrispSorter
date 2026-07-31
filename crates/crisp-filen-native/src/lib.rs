@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -614,6 +615,60 @@ impl FilenNativeClient {
         )
     }
 
+    /// Fetch and decrypt one file's metadata without listing its parent.
+    pub fn get_file(&self, uuid: &str) -> Result<NativeItem> {
+        let upload: RemoteUpload = self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/file", self.gateway_url),
+            Some(serde_json::json!({"uuid": uuid})),
+        )?;
+        self.remote_upload_to_item(upload)
+    }
+
+    fn remote_upload_to_item(&self, upload: RemoteUpload) -> Result<NativeItem> {
+        let metadata = self.crypto_metadata(&upload.metadata)?;
+        let value: serde_json::Value = serde_json::from_str(&metadata)?;
+        let name = value
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let key = value
+            .get("key")
+            .and_then(|v| v.as_str())
+            .and_then(|s| decode_file_key(s).ok());
+        Ok(NativeItem {
+            uuid: upload.uuid,
+            name,
+            is_dir: false,
+            size: value
+                .get("size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(upload.size),
+            parent: upload.parent,
+            file_key: key,
+            bucket: upload.bucket,
+            region: upload.region,
+            chunks: upload.chunks,
+            version: upload.version,
+            mime: value
+                .get("mime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("application/octet-stream")
+                .to_owned(),
+            created: value.get("creation").and_then(|v| v.as_i64()).unwrap_or(0),
+            modified: value
+                .get("lastModified")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            hash: value
+                .get("blake3")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(),
+        })
+    }
+
     fn list_folder_uncached(&self, uuid: &str) -> Result<Vec<NativeItem>> {
         let content: DirContent = self.request(
             reqwest::Method::POST,
@@ -652,47 +707,7 @@ impl FilenNativeClient {
             });
         }
         for upload in content.uploads {
-            let metadata = self.crypto_metadata(&upload.metadata)?;
-            let value: serde_json::Value = serde_json::from_str(&metadata)?;
-            let name = value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_owned();
-            let key = value
-                .get("key")
-                .and_then(|v| v.as_str())
-                .and_then(|s| decode_file_key(s).ok());
-            items.push(NativeItem {
-                uuid: upload.uuid,
-                name,
-                is_dir: false,
-                size: value
-                    .get("size")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(upload.size),
-                parent: upload.parent,
-                file_key: key,
-                bucket: upload.bucket,
-                region: upload.region,
-                chunks: upload.chunks,
-                version: upload.version,
-                mime: value
-                    .get("mime")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("application/octet-stream")
-                    .to_owned(),
-                created: value.get("creation").and_then(|v| v.as_i64()).unwrap_or(0),
-                modified: value
-                    .get("lastModified")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-                hash: value
-                    .get("blake3")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_owned(),
-            });
+            items.push(self.remote_upload_to_item(upload)?);
         }
         Ok(items)
     }
@@ -1426,6 +1441,16 @@ impl FilenNativeClient {
         Ok(plain)
     }
 
+    /// Download a file directly into a writer, preserving bounded chunk
+    /// concurrency without materializing the complete plaintext in memory.
+    pub fn download_file_to_writer<W: Write>(
+        &self,
+        item: &NativeItem,
+        writer: &mut W,
+    ) -> Result<u64> {
+        self.download_chunks_to_writer(item, 0, item.chunks.max(1) as usize, writer)
+    }
+
     /// Download only the byte range requested. Only the necessary encrypted
     /// chunks are fetched; the first and last plaintext chunks are trimmed
     /// after authenticated decryption.
@@ -1440,10 +1465,11 @@ impl FilenNativeClient {
         if end <= offset {
             return Ok(Vec::new());
         }
-        let first = (offset as usize) / CHUNK_SIZE;
-        let last = ((end - 1) as usize) / CHUNK_SIZE;
+        let chunk_size = self.transfer_config.chunk_size;
+        let first = (offset as usize) / chunk_size;
+        let last = ((end - 1) as usize) / chunk_size;
         let mut plain = self.download_chunks(item, first, last + 1)?;
-        let skip = (offset as usize) % CHUNK_SIZE;
+        let skip = (offset as usize) % chunk_size;
         plain.drain(..skip.min(plain.len()));
         plain.truncate((end - offset) as usize);
         Ok(plain)
@@ -1461,6 +1487,19 @@ impl FilenNativeClient {
         start_chunk: usize,
         end_chunk: usize,
     ) -> Result<Vec<u8>> {
+        let mut plain = Vec::new();
+        self.download_chunks_to_writer(item, start_chunk, end_chunk, &mut plain)?;
+        plain.truncate(item.size as usize);
+        Ok(plain)
+    }
+
+    fn download_chunks_to_writer<W: Write>(
+        &self,
+        item: &NativeItem,
+        start_chunk: usize,
+        end_chunk: usize,
+        writer: &mut W,
+    ) -> Result<u64> {
         let key = item
             .file_key
             .ok_or_else(|| anyhow!("Filen item has no file key"))?;
@@ -1477,7 +1516,7 @@ impl FilenNativeClient {
         let uuid = item.uuid.clone();
         let retries = self.transfer_config.retries;
         let retry_backoff_ms = self.transfer_config.retry_backoff_ms;
-        let mut plain = std::thread::scope(|scope| -> Result<Vec<u8>> {
+        let written = std::thread::scope(|scope| -> Result<u64> {
             for _ in 0..workers {
                 let next = Arc::clone(&next);
                 let sender = sender.clone();
@@ -1516,14 +1555,21 @@ impl FilenNativeClient {
                 let (index, plain) = result?;
                 chunks[index] = Some(plain);
             }
-            let mut plain = Vec::new();
+            let mut written = 0u64;
+            let limit = item.size;
             for chunk in chunks {
-                plain.extend(chunk.ok_or_else(|| anyhow!("Filen download worker exited early"))?);
+                let chunk = chunk.ok_or_else(|| anyhow!("Filen download worker exited early"))?;
+                let remaining = limit.saturating_sub(written);
+                if remaining == 0 {
+                    break;
+                }
+                let take = chunk.len().min(remaining as usize);
+                writer.write_all(&chunk[..take])?;
+                written += take as u64;
             }
-            Ok(plain)
+            Ok(written)
         })?;
-        plain.truncate(item.size as usize);
-        Ok(plain)
+        Ok(written)
     }
 
     pub fn download_files(&self, items: Vec<NativeItem>) -> Result<Vec<Vec<u8>>> {
@@ -1742,6 +1788,26 @@ mod tests {
                     body
                 )
                 .unwrap();
+            }
+        });
+        address
+    }
+
+    fn spawn_raw_server(responses: Vec<Vec<u8>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for body in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
             }
         });
         address
@@ -2063,6 +2129,36 @@ mod tests {
     }
 
     #[test]
+    fn hermetic_file_metadata_endpoint_decrypts_native_item() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata = v2_encrypt_metadata(
+            r#"{"name":"one.txt","size":3,"mime":"text/plain","key":"0123456789abcdef0123456789abcdef","creation":11,"lastModified":22,"blake3":"hash"}"#,
+            key,
+            *b"abcdefghijkl",
+        )
+        .unwrap();
+        let gateway = spawn_http_server(vec![serde_json::json!({
+            "status": true,
+            "data": {
+                "uuid": "file-1",
+                "metadata": metadata,
+                "parent": "root",
+                "size": 3,
+                "bucket": "bucket",
+                "region": "region",
+                "chunks": 1,
+                "version": 2
+            }
+        })
+        .to_string()]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        let item = client.get_file("file-1").unwrap();
+        assert_eq!(item.name, "one.txt");
+        assert_eq!(item.mime, "text/plain");
+        assert_eq!(item.modified, 22);
+    }
+
+    #[test]
     fn file_hash_verification_matches_blake3_metadata() {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"hello");
@@ -2086,5 +2182,37 @@ mod tests {
             FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
         assert!(client.verify_file_bytes(&item, b"hello"));
         assert!(!client.verify_file_bytes(&item, b"wrong"));
+    }
+
+    #[test]
+    fn download_to_writer_streams_decrypted_plaintext() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            hash: String::new(),
+            chunks: 1,
+            bucket: "bucket".into(),
+            region: "region".into(),
+            version: 2,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+        };
+        let mut output = Vec::new();
+        assert_eq!(
+            client.download_file_to_writer(&item, &mut output).unwrap(),
+            5
+        );
+        assert_eq!(output, b"hello");
     }
 }

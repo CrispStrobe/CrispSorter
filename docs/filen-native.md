@@ -20,7 +20,9 @@ cross-checks.
   `retries`, and `retry_backoff_ms`.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
-  byte ranges and post-transfer hash verification.
+  byte ranges, direct-to-writer streaming, and post-transfer hash
+  verification. `get_file` fetches and decrypts one file's metadata without a
+  parent listing.
 
 ## Supported mutations
 
