@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crisp_internxt_native::{
-    InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL,
+    ConflictPolicy, InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL,
 };
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -49,6 +49,22 @@ enum Command {
         local: PathBuf,
         remote: PathBuf,
     },
+    /// Recursively upload a local directory into a remote folder.
+    WriteTree {
+        session: PathBuf,
+        local: PathBuf,
+        remote: PathBuf,
+        #[arg(long, default_value = "fail")]
+        on_conflict: String,
+    },
+    /// Recursively download a remote folder into a local directory.
+    ReadTree {
+        session: PathBuf,
+        remote: PathBuf,
+        out: PathBuf,
+        #[arg(long, default_value = "fail")]
+        on_conflict: String,
+    },
     /// Move a remote file or folder to trash.
     Delete { session: PathBuf, remote: PathBuf },
     /// Move a remote file or folder into another remote folder.
@@ -62,6 +78,35 @@ enum Command {
         session: PathBuf,
         remote: PathBuf,
         name: String,
+    },
+    /// List items currently in trash.
+    TrashList {
+        session: PathBuf,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Restore an item from trash into a destination folder.
+    Restore {
+        session: PathBuf,
+        uuid: String,
+        kind: String,
+        destination: PathBuf,
+    },
+    /// Permanently delete one item from trash.
+    Purge {
+        session: PathBuf,
+        uuid: String,
+        kind: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Permanently empty the entire trash.
+    EmptyTrash {
+        session: PathBuf,
+        #[arg(long)]
+        force: bool,
     },
     /// Print deterministic protocol vectors without contacting Internxt.
     CryptoVector,
@@ -154,6 +199,46 @@ fn run() -> Result<()> {
             client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
             println!("uploaded {}", remote.display());
         }
+        Command::WriteTree {
+            session,
+            local,
+            remote,
+            on_conflict,
+        } => {
+            let (client, value) = open(&session)?;
+            let folder = client.resolve_path(&value, &remote)?;
+            anyhow::ensure!(folder.is_dir, "remote path is not a folder");
+            let stats = client.upload_directory(
+                &value,
+                &local,
+                &folder.uuid,
+                parse_conflict_policy(&on_conflict)?,
+            )?;
+            println!(
+                "uploaded {} file(s), {} folder(s), {} bytes ({} skipped)",
+                stats.files, stats.folders, stats.bytes, stats.skipped
+            );
+        }
+        Command::ReadTree {
+            session,
+            remote,
+            out,
+            on_conflict,
+        } => {
+            let (client, value) = open(&session)?;
+            let folder = client.resolve_path(&value, &remote)?;
+            anyhow::ensure!(folder.is_dir, "remote path is not a folder");
+            let stats = client.download_directory(
+                &value,
+                &folder.uuid,
+                &out,
+                parse_conflict_policy(&on_conflict)?,
+            )?;
+            println!(
+                "downloaded {} file(s), {} folder(s), {} bytes ({} skipped)",
+                stats.files, stats.folders, stats.bytes, stats.skipped
+            );
+        }
         Command::Delete { session, remote } => {
             let (client, value) = open(&session)?;
             let item = client.resolve_path(&value, &remote)?;
@@ -190,6 +275,45 @@ fn run() -> Result<()> {
                 client.rename_file(&item.uuid, stem, ext)?;
             }
             println!("renamed {} to {}", remote.display(), name);
+        }
+        Command::TrashList {
+            session,
+            kind,
+            limit,
+        } => {
+            let (client, _) = open(&session)?;
+            for item in client.list_trash(kind.as_deref(), limit)? {
+                print_item(&item);
+            }
+        }
+        Command::Restore {
+            session,
+            uuid,
+            kind,
+            destination,
+        } => {
+            let (client, value) = open(&session)?;
+            let folder = client.resolve_path(&value, &destination)?;
+            anyhow::ensure!(folder.is_dir, "restore destination is not a folder");
+            client.restore_from_trash(&uuid, &kind, &folder.uuid)?;
+            println!("restored {uuid} into {}", destination.display());
+        }
+        Command::Purge {
+            session,
+            uuid,
+            kind,
+            force,
+        } => {
+            anyhow::ensure!(force, "permanent deletion requires --force");
+            let (client, _) = open(&session)?;
+            client.permanently_delete(&uuid, &kind)?;
+            println!("permanently deleted {uuid}");
+        }
+        Command::EmptyTrash { session, force } => {
+            anyhow::ensure!(force, "emptying trash requires --force");
+            let (client, _) = open(&session)?;
+            client.clear_trash()?;
+            println!("trash emptied");
         }
         Command::CryptoVector => {
             let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -239,5 +363,16 @@ fn split_name(name: &str) -> (&str, &str) {
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem, ext),
         _ => (name, "file"),
+    }
+}
+
+fn parse_conflict_policy(value: &str) -> Result<ConflictPolicy> {
+    match value.to_ascii_lowercase().as_str() {
+        "fail" => Ok(ConflictPolicy::Fail),
+        "skip" => Ok(ConflictPolicy::Skip),
+        "overwrite" => Ok(ConflictPolicy::Overwrite),
+        other => Err(anyhow::anyhow!(
+            "unknown conflict policy '{other}' (expected fail, skip, or overwrite)"
+        )),
     }
 }

@@ -230,6 +230,21 @@ pub struct NativeItem {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictPolicy {
+    Fail,
+    Skip,
+    Overwrite,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TransferStats {
+    pub files: u64,
+    pub folders: u64,
+    pub bytes: u64,
+    pub skipped: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct ContentPage {
     #[serde(default)]
@@ -912,7 +927,8 @@ impl InternxtNativeClient {
                 value.etags.clone(),
             )
         } else {
-            getrandom::getrandom(&mut index).context("generating upload file index")?;
+            getrandom::getrandom(&mut index)
+                .map_err(|error| anyhow!("generating upload file index: {error}"))?;
             let start_url = format!(
                 "{}/v2/buckets/{}/files/start?multiparts={parts}",
                 session.network_url.trim_end_matches('/'),
@@ -1590,6 +1606,311 @@ impl InternxtNativeClient {
         }
         Ok(())
     }
+
+    /// Move an item from trash back into a folder. The gateway's reliable
+    /// restore mechanism is the same destination-folder PATCH used by move.
+    pub fn restore_from_trash(
+        &self,
+        uuid: &str,
+        kind: &str,
+        destination_folder_uuid: &str,
+    ) -> Result<()> {
+        self.move_item(uuid, destination_folder_uuid, kind)
+    }
+
+    /// Permanently delete one item that is already in trash.
+    pub fn permanently_delete(&self, uuid: &str, kind: &str) -> Result<()> {
+        let url = format!("{}/storage/trash", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "items": [{"uuid": uuid, "type": kind}]
+        }))?;
+        let response = self.bearer_request(reqwest::Method::DELETE, &url, body)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "Internxt permanent-delete endpoint returned {status}: {}",
+                response.text().unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Permanently empty the account trash.
+    pub fn clear_trash(&self) -> Result<()> {
+        let url = format!("{}/storage/trash/all", self.base_url);
+        let response = self
+            .http
+            .delete(&url)
+            .bearer_auth(&self.bearer_token)
+            .header("accept", "application/json")
+            .header("internxt-client", "internxt-cli")
+            .send()
+            .with_context(|| format!("requesting Internxt trash clear: {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "Internxt trash-clear endpoint returned {status}: {}",
+                response.text().unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    /// List paginated files and folders currently in trash.
+    pub fn list_trash(&self, kind: Option<&str>, limit: usize) -> Result<Vec<NativeItem>> {
+        let mut all = Vec::new();
+        for requested_kind in kind
+            .into_iter()
+            .chain(["files", "folders"].into_iter().filter(|_| kind.is_none()))
+        {
+            let mut offset = 0usize;
+            loop {
+                let url = format!("{}/storage/trash/paginated", self.base_url);
+                let mut parsed = reqwest::Url::parse(&url)?;
+                parsed
+                    .query_pairs_mut()
+                    .append_pair("offset", &offset.to_string())
+                    .append_pair("limit", &limit.max(1).to_string())
+                    .append_pair("type", requested_kind);
+                let url_text = parsed.to_string();
+                let response = self
+                    .http
+                    .get(parsed)
+                    .bearer_auth(&self.bearer_token)
+                    .header("accept", "application/json")
+                    .header("internxt-client", "internxt-cli")
+                    .send()
+                    .with_context(|| format!("requesting Internxt trash listing: {url_text}"))?;
+                let status = response.status();
+                let body = response.text()?;
+                if !status.is_success() {
+                    return Err(anyhow!("Internxt trash listing returned {status}: {body}"));
+                }
+                let value: serde_json::Value = serde_json::from_str(&body)?;
+                let values = value
+                    .get("result")
+                    .or_else(|| value.get("items"))
+                    .and_then(|item| item.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let count = values.len();
+                for item in values {
+                    all.push(NativeItem {
+                        name: item
+                            .get("plainName")
+                            .or_else(|| item.get("name"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("?")
+                            .to_owned(),
+                        uuid: item
+                            .get("uuid")
+                            .or_else(|| item.get("id"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        is_dir: requested_kind == "folders",
+                        size: item
+                            .get("size")
+                            .and_then(|value| {
+                                value.as_u64().or_else(|| value.as_str()?.parse().ok())
+                            })
+                            .unwrap_or(0),
+                    });
+                }
+                if count < limit.max(1) {
+                    break;
+                }
+                offset += count;
+            }
+        }
+        Ok(all)
+    }
+
+    /// Recursively upload a local directory into an existing remote folder.
+    /// Traversal is deterministic and conflict handling is explicit.
+    pub fn upload_directory(
+        &self,
+        session: &InternxtSession,
+        local_root: &Path,
+        remote_parent_uuid: &str,
+        policy: ConflictPolicy,
+    ) -> Result<TransferStats> {
+        let mut stats = TransferStats::default();
+        self.upload_directory_contents(
+            session,
+            local_root,
+            remote_parent_uuid,
+            policy,
+            &mut stats,
+        )?;
+        Ok(stats)
+    }
+
+    fn upload_directory_contents(
+        &self,
+        session: &InternxtSession,
+        local_root: &Path,
+        remote_parent_uuid: &str,
+        policy: ConflictPolicy,
+        stats: &mut TransferStats,
+    ) -> Result<()> {
+        let mut entries = fs::read_dir(local_root)
+            .with_context(|| format!("reading local directory {}", local_root.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let local = entry.path();
+            let name = sanitize_filename(&entry.file_name().to_string_lossy());
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                let remote = self.existing_child(remote_parent_uuid, &name, true)?;
+                let folder_uuid = match remote {
+                    Some(item) => match policy {
+                        ConflictPolicy::Fail => {
+                            return Err(anyhow!("remote folder already exists: {name}"))
+                        }
+                        ConflictPolicy::Skip | ConflictPolicy::Overwrite => item.uuid,
+                    },
+                    None => self.create_folder(remote_parent_uuid, &name)?,
+                };
+                stats.folders += 1;
+                self.upload_directory_contents(session, &local, &folder_uuid, policy, stats)?;
+            } else if metadata.is_file() {
+                let (stem, extension) = split_remote_name(&name);
+                let remote = self.existing_child(
+                    remote_parent_uuid,
+                    &format_remote_name(stem, extension),
+                    false,
+                )?;
+                if let Some(item) = remote {
+                    match policy {
+                        ConflictPolicy::Fail => {
+                            return Err(anyhow!("remote file already exists: {name}"))
+                        }
+                        ConflictPolicy::Skip => {
+                            stats.skipped += 1;
+                            continue;
+                        }
+                        ConflictPolicy::Overwrite => {
+                            self.trash(&item.uuid, "file")?;
+                        }
+                    }
+                }
+                self.upload_path(session, remote_parent_uuid, stem, extension, &local)?;
+                stats.files += 1;
+                stats.bytes += metadata.len();
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively download a remote folder into a local directory.
+    pub fn download_directory(
+        &self,
+        session: &InternxtSession,
+        remote_folder_uuid: &str,
+        local_root: &Path,
+        policy: ConflictPolicy,
+    ) -> Result<TransferStats> {
+        fs::create_dir_all(local_root)?;
+        let mut stats = TransferStats::default();
+        self.download_directory_contents(
+            session,
+            remote_folder_uuid,
+            local_root,
+            policy,
+            &mut stats,
+        )?;
+        Ok(stats)
+    }
+
+    fn download_directory_contents(
+        &self,
+        session: &InternxtSession,
+        remote_folder_uuid: &str,
+        local_root: &Path,
+        policy: ConflictPolicy,
+        stats: &mut TransferStats,
+    ) -> Result<()> {
+        for item in self.list_folder(remote_folder_uuid)? {
+            let local = local_root.join(sanitize_filename(&item.name));
+            if item.is_dir {
+                if local.exists() {
+                    if policy == ConflictPolicy::Fail {
+                        return Err(anyhow!("local folder already exists: {}", local.display()));
+                    }
+                    if policy == ConflictPolicy::Skip {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                } else {
+                    fs::create_dir_all(&local)?;
+                }
+                stats.folders += 1;
+                self.download_directory_contents(session, &item.uuid, &local, policy, stats)?;
+            } else {
+                if local.exists() {
+                    match policy {
+                        ConflictPolicy::Fail => {
+                            return Err(anyhow!("local file already exists: {}", local.display()))
+                        }
+                        ConflictPolicy::Skip => {
+                            stats.skipped += 1;
+                            continue;
+                        }
+                        ConflictPolicy::Overwrite => {}
+                    }
+                }
+                self.download_file_to_path_ranged(session, &item.uuid, &local)?;
+                stats.files += 1;
+                stats.bytes += item.size;
+            }
+        }
+        Ok(())
+    }
+
+    fn existing_child(
+        &self,
+        parent_uuid: &str,
+        name: &str,
+        is_dir: bool,
+    ) -> Result<Option<NativeItem>> {
+        Ok(self
+            .list_folder(parent_uuid)?
+            .into_iter()
+            .find(|item| item.is_dir == is_dir && item.name == name))
+    }
+}
+
+pub fn sanitize_filename(filename: &str) -> String {
+    let mut sanitized = filename
+        .chars()
+        .map(|value| match value {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            value => value,
+        })
+        .collect::<String>();
+    sanitized = sanitized.trim_matches([' ', '.']).to_owned();
+    if sanitized.is_empty() {
+        "unnamed_file".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+fn split_remote_name(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, extension),
+        _ => (name, "file"),
+    }
+}
+
+fn format_remote_name(stem: &str, extension: &str) -> String {
+    if extension.is_empty() {
+        stem.to_owned()
+    } else {
+        format!("{stem}.{extension}")
+    }
 }
 
 fn multipart_part_count(size: usize) -> usize {
@@ -1770,6 +2091,13 @@ mod tests {
         let folder = serde_json::json!({"plainName": "Documents"});
         assert_eq!(item_name(&file, "files"), "report.pdf");
         assert_eq!(item_name(&folder, "folders"), "Documents");
+    }
+
+    #[test]
+    fn filename_sanitization_matches_reference_safety_rules() {
+        assert_eq!(sanitize_filename(" report?.txt "), "report_.txt");
+        assert_eq!(sanitize_filename("..."), "unnamed_file");
+        assert_eq!(sanitize_filename("nested/name"), "nested_name");
     }
 
     #[test]
