@@ -13,7 +13,6 @@
     "dialog:allow-confirm",
     "store:default",
     "fs:default",
-    "shell:default",
     "process:default",
     "fs:read-all",
     "fs:write-all",
