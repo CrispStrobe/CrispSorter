@@ -2192,6 +2192,7 @@ dependencies = [
  "md-5 0.10.6",
  "pbkdf2 0.12.2",
  "reqwest 0.13.4",
+ "ripemd 0.2.0",
  "serde",
  "serde_json",
  "sha1 0.10.6",

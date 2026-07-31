@@ -12,6 +12,7 @@ use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit, 
 use ctr::Ctr128BE;
 use md5::{Digest as Md5Digest, Md5};
 use reqwest::blocking::{Client, Response};
+use ripemd::Digest as RipemdDigest;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
 use unicode_normalization::UnicodeNormalization;
@@ -559,17 +560,18 @@ impl InternxtNativeClient {
         file_type: &str,
         data: &[u8],
     ) -> Result<()> {
-        const SINGLE_UPLOAD_LIMIT: usize = 100 * 1024 * 1024;
-        if data.len() >= SINGLE_UPLOAD_LIMIT {
-            return Err(anyhow!(
-                "native Internxt upload currently supports files below 100 MiB"
-            ));
-        }
         let bucket = session.bucket_bytes()?;
         let (index, encrypted) = encrypt(data, &session.mnemonic, &bucket);
         let index_hex = hex::encode(index);
+        const MULTIPART_MIN_SIZE: usize = 100 * 1024 * 1024;
+        const PART_SIZE: usize = 30 * 1024 * 1024;
+        let parts = if data.len() >= MULTIPART_MIN_SIZE {
+            data.len().div_ceil(PART_SIZE)
+        } else {
+            1
+        };
         let start_url = format!(
-            "{}/v2/buckets/{}/files/start?multiparts=1",
+            "{}/v2/buckets/{}/files/start?multiparts={parts}",
             session.network_url.trim_end_matches('/'),
             session.bucket_id
         );
@@ -585,36 +587,95 @@ impl InternxtNativeClient {
             .and_then(|v| v.as_array())
             .and_then(|v| v.first())
             .ok_or_else(|| anyhow!("Internxt upload start returned no upload"))?;
-        let upload_url = upload
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Internxt upload start returned no upload URL"))?;
         let shard_uuid = upload
             .get("uuid")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Internxt upload start returned no shard UUID"))?;
-        let response = self
-            .http
-            .put(upload_url)
-            .header("content-type", "application/octet-stream")
-            .body(encrypted.clone())
-            .send()
-            .context("uploading encrypted Internxt shard")?;
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Internxt shard upload returned {}",
-                response.status()
-            ));
+        let mut manifest = Vec::new();
+        if parts == 1 {
+            let upload_url = upload
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Internxt upload start returned no upload URL"))?;
+            let response = self
+                .http
+                .put(upload_url)
+                .header("content-type", "application/octet-stream")
+                .body(encrypted.clone())
+                .send()
+                .context("uploading encrypted Internxt shard")?;
+            if !response.status().is_success() {
+                return Err(anyhow!(
+                    "Internxt shard upload returned {}",
+                    response.status()
+                ));
+            }
+        } else {
+            let urls = upload
+                .get("urls")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Internxt multipart start returned no part URLs"))?;
+            let upload_id = upload
+                .get("UploadId")
+                .or_else(|| upload.get("uploadId"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Internxt multipart start returned no UploadId"))?;
+            if urls.len() < parts {
+                return Err(anyhow!(
+                    "Internxt multipart start returned {} URLs for {parts} parts",
+                    urls.len()
+                ));
+            }
+            for (part_number, chunk) in encrypted.chunks(PART_SIZE).enumerate() {
+                let url = urls[part_number]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Internxt multipart URL is not text"))?;
+                let response = self
+                    .http
+                    .put(url)
+                    .header("content-type", "application/octet-stream")
+                    .body(chunk.to_vec())
+                    .send()
+                    .with_context(|| format!("uploading Internxt part {}", part_number + 1))?;
+                let status = response.status();
+                if !status.is_success() {
+                    return Err(anyhow!(
+                        "Internxt part {} upload returned {status}",
+                        part_number + 1
+                    ));
+                }
+                let etag = response
+                    .headers()
+                    .get("etag")
+                    .or_else(|| response.headers().get("ETag"))
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.trim_matches('"').to_owned())
+                    .ok_or_else(|| anyhow!("Internxt part {} returned no ETag", part_number + 1))?;
+                manifest.push(serde_json::json!({
+                    "PartNumber": part_number + 1,
+                    "ETag": etag,
+                }));
+            }
+            manifest = vec![serde_json::json!({
+                "UploadId": upload_id,
+                "parts": manifest,
+            })];
         }
-        let hash = hex::encode(sha2::Sha256::digest(&encrypted));
+        let sha = sha2::Sha256::digest(&encrypted);
+        let hash = hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha));
         let finish_url = format!(
             "{}/v2/buckets/{}/files/finish",
             session.network_url.trim_end_matches('/'),
             session.bucket_id
         );
+        let mut shard = serde_json::json!({"hash": hash, "uuid": shard_uuid});
+        if parts > 1 {
+            shard["UploadId"] = manifest[0]["UploadId"].clone();
+            shard["parts"] = manifest[0]["parts"].clone();
+        }
         let finish_body = serde_json::to_vec(&serde_json::json!({
             "index": index_hex,
-            "shards": [{"hash": hash, "uuid": shard_uuid}]
+            "shards": [shard]
         }))?;
         let finished = self.json_response(
             self.bridge_response(
