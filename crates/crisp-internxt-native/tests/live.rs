@@ -211,6 +211,7 @@ fn live_cross_client_dart_rust_round_trip() {
     std::fs::create_dir_all(&isolated_home).unwrap();
     let rust_name = unique_name("crispsorter-rust-to-dart").replace(' ', "-");
     let dart_name = unique_name("crispsorter-dart-to-rust").replace(' ', "-");
+    let folder_name = unique_name("crispsorter-dart-live").replace(' ', "-");
     let rust_source = std::env::temp_dir().join(format!("{rust_name}.txt"));
     let dart_source = std::env::temp_dir().join(format!("{dart_name}.txt"));
     let dart_download_dir = std::env::temp_dir().join(unique_name("crispsorter-dart-download"));
@@ -227,22 +228,21 @@ fn live_cross_client_dart_rust_round_trip() {
             &password,
             tfa.as_deref(),
         )?;
-        client.upload_path(
+        let folder_uuid = client.create_folder(&session.root_folder_id, &folder_name)?;
+        let folder_path = format!("/{folder_name}");
+        client.upload_path(&session, &folder_uuid, &rust_name, "txt", &rust_source)?;
+        let rust_item = wait_for_remote_path(
+            &client,
             &session,
-            &session.root_folder_id,
-            &rust_name,
-            "txt",
-            &rust_source,
+            Path::new(&format!("/{folder_name}/{rust_name}.txt")),
         )?;
-        let rust_item =
-            wait_for_remote_path(&client, &session, Path::new(&format!("/{rust_name}.txt")))?;
         run_dart_cli(
             &dart,
             &dart_project,
             &isolated_home,
             &[
                 "download-path".into(),
-                format!("/{}", rust_item.name),
+                format!("{folder_path}/{}", rust_item.name),
                 "--target".into(),
                 dart_download_dir.to_string_lossy().into_owned(),
                 "--on-conflict".into(),
@@ -262,15 +262,18 @@ fn live_cross_client_dart_rust_round_trip() {
                 "upload".into(),
                 dart_source.to_string_lossy().into_owned(),
                 "--target".into(),
-                "/".into(),
+                folder_path.clone(),
                 "--on-conflict".into(),
                 "overwrite".into(),
                 "--chunk-workers".into(),
                 "1".into(),
             ],
         )?;
-        let dart_item =
-            wait_for_remote_path(&client, &session, Path::new(&format!("/{dart_name}.txt")))?;
+        let dart_item = wait_for_remote_path(
+            &client,
+            &session,
+            Path::new(&format!("/{folder_name}/{dart_name}.txt")),
+        )?;
         let downloaded = dart_download_dir.join(format!("{dart_name}-rust.txt"));
         client.download_file_to_path(&session, &dart_item.uuid, &downloaded)?;
         assert_eq!(
@@ -280,14 +283,9 @@ fn live_cross_client_dart_rust_round_trip() {
         Ok(())
     })();
     let _ = client
-        .resolve_path(&session, Path::new(&format!("/{rust_name}.txt")))
+        .resolve_path(&session, Path::new(&format!("/{folder_name}")))
         .map(|item| {
-            let _ = client.trash(&item.uuid, "file");
-        });
-    let _ = client
-        .resolve_path(&session, Path::new(&format!("/{dart_name}.txt")))
-        .map(|item| {
-            let _ = client.trash(&item.uuid, "file");
+            let _ = client.trash(&item.uuid, "folder");
         });
     let _ = std::fs::remove_file(rust_source);
     let _ = std::fs::remove_file(dart_source);
