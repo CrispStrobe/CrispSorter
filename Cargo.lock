@@ -1908,6 +1908,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisp-internxt-native"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "cbc",
+ "cipher",
+ "clap",
+ "ctr",
+ "getrandom 0.2.17",
+ "hex",
+ "md-5",
+ "pbkdf2",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "crispasr"
 version = "0.8.24"
 dependencies = [
@@ -1974,7 +1996,6 @@ dependencies = [
 name = "crispsorter"
 version = "0.11.0"
 dependencies = [
- "aes",
  "anyhow",
  "arboard",
  "arrow",
@@ -1982,8 +2003,6 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "async-trait",
- "cbc",
- "cipher",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -1991,13 +2010,13 @@ dependencies = [
  "crisp-docx-core",
  "crisp-docx-llm",
  "crisp-index-protocol",
+ "crisp-internxt-native",
  "crispasr",
  "crispasr-sys",
  "crispcat",
  "crispembed",
  "crispembed-sys",
  "crisplens-protocol",
- "ctr",
  "deunicode",
  "docx-rs",
  "fastembed",
@@ -2028,7 +2047,6 @@ dependencies = [
  "ocrs",
  "openssl",
  "ort",
- "pbkdf2",
  "pdf-extract",
  "pdfium-render",
  "protoc-bin-vendored",
@@ -2059,7 +2077,6 @@ dependencies = [
  "tokenizers 0.22.2",
  "tokio",
  "tokio-util",
- "unicode-normalization",
  "usls",
  "uuid 1.23.3",
  "walkdir",

@@ -1,6 +1,7 @@
 # CrispSorter Cargo workspace.
 #
-# Three members:
+# Workspace members include the desktop app, index service/protocol crates,
+# and the standalone catalog and native-drive utilities.
 #
 # - `src-tauri`             — the Tauri 2 desktop app (binary + lib).
 #                             Owns the UI, the local LanceDB+Tantivy index,
@@ -34,6 +35,7 @@ members  = [
     "crates/crispcat",
     "crates/crispcat-cli",
     "crates/crisplens-protocol",
+    "crates/crisp-internxt-native",
 ]
 # release.yml extracts sibling repos (CrispEmbed / CrispASR / crisp-docx)
 # under `_sibling/` so path deps in src-tauri/Cargo.toml resolve in CI.
