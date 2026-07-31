@@ -117,6 +117,7 @@ impl InternxtDrive {
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output> {
+        super::ensure_subprocess_drives_supported("Internxt")?;
         if !self.cli_py.exists() {
             return Err(anyhow!(
                 "internxt-cli script not found at {} — set DriveConfig.path \

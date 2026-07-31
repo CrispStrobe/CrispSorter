@@ -2213,3 +2213,176 @@ lines, own docs say "reserved, no-op", `options.linearize` never read):
   the job it does when there is not.  `pdf text <file> [--out F]` reads
   the text layer through `extractors::extract_text_from_path` and says
   so when it finds none, pointing at `ocr` for scans.
+
+### P33 — Native cloud drives, so Filen/Internxt can leave the Python CLI (planned, 2026-07-31)
+
+The Filen and Internxt drives work by spawning a user-installed Python
+`cli.py` (`drives/{filen,internxt}.rs`).  That design has a hard ceiling:
+
+* **iOS cannot run them at all.**  The sandbox denies `fork`/`exec`, so the
+  `posix_spawn` behind `std::process::Command` fails with EPERM, and there
+  is no interpreter we are permitted to execute — App Review 2.5.2 also
+  bars shipping one to run third-party code.  Until 2026-07-31 the drive
+  picker offered both kinds on iOS and they failed at use time with a raw
+  spawn error; both are now gated off mobile in Rust
+  (`drives::ensure_subprocess_drives_supported`) and in the UI
+  (`isDesktop()` in `IndexIngest.svelte`), with `platform.ts` taught to
+  recognise iPadOS' Macintosh user-agent via `maxTouchPoints`.
+* **The Mac App Store build is doubtful.**  A sandboxed child inherits the
+  sandbox, and exec'ing a user-chosen interpreter outside the container
+  needs a temporary-exception entitlement reviewers dislike; 2.5.2 applies
+  again because the functionality lives in a binary we neither ship nor
+  sign.
+* **Even on desktop it costs the user a Python install** plus a patched
+  `cli.py`, which is the single worst step in our setup instructions.
+
+Native Rust clients fix all three.  The licence gate from P32 applies: a
+third-party **AGPL** dependency permanently blocks App Store distribution,
+because the AGPLv3 §7 extra permission we grant Apple can only be granted
+for code we own.
+
+**Where this landed, after a longer detour than it needed
+(2026-07-31):**
+
+* **Filen → port from [`filen-sdk-go`](https://github.com/FilenCloudDienste/filen-sdk-go)**,
+  Filen's own SDK under **MIT**.  Their TS and Rust SDKs are AGPL and look
+  like a hard block; the Go one is not.  Nothing else about Filen matters
+  once you know that.
+* **Internxt → port from our own `../internxt-dart`**, cross-checked
+  against [`internxt-core`](https://github.com/Bebbssos/internxt-core-rust)
+  (MIT).  There is no official Internxt Rust or Go SDK; theirs is
+  TypeScript.
+
+The clients we already own stay useful either way — as the Internxt source,
+and as black-box oracles for both.  Four repos, all `CrispStrobe`, sole
+author:
+
+| Ours | Licence | Size | Notes |
+|---|---|---|---|
+| `../internxt-dart` | MPL-2.0 | 9,184 LOC | most complete: `auth`, `internxt_client`, `drive`, `upload`, `download`, `cache`, `paths` |
+| `../filen-dart` | MPL-2.0 | 6,882 LOC | `auth`, `filen_client`, `credential_crypto`, `aes_gcm_backend`, `bcrypt_aesgcm`, `openssl_aesgcm` |
+| `../internxt-cli` (= `CrispStrobe/internxt-python`) | AGPL-3.0 | 3,306 LOC | what `drives/internxt.rs` shells out to today |
+| `../filen-python` | AGPL-3.0 | 1,802 LOC | what `drives/filen.rs` shells out to today |
+
+Because we hold the copyright, the AGPL on the two Python clients is a
+grant we made to the public and does not bind us — the Rust port can carry
+whatever licence the App Store needs.
+
+#### Are our own clients clean enough to port from?
+
+Asked because it matters: if `filen-dart` were a derivative of Filen's
+**AGPL** TS SDK, porting it to Rust would carry the taint into an App Store
+binary — and its 2026-07-16 relicence AGPL-3.0 → MPL-2.0 would itself be a
+step only an original author may take.
+
+Audited 2026-07-31, and it comes out **moot for both drives**, for a reason
+better than a favourable reading of the evidence: *both vendors publish MIT
+references.*  Filen's own Go SDK is MIT and is now the Filen port source, so
+`filen-dart`'s history stops mattering.  Internxt's own
+[`internxt/sdk`](https://github.com/internxt/sdk) is **MIT** (TypeScript,
+pushed 2026-07-29) and so is `internxt/drive-desktop` — so even if
+`internxt-dart` did derive from them, MIT permits exactly that.  The only
+combination that could ever have bitten was Filen-derived-from-AGPL, and
+that is the one we are no longer relying on.
+
+For the record, the evidence pointed to independent work anyway: no commit
+message or doc claims a port; `filen-dart`'s HISTORY describes its modules
+being *extracted from its own earlier monolith* "following internxt-dart's
+architecture pattern", i.e. from another of our repos; the single
+acknowledged borrowing is a constant ("Mirrors filen-sdk-ts's
+`MAX_UPLOAD_THREADS`"); and names like `encryptMetadata002` track Filen's
+own on-wire metadata format version.  Constants, endpoints and format
+identifiers are functional protocol facts — the unproblematic category.
+What could not be recovered from the repository is the one fact that would
+have settled it: what was open while the code was written.
+
+So the discipline is cheap insurance rather than a load-bearing assumption:
+port from the vendors' MIT SDKs, and use our own clients **black-box** — run
+them, compare bytes.  Observing behaviour creates no derivative work, and an
+oracle is more valuable that way regardless, because it catches wire-format
+mismatches that reading the code would faithfully reproduce.  CrispSorter
+already talks to the Python ones in production, which makes them convenient.
+(Separately worth confirming some day: if
+`filen-dart`'s provenance is *not* clean, the exposure is that relicence,
+not this port.)
+
+Third-party crates therefore drop to optional cross-references, and one is
+a trap:
+
+| Third-party | Licence | Use |
+|---|---|---|
+| **[`internxt/sdk`](https://github.com/internxt/sdk)** | **MIT** | Internxt's *own* SDK (TypeScript, pushed 2026-07-29) — the authoritative reference for their protocol and crypto; `internxt/drive-desktop` is MIT too.  No official Rust or Go equivalent, which is why P33.1 ports from our Dart rather than from a vendor SDK directly |
+| [`internxt-core`](https://github.com/Bebbssos/internxt-core-rust) 0.1.3 | MIT | current (updated 2026-07-24), `reqwest ^0.13`, pure-Rust crypto, good seams (`ProgressSink`, injected 2FA). Viable shortcut or cross-check |
+| [`rust-filen`](https://github.com/EnoughTea/rust-filen) 0.3.0 | MIT | 352 commits, real crypto (master keys, metadata, RSA, link keys) — but targets `/v1/`; author: *"there is /v3/ API already… chances are, it's even more janky than before"*.  Useful as Rust-shaped prior art, not as a base |
+| **[`filen-sdk-go`](https://github.com/FilenCloudDienste/filen-sdk-go)** | **MIT** | ⭐ **The one to port from.** Filen's *own* SDK, MIT, current (pushed 2026-04-03), 61 Go files / 202 KB: `filen/crypto/crypto.go` (21 KB) is the authoritative crypto, `client/v3_login.go` the v3 auth, `upload.go`+`download.go` the transfers, and `main_test.go` (32 KB) supplies expected-behaviour vectors.  Official *and* permissive *and* small |
+| [`filen-rclone`](https://github.com/FilenCloudDienste/filen-rclone) | MIT | Filen's rclone backend, also theirs — a second MIT usage example of the SDK above |
+| [`go-filen`](https://github.com/ybkimm/go-filen) | MIT | third-party `/v3/` client (2023) — superseded as a reference by Filen's own Go SDK |
+| [Filen API docs](https://docs.filen.io/docs/api/specs/) + [auth guide](https://docs.filen.io/docs/api/guides/authentication/) | official docs | endpoints and concrete params: `/v3/auth/info` → PBKDF2-SHA512, **200,000 iterations, 512-bit output**, hex-split — first half is the master key, second half SHA-512'd into the login password.  Hosts: `gateway.filen.io`, `ingest.filen.io`, `egest.filen.io` |
+| `filen-sdk-rs` / `filen-sdk-ts` | **AGPL-3.0** | ⛔ **Do not read while writing the port.**  Not ours, so it cannot ship on the App Store, and deriving from it would taint an otherwise clean implementation |
+
+#### Items
+
+- [x] **P33.0 — Gate the subprocess drives off mobile.**  ✅ SHIPPED
+  (2026-07-31).  Guard in `drives::ensure_subprocess_drives_supported`,
+  called from the single spawn site in each drive before the `cli.py`
+  existence check so the message is about the platform rather than a
+  missing path; UI options hidden on mobile; WebDAV named in the error as
+  the mobile route to the same storage.
+
+- [ ] **P33.1 — Internxt native, ported from our own `internxt-dart`.**
+  9,184 LOC of Dart we wrote and own, and the most complete of the four
+  clients.  Only a subset needs porting: `auth`, `internxt_client`,
+  `drive`, `upload`, `download` — the `webdav_filesystem`, `cli` and
+  `cache` layers exist to serve a daemon we do not need, since
+  `trait CloudDrive` requires only seven methods — `label`, `list_dir`,
+  `read_file`, `write_file`, `delete`, `stat`, `drive_type` — with
+  `share_link` / `list_versions` / `restore_version` already defaulted.
+  Behind a `drive-internxt-native` feature,
+  replacing `InternxtDrive`'s subprocess with library calls and keeping
+  credentials in the OS keychain instead of wherever the CLI put them.
+  Cross-check the crypto against [`internxt-core`](https://github.com/Bebbssos/internxt-core-rust)
+  (MIT) where the two disagree — a second independent implementation is
+  cheaper than debugging our own from scratch, and it is permissively
+  licensed so reading it costs nothing.  Confirm before shipping: builds
+  for `aarch64-apple-ios`, and TLS goes through rustls on mobile rather
+  than dragging OpenSSL in.
+
+- [ ] **P33.2 — Verify the crypto against the reference client, not our own
+  tests.**  `internxt-core` claims byte-for-byte compatibility with the
+  official Node implementation "checked against reference test vectors".
+  That claim is exactly what must not be taken on faith: a KDF or metadata
+  mismatch produces uploads that succeed and are then unreadable by
+  Internxt's own clients, with nothing failing on our side.  Cross-client
+  round-trip in both directions — write with Rust, read with the Python
+  CLI, and the reverse — as a live-marked test alongside
+  `verify_pdf_independent.py`.  This is the zpdf lesson: our
+  extract-and-compare test passed a linearizer that emitted a malformed
+  xref, because both sides of the comparison were ours.
+
+- [ ] **P33.3 — Filen native, ported from Filen's own MIT Go SDK.**  Port
+  from [`filen-sdk-go`](https://github.com/FilenCloudDienste/filen-sdk-go),
+  not from our Dart and not clean-room: it is the vendor's *own*
+  implementation, **MIT**, current, and small (202 KB of Go; the subset we
+  need — `crypto/crypto.go`, `client/v3_login.go`, `client/v3_dir_content.go`,
+  `upload.go`, `download.go` — is well under half of that).  MIT means we
+  may read it, port it and ship the result on the App Store, so every
+  awkwardness above evaporates: no AGPL block, no clean-room discipline, no
+  dependence on `filen-dart`'s provenance, and no reviving the stale
+  `/v1/`-era `rust-filen`.  `main_test.go` (32 KB) is a bonus — port its
+  vectors alongside the code so the crypto is pinned by the vendor's own
+  expectations rather than only by our round-trip.  Keep the
+  [API docs](https://docs.filen.io/docs/api/specs/) open for the endpoints
+  the SDK leaves implicit, and `filen-rclone` (also theirs, also MIT) as a
+  second usage example.  The AGPL `filen-sdk-rs`/`filen-sdk-ts` are now
+  simply unnecessary — do not open them; there is no reason to.
+
+  Note this is the *same vendor* shipping the same functionality under two
+  licences: TS and Rust are AGPL-3.0, Go and the rclone backend are MIT.
+  Whichever one you happen to find first determines whether the feature
+  looks impossible or easy.
+
+- [ ] **P33.4 — Document WebDAV as the mobile route.**  Both vendors'
+  WebDAV gateways run as local daemons, so they do not help on iOS, but any
+  *remote* WebDAV works through `drives/webdav.rs` today and is already the
+  fallback named in the new guard's error message.  Say so in the drive
+  picker's help text rather than leaving mobile users to infer it.

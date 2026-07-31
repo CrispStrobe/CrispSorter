@@ -11,7 +11,11 @@ export function isMobile(): boolean {
     // Tauri injects `__TAURI_INTERNALS__` on all platforms.
     // On mobile, the user-agent or navigator.platform hints at Android/iOS.
     const ua = navigator.userAgent.toLowerCase();
-    return ua.includes('android') || ua.includes('iphone') || ua.includes('ipad');
+    if (ua.includes('android') || ua.includes('iphone') || ua.includes('ipad')) return true;
+    // iPadOS' WKWebView reports a *Macintosh* user-agent, so the check above
+    // misses iPads and mobile-only UI leaks through. Touch points disambiguate:
+    // macOS reports 0 (a trackpad is not a touchscreen), iPadOS reports 5.
+    return ua.includes('mac') && (navigator.maxTouchPoints ?? 0) > 1;
 }
 
 /** True when running on a desktop OS. */

@@ -6,6 +6,7 @@
     import { readDir, readFile, readTextFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
     import { getSetting, saveSetting } from '$lib/store';
+    import { isDesktop } from '../platform';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
@@ -3532,8 +3533,14 @@
                             <select bind:value={driveCreateKind} class="drive-dialog-input"
                                     disabled={driveCreateBusy}>
                                 <option value="webdav">WebDAV (Nextcloud / ownCloud / mailbox.org / Synology)</option>
-                                <option value="filen">Filen (Python cli.py)</option>
-                                <option value="internxt">Internxt (Python cli.py)</option>
+                                <!-- Both shell out to a Python CLI, which iOS and
+                                     Android forbid; offering them there produced a
+                                     spawn error at use time. WebDAV stays available
+                                     as the mobile route to the same storage. -->
+                                {#if isDesktop()}
+                                    <option value="filen">Filen (Python cli.py)</option>
+                                    <option value="internxt">Internxt (Python cli.py)</option>
+                                {/if}
                                 <option value="local">Lokal / OS-Mount (SMB / NFS / SFTP via FUSE)</option>
                                 <option value="sftp">SFTP (über OS-Mount)</option>
                             </select>

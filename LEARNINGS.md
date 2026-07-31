@@ -1229,3 +1229,92 @@ footgun. The cb-api rebuilds the FTS index after compaction/bulk-ingest; if
 federated search ever feels suddenly slow, a stale FTS index is the first
 suspect (server-side detail in the cloud-backup repo). Storage placement of the
 index is *not* the lever — a live inverted index reads only small postings.
+
+## App Store Connect API
+
+### A sparse `fields[builds]` fieldset silently drops `relationships`
+
+`GET /v1/builds` with `fields[builds]=version,processingState,…` returns
+build objects with **no `relationships` key at all** unless
+`preReleaseVersion` is named in that fieldset too.  Adding `include=
+preReleaseVersion` is not enough: the related objects do arrive in
+`included`, but nothing ties them back to a build, so every lookup that
+joins the two comes back empty.  Verified against the live API — without
+it every build reports `rel=ABSENT`, with it `rel=present`.
+
+The failure mode is the dangerous kind: no error, no 400, just an empty
+join.  Ours sat behind a 25-minute wait loop and then reported *"Apple is
+still processing, or the upload never arrived"* about a build that was
+`VALID` and sitting in the list.  If a request that should return data
+returns none, print the raw response before believing the absence.
+
+### A build's `version` is the build number, not the marketing version
+
+`build.attributes.version` is `"131"`.  The semver `"0.11.0"` lives on the
+related `preReleaseVersion`.  `release.yml` naturally passes the semver, so
+a filter comparing `attributes.version` never matches.  Accept either
+identifier and log both — the two are too easy to confuse for the
+distinction to live only in a reader's head.
+
+### `usesNonExemptEncryption = null` blocks distribution with no error
+
+A build uploaded without `ITSAppUsesNonExemptEncryption` in `Info.plist`
+comes out of processing with this `null`, and TestFlight then offers it to
+**nobody** — internal or external — while showing no error anywhere.
+`GET /v1/builds` reveals it (`nonExempt=None`).  Set it explicitly per
+build; see `docs/export-compliance.md` for the declaration itself, which
+is a legal answer rather than a script default.
+
+## Dependency evaluation
+
+### Enumerate a vendor's repos before concluding their licence blocks you
+
+Looking for native replacements for the Python-CLI cloud drives, I reached
+for Filen's SDK, found `filen-sdk-rs` (and `filen-sdk-ts`) under AGPL-3.0,
+and concluded App Store distribution was blocked — correctly, per this
+repo's rule (PLAN.md P32): the AGPLv3 §7 extra permission we grant Apple can
+only be granted for code we own.  A plan was then built around that block:
+clean-room implementation, permissive prior art, whether to email the vendor
+for an exception, whether our own MPL Dart client was clean enough to port
+from.
+
+All of it was unnecessary.  **The same vendor ships the same functionality
+under MIT** — [`filen-sdk-go`](https://github.com/FilenCloudDienste/filen-sdk-go)
+(official, current, 202 KB of Go, with a 32 KB test file full of vectors)
+and `filen-rclone`.  TS and Rust are AGPL; Go and the rclone backend are
+MIT.  Which repo you happen to find first decides whether the feature looks
+impossible or easy.
+
+So: "vendor X is AGPL" is a statement about a *repo*, not about a vendor.
+Enumerate the org before designing around a licence.  The cost of not doing
+so was not a wrong answer — the AGPL finding was right — but an elaborate
+plan for a constraint that did not bind.
+
+Two smaller lessons that survive: check the licence before the architecture
+(it can veto, and the architecture review is then wasted); and porting from
+someone else's implementation inherits its licence, so "we'll port it
+ourselves" is not an escape hatch from AGPL.
+
+### Black-box the reference implementation when provenance is unclear
+
+Our own `filen-dart` / `filen-python` were candidate port sources — we hold
+the copyright, so the licence is ours to set.  But whether *they* were
+written independently of Filen's AGPL SDK is not recoverable from the
+repository: no commit claims a port, the history describes modules being
+extracted from its own earlier monolith, and the one acknowledged borrowing
+is a constant — yet `filen-dart` was AGPL until 2026-07-16 and then
+relicensed to MPL-2.0 without a recorded provenance review.
+
+Two ways out, and prefer the first.  **Remove the dependence on the answer:**
+here, both vendors turned out to publish MIT references (Filen's Go SDK,
+`internxt/sdk`), so porting from those makes our own clients' history
+irrelevant — and MIT would have permitted the derivation anyway.  Failing
+that, **use the existing client as a black-box oracle** — run it, compare
+bytes — rather than as a source text.  Observing behaviour creates no
+derivative work, so the new implementation stays clean regardless of the old
+one's history, and the oracle is worth more that way in any case: it catches
+wire-format mismatches that reading the code would faithfully reproduce.
+
+The generalisable bit: when a blocking question cannot be answered from the
+evidence available, look for a path that does not need it answered before
+spending effort on adjudicating it.

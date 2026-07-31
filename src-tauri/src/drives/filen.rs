@@ -85,6 +85,7 @@ impl FilenDrive {
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output> {
+        super::ensure_subprocess_drives_supported("Filen")?;
         if !self.cli_py.exists() {
             return Err(anyhow!(
                 "filen-cli script not found at {} — set DriveConfig.path \

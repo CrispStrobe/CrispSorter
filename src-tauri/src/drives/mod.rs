@@ -25,9 +25,49 @@ pub mod onedrive;
 pub mod tauri_commands;
 pub mod webdav;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+// ── Platform support for the subprocess-backed drives ──────────────────────
+
+/// Guard for the drives that work by spawning a Python CLI (Filen, Internxt).
+///
+/// iOS and Android cannot run them **at all**: the sandbox denies `fork`/`exec`,
+/// so the `posix_spawn` behind `std::process::Command` fails with EPERM, and
+/// neither platform ships a Python interpreter we are allowed to execute —
+/// App Review 2.5.2 also bars shipping one to run third-party code. Before this
+/// guard existed the drive picker offered both kinds on iOS and they failed at
+/// use time with a raw spawn error.
+///
+/// The modules stay compiled on every target (they build fine; it is the
+/// *runtime* that refuses), so the registry dispatch and its tests are
+/// platform-independent. `src/lib/platform.ts` hides the matching UI options,
+/// exactly as it already does for the Ollama / llama.cpp / MLX sidecars; this
+/// is the backstop for anything that gets past the UI.
+///
+/// Note also that the Mac App Store build is sandboxed, where exec'ing a
+/// user-chosen interpreter outside the container is denied without a
+/// temporary-exception entitlement. These drives are a direct-download feature.
+/// Tracked in PLAN.md: native Rust replacements would lift both limits.
+pub(crate) fn ensure_subprocess_drives_supported(kind: &str) -> Result<()> {
+    if cfg!(any(target_os = "ios", target_os = "android")) {
+        return Err(anyhow!(unsupported_drive_message(kind)));
+    }
+    Ok(())
+}
+
+/// Split out from the `cfg!` above so the wording is assertable on every
+/// target. Left inline, only the *polarity* of the guard would be covered —
+/// and only on whichever platform happens to be running the tests, which is
+/// never the one the guard exists for.
+fn unsupported_drive_message(kind: &str) -> String {
+    format!(
+        "the {kind} drive needs to run a Python CLI as a subprocess, which \
+         iOS and Android do not permit — use it from a desktop build, or \
+         reach the same storage over WebDAV"
+    )
+}
 
 // ── Trait ──────────────────────────────────────────────────────────────────
 
@@ -612,6 +652,36 @@ mod tests {
         // Round-trips.
         let back: DriveType = serde_json::from_str("\"internxt\"").unwrap();
         assert_eq!(back, DriveType::Internxt);
+    }
+
+    #[test]
+    fn the_unsupported_drive_message_is_actionable() {
+        // Runs on every target, unlike the polarity check below: names the
+        // drive rather than leaving the user with a raw EPERM, says which
+        // platforms are affected, and points at the way out.
+        let msg = unsupported_drive_message("Filen");
+        assert!(msg.contains("Filen"), "should name the drive: {msg}");
+        assert!(
+            msg.contains("iOS") && msg.contains("Android"),
+            "should say which platforms cannot do this: {msg}"
+        );
+        assert!(msg.contains("WebDAV"), "should offer the alternative: {msg}");
+    }
+
+    #[test]
+    fn subprocess_drives_are_refused_on_mobile_and_allowed_on_desktop() {
+        // Only one arm can run per target, so this covers the polarity and
+        // nothing else. On desktop the guard must be transparent (the drives
+        // are a working direct-download feature); on mobile it must refuse
+        // before any spawn is attempted. That the refusal *would* otherwise be
+        // an EPERM from the sandbox is platform behaviour our tests cannot
+        // reach — it is why the guard exists rather than something it proves.
+        let got = ensure_subprocess_drives_supported("Filen");
+        if cfg!(any(target_os = "ios", target_os = "android")) {
+            assert!(got.is_err(), "mobile must refuse the subprocess drives");
+        } else {
+            assert!(got.is_ok(), "desktop must keep working: {got:?}");
+        }
     }
 
     #[test]
