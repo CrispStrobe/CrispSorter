@@ -185,7 +185,7 @@ impl CloudDrive for GoogleDriveDrive {
 
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
         let file_id = self.resolve_id(path)?;
-        let url = format!("{}/files/{}?alt=media", API_BASE, file_id);
+        let url = format!("{}/files/{}?alt=media", self.api_base, file_id);
 
         let resp = self
             .client
@@ -343,7 +343,7 @@ impl CloudDrive for GoogleDriveDrive {
 
     fn delete(&self, path: &Path) -> Result<()> {
         let file_id = self.resolve_id(path)?;
-        let url = format!("{}/files/{}", API_BASE, file_id);
+        let url = format!("{}/files/{}", self.api_base, file_id);
 
         let resp = self
             .client
@@ -362,7 +362,7 @@ impl CloudDrive for GoogleDriveDrive {
         let file_id = self.resolve_id(path)?;
         let url = format!(
             "{}/files/{}?fields=size,mimeType,modifiedTime",
-            API_BASE, file_id
+            self.api_base, file_id
         );
 
         let resp = self
@@ -430,7 +430,7 @@ impl CloudDrive for GoogleDriveDrive {
         let file_id = self.resolve_id(path)?;
         let url = format!(
             "{}/files/{}/revisions?fields=revisions(id,modifiedTime,size,lastModifyingUser/displayName)",
-            API_BASE, file_id
+            self.api_base, file_id
         );
 
         let resp = self
@@ -481,7 +481,7 @@ impl CloudDrive for GoogleDriveDrive {
         // Download the specific revision
         let download_url = format!(
             "{}/files/{}/revisions/{}?alt=media",
-            API_BASE, file_id, version_id
+            self.api_base, file_id, version_id
         );
         let resp = self
             .client
@@ -567,6 +567,61 @@ mod tests {
         assert!(capabilities.share_links);
         assert!(capabilities.versions);
         assert!(!capabilities.streaming);
+    }
+
+    #[test]
+    fn drive_mutations_use_injectable_api_endpoints() {
+        let mut server = Server::new();
+        let list = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .expect(2)
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"file-1","name":"old.txt"}]}"#)
+            .create();
+        let create = server
+            .mock("POST", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"mimeType":"application/vnd.google-apps.folder","name":"Archive","parents":["root"]}"#.into(),
+            ))
+            .with_status(200)
+            .create();
+        let move_mock = server
+            .mock("PATCH", "/drive/v3/files/file-1")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::JsonString(r#"{"name":"new.txt"}"#.into()))
+            .with_status(200)
+            .create();
+        let copy = server
+            .mock("POST", "/drive/v3/files/file-1/copy")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"name":"copy.txt","parents":["root"]}"#.into(),
+            ))
+            .with_status(200)
+            .create();
+        let drive = GoogleDriveDrive::with_api_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/drive/v3", server.url()),
+        );
+
+        drive.create_dir(Path::new("Archive")).unwrap();
+        drive
+            .move_path(Path::new("old.txt"), Path::new("new.txt"))
+            .unwrap();
+        drive
+            .copy_path(Path::new("old.txt"), Path::new("copy.txt"))
+            .unwrap();
+
+        list.assert();
+        create.assert();
+        move_mock.assert();
+        copy.assert();
     }
 
     #[test]
