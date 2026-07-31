@@ -236,6 +236,110 @@ fn ranged_download_assembles_out_of_order_safe_ciphertext() {
     std::fs::remove_file(output).unwrap();
 }
 
+#[test]
+fn interrupted_multipart_upload_reuses_checkpoint_and_skips_completed_parts() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let attempts = Arc::new(Mutex::new([0usize; 4]));
+    let attempts_server = Arc::clone(&attempts);
+    let server = thread::spawn(move || {
+        let mut start_calls = 0usize;
+        let mut finish_calls = 0usize;
+        let mut create_calls = 0usize;
+        while create_calls == 0 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (request, _headers, _body) = read_request(&mut stream);
+            let path = request.split_whitespace().nth(1).unwrap();
+            if path.contains("/files/start") {
+                start_calls += 1;
+                let urls = (1..=4)
+                    .map(|part| format!("\"http://{address}/part{part}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                respond(
+                    &mut stream,
+                    "200 OK",
+                    &format!(
+                        r#"{{"uploads":[{{"uuid":"shard","UploadId":"upload-id","urls":[{urls}]}}]}}"#
+                    ),
+                );
+            } else if let Some(part) = path.strip_prefix("/part") {
+                let part: usize = part.parse().unwrap();
+                let mut counts = attempts_server.lock().unwrap();
+                counts[part - 1] += 1;
+                if part == 4 && counts[part - 1] <= 5 {
+                    respond(&mut stream, "500 Internal Server Error", "retry");
+                } else {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nETag: etag-{part}\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                }
+            } else if path.ends_with("/files/finish") {
+                finish_calls += 1;
+                respond(&mut stream, "200 OK", r#"{"id":"network-file"}"#);
+            } else if path == "/files" {
+                create_calls += 1;
+                respond(&mut stream, "200 OK", "{}");
+            } else {
+                panic!("unexpected resume endpoint: {path}");
+            }
+        }
+        assert_eq!(start_calls, 1);
+        assert_eq!(finish_calls, 1);
+        assert_eq!(create_calls, 1);
+    });
+
+    let path = unique_path("resume-upload");
+    let state = unique_path("resume-state");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(100 * 1024 * 1024 + 1)
+        .unwrap();
+    let base = format!("http://{address}");
+    let session = InternxtSession {
+        drive_api_url: base.clone(),
+        network_url: base.clone(),
+        email: "test@example.invalid".into(),
+        token: "token".into(),
+        new_token: "new-token".into(),
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
+        user_id: "user".into(),
+        root_folder_id: "root".into(),
+        bridge_user: "bridge".into(),
+        bucket_id: "00".repeat(12),
+    };
+    let client = InternxtNativeClient::new(&base, "token").unwrap();
+    let first =
+        client.upload_path_with_resume_state(&session, "folder", "resume", "bin", &path, &state);
+    assert!(first.is_err());
+    let checkpoint = client.load_upload_resume_state(&state).unwrap().unwrap();
+    assert_eq!(checkpoint.uuid, "shard");
+    assert_eq!(checkpoint.upload_id, "upload-id");
+    assert_eq!(
+        checkpoint
+            .etags
+            .iter()
+            .filter(|etag| etag.is_some())
+            .count(),
+        3
+    );
+    client
+        .upload_path_with_resume_state(&session, "folder", "resume", "bin", &path, &state)
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(attempts.lock().unwrap()[0], 1);
+    assert_eq!(attempts.lock().unwrap()[1], 1);
+    assert_eq!(attempts.lock().unwrap()[2], 1);
+    assert_eq!(attempts.lock().unwrap()[3], 6);
+    assert!(client.load_upload_resume_state(&state).unwrap().is_none());
+    std::fs::remove_file(path).unwrap();
+}
+
 fn unique_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "crispsorter-internxt-{label}-{}-{}",
