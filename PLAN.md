@@ -1319,9 +1319,11 @@ independently with no shared concurrency limit or retry policy.
   and `JoinHandle<Result<Vec<u8>>>`.  `TransferProgress` tracks `job_id`,
   `direction`, `drive_id`, `remote_path`, `bytes_done`, `bytes_total`,
   `TransferState` (Queued/Active/Retrying/Done/Failed/Cancelled).
-  Backoff: `min(2^attempt * 500ms, 30s)` with jitter.  `active_count()`
-  for monitoring.  8 unit tests (concurrency limit, 4th-job-waits,
-  progress reporting, failure state, serde round-trip).
+  Backoff: `min(2^attempt * 500ms, 30s)` with jitter; transient network,
+  timeout, and 5xx-style failures are retried while the semaphore permit is
+  released.  `active_count()` for monitoring.  10 unit tests (concurrency
+  limit, 4th-job-waits, progress reporting, failure state, transient retry
+  recovery, cancellation during retry backoff, serde round-trip).
 - [ ] **Wire all 5 CloudDrive impls through the queue.**  Replace
   direct `reqwest` calls in `drives/{internxt,filen,webdav,onedrive,
   gdrive}.rs` upload/download methods with `TransferQueue::submit`.
@@ -1330,8 +1332,9 @@ independently with no shared concurrency limit or retry policy.
 - [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button).  Listens to `transfer://progress` events.
-- [ ] **Tests.**  ✅ 8 tests shipped with the module (see above).
-  Remaining: cancel-in-flight (needs `CancellationToken` plumbing).
+- [x] **Tests.**  ✅ 11 tests shipped with the module (see above), including
+  cancellation during retry backoff. Provider-wide queue wiring remains a
+  separate integration task.
 
 #### Priority 2 — Block-level delta sync
 
@@ -2397,7 +2400,23 @@ a trap:
   extract-and-compare test passed a linearizer that emitted a malformed
   xref, because both sides of the comparison were ours.
 
-- [ ] **P33.3 — Filen native, ported from Filen's own MIT Go SDK.**  Port
+- [x] **P33.3 — Filen native, ported from Filen's own MIT Go SDK.**  Shipped
+  as `crisp-filen-native` with the `crisp-filen` CLI, keychain-backed Tauri
+  adapter, v1/v2/v3 crypto handling, chunked transfers, and both-direction
+  live tests against `../filen-python`.  The native crate passes its unit
+  tests and builds for `aarch64-apple-ios` with rustls.  The full Tauri
+  feature checks now pass for both desktop (`desktop,drive-filen-native`) and
+  iOS (`--no-default-features,drive-filen-native`); the capability split keeps
+  desktop-only shell/process permissions out of mobile builds.
+  Transfers use a pooled rustls client with bounded four-way chunk upload and
+  download concurrency, ordered reassembly, request timeouts, and cache
+  invalidation after mutations. `TransferConfig` exposes chunk size, worker
+  count, file-worker count, retry count, and exponential retry backoff to Rust
+  consumers. Batch transfer APIs, true range downloads, and serializable
+  resumable upload state (UUID/upload key/file key/completed chunks) are also
+  covered by the native client. Vendor filename-hash vectors from the MIT Go
+  SDK's `crypto_test.go` are pinned in the Rust unit suite.
+  Source rationale:
   from [`filen-sdk-go`](https://github.com/FilenCloudDienste/filen-sdk-go),
   not from our Dart and not clean-room: it is the vendor's *own*
   implementation, **MIT**, current, and small (202 KB of Go; the subset we

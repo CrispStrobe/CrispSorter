@@ -41,6 +41,42 @@ enum Command {
         session: PathBuf,
         remote: PathBuf,
     },
+    Restore {
+        session: PathBuf,
+        uuid: String,
+        #[arg(long, default_value = "file")]
+        kind: String,
+    },
+    ListTrash {
+        session: PathBuf,
+    },
+    Mkdir {
+        session: PathBuf,
+        remote: PathBuf,
+    },
+    Move {
+        session: PathBuf,
+        remote: PathBuf,
+        destination: PathBuf,
+    },
+    Rename {
+        session: PathBuf,
+        remote: PathBuf,
+        name: String,
+    },
+    Copy {
+        session: PathBuf,
+        remote: PathBuf,
+        destination: PathBuf,
+    },
+    Search {
+        session: PathBuf,
+        pattern: String,
+    },
+    PermanentDelete {
+        session: PathBuf,
+        remote: PathBuf,
+    },
     CryptoVector,
 }
 
@@ -111,6 +147,73 @@ fn run() -> Result<()> {
             let (client, value) = open(&session)?;
             let item = client.resolve_path(&value, &remote)?;
             client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })?;
+        }
+        Command::Restore {
+            session,
+            uuid,
+            kind,
+        } => {
+            let (client, _) = open(&session)?;
+            client.restore(&uuid, &kind)?;
+        }
+        Command::ListTrash { session } => {
+            let (client, _) = open(&session)?;
+            for entry in client.list_trash()? {
+                print_item(&entry);
+            }
+        }
+        Command::Mkdir { session, remote } => {
+            let (client, value) = open(&session)?;
+            let mut parent = value.root_folder_uuid.clone();
+            for component in remote.components() {
+                let name = component.as_os_str().to_string_lossy();
+                if name.is_empty() || name == "." || name == "/" {
+                    continue;
+                }
+                parent = client.create_folder(&parent, &name)?;
+            }
+        }
+        Command::Move {
+            session,
+            remote,
+            destination,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            let target = client.resolve_path(&value, &destination)?;
+            anyhow::ensure!(target.is_dir, "move destination is not a folder");
+            client.move_item(&item.uuid, &target.uuid, item.is_dir)?;
+        }
+        Command::Rename {
+            session,
+            remote,
+            name,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            client.rename_item(&item, &name)?;
+        }
+        Command::Copy {
+            session,
+            remote,
+            destination,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            let target = client.resolve_path(&value, &destination)?;
+            anyhow::ensure!(target.is_dir, "copy destination is not a folder");
+            client.copy_item(&item, &target.uuid)?;
+        }
+        Command::Search { session, pattern } => {
+            let (client, value) = open(&session)?;
+            for item in client.search(&value, &pattern)? {
+                print_item(&item);
+            }
+        }
+        Command::PermanentDelete { session, remote } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            client.delete_permanent(&item.uuid, item.is_dir)?;
         }
         Command::CryptoVector => {
             let (raw, password) = crisp_filen_native::pbkdf2_login("password", "salt");

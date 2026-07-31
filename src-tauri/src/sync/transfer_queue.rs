@@ -13,12 +13,12 @@
 //!
 //! Progress is broadcast per-job via `tokio::sync::watch` channels.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 use tokio::task::JoinHandle;
 
 // ── Configuration ────────────────────────────────────────────────────────
@@ -84,13 +84,32 @@ pub struct TransferHandle {
     pub job_id: u64,
     pub progress_rx: watch::Receiver<TransferProgress>,
     pub handle: JoinHandle<Result<Vec<u8>>>,
+    pub cancellation: TransferCancellation,
+}
+
+/// Cancellation control for a queued or active transfer.
+#[derive(Clone, Default)]
+pub struct TransferCancellation {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl TransferCancellation {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
 }
 
 /// Closure that performs the actual I/O.  Receives `(drive, remote_path,
 /// local_data)`.  For downloads, `local_data` is empty and the closure
 /// returns the downloaded bytes.  For uploads, `local_data` contains the
 /// payload and the closure returns an empty vec on success.
-type TransferFn = Box<dyn FnOnce() -> Result<Vec<u8>> + Send + 'static>;
+type TransferFn = Arc<dyn Fn() -> Result<Vec<u8>> + Send + Sync + 'static>;
 
 // ── TransferQueue ────────────────────────────────────────────────────────
 
@@ -137,7 +156,7 @@ impl TransferQueue {
         drive_id: String,
         remote_path: PathBuf,
         data: Vec<u8>,
-        write_fn: impl FnOnce(&Path, &[u8]) -> Result<()> + Send + 'static,
+        write_fn: impl Fn(&Path, &[u8]) -> Result<()> + Send + Sync + 'static,
     ) -> TransferHandle {
         let size = data.len() as u64;
         let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
@@ -153,6 +172,8 @@ impl TransferQueue {
         };
         let (tx, rx) = watch::channel(initial);
         let sem = self.semaphore.clone();
+        let cancellation = TransferCancellation::default();
+        let task_cancellation = cancellation.clone();
 
         let handle = tokio::spawn(async move {
             run_with_retries(
@@ -163,7 +184,8 @@ impl TransferQueue {
                 Some(size),
                 sem,
                 tx,
-                Box::new(move || {
+                task_cancellation,
+                Arc::new(move || {
                     write_fn(&remote_path, &data)?;
                     Ok(Vec::new())
                 }),
@@ -175,6 +197,7 @@ impl TransferQueue {
             job_id,
             progress_rx: rx,
             handle,
+            cancellation,
         }
     }
 
@@ -187,7 +210,7 @@ impl TransferQueue {
         drive_id: String,
         remote_path: PathBuf,
         size_hint: Option<u64>,
-        read_fn: impl FnOnce(&Path) -> Result<Vec<u8>> + Send + 'static,
+        read_fn: impl Fn(&Path) -> Result<Vec<u8>> + Send + Sync + 'static,
     ) -> TransferHandle {
         let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -202,6 +225,8 @@ impl TransferQueue {
         };
         let (tx, rx) = watch::channel(initial);
         let sem = self.semaphore.clone();
+        let cancellation = TransferCancellation::default();
+        let task_cancellation = cancellation.clone();
 
         let handle = tokio::spawn(async move {
             run_with_retries(
@@ -212,7 +237,8 @@ impl TransferQueue {
                 size_hint,
                 sem,
                 tx,
-                Box::new(move || read_fn(&remote_path)),
+                task_cancellation,
+                Arc::new(move || read_fn(&remote_path)),
             )
             .await
         });
@@ -221,6 +247,7 @@ impl TransferQueue {
             job_id,
             progress_rx: rx,
             handle,
+            cancellation,
         }
     }
 }
@@ -249,10 +276,6 @@ fn backoff_duration(attempt: u32) -> std::time::Duration {
 /// runs inside `spawn_blocking`.  On transient failure, we release the
 /// semaphore permit, sleep with backoff, then re-acquire.
 ///
-/// For the retry loop to work, the closure is only invoked once (we can't
-/// clone arbitrary closures).  So retries are only applied at the
-/// semaphore-acquisition level — if the transfer itself fails, the error
-/// propagates.  For full retry support, callers should re-submit the job.
 async fn run_with_retries(
     job_id: u64,
     direction: TransferDirection,
@@ -261,6 +284,7 @@ async fn run_with_retries(
     bytes_total: Option<u64>,
     semaphore: Arc<Semaphore>,
     tx: watch::Sender<TransferProgress>,
+    cancellation: TransferCancellation,
     transfer_fn: TransferFn,
 ) -> Result<Vec<u8>> {
     let remote_str = remote_path.to_string_lossy().into_owned();
@@ -275,35 +299,83 @@ async fn run_with_retries(
         state,
     };
 
-    // Acquire semaphore permit (waits if all slots are occupied).
-    let _permit = semaphore
-        .acquire()
-        .await
-        .context("transfer queue semaphore closed")?;
-
-    let _ = tx.send(make_progress(TransferState::Active, 0));
-
-    // Run the blocking I/O on a dedicated thread.
-    let result = tokio::task::spawn_blocking(transfer_fn)
-        .await
-        .context("transfer task panicked")?;
-
-    match &result {
-        Ok(bytes) => {
-            let done = bytes_total.unwrap_or(bytes.len() as u64);
-            let _ = tx.send(make_progress(TransferState::Done, done));
+    for attempt in 0..=MAX_RETRIES {
+        if cancellation.is_cancelled() {
+            let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+            return Err(anyhow!("transfer cancelled"));
         }
-        Err(e) => {
-            let _ = tx.send(make_progress(
-                TransferState::Failed {
-                    error: format!("{e:#}"),
-                },
-                0,
-            ));
+        // Acquire a fresh permit for every attempt. This prevents a sleeping
+        // retry from occupying a transfer slot.
+        let permit = tokio::select! {
+            permit = semaphore.acquire() => permit.context("transfer queue semaphore closed")?,
+            _ = cancellation.notify.notified() => {
+                let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+                return Err(anyhow!("transfer cancelled"));
+            }
+        };
+        let _ = tx.send(make_progress(TransferState::Active, 0));
+        let transfer = transfer_fn.clone();
+        let result = tokio::task::spawn_blocking(move || transfer())
+            .await
+            .context("transfer task panicked")?;
+        drop(permit);
+
+        if cancellation.is_cancelled() {
+            let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+            return Err(anyhow!("transfer cancelled"));
+        }
+
+        match result {
+            Ok(bytes) => {
+                let done = bytes_total.unwrap_or(bytes.len() as u64);
+                let _ = tx.send(make_progress(TransferState::Done, done));
+                return Ok(bytes);
+            }
+            Err(error) if attempt < MAX_RETRIES && is_retryable(&error) => {
+                let _ = tx.send(make_progress(
+                    TransferState::Retrying {
+                        attempt: attempt + 1,
+                    },
+                    0,
+                ));
+                tokio::select! {
+                    _ = tokio::time::sleep(backoff_duration(attempt)) => {}
+                    _ = cancellation.notify.notified() => {
+                        let _ = tx.send(make_progress(TransferState::Cancelled, 0));
+                        return Err(anyhow!("transfer cancelled"));
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = tx.send(make_progress(
+                    TransferState::Failed {
+                        error: format!("{error:#}"),
+                    },
+                    0,
+                ));
+                return Err(error);
+            }
         }
     }
+    unreachable!("retry loop always returns")
+}
 
-    result
+fn is_retryable(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "tempor",
+        "connection",
+        "network",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -312,6 +384,7 @@ async fn run_with_retries(
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Mutex;
 
     #[test]
     fn backoff_increases_with_attempt() {
@@ -418,7 +491,7 @@ mod tests {
             "test-drive".into(),
             PathBuf::from("fail.txt"),
             vec![1, 2, 3],
-            |_path, _data| anyhow::bail!("network timeout"),
+            |_path, _data| anyhow::bail!("permanent validation failure"),
         );
 
         let result = h.handle.await.unwrap();
@@ -427,10 +500,60 @@ mod tests {
         let progress = h.progress_rx.borrow().clone();
         match &progress.state {
             TransferState::Failed { error } => {
-                assert!(error.contains("network timeout"), "error: {error}");
+                assert!(
+                    error.contains("permanent validation failure"),
+                    "error: {error}"
+                );
             }
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn transient_transfer_retries_and_reports_done() {
+        let queue = TransferQueue::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let h = queue.submit_upload(
+            "test-drive".into(),
+            PathBuf::from("retry.txt"),
+            vec![1, 2, 3],
+            {
+                let attempts = attempts.clone();
+                move |_path, _data| {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt < 2 {
+                        anyhow::bail!("transient network timeout")
+                    }
+                    Ok(())
+                }
+            },
+        );
+
+        h.handle.await.unwrap().unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(h.progress_rx.borrow().state, TransferState::Done);
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_retry_backoff() {
+        let queue = TransferQueue::new();
+        let h = queue.submit_upload(
+            "test-drive".into(),
+            PathBuf::from("cancel.txt"),
+            vec![1],
+            |_path, _data| anyhow::bail!("transient network timeout"),
+        );
+        let mut progress = h.progress_rx.clone();
+        loop {
+            progress.changed().await.unwrap();
+            if matches!(progress.borrow().state, TransferState::Retrying { .. }) {
+                break;
+            }
+        }
+        h.cancellation.cancel();
+        let error = h.handle.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(progress.borrow().state, TransferState::Cancelled);
     }
 
     #[tokio::test]
@@ -441,16 +564,22 @@ mod tests {
 
         let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+        let release_rx = Arc::new(Mutex::new(Some(release_rx)));
 
         let _h = queue.submit_upload(
             "d".into(),
             PathBuf::from("x"),
             vec![],
             move |_path, _data| {
-                let _ = started_tx.send(());
+                if let Some(tx) = started_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
                 // Block until released.
                 let rt = tokio::runtime::Handle::current();
-                rt.block_on(async { release_rx.await.ok() });
+                if let Some(rx) = release_rx.lock().unwrap().take() {
+                    rt.block_on(async { rx.await.ok() });
+                }
                 Ok(())
             },
         );
@@ -474,6 +603,7 @@ mod tests {
         for i in 0..4 {
             let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
             release_txs.push(release_tx);
+            let release_rx = Arc::new(Mutex::new(Some(release_rx)));
 
             let h = queue.submit_upload(
                 format!("d-{i}"),
@@ -481,7 +611,9 @@ mod tests {
                 vec![],
                 move |_path, _data| {
                     let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async { release_rx.await.ok() });
+                    if let Some(rx) = release_rx.lock().unwrap().take() {
+                        rt.block_on(async { rx.await.ok() });
+                    }
                     Ok(())
                 },
             );

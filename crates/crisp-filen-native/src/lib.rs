@@ -16,11 +16,46 @@ use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 pub const DEFAULT_GATEWAY_URL: &str = "https://gateway.filen.io";
 pub const DEFAULT_INGEST_URL: &str = "https://ingest.filen.io";
 pub const DEFAULT_EGEST_URL: &str = "https://egest.filen.io";
 pub const CHUNK_SIZE: usize = 1024 * 1024;
+pub const TRANSFER_CONCURRENCY: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferConfig {
+    pub chunk_size: usize,
+    pub workers: usize,
+    pub file_workers: usize,
+    pub retries: usize,
+    pub retry_backoff_ms: u64,
+}
+
+impl Default for TransferConfig {
+    fn default() -> Self {
+        Self {
+            chunk_size: CHUNK_SIZE,
+            workers: TRANSFER_CONCURRENCY,
+            file_workers: 4,
+            retries: 3,
+            retry_backoff_ms: 250,
+        }
+    }
+}
+
+impl TransferConfig {
+    pub fn validate(self) -> Result<Self> {
+        anyhow::ensure!(self.chunk_size > 0, "Filen chunk size must be positive");
+        anyhow::ensure!(self.workers > 0, "Filen transfer workers must be positive");
+        anyhow::ensure!(self.file_workers > 0, "Filen file workers must be positive");
+        Ok(self)
+    }
+}
 
 pub type AuthVersion = u8;
 
@@ -226,6 +261,37 @@ pub fn random_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn post_json_retry<T: serde::de::DeserializeOwned>(
+    http: &reqwest::blocking::Client,
+    url: String,
+    body: serde_json::Value,
+    config: TransferConfig,
+) -> Result<ApiEnvelope<T>> {
+    let mut last_error = None;
+    for attempt in 0..config.retries.max(1) {
+        match http.post(&url).json(&body).send() {
+            Ok(response) => {
+                let status = response.status();
+                let text = response.text()?;
+                if status.is_success() {
+                    return Ok(serde_json::from_str(&text)?);
+                }
+                last_error = Some(anyhow!("Filen HTTP {status}: {text}"));
+                if !status.is_server_error() {
+                    break;
+                }
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+        if attempt + 1 < config.retries.max(1) {
+            std::thread::sleep(Duration::from_millis(
+                config.retry_backoff_ms.saturating_mul(1 << attempt),
+            ));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("Filen request failed")))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeItem {
     pub uuid: String,
@@ -238,6 +304,33 @@ pub struct NativeItem {
     pub region: String,
     pub chunks: u64,
     pub version: u8,
+    pub mime: String,
+    pub created: i64,
+    pub modified: i64,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadJob {
+    pub parent: String,
+    pub name: String,
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UploadResumeState {
+    pub uuid: String,
+    pub upload_key: String,
+    pub file_key: [u8; 32],
+    pub parent: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub chunk_size: usize,
+    pub completed_chunks: Vec<usize>,
+    pub bucket: String,
+    pub region: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +349,8 @@ pub struct FilenNativeClient {
     master_key: Option<Vec<u8>>,
     dek: Option<[u8; 32]>,
     hmac_key: Option<[u8; 32]>,
+    listing_cache: Mutex<HashMap<String, Vec<NativeItem>>>,
+    transfer_config: TransferConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,7 +415,9 @@ struct RemoteFolder {
 impl FilenNativeClient {
     fn new_inner(session: &FilenSession) -> Result<Self> {
         Ok(Self {
-            http: reqwest::blocking::Client::builder().build()?,
+            http: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()?,
             gateway_url: session.gateway_url.trim_end_matches('/').into(),
             ingest_url: session.ingest_url.trim_end_matches('/').into(),
             egest_url: session.egest_url.trim_end_matches('/').into(),
@@ -333,11 +430,68 @@ impl FilenNativeClient {
             master_key: session.master_keys.first().cloned(),
             dek: session.dek,
             hmac_key: session.hmac_key,
+            listing_cache: Mutex::new(HashMap::new()),
+            transfer_config: TransferConfig::default(),
         })
     }
 
     pub fn from_session(session: &FilenSession) -> Result<Self> {
         Self::new_inner(session)
+    }
+
+    pub fn from_session_with_config(
+        session: &FilenSession,
+        transfer_config: TransferConfig,
+    ) -> Result<Self> {
+        let mut client = Self::new_inner(session)?;
+        client.transfer_config = transfer_config.validate()?;
+        Ok(client)
+    }
+
+    pub fn set_transfer_config(&mut self, transfer_config: TransferConfig) -> Result<()> {
+        self.transfer_config = transfer_config.validate()?;
+        Ok(())
+    }
+
+    pub fn upload_files(&self, jobs: Vec<UploadJob>) -> Result<()> {
+        let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
+        let jobs = jobs.as_slice();
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= jobs.len() {
+                        break;
+                    }
+                    let result = self.upload_file(
+                        &jobs[index].parent,
+                        &jobs[index].name,
+                        &jobs[index].mime,
+                        &jobs[index].data,
+                    );
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(sender);
+            for result in receiver {
+                result?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Drop all cached directory listings. Every tree mutation calls this so
+    /// path resolution cannot observe stale entries after a write.
+    pub fn invalidate_listings(&self) {
+        if let Ok(mut cache) = self.listing_cache.lock() {
+            cache.clear();
+        }
     }
 
     fn request<T: serde::de::DeserializeOwned>(
@@ -346,22 +500,45 @@ impl FilenNativeClient {
         url: String,
         body: Option<serde_json::Value>,
     ) -> Result<T> {
-        let mut request = self.http.request(method, &url).bearer_auth(&self.api_key);
-        if let Some(body) = body {
-            request = request.json(&body);
+        let mut last_error = None;
+        for attempt in 0..self.transfer_config.retries.max(1) {
+            let mut request = self
+                .http
+                .request(method.clone(), &url)
+                .bearer_auth(&self.api_key);
+            if let Some(value) = &body {
+                request = request.json(value);
+            }
+            match request.send() {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text()?;
+                    if status.is_success() {
+                        let envelope: ApiEnvelope<T> = serde_json::from_str(&text)
+                            .with_context(|| format!("decoding Filen response: {text}"))?;
+                        anyhow::ensure!(envelope.status, "Filen API error: {}", envelope.message);
+                        return envelope
+                            .data
+                            .ok_or_else(|| anyhow!("Filen response has no data"));
+                    }
+                    last_error = Some(anyhow!("Filen HTTP {status}: {text}"));
+                    if !status.is_server_error() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    last_error = Some(error.into());
+                }
+            }
+            if attempt + 1 < self.transfer_config.retries.max(1) {
+                std::thread::sleep(Duration::from_millis(
+                    self.transfer_config
+                        .retry_backoff_ms
+                        .saturating_mul(1 << attempt),
+                ));
+            }
         }
-        let response = request
-            .send()
-            .with_context(|| format!("requesting Filen {url}"))?;
-        let status = response.status();
-        let text = response.text()?;
-        anyhow::ensure!(status.is_success(), "Filen HTTP {status}: {text}");
-        let envelope: ApiEnvelope<T> = serde_json::from_str(&text)
-            .with_context(|| format!("decoding Filen response: {text}"))?;
-        anyhow::ensure!(envelope.status, "Filen API error: {}", envelope.message);
-        envelope
-            .data
-            .ok_or_else(|| anyhow!("Filen response has no data"))
+        Err(last_error.unwrap_or_else(|| anyhow!("Filen request failed")))
     }
 
     fn crypto_metadata(&self, value: &str) -> Result<String> {
@@ -391,6 +568,53 @@ impl FilenNativeClient {
     }
 
     pub fn list_folder(&self, uuid: &str) -> Result<Vec<NativeItem>> {
+        if let Some(items) = self
+            .listing_cache
+            .lock()
+            .map_err(|_| anyhow!("listing cache poisoned"))?
+            .get(uuid)
+            .cloned()
+        {
+            return Ok(items);
+        }
+        let items = self.list_folder_uncached(uuid)?;
+        self.listing_cache
+            .lock()
+            .map_err(|_| anyhow!("listing cache poisoned"))?
+            .insert(uuid.to_owned(), items.clone());
+        Ok(items)
+    }
+
+    pub fn file_exists(&self, parent: &str, name: &str) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Exists {
+            #[serde(default)]
+            exists: bool,
+        }
+        let value: Exists = self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/file/exists", self.gateway_url),
+            Some(serde_json::json!({
+                "parent": parent,
+                "nameHashed": self.hash_name(name)?
+            })),
+        )?;
+        Ok(value.exists)
+    }
+
+    pub fn get_flat_folder_tree(&self, folder_uuid: &str) -> Result<serde_json::Value> {
+        self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/dir/tree", self.gateway_url),
+            Some(serde_json::json!({
+                "uuid": folder_uuid,
+                "deviceId": random_uuid(),
+                "skipCache": 0
+            })),
+        )
+    }
+
+    fn list_folder_uncached(&self, uuid: &str) -> Result<Vec<NativeItem>> {
         let content: DirContent = self.request(
             reqwest::Method::POST,
             format!("{}/v3/dir/content", self.gateway_url),
@@ -399,10 +623,17 @@ impl FilenNativeClient {
         let mut items = Vec::with_capacity(content.uploads.len() + content.folders.len());
         for folder in content.folders {
             let name = self.crypto_metadata(&folder.metadata)?;
-            let name = serde_json::from_str::<serde_json::Value>(&name)
-                .ok()
-                .and_then(|v| v.get("name").and_then(|n| n.as_str().map(str::to_owned)))
-                .unwrap_or(name);
+            let folder_meta = serde_json::from_str::<serde_json::Value>(&name).ok();
+            let created = folder_meta
+                .as_ref()
+                .and_then(|v| v.get("creation"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let name = folder_meta
+                .as_ref()
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()))
+                .unwrap_or(&name)
+                .to_owned();
             items.push(NativeItem {
                 uuid: folder.uuid,
                 name,
@@ -414,6 +645,10 @@ impl FilenNativeClient {
                 region: String::new(),
                 chunks: 0,
                 version: 0,
+                mime: String::new(),
+                created,
+                modified: 0,
+                hash: String::new(),
             });
         }
         for upload in content.uploads {
@@ -442,9 +677,106 @@ impl FilenNativeClient {
                 region: upload.region,
                 chunks: upload.chunks,
                 version: upload.version,
+                mime: value
+                    .get("mime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/octet-stream")
+                    .to_owned(),
+                created: value.get("creation").and_then(|v| v.as_i64()).unwrap_or(0),
+                modified: value
+                    .get("lastModified")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                hash: value
+                    .get("blake3")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
             });
         }
         Ok(items)
+    }
+
+    /// Find files and folders using slash-separated glob paths. * and ?
+    /// never cross a directory boundary; ** is recursive.
+    pub fn search(&self, session: &FilenSession, pattern: &str) -> Result<Vec<NativeItem>> {
+        self.search_with_max_depth(session, pattern, None)
+    }
+
+    pub fn search_with_max_depth(
+        &self,
+        session: &FilenSession,
+        pattern: &str,
+        max_depth: Option<usize>,
+    ) -> Result<Vec<NativeItem>> {
+        let pattern = pattern.trim_matches('/');
+        let parts: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
+        let mut current_uuid = session.root_folder_uuid.clone();
+        let mut prefix = String::new();
+        let mut offset = 0;
+        while offset < parts.len() && is_literal_glob_component(parts[offset]) {
+            let name = parts[offset];
+            let item = self
+                .list_folder(&current_uuid)?
+                .into_iter()
+                .find(|item| item.name == name);
+            let Some(item) = item else {
+                return Ok(Vec::new());
+            };
+            prefix = if prefix.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            current_uuid = item.uuid.clone();
+            offset += 1;
+            if offset == parts.len() {
+                return Ok(vec![item]);
+            }
+        }
+        let remaining = parts[offset..].join("/");
+        let mut results = Vec::new();
+        self.search_folder_depth(
+            &current_uuid,
+            &prefix,
+            &remaining,
+            0,
+            max_depth,
+            &mut results,
+        )?;
+        Ok(results)
+    }
+
+    fn search_folder_depth(
+        &self,
+        uuid: &str,
+        prefix: &str,
+        pattern: &str,
+        depth: usize,
+        max_depth: Option<usize>,
+        results: &mut Vec<NativeItem>,
+    ) -> Result<()> {
+        for item in self.list_folder(uuid)? {
+            let path = if prefix.is_empty() {
+                item.name.clone()
+            } else {
+                format!("{prefix}/{}", item.name)
+            };
+            if glob_match(pattern, &path) {
+                results.push(item.clone());
+            }
+            if item.is_dir && max_depth.is_none_or(|limit| depth < limit) {
+                self.search_folder_depth(
+                    &item.uuid,
+                    &path,
+                    pattern,
+                    depth + 1,
+                    max_depth,
+                    results,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn resolve_path(
@@ -463,6 +795,10 @@ impl FilenNativeClient {
             region: String::new(),
             chunks: 0,
             version: 0,
+            mime: String::new(),
+            created: 0,
+            modified: 0,
+            hash: String::new(),
         };
         let mut current = root;
         for component in path.components() {
@@ -485,13 +821,16 @@ impl FilenNativeClient {
         password: &str,
         tfa: Option<&str>,
     ) -> Result<FilenSession> {
-        let http = reqwest::blocking::Client::new();
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
         let base = gateway_url.trim_end_matches('/');
-        let auth: ApiEnvelope<AuthInfo> = http
-            .post(format!("{base}/v3/auth/info"))
-            .json(&serde_json::json!({"email": email}))
-            .send()?
-            .json()?;
+        let auth: ApiEnvelope<AuthInfo> = post_json_retry(
+            &http,
+            format!("{base}/v3/auth/info"),
+            serde_json::json!({"email": email}),
+            TransferConfig::default(),
+        )?;
         let auth = auth
             .data
             .ok_or_else(|| anyhow!("Filen auth info missing"))?;
@@ -503,7 +842,24 @@ impl FilenNativeClient {
             let derived = hex::encode(raw);
             (p, Some(derived[..64].as_bytes().to_vec()), None, None)
         };
-        let login: ApiEnvelope<LoginResponse> = http.post(format!("{base}/v3/login")).json(&serde_json::json!({"email": email, "password": auth_password, "authVersion": auth.auth_version, "twoFactorCode": tfa.unwrap_or("")})).send()?.json()?;
+        let mut login_body = serde_json::json!({
+            "email": email,
+            "password": auth_password,
+            "authVersion": auth.auth_version,
+        });
+        // The API requires a syntactically valid 2FA value even when 2FA is
+        // disabled. This is the same sentinel used by the reference clients.
+        login_body["twoFactorCode"] = serde_json::Value::String(
+            tfa.filter(|value| !value.is_empty())
+                .unwrap_or("XXXXXX")
+                .to_owned(),
+        );
+        let login: ApiEnvelope<LoginResponse> = post_json_retry(
+            &http,
+            format!("{base}/v3/login"),
+            login_body,
+            TransferConfig::default(),
+        )?;
         let api = login
             .data
             .ok_or_else(|| anyhow!("Filen login response missing"))?;
@@ -596,6 +952,128 @@ impl FilenNativeClient {
         ))
     }
 
+    pub fn begin_upload(
+        &self,
+        parent: &str,
+        name: &str,
+        mime: &str,
+        size: u64,
+    ) -> Result<UploadResumeState> {
+        let (file_key, _) = self.new_file_key()?;
+        Ok(UploadResumeState {
+            uuid: random_uuid(),
+            upload_key: random_uuid().replace('-', ""),
+            file_key,
+            parent: parent.to_owned(),
+            name: name.to_owned(),
+            mime: mime.to_owned(),
+            size,
+            chunk_size: self.transfer_config.chunk_size,
+            completed_chunks: Vec::new(),
+            bucket: String::new(),
+            region: String::new(),
+        })
+    }
+
+    /// Continue an upload from its caller-owned state. On a transient or
+    /// permanent failure, completed_chunks remains updated and the same state
+    /// can be passed back after the caller reconnects.
+    pub fn resume_upload(&self, state: &mut UploadResumeState, data: &[u8]) -> Result<()> {
+        anyhow::ensure!(
+            data.len() as u64 == state.size,
+            "resume data length does not match upload state"
+        );
+        if data.is_empty() {
+            let _: serde_json::Value = self.request(
+                reqwest::Method::POST,
+                format!("{}/v3/upload/empty", self.gateway_url),
+                Some(serde_json::json!({
+                    "uuid": state.uuid,
+                    "name": self.encrypt_metadata(&state.name)?,
+                    "nameHashed": self.hash_name(&state.name)?,
+                    "size": self.encrypt_metadata("0")?,
+                    "parent": state.parent,
+                    "mime": self.encrypt_metadata(&state.mime)?,
+                    "metadata": self.encrypt_metadata("{}")?,
+                    "version": if self.mode == CryptoMode::V3 { 3 } else { 2 }
+                })),
+            )?;
+            self.invalidate_listings();
+            return Ok(());
+        }
+        let chunk_size = state.chunk_size;
+        anyhow::ensure!(chunk_size > 0, "resume state has invalid chunk size");
+        let total = data.len().div_ceil(chunk_size);
+        let mut completed: std::collections::HashSet<usize> =
+            state.completed_chunks.iter().copied().collect();
+        for index in 0..total {
+            if completed.contains(&index) {
+                continue;
+            }
+            let start = index * chunk_size;
+            let chunk = &data[start..data.len().min(start + chunk_size)];
+            let mut nonce = [0u8; 12];
+            getrandom::getrandom(&mut nonce)?;
+            let encrypted = encrypt_file_chunk(chunk, &state.file_key, nonce)?;
+            let hash = hex::encode(Sha512::digest(&encrypted));
+            let value = upload_chunk_request(
+                &self.http,
+                &self.api_key,
+                format!(
+                    "{}/v3/upload?uuid={}&index={index}&parent={}&uploadKey={}&hash={hash}",
+                    self.ingest_url, state.uuid, state.parent, state.upload_key
+                ),
+                &encrypted,
+                self.transfer_config.retries,
+                self.transfer_config.retry_backoff_ms,
+            )?;
+            state.bucket = value.bucket;
+            state.region = value.region;
+            completed.insert(index);
+            state.completed_chunks = completed.iter().copied().collect();
+            state.completed_chunks.sort_unstable();
+        }
+        let key_string = if self.mode == CryptoMode::V3 {
+            hex::encode(state.file_key)
+        } else {
+            String::from_utf8_lossy(&state.file_key).into_owned()
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(data);
+        let now = chrono::Utc::now().timestamp_millis();
+        let metadata = serde_json::json!({
+            "name": state.name,
+            "size": data.len(),
+            "mime": state.mime,
+            "key": key_string,
+            "creation": now,
+            "lastModified": now,
+            "blake3": hasher.finalize().to_hex().to_string()
+        })
+        .to_string();
+        let _: serde_json::Value = self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/upload/done", self.gateway_url),
+            Some(serde_json::json!({
+                "uuid": state.uuid,
+                "name": self.encrypt_metadata(&state.name)?,
+                "nameHashed": self.hash_name(&state.name)?,
+                "size": self.encrypt_metadata(&data.len().to_string())?,
+                "parent": state.parent,
+                "mime": self.encrypt_metadata(&state.mime)?,
+                "metadata": self.encrypt_metadata(&metadata)?,
+                "version": if self.mode == CryptoMode::V3 { 3 } else { 2 },
+                "chunks": total,
+                "rm": "0",
+                "uploadKey": state.upload_key,
+                "bucket": state.bucket,
+                "region": state.region
+            })),
+        )?;
+        self.invalidate_listings();
+        Ok(())
+    }
+
     pub fn create_folder(&self, parent: &str, name: &str) -> Result<String> {
         let metadata =
             serde_json::json!({"name": name, "creation": chrono::Utc::now().timestamp_millis()})
@@ -605,7 +1083,169 @@ impl FilenNativeClient {
             uuid: String,
         }
         let value: Created = self.request(reqwest::Method::POST, format!("{}/v3/dir/create", self.gateway_url), Some(serde_json::json!({"uuid": random_uuid(), "name": self.encrypt_metadata(&metadata)?, "nameHashed": self.hash_name(name)?, "parent": parent})))?;
+        self.invalidate_listings();
         Ok(value.uuid)
+    }
+
+    fn encrypt_file_name(&self, name: &str, file_key: &[u8; 32]) -> Result<String> {
+        let mut nonce = [0u8; 12];
+        getrandom::getrandom(&mut nonce)?;
+        for value in &mut nonce {
+            *value = b'A' + (*value % 26);
+        }
+        v2_encrypt_metadata(name, file_key, nonce)
+    }
+
+    pub fn move_item(&self, uuid: &str, new_parent: &str, is_dir: bool) -> Result<()> {
+        let result = self.request_empty(
+            reqwest::Method::POST,
+            format!(
+                "{}/v3/{}/move",
+                self.gateway_url,
+                if is_dir { "dir" } else { "file" }
+            ),
+            Some(serde_json::json!({"uuid": uuid, "to": new_parent})),
+        );
+        if result.is_ok() {
+            self.invalidate_listings();
+        }
+        result
+    }
+
+    pub fn rename_item(&self, item: &NativeItem, new_name: &str) -> Result<()> {
+        anyhow::ensure!(
+            !new_name.is_empty() && !new_name.contains('/'),
+            "invalid Filen name"
+        );
+        if item.is_dir {
+            let metadata =
+                serde_json::json!({"name": new_name, "creation": item.created}).to_string();
+            let result = self.request_empty(
+                reqwest::Method::POST,
+                format!("{}/v3/dir/metadata", self.gateway_url),
+                Some(serde_json::json!({"uuid": item.uuid, "nameHashed": self.hash_name(new_name)?, "name": self.encrypt_metadata(&metadata)?})),
+            );
+            if result.is_ok() {
+                self.invalidate_listings();
+            }
+            result
+        } else {
+            let key = item
+                .file_key
+                .ok_or_else(|| anyhow!("Filen file has no encryption key"))?;
+            let metadata = serde_json::json!({"name": new_name, "size": item.size, "mime": item.mime, "key": if self.mode == CryptoMode::V3 { hex::encode(key) } else { String::from_utf8_lossy(&key).into_owned() }, "creation": item.created, "lastModified": item.modified, "blake3": item.hash}).to_string();
+            let result = self.request_empty(
+                reqwest::Method::POST,
+                format!("{}/v3/file/metadata", self.gateway_url),
+                Some(serde_json::json!({"uuid": item.uuid, "name": self.encrypt_file_name(new_name, &key)?, "nameHashed": self.hash_name(new_name)?, "metadata": self.encrypt_metadata(&metadata)?})),
+            );
+            if result.is_ok() {
+                self.invalidate_listings();
+            }
+            result
+        }
+    }
+
+    /// Update gateway metadata without changing file contents. Timestamps are
+    /// sent in milliseconds, matching the Go SDK's metadata representation.
+    pub fn update_timestamps(&self, item: &NativeItem, created: i64, modified: i64) -> Result<()> {
+        if item.is_dir {
+            let metadata = serde_json::json!({"name": item.name, "creation": created}).to_string();
+            let result = self.request_empty(
+                reqwest::Method::POST,
+                format!("{}/v3/dir/metadata", self.gateway_url),
+                Some(serde_json::json!({
+                    "uuid": item.uuid,
+                    "nameHashed": self.hash_name(&item.name)?,
+                    "name": self.encrypt_metadata(&metadata)?
+                })),
+            );
+            if result.is_ok() {
+                self.invalidate_listings();
+            }
+            result
+        } else {
+            let key = item
+                .file_key
+                .ok_or_else(|| anyhow!("Filen file has no encryption key"))?;
+            let metadata = serde_json::json!({
+                "name": item.name,
+                "size": item.size,
+                "mime": item.mime,
+                "key": if self.mode == CryptoMode::V3 {
+                    hex::encode(key)
+                } else {
+                    String::from_utf8_lossy(&key).into_owned()
+                },
+                "creation": created,
+                "lastModified": modified,
+                "blake3": item.hash
+            })
+            .to_string();
+            let result = self.request_empty(
+                reqwest::Method::POST,
+                format!("{}/v3/file/metadata", self.gateway_url),
+                Some(serde_json::json!({
+                    "uuid": item.uuid,
+                    "name": self.encrypt_file_name(&item.name, &key)?,
+                    "nameHashed": self.hash_name(&item.name)?,
+                    "metadata": self.encrypt_metadata(&metadata)?
+                })),
+            );
+            if result.is_ok() {
+                self.invalidate_listings();
+            }
+            result
+        }
+    }
+
+    /// Replace a remote file using the gateway-safe trash-then-upload flow.
+    /// Filen permits duplicate names, so uploading directly would create a
+    /// sibling rather than update the existing path.
+    pub fn replace_file(&self, item: &NativeItem, mime: &str, data: &[u8]) -> Result<()> {
+        anyhow::ensure!(!item.is_dir, "cannot replace a folder with file data");
+        self.trash(&item.uuid, "file")?;
+        self.upload_file(&item.parent, &item.name, mime, data)
+    }
+
+    pub fn delete_permanent(&self, uuid: &str, is_dir: bool) -> Result<()> {
+        let result = self.request_empty(
+            reqwest::Method::POST,
+            format!(
+                "{}/v3/{}/delete/permanent",
+                self.gateway_url,
+                if is_dir { "dir" } else { "file" }
+            ),
+            Some(serde_json::json!({"uuid": uuid})),
+        );
+        if result.is_ok() {
+            self.invalidate_listings();
+        }
+        result
+    }
+
+    pub fn copy_file(&self, item: &NativeItem, destination_parent: &str) -> Result<()> {
+        let data = self.download_file(item)?;
+        self.upload_file(destination_parent, &item.name, &item.mime, &data)
+    }
+
+    /// Copy a complete subtree, preserving names and file MIME types.
+    pub fn copy_item(&self, item: &NativeItem, destination_parent: &str) -> Result<String> {
+        if !item.is_dir {
+            self.copy_file(item, destination_parent)?;
+            return self
+                .list_folder(destination_parent)?
+                .into_iter()
+                .rev()
+                .find(|candidate| candidate.name == item.name && !candidate.is_dir)
+                .map(|candidate| candidate.uuid)
+                .ok_or_else(|| anyhow!("copied file was not returned by the gateway"));
+        }
+        let copied = self.create_folder(destination_parent, &item.name)?;
+        for child in self.list_folder(&item.uuid)? {
+            self.copy_item(&child, &copied)?;
+        }
+        Ok(copied)
     }
 
     pub fn trash(&self, uuid: &str, kind: &str) -> Result<()> {
@@ -614,12 +1254,36 @@ impl FilenNativeClient {
         } else {
             "v3/file/trash"
         };
-        let _: serde_json::Value = self.request(
+        let result = self.request_empty(
             reqwest::Method::POST,
             format!("{}/{endpoint}", self.gateway_url),
             Some(serde_json::json!({"uuid": uuid})),
-        )?;
-        Ok(())
+        );
+        if result.is_ok() {
+            self.invalidate_listings();
+        }
+        result
+    }
+
+    pub fn restore(&self, uuid: &str, kind: &str) -> Result<()> {
+        let endpoint = if kind == "folder" {
+            "v3/dir/restore"
+        } else {
+            "v3/file/restore"
+        };
+        let result = self.request_empty(
+            reqwest::Method::POST,
+            format!("{}/{endpoint}", self.gateway_url),
+            Some(serde_json::json!({"uuid": uuid})),
+        );
+        if result.is_ok() {
+            self.invalidate_listings();
+        }
+        result
+    }
+
+    pub fn list_trash(&self) -> Result<Vec<NativeItem>> {
+        self.list_folder("trash")
     }
 
     pub fn upload_file(&self, parent: &str, name: &str, mime: &str, data: &[u8]) -> Result<()> {
@@ -629,82 +1293,355 @@ impl FilenNativeClient {
         let metadata = serde_json::json!({"name": name, "size": data.len(), "mime": mime, "key": key_string, "creation": chrono::Utc::now().timestamp_millis(), "lastModified": chrono::Utc::now().timestamp_millis(), "blake3": hasher.finalize().to_hex().to_string()}).to_string();
         let uuid = random_uuid();
         let upload_key = random_uuid().replace('-', "");
-        let chunks = data.len().div_ceil(CHUNK_SIZE);
+        let chunks = data.len().div_ceil(self.transfer_config.chunk_size);
         if data.is_empty() {
             let _: serde_json::Value = self.request(reqwest::Method::POST, format!("{}/v3/upload/empty", self.gateway_url), Some(serde_json::json!({"uuid": uuid, "name": self.encrypt_metadata(name)?, "nameHashed": self.hash_name(name)?, "size": self.encrypt_metadata("0")?, "parent": parent, "mime": self.encrypt_metadata(mime)?, "metadata": self.encrypt_metadata(&metadata)?, "version": if self.mode == CryptoMode::V3 {3} else {2}})))?;
+            self.invalidate_listings();
             return Ok(());
         }
-        let mut bucket = String::new();
-        let mut region = String::new();
-        for (index, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
-            let mut nonce = [0u8; 12];
-            getrandom::getrandom(&mut nonce)?;
-            let encrypted = encrypt_file_chunk(chunk, &key, nonce)?;
-            let hash = hex::encode(Sha512::digest(&encrypted));
-            #[derive(Deserialize)]
-            struct Uploaded {
-                bucket: String,
-                region: String,
-            }
-            let value: Uploaded = self.request_raw(reqwest::Method::POST, format!("{}/v3/upload?uuid={uuid}&index={index}&parent={parent}&uploadKey={upload_key}&hash={hash}", self.ingest_url), &encrypted)?;
-            bucket = value.bucket;
-            region = value.region;
-        }
+        let uploaded = self.upload_chunks(&uuid, parent, &upload_key, &key, data)?;
+        let (bucket, region) = uploaded
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("Filen upload produced no chunks"))?;
         let _: serde_json::Value = self.request(reqwest::Method::POST, format!("{}/v3/upload/done", self.gateway_url), Some(serde_json::json!({"uuid": uuid, "name": self.encrypt_metadata(name)?, "nameHashed": self.hash_name(name)?, "size": self.encrypt_metadata(&data.len().to_string())?, "parent": parent, "mime": self.encrypt_metadata(mime)?, "metadata": self.encrypt_metadata(&metadata)?, "version": if self.mode == CryptoMode::V3 {3} else {2}, "chunks": chunks, "rm": "0", "uploadKey": upload_key, "bucket": bucket, "region": region})))?;
+        self.invalidate_listings();
         Ok(())
     }
 
-    fn request_raw<T: serde::de::DeserializeOwned>(
+    fn upload_chunks(
+        &self,
+        uuid: &str,
+        parent: &str,
+        upload_key: &str,
+        key: &[u8; 32],
+        data: &[u8],
+    ) -> Result<Vec<(String, String)>> {
+        let chunk_size = self.transfer_config.chunk_size;
+        let total = data.len().div_ceil(chunk_size);
+        let workers = self.transfer_config.workers.min(total).max(1);
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        let http = self.http.clone();
+        let ingest_url = self.ingest_url.clone();
+        let api_key = self.api_key.clone();
+        let key = *key;
+        let retries = self.transfer_config.retries;
+        let retry_backoff_ms = self.transfer_config.retry_backoff_ms;
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                let http = http.clone();
+                let ingest_url = ingest_url.clone();
+                let api_key = api_key.clone();
+                scope.spawn(move || {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= total {
+                            break;
+                        }
+                        let result = (|| {
+                            let chunk = &data[index * chunk_size
+                                ..data.len().min((index + 1) * chunk_size)];
+                            let mut nonce = [0u8; 12];
+                            getrandom::getrandom(&mut nonce)?;
+                            let encrypted = encrypt_file_chunk(chunk, &key, nonce)?;
+                            let hash = hex::encode(Sha512::digest(&encrypted));
+                            let url = format!("{ingest_url}/v3/upload?uuid={uuid}&index={index}&parent={parent}&uploadKey={upload_key}&hash={hash}");
+                            let value = upload_chunk_request(
+                                &http,
+                                &api_key,
+                                url,
+                                &encrypted,
+                                retries,
+                                retry_backoff_ms,
+                            )?;
+                            Ok::<_, anyhow::Error>((index, value.bucket, value.region))
+                        })();
+                        if sender.send(result).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(sender);
+            let mut results = vec![None; total];
+            for result in receiver {
+                let (index, bucket, region) = result?;
+                results[index] = Some((bucket, region));
+            }
+            results
+                .into_iter()
+                .map(|value| value.ok_or_else(|| anyhow!("Filen chunk worker exited early")))
+                .collect()
+        })
+    }
+
+    fn request_empty(
         &self,
         method: reqwest::Method,
         url: String,
-        bytes: &[u8],
-    ) -> Result<T> {
-        let response = self
-            .http
-            .request(method, &url)
-            .bearer_auth(&self.api_key)
-            .body(bytes.to_vec())
-            .send()?;
-        let status = response.status();
-        let text = response.text()?;
-        anyhow::ensure!(status.is_success(), "Filen upload HTTP {status}: {text}");
-        let envelope: ApiEnvelope<T> = serde_json::from_str(&text)?;
-        anyhow::ensure!(
-            envelope.status,
-            "Filen upload API error: {}",
-            envelope.message
-        );
-        envelope
-            .data
-            .ok_or_else(|| anyhow!("Filen upload response has no data"))
+        body: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let mut last_error = None;
+        for attempt in 0..self.transfer_config.retries.max(1) {
+            let mut request = self
+                .http
+                .request(method.clone(), &url)
+                .bearer_auth(&self.api_key);
+            if let Some(body) = &body {
+                request = request.json(body);
+            }
+            match request.send() {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text()?;
+                    if status.is_success() {
+                        let envelope: ApiEnvelope<serde_json::Value> = serde_json::from_str(&text)?;
+                        anyhow::ensure!(envelope.status, "Filen API error: {}", envelope.message);
+                        return Ok(());
+                    }
+                    last_error = Some(anyhow!("Filen HTTP {status}: {text}"));
+                    if !status.is_server_error() {
+                        break;
+                    }
+                }
+                Err(error) => last_error = Some(error.into()),
+            }
+            if attempt + 1 < self.transfer_config.retries.max(1) {
+                std::thread::sleep(Duration::from_millis(
+                    self.transfer_config
+                        .retry_backoff_ms
+                        .saturating_mul(1 << attempt),
+                ));
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("Filen mutation request failed")))
     }
 
     pub fn download_file(&self, item: &NativeItem) -> Result<Vec<u8>> {
-        let key = item
-            .file_key
-            .ok_or_else(|| anyhow!("Filen item has no file key"))?;
-        let mut plain = Vec::new();
-        for index in 0..item.chunks.max(1) {
-            let response = self
-                .http
-                .get(format!(
-                    "{}/{}/{}/{}/{}",
-                    self.egest_url, item.region, item.bucket, item.uuid, index
-                ))
-                .bearer_auth(&self.api_key)
-                .send()?;
-            anyhow::ensure!(
-                response.status().is_success(),
-                "Filen download HTTP {}",
-                response.status()
-            );
-            let encrypted = response.bytes()?;
-            plain.extend(decrypt_file_chunk(&encrypted, &key)?);
-        }
+        let mut plain = self.download_chunks(item, 0, item.chunks.max(1) as usize)?;
         plain.truncate(item.size as usize);
         Ok(plain)
     }
+
+    /// Download only the byte range requested. Only the necessary encrypted
+    /// chunks are fetched; the first and last plaintext chunks are trimmed
+    /// after authenticated decryption.
+    pub fn download_file_range(
+        &self,
+        item: &NativeItem,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>> {
+        anyhow::ensure!(offset <= item.size, "Filen range starts beyond file size");
+        let end = offset.saturating_add(length).min(item.size);
+        if end <= offset {
+            return Ok(Vec::new());
+        }
+        let first = (offset as usize) / CHUNK_SIZE;
+        let last = ((end - 1) as usize) / CHUNK_SIZE;
+        let mut plain = self.download_chunks(item, first, last + 1)?;
+        let skip = (offset as usize) % CHUNK_SIZE;
+        plain.drain(..skip.min(plain.len()));
+        plain.truncate((end - offset) as usize);
+        Ok(plain)
+    }
+
+    pub fn verify_file_bytes(&self, item: &NativeItem, data: &[u8]) -> bool {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(data);
+        item.hash.is_empty() || item.hash == hasher.finalize().to_hex().to_string()
+    }
+
+    fn download_chunks(
+        &self,
+        item: &NativeItem,
+        start_chunk: usize,
+        end_chunk: usize,
+    ) -> Result<Vec<u8>> {
+        let key = item
+            .file_key
+            .ok_or_else(|| anyhow!("Filen item has no file key"))?;
+        let total = end_chunk.saturating_sub(start_chunk);
+        anyhow::ensure!(total > 0, "Filen download range has no chunks");
+        let workers = self.transfer_config.workers.min(total).max(1);
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        let http = self.http.clone();
+        let egest_url = self.egest_url.clone();
+        let api_key = self.api_key.clone();
+        let region = item.region.clone();
+        let bucket = item.bucket.clone();
+        let uuid = item.uuid.clone();
+        let retries = self.transfer_config.retries;
+        let retry_backoff_ms = self.transfer_config.retry_backoff_ms;
+        let mut plain = std::thread::scope(|scope| -> Result<Vec<u8>> {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                let http = http.clone();
+                let egest_url = egest_url.clone();
+                let api_key = api_key.clone();
+                let region = region.clone();
+                let bucket = bucket.clone();
+                let uuid = uuid.clone();
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= total {
+                        break;
+                    }
+                    let result = (|| {
+                        let encrypted = download_chunk_request(
+                            &http,
+                            &api_key,
+                            format!(
+                                "{egest_url}/{region}/{bucket}/{uuid}/{}",
+                                start_chunk + index
+                            ),
+                            retries,
+                            retry_backoff_ms,
+                        )?;
+                        Ok::<_, anyhow::Error>((index, decrypt_file_chunk(&encrypted, &key)?))
+                    })();
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(sender);
+            let mut chunks = vec![None; total];
+            for result in receiver {
+                let (index, plain) = result?;
+                chunks[index] = Some(plain);
+            }
+            let mut plain = Vec::new();
+            for chunk in chunks {
+                plain.extend(chunk.ok_or_else(|| anyhow!("Filen download worker exited early"))?);
+            }
+            Ok(plain)
+        })?;
+        plain.truncate(item.size as usize);
+        Ok(plain)
+    }
+
+    pub fn download_files(&self, items: Vec<NativeItem>) -> Result<Vec<Vec<u8>>> {
+        let workers = self.transfer_config.file_workers.min(items.len()).max(1);
+        let item_count = items.len();
+        let items = items.as_slice();
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= items.len() {
+                        break;
+                    }
+                    let result = self.download_file(&items[index]).map(|data| (index, data));
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(sender);
+            let mut results = vec![None; item_count];
+            for result in receiver {
+                let (index, data) = result?;
+                results[index] = Some(data);
+            }
+            results
+                .into_iter()
+                .map(|data| data.ok_or_else(|| anyhow!("Filen batch worker exited early")))
+                .collect()
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UploadedChunk {
+    bucket: String,
+    region: String,
+}
+
+fn upload_chunk_request(
+    http: &reqwest::blocking::Client,
+    api_key: &str,
+    url: String,
+    bytes: &[u8],
+    retries: usize,
+    retry_backoff_ms: u64,
+) -> Result<UploadedChunk> {
+    let mut last_error = None;
+    for attempt in 0..retries.max(1) {
+        match http
+            .post(&url)
+            .bearer_auth(api_key)
+            .body(bytes.to_vec())
+            .send()
+        {
+            Ok(response) => {
+                let status = response.status();
+                let text = response.text()?;
+                if status.is_success() {
+                    let envelope: ApiEnvelope<UploadedChunk> = serde_json::from_str(&text)?;
+                    anyhow::ensure!(
+                        envelope.status,
+                        "Filen upload API error: {}",
+                        envelope.message
+                    );
+                    return envelope
+                        .data
+                        .ok_or_else(|| anyhow!("Filen upload response has no data"));
+                }
+                last_error = Some(anyhow!("Filen upload HTTP {status}: {text}"));
+                if !status.is_server_error() {
+                    break;
+                }
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+        if attempt + 1 < retries.max(1) {
+            std::thread::sleep(Duration::from_millis(
+                retry_backoff_ms.saturating_mul(1 << attempt),
+            ));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("Filen upload failed")))
+}
+
+fn download_chunk_request(
+    http: &reqwest::blocking::Client,
+    api_key: &str,
+    url: String,
+    retries: usize,
+    retry_backoff_ms: u64,
+) -> Result<Vec<u8>> {
+    let mut last_error = None;
+    for attempt in 0..retries.max(1) {
+        match http.get(&url).bearer_auth(api_key).send() {
+            Ok(response) if response.status().is_success() => {
+                return Ok(response.bytes()?.to_vec());
+            }
+            Ok(response) => {
+                let status = response.status();
+                last_error = Some(anyhow!("Filen download HTTP {status}"));
+                if !status.is_server_error() {
+                    break;
+                }
+            }
+            Err(error) => last_error = Some(error.into()),
+        }
+        if attempt + 1 < retries.max(1) {
+            std::thread::sleep(Duration::from_millis(
+                retry_backoff_ms.saturating_mul(1 << attempt),
+            ));
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("Filen download failed")))
 }
 
 fn decode_file_key(value: &str) -> Result<[u8; 32]> {
@@ -719,15 +1656,154 @@ fn decode_file_key(value: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("invalid v2 file key"))?)
 }
 
+fn glob_match(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let mut dp = vec![vec![false; value.len() + 1]; pattern.len() + 1];
+    dp[0][0] = true;
+    for i in 0..pattern.len() {
+        for j in 0..=value.len() {
+            if !dp[i][j] {
+                continue;
+            }
+            match pattern[i] {
+                '*' => {
+                    let recursive = i + 1 < pattern.len() && pattern[i + 1] == '*';
+                    if recursive {
+                        dp[i + 1][j] = true;
+                        if j < value.len() {
+                            dp[i][j + 1] = true;
+                        }
+                    } else {
+                        dp[i + 1][j] = true;
+                        if j < value.len() && value[j] != '/' {
+                            dp[i][j + 1] = true;
+                        }
+                    }
+                }
+                '?' if j < value.len() && value[j] != '/' => dp[i + 1][j + 1] = true,
+                c if j < value.len() && c == value[j] => dp[i + 1][j + 1] = true,
+                _ => {}
+            }
+        }
+    }
+    dp[pattern.len()][value.len()]
+}
+
+fn is_literal_glob_component(value: &str) -> bool {
+    !value.contains(['*', '?', '[', ']'])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::thread;
+
+    fn test_session(gateway_url: String) -> FilenSession {
+        FilenSession {
+            gateway_url,
+            ingest_url: "http://127.0.0.1:1".into(),
+            egest_url: "http://127.0.0.1:1".into(),
+            email: "test@example.test".into(),
+            api_key: "test-api-key".into(),
+            auth_version: 2,
+            file_encryption_version: 2,
+            metadata_encryption_version: 2,
+            root_folder_uuid: "root".into(),
+            master_keys: vec![
+                b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_vec(),
+            ],
+            dek: None,
+            kek: None,
+            private_key: None,
+            hmac_key: None,
+        }
+    }
+
+    fn spawn_http_server(responses: Vec<String>) -> String {
+        spawn_status_server(responses.into_iter().map(|body| (200, body)).collect())
+    }
+
+    fn spawn_status_server(responses: Vec<(u16, String)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        address
+    }
+
+    fn spawn_counting_server(
+        expected_requests: usize,
+        delay_ms: u64,
+    ) -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let server_active = Arc::clone(&active);
+        let server_peak = Arc::clone(&peak);
+        thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let active = Arc::clone(&server_active);
+                let peak = Arc::clone(&server_peak);
+                handlers.push(thread::spawn(move || {
+                    let mut request = [0u8; 8192];
+                    let size = stream.read(&mut request).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&request[..size]);
+                    let body = if request.contains("/v3/upload?") {
+                        r#"{"status":true,"data":{"bucket":"b","region":"r"}}"#
+                    } else {
+                        r#"{"status":true,"data":{}}"#
+                    };
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(delay_ms));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .unwrap();
+                }));
+            }
+            for handler in handlers {
+                handler.join().unwrap();
+            }
+        });
+        (address, active, peak)
+    }
 
     #[test]
     fn v2_login_matches_reference_formula() {
         let (_, password) = pbkdf2_login("password", "salt");
         assert_eq!(password.len(), 128);
         assert_eq!(password, "65773430407d1049af0d42763b5bc2bc8f60ab7f4143d98f7f57a877a951801d38054187db31989a02e83e7a0f5f1a9085a85197d2846b7df28053b46aed4790");
+    }
+
+    #[test]
+    fn v2_filename_hash_matches_vendor_vectors() {
+        // FilenCloudDienste/filen-sdk-go/filen/crypto_test.go.
+        assert_eq!(v2_hash(b"abc"), "5c5a4ad792911a5a58741e16257f62b664aa2df3");
+        assert_eq!(v2_hash(b"cde"), "dc4237084f19afa9eb668edcbc39b5da51f63273");
     }
 
     #[test]
@@ -776,5 +1852,239 @@ mod tests {
         let key = [3u8; 32];
         let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
         assert_eq!(decrypt_file_chunk(&encrypted, &key).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn recursive_glob_matches_only_expected_paths() {
+        assert!(glob_match("docs/**/*.pdf", "docs/a/b/report.pdf"));
+        assert!(glob_match("**/*.pdf", "docs/report.pdf"));
+        assert!(glob_match("*.txt", "readme.txt"));
+        assert!(!glob_match("*.txt", "docs/readme.txt"));
+        assert!(!glob_match("**/*.pdf", "docs/report.txt"));
+    }
+
+    #[test]
+    fn transfer_config_rejects_invalid_limits() {
+        assert!(TransferConfig {
+            chunk_size: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(TransferConfig {
+            workers: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert_eq!(TransferConfig::default().validate().unwrap().workers, 4);
+    }
+
+    #[test]
+    fn empty_batches_are_noops() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        client.upload_files(Vec::new()).unwrap();
+        assert!(client.download_files(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn batch_file_workers_bound_in_flight_requests() {
+        let (gateway, active, peak) = spawn_counting_server(6, 25);
+        let mut session = test_session(gateway.clone());
+        session.ingest_url = gateway;
+        let client = FilenNativeClient::from_session_with_config(
+            &session,
+            TransferConfig {
+                workers: 1,
+                file_workers: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let jobs = (0..6)
+            .map(|index| UploadJob {
+                parent: "root".into(),
+                name: format!("empty-{index}.txt"),
+                mime: "text/plain".into(),
+                data: Vec::new(),
+            })
+            .collect();
+        client.upload_files(jobs).unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert!(peak.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn chunk_workers_bound_in_flight_requests() {
+        let (gateway, active, peak) = spawn_counting_server(3, 25);
+        let mut session = test_session(gateway.clone());
+        session.ingest_url = gateway;
+        let client = FilenNativeClient::from_session_with_config(
+            &session,
+            TransferConfig {
+                chunk_size: 8,
+                workers: 2,
+                file_workers: 1,
+                retries: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        client
+            .upload_file(
+                "root",
+                "two-chunks.bin",
+                "application/octet-stream",
+                &vec![7; 16],
+            )
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert!(peak.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[test]
+    fn upload_resume_state_round_trips_with_completed_chunks() {
+        let state = UploadResumeState {
+            uuid: "u".into(),
+            upload_key: "k".into(),
+            file_key: [7; 32],
+            parent: "p".into(),
+            name: "f".into(),
+            mime: "text/plain".into(),
+            size: 2_000_000,
+            chunk_size: CHUNK_SIZE,
+            completed_chunks: vec![0, 2],
+            bucket: "b".into(),
+            region: "r".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<UploadResumeState>(&serde_json::to_string(&state).unwrap())
+                .unwrap(),
+            state
+        );
+    }
+
+    #[test]
+    fn hermetic_resume_retries_only_the_missing_chunk() {
+        let gateway = spawn_status_server(vec![
+            (500, r#"{"status":false,"message":"temporary"}"#.into()),
+            (
+                200,
+                r#"{"status":true,"data":{"bucket":"b","region":"r"}}"#.into(),
+            ),
+            (200, r#"{"status":true,"data":{}}"#.into()),
+        ]);
+        let mut session = test_session(gateway.clone());
+        session.ingest_url = gateway;
+        let client = FilenNativeClient::from_session_with_config(
+            &session,
+            TransferConfig {
+                retries: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut state = client
+            .begin_upload("root", "resume.txt", "text/plain", 5)
+            .unwrap();
+        assert!(client.resume_upload(&mut state, b"hello").is_err());
+        assert!(state.completed_chunks.is_empty());
+        client.resume_upload(&mut state, b"hello").unwrap();
+        assert_eq!(state.completed_chunks, vec![0]);
+    }
+
+    #[test]
+    fn listing_cache_avoids_http_and_invalidation_reloads() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata =
+            v2_encrypt_metadata(r#"{"name":"cached.txt","size":5,"mime":"text/plain","key":"0123456789abcdef0123456789abcdef","creation":1,"lastModified":2,"blake3":"hash"}"#, key, *b"abcdefghijkl").unwrap();
+        let body = serde_json::json!({
+            "status": true,
+            "data": {
+                "uploads": [{
+                    "uuid": "file-1",
+                    "metadata": metadata,
+                    "parent": "root",
+                    "size": 5,
+                    "bucket": "bucket",
+                    "region": "region",
+                    "chunks": 1,
+                    "version": 2
+                }],
+                "folders": []
+            }
+        })
+        .to_string();
+        let gateway = spawn_http_server(vec![body.clone(), body]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        assert_eq!(client.list_folder("root").unwrap()[0].name, "cached.txt");
+        assert_eq!(client.list_folder("root").unwrap()[0].name, "cached.txt");
+        client.invalidate_listings();
+        assert_eq!(client.list_folder("root").unwrap()[0].uuid, "file-1");
+    }
+
+    #[test]
+    fn hermetic_empty_mutation_accepts_success_without_data() {
+        let gateway =
+            spawn_http_server(vec![r#"{"status":true,"message":"ok","data":null}"#.into()]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        client.trash("file-1", "file").unwrap();
+    }
+
+    #[test]
+    fn hermetic_mutations_retry_transient_5xx() {
+        let gateway = spawn_status_server(vec![
+            (503, r#"{"status":false,"message":"temporary"}"#.into()),
+            (200, r#"{"status":true,"message":"ok","data":null}"#.into()),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        client.trash("file-1", "file").unwrap();
+    }
+
+    #[test]
+    fn hermetic_exists_and_tree_requests_parse_gateway_shapes() {
+        let gateway = spawn_status_server(vec![
+            (503, r#"{"status":false,"message":"temporary"}"#.into()),
+            (200, r#"{"status":true,"data":{"exists":true}}"#.into()),
+            (
+                200,
+                r#"{"status":true,"data":{"folders":[],"uploads":[]}}"#.into(),
+            ),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        assert!(client.file_exists("root", "name.txt").unwrap());
+        assert_eq!(
+            client.get_flat_folder_tree("root").unwrap()["folders"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn file_hash_verification_matches_blake3_metadata() {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"hello");
+        let item = NativeItem {
+            uuid: "f".into(),
+            name: "f".into(),
+            is_dir: false,
+            size: 5,
+            parent: "p".into(),
+            file_key: None,
+            bucket: String::new(),
+            region: String::new(),
+            chunks: 1,
+            version: 3,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+            hash: hasher.finalize().to_hex().to_string(),
+        };
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        assert!(client.verify_file_bytes(&item, b"hello"));
+        assert!(!client.verify_file_bytes(&item, b"wrong"));
     }
 }
