@@ -11,7 +11,7 @@ use anyhow::{anyhow, Context, Result};
 use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
 use ctr::Ctr128BE;
 use md5::{Digest as Md5Digest, Md5};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
 use unicode_normalization::UnicodeNormalization;
@@ -274,6 +274,238 @@ impl InternxtNativeClient {
                     .unwrap_or(0),
             })
             .collect())
+    }
+
+    fn bearer_response(&self, method: reqwest::Method, url: &str) -> Result<Response> {
+        self.http
+            .request(method, url)
+            .bearer_auth(&self.bearer_token)
+            .header("internxt-client", "cli")
+            .send()
+            .with_context(|| format!("requesting Internxt drive endpoint: {url}"))
+    }
+
+    fn bridge_response(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        session: &InternxtSession,
+        body: Option<Vec<u8>>,
+    ) -> Result<Response> {
+        let mut request = self
+            .http
+            .request(method, url)
+            .basic_auth(&session.bridge_user, Some(session.bridge_pass()))
+            .header("x-api-version", "2");
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/json")
+                .body(body);
+        }
+        request
+            .send()
+            .with_context(|| format!("requesting Internxt network endpoint: {url}"))
+    }
+
+    pub fn file_metadata(&self, file_uuid: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/files/{file_uuid}/meta", self.base_url);
+        let response = self.bearer_response(reqwest::Method::GET, &url)?;
+        self.json_response(response, &url)
+    }
+
+    fn json_response(&self, response: Response, url: &str) -> Result<serde_json::Value> {
+        let status = response.status();
+        let body = response
+            .text()
+            .with_context(|| format!("reading Internxt response: {url}"))?;
+        if !status.is_success() {
+            return Err(anyhow!("Internxt endpoint returned {status}: {body}"));
+        }
+        serde_json::from_str(&body).with_context(|| format!("parsing Internxt response: {body}"))
+    }
+
+    fn download_links(
+        &self,
+        session: &InternxtSession,
+        bucket_id: &str,
+        network_file_id: &str,
+    ) -> Result<(String, String)> {
+        let url = format!(
+            "{}/buckets/{bucket_id}/files/{network_file_id}/info",
+            session.network_url.trim_end_matches('/')
+        );
+        let value = self.json_response(
+            self.bridge_response(reqwest::Method::GET, &url, session, None)?,
+            &url,
+        )?;
+        let download_url = value
+            .get("shards")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt response has no download shard URL"))?;
+        let index = value
+            .get("index")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt response has no file index"))?;
+        Ok((download_url.to_owned(), index.to_owned()))
+    }
+
+    pub fn download_file(&self, session: &InternxtSession, file_uuid: &str) -> Result<Vec<u8>> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let bucket = metadata
+            .get("bucket")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no bucket"))?;
+        let network_id = metadata
+            .get("fileId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no network file id"))?;
+        let (url, index_hex) = self.download_links(session, bucket, network_id)?;
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .context("downloading encrypted Internxt file")?;
+        let status = response.status();
+        let encrypted = response
+            .bytes()
+            .context("reading encrypted Internxt file")?;
+        if !status.is_success() {
+            return Err(anyhow!("Internxt shard download returned {status}"));
+        }
+        let index = hex::decode(index_hex).context("decoding Internxt file index")?;
+        let index: [u8; 32] = index
+            .try_into()
+            .map_err(|_| anyhow!("Internxt file index must contain 32 bytes"))?;
+        let bucket = hex::decode(bucket).context("decoding Internxt bucket")?;
+        let bucket: [u8; 12] = bucket
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket must contain 12 bytes"))?;
+        let mut plain = encrypted.to_vec();
+        crypt(&mut plain, &session.mnemonic, &bucket, &index);
+        let expected = metadata
+            .get("size")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?
+            as usize;
+        if plain.len() < expected {
+            return Err(anyhow!("Internxt download is shorter than its metadata"));
+        }
+        plain.truncate(expected);
+        Ok(plain)
+    }
+
+    pub fn upload_file(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        name: &str,
+        data: &[u8],
+    ) -> Result<()> {
+        const SINGLE_UPLOAD_LIMIT: usize = 100 * 1024 * 1024;
+        if data.len() >= SINGLE_UPLOAD_LIMIT {
+            return Err(anyhow!(
+                "native Internxt upload currently supports files below 100 MiB"
+            ));
+        }
+        let bucket = session.bucket_bytes()?;
+        let (index, encrypted) = encrypt(data, &session.mnemonic, &bucket);
+        let index_hex = hex::encode(index);
+        let start_url = format!(
+            "{}/v2/buckets/{}/files/start?multiparts=1",
+            session.network_url.trim_end_matches('/'),
+            session.bucket_id
+        );
+        let start_body = serde_json::to_vec(&serde_json::json!({
+            "uploads": [{"index": 0, "size": encrypted.len()}]
+        }))?;
+        let started = self.json_response(
+            self.bridge_response(reqwest::Method::POST, &start_url, session, Some(start_body))?,
+            &start_url,
+        )?;
+        let upload = started
+            .get("uploads")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            .ok_or_else(|| anyhow!("Internxt upload start returned no upload"))?;
+        let upload_url = upload
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload start returned no upload URL"))?;
+        let shard_uuid = upload
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload start returned no shard UUID"))?;
+        let response = self
+            .http
+            .put(upload_url)
+            .header("content-type", "application/octet-stream")
+            .body(encrypted.clone())
+            .send()
+            .context("uploading encrypted Internxt shard")?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Internxt shard upload returned {}",
+                response.status()
+            ));
+        }
+        let hash = hex::encode(sha2::Sha256::digest(&encrypted));
+        let finish_url = format!(
+            "{}/v2/buckets/{}/files/finish",
+            session.network_url.trim_end_matches('/'),
+            session.bucket_id
+        );
+        let finish_body = serde_json::to_vec(&serde_json::json!({
+            "index": index_hex,
+            "shards": [{"hash": hash, "uuid": shard_uuid}]
+        }))?;
+        let finished = self.json_response(
+            self.bridge_response(
+                reqwest::Method::POST,
+                &finish_url,
+                session,
+                Some(finish_body),
+            )?,
+            &finish_url,
+        )?;
+        let network_file_id = finished
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload finish returned no file id"))?;
+        let create_url = format!("{}/files", self.base_url);
+        let create_body = serde_json::to_vec(&serde_json::json!({
+            "folderUuid": parent_folder_uuid,
+            "plainName": name,
+            "type": "",
+            "size": data.len(),
+            "bucket": session.bucket_id,
+            "fileId": network_file_id,
+            "encryptVersion": "Aes03",
+            "name": ""
+        }))?;
+        self.json_response(
+            self.bearer_request(reqwest::Method::POST, &create_url, create_body)?,
+            &create_url,
+        )?;
+        Ok(())
+    }
+
+    fn bearer_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Vec<u8>,
+    ) -> Result<Response> {
+        self.http
+            .request(method, url)
+            .bearer_auth(&self.bearer_token)
+            .header("internxt-client", "cli")
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .with_context(|| format!("requesting Internxt drive endpoint: {url}"))
     }
 
     /// List all files and folders directly below [folder_uuid].
