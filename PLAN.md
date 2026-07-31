@@ -2629,6 +2629,16 @@ a transfer without leaving the search/catalog workflow.
     move, and copy using its `mkdir`/`rename`/`mv`/`cp` commands. Internxt’s
     adapter exposes only the CLI’s `mkdir`; move/rename/copy remain false
     until its CLI provides compatible path semantics. ✅ 2026-07-31
+  - [x] **Official Internxt adapter comparison.** The official Go
+    [`internxt/rclone-adapter`](https://github.com/internxt/rclone-adapter)
+    implements file/folder create, delete, rename, and move, but has no
+    provider-level copy operation. Its multipart/streaming/range transfer
+    code is materially ahead of the subprocess wrapper. The separate
+    [`internxt/rclone`](https://github.com/internxt/rclone) fork supplies
+    generic rclone `copy`/`sync` orchestration; that does not mean Internxt’s
+    provider API has native copy. Our Python and Dart Internxt clients do
+    expose copy, so the Rust subprocess adapter is currently the lagging
+    layer and should gain create/rename/move before copy.
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.
