@@ -1138,8 +1138,11 @@ jobs:
           ASC_ISSUER_ID: ${{ env.APPLE_API_ISSUER_ID }}
           ASC_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
           ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          # Export-compliance declaration — see docs/export-compliance.md for
+          # the crypto inventory and the published-source basis. Must match the
+          # ITSAppUsesNonExemptEncryption written into Info.plist above.
+          ASC_USES_NON_EXEMPT_ENCRYPTION: "false"
         run: |
-          python3 -m pip install --quiet --break-system-packages 'pyjwt[crypto]'
           python3 scripts/testflight_distribute.py \
             --platform IOS --mode internal \
             --notes "iOS build from CI."
@@ -1391,8 +1394,10 @@ jobs:
           ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
           # Review contact defaults come from the app's own Impressum
           # (Settings → Legal → Contact), so there is nothing to inject here.
+          # Export-compliance declaration — see docs/export-compliance.md for
+          # the crypto inventory and the published-source basis.
+          ASC_USES_NON_EXEMPT_ENCRYPTION: "false"
         run: |
-          python3 -m pip install --quiet --break-system-packages 'pyjwt[crypto]'
           # External testers join via the group's public TestFlight URL, not
           # per-email invitations. The link only starts working once Beta App
           # Review passes; before that Apple returns it as null and testers

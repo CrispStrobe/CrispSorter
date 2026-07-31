@@ -74,48 +74,51 @@ def log(msg):
 def make_token(key_id: str, issuer_id: str, p8: bytes) -> str:
     """ES256 JWT for the App Store Connect API.
 
-    `exp` is 15 minutes, not the maximum 20: Apple rejects anything over 20
-    and has been observed to reject exactly-20 depending on clock skew
-    between the runner and their edge.
+    This mirrors `../appstore.md` Step 1's `gen_token.py` deliberately, down
+    to the 1190-second expiry: that implementation is *proven* against this
+    exact key, and reimplementing it with PyJWT added a variable for no gain.
+    Signing with `cryptography` also drops a pip install from the CI step.
 
-    Everything about the inputs is logged except the inputs themselves —
-    lengths, PEM header, and the decoded JWT header/claims. A 401 from Apple
-    says only "provide a properly configured and signed bearer token", which
-    is indistinguishable between a wrong key id, an empty issuer, a p8 that
-    decoded to garbage, and a malformed claim set; this narrows it without
-    printing a private key into a public log.
+    The key is a **team** key — the App Store Connect page showed both a Key
+    ID and an Issuer ID when it was generated with Role: Admin, and only team
+    keys have an issuer. So `iss` is correct here; Apple's *individual* keys,
+    which omit `iss` and carry `sub: "user"` instead, are a different animal
+    and not what this account uses. An earlier version of this file tried
+    both shapes on a 401, which was guessing at a checkable fact.
+
+    Inputs are logged by shape, never by value.
     """
-    try:
-        import jwt  # PyJWT
-    except ImportError:
-        sys.exit("need PyJWT with crypto: pip install 'pyjwt[crypto]'")
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, utils as ec_utils
 
-    pem = p8.decode() if isinstance(p8, bytes) else p8
-    first = pem.strip().splitlines()[0] if pem.strip() else "<empty>"
+    pem = p8 if isinstance(p8, bytes) else p8.encode()
+    first = pem.decode(errors="replace").strip().splitlines()[0] if pem.strip() else "<empty>"
     log(f"   key id: {len(key_id)} chars ({key_id[:4]}…)  "
-        f"issuer: {len(issuer_id)} chars  p8: {len(pem)} chars, starts {first!r}")
+        f"issuer: {len(issuer_id)} chars  p8: {len(pem)} bytes, starts {first!r}")
     if "BEGIN" not in first:
         sys.exit("the decoded key is not a PEM — check that the secret holds "
                  "base64 of the .p8 file, not the raw file or a path")
 
+    key = serialization.load_pem_private_key(pem, password=None)
+
+    def b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
     now = int(time.time())
-    claims = {"iss": issuer_id, "iat": now, "exp": now + 15 * 60,
-              "aud": "appstoreconnect-v1"}
-    token = jwt.encode(claims, pem, algorithm="ES256",
-                       headers={"kid": key_id, "typ": "JWT"})
-    # Echo back what we actually signed, decoded from the token itself rather
-    # than from the variables we think we passed.
-    try:
-        import base64 as _b64, json as _json
-        h, c, _ = token.split(".")
-        pad = lambda x: x + "=" * (-len(x) % 4)
-        log(f"   jwt header: {_json.loads(_b64.urlsafe_b64decode(pad(h)))}")
-        decoded = _json.loads(_b64.urlsafe_b64decode(pad(c)))
-        log(f"   jwt claims: iss={decoded['iss'][:8]}… aud={decoded['aud']} "
-            f"ttl={decoded['exp'] - decoded['iat']}s")
-    except Exception as e:  # never fail the run over diagnostics
-        log(f"   (could not decode our own token for logging: {e})")
-    return token
+    header = {"alg": "ES256", "kid": key_id, "typ": "JWT"}
+    payload = {"iss": issuer_id, "iat": now, "exp": now + 1190,
+               "aud": "appstoreconnect-v1"}
+    signing_input = (
+        f"{b64url(json.dumps(header, separators=(',', ':')).encode())}."
+        f"{b64url(json.dumps(payload, separators=(',', ':')).encode())}"
+    )
+    # JWS wants the raw r||s pair; `sign()` returns DER, so convert.
+    der = key.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256()))
+    r, sig_s = ec_utils.decode_dss_signature(der)
+    raw = r.to_bytes(32, "big") + sig_s.to_bytes(32, "big")
+    log(f"   jwt header: {header}  claims: iss={issuer_id[:8]}… "
+        f"aud={payload['aud']} ttl={payload['exp'] - payload['iat']}s")
+    return f"{signing_input}.{b64url(raw)}"
 
 
 class Asc:
@@ -183,6 +186,12 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
     while True:
         payload, status = asc.get(f"/builds?{q}")
         if status == 401:
+            # The playbook's own sanity check: a bare /v1/apps distinguishes
+            # "this token is not accepted at all" from "this request is
+            # wrong", which Apple reports identically.
+            probe, probe_status = asc.get("/apps?limit=1")
+            log(f"   probe GET /v1/apps → {probe_status}"
+                + ("" if probe_status == 200 else f" {errors_of(probe)[:120]}"))
             sys.exit(
                 "App Store Connect rejected the token (401). The key itself is "
                 "probably fine — altool in the preceding step uses the same "
@@ -221,18 +230,42 @@ def set_export_compliance(asc, build):
     A build uploaded without `ITSAppUsesNonExemptEncryption` in Info.plist
     comes out of processing with this null, and TestFlight then offers it to
     nobody — internal or external — with no obvious error anywhere.
+
+    **This is a legal declaration, so it is not hardcoded.** It must come from
+    `ASC_USES_NON_EXEMPT_ENCRYPTION`, set explicitly by whoever is the
+    exporter of record. An earlier version of this file asserted `false`
+    unconditionally — right answer, but reached by assumption rather than by
+    anyone deciding it, which is the part that was wrong.
+
+    The basis for CrispSorter's answer, the full inventory of crypto that
+    actually ships, and the regulation cites live in `docs/export-compliance.md`.
+    Read that before changing the value in `release.yml`; the short version is
+    that the app's own source is published under AGPL-3.0-or-later, which is a
+    different exemption route from the ECCN 5D992.c self-classification that a
+    closed-source app shipping the same AES-256 would need.
     """
+    answer = os.environ.get("ASC_USES_NON_EXEMPT_ENCRYPTION", "").strip().lower()
+    if answer not in ("true", "false"):
+        sys.exit(
+            "ASC_USES_NON_EXEMPT_ENCRYPTION must be set to 'true' or 'false'.\n"
+            "This is an export-compliance declaration about the app, not a\n"
+            "detail a script may assume. CrispSorter ships AES-256 PDF\n"
+            "encryption and a statically linked OpenSSL, so the answer is not\n"
+            "self-evident from the absence of crypto. See the reasoning and\n"
+            "the shipped-crypto inventory in docs/export-compliance.md, then\n"
+            "set it explicitly."
+        )
     if build["attributes"].get("usesNonExemptEncryption") is not None:
         log("   export compliance already answered")
         return
     payload, status = asc.patch(
         f"/builds/{build['id']}",
         {"data": {"type": "builds", "id": build["id"],
-                  "attributes": {"usesNonExemptEncryption": False}}},
+                  "attributes": {"usesNonExemptEncryption": answer == "true"}}},
     )
     if status not in (200, 204):
         sys.exit(f"setting export compliance failed ({status}): {errors_of(payload)}")
-    log("   export compliance set (exempt: standard HTTPS/TLS only)")
+    log(f"   export compliance set: usesNonExemptEncryption={answer}")
 
 
 def ensure_group(asc, app_id, name, internal):
