@@ -24,6 +24,7 @@ pub mod internxt;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native;
 pub mod onedrive;
+pub(crate) mod secret;
 pub mod tauri_commands;
 pub mod webdav;
 

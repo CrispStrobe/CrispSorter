@@ -12,8 +12,8 @@ use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit, 
 use ctr::Ctr128BE;
 use md5::{Digest as Md5Digest, Md5};
 use reqwest::blocking::Client;
-use serde::Deserialize;
-use sha2::{Digest, Sha512};
+use serde::{Deserialize, Serialize};
+use sha2::Sha512;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
@@ -84,6 +84,32 @@ pub fn login_password_payload(
         .context("Internxt login salt is not UTF-8")?;
     let hash = password_hash(password, &salt)?;
     encrypt_text(hash.as_bytes(), app_secret)
+}
+
+/// All state needed after a successful Internxt login. This is serialized
+/// only into the OS keychain by [`super::secret`], never into `drives.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InternxtSession {
+    pub drive_api_url: String,
+    pub network_url: String,
+    pub email: String,
+    pub token: String,
+    pub new_token: String,
+    pub mnemonic: String,
+    pub user_id: String,
+    pub root_folder_id: String,
+    pub bridge_user: String,
+    pub bucket_id: String,
+}
+
+impl InternxtSession {
+    pub fn encode(&self) -> Result<String> {
+        serde_json::to_string(self).context("serializing Internxt session")
+    }
+
+    pub fn decode(serialized: &str) -> Result<Self> {
+        serde_json::from_str(serialized).context("parsing Internxt session")
+    }
 }
 
 /// Derive the 64-byte BIP-39 seed for a mnemonic and optional passphrase.
@@ -329,5 +355,25 @@ mod tests {
         let legacy: ContentPage =
             serde_json::from_str(r#"{"folders":[{"name":"Docs","id":"d1"}],"files":[]}"#).unwrap();
         assert_eq!(legacy.folders.len(), 1);
+    }
+
+    #[test]
+    fn session_serialization_round_trips_all_auth_state() {
+        let session = InternxtSession {
+            drive_api_url: "https://drive.example".into(),
+            network_url: "https://network.example".into(),
+            email: "user@example.com".into(),
+            token: "token".into(),
+            new_token: "new-token".into(),
+            mnemonic: "test mnemonic".into(),
+            user_id: "user-id".into(),
+            root_folder_id: "root-id".into(),
+            bridge_user: "bridge-user".into(),
+            bucket_id: "00112233445566778899aabb".into(),
+        };
+        assert_eq!(
+            InternxtSession::decode(&session.encode().unwrap()).unwrap(),
+            session
+        );
     }
 }
