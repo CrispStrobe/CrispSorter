@@ -1,4 +1,4 @@
-use crisp_internxt_native::{InternxtNativeClient, InternxtSession};
+use crisp_internxt::{InternxtNativeClient, InternxtSession};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;

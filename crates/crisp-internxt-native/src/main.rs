@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crisp_internxt_native::{
+use crisp_internxt::{
     inspect_local_directory, ConflictPolicy, InternxtNativeClient, InternxtSession, NativeItem,
     TransferFilter, TransferOptions, DEFAULT_DRIVE_API_URL,
 };
@@ -538,7 +538,7 @@ fn run() -> Result<()> {
             let index = [0x11u8; 32];
             println!(
                 "{}",
-                hex::encode(crisp_internxt_native::file_key(mnemonic, &bucket, &index))
+                hex::encode(crisp_internxt::file_key(mnemonic, &bucket, &index))
             );
         }
     }

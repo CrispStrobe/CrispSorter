@@ -2446,3 +2446,65 @@ a trap:
   *remote* WebDAV works through `drives/webdav.rs` today and is already the
   fallback named in the new guard's error message.  The drive picker now
   explains this on mobile, and the README names remote WebDAV as the route.
+
+- [ ] **P33.5 — Close the published `crisp-cloud-rs` parity gaps**
+  (Internxt, Filen, and shared facade).
+
+  **Internxt (`crisp-internxt`) — retain its stronger path and CLI surface:**
+
+  - [x] Add generic reader-based upload and writer-based download APIs so
+    library callers never need whole-file `Vec<u8>` buffering.
+  - [x] Make multipart part size, retry count, backoff, timeout, and worker
+    count configurable through a validated `TransferConfig`; keep serial
+    multipart as the default and retain explicit concurrent workers.
+  - [ ] Add persisted resumable download state and resumable recursive
+    download state, not only resumable multipart upload state.
+  - [ ] Add end-to-end content/hash verification and byte-level progress
+    callbacks for single-file upload/download operations.
+  - [ ] Add automatic expired-token detection, refresh, and one safe retry;
+    preserve the explicit CLI `refresh` command.
+  - [ ] Use explicit rustls-only Reqwest features for the published crate and
+    verify desktop, macOS, Linux, and iOS builds without OpenSSL.
+  - [ ] Add unit, local HTTP-harness, cross-client Python/Dart, and live tests
+    for every new transfer and refresh path.
+
+  **Filen (`crisp-filen`) — retain its stronger crypto and transfer engine:**
+
+  - [ ] Add token/session refresh and expiry-aware retry behavior, matching
+    Internxt's refresh semantics where the Filen gateway permits it.
+  - [ ] Expand the CLI to expose the library's recursive transfers, filters,
+    conflict policies, dry-run inspection, timestamp preservation, progress,
+    resumable state, and verbose diagnostics.
+  - [x] Add a serial-safe transfer mode and make it the default for fragile
+    gateways; keep configurable chunk/file worker concurrency as opt-in.
+  - [ ] Complete trash parity with listing filters/limits and empty-trash
+    behavior where supported by the Filen API.
+  - [ ] Add a provider-neutral metadata/path result model or conversion layer
+    so callers do not have to translate `NativeItem` and `PathListing` by hand.
+  - [ ] Rename remaining public `FilenNativeClient`/native wording where this
+    is source-compatible, while preserving a deprecation path for users of
+    0.x APIs.
+  - [ ] Run the ignored Rust↔Python live matrix against v1/v2/v3 accounts,
+    large files, resume interruption, range downloads, timestamps, and all
+    mutation operations; record gateway-specific failures separately from
+    implementation failures.
+
+  **Shared `crisp-cloud-rs` facade and release quality:**
+
+  - [x] Define a small provider-neutral `CloudDrive` capability trait for
+    path resolution, listing, transfers, progress, and mutations; keep
+    provider-specific crypto and advanced operations outside the trait.
+  - [ ] Add shared transfer types for conflict policy, filters, progress,
+    cancellation, resume state, and structured error classification.
+  - [ ] Add cooperative cancellation and bounded concurrency guarantees to
+    both backends, with identical progress semantics.
+  - [ ] Add an async API or an explicitly documented blocking-only boundary;
+    do not let the facade imply async portability it does not provide.
+  - [ ] Move session persistence behind a caller-supplied secret-store trait;
+    keep JSON serialization available for CLI/testing but document its
+    sensitive contents.
+  - [ ] Add CI for formatting, clippy, hermetic tests, package manifests,
+    cross-platform builds, and ignored live tests gated by explicit secrets.
+  - [ ] Publish coordinated versions of `crisp-internxt`, `crisp-filen`, and
+    `crisp-cloud-rs`; verify README install commands, crates.io metadata,
+    GitHub releases, and license notices after every release.

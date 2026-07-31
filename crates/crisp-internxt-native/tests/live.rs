@@ -5,7 +5,7 @@
 //! loading the developer's external `../.env`; values are never printed.
 
 use anyhow::{Context, Result};
-use crisp_internxt_native::{InternxtNativeClient, InternxtSession, DEFAULT_DRIVE_API_URL};
+use crisp_internxt::{InternxtNativeClient, InternxtSession, DEFAULT_DRIVE_API_URL};
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -86,7 +86,7 @@ fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Res
             &item.uuid,
             &target_uuid,
             Some("copied"),
-            crisp_internxt_native::ConflictPolicy::Skip,
+            crisp_internxt::ConflictPolicy::Skip,
         )?;
         assert_eq!(skipped.uuid, copied.uuid);
         let overwritten = client.copy_file_with_policy(
@@ -94,7 +94,7 @@ fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Res
             &item.uuid,
             &target_uuid,
             Some("copied"),
-            crisp_internxt_native::ConflictPolicy::Overwrite,
+            crisp_internxt::ConflictPolicy::Overwrite,
         )?;
         assert_eq!(overwritten.name, "copied.txt");
         eprintln!("live lifecycle: update");

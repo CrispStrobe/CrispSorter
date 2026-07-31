@@ -41,6 +41,61 @@ const LISTING_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
+/// Bounded transfer knobs for the Internxt gateway.
+///
+/// The default deliberately uses one multipart worker. The gateway is more
+/// reliable with serial part submission; callers can opt into bounded
+/// concurrency through [`InternxtNativeClient::set_transfer_config`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferConfig {
+    pub multipart_min_size: u64,
+    pub part_size: usize,
+    pub max_multipart_parts: usize,
+    pub max_upload_retries: usize,
+    pub retry_backoff_ms: u64,
+    pub download_part_size: u64,
+    pub download_workers: usize,
+    pub request_timeout: Duration,
+}
+
+impl Default for TransferConfig {
+    fn default() -> Self {
+        Self {
+            multipart_min_size: MULTIPART_MIN_SIZE as u64,
+            part_size: UPLOAD_PART_SIZE,
+            max_multipart_parts: MAX_MULTIPARTS,
+            max_upload_retries: MAX_UPLOAD_RETRIES,
+            retry_backoff_ms: 1_000,
+            download_part_size: DOWNLOAD_PART_SIZE,
+            download_workers: 1,
+            request_timeout: Duration::from_secs(300),
+        }
+    }
+}
+
+impl TransferConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.part_size == 0 || !self.part_size.is_multiple_of(16) {
+            return Err(anyhow!(
+                "Internxt upload part_size must be positive and 16-byte aligned"
+            ));
+        }
+        if self.multipart_min_size == 0 || self.max_multipart_parts == 0 {
+            return Err(anyhow!("Internxt multipart limits must be positive"));
+        }
+        if self.max_upload_retries == 0
+            || self.download_part_size == 0
+            || self.download_workers == 0
+        {
+            return Err(anyhow!("Internxt transfer limits must be positive"));
+        }
+        if self.request_timeout.is_zero() {
+            return Err(anyhow!("Internxt request timeout must be positive"));
+        }
+        Ok(())
+    }
+}
+
 /// OpenSSL's legacy EVP_BytesToKey derivation with MD5, as used by the
 /// Internxt CLI for the `/auth/login` salt and password-hash envelope.
 fn evp_bytes_to_key(secret: &[u8], salt: &[u8; 8]) -> ([u8; 32], [u8; 16]) {
@@ -196,7 +251,7 @@ pub fn crypt_at(
     index: &[u8; 32],
     offset: u64,
 ) -> Result<()> {
-    if offset % 16 != 0 {
+    if !offset.is_multiple_of(16) {
         return Err(anyhow!("AES-CTR offset must be 16-byte aligned: {offset}"));
     }
     let key = file_key(mnemonic, bucket_id, index);
@@ -396,6 +451,7 @@ pub struct InternxtNativeClient {
     http: Client,
     listing_cache: Arc<Mutex<std::collections::HashMap<String, CachedListing>>>,
     verbose: bool,
+    transfer_config: TransferConfig,
 }
 
 /// Durable state for a resumable upload.
@@ -527,12 +583,26 @@ impl InternxtNativeClient {
         bearer_token: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self> {
+        let config = TransferConfig {
+            request_timeout: timeout,
+            ..TransferConfig::default()
+        };
+        Self::new_with_config(base_url, bearer_token, config)
+    }
+
+    /// Construct a client with validated, bounded transfer settings.
+    pub fn new_with_config(
+        base_url: impl Into<String>,
+        bearer_token: impl Into<String>,
+        transfer_config: TransferConfig,
+    ) -> Result<Self> {
+        transfer_config.validate()?;
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         reqwest::Url::parse(&base_url)
             .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
-            .timeout(timeout)
+            .timeout(transfer_config.request_timeout)
             .build()
             .context("building Internxt HTTP client")?;
         Ok(Self {
@@ -541,12 +611,26 @@ impl InternxtNativeClient {
             http,
             listing_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
             verbose: false,
+            transfer_config,
         })
     }
 
     /// Enable diagnostic transfer logging for CLI/debug consumers.
     pub fn set_verbose(&mut self, verbose: bool) {
         self.verbose = verbose;
+    }
+
+    /// Replace transfer settings after construction. The HTTP request timeout
+    /// is fixed at construction time; use [`Self::new_with_config`] when that
+    /// timeout also needs to change.
+    pub fn set_transfer_config(&mut self, transfer_config: TransferConfig) -> Result<()> {
+        transfer_config.validate()?;
+        self.transfer_config = transfer_config;
+        Ok(())
+    }
+
+    pub fn transfer_config(&self) -> &TransferConfig {
+        &self.transfer_config
     }
 
     /// Return the default durable state location used by [`upload_path`].
@@ -1154,7 +1238,7 @@ impl InternxtNativeClient {
         let bucket = session.bucket_bytes()?;
         let (index, encrypted) = encrypt(data, &session.mnemonic, &bucket);
         let index_hex = hex::encode(index);
-        let parts = multipart_part_count(data.len());
+        let parts = multipart_part_count_with_config(data.len(), &self.transfer_config);
         let start_url = format!(
             "{}/v2/buckets/{}/files/start?multiparts={parts}",
             session.network_url.trim_end_matches('/'),
@@ -1211,7 +1295,8 @@ impl InternxtNativeClient {
                     urls.len()
                 ));
             }
-            for (part_number, chunk) in encrypted.chunks(UPLOAD_PART_SIZE).enumerate() {
+            for (part_number, chunk) in encrypted.chunks(self.transfer_config.part_size).enumerate()
+            {
                 let url = urls[part_number]
                     .as_str()
                     .ok_or_else(|| anyhow!("Internxt multipart URL is not text"))?;
@@ -1293,6 +1378,170 @@ impl InternxtNativeClient {
         Ok(())
     }
 
+    /// Upload from a non-seekable reader while buffering at most one
+    /// encrypted multipart part. `file_size` is required because the gateway
+    /// start request and final metadata are size-bearing operations. This API
+    /// is intentionally non-resumable; use `upload_path_with_resume_state`
+    /// when durable continuation is required.
+    pub fn upload_reader<R: Read>(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        mut reader: R,
+        file_size: u64,
+    ) -> Result<()> {
+        let mut part_size = if file_size < self.transfer_config.multipart_min_size {
+            file_size.max(1) as usize
+        } else {
+            self.transfer_config.part_size
+        };
+        let mut parts = file_size.div_ceil(part_size as u64) as usize;
+        if parts > self.transfer_config.max_multipart_parts {
+            parts = self.transfer_config.max_multipart_parts;
+            part_size = file_size
+                .div_ceil(parts as u64)
+                .div_ceil(16)
+                .saturating_mul(16) as usize;
+        }
+        let bucket = session.bucket_bytes()?;
+        let mut index = [0u8; 32];
+        getrandom::getrandom(&mut index)
+            .map_err(|error| anyhow!("generating upload file index: {error}"))?;
+        let start_url = format!(
+            "{}/v2/buckets/{}/files/start?multiparts={parts}",
+            session.network_url.trim_end_matches('/'),
+            session.bucket_id
+        );
+        let started = self.json_response(
+            self.bridge_response(
+                reqwest::Method::POST,
+                &start_url,
+                session,
+                Some(serde_json::to_vec(&serde_json::json!({
+                    "uploads": [{"index": 0, "size": file_size}]
+                }))?),
+            )?,
+            &start_url,
+        )?;
+        let upload = started
+            .get("uploads")
+            .and_then(|value| value.as_array())
+            .and_then(|value| value.first())
+            .ok_or_else(|| anyhow!("Internxt upload start returned no upload"))?;
+        let shard_uuid = upload
+            .get("uuid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload start returned no shard UUID"))?;
+        let urls = if parts == 1 {
+            vec![upload
+                .get("url")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| anyhow!("Internxt upload start returned no upload URL"))?
+                .to_owned()]
+        } else {
+            let values = upload
+                .get("urls")
+                .and_then(|value| value.as_array())
+                .ok_or_else(|| anyhow!("Internxt multipart start returned no part URLs"))?;
+            if values.len() < parts {
+                return Err(anyhow!(
+                    "Internxt multipart start returned {} URLs for {parts} parts",
+                    values.len()
+                ));
+            }
+            values
+                .iter()
+                .take(parts)
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| anyhow!("Internxt multipart URL is not text"))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let upload_id = if parts > 1 {
+            Some(
+                upload
+                    .get("UploadId")
+                    .or_else(|| upload.get("uploadId"))
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow!("Internxt multipart start returned no UploadId"))?
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let mut sha = Sha256::new();
+        let mut etags = Vec::with_capacity(parts);
+        for (part, url) in urls.iter().enumerate().take(parts) {
+            let offset = part as u64 * part_size as u64;
+            let length = ((file_size - offset) as usize).min(part_size);
+            let mut encrypted = vec![0u8; length];
+            reader
+                .read_exact(&mut encrypted)
+                .with_context(|| format!("reading upload part {}", part + 1))?;
+            crypt_at(&mut encrypted, &session.mnemonic, &bucket, &index, offset)?;
+            sha.update(&encrypted);
+            let response = self.put_with_retry(url, encrypted, part + 1, parts)?;
+            if parts > 1 {
+                let etag = response
+                    .headers()
+                    .get("etag")
+                    .or_else(|| response.headers().get("ETag"))
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.trim_matches('"').to_owned())
+                    .ok_or_else(|| anyhow!("Internxt part {} returned no ETag", part + 1))?;
+                etags.push(serde_json::json!({"PartNumber": part + 1, "ETag": etag}));
+            }
+        }
+        let finish_url = format!(
+            "{}/v2/buckets/{}/files/finish",
+            session.network_url.trim_end_matches('/'),
+            session.bucket_id
+        );
+        let mut shard = serde_json::json!({
+            "hash": hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha.finalize())),
+            "uuid": shard_uuid,
+        });
+        if let Some(upload_id) = upload_id {
+            shard["UploadId"] = serde_json::json!(upload_id);
+            shard["parts"] = serde_json::json!(etags);
+        }
+        let finished = self.json_response(
+            self.bridge_response(
+                reqwest::Method::POST,
+                &finish_url,
+                session,
+                Some(serde_json::to_vec(&serde_json::json!({
+                    "index": hex::encode(index), "shards": [shard]
+                }))?),
+            )?,
+            &finish_url,
+        )?;
+        let network_file_id = finished
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt upload finish returned no file id"))?;
+        let create_url = format!("{}/files", self.base_url);
+        self.json_response(
+            self.bearer_request(
+                reqwest::Method::POST,
+                &create_url,
+                serde_json::to_vec(&serde_json::json!({
+                    "folderUuid": parent_folder_uuid, "plainName": plain_name,
+                    "type": file_type, "size": file_size, "bucket": session.bucket_id,
+                    "fileId": network_file_id, "encryptVersion": "Aes03", "name": ""
+                }))?,
+            )?,
+            &create_url,
+        )?;
+        self.clear_listing_cache();
+        Ok(())
+    }
+
     /// Stream a local file into Internxt without buffering the complete
     /// plaintext or ciphertext. Multipart parts are regenerated from the
     /// same CTR stream, retried independently, and checkpointed after each
@@ -1348,6 +1597,7 @@ impl InternxtNativeClient {
     /// official client: encryption is performed once, only a small number of
     /// encrypted parts are buffered, and each part independently reports its
     /// ETag and retry result. Values are capped at ten to match that client.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_path_with_resume_state_with_workers(
         &self,
         session: &InternxtSession,
@@ -1363,14 +1613,14 @@ impl InternxtNativeClient {
             .with_context(|| format!("reading upload metadata for {}", path.display()))?;
         let file_size = metadata.len();
         let modified_ns = file_modified_ns(path)?;
-        let mut part_size = if file_size < MULTIPART_MIN_SIZE as u64 {
+        let mut part_size = if file_size < self.transfer_config.multipart_min_size {
             file_size.max(1) as usize
         } else {
-            UPLOAD_PART_SIZE
+            self.transfer_config.part_size
         };
         let mut parts = file_size.div_ceil(part_size as u64) as usize;
-        if parts > MAX_MULTIPARTS {
-            parts = MAX_MULTIPARTS;
+        if parts > self.transfer_config.max_multipart_parts {
+            parts = self.transfer_config.max_multipart_parts;
             part_size = file_size
                 .div_ceil(parts as u64)
                 .div_ceil(16)
@@ -1383,7 +1633,7 @@ impl InternxtNativeClient {
             );
         }
         let cp_path = state_path;
-        let mut checkpoint = load_checkpoint(&cp_path)?.filter(|value| {
+        let mut checkpoint = load_checkpoint(cp_path)?.filter(|value| {
             value.version == 1
                 && value.path == path.to_string_lossy()
                 && value.bucket_id == session.bucket_id
@@ -1398,7 +1648,7 @@ impl InternxtNativeClient {
                     .unwrap_or(false)
         });
         if checkpoint.is_none() {
-            remove_checkpoint(&cp_path);
+            remove_checkpoint(cp_path);
         }
 
         let mut index = [0u8; 32];
@@ -1493,7 +1743,7 @@ impl InternxtNativeClient {
                     etags: etags.clone(),
                     created: now_seconds(),
                 };
-                save_checkpoint(&cp_path, &value)?;
+                save_checkpoint(cp_path, &value)?;
                 checkpoint = Some(value);
             }
             (uuid, upload_id, urls, etags)
@@ -1595,7 +1845,7 @@ impl InternxtNativeClient {
                             etags[part] = Some(etag);
                             if let Some(value) = checkpoint.as_mut() {
                                 value.etags[part] = etags[part].clone();
-                                save_checkpoint(&cp_path, value)?;
+                                save_checkpoint(cp_path, value)?;
                             }
                         }
                         Err(error) => {
@@ -1664,13 +1914,78 @@ impl InternxtNativeClient {
             )?,
             &create_url,
         )?;
-        remove_checkpoint(&cp_path);
+        remove_checkpoint(cp_path);
         Ok(())
     }
 
     /// Stream-decrypt a remote file directly to disk. The output is
     /// truncated only after metadata is validated, and the AES-CTR state is
     /// advanced incrementally so memory stays bounded by the read buffer.
+    pub fn download_file_to_writer<W: Write>(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        mut writer: W,
+    ) -> Result<u64> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let bucket_id = metadata
+            .get("bucket")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no bucket"))?;
+        let network_id = metadata
+            .get("fileId")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no network file id"))?;
+        let (url, index_hex) = self.download_links(session, bucket_id, network_id)?;
+        let index: [u8; 32] = hex::decode(index_hex)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt file index must contain 32 bytes"))?;
+        let bucket: [u8; 12] = hex::decode(bucket_id)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket must contain 12 bytes"))?;
+        let expected = metadata
+            .get("size")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
+        let mut response = self
+            .http
+            .get(url)
+            .send()
+            .context("streaming encrypted Internxt file")?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!("Internxt shard download returned {status}"));
+        }
+        let key = file_key(&session.mnemonic, &bucket, &index);
+        let mut cipher = Aes256Ctr::new((&key).into(), (&index[..16]).into());
+        let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
+        let mut total = 0u64;
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .context("reading encrypted shard")?;
+            if read == 0 {
+                break;
+            }
+            cipher.apply_keystream(&mut buffer[..read]);
+            let remaining = expected.saturating_sub(total) as usize;
+            if read > remaining {
+                return Err(anyhow!("Internxt download exceeds its metadata size"));
+            }
+            writer
+                .write_all(&buffer[..read])
+                .context("writing decrypted Internxt file")?;
+            total += read as u64;
+        }
+        if total != expected {
+            return Err(anyhow!(
+                "Internxt download is incomplete: got {total} bytes, expected {expected}"
+            ));
+        }
+        writer.flush().context("flushing decrypted Internxt file")?;
+        Ok(total)
+    }
+
     pub fn download_file_to_path(
         &self,
         session: &InternxtSession,
@@ -1775,7 +2090,7 @@ impl InternxtNativeClient {
             .get("size")
             .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
             .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
-        if expected < DOWNLOAD_PART_SIZE {
+        if expected < self.transfer_config.download_part_size {
             return self.download_file_to_path(session, file_uuid, path);
         }
 
@@ -1789,8 +2104,8 @@ impl InternxtNativeClient {
             return self.download_file_to_path(session, file_uuid, path);
         }
 
-        let parts = expected.div_ceil(DOWNLOAD_PART_SIZE) as usize;
-        let workers = parts.min(4);
+        let parts = expected.div_ceil(self.transfer_config.download_part_size) as usize;
+        let workers = parts.min(self.transfer_config.download_workers);
         let temporary = path.with_extension("crispsorter-partial");
         if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
             fs::create_dir_all(parent)?;
@@ -1812,8 +2127,8 @@ impl InternxtNativeClient {
                 scope.spawn(move || loop {
                     let part = receiver.lock().ok().and_then(|guard| guard.recv().ok());
                     let Some(part) = part else { break };
-                    let start = part as u64 * DOWNLOAD_PART_SIZE;
-                    let end = (start + DOWNLOAD_PART_SIZE).min(expected);
+                    let start = part as u64 * client.transfer_config.download_part_size;
+                    let end = (start + client.transfer_config.download_part_size).min(expected);
                     let result = (|| -> Result<()> {
                         let response = client
                             .http
@@ -1888,7 +2203,7 @@ impl InternxtNativeClient {
         total: usize,
     ) -> Result<Response> {
         let mut last_error = None;
-        for attempt in 0..MAX_UPLOAD_RETRIES {
+        for attempt in 0..self.transfer_config.max_upload_retries {
             match self
                 .http
                 .put(url)
@@ -1910,8 +2225,12 @@ impl InternxtNativeClient {
                 }
                 Err(error) => last_error = Some(error.into()),
             }
-            if attempt + 1 < MAX_UPLOAD_RETRIES {
-                std::thread::sleep(Duration::from_secs(1u64 << attempt));
+            if attempt + 1 < self.transfer_config.max_upload_retries {
+                std::thread::sleep(Duration::from_millis(
+                    self.transfer_config
+                        .retry_backoff_ms
+                        .saturating_mul(1u64 << attempt.min(10)),
+                ));
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow!("Internxt part {part}/{total} failed")))
@@ -1927,7 +2246,7 @@ impl InternxtNativeClient {
         index: &[u8; 32],
     ) -> Result<Sha256> {
         let mut last_error = None;
-        for attempt in 0..MAX_UPLOAD_RETRIES {
+        for attempt in 0..self.transfer_config.max_upload_retries {
             let hash = Arc::new(Mutex::new(Sha256::new()));
             let key = file_key(mnemonic, bucket, index);
             let reader = EncryptReader {
@@ -1961,8 +2280,12 @@ impl InternxtNativeClient {
                 }
                 Err(error) => last_error = Some(error.into()),
             }
-            if attempt + 1 < MAX_UPLOAD_RETRIES {
-                std::thread::sleep(Duration::from_secs(1u64 << attempt));
+            if attempt + 1 < self.transfer_config.max_upload_retries {
+                std::thread::sleep(Duration::from_millis(
+                    self.transfer_config
+                        .retry_backoff_ms
+                        .saturating_mul(1u64 << attempt.min(10)),
+                ));
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow!("Internxt shard upload failed")))
@@ -2119,6 +2442,7 @@ impl InternxtNativeClient {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn search_folder(
         &self,
         folder_uuid: &str,
@@ -2796,9 +3120,14 @@ fn format_remote_name(stem: &str, extension: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn multipart_part_count(size: usize) -> usize {
-    if size >= MULTIPART_MIN_SIZE {
-        size.div_ceil(UPLOAD_PART_SIZE)
+    multipart_part_count_with_config(size, &TransferConfig::default())
+}
+
+fn multipart_part_count_with_config(size: usize, config: &TransferConfig) -> usize {
+    if size as u64 >= config.multipart_min_size {
+        size.div_ceil(config.part_size)
     } else {
         1
     }
@@ -2887,6 +3216,17 @@ mod tests {
         let (index, encrypted) = encrypt(&[], MNEMONIC, &BUCKET);
         assert_eq!(index.len(), 32);
         assert!(encrypted.is_empty());
+    }
+
+    #[test]
+    fn transfer_config_defaults_are_serial_and_validates_bounds() {
+        let config = TransferConfig::default();
+        assert_eq!(config.download_workers, 1);
+        assert_eq!(multipart_part_count_with_config(100, &config), 1);
+        assert!(config.validate().is_ok());
+        let mut invalid = config;
+        invalid.part_size = 15;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -3075,9 +3415,11 @@ mod tests {
             })),
             ..TransferOptions::default()
         };
-        let mut stats = TransferStats::default();
-        stats.files = 1;
-        stats.bytes = 42;
+        let stats = TransferStats {
+            files: 1,
+            bytes: 42,
+            ..TransferStats::default()
+        };
         report_progress(&options, Path::new("file.txt"), &stats, 42);
         let progress = seen.lock().unwrap().pop().unwrap();
         assert_eq!(progress.path, PathBuf::from("file.txt"));

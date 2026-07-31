@@ -260,3 +260,44 @@ jobs:
           name: crispsorter-cli-linux-x64
           path: repos/CrispSorter/target/debug/crispsorter
           retention-days: 7
+
+  cloud-backends:
+    name: Native cloud crates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+
+      - name: Format cloud crates
+        working-directory: repos/CrispSorter
+        run: cargo fmt --package crisp-internxt --package crisp-filen -- --check
+
+      - name: Test cloud crates
+        working-directory: repos/CrispSorter
+        run: |
+          cargo test -p crisp-internxt --all-targets
+          cargo test -p crisp-filen --all-targets
+
+      - name: Clippy cloud crates
+        working-directory: repos/CrispSorter
+        run: |
+          cargo clippy -p crisp-internxt --all-targets --all-features --no-deps -- -D warnings
+          cargo clippy -p crisp-filen --all-targets --all-features --no-deps -- -D warnings
+
+      - name: Verify publishable packages
+        working-directory: repos/CrispSorter
+        run: |
+          cargo package -p crisp-internxt --allow-dirty
+          cargo package -p crisp-filen --allow-dirty

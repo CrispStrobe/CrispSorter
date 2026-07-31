@@ -27,7 +27,9 @@ pub const DEFAULT_GATEWAY_URL: &str = "https://gateway.filen.io";
 pub const DEFAULT_INGEST_URL: &str = "https://ingest.filen.io";
 pub const DEFAULT_EGEST_URL: &str = "https://egest.filen.io";
 pub const CHUNK_SIZE: usize = 1024 * 1024;
-pub const TRANSFER_CONCURRENCY: usize = 4;
+/// Serial is the gateway-safe default; callers may opt into concurrency via
+/// [`FilenNativeClient::set_transfer_config`].
+pub const TRANSFER_CONCURRENCY: usize = 1;
 pub const LISTING_CACHE_TTL: Duration = Duration::from_secs(600);
 
 fn local_timestamps(metadata: &std::fs::Metadata) -> (i64, i64) {
@@ -70,7 +72,7 @@ impl Default for TransferConfig {
         Self {
             chunk_size: CHUNK_SIZE,
             workers: TRANSFER_CONCURRENCY,
-            file_workers: 4,
+            file_workers: 1,
             retries: 3,
             retry_backoff_ms: 250,
         }
@@ -175,7 +177,7 @@ pub fn pbkdf2_login(password: &str, salt: &str) -> ([u8; 64], String) {
     pbkdf2_hmac::<Sha512>(password.as_bytes(), salt.as_bytes(), 200_000, &mut raw);
     let derived = hex::encode(raw);
     let mut h = Sha512::new();
-    h.update(derived[64..].as_bytes());
+    h.update(&derived.as_bytes()[64..]);
     (raw, hex::encode(h.finalize()))
 }
 
@@ -1226,7 +1228,7 @@ impl FilenNativeClient {
         } else {
             let (raw, p) = pbkdf2_login(password, &auth.salt);
             let derived = hex::encode(raw);
-            (p, Some(derived[..64].as_bytes().to_vec()), None, None)
+            (p, Some(derived.as_bytes()[..64].to_vec()), None, None)
         };
         let mut login_body = serde_json::json!({
             "email": email,
@@ -2815,14 +2817,14 @@ fn download_chunk_request(
 
 fn decode_file_key(value: &str) -> Result<[u8; 32]> {
     if value.len() == 64 {
-        return Ok(hex::decode(value)?
+        return hex::decode(value)?
             .try_into()
-            .map_err(|_| anyhow!("invalid file key"))?);
+            .map_err(|_| anyhow!("invalid file key"));
     }
-    Ok(value
+    value
         .as_bytes()
         .try_into()
-        .map_err(|_| anyhow!("invalid v2 file key"))?)
+        .map_err(|_| anyhow!("invalid v2 file key"))
 }
 
 fn glob_match(pattern: &str, value: &str) -> bool {
@@ -3182,7 +3184,7 @@ mod tests {
                 "root",
                 "two-chunks.bin",
                 "application/octet-stream",
-                &vec![7; 16],
+                &[7; 16],
             )
             .unwrap();
         assert_eq!(active.load(Ordering::SeqCst), 0);

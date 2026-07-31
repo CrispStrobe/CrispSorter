@@ -1,4 +1,7 @@
-# crisp-internxt-native
+# crisp-internxt
+
+> **Unofficial community client.** This is not an official Internxt product
+> and is not affiliated with or endorsed by Internxt.
 
 Purpose-built native Internxt Cloud Drive protocol client for CrispSorter.
 
@@ -15,7 +18,7 @@ chunking, resume, and the sync adapter shape this app needs.
 Build and run the offline protocol check:
 
 ```sh
-cargo run -p crisp-internxt-native -- crypto-vector
+cargo run -p crisp-internxt -- crypto-vector
 ```
 
 For live testing, provide the password through stdin and choose an explicit
@@ -24,6 +27,6 @@ mnemonic; protect or remove them after testing:
 
 ```sh
 printf '%s\n' "$INTERNXT_PASSWORD" \
-  | cargo run -p crisp-internxt-native -- login user@example.com --session /tmp/internxt-session.json
-cargo run -p crisp-internxt-native -- list /tmp/internxt-session.json .
+  | cargo run -p crisp-internxt -- login user@example.com --session /tmp/internxt-session.json
+cargo run -p crisp-internxt -- list /tmp/internxt-session.json .
 ```

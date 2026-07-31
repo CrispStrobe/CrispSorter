@@ -1,4 +1,4 @@
-use crisp_internxt_native::{crypt, InternxtNativeClient, InternxtSession};
+use crisp_internxt::{crypt, InternxtNativeClient, InternxtSession};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -296,6 +296,7 @@ fn interrupted_multipart_upload_reuses_checkpoint_and_skips_completed_parts() {
     std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(true)
         .open(&path)
         .unwrap()
         .set_len(100 * 1024 * 1024 + 1)

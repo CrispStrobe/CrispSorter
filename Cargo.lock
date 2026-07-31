@@ -2207,7 +2207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crisp-internxt-native"
+name = "crisp-internxt"
 version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
@@ -2314,7 +2314,7 @@ dependencies = [
  "crisp-docx-llm",
  "crisp-filen",
  "crisp-index-protocol",
- "crisp-internxt-native",
+ "crisp-internxt",
  "crispasr",
  "crispasr-sys",
  "crispcat",
