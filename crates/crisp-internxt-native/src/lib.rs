@@ -342,6 +342,40 @@ impl InternxtNativeClient {
         })
     }
 
+    /// Refresh an expiring session without re-entering the password. The
+    /// returned session keeps the existing account/mnemonic fields and only
+    /// replaces the bearer tokens returned by `/users/refresh`.
+    pub fn refresh_session(&self, session: &InternxtSession) -> Result<InternxtSession> {
+        let url = format!("{}/users/refresh", self.base_url);
+        let token = if session.new_token.is_empty() {
+            &session.token
+        } else {
+            &session.new_token
+        };
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(token)
+            .header("content-type", "application/json")
+            .header("internxt-client", "cli")
+            .send()
+            .context("refreshing Internxt session")?;
+        let value = self.json_response(response, &url)?;
+        let mut refreshed = session.clone();
+        refreshed.token = value
+            .get("token")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&session.token)
+            .to_owned();
+        refreshed.new_token = value
+            .get("newToken")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("token").and_then(|v| v.as_str()))
+            .ok_or_else(|| anyhow!("Internxt refresh response has no token"))?
+            .to_owned();
+        Ok(refreshed)
+    }
+
     fn list_page(&self, folder_uuid: &str, kind: &str, offset: usize) -> Result<Vec<NativeItem>> {
         let url = format!("{}/folders/content/{}/{}", self.base_url, folder_uuid, kind);
         let mut url = reqwest::Url::parse(&url).context("building Internxt listing URL")?;
@@ -704,6 +738,55 @@ impl InternxtNativeClient {
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
             return Err(anyhow!("Internxt trash endpoint returned {status}: {body}"));
+        }
+        Ok(())
+    }
+
+    pub fn move_file(&self, uuid: &str, destination_folder_uuid: &str) -> Result<()> {
+        self.move_item(uuid, destination_folder_uuid, "files")
+    }
+
+    pub fn move_folder(&self, uuid: &str, destination_folder_uuid: &str) -> Result<()> {
+        self.move_item(uuid, destination_folder_uuid, "folders")
+    }
+
+    fn move_item(&self, uuid: &str, destination_folder_uuid: &str, kind: &str) -> Result<()> {
+        let url = format!("{}/{}/{uuid}", self.base_url, kind);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "destinationFolder": destination_folder_uuid
+        }))?;
+        let response = self.bearer_request(reqwest::Method::PATCH, &url, body)?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!("Internxt move endpoint returned {status}: {body}"));
+        }
+        Ok(())
+    }
+
+    pub fn rename_file(&self, uuid: &str, plain_name: &str, file_type: &str) -> Result<()> {
+        let url = format!("{}/files/{uuid}/meta", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "plainName": plain_name,
+            "type": file_type
+        }))?;
+        let response = self.bearer_request(reqwest::Method::PUT, &url, body)?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!("Internxt file rename returned {status}: {body}"));
+        }
+        Ok(())
+    }
+
+    pub fn rename_folder(&self, uuid: &str, plain_name: &str) -> Result<()> {
+        let url = format!("{}/folders/{uuid}/meta", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({ "plainName": plain_name }))?;
+        let response = self.bearer_request(reqwest::Method::PUT, &url, body)?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!("Internxt folder rename returned {status}: {body}"));
         }
         Ok(())
     }

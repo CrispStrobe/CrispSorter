@@ -253,3 +253,52 @@ pub async fn drive_native_logout(
     }
     super::secret::delete_session(&drive_id).map_err(|error| error.to_string())
 }
+
+/// Refresh the bearer tokens for a keychain-backed native Internxt session.
+#[tauri::command]
+pub async fn drive_native_refresh(
+    state: State<'_, AppState>,
+    drive_id: String,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg
+        .drives
+        .iter()
+        .find(|drive| drive.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    if config.kind != DriveType::Internxt {
+        return Err("native Internxt refresh requires an Internxt drive".to_owned());
+    }
+
+    #[cfg(feature = "drive-internxt-native")]
+    {
+        let serialized = super::secret::get_session(&drive_id)
+            .map_err(|error| format!("reading native Internxt session failed: {error:#}"))?
+            .ok_or_else(|| "no native Internxt session is stored".to_owned())?;
+        let session = super::internxt_native::InternxtSession::decode(&serialized)
+            .map_err(|error| format!("parsing native Internxt session failed: {error:#}"))?;
+        let client = super::internxt_native::InternxtNativeClient::new(
+            &session.drive_api_url,
+            &session.token,
+        )
+        .map_err(|error| format!("creating native Internxt client failed: {error:#}"))?;
+        let refreshed = client
+            .refresh_session(&session)
+            .map_err(|error| format!("refreshing native Internxt session failed: {error:#}"))?;
+        let serialized = refreshed
+            .encode()
+            .map_err(|error| format!("serializing native Internxt session failed: {error:#}"))?;
+        super::secret::set_session(&drive_id, &serialized)
+            .map_err(|error| format!("storing native Internxt session failed: {error:#}"))
+    }
+    #[cfg(not(feature = "drive-internxt-native"))]
+    {
+        Err("native Internxt support is not enabled in this build".to_owned())
+    }
+}

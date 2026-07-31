@@ -29,6 +29,8 @@ enum Command {
         #[arg(long, short)]
         session: PathBuf,
     },
+    /// Refresh bearer tokens in an existing explicit session file.
+    Refresh { session: PathBuf },
     /// List the contents of a remote folder path.
     List {
         session: PathBuf,
@@ -49,6 +51,18 @@ enum Command {
     },
     /// Move a remote file or folder to trash.
     Delete { session: PathBuf, remote: PathBuf },
+    /// Move a remote file or folder into another remote folder.
+    Move {
+        session: PathBuf,
+        remote: PathBuf,
+        destination: PathBuf,
+    },
+    /// Rename a remote file or folder in place.
+    Rename {
+        session: PathBuf,
+        remote: PathBuf,
+        name: String,
+    },
     /// Print deterministic protocol vectors without contacting Internxt.
     CryptoVector,
 }
@@ -85,6 +99,12 @@ fn run() -> Result<()> {
                 value.email,
                 session.display()
             );
+        }
+        Command::Refresh { session } => {
+            let (client, value) = open(&session)?;
+            let refreshed = client.refresh_session(&value)?;
+            write_session(&session, &refreshed)?;
+            println!("session refreshed: {}", session.display());
         }
         Command::List { session, path } => {
             let (client, value) = open(&session)?;
@@ -142,6 +162,37 @@ fn run() -> Result<()> {
             let item = client.resolve_path(&value, &remote)?;
             client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })?;
             println!("trashed {}", remote.display());
+        }
+        Command::Move {
+            session,
+            remote,
+            destination,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            let target = client.resolve_path(&value, &destination)?;
+            anyhow::ensure!(target.is_dir, "move destination is not a folder");
+            if item.is_dir {
+                client.move_folder(&item.uuid, &target.uuid)?;
+            } else {
+                client.move_file(&item.uuid, &target.uuid)?;
+            }
+            println!("moved {} into {}", remote.display(), destination.display());
+        }
+        Command::Rename {
+            session,
+            remote,
+            name,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            if item.is_dir {
+                client.rename_folder(&item.uuid, &name)?;
+            } else {
+                let (stem, ext) = split_name(&name);
+                client.rename_file(&item.uuid, stem, ext)?;
+            }
+            println!("renamed {} to {}", remote.display(), name);
         }
         Command::CryptoVector => {
             let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
