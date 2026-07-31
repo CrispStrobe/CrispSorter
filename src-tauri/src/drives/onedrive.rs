@@ -17,6 +17,7 @@ const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
 
 pub struct OneDriveDrive {
     label: String,
+    graph_base: String,
     access_token: String,
     _refresh_token: Option<String>,
     _client_id: Option<String>,
@@ -32,8 +33,20 @@ impl OneDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
+        Self::with_graph_base(label, access_token, refresh_token, client_id, client_secret, GRAPH_BASE)
+    }
+
+    fn with_graph_base(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        graph_base: impl Into<String>,
+    ) -> Self {
         Self {
             label,
+            graph_base: graph_base.into(),
             access_token,
             _refresh_token: refresh_token,
             _client_id: client_id,
@@ -45,11 +58,11 @@ impl OneDriveDrive {
     fn graph_url(&self, path: &Path) -> String {
         let rel = path.to_string_lossy();
         if rel.is_empty() || rel == "." || rel == "/" {
-            format!("{}/me/drive/root/children", GRAPH_BASE)
+            format!("{}/me/drive/root/children", self.graph_base)
         } else {
             // Encode path for Graph API — colons delimit the path segment
             let clean = rel.trim_start_matches('/');
-            format!("{}/me/drive/root:/{}:/children", GRAPH_BASE, clean)
+            format!("{}/me/drive/root:/{}:/children", self.graph_base, clean)
         }
     }
 
@@ -57,9 +70,9 @@ impl OneDriveDrive {
         let rel = path.to_string_lossy();
         let clean = rel.trim_start_matches('/');
         if clean.is_empty() || clean == "." {
-            format!("{}/me/drive/root", GRAPH_BASE)
+            format!("{}/me/drive/root", self.graph_base)
         } else {
-            format!("{}/me/drive/root:/{}", GRAPH_BASE, clean)
+            format!("{}/me/drive/root:/{}", self.graph_base, clean)
         }
     }
 
@@ -129,7 +142,7 @@ impl CloudDrive for OneDriveDrive {
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
         let rel = path.to_string_lossy();
         let clean = rel.trim_start_matches('/');
-        let url = format!("{}/me/drive/root:/{}:/content", GRAPH_BASE, clean);
+        let url = format!("{}/me/drive/root:/{}:/content", self.graph_base, clean);
 
         let resp = self
             .client
@@ -319,6 +332,7 @@ pub fn chrono_parse_iso8601(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
 
     #[test]
     fn iso8601_parse() {
@@ -368,5 +382,29 @@ mod tests {
             d.share_link_url(Path::new("Documents/report.pdf")),
             "https://graph.microsoft.com/v1.0/me/drive/root:/Documents/report.pdf/createLink"
         );
+    }
+
+    #[test]
+    fn share_link_posts_graph_create_link_and_returns_web_url() {
+        let mut server = Server::new();
+        let mock = server
+            .mock("POST", "/v1.0/me/drive/root:/report.pdf/createLink")
+            .match_header("authorization", "Bearer tok")
+            .with_status(200)
+            .with_body(r#"{"link":{"webUrl":"https://onedrive.example/s/abc"}}"#)
+            .create();
+        let drive = OneDriveDrive::with_graph_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/v1.0", server.url()),
+        );
+        assert_eq!(
+            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            Some("https://onedrive.example/s/abc")
+        );
+        mock.assert();
     }
 }

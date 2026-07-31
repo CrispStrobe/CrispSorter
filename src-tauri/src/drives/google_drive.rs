@@ -18,6 +18,7 @@ const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
 
 pub struct GoogleDriveDrive {
     label: String,
+    api_base: String,
     access_token: String,
     _refresh_token: Option<String>,
     _client_id: Option<String>,
@@ -33,8 +34,20 @@ impl GoogleDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
+        Self::with_api_base(label, access_token, refresh_token, client_id, client_secret, API_BASE)
+    }
+
+    fn with_api_base(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        api_base: impl Into<String>,
+    ) -> Self {
         Self {
             label,
+            api_base: api_base.into(),
             access_token,
             _refresh_token: refresh_token,
             _client_id: client_id,
@@ -67,7 +80,7 @@ impl GoogleDriveDrive {
             );
             let url = format!(
                 "{}/files?q={}&fields=files(id,name)&pageSize=1",
-                API_BASE,
+                self.api_base,
                 encode_query_param(&q)
             );
             let resp = self
@@ -121,7 +134,7 @@ impl CloudDrive for GoogleDriveDrive {
         let q = format!("'{}' in parents and trashed = false", folder_id);
         let url = format!(
             "{}/files?q={}&fields=files(id,name,mimeType,size)&pageSize=1000",
-            API_BASE,
+            self.api_base,
             encode_query_param(&q)
         );
 
@@ -277,7 +290,7 @@ impl CloudDrive for GoogleDriveDrive {
         let file_id = self.resolve_id(path)?;
         let permission_url = format!(
             "{}/files/{}/permissions?fields=id",
-            API_BASE, file_id
+            self.api_base, file_id
         );
         let resp = self
             .client
@@ -296,7 +309,7 @@ impl CloudDrive for GoogleDriveDrive {
 
         let metadata_url = format!(
             "{}/files/{}?fields=webViewLink",
-            API_BASE, file_id
+            self.api_base, file_id
         );
         let resp = self
             .client
@@ -431,6 +444,7 @@ fn encode_query_param(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
 
     #[test]
     fn resolve_root() {
@@ -455,5 +469,43 @@ mod tests {
             format!("{}/files/id/permissions?fields=id", API_BASE),
             "https://www.googleapis.com/drive/v3/files/id/permissions?fields=id"
         );
+    }
+
+    #[test]
+    fn share_link_uses_permission_and_metadata_endpoints() {
+        let mut server = Server::new();
+        let list = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"file-1","name":"report.pdf"}]}"#)
+            .create();
+        let permission = server
+            .mock("POST", "/drive/v3/files/file-1/permissions")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"{"id":"anyoneWithLink"}"#)
+            .create();
+        let metadata = server
+            .mock("GET", "/drive/v3/files/file-1")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"{"webViewLink":"https://drive.example/file-1"}"#)
+            .create();
+        let drive = GoogleDriveDrive::with_api_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/drive/v3", server.url()),
+        );
+        assert_eq!(
+            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            Some("https://drive.example/file-1")
+        );
+        list.assert();
+        permission.assert();
+        metadata.assert();
     }
 }
