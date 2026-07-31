@@ -8,13 +8,83 @@
 
 use aes::Aes256;
 use anyhow::{anyhow, Context, Result};
-use cipher::{KeyIvInit, StreamCipher};
+use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
 use ctr::Ctr128BE;
+use md5::{Digest as Md5Digest, Md5};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha512};
 
 type Aes256Ctr = Ctr128BE<Aes256>;
+type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+type Aes256CbcDec = cbc::Decryptor<Aes256>;
+
+const OPENSSL_MAGIC: &[u8; 8] = b"Salted__";
+
+/// OpenSSL's legacy EVP_BytesToKey derivation with MD5, as used by the
+/// Internxt CLI for the `/auth/login` salt and password-hash envelope.
+fn evp_bytes_to_key(secret: &[u8], salt: &[u8; 8]) -> ([u8; 32], [u8; 16]) {
+    let mut material = Vec::with_capacity(48);
+    let mut previous = Vec::new();
+    while material.len() < 48 {
+        let mut digest = Md5::new();
+        digest.update(&previous);
+        digest.update(secret);
+        digest.update(salt);
+        previous = digest.finalize().to_vec();
+        material.extend_from_slice(&previous);
+    }
+    let mut key = [0u8; 32];
+    let mut iv = [0u8; 16];
+    key.copy_from_slice(&material[..32]);
+    iv.copy_from_slice(&material[32..48]);
+    (key, iv)
+}
+
+/// Encrypt text in the hex-encoded `Salted__` envelope used by Internxt.
+pub fn encrypt_text(text: &[u8], secret: &str) -> Result<String> {
+    let mut salt = [0u8; 8];
+    getrandom::getrandom(&mut salt).context("generating Internxt crypto salt")?;
+    let (key, iv) = evp_bytes_to_key(secret.as_bytes(), &salt);
+    let mut ciphertext = vec![0u8; text.len() + 16];
+    let encrypted = Aes256CbcEnc::new((&key).into(), (&iv).into())
+        .encrypt_padded_b2b_mut::<Pkcs7>(text, &mut ciphertext)
+        .map_err(|_| anyhow!("Internxt AES-CBC encryption failed"))?;
+    let mut envelope = Vec::with_capacity(16 + encrypted.len());
+    envelope.extend_from_slice(OPENSSL_MAGIC);
+    envelope.extend_from_slice(&salt);
+    envelope.extend_from_slice(encrypted);
+    Ok(hex::encode(envelope))
+}
+
+/// Decrypt an Internxt `Salted__` envelope.
+pub fn decrypt_text(encoded: &str, secret: &str) -> Result<Vec<u8>> {
+    let envelope = hex::decode(encoded).context("decoding Internxt encrypted text")?;
+    if envelope.len() < 16 || &envelope[..8] != OPENSSL_MAGIC {
+        return Err(anyhow!("invalid Internxt encrypted text envelope"));
+    }
+    let salt: [u8; 8] = envelope[8..16]
+        .try_into()
+        .expect("validated eight-byte salt");
+    let (key, iv) = evp_bytes_to_key(secret.as_bytes(), &salt);
+    let mut plaintext = envelope[16..].to_vec();
+    let decrypted = Aes256CbcDec::new((&key).into(), (&iv).into())
+        .decrypt_padded_mut::<Pkcs7>(&mut plaintext)
+        .map_err(|_| anyhow!("Internxt AES-CBC decryption failed"))?;
+    Ok(decrypted.to_vec())
+}
+
+/// Complete password transport step after `/auth/login` returns `sKey`.
+pub fn login_password_payload(
+    password: &str,
+    encrypted_salt: &str,
+    app_secret: &str,
+) -> Result<String> {
+    let salt = String::from_utf8(decrypt_text(encrypted_salt, app_secret)?)
+        .context("Internxt login salt is not UTF-8")?;
+    let hash = password_hash(password, &salt)?;
+    encrypt_text(hash.as_bytes(), app_secret)
+}
 
 /// Derive the 64-byte BIP-39 seed for a mnemonic and optional passphrase.
 ///
@@ -201,6 +271,28 @@ mod tests {
         assert_eq!(
             password_hash("password123", "00112233445566778899aabbccddeeff").unwrap(),
             "c1248c09f33f02499054008e59e28207367eae453a09b4c49a1df4c2d1b516c8"
+        );
+    }
+
+    #[test]
+    fn openssl_envelope_round_trips_and_has_magic_header() {
+        let encrypted = encrypt_text("unicode ✓".as_bytes(), "6KYQBP847D4ATSFA").unwrap();
+        assert!(encrypted.starts_with("53616c7465645f5f"));
+        assert_eq!(
+            decrypt_text(&encrypted, "6KYQBP847D4ATSFA").unwrap(),
+            "unicode ✓".as_bytes()
+        );
+    }
+
+    #[test]
+    fn login_password_payload_decrypts_to_derived_hash() {
+        let secret = "6KYQBP847D4ATSFA";
+        let encrypted_salt = encrypt_text(b"00112233445566778899aabbccddeeff", secret).unwrap();
+        let payload = login_password_payload("password123", &encrypted_salt, secret).unwrap();
+        let hash = decrypt_text(&payload, secret).unwrap();
+        assert_eq!(
+            hash,
+            b"c1248c09f33f02499054008e59e28207367eae453a09b4c49a1df4c2d1b516c8"
         );
     }
 
