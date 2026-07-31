@@ -21,7 +21,9 @@ cross-checks.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
   byte ranges, direct-to-writer streaming, and post-transfer hash
-  verification. `get_file` fetches and decrypts one file's metadata without a
+  verification. `upload_file_from_reader` avoids buffering a complete upload,
+  while the `_with_progress` upload/download variants report `(completed,
+  total)` bytes. `get_file` fetches and decrypts one file's metadata without a
   parent listing.
 
 ## Supported mutations
@@ -34,8 +36,8 @@ are accepted for successful empty mutations.
 ## Verification
 
 Hermetic tests exercise gateway parsing, cache invalidation, retries,
-concurrency ceilings, wildcard search, resumable gaps, range downloads, and
-crypto vectors. The ignored live suite uses unique folders and verifies both
+concurrency ceilings, wildcard search, resumable gaps, reader uploads,
+streaming/progress downloads, range downloads, and crypto vectors. The ignored live suite uses unique folders and verifies both
 directions with `../filen-python`:
 
 ```bash

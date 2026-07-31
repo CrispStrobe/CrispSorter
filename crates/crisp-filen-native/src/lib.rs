@@ -1324,6 +1324,139 @@ impl FilenNativeClient {
         Ok(())
     }
 
+    /// Upload from a reader without requiring the complete plaintext in memory.
+    /// `size` must be the exact number of plaintext bytes available from the reader.
+    pub fn upload_file_from_reader<R: std::io::Read>(
+        &self,
+        parent: &str,
+        name: &str,
+        mime: &str,
+        size: u64,
+        reader: R,
+    ) -> Result<()> {
+        self.upload_file_from_reader_with_progress(parent, name, mime, size, reader, |_, _| {})
+    }
+
+    /// Reader-based upload with `(completed_bytes, total_bytes)` progress.
+    pub fn upload_file_from_reader_with_progress<R: std::io::Read, F: FnMut(u64, u64)>(
+        &self,
+        parent: &str,
+        name: &str,
+        mime: &str,
+        size: u64,
+        mut reader: R,
+        mut progress: F,
+    ) -> Result<()> {
+        let size_usize = usize::try_from(size).context("Filen upload is too large")?;
+        let (key, key_string) = self.new_file_key()?;
+        let uuid = random_uuid();
+        let upload_key = random_uuid().replace('-', "");
+        let chunks = size_usize.div_ceil(self.transfer_config.chunk_size);
+        let mut hasher = blake3::Hasher::new();
+        let mut uploaded_bytes = 0u64;
+
+        if size_usize == 0 {
+            let metadata = serde_json::json!({
+                "name": name,
+                "size": 0,
+                "mime": mime,
+                "key": key_string,
+                "creation": chrono::Utc::now().timestamp_millis(),
+                "lastModified": chrono::Utc::now().timestamp_millis(),
+                "blake3": blake3::hash(b"").to_hex().to_string()
+            })
+            .to_string();
+            let _: serde_json::Value = self.request(
+                reqwest::Method::POST,
+                format!("{}/v3/upload/empty", self.gateway_url),
+                Some(serde_json::json!({
+                    "uuid": uuid,
+                    "name": self.encrypt_metadata(name)?,
+                    "nameHashed": self.hash_name(name)?,
+                    "size": self.encrypt_metadata("0")?,
+                    "parent": parent,
+                    "mime": self.encrypt_metadata(mime)?,
+                    "metadata": self.encrypt_metadata(&metadata)?,
+                    "version": if self.mode == CryptoMode::V3 { 3 } else { 2 }
+                })),
+            )?;
+            progress(0, size);
+            self.invalidate_listings();
+            return Ok(());
+        }
+
+        let mut bucket = String::new();
+        let mut region = String::new();
+        for index in 0..chunks {
+            let wanted = self
+                .transfer_config
+                .chunk_size
+                .min(size_usize - uploaded_bytes as usize);
+            let mut plain = vec![0u8; wanted];
+            let mut read = 0;
+            while read < wanted {
+                let count = reader.read(&mut plain[read..])?;
+                anyhow::ensure!(count > 0, "Filen upload reader ended before declared size");
+                read += count;
+            }
+            hasher.update(&plain);
+            let mut nonce = [0u8; 12];
+            getrandom::getrandom(&mut nonce)?;
+            let encrypted = encrypt_file_chunk(&plain, &key, nonce)?;
+            let hash = hex::encode(Sha512::digest(&encrypted));
+            let value = upload_chunk_request(
+                &self.http,
+                &self.api_key,
+                format!(
+                    "{}/v3/upload?uuid={uuid}&index={index}&parent={parent}&uploadKey={upload_key}&hash={hash}",
+                    self.ingest_url
+                ),
+                &encrypted,
+                self.transfer_config.retries,
+                self.transfer_config.retry_backoff_ms,
+            )?;
+            bucket = value.bucket;
+            region = value.region;
+            uploaded_bytes += read as u64;
+            progress(uploaded_bytes, size);
+        }
+        anyhow::ensure!(
+            reader.read(&mut [0u8; 1])? == 0,
+            "Filen upload reader has extra data"
+        );
+        let metadata = serde_json::json!({
+            "name": name,
+            "size": size,
+            "mime": mime,
+            "key": key_string,
+            "creation": chrono::Utc::now().timestamp_millis(),
+            "lastModified": chrono::Utc::now().timestamp_millis(),
+            "blake3": hasher.finalize().to_hex().to_string()
+        })
+        .to_string();
+        let _: serde_json::Value = self.request(
+            reqwest::Method::POST,
+            format!("{}/v3/upload/done", self.gateway_url),
+            Some(serde_json::json!({
+                "uuid": uuid,
+                "name": self.encrypt_metadata(name)?,
+                "nameHashed": self.hash_name(name)?,
+                "size": self.encrypt_metadata(&size.to_string())?,
+                "parent": parent,
+                "mime": self.encrypt_metadata(mime)?,
+                "metadata": self.encrypt_metadata(&metadata)?,
+                "version": if self.mode == CryptoMode::V3 { 3 } else { 2 },
+                "chunks": chunks,
+                "rm": "0",
+                "uploadKey": upload_key,
+                "bucket": bucket,
+                "region": region
+            })),
+        )?;
+        self.invalidate_listings();
+        Ok(())
+    }
+
     fn upload_chunks(
         &self,
         uuid: &str,
@@ -1451,6 +1584,22 @@ impl FilenNativeClient {
         self.download_chunks_to_writer(item, 0, item.chunks.max(1) as usize, writer)
     }
 
+    /// Streaming download with `(completed_bytes, total_bytes)` progress.
+    pub fn download_file_to_writer_with_progress<W: Write, F: FnMut(u64, u64)>(
+        &self,
+        item: &NativeItem,
+        writer: &mut W,
+        mut progress: F,
+    ) -> Result<u64> {
+        self.download_chunks_to_writer_with_progress(
+            item,
+            0,
+            item.chunks.max(1) as usize,
+            writer,
+            Some(&mut progress),
+        )
+    }
+
     /// Download only the byte range requested. Only the necessary encrypted
     /// chunks are fetched; the first and last plaintext chunks are trimmed
     /// after authenticated decryption.
@@ -1499,6 +1648,17 @@ impl FilenNativeClient {
         start_chunk: usize,
         end_chunk: usize,
         writer: &mut W,
+    ) -> Result<u64> {
+        self.download_chunks_to_writer_with_progress(item, start_chunk, end_chunk, writer, None)
+    }
+
+    fn download_chunks_to_writer_with_progress<W: Write>(
+        &self,
+        item: &NativeItem,
+        start_chunk: usize,
+        end_chunk: usize,
+        writer: &mut W,
+        mut progress: Option<&mut dyn FnMut(u64, u64)>,
     ) -> Result<u64> {
         let key = item
             .file_key
@@ -1566,6 +1726,9 @@ impl FilenNativeClient {
                 let take = chunk.len().min(remaining as usize);
                 writer.write_all(&chunk[..take])?;
                 written += take as u64;
+                if let Some(progress) = progress.as_mut() {
+                    progress(written, item.size);
+                }
             }
             Ok(written)
         })?;
@@ -2214,5 +2377,87 @@ mod tests {
             5
         );
         assert_eq!(output, b"hello");
+    }
+
+    #[test]
+    fn reader_upload_streams_chunks_and_reports_progress() {
+        let gateway = spawn_status_server(vec![
+            (
+                200,
+                r#"{"status":true,"data":{"bucket":"b","region":"r"}}"#.into(),
+            ),
+            (
+                200,
+                r#"{"status":true,"data":{"bucket":"b","region":"r"}}"#.into(),
+            ),
+            (
+                200,
+                r#"{"status":true,"data":{"bucket":"b","region":"r"}}"#.into(),
+            ),
+            (200, r#"{"status":true,"data":{}}"#.into()),
+        ]);
+        let mut session = test_session(gateway.clone());
+        session.ingest_url = gateway.clone();
+        let client = FilenNativeClient::from_session_with_config(
+            &session,
+            TransferConfig {
+                chunk_size: 4,
+                workers: 1,
+                file_workers: 1,
+                retries: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut progress = Vec::new();
+        client
+            .upload_file_from_reader_with_progress(
+                "root",
+                "reader.bin",
+                "application/octet-stream",
+                9,
+                std::io::Cursor::new(b"123456789"),
+                |done, total| progress.push((done, total)),
+            )
+            .unwrap();
+        assert_eq!(progress, vec![(4, 9), (8, 9), (9, 9)]);
+    }
+
+    #[test]
+    fn streaming_download_reports_final_progress() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            hash: String::new(),
+            chunks: 1,
+            bucket: "bucket".into(),
+            region: "region".into(),
+            version: 2,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+        };
+        let mut output = Vec::new();
+        let mut progress = Vec::new();
+        assert_eq!(
+            client
+                .download_file_to_writer_with_progress(&item, &mut output, |done, total| {
+                    progress.push((done, total))
+                })
+                .unwrap(),
+            5
+        );
+        assert_eq!(output, b"hello");
+        assert_eq!(progress.last(), Some(&(5, 5)));
     }
 }

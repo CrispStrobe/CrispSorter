@@ -2412,7 +2412,8 @@ a trap:
   download concurrency, ordered reassembly, request timeouts, and cache
   invalidation after mutations. `TransferConfig` exposes chunk size, worker
   count, file-worker count, retry count, and exponential retry backoff to Rust
-  consumers. Batch transfer APIs, true range downloads, and serializable
+  consumers. Reader-based uploads and writer-based downloads expose progress
+  callbacks without requiring whole-file buffering. Batch transfer APIs, true range downloads, and serializable
   resumable upload state (UUID/upload key/file key/completed chunks) are also
   covered by the native client. Vendor filename-hash vectors from the MIT Go
   SDK's `crypto_test.go` are pinned in the Rust unit suite.
