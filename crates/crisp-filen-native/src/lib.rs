@@ -326,6 +326,12 @@ pub struct UploadJob {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DownloadPathJob {
+    pub item: NativeItem,
+    pub local_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchConflictPolicy {
     Fail,
@@ -2107,6 +2113,105 @@ impl FilenNativeClient {
                 .collect()
         })
     }
+
+    /// Batch path download with durable per-file state and explicit local
+    /// conflict handling. Completed jobs are omitted on retry.
+    pub fn download_paths_resumable<F: FnMut(usize, usize)>(
+        &self,
+        jobs: Vec<DownloadPathJob>,
+        state_path: &Path,
+        conflict: BatchConflictPolicy,
+        mut progress: F,
+    ) -> Result<()> {
+        let mut state = Self::load_batch_transfer_state(state_path)?.unwrap_or_default();
+        anyhow::ensure!(state.version == 1, "unsupported Filen batch state version");
+        state.completed.sort_unstable();
+        Self::save_batch_transfer_state(state_path, &state)?;
+        let shared_state = Arc::new(Mutex::new(state));
+        let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
+        let total = jobs.len();
+        let jobs = jobs.as_slice();
+        let next = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        let state_path = state_path.to_owned();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let next = Arc::clone(&next);
+                let sender = sender.clone();
+                let shared_state = Arc::clone(&shared_state);
+                let state_path = state_path.clone();
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= jobs.len() {
+                        break;
+                    }
+                    let job = &jobs[index];
+                    let key = job.item.uuid.clone();
+                    let result = (|| {
+                        {
+                            let state = shared_state
+                                .lock()
+                                .map_err(|_| anyhow!("batch state poisoned"))?;
+                            if state.completed.binary_search(&key).is_ok() {
+                                return Ok(());
+                            }
+                        }
+                        if job.local_path.exists() {
+                            match conflict {
+                                BatchConflictPolicy::Fail => {
+                                    return Err(anyhow!(
+                                        "Filen local batch conflict at {}",
+                                        job.local_path.display()
+                                    ));
+                                }
+                                BatchConflictPolicy::Skip => {}
+                                BatchConflictPolicy::Replace => {
+                                    if job.local_path.is_dir() {
+                                        std::fs::remove_dir_all(&job.local_path)?;
+                                    } else {
+                                        std::fs::remove_file(&job.local_path)?;
+                                    }
+                                }
+                            }
+                            if conflict == BatchConflictPolicy::Skip {
+                                let mut state = shared_state
+                                    .lock()
+                                    .map_err(|_| anyhow!("batch state poisoned"))?;
+                                if state.completed.binary_search(&key).is_err() {
+                                    state.completed.push(key.clone());
+                                    state.completed.sort_unstable();
+                                    Self::save_batch_transfer_state(&state_path, &state)?;
+                                }
+                                return Ok(());
+                            }
+                        }
+                        self.download_path(&job.item, &job.local_path)?;
+                        let mut state = shared_state
+                            .lock()
+                            .map_err(|_| anyhow!("batch state poisoned"))?;
+                        if state.completed.binary_search(&key).is_err() {
+                            state.completed.push(key);
+                            state.completed.sort_unstable();
+                            Self::save_batch_transfer_state(&state_path, &state)?;
+                        }
+                        Ok(())
+                    })();
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(sender);
+            let mut completed = 0;
+            for result in receiver {
+                result?;
+                completed += 1;
+                progress(completed, total);
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Self::clear_batch_transfer_state(&state_path)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2977,5 +3082,49 @@ mod tests {
         let destination = local.path().join("nested/file.txt");
         client.download_path(&item, &destination).unwrap();
         assert_eq!(std::fs::read(destination).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn resumable_download_batch_streams_and_cleans_state() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "download-batch-file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            bucket: "bucket".into(),
+            region: "region".into(),
+            chunks: 1,
+            version: 2,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+            hash: String::new(),
+        };
+        let local = tempfile::tempdir().unwrap();
+        let state_path = local.path().join("batch.json");
+        let destination = local.path().join("file.txt");
+        let mut progress = Vec::new();
+        client
+            .download_paths_resumable(
+                vec![DownloadPathJob {
+                    item,
+                    local_path: destination.clone(),
+                }],
+                &state_path,
+                BatchConflictPolicy::Replace,
+                |done, total| progress.push((done, total)),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), b"hello");
+        assert_eq!(progress, vec![(1, 1)]);
+        assert!(!state_path.exists());
     }
 }

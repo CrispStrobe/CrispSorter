@@ -24,6 +24,7 @@ cross-checks.
   serialized file-completion progress for batch consumers.
   `upload_files_resumable` adds durable per-file batch state and explicit
   `BatchConflictPolicy::{Fail, Skip, Replace}` handling.
+  `download_paths_resumable` provides the symmetric local-path batch flow.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
   byte ranges, direct-to-writer streaming, and post-transfer hash
@@ -61,7 +62,7 @@ FILEN_EMAIL="$FILEN_LOGIN" FILEN_PASSWORD="$FILEN_PW" \
   -- --ignored --nocapture --test-threads=1
 ```
 
-Current suite counts: Rust native unit/hermetic tests 29 passing; Python
+Current suite counts: Rust native unit/hermetic tests 30 passing; Python
 suite 30 passing; Dart suite 244 passing with 3 expected live-suite skips when
 credentials are absent. The Rust live cross-client suite has 3 authenticated
 tests covering mutations and both transfer directions.
