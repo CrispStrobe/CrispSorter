@@ -334,6 +334,80 @@ pub struct TransferProgress {
 
 pub type ProgressCallback = Arc<dyn Fn(TransferProgress) + Send + Sync>;
 
+struct ProgressReader<R> {
+    inner: R,
+    path: PathBuf,
+    total_bytes: u64,
+    completed_bytes: u64,
+    callback: ProgressCallback,
+}
+
+impl<R> ProgressReader<R> {
+    fn new(inner: R, path: &str, total_bytes: u64, callback: ProgressCallback) -> Self {
+        Self {
+            inner,
+            path: PathBuf::from(path),
+            total_bytes,
+            completed_bytes: 0,
+            callback,
+        }
+    }
+}
+
+impl<R: Read> Read for ProgressReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.completed_bytes = self.completed_bytes.saturating_add(read as u64);
+        (self.callback)(TransferProgress {
+            path: self.path.clone(),
+            completed_bytes: self.completed_bytes,
+            total_bytes: self.total_bytes,
+            files_completed: u64::from(self.completed_bytes == self.total_bytes),
+            folders_completed: 0,
+        });
+        Ok(read)
+    }
+}
+
+struct ProgressWriter<W> {
+    inner: W,
+    path: PathBuf,
+    total_bytes: u64,
+    completed_bytes: u64,
+    callback: ProgressCallback,
+}
+
+impl<W> ProgressWriter<W> {
+    fn new(inner: W, path: &str, total_bytes: u64, callback: ProgressCallback) -> Self {
+        Self {
+            inner,
+            path: PathBuf::from(path),
+            total_bytes,
+            completed_bytes: 0,
+            callback,
+        }
+    }
+}
+
+impl<W: Write> Write for ProgressWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buffer)?;
+        self.completed_bytes = self.completed_bytes.saturating_add(written as u64);
+        (self.callback)(TransferProgress {
+            path: self.path.clone(),
+            completed_bytes: self.completed_bytes,
+            total_bytes: self.total_bytes,
+            files_completed: u64::from(self.completed_bytes == self.total_bytes),
+            folders_completed: 0,
+        });
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransferFilter {
     pub includes: Vec<String>,
@@ -587,6 +661,23 @@ struct EncryptReader<R> {
     cipher: Aes256Ctr,
     remaining: u64,
     hash: Arc<Mutex<Sha256>>,
+}
+
+struct HashingWriter<W> {
+    writer: W,
+    hash: Sha256,
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let written = self.writer.write(buffer)?;
+        self.hash.update(&buffer[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 impl<R: Read> Read for EncryptReader<R> {
@@ -1585,6 +1676,30 @@ impl InternxtNativeClient {
         Ok(())
     }
 
+    /// Upload from a reader and report byte-level progress after each source
+    /// read. The callback is invoked synchronously on the calling thread.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upload_reader_with_progress<R: Read>(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        reader: R,
+        file_size: u64,
+        progress: ProgressCallback,
+    ) -> Result<()> {
+        let reader = ProgressReader::new(reader, plain_name, file_size, progress);
+        self.upload_reader(
+            session,
+            parent_folder_uuid,
+            plain_name,
+            file_type,
+            reader,
+            file_size,
+        )
+    }
+
     /// Stream a local file into Internxt without buffering the complete
     /// plaintext or ciphertext. Multipart parts are regenerated from the
     /// same CTR stream, retried independently, and checkpointed after each
@@ -2027,6 +2142,38 @@ impl InternxtNativeClient {
         }
         writer.flush().context("flushing decrypted Internxt file")?;
         Ok(total)
+    }
+
+    pub fn download_file_to_writer_verified<W: Write>(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        writer: W,
+    ) -> Result<(u64, String)> {
+        let mut hashing = HashingWriter {
+            writer,
+            hash: Sha256::new(),
+        };
+        let total = self.download_file_to_writer(session, file_uuid, &mut hashing)?;
+        Ok((total, hex::encode(hashing.hash.finalize())))
+    }
+
+    /// Download to a writer and report byte-level plaintext progress after
+    /// each successful write. The callback is invoked synchronously.
+    pub fn download_file_to_writer_with_progress<W: Write>(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        writer: W,
+        progress: ProgressCallback,
+    ) -> Result<u64> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let total = metadata
+            .get("size")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
+        let writer = ProgressWriter::new(writer, file_uuid, total, progress);
+        self.download_file_to_writer(session, file_uuid, writer)
     }
 
     pub fn download_file_to_path(
@@ -3310,6 +3457,25 @@ fn shard_hash(encrypted: &[u8]) -> String {
     hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha))
 }
 
+/// Return the lowercase SHA-256 digest commonly used by callers to verify
+/// plaintext before or after a transfer.
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(Sha256::digest(data))
+}
+
+/// Verify a plaintext SHA-256 digest and return a descriptive error on a
+/// mismatch. Provider shard hashes remain an internal wire concern.
+pub fn verify_sha256(data: &[u8], expected_hex: &str) -> Result<()> {
+    let actual = sha256_hex(data);
+    anyhow::ensure!(
+        actual.eq_ignore_ascii_case(expected_hex.trim()),
+        "Internxt content hash mismatch: expected {}, got {}",
+        expected_hex,
+        actual
+    );
+    Ok(())
+}
+
 fn item_name(item: &serde_json::Value, kind: &str) -> String {
     let plain_name = item
         .get("plainName")
@@ -3478,6 +3644,40 @@ mod tests {
             shard_hash(b"internxt shard"),
             "30b546838b1dfabb91afdde3cf09661657aee40d"
         );
+    }
+
+    #[test]
+    fn plaintext_hash_verification_is_case_insensitive() {
+        let digest = sha256_hex(b"verified content");
+        verify_sha256(b"verified content", &digest.to_uppercase()).unwrap();
+        assert!(verify_sha256(b"tampered content", &digest)
+            .unwrap_err()
+            .to_string()
+            .contains("content hash mismatch"));
+    }
+
+    #[test]
+    fn single_transfer_progress_wrappers_report_bytes() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let copy = Arc::clone(&seen);
+        let callback: ProgressCallback = Arc::new(move |progress| {
+            copy.lock().unwrap().push(progress);
+        });
+        let mut reader = ProgressReader::new(
+            std::io::Cursor::new(b"reader bytes".to_vec()),
+            "upload.bin",
+            12,
+            Arc::clone(&callback),
+        );
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer).unwrap();
+        let mut writer = ProgressWriter::new(Vec::new(), "download.bin", 14, Arc::clone(&callback));
+        writer.write_all(b"download bytes").unwrap();
+        let progress = seen.lock().unwrap();
+        assert_eq!(progress.first().unwrap().completed_bytes, 12);
+        assert_eq!(progress.last().unwrap().completed_bytes, 14);
+        assert_eq!(progress.last().unwrap().total_bytes, 14);
+        assert_eq!(progress.last().unwrap().files_completed, 1);
     }
 
     #[test]

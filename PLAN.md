@@ -2457,9 +2457,9 @@ a trap:
   - [x] Make multipart part size, retry count, backoff, timeout, and worker
     count configurable through a validated `TransferConfig`; keep serial
     multipart as the default and retain explicit concurrent workers.
-  - [>] Add persisted resumable download state and resumable recursive
+  - [x] Add persisted resumable download state and resumable recursive
     download state, not only resumable multipart upload state.
-  - [ ] Add end-to-end content/hash verification and byte-level progress
+  - [>] Add end-to-end content/hash verification and byte-level progress
     callbacks for single-file upload/download operations.
   - [ ] Add automatic expired-token detection, refresh, and one safe retry;
     preserve the explicit CLI `refresh` command.
