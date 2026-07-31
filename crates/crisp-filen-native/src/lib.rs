@@ -375,6 +375,11 @@ pub struct BatchTransferState {
     pub completed: Vec<String>,
 }
 
+enum ResumableUploadEvent {
+    Progress { index: usize, bytes: u64 },
+    Done { index: usize, result: Result<()> },
+}
+
 impl Default for BatchTransferState {
     fn default() -> Self {
         Self {
@@ -611,6 +616,24 @@ impl FilenNativeClient {
         conflict: BatchConflictPolicy,
         mut progress: F,
     ) -> Result<()> {
+        self.upload_files_resumable_with_byte_progress(
+            jobs,
+            state_path,
+            conflict,
+            |completed, total, _, _| progress(completed, total),
+        )
+    }
+
+    /// Resumable batch upload with serialized file and aggregate byte
+    /// progress. Byte callbacks are emitted as encrypted chunks complete,
+    /// even when multiple files are uploading concurrently.
+    pub fn upload_files_resumable_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        jobs: Vec<UploadJob>,
+        state_path: &Path,
+        conflict: BatchConflictPolicy,
+        mut progress: F,
+    ) -> Result<()> {
         let mut state = Self::load_batch_transfer_state(state_path)?.unwrap_or_default();
         anyhow::ensure!(state.version == 1, "unsupported Filen batch state version");
         state.completed.sort_unstable();
@@ -620,12 +643,13 @@ impl FilenNativeClient {
         let total = jobs.len();
         let jobs = jobs.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel::<ResumableUploadEvent>();
         let state_path = state_path.to_owned();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let next = Arc::clone(&next);
                 let sender = sender.clone();
+                let progress_sender = sender.clone();
                 let shared_state = Arc::clone(&shared_state);
                 let state_path = state_path.clone();
                 scope.spawn(move || loop {
@@ -670,7 +694,18 @@ impl FilenNativeClient {
                                 return Ok(());
                             }
                         }
-                        self.upload_file(&job.parent, &job.name, &job.mime, &job.data)?;
+                        let mut upload_progress = |bytes, _total| {
+                            let _ = progress_sender
+                                .send(ResumableUploadEvent::Progress { index, bytes });
+                        };
+                        self.upload_file_from_reader_with_progress(
+                            &job.parent,
+                            &job.name,
+                            &job.mime,
+                            job.data.len() as u64,
+                            std::io::Cursor::new(job.data.as_slice()),
+                            &mut upload_progress,
+                        )?;
                         let mut state = shared_state
                             .lock()
                             .map_err(|_| anyhow!("batch state poisoned"))?;
@@ -681,17 +716,39 @@ impl FilenNativeClient {
                         }
                         Ok(())
                     })();
-                    if sender.send(result).is_err() {
+                    if sender
+                        .send(ResumableUploadEvent::Done { index, result })
+                        .is_err()
+                    {
                         break;
                     }
                 });
             }
             drop(sender);
             let mut completed = 0;
-            for result in receiver {
-                result?;
-                completed += 1;
-                progress(completed, total);
+            let total_bytes = jobs.iter().map(|job| job.data.len() as u64).sum();
+            let mut completed_bytes = 0;
+            let mut per_file_bytes = vec![0u64; total];
+            for event in receiver {
+                match event {
+                    ResumableUploadEvent::Progress { index, bytes } => {
+                        let previous = per_file_bytes[index];
+                        let current = bytes.max(previous);
+                        per_file_bytes[index] = current;
+                        completed_bytes += current - previous;
+                        progress(completed, total, completed_bytes, total_bytes);
+                    }
+                    ResumableUploadEvent::Done { index, result } => {
+                        result?;
+                        if per_file_bytes[index] < jobs[index].data.len() as u64 {
+                            completed_bytes +=
+                                jobs[index].data.len() as u64 - per_file_bytes[index];
+                            per_file_bytes[index] = jobs[index].data.len() as u64;
+                        }
+                        completed += 1;
+                        progress(completed, total, completed_bytes, total_bytes);
+                    }
+                }
             }
             Ok::<_, anyhow::Error>(())
         })?;
@@ -3070,7 +3127,7 @@ mod tests {
         let state_path = temp.path().join("batch.json");
         let mut progress = Vec::new();
         client
-            .upload_files_resumable(
+            .upload_files_resumable_with_byte_progress(
                 vec![UploadJob {
                     parent: "root".into(),
                     name: "same.txt".into(),
@@ -3079,10 +3136,10 @@ mod tests {
                 }],
                 &state_path,
                 BatchConflictPolicy::Skip,
-                |done, total| progress.push((done, total)),
+                |done, total, bytes, total_bytes| progress.push((done, total, bytes, total_bytes)),
             )
             .unwrap();
-        assert_eq!(progress, vec![(1, 1)]);
+        assert_eq!(progress, vec![(1, 1, 3, 3)]);
         assert!(!state_path.exists());
     }
 

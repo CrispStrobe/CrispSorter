@@ -28,6 +28,8 @@ cross-checks.
   total bytes.
   `upload_files_resumable` adds durable per-file batch state and explicit
   `BatchConflictPolicy::{Fail, Skip, Replace}` handling.
+  `upload_files_resumable_with_byte_progress` additionally reports serialized
+  aggregate chunk progress while retaining those checkpoints.
   `download_paths_resumable` provides the symmetric local-path batch flow.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
