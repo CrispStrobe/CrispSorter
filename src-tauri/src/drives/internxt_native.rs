@@ -21,6 +21,9 @@ type Aes256CbcEnc = cbc::Encryptor<Aes256>;
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 const OPENSSL_MAGIC: &[u8; 8] = b"Salted__";
+const INTERNXT_APP_SECRET: &str = "6KYQBP847D4ATSFA";
+pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
+const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
 /// OpenSSL's legacy EVP_BytesToKey derivation with MD5, as used by the
 /// Internxt CLI for the `/auth/login` salt and password-hash envelope.
@@ -219,6 +222,121 @@ impl InternxtNativeClient {
             base_url,
             bearer_token: bearer_token.into(),
             http: Client::new(),
+        })
+    }
+
+    /// Authenticate using Internxt's compatibility flow that does not upload
+    /// fresh OpenPGP keys. Existing accounts accept this path and the server
+    /// still returns the complete drive session, including the encrypted
+    /// mnemonic. Accounts that require key registration receive the gateway's
+    /// error instead of silently creating a partial session.
+    pub fn login_without_keys(
+        drive_api_url: &str,
+        email: &str,
+        password: &str,
+        tfa_code: Option<&str>,
+    ) -> Result<InternxtSession> {
+        let http = Client::new();
+        let drive_api_url = drive_api_url.trim_end_matches('/');
+        let email = email.trim().to_lowercase();
+        let security_url = format!("{drive_api_url}/auth/login");
+        let security = http
+            .post(&security_url)
+            .header("content-type", "application/json")
+            .header("internxt-client", "cli")
+            .json(&serde_json::json!({"email": email}))
+            .send()
+            .context("requesting Internxt login security details")?;
+        let security_status = security.status();
+        let security_body = security
+            .text()
+            .context("reading Internxt login security details")?;
+        if !security_status.is_success() {
+            return Err(anyhow!(
+                "Internxt login security returned {security_status}: {security_body}"
+            ));
+        }
+        let encrypted_salt = serde_json::from_str::<serde_json::Value>(&security_body)?
+            .get("sKey")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt login response has no sKey"))?
+            .to_owned();
+        let encrypted_password =
+            login_password_payload(password, &encrypted_salt, INTERNXT_APP_SECRET)?;
+
+        let access_url = format!("{drive_api_url}/auth/login/access");
+        let access = http
+            .post(&access_url)
+            .header("content-type", "application/json")
+            .header("internxt-client", "cli")
+            .json(&serde_json::json!({
+                "email": email,
+                "password": encrypted_password,
+                "tfa": tfa_code
+            }))
+            .send()
+            .context("requesting Internxt login access")?;
+        let access_status = access.status();
+        let access_body = access.text().context("reading Internxt login access")?;
+        if !access_status.is_success() {
+            return Err(anyhow!(
+                "Internxt login access returned {access_status}: {access_body}"
+            ));
+        }
+        let access_json: serde_json::Value = serde_json::from_str(&access_body)?;
+        let temporary_token = access_json
+            .get("newToken")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt login access response has no newToken"))?;
+
+        let refresh_url = format!("{drive_api_url}/users/refresh");
+        let refresh = http
+            .get(&refresh_url)
+            .bearer_auth(temporary_token)
+            .header("content-type", "application/json")
+            .header("internxt-client", "cli")
+            .send()
+            .context("hydrating Internxt login session")?;
+        let refresh_status = refresh.status();
+        let refresh_body = refresh.text().context("reading Internxt login hydration")?;
+        if !refresh_status.is_success() {
+            return Err(anyhow!(
+                "Internxt login hydration returned {refresh_status}: {refresh_body}"
+            ));
+        }
+        let hydrated: serde_json::Value = serde_json::from_str(&refresh_body)?;
+        let user = hydrated
+            .get("user")
+            .ok_or_else(|| anyhow!("Internxt login hydration has no user"))?;
+        let text_field = |name: &str| -> Result<String> {
+            user.get(name)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("Internxt login hydration has no {name}"))
+        };
+        let encrypted_mnemonic = text_field("mnemonic")?;
+        let mnemonic = String::from_utf8(decrypt_text(&encrypted_mnemonic, password)?)
+            .context("decrypting Internxt mnemonic")?;
+        let user_id = text_field("userId")?;
+        Ok(InternxtSession {
+            drive_api_url: drive_api_url.to_owned(),
+            network_url: INTERNXT_NETWORK_URL.to_owned(),
+            email: text_field("email")?,
+            token: hydrated
+                .get("token")
+                .and_then(|value| value.as_str())
+                .unwrap_or(temporary_token)
+                .to_owned(),
+            new_token: hydrated
+                .get("newToken")
+                .and_then(|value| value.as_str())
+                .unwrap_or(temporary_token)
+                .to_owned(),
+            mnemonic,
+            user_id,
+            root_folder_id: text_field("rootFolderId")?,
+            bridge_user: text_field("bridgeUser")?,
+            bucket_id: text_field("bucket")?,
         })
     }
 

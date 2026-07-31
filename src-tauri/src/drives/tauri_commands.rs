@@ -179,3 +179,77 @@ pub async fn drive_stat(
         .stat(std::path::Path::new(&path))
         .map_err(|e| e.to_string())
 }
+
+/// Log a native Internxt drive in without persisting the password or
+/// mnemonic. The resulting session is stored under the registered drive id
+/// in the OS keychain. This command is available in all builds so the UI can
+/// report a clear feature error when native support is not compiled in.
+#[tauri::command]
+pub async fn drive_native_login(
+    state: State<'_, AppState>,
+    drive_id: String,
+    email: String,
+    password: String,
+    tfa_code: Option<String>,
+    drive_api_url: Option<String>,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg
+        .drives
+        .iter()
+        .find(|drive| drive.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    if config.kind != DriveType::Internxt {
+        return Err("native Internxt login requires an Internxt drive".to_owned());
+    }
+
+    #[cfg(feature = "drive-internxt-native")]
+    {
+        let api_url = drive_api_url
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| super::internxt_native::DEFAULT_DRIVE_API_URL.to_owned());
+        let session = super::internxt_native::InternxtNativeClient::login_without_keys(
+            &api_url,
+            &email,
+            &password,
+            tfa_code.as_deref(),
+        )
+        .map_err(|error| format!("native Internxt login failed: {error:#}"))?;
+        let serialized = session
+            .encode()
+            .map_err(|error| format!("serializing native Internxt session failed: {error:#}"))?;
+        super::secret::set_session(&drive_id, &serialized)
+            .map_err(|error| format!("storing native Internxt session failed: {error:#}"))?;
+        Ok(())
+    }
+    #[cfg(not(feature = "drive-internxt-native"))]
+    {
+        let _ = (email, password, tfa_code, drive_api_url);
+        Err("native Internxt support is not enabled in this build".to_owned())
+    }
+}
+
+/// Remove the native Internxt session from the OS keychain.
+#[tauri::command]
+pub async fn drive_native_logout(
+    state: State<'_, AppState>,
+    drive_id: String,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    if !reg.drives.iter().any(|drive| drive.id == drive_id) {
+        return Err(format!("drive '{drive_id}' not found"));
+    }
+    super::secret::delete_session(&drive_id).map_err(|error| error.to_string())
+}
