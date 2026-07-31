@@ -7,8 +7,11 @@
 //! test before the authenticated drive wrapper is added.
 
 use aes::Aes256;
+use anyhow::{anyhow, Context, Result};
 use cipher::{KeyIvInit, StreamCipher};
 use ctr::Ctr128BE;
+use reqwest::blocking::Client;
+use serde::Deserialize;
 use sha2::{Digest, Sha512};
 
 type Aes256Ctr = Ctr128BE<Aes256>;
@@ -66,6 +69,121 @@ pub fn password_hash(password: &str, salt_hex: &str) -> anyhow::Result<String> {
     Ok(hex::encode(hash))
 }
 
+/// A drive item returned by Internxt's folder-content endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeItem {
+    pub name: String,
+    pub uuid: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentPage {
+    #[serde(default)]
+    result: Vec<serde_json::Value>,
+    #[serde(default)]
+    folders: Vec<serde_json::Value>,
+    #[serde(default)]
+    files: Vec<serde_json::Value>,
+}
+
+/// Minimal authenticated Internxt gateway client. Authentication/session
+/// creation is deliberately separate: the native drive will obtain a token
+/// from the keychain-backed login flow, then use this client for ordinary
+/// drive operations.
+pub struct InternxtNativeClient {
+    base_url: String,
+    bearer_token: String,
+    http: Client,
+}
+
+impl InternxtNativeClient {
+    pub fn new(base_url: impl Into<String>, bearer_token: impl Into<String>) -> Result<Self> {
+        let base_url = base_url.into().trim_end_matches('/').to_owned();
+        reqwest::Url::parse(&base_url)
+            .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
+        Ok(Self {
+            base_url,
+            bearer_token: bearer_token.into(),
+            http: Client::new(),
+        })
+    }
+
+    fn list_page(&self, folder_uuid: &str, kind: &str, offset: usize) -> Result<Vec<NativeItem>> {
+        let url = format!("{}/folders/content/{}/{}", self.base_url, folder_uuid, kind);
+        let mut url = reqwest::Url::parse(&url).context("building Internxt listing URL")?;
+        url.query_pairs_mut()
+            .append_pair("offset", &offset.to_string())
+            .append_pair("limit", "50")
+            .append_pair("sort", "plainName")
+            .append_pair("direction", "ASC");
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&self.bearer_token)
+            .send()
+            .context("requesting Internxt folder contents")?;
+        let status = response.status();
+        let body = response
+            .text()
+            .context("reading Internxt folder response")?;
+        if !status.is_success() {
+            return Err(anyhow!("Internxt gateway returned {status}: {body}"));
+        }
+        let page: ContentPage = serde_json::from_str(&body)
+            .with_context(|| format!("parsing Internxt folder response: {body}"))?;
+        let values = if !page.result.is_empty() {
+            page.result
+        } else if kind == "folders" {
+            page.folders
+        } else {
+            page.files
+        };
+        Ok(values
+            .into_iter()
+            .map(|item| NativeItem {
+                name: item
+                    .get("plainName")
+                    .or_else(|| item.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_owned(),
+                uuid: item
+                    .get("uuid")
+                    .or_else(|| item.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                is_dir: kind == "folders",
+                size: item
+                    .get("size")
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// List all files and folders directly below [folder_uuid].
+    pub fn list_folder(&self, folder_uuid: &str) -> Result<Vec<NativeItem>> {
+        let mut entries = Vec::new();
+        for kind in ["folders", "files"] {
+            let mut offset = 0;
+            loop {
+                let page = self.list_page(folder_uuid, kind, offset)?;
+                let count = page.len();
+                entries.extend(page);
+                if count < 50 {
+                    break;
+                }
+                offset += count;
+            }
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +226,16 @@ mod tests {
         let (index, encrypted) = encrypt(&[], MNEMONIC, &BUCKET);
         assert_eq!(index.len(), 32);
         assert!(encrypted.is_empty());
+    }
+
+    #[test]
+    fn content_page_accepts_result_and_legacy_keys() {
+        let page: ContentPage =
+            serde_json::from_str(r#"{"result":[{"plainName":"a.txt","uuid":"f1","size":"12"}]}"#)
+                .unwrap();
+        assert_eq!(page.result.len(), 1);
+        let legacy: ContentPage =
+            serde_json::from_str(r#"{"folders":[{"name":"Docs","id":"d1"}],"files":[]}"#).unwrap();
+        assert_eq!(legacy.folders.len(), 1);
     }
 }
