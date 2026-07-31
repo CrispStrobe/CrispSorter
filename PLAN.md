@@ -2482,7 +2482,7 @@ a trap:
     gateways; keep configurable chunk/file worker concurrency as opt-in.
   - [x] Complete trash parity with listing filters/limits and empty-trash
     behavior where supported by the Filen API.
-  - [ ] Add a provider-neutral metadata/path result model or conversion layer
+  - [x] Add a provider-neutral metadata/path result model or conversion layer
     so callers do not have to translate `NativeItem` and `PathListing` by hand.
   - [x] Rename remaining public `FilenNativeClient`/native wording where this
     is source-compatible, while preserving a deprecation path for users of
