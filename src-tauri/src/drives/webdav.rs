@@ -100,6 +100,20 @@ impl WebDavDrive {
         }
         b
     }
+
+    /// Return Nextcloud's OCS sharing endpoint when this looks like a
+    /// Nextcloud WebDAV root. Other WebDAV servers must remain untouched:
+    /// probing an arbitrary DAV server with an OCS request is not safe.
+    fn nextcloud_ocs_url(&self) -> Option<String> {
+        let mut url = reqwest::Url::parse(&self.base_url).ok()?;
+        if !url.path().contains("/remote.php/") {
+            return None;
+        }
+        url.set_path("/ocs/v2.php/apps/files_sharing/api/v1/shares");
+        url.set_query(None);
+        url.set_fragment(None);
+        Some(url.to_string())
+    }
 }
 
 /// Minimal RFC 3986 unreserved-set encoder.  Encode anything that isn't
@@ -340,6 +354,39 @@ impl CloudDrive for WebDavDrive {
         })
     }
 
+    fn share_link(&self, path: &Path) -> Result<Option<String>> {
+        let Some(url) = self.nextcloud_ocs_url() else {
+            return Ok(None);
+        };
+        let clean = path.to_string_lossy().trim_start_matches('/').to_owned();
+        let form_body = format!(
+            "path={}&shareType=3&permissions=1",
+            percent_encode_segment(&format!("/{clean}"))
+        );
+        let response = self
+            .req(reqwest::Method::POST, &url)
+            .header("OCS-APIRequest", "true")
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body)
+            .send()
+            .with_context(|| format!("Nextcloud share_link: POST {url}"))?;
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .context("Nextcloud share_link: parse OCS response")?;
+        if !status.is_success() {
+            return Err(anyhow!("Nextcloud share_link: HTTP {status}"));
+        }
+        if body["ocs"]["meta"]["statuscode"].as_i64() != Some(100) {
+            return Err(anyhow!(
+                "Nextcloud share_link rejected request: {}",
+                body["ocs"]["meta"]["message"].as_str().unwrap_or("unknown error")
+            ));
+        }
+        Ok(body["ocs"]["data"]["url"].as_str().map(str::to_owned))
+    }
+
     fn read_file(&self, path: &Path) -> Result<Vec<u8>> {
         let url = self.url_for(path);
         let resp = self
@@ -464,6 +511,7 @@ fn name_from_response(r: &DavResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::{Matcher, Server};
 
     #[test]
     fn drive_metadata_correct() {
@@ -493,6 +541,60 @@ mod tests {
             d.url_for(Path::new("\u{00FC}.txt")),
             "https://h/dav/%C3%BC.txt"
         );
+    }
+
+    #[test]
+    fn nextcloud_share_detection_preserves_host_and_port() {
+        let d = WebDavDrive::new(
+            "d",
+            "http://localhost:8080/remote.php/dav/files/alice/",
+            Some("alice".into()),
+            Some("pw".into()),
+            true,
+        );
+        assert_eq!(
+            d.nextcloud_ocs_url().as_deref(),
+            Some("http://localhost:8080/ocs/v2.php/apps/files_sharing/api/v1/shares")
+        );
+    }
+
+    #[test]
+    fn non_nextcloud_webdav_does_not_probe_ocs() {
+        let d = WebDavDrive::new("d", "https://dav.example.test/files/", None, None, false);
+        assert!(d.nextcloud_ocs_url().is_none());
+        assert!(d.share_link(Path::new("report.pdf")).unwrap().is_none());
+    }
+
+    #[test]
+    fn nextcloud_share_link_posts_ocs_form_and_returns_url() {
+        let mut server = Server::new();
+        let endpoint = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
+        let mock = server
+            .mock("POST", endpoint)
+            .match_header("OCS-APIRequest", "true")
+            .match_body(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("path".into(), "/report.pdf".into()),
+                Matcher::UrlEncoded("shareType".into(), "3".into()),
+                Matcher::UrlEncoded("permissions".into(), "1".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ocs":{"meta":{"status":"ok","statuscode":100},"data":{"url":"https://cloud.example/s/abc"}}}"#,
+            )
+            .create();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/remote.php/dav/files/alice/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+        assert_eq!(
+            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            Some("https://cloud.example/s/abc")
+        );
+        mock.assert();
     }
 
     #[test]

@@ -1464,8 +1464,9 @@ a natural feature.
   `OneDriveDrive` (Graph API `POST /me/drive/items/{id}/createLink`
   with `type: "view"`, `scope: "anonymous"`), `GDriveDrive` (Drive
   API `POST /files/{id}/permissions` + `webViewLink`), and
-  `WebDavDrive` (Nextcloud OCS sharing API, if detected).  Internxt
-  and Filen: stub until their public-link APIs are documented.
+  `WebDavDrive` (Nextcloud OCS sharing API, if detected). WebDAV now
+  detects `/remote.php/` roots and posts a read-only OCS share request.
+  Internxt and Filen: stub until their public-link APIs are documented.
 - [x] **Tauri command `drive_share_link(drive_id, path)`.**
   Resolves the drive, calls `share_link`, returns the URL or an
   error if the provider doesn't support sharing. ✅ Shipped 2026-07-31.
@@ -1477,8 +1478,9 @@ a natural feature.
   disabled-state discovery remain pending.
 - [>] **Tests.**  Unit: URL format validation per provider, unsupported
   provider returns None, error handling for expired tokens. OneDrive URL
-  construction and existing Google/unsupported-provider coverage are now
-  present; mock HTTP response coverage remains pending.
+  construction, Google/unsupported-provider coverage, and a hermetic
+  Nextcloud OCS request/response test now pass; Graph error-path coverage
+  and expired-token tests remain.
 
 #### Priority 6 — Cloud provider version history
 
