@@ -2,12 +2,12 @@
 //! the caller has not deliberately supplied both Rust login credentials and
 //! the local Python CLI checkout.
 
-use crisp_filen_native::{FilenNativeClient, DEFAULT_GATEWAY_URL};
+use crisp_filen::{FilenNativeClient, DEFAULT_GATEWAY_URL};
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn setup() -> Option<(
     FilenNativeClient,
-    crisp_filen_native::FilenSession,
+    crisp_filen::FilenSession,
     PathBuf,
     PathBuf,
 )> {

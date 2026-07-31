@@ -109,8 +109,8 @@ The native Filen client is opt-in so existing desktop builds remain unchanged:
 
 ```bash
 # Native client and CLI
-cargo test -p crisp-filen-native --lib
-cargo run -p crisp-filen-native -- --help
+cargo test -p crisp-filen --lib
+cargo run -p crisp-filen -- --help
 
 # Tauri desktop build with native Filen routing
 cargo check -p crispsorter --features desktop,drive-filen-native
@@ -126,7 +126,7 @@ credentials through the shell environment; do not commit them:
 ```bash
 export FILEN_EMAIL="$(sed -n 's/^FILEN_LOGIN=//p' /path/to/.env)"
 export FILEN_PASSWORD="$(sed -n 's/^FILEN_PW=//p' /path/to/.env)"
-  cargo test -p crisp-filen-native --test filen_live \
+  cargo test -p crisp-filen --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```
 

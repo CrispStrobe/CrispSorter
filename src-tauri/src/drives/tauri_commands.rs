@@ -265,8 +265,8 @@ pub async fn drive_filen_native_login(
     {
         let url = gateway_url
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| crisp_filen_native::DEFAULT_GATEWAY_URL.to_owned());
-        let session = crisp_filen_native::FilenNativeClient::login(
+            .unwrap_or_else(|| crisp_filen::DEFAULT_GATEWAY_URL.to_owned());
+        let session = crisp_filen::FilenNativeClient::login(
             &url,
             &email,
             &password,

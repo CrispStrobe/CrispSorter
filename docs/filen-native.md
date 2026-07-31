@@ -1,6 +1,6 @@
 # Native Filen client
 
-`crisp-filen-native` is the Rust Filen implementation used by Tauri when the
+`crisp-filen` is the unofficial Rust Filen implementation used by Tauri when the
 `drive-filen-native` feature is enabled. Its protocol and crypto behavior are
 derived from Filen's MIT Go SDK, with the Python and Dart clients used for
 cross-checks.
@@ -73,7 +73,7 @@ directions with `../filen-python`:
 export FILEN_EMAIL="$(sed -n 's/^FILEN_LOGIN=//p' /Users/christianstrobele/code/.env)"
 export FILEN_PASSWORD="$(sed -n 's/^FILEN_PW=//p' /Users/christianstrobele/code/.env)"
 FILEN_EMAIL="$FILEN_EMAIL" FILEN_PASSWORD="$FILEN_PASSWORD" \
-  cargo test -p crisp-filen-native --test filen_live \
+  cargo test -p crisp-filen --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```
 

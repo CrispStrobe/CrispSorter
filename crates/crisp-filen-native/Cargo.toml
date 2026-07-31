@@ -1,16 +1,16 @@
 [package]
-name = "crisp-filen-native"
+name = "crisp-filen"
 version = "0.1.0"
 edition = "2021"
 description = "Reusable native Filen Cloud Drive protocol client and test CLI"
-license = "AGPL-3.0-or-later"
-repository = "https://github.com/CrispStrobe/crisp-filen-native"
+license = "MPL-2.0"
+repository = "https://github.com/CrispStrobe/crisp-filen"
 readme = "README.md"
 keywords = ["filen", "cloud-storage", "encrypted-storage"]
 categories = ["api-bindings", "filesystem"]
 
 [lib]
-name = "crisp_filen_native"
+name = "crisp_filen"
 path = "src/lib.rs"
 
 [[bin]]

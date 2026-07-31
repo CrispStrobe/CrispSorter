@@ -2401,7 +2401,7 @@ a trap:
   xref, because both sides of the comparison were ours.
 
 - [x] **P33.3 — Filen native, ported from Filen's own MIT Go SDK.**  Shipped
-  as `crisp-filen-native` with the `crisp-filen` CLI, keychain-backed Tauri
+  as `crisp-filen` with the `crisp-filen` CLI, keychain-backed Tauri
   adapter, v1/v2/v3 crypto handling, chunked transfers, and both-direction
   live tests against `../filen-python`.  The native crate passes its unit
   tests and builds for `aarch64-apple-ios` with rustls.  The full Tauri

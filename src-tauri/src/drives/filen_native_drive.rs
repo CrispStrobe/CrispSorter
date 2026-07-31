@@ -2,7 +2,7 @@
 
 use super::{CloudDrive, DirEntry, DriveType, FileStat};
 use anyhow::{anyhow, Result};
-use crisp_filen_native::{FilenNativeClient, FilenSession};
+use crisp_filen::{FilenNativeClient, FilenSession};
 use std::path::Path;
 
 pub struct NativeFilenDrive {
@@ -33,7 +33,7 @@ impl NativeFilenDrive {
     ) -> Result<(
         FilenSession,
         FilenNativeClient,
-        crisp_filen_native::NativeItem,
+        crisp_filen::NativeItem,
     )> {
         let (session, client) = self.parts()?;
         let item = client.resolve_path(session, path)?;
@@ -114,7 +114,10 @@ impl CloudDrive for NativeFilenDrive {
         Ok(FileStat {
             size: item.size,
             is_dir: item.is_dir,
-            mtime_unix: None,
+            // Filen stores metadata timestamps in milliseconds; CloudDrive
+            // exposes Unix seconds. Zero is the native client's sentinel for
+            // folders or unavailable gateway metadata.
+            mtime_unix: (item.modified > 0).then_some(item.modified / 1_000),
         })
     }
     fn drive_type(&self) -> DriveType {

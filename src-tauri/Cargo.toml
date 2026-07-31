@@ -30,7 +30,7 @@ crisp-index-protocol = { path = "../crisp-index-protocol" }
 crisplens-protocol   = { path = "../crates/crisplens-protocol" }
 crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 crisp-internxt-native = { path = "../crates/crisp-internxt-native", optional = true }
-crisp-filen-native = { path = "../crates/crisp-filen-native", optional = true }
+crisp-filen = { package = "crisp-filen", path = "../crates/crisp-filen-native", optional = true }
 
 # Document translation pipeline. The `crisp-docx` workspace is a
 # sibling checkout (../../crisp-docx). These path deps are
@@ -251,7 +251,7 @@ desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plu
 # P33.1 — native Internxt protocol. Kept opt-in while the client is being
 # verified against the vendor's Python CLI in both directions.
 drive-internxt-native = ["dep:crisp-internxt-native"]
-drive-filen-native = ["dep:crisp-filen-native"]
+drive-filen-native = ["dep:crisp-filen"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]

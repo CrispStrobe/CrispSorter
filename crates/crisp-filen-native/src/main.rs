@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use crisp_filen_native::{FilenNativeClient, FilenSession, NativeItem, DEFAULT_GATEWAY_URL};
+use crisp_filen::{FilenNativeClient, FilenSession, NativeItem, DEFAULT_GATEWAY_URL};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -216,7 +216,7 @@ fn run() -> Result<()> {
             client.delete_permanent(&item.uuid, item.is_dir)?;
         }
         Command::CryptoVector => {
-            let (raw, password) = crisp_filen_native::pbkdf2_login("password", "salt");
+            let (raw, password) = crisp_filen::pbkdf2_login("password", "salt");
             println!(
                 "pbkdf2_raw={}\nauth_password={}",
                 hex::encode(raw),

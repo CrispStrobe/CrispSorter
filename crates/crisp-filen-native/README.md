@@ -1,4 +1,7 @@
-# crisp-filen-native
+# crisp-filen
+
+> **Unofficial community client.** This is not an official Filen product and
+> is not affiliated with or endorsed by Filen.
 
 Native Rust client for the Filen Cloud Drive protocol.
 
@@ -28,7 +31,7 @@ consumers that need encrypted Filen transfers without spawning Python.
 ## Basic usage
 
 ```rust,no_run
-use crisp_filen_native::{FilenNativeClient, FilenSession};
+use crisp_filen::{FilenNativeClient, FilenSession};
 
 fn download(session: &FilenSession, uuid: &str) -> anyhow::Result<Vec<u8>> {
     let client = FilenNativeClient::from_session(session)?;
@@ -40,7 +43,7 @@ fn download(session: &FilenSession, uuid: &str) -> anyhow::Result<Vec<u8>> {
 Transfer tuning is explicit:
 
 ```rust,no_run
-use crisp_filen_native::{FilenNativeClient, FilenSession, TransferConfig};
+use crisp_filen::{FilenNativeClient, FilenSession, TransferConfig};
 
 fn configure(session: &FilenSession) -> anyhow::Result<FilenNativeClient> {
     FilenNativeClient::from_session_with_config(
@@ -77,8 +80,8 @@ preserves Filen's `enter_2fa` or `wrong_2fa` code.
 Fast unit and hermetic HTTP coverage requires no credentials:
 
 ```bash
-cargo test -p crisp-filen-native --lib
-cargo check -p crisp-filen-native --bins
+cargo test -p crisp-filen --lib
+cargo check -p crisp-filen --bins
 ```
 
 The authenticated live suite creates unique temporary folders and removes
@@ -99,6 +102,7 @@ never part of the repository.
 ## Compatibility and license
 
 The authoritative protocol reference is Filen's MIT-licensed Go client. This
-crate is licensed under AGPL-3.0-or-later as part of the CrispStrobe project.
+crate is licensed under MPL-2.0. It is an unofficial community client and is
+not affiliated with or endorsed by Filen.
 See the repository's issue tracker for protocol changes and compatibility
 reports.
