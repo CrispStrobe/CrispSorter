@@ -2388,7 +2388,7 @@ a trap:
 
   `../internxt-dart` stays the **oracle** (P33.2), not a port source.
 
-- [>] **P33.2 — Verify the crypto against the reference client, not our own
+- [x] **P33.2 — Verify the crypto against the reference client, not our own
   tests.**  `internxt-core` claims byte-for-byte compatibility with the
   official Node implementation "checked against reference test vectors".
   That claim is exactly what must not be taken on faith: a KDF or metadata

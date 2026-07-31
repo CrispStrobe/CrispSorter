@@ -144,10 +144,10 @@ fn kyber_secret_key_raw(stored_b64: &str) -> Result<Vec<u8>> {
     if once.len() == KYBER512_SK_LEN {
         return Ok(once);
     }
-    if let Ok(twice) = B64.decode(&once) {
-        if twice.len() == KYBER512_SK_LEN {
-            return Ok(twice);
-        }
+    if let Ok(twice) = B64.decode(&once)
+        && twice.len() == KYBER512_SK_LEN
+    {
+        return Ok(twice);
     }
     Err(anyhow!(
         "kyber secret key has unexpected length {} (want {KYBER512_SK_LEN})",
@@ -443,4 +443,3 @@ impl Ctr {
         self.0.seek(pos);
     }
 }
-

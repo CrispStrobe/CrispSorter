@@ -97,6 +97,7 @@ where
 }
 
 /// Single presigned-URL upload, body streamed straight from a reader through CTR.
+#[allow(clippy::too_many_arguments)]
 async fn upload_single<R>(
     net: &NetworkApi,
     bucket: &str,
@@ -833,4 +834,3 @@ mod tests {
         );
     }
 }
-

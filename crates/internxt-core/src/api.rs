@@ -671,3 +671,8 @@ impl DriveApi {
     }
 }
 
+impl Default for DriveApi {
+    fn default() -> Self {
+        Self::new()
+    }
+}

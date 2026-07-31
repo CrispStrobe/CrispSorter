@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use crisp_internxt::{InternxtNativeClient, InternxtSession, DEFAULT_DRIVE_API_URL};
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LARGE_FILE_SIZE: usize = 100 * 1024 * 1024 + 1;
@@ -54,6 +55,142 @@ fn live_search_copy_and_update_round_trip() {
         return;
     };
     run_search_copy_update(&email, &password, tfa.as_deref()).unwrap();
+}
+
+#[test]
+#[ignore = "mutates a real account and invokes the configured Python CLI"]
+fn live_cross_client_python_rust_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("cross-client live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    if std::env::var("INTERNXT_PYTHON_READY").as_deref() != Ok("1") {
+        eprintln!(
+            "cross-client live test skipped: set INTERNXT_PYTHON_READY=1 to opt into Python CLI"
+        );
+        return;
+    }
+    let python_cli = std::env::var_os("INTERNXT_PYTHON_CLI")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../internxt-cli/cli.py")
+        });
+    let python =
+        std::env::var_os("INTERNXT_PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python3"));
+    if !python_cli.exists() {
+        eprintln!(
+            "cross-client live test skipped: Python CLI not found at {}",
+            python_cli.display()
+        );
+        return;
+    }
+
+    let session = InternxtNativeClient::login_without_keys(
+        DEFAULT_DRIVE_API_URL,
+        &email,
+        &password,
+        tfa.as_deref(),
+    )
+    .unwrap();
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let rust_name = unique_name("crispsorter-rust-to-python").replace(' ', "-");
+    let python_name = unique_name("crispsorter-python-to-rust").replace(' ', "-");
+    let rust_source = std::env::temp_dir().join(format!("{rust_name}.txt"));
+    let python_source = std::env::temp_dir().join(format!("{python_name}.txt"));
+    let python_download_dir = std::env::temp_dir().join(unique_name("crispsorter-python-download"));
+    std::fs::write(&rust_source, b"written by Rust; read by Python\n").unwrap();
+    std::fs::write(&python_source, b"written by Python; read by Rust\n").unwrap();
+    std::fs::create_dir_all(&python_download_dir).unwrap();
+    let result = (|| -> Result<()> {
+        client.upload_path(
+            &session,
+            &session.root_folder_id,
+            &rust_name,
+            "txt",
+            &rust_source,
+        )?;
+        run_python_cli(
+            &python,
+            &python_cli,
+            &email,
+            &password,
+            [
+                "download-path",
+                &format!("/{rust_name}.txt"),
+                "--destination",
+                python_download_dir.to_str().unwrap(),
+                "--on-conflict",
+                "overwrite",
+            ],
+        )?;
+        assert_eq!(
+            std::fs::read(python_download_dir.join(format!("{rust_name}.txt")))?,
+            b"written by Rust; read by Python\n"
+        );
+
+        run_python_cli(
+            &python,
+            &python_cli,
+            &email,
+            &password,
+            [
+                "upload",
+                python_source.to_str().unwrap(),
+                "--target",
+                "/",
+                "--on-conflict",
+                "overwrite",
+            ],
+        )?;
+        let item = client.resolve_path(&session, Path::new(&format!("/{python_name}.txt")))?;
+        let downloaded = python_download_dir.join(format!("{python_name}-rust.txt"));
+        client.download_file_to_path(&session, &item.uuid, &downloaded)?;
+        assert_eq!(
+            std::fs::read(downloaded)?,
+            b"written by Python; read by Rust\n"
+        );
+        Ok(())
+    })();
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{rust_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{python_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = std::fs::remove_file(rust_source);
+    let _ = std::fs::remove_file(python_source);
+    let _ = std::fs::remove_dir_all(python_download_dir);
+    result.unwrap();
+}
+
+fn run_python_cli<const N: usize>(
+    python: &std::ffi::OsStr,
+    cli: &Path,
+    email: &str,
+    password: &str,
+    args: [&str; N],
+) -> Result<()> {
+    let mut command = Command::new(python);
+    command
+        .arg(cli)
+        .args(args)
+        .env("INTERNXT_EMAIL", email)
+        .env("INTERNXT_PASSWORD", password);
+    if let Ok(secret) = std::env::var("INTERNXT_TFA_SECRET") {
+        command.env("INTERNXT_TFA_SECRET", secret);
+    }
+    let output = command.output().context("running Python Internxt CLI")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Python CLI failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Result<()> {
