@@ -601,7 +601,7 @@ impl FilenNativeClient {
                             }
                         }
                         let existing = self
-                            .list_folder(&job.parent)?
+                            .list_folder_fresh(&job.parent)?
                             .into_iter()
                             .find(|item| item.name == job.name && !item.is_dir);
                         if let Some(existing) = existing {
