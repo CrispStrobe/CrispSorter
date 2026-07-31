@@ -21,6 +21,7 @@
     import Translate from '$lib/components/Translate.svelte';
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
     import PdfWorkspace from '$lib/components/PdfWorkspace.svelte';
+    import TransferDrawer from '$lib/components/TransferDrawer.svelte';
 
     let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
@@ -463,6 +464,8 @@
             </div>
         {/if}
     </main>
+
+    <TransferDrawer />
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">

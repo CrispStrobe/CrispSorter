@@ -1336,9 +1336,12 @@ independently with no shared concurrency limit or retry policy.
   intentionally direct because its synchronous filesystem trait cannot
   safely await the async queue; provider-internal calls still need an
   explicit shared-queue boundary.
-- [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
+- [x] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
-  speed, cancel button).  Listens to `transfer://progress` events.
+  speed, cancel button). It polls the shared `transfer_queue_status`
+  snapshot and uses `transfer_queue_cancel`; the snapshot boundary is used
+  instead of a `transfer://progress` event because the queue retains
+  terminal jobs for late-opening drawers.
 - [x] **Tests.**  ✅ 11 tests shipped with the module (see above), including
   cancellation during retry backoff. Provider-wide queue wiring remains a
   separate integration task.
