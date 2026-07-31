@@ -549,8 +549,21 @@ impl FilenNativeClient {
         jobs: Vec<UploadJob>,
         mut progress: F,
     ) -> Result<()> {
+        self.upload_files_with_byte_progress(jobs, |completed, total, _, _| {
+            progress(completed, total)
+        })
+    }
+
+    /// Batch upload progress with both completed-file and completed-byte
+    /// totals. Callbacks are serialized and emitted when each file finishes.
+    pub fn upload_files_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        jobs: Vec<UploadJob>,
+        mut progress: F,
+    ) -> Result<()> {
         let workers = self.transfer_config.file_workers.min(jobs.len()).max(1);
         let total = jobs.len();
+        let total_bytes = jobs.iter().map(|job| job.data.len() as u64).sum();
         let jobs = jobs.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::channel();
@@ -569,17 +582,19 @@ impl FilenNativeClient {
                         &jobs[index].mime,
                         &jobs[index].data,
                     );
-                    if sender.send(result).is_err() {
+                    if sender.send((index, result)).is_err() {
                         break;
                     }
                 });
             }
             drop(sender);
             let mut completed = 0;
-            for result in receiver {
+            let mut completed_bytes = 0;
+            for (index, result) in receiver {
                 result?;
                 completed += 1;
-                progress(completed, total);
+                completed_bytes += jobs[index].data.len() as u64;
+                progress(completed, total, completed_bytes, total_bytes);
             }
             Ok(())
         })
@@ -2380,8 +2395,21 @@ impl FilenNativeClient {
         items: Vec<NativeItem>,
         mut progress: F,
     ) -> Result<Vec<Vec<u8>>> {
+        self.download_files_with_byte_progress(items, |completed, total, _, _| {
+            progress(completed, total)
+        })
+    }
+
+    /// Batch download progress with both completed-file and completed-byte
+    /// totals. Callbacks are serialized and emitted when each file finishes.
+    pub fn download_files_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        items: Vec<NativeItem>,
+        mut progress: F,
+    ) -> Result<Vec<Vec<u8>>> {
         let workers = self.transfer_config.file_workers.min(items.len()).max(1);
         let item_count = items.len();
+        let total_bytes = items.iter().map(|item| item.size).sum();
         let items = items.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
         let (sender, receiver) = mpsc::channel();
@@ -2403,11 +2431,13 @@ impl FilenNativeClient {
             drop(sender);
             let mut results = vec![None; item_count];
             let mut completed = 0;
+            let mut completed_bytes = 0;
             for result in receiver {
                 let (index, data) = result?;
+                completed_bytes += data.len() as u64;
                 results[index] = Some(data);
                 completed += 1;
-                progress(completed, item_count);
+                progress(completed, item_count, completed_bytes, total_bytes);
             }
             results
                 .into_iter()
@@ -2891,6 +2921,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_batch_byte_progress_reports_zero_totals() {
+        let client =
+            FilenNativeClient::from_session(&test_session("http://127.0.0.1:1".into())).unwrap();
+        let mut upload = Vec::new();
+        client
+            .upload_files_with_byte_progress(Vec::new(), |a, b, c, d| upload.push((a, b, c, d)))
+            .unwrap();
+        assert!(upload.is_empty());
+        let mut download = Vec::new();
+        assert!(client
+            .download_files_with_byte_progress(Vec::new(), |a, b, c, d| {
+                download.push((a, b, c, d))
+            })
+            .unwrap()
+            .is_empty());
+        assert!(download.is_empty());
+    }
+
+    #[test]
     fn batch_file_workers_bound_in_flight_requests() {
         let (gateway, active, peak) = spawn_counting_server(6, 25);
         let mut session = test_session(gateway.clone());
@@ -2914,14 +2963,18 @@ mod tests {
             .collect();
         let mut progress = Vec::new();
         client
-            .upload_files_with_progress(jobs, |completed, total| progress.push((completed, total)))
+            .upload_files_with_byte_progress(jobs, |completed, total, bytes, total_bytes| {
+                progress.push((completed, total, bytes, total_bytes))
+            })
             .unwrap();
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert!(peak.load(Ordering::SeqCst) <= 2);
         assert!(peak.load(Ordering::SeqCst) >= 2);
         assert_eq!(progress.len(), 6);
-        assert!(progress.iter().all(|(_, total)| *total == 6));
-        assert_eq!(progress.last(), Some(&(6, 6)));
+        assert!(progress
+            .iter()
+            .all(|(_, total, _, total_bytes)| { *total == 6 && *total_bytes == 0 }));
+        assert_eq!(progress.last(), Some(&(6, 6, 0, 0)));
     }
 
     #[test]
@@ -3462,6 +3515,42 @@ mod tests {
         let destination = local.path().join("nested/file.txt");
         client.download_path(&item, &destination).unwrap();
         assert_eq!(std::fs::read(destination).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn batch_download_byte_progress_reports_file_and_byte_totals() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "batch-progress-file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            bucket: "bucket".into(),
+            region: "region".into(),
+            chunks: 1,
+            version: 2,
+            mime: "text/plain".into(),
+            created: 0,
+            modified: 0,
+            hash: String::new(),
+        };
+        let mut progress = Vec::new();
+        assert_eq!(
+            client
+                .download_files_with_byte_progress(vec![item], |a, b, c, d| {
+                    progress.push((a, b, c, d))
+                })
+                .unwrap()[0],
+            b"hello"
+        );
+        assert_eq!(progress, vec![(1, 1, 5, 5)]);
     }
 
     #[test]

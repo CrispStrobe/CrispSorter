@@ -23,7 +23,9 @@ cross-checks.
   levels. `TransferConfig` exposes `chunk_size`, `workers`, `file_workers`,
   `retries`, and `retry_backoff_ms`.
   `upload_files_with_progress` and `download_files_with_progress` report
-  serialized file-completion progress for batch consumers.
+  serialized file-completion progress for batch consumers; the
+  `*_with_byte_progress` variants additionally report aggregate completed and
+  total bytes.
   `upload_files_resumable` adds durable per-file batch state and explicit
   `BatchConflictPolicy::{Fail, Skip, Replace}` handling.
   `download_paths_resumable` provides the symmetric local-path batch flow.
@@ -71,7 +73,7 @@ FILEN_EMAIL="$FILEN_EMAIL" FILEN_PASSWORD="$FILEN_PASSWORD" \
   -- --ignored --nocapture --test-threads=1
 ```
 
-Current suite counts: Rust native unit/hermetic tests 32 passing; Python
+Current suite counts: Rust native unit/hermetic tests 35 passing; Python
 suite 30 passing; Dart suite 244 passing with 3 expected live-suite skips when
 credentials are absent. The Rust live cross-client suite has 3 authenticated
 tests covering mutations and both transfer directions.
