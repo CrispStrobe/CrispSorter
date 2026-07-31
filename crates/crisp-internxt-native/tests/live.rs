@@ -220,7 +220,16 @@ fn run_multipart(
             remaining -= length;
         }
     }
-    client.upload_path(session, folder_uuid, "multipart-round-trip", "bin", &source)?;
+    let state_path = std::env::temp_dir().join(unique_name("crispsorter-multipart-state"));
+    client.upload_path_with_resume_state(
+        session,
+        folder_uuid,
+        "multipart-round-trip",
+        "bin",
+        &source,
+        &state_path,
+    )?;
+    assert!(client.load_upload_resume_state(&state_path)?.is_none());
     let path = Path::new(folder_name).join("multipart-round-trip.bin");
     let item = client.resolve_path(session, &path)?;
     let downloaded = std::env::temp_dir().join(unique_name("crispsorter-multipart-download"));
@@ -228,6 +237,7 @@ fn run_multipart(
     assert_eq!(std::fs::read(&downloaded)?, std::fs::read(&source)?);
     let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_file(downloaded);
+    client.clear_upload_resume_state(&state_path);
     Ok(())
 }
 

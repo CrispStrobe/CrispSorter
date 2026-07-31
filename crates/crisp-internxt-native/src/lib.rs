@@ -31,7 +31,7 @@ const INTERNXT_APP_SECRET: &str = "6KYQBP847D4ATSFA";
 const MULTIPART_MIN_SIZE: usize = 100 * 1024 * 1024;
 const UPLOAD_PART_SIZE: usize = 30 * 1024 * 1024;
 const MAX_MULTIPARTS: usize = 10_000;
-const MAX_UPLOAD_RETRIES: usize = 3;
+const MAX_UPLOAD_RETRIES: usize = 5;
 const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
 const DOWNLOAD_PART_SIZE: u64 = 30 * 1024 * 1024;
 const LISTING_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
@@ -1380,7 +1380,11 @@ impl InternxtNativeClient {
         } else {
             let mut file = File::open(path)
                 .with_context(|| format!("opening upload file {}", path.display()))?;
-            let workers = parts.min(4);
+            // Keep concurrent presigned PUTs conservative. The gateway/S3
+            // layer intermittently resets one of several simultaneous
+            // 30 MiB connections; bounded concurrency plus retrying the same
+            // URL is more reliable than saturating it.
+            let workers = parts.min(2);
             let (job_tx, job_rx) = mpsc::sync_channel::<(usize, String, Vec<u8>)>(workers * 2);
             let job_rx = Arc::new(Mutex::new(job_rx));
             let (result_tx, result_rx) = mpsc::channel::<(usize, Result<String>)>();
