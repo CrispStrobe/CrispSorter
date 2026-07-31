@@ -121,6 +121,30 @@ impl OfflineQueue {
         Ok(rows)
     }
 
+    /// Return all queued operations, including failed/cancelled records.
+    pub fn list(&self) -> Result<Vec<QueuedOp>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, op_type, payload, provider_id, retry_count, last_error, status, created_at
+             FROM queued_ops ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(QueuedOp {
+                    id: row.get(0)?,
+                    op_type: row.get(1)?,
+                    payload: row.get(2)?,
+                    provider_id: row.get(3)?,
+                    retry_count: row.get(4)?,
+                    last_error: row.get(5)?,
+                    status: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// Mark an operation as successfully completed (removes it).
     pub fn mark_done(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -141,6 +165,16 @@ impl OfflineQueue {
             params![id, error, MAX_RETRIES],
         )?;
         Ok(())
+    }
+
+    /// Cancel a pending operation while retaining its diagnostic record.
+    pub fn cancel(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn.execute(
+            "UPDATE queued_ops SET status = 'cancelled' WHERE id = ?1 AND status = 'pending'",
+            params![id],
+        )?;
+        Ok(changed != 0)
     }
 
     /// Number of pending operations (retries not exhausted).
@@ -307,5 +341,17 @@ mod tests {
         assert_eq!(stats.pending, 2);
         assert_eq!(stats.failed, 1);
         assert_eq!(stats.total, 3);
+    }
+
+    #[test]
+    fn list_and_cancel_preserve_operation_diagnostics() {
+        let (_dir, q) = make_queue();
+        let id = q.enqueue("upload", r#"{"path":"/a"}"#, "drive-1").unwrap();
+        assert!(q.cancel(id).unwrap());
+        assert!(!q.cancel(id).unwrap());
+        let listed = q.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].status, "cancelled");
+        assert_eq!(q.stats().unwrap().total, 1);
     }
 }
