@@ -2625,6 +2625,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] OneDrive now advertises and implements folder creation and
     rename/move through Graph mutations. Copy remains explicitly unsupported
     because Graph exposes it as an asynchronous operation. ✅ 2026-07-31
+  - [x] Filen’s Python CLI adapter now exposes folder creation, rename,
+    move, and copy using its `mkdir`/`rename`/`mv`/`cp` commands. Internxt’s
+    adapter exposes only the CLI’s `mkdir`; move/rename/copy remain false
+    until its CLI provides compatible path semantics. ✅ 2026-07-31
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.

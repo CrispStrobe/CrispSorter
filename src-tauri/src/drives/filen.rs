@@ -20,7 +20,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
 /// Wire shape of `cli.py ls --json` output.
 #[derive(Debug, Deserialize)]
@@ -129,6 +129,16 @@ impl CloudDrive for FilenDrive {
     }
     fn drive_type(&self) -> DriveType {
         DriveType::Filen
+    }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
+            ..DriveCapabilities::basic()
+        }
     }
 
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
@@ -241,6 +251,68 @@ impl CloudDrive for FilenDrive {
         Ok(())
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        let path = path.to_string_lossy();
+        self.run(&["mkdir", &path])?;
+        Ok(())
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let source_parent = source.parent().unwrap_or_else(|| Path::new(""));
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new(""));
+        let source_name = source
+            .file_name()
+            .ok_or_else(|| anyhow!("move source has no filename: {}", source.display()))?;
+        let destination_name = destination.file_name().ok_or_else(|| {
+            anyhow!(
+                "move destination has no filename: {}",
+                destination.display()
+            )
+        })?;
+        let mut renamed_source = source.to_path_buf();
+        if source_name != destination_name {
+            let source_string = source.to_string_lossy();
+            let new_name = destination_name.to_string_lossy();
+            self.run(&["rename", &source_string, &new_name])?;
+            renamed_source = source_parent.join(destination_name);
+        }
+        if source_parent != destination_parent {
+            let source_string = renamed_source.to_string_lossy();
+            let target_string = destination_parent.to_string_lossy();
+            self.run(&[
+                "mv",
+                &source_string,
+                &target_string,
+                "--on-conflict",
+                "overwrite",
+            ])?;
+        }
+        Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let source_string = source.to_string_lossy();
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new(""));
+        let target_string = destination_parent.to_string_lossy();
+        self.run(&["cp", &source_string, &target_string])?;
+        let source_name = source
+            .file_name()
+            .ok_or_else(|| anyhow!("copy source has no filename: {}", source.display()))?;
+        let destination_name = destination.file_name().ok_or_else(|| {
+            anyhow!(
+                "copy destination has no filename: {}",
+                destination.display()
+            )
+        })?;
+        if source_name != destination_name {
+            let copied = destination_parent.join(source_name);
+            let copied_string = copied.to_string_lossy();
+            let new_name = destination_name.to_string_lossy();
+            self.run(&["rename", &copied_string, &new_name])?;
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         // Use `trash` (recoverable) to mirror InternxtDrive's semantics.
         // Pass -r so folders work too; -f bypasses the interactive confirmation
@@ -259,6 +331,11 @@ mod tests {
         let drive = FilenDrive::new("My Filen", "/nonexistent/cli.py");
         assert_eq!(drive.label(), "My Filen");
         assert_eq!(drive.drive_type(), DriveType::Filen);
+        let capabilities = drive.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(capabilities.copy);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
 /// Wire shape of `cli.py list-path --json` output.
 /// Mirrors `drive_service.list_folder_with_paths`'s return value.
@@ -203,6 +203,13 @@ impl CloudDrive for InternxtDrive {
         DriveType::Internxt
     }
 
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let path_str = if path.as_os_str().is_empty() {
             "/".to_owned()
@@ -337,6 +344,12 @@ impl CloudDrive for InternxtDrive {
         Ok(())
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        let path = path.to_string_lossy();
+        self.run(&["mkdir", &path])?;
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         self.run(&["trash-path", &path.to_string_lossy(), "--force"])?;
         Ok(())
@@ -352,6 +365,9 @@ mod tests {
         let drive = InternxtDrive::new("My Internxt", "/nonexistent/cli.py");
         assert_eq!(drive.label(), "My Internxt");
         assert_eq!(drive.drive_type(), DriveType::Internxt);
+        assert!(drive.capabilities().create_dir);
+        assert!(!drive.capabilities().move_path);
+        assert!(!drive.capabilities().copy);
     }
 
     #[test]
