@@ -2329,57 +2329,61 @@ a trap:
   missing path; UI options hidden on mobile; WebDAV named in the error as
   the mobile route to the same storage.
 
-- [ ] **P33.1 — Internxt native, on a vendored fork of
-  [`internxt-core`](https://github.com/Bebbssos/internxt-core-rust).**
+- [ ] **P33.1 — Internxt native: continue on our own
+  `crates/crisp-internxt-native`.**
 
-  *Corrected 2026-07-31.* An earlier revision of this item said "port from
-  our own `internxt-dart`" and demoted `internxt-core` to a cross-check, in
-  a subordinate clause, with no reason recorded.  That was drift, not a
-  decision: the "these repos are ours, port from them" frame arrived with
-  the Filen half and was applied to Internxt without re-deriving it.  The
-  crate covers **every** method the trait needs, already in Rust:
+  *Settled 2026-07-31 after reading both implementations.* This item was
+  written twice before, wrongly: first "port from our `internxt-dart`"
+  (drift — the Filen frame applied without re-deriving), then "vendor a fork
+  of `internxt-core`" (an evaluation of the crate against a *fragment* of
+  our code, before the crate we already had was read).  The comparison that
+  matters:
 
-  | `trait CloudDrive` | `internxt-core` |
+  **What `crisp-internxt-native` already has** (840 LOC + a 190 LOC CLI,
+  10 tests): the full three-step login (`/auth/login` → `/auth/login/access`
+  with 2FA → `/users/refresh`), the OpenSSL `EVP_BytesToKey`/MD5 `Salted__`
+  envelope, password→mnemonic decryption, an `InternxtSession` shaped for the
+  keychain, `bridge_pass = sha256(user_id)`, NFKD-normalised BIP-39 seed
+  derivation, verified file crypto, paginated listing tolerant of both
+  `result` and legacy `folders`/`files` shapes, network-bridge download and
+  upload (`files/start` → PUT → `files/finish` → `POST /files`,
+  `encryptVersion: "Aes03"`), `create_folder` and `trash`.
+
+  **Why it is the better base**, not merely the incumbent:
+  * **Sync** (`reqwest::blocking`) — `trait CloudDrive` is sync, so there is
+    no runtime bridge.  `internxt-core` is async throughout.
+  * **`resolve_path`** — the trait is path-addressed; `internxt-core` is
+    UUID-addressed and has no path resolution at all.  That is the single
+    largest piece it would not give us.
+  * **Dependency alignment** — `aes 0.8`, `ctr 0.9`, `pbkdf2 0.12`,
+    `sha2 0.10` match the tree, so no duplicate RustCrypto majors, no
+    `tokio` `full`, no `pgp`, no `safe_pqc_kyber`.
+  * A **standalone CLI** exercising the same code path, which is exactly the
+    lever P33.2 needs.
+
+  **Where [`internxt-core`](https://github.com/Bebbssos/internxt-core-rust)
+  (MIT) is genuinely ahead — crib from it, do not adopt it wholesale:**
+
+  | Gap here | Look at |
   |---|---|
-  | `list_dir` | `api::get_folder_subfolders`, `get_folder_subfiles` |
-  | `stat` | `api::get_file_meta`, `get_folder_meta` |
-  | `read_file` | `transfer::download_file_to_writer` (**streaming**) |
-  | `write_file` | `api::create_file_entry`/`replace_file` + `transfer::upload_stream_to_network` (**streaming**) |
-  | `delete` | `api::delete_file`, `delete_folder`, `trash_items` |
-  | — | plus `move_*`, `rename_*`, trash pagination, ancestors |
+  | `upload_file` refuses ≥100 MiB; single-part only | `transfer::upload_stream_to_network` (multipart + streaming) |
+  | Whole files buffered in `Vec<u8>` | `transfer::download_file_to_writer` |
+  | No token refresh, so sessions expire | `api::refresh_user_token`, `auth::refresh_credentials` |
+  | No move/rename | `api::move_file`/`move_folder`, `rename_*` |
+  | `resolve_path` re-lists every component, uncached | (nothing — but cache it) |
 
-  `crypto.rs` additionally has `generate_file_key`, `pass_to_hash` and
-  `decrypt_text_with_key` — the last being the password→mnemonic step that
-  gates login — plus `auth::login` with 2FA, SSO, workspace keys and Kyber
-  decapsulation.  Hand-porting 9k LOC of Dart to reach the same place is
-  strictly more work with strictly more crypto risk.
+  Also worth a look when the need arises: SSO (`sso::login`), workspaces
+  (`decrypt_workspace_key`), thumbnails, and `ProgressSink` as a model for
+  progress reporting.  It is MIT, so reading and lifting individual
+  functions is unencumbered.
 
-  **Vendor a fork rather than depending on crates.io** (the `pdf-zpdf`
-  pattern: git dep pinned to a `rev` on `CrispStrobe/…`).  Reasons, all of
-  which are about control rather than doubt: 0.x with declared breaking
-  changes between releases and a single author; `reqwest` is taken with
-  default features, so mobile needs `default-features = false` + rustls;
-  `tokio` is taken as `full`; and its RustCrypto majors run ahead of ours
-  (`aes ^0.9` against our 0.8.4 via `lopdf`/`zip`), so either accept
-  duplicate crates or align them in the fork.  Behind a
-  `drive-internxt-native` feature, with credentials in the OS keychain
-  rather than `drives.json`.
+  Remaining work here: wire `InternxtDrive` to the crate behind
+  `drive-internxt-native`, put the session in the OS keychain rather than
+  `drives.json`, close the streaming/refresh gaps above, and confirm the
+  crate builds for `aarch64-apple-ios` with rustls rather than dragging
+  OpenSSL in.
 
-  One design point to settle first: the crate is **async**, `CloudDrive` is
-  **sync**.  Either bridge with a runtime handle or take the opportunity to
-  add the streaming trait methods discussed in P33.5 — the crate's streaming
-  upload/download is wasted through a `Vec<u8>` interface.
-
-  Our `../internxt-dart` stays valuable as the **oracle** (P33.2) and as a
-  second opinion where the crate looks wrong.  The hand-written
-  `drives/internxt_native.rs` (commit `c53b12b`) is *not* wasted either: its
-  four vectors were cross-checked against `internxt-dart` and an independent
-  Python recomputation and all agree, so keep it as a conformance test that
-  the vendored crate derives the same keys.  Two implementations agreeing on
-  the same vectors is exactly what P33.2 asks for.
-
-  Confirm before shipping: builds for `aarch64-apple-ios`, and TLS goes
-  through rustls on mobile rather than dragging OpenSSL in.
+  `../internxt-dart` stays the **oracle** (P33.2), not a port source.
 
 - [ ] **P33.2 — Verify the crypto against the reference client, not our own
   tests.**  `internxt-core` claims byte-for-byte compatibility with the
