@@ -173,13 +173,30 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
     Apple processes an upload asynchronously; a build in PROCESSING cannot be
     assigned to a group, so waiting is part of the job rather than something
     the caller should have to know.
+
+    `version` matches either identifier, because the two are easy to confuse
+    and the failure is expensive: a build's own `attributes.version` is the
+    **build number** ("131"), while the marketing semver ("0.11.0") lives on
+    the related `preReleaseVersion`. `release.yml` passes the semver, so an
+    earlier revision that compared only `attributes.version` could never match
+    — it spun for the full 25 minutes and then reported "the upload never
+    arrived" about a build sitting right there in the list.
     """
     q = urllib.parse.urlencode({
         "filter[app]": app_id,
         "filter[preReleaseVersion.platform]": platform,
         "sort": "-version",
         "limit": "5",
-        "fields[builds]": "version,processingState,uploadedDate,usesNonExemptEncryption",
+        # `preReleaseVersion` must appear in the sparse fieldset as well, not
+        # just in `include`: with `fields[builds]` set and the relationship
+        # left out, Apple returns the build objects with no `relationships`
+        # key at all, so the semver cannot be tied back to its build even
+        # though the preReleaseVersions are present in `included`. Verified
+        # against the live API — dropping it silently reinstates the bug above.
+        "fields[builds]": ("version,processingState,uploadedDate,"
+                           "usesNonExemptEncryption,preReleaseVersion"),
+        "include": "preReleaseVersion",
+        "fields[preReleaseVersions]": "version,platform",
     })
     deadline = time.time() + wait_minutes * 60
     seen = None
@@ -204,14 +221,24 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25):
         if status != 200:
             sys.exit(f"listing builds failed ({status}): {errors_of(payload)}")
         builds = payload.get("data", [])
+        semvers = {i["id"]: i.get("attributes", {}).get("version")
+                   for i in payload.get("included", [])
+                   if i.get("type") == "preReleaseVersions"}
+
+        def semver_of(b):
+            rel = b.get("relationships", {}).get("preReleaseVersion", {}).get("data")
+            return semvers.get(rel["id"]) if rel else None
+
         if version:
-            builds = [b for b in builds if b["attributes"].get("version") == version]
+            builds = [b for b in builds
+                      if version in (b["attributes"].get("version"), semver_of(b))]
         if builds:
             b = builds[0]
             state = b["attributes"].get("processingState")
-            seen = f"{b['attributes'].get('version')} ({state})"
+            label = f"{semver_of(b) or '?'} ({b['attributes'].get('version')})"
+            seen = f"{label} {state}"
             if state == "VALID":
-                log(f"   build {b['id']} version {b['attributes'].get('version')} is VALID")
+                log(f"   build {b['id']} version {label} is VALID")
                 return b
             if state in ("INVALID", "FAILED"):
                 sys.exit(f"build {b['id']} processing state is {state} — nothing to distribute")
