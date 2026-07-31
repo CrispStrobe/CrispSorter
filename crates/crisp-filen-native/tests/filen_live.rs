@@ -152,8 +152,21 @@ fn filen_live_native_mutations() {
         b"path transfer fixture",
     )
     .unwrap();
+    let expected_modified = 1_700_000_123_000i64;
+    std::fs::File::open(local_tree.path().join("subdir").join("path.txt"))
+        .unwrap()
+        .set_modified(
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(expected_modified as u64),
+        )
+        .unwrap();
     client
-        .upload_path(&folder_uuid, "path-tree", "text/plain", local_tree.path())
+        .upload_path_with_timestamps(
+            &folder_uuid,
+            "path-tree",
+            "text/plain",
+            local_tree.path(),
+            true,
+        )
         .unwrap();
     let path_root = client
         .resolve_path(
@@ -163,11 +176,22 @@ fn filen_live_native_mutations() {
         .unwrap();
     let local_download = tempfile::tempdir().unwrap();
     let downloaded_tree = local_download.path().join("path-tree");
-    client.download_path(&path_root, &downloaded_tree).unwrap();
+    client
+        .download_path_with_timestamps(&path_root, &downloaded_tree, true)
+        .unwrap();
+    let downloaded_file = downloaded_tree.join("subdir/path.txt");
     assert_eq!(
-        fs::read(downloaded_tree.join("subdir/path.txt")).unwrap(),
+        fs::read(&downloaded_file).unwrap(),
         b"path transfer fixture"
     );
+    let downloaded_modified = fs::metadata(downloaded_file)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!((downloaded_modified - expected_modified).abs() < 5_000);
     let mut resumable = client
         .begin_upload(&folder_uuid, "before.txt", "text/plain", 16)
         .unwrap();
