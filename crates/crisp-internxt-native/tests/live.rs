@@ -46,6 +46,51 @@ fn live_multipart_upload_download_round_trip() {
     result.unwrap();
 }
 
+#[test]
+#[ignore = "mutates a real Internxt account; run explicitly with --ignored"]
+fn live_search_copy_and_update_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    run_search_copy_update(&email, &password, tfa.as_deref()).unwrap();
+}
+
+fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Result<()> {
+    let session =
+        InternxtNativeClient::login_without_keys(DEFAULT_DRIVE_API_URL, email, password, tfa)?;
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token)?;
+    let source_name = unique_name("CrispSorter Rust lifecycle source");
+    let target_name = unique_name("CrispSorter Rust lifecycle target");
+    let source_uuid = client.create_folder(&session.root_folder_id, &source_name)?;
+    let target_uuid = client.create_folder(&session.root_folder_id, &target_name)?;
+    let source_path = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-source"));
+    let replacement_path =
+        std::env::temp_dir().join(unique_name("crispsorter-lifecycle-replacement"));
+    std::fs::write(&source_path, b"before")?;
+    std::fs::write(&replacement_path, b"after")?;
+    let result = (|| -> Result<()> {
+        client.upload_path(&session, &source_uuid, "lifecycle", "txt", &source_path)?;
+        let item = client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
+        let matches = client.search_files(&session, "lifecycle.*", true, -1)?;
+        assert!(matches.iter().any(|entry| entry.item.uuid == item.uuid));
+        let copied = client.copy_file(&session, &item.uuid, &target_uuid, Some("copied"))?;
+        assert_eq!(copied.name, "copied.txt");
+        client.update_file(&session, &item.uuid, &replacement_path)?;
+        let updated =
+            client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
+        let downloaded = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-download"));
+        client.download_file_to_path(&session, &updated.uuid, &downloaded)?;
+        assert_eq!(std::fs::read(downloaded)?, b"after");
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(source_path);
+    let _ = std::fs::remove_file(replacement_path);
+    let _ = client.trash(&source_uuid, "folder");
+    let _ = client.trash(&target_uuid, "folder");
+    result
+}
+
 fn run_small_round_trip(email: &str, password: &str, tfa: Option<&str>) -> Result<()> {
     let session =
         InternxtNativeClient::login_without_keys(DEFAULT_DRIVE_API_URL, email, password, tfa)?;

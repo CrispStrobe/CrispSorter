@@ -19,7 +19,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use unicode_normalization::UnicodeNormalization;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
@@ -34,6 +34,7 @@ const MAX_MULTIPARTS: usize = 10_000;
 const MAX_UPLOAD_RETRIES: usize = 3;
 const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
 const DOWNLOAD_PART_SIZE: u64 = 30 * 1024 * 1024;
+const LISTING_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
@@ -230,6 +231,18 @@ pub struct NativeItem {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResult {
+    pub path: PathBuf,
+    pub item: NativeItem,
+}
+
+#[derive(Debug, Clone)]
+struct CachedListing {
+    expires_at: Instant,
+    items: Vec<NativeItem>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictPolicy {
     Fail,
@@ -264,6 +277,7 @@ pub struct InternxtNativeClient {
     base_url: String,
     bearer_token: String,
     http: Client,
+    listing_cache: Arc<Mutex<std::collections::HashMap<String, CachedListing>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,6 +401,7 @@ impl InternxtNativeClient {
             base_url,
             bearer_token: bearer_token.into(),
             http,
+            listing_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -636,6 +651,172 @@ impl InternxtNativeClient {
         self.json_response(response, &url)
     }
 
+    pub fn folder_metadata(&self, folder_uuid: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/folders/{folder_uuid}/meta", self.base_url);
+        let response = self.bearer_response(reqwest::Method::GET, &url)?;
+        self.json_response(response, &url)
+    }
+
+    /// Update a file by streaming a replacement beside the original, then
+    /// swapping names. This preserves the gateway's immutable content model
+    /// while avoiding a plaintext buffer in memory.
+    pub fn update_file(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        replacement: &Path,
+    ) -> Result<()> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let parent = metadata
+            .get("folderUuid")
+            .or_else(|| metadata.get("folderId"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no parent folder"))?;
+        let plain_name = metadata
+            .get("plainName")
+            .or_else(|| metadata.get("name"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no plain name"))?;
+        let file_type = metadata
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("file");
+        let temporary_name = format!(".crispsorter-update-{}", transfer_token());
+        self.upload_path(session, parent, &temporary_name, file_type, replacement)?;
+        let temporary = self
+            .existing_child(
+                parent,
+                &format_remote_name(&temporary_name, file_type),
+                false,
+            )?
+            .ok_or_else(|| anyhow!("replacement upload was not visible in its parent folder"))?;
+        let result = (|| {
+            self.trash(file_uuid, "file")?;
+            self.rename_file(&temporary.uuid, plain_name, file_type)
+        })();
+        if result.is_err() {
+            let _ = self.trash(&temporary.uuid, "file");
+        }
+        result
+    }
+
+    /// Copy a remote file through a bounded on-disk temporary file.
+    pub fn copy_file(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        destination_folder_uuid: &str,
+        name_override: Option<&str>,
+    ) -> Result<NativeItem> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let name = name_override
+            .or_else(|| metadata.get("plainName").and_then(|value| value.as_str()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no plain name"))?;
+        let file_type = metadata
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("file");
+        let temporary = std::env::temp_dir().join(format!("crispsorter-copy-{}", transfer_token()));
+        self.download_file_to_path_ranged(session, file_uuid, &temporary)?;
+        let result = (|| {
+            self.upload_path(
+                session,
+                destination_folder_uuid,
+                name,
+                file_type,
+                &temporary,
+            )?;
+            self.existing_child(
+                destination_folder_uuid,
+                &format_remote_name(name, file_type),
+                false,
+            )?
+            .ok_or_else(|| anyhow!("copied file was not visible in destination folder"))
+        })();
+        let _ = fs::remove_file(&temporary);
+        result
+    }
+
+    /// Recursively copy a remote folder and its contents.
+    pub fn copy_folder(
+        &self,
+        session: &InternxtSession,
+        source_folder_uuid: &str,
+        destination_parent_uuid: &str,
+        name_override: Option<&str>,
+    ) -> Result<(NativeItem, TransferStats)> {
+        let source = self.folder_metadata(source_folder_uuid)?;
+        let name = name_override
+            .or_else(|| source.get("plainName").and_then(|value| value.as_str()))
+            .ok_or_else(|| anyhow!("Internxt folder metadata has no plain name"))?;
+        let new_uuid = self.create_folder(destination_parent_uuid, name)?;
+        let mut stats = TransferStats {
+            folders: 1,
+            ..TransferStats::default()
+        };
+        for item in self.list_folder_cached(source_folder_uuid)? {
+            if item.is_dir {
+                let (_, child) = self.copy_folder(session, &item.uuid, &new_uuid, None)?;
+                stats.files += child.files;
+                stats.folders += child.folders;
+                stats.bytes += child.bytes;
+                stats.skipped += child.skipped;
+            } else {
+                let copied = self.copy_file(session, &item.uuid, &new_uuid, None)?;
+                stats.files += 1;
+                stats.bytes += copied.size;
+            }
+        }
+        Ok((
+            NativeItem {
+                name: name.to_owned(),
+                uuid: new_uuid,
+                is_dir: true,
+                size: 0,
+            },
+            stats,
+        ))
+    }
+
+    pub fn set_file_timestamp(&self, file_uuid: &str, timestamp: &str) -> Result<()> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "plainName": metadata.get("plainName").and_then(|v| v.as_str()).unwrap_or(""),
+            "type": metadata.get("type").and_then(|v| v.as_str()).unwrap_or("file"),
+            "modificationTime": timestamp,
+        }))?;
+        let url = format!("{}/files/{file_uuid}/meta", self.base_url);
+        let response = self.bearer_request(reqwest::Method::PUT, &url, body)?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Internxt file timestamp update returned {}: {}",
+                response.status(),
+                response.text().unwrap_or_default()
+            ));
+        }
+        self.clear_listing_cache();
+        Ok(())
+    }
+
+    pub fn set_folder_timestamp(&self, folder_uuid: &str, timestamp: &str) -> Result<()> {
+        let metadata = self.folder_metadata(folder_uuid)?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "plainName": metadata.get("plainName").and_then(|v| v.as_str()).unwrap_or(""),
+            "modificationTime": timestamp,
+        }))?;
+        let url = format!("{}/folders/{folder_uuid}/meta", self.base_url);
+        let response = self.bearer_request(reqwest::Method::PUT, &url, body)?;
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Internxt folder timestamp update returned {}: {}",
+                response.status(),
+                response.text().unwrap_or_default()
+            ));
+        }
+        self.clear_listing_cache();
+        Ok(())
+    }
+
     fn json_response(&self, response: Response, url: &str) -> Result<serde_json::Value> {
         let status = response.status();
         let body = response
@@ -866,6 +1047,7 @@ impl InternxtNativeClient {
             self.bearer_request(reqwest::Method::POST, &create_url, create_body)?,
             &create_url,
         )?;
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1498,6 +1680,91 @@ impl InternxtNativeClient {
         Ok(entries)
     }
 
+    /// List a folder with a short-lived in-memory cache. Mutating operations
+    /// clear this cache because the gateway does not expose reliable etags.
+    pub fn list_folder_cached(&self, folder_uuid: &str) -> Result<Vec<NativeItem>> {
+        if let Ok(mut cache) = self.listing_cache.lock() {
+            if let Some(entry) = cache.get(folder_uuid) {
+                if entry.expires_at > Instant::now() {
+                    return Ok(entry.items.clone());
+                }
+                cache.remove(folder_uuid);
+            }
+        }
+        let items = self.list_folder(folder_uuid)?;
+        if let Ok(mut cache) = self.listing_cache.lock() {
+            cache.insert(
+                folder_uuid.to_owned(),
+                CachedListing {
+                    expires_at: Instant::now() + LISTING_CACHE_TTL,
+                    items: items.clone(),
+                },
+            );
+        }
+        Ok(items)
+    }
+
+    pub fn clear_listing_cache(&self) {
+        if let Ok(mut cache) = self.listing_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// Find files recursively by a shell-style `*`/`?` pattern.
+    pub fn search_files(
+        &self,
+        session: &InternxtSession,
+        pattern: &str,
+        case_sensitive: bool,
+        max_depth: isize,
+    ) -> Result<Vec<SearchResult>> {
+        let mut results = Vec::new();
+        self.search_folder(
+            &session.root_folder_id,
+            Path::new(""),
+            pattern,
+            case_sensitive,
+            max_depth,
+            0,
+            &mut results,
+        )?;
+        results.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(results)
+    }
+
+    fn search_folder(
+        &self,
+        folder_uuid: &str,
+        parent_path: &Path,
+        pattern: &str,
+        case_sensitive: bool,
+        max_depth: isize,
+        depth: isize,
+        results: &mut Vec<SearchResult>,
+    ) -> Result<()> {
+        for item in self.list_folder_cached(folder_uuid)? {
+            let path = parent_path.join(&item.name);
+            if !item.is_dir && wildcard_matches(&item.name, pattern, case_sensitive) {
+                results.push(SearchResult {
+                    path: path.clone(),
+                    item: item.clone(),
+                });
+            }
+            if item.is_dir && (max_depth < 0 || depth < max_depth) {
+                self.search_folder(
+                    &item.uuid,
+                    &path,
+                    pattern,
+                    case_sensitive,
+                    max_depth,
+                    depth + 1,
+                    results,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn resolve_path(
         &self,
         session: &InternxtSession,
@@ -1518,7 +1785,7 @@ impl InternxtNativeClient {
                 return Err(anyhow!("Internxt path traverses through a file"));
             }
             current = self
-                .list_folder(&current.uuid)?
+                .list_folder_cached(&current.uuid)?
                 .into_iter()
                 .find(|item| item.name == component)
                 .ok_or_else(|| anyhow!("Internxt path component not found: {component}"))?;
@@ -1536,12 +1803,16 @@ impl InternxtNativeClient {
             self.bearer_request(reqwest::Method::POST, &url, body)?,
             &url,
         )?;
-        value
+        let result = value
             .get("uuid")
             .or_else(|| value.get("id"))
             .and_then(|v| v.as_str())
             .map(str::to_owned)
-            .ok_or_else(|| anyhow!("Internxt folder creation returned no UUID"))
+            .ok_or_else(|| anyhow!("Internxt folder creation returned no UUID"));
+        if result.is_ok() {
+            self.clear_listing_cache();
+        }
+        result
     }
 
     pub fn trash(&self, uuid: &str, kind: &str) -> Result<()> {
@@ -1555,6 +1826,7 @@ impl InternxtNativeClient {
             let body = response.text().unwrap_or_default();
             return Err(anyhow!("Internxt trash endpoint returned {status}: {body}"));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1577,6 +1849,7 @@ impl InternxtNativeClient {
             let body = response.text().unwrap_or_default();
             return Err(anyhow!("Internxt move endpoint returned {status}: {body}"));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1592,6 +1865,7 @@ impl InternxtNativeClient {
             let body = response.text().unwrap_or_default();
             return Err(anyhow!("Internxt file rename returned {status}: {body}"));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1604,6 +1878,7 @@ impl InternxtNativeClient {
             let body = response.text().unwrap_or_default();
             return Err(anyhow!("Internxt folder rename returned {status}: {body}"));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1632,6 +1907,7 @@ impl InternxtNativeClient {
                 response.text().unwrap_or_default()
             ));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1653,6 +1929,7 @@ impl InternxtNativeClient {
                 response.text().unwrap_or_default()
             ));
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1801,6 +2078,7 @@ impl InternxtNativeClient {
                 stats.bytes += metadata.len();
             }
         }
+        self.clear_listing_cache();
         Ok(())
     }
 
@@ -1832,7 +2110,7 @@ impl InternxtNativeClient {
         policy: ConflictPolicy,
         stats: &mut TransferStats,
     ) -> Result<()> {
-        for item in self.list_folder(remote_folder_uuid)? {
+        for item in self.list_folder_cached(remote_folder_uuid)? {
             let local = local_root.join(sanitize_filename(&item.name));
             if item.is_dir {
                 if local.exists() {
@@ -1876,7 +2154,7 @@ impl InternxtNativeClient {
         is_dir: bool,
     ) -> Result<Option<NativeItem>> {
         Ok(self
-            .list_folder(parent_uuid)?
+            .list_folder_cached(parent_uuid)?
             .into_iter()
             .find(|item| item.is_dir == is_dir && item.name == name))
     }
@@ -1896,6 +2174,46 @@ pub fn sanitize_filename(filename: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn transfer_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("OS randomness unavailable");
+    hex::encode(bytes)
+}
+
+fn wildcard_matches(value: &str, pattern: &str, case_sensitive: bool) -> bool {
+    let value = if case_sensitive {
+        value.to_owned()
+    } else {
+        value.to_ascii_lowercase()
+    };
+    let pattern = if case_sensitive {
+        pattern.to_owned()
+    } else {
+        pattern.to_ascii_lowercase()
+    };
+    let value = value.as_bytes();
+    let pattern = pattern.as_bytes();
+    let mut previous = vec![false; pattern.len() + 1];
+    previous[0] = true;
+    for index in 0..pattern.len() {
+        if pattern[index] == b'*' {
+            previous[index + 1] = previous[index];
+        }
+    }
+    for &character in value {
+        let mut current = vec![false; pattern.len() + 1];
+        for (index, &token) in pattern.iter().enumerate() {
+            current[index + 1] = match token {
+                b'*' => current[index] || previous[index + 1],
+                b'?' => previous[index],
+                literal => previous[index] && literal == character,
+            };
+        }
+        previous = current;
+    }
+    previous[pattern.len()]
 }
 
 fn split_remote_name(name: &str) -> (&str, &str) {
@@ -2098,6 +2416,20 @@ mod tests {
         assert_eq!(sanitize_filename(" report?.txt "), "report_.txt");
         assert_eq!(sanitize_filename("..."), "unnamed_file");
         assert_eq!(sanitize_filename("nested/name"), "nested_name");
+    }
+
+    #[test]
+    fn wildcard_matching_supports_stars_questions_and_case_folding() {
+        assert!(wildcard_matches("Report-2026.pdf", "Report-????.pdf", true));
+        assert!(wildcard_matches("Report-2026.pdf", "report-*.PDF", false));
+        assert!(!wildcard_matches(
+            "Report-2026.pdf",
+            "report-????.txt",
+            false
+        ));
+        assert!(wildcard_matches("abc", "a*c", true));
+        assert!(wildcard_matches("abc", "*", true));
+        assert!(wildcard_matches("abc", "***", true));
     }
 
     #[test]

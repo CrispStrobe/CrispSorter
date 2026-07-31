@@ -65,6 +65,35 @@ enum Command {
         #[arg(long, default_value = "fail")]
         on_conflict: String,
     },
+    /// Search recursively using a shell-style filename pattern.
+    Search {
+        session: PathBuf,
+        pattern: String,
+        #[arg(long)]
+        case_sensitive: bool,
+        #[arg(long, default_value_t = -1)]
+        max_depth: isize,
+    },
+    /// Copy a remote file or folder into another remote folder.
+    Copy {
+        session: PathBuf,
+        remote: PathBuf,
+        destination: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Replace a remote file's content from a local path.
+    Update {
+        session: PathBuf,
+        remote: PathBuf,
+        local: PathBuf,
+    },
+    /// Set a remote file or folder modification timestamp.
+    Touch {
+        session: PathBuf,
+        remote: PathBuf,
+        timestamp: String,
+    },
     /// Move a remote file or folder to trash.
     Delete { session: PathBuf, remote: PathBuf },
     /// Move a remote file or folder into another remote folder.
@@ -159,7 +188,7 @@ fn run() -> Result<()> {
                 "remote path is not a folder: {}",
                 path.display()
             );
-            for entry in client.list_folder(&item.uuid)? {
+            for entry in client.list_folder_cached(&item.uuid)? {
                 print_item(&entry);
             }
         }
@@ -238,6 +267,70 @@ fn run() -> Result<()> {
                 "downloaded {} file(s), {} folder(s), {} bytes ({} skipped)",
                 stats.files, stats.folders, stats.bytes, stats.skipped
             );
+        }
+        Command::Search {
+            session,
+            pattern,
+            case_sensitive,
+            max_depth,
+        } => {
+            let (client, value) = open(&session)?;
+            for result in client.search_files(&value, &pattern, case_sensitive, max_depth)? {
+                println!(
+                    "{}\t{}\t{}",
+                    result.item.uuid,
+                    result.item.size,
+                    result.path.display()
+                );
+            }
+        }
+        Command::Copy {
+            session,
+            remote,
+            destination,
+            name,
+        } => {
+            let (client, value) = open(&session)?;
+            let source = client.resolve_path(&value, &remote)?;
+            let target = client.resolve_path(&value, &destination)?;
+            anyhow::ensure!(target.is_dir, "copy destination is not a folder");
+            if source.is_dir {
+                let (_, stats) =
+                    client.copy_folder(&value, &source.uuid, &target.uuid, name.as_deref())?;
+                println!(
+                    "copied {} file(s), {} folder(s), {} bytes",
+                    stats.files, stats.folders, stats.bytes
+                );
+            } else {
+                let copied =
+                    client.copy_file(&value, &source.uuid, &target.uuid, name.as_deref())?;
+                println!("copied {}", copied.name);
+            }
+        }
+        Command::Update {
+            session,
+            remote,
+            local,
+        } => {
+            let (client, value) = open(&session)?;
+            let source = client.resolve_path(&value, &remote)?;
+            anyhow::ensure!(!source.is_dir, "cannot update a folder");
+            client.update_file(&value, &source.uuid, &local)?;
+            println!("updated {}", remote.display());
+        }
+        Command::Touch {
+            session,
+            remote,
+            timestamp,
+        } => {
+            let (client, value) = open(&session)?;
+            let item = client.resolve_path(&value, &remote)?;
+            if item.is_dir {
+                client.set_folder_timestamp(&item.uuid, &timestamp)?;
+            } else {
+                client.set_file_timestamp(&item.uuid, &timestamp)?;
+            }
+            println!("updated timestamp for {}", remote.display());
         }
         Command::Delete { session, remote } => {
             let (client, value) = open(&session)?;
