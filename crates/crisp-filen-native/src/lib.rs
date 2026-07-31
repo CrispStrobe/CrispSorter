@@ -1558,6 +1558,37 @@ impl FilenNativeClient {
         self.upload_file(&item.parent, &item.name, mime, data)
     }
 
+    /// Replace a remote file from a reader without materializing plaintext in
+    /// memory. The existing item is trashed before the replacement is
+    /// uploaded, matching the gateway-safe semantics of `replace_file`.
+    pub fn replace_file_from_reader<R: std::io::Read>(
+        &self,
+        item: &NativeItem,
+        mime: &str,
+        size: u64,
+        reader: R,
+    ) -> Result<()> {
+        anyhow::ensure!(!item.is_dir, "cannot replace a folder with file data");
+        self.trash(&item.uuid, "file")?;
+        self.upload_file_from_reader(&item.parent, &item.name, mime, size, reader)
+    }
+
+    /// Replace a remote file from a local path using the streaming reader
+    /// implementation.
+    pub fn replace_file_from_path(
+        &self,
+        item: &NativeItem,
+        mime: &str,
+        local_path: &Path,
+    ) -> Result<()> {
+        let metadata = std::fs::metadata(local_path)
+            .with_context(|| format!("reading Filen replacement {}", local_path.display()))?;
+        anyhow::ensure!(metadata.is_file(), "Filen replacement path is not a file");
+        let file = std::fs::File::open(local_path)
+            .with_context(|| format!("opening Filen replacement {}", local_path.display()))?;
+        self.replace_file_from_reader(item, mime, metadata.len(), file)
+    }
+
     pub fn delete_permanent(&self, uuid: &str, is_dir: bool) -> Result<()> {
         let result = self.request_empty(
             reqwest::Method::POST,
@@ -1575,8 +1606,28 @@ impl FilenNativeClient {
     }
 
     pub fn copy_file(&self, item: &NativeItem, destination_parent: &str) -> Result<()> {
-        let data = self.download_file(item)?;
-        self.upload_file(destination_parent, &item.name, &item.mime, &data)
+        anyhow::ensure!(!item.is_dir, "cannot copy a folder with copy_file");
+        let temporary =
+            std::env::temp_dir().join(format!(".crispsorter-filen-copy-{}", random_uuid()));
+        let result = (|| {
+            let mut file = std::fs::File::create(&temporary).with_context(|| {
+                format!("creating Filen copy staging file {}", temporary.display())
+            })?;
+            self.download_file_to_writer(item, &mut file)?;
+            drop(file);
+            let file = std::fs::File::open(&temporary).with_context(|| {
+                format!("opening Filen copy staging file {}", temporary.display())
+            })?;
+            self.upload_file_from_reader(
+                destination_parent,
+                &item.name,
+                &item.mime,
+                item.size,
+                file,
+            )
+        })();
+        let _ = std::fs::remove_file(&temporary);
+        result
     }
 
     /// Copy a complete subtree, preserving names and file MIME types.
@@ -2989,6 +3040,57 @@ mod tests {
         ]);
         let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
         client.trash("file-1", "file").unwrap();
+    }
+
+    #[test]
+    fn hermetic_mutation_endpoints_accept_gateway_empty_successes() {
+        let gateway = spawn_http_server(
+            (0..8)
+                .map(|_| r#"{"status":true,"message":"ok","data":null}"#.into())
+                .collect(),
+        );
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        let key = [b'A'; 32];
+        let file = NativeItem {
+            uuid: "file-1".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 3,
+            parent: "root".into(),
+            file_key: Some(key),
+            bucket: "bucket".into(),
+            region: "region".into(),
+            chunks: 1,
+            version: 2,
+            mime: "text/plain".into(),
+            created: 11,
+            modified: 22,
+            hash: "hash".into(),
+        };
+        let folder = NativeItem {
+            uuid: "folder-1".into(),
+            name: "folder".into(),
+            is_dir: true,
+            size: 0,
+            parent: "root".into(),
+            file_key: None,
+            bucket: String::new(),
+            region: String::new(),
+            chunks: 0,
+            version: 0,
+            mime: String::new(),
+            created: 11,
+            modified: 22,
+            hash: String::new(),
+        };
+        client.move_item(&file.uuid, "destination", false).unwrap();
+        client.rename_item(&folder, "renamed-folder").unwrap();
+        client.rename_item(&file, "renamed.txt").unwrap();
+        client.update_timestamps(&folder, 101, 202).unwrap();
+        client.update_timestamps(&file, 303, 404).unwrap();
+        client.trash(&file.uuid, "file").unwrap();
+        client.restore(&folder.uuid, "folder").unwrap();
+        client.delete_permanent(&file.uuid, false).unwrap();
     }
 
     #[test]
