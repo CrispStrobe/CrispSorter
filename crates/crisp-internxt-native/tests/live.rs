@@ -105,6 +105,22 @@ fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Res
         let downloaded = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-download"));
         client.download_file_to_path(&session, &updated.uuid, &downloaded)?;
         assert_eq!(std::fs::read(downloaded)?, b"after");
+        let file_timestamp = client.set_file_timestamp(&updated.uuid, "2026-07-31T12:00:00.000Z");
+        assert!(file_timestamp
+            .as_ref()
+            .err()
+            .map(|error| error.to_string().contains("409"))
+            .unwrap_or(false));
+        let folder_timestamp =
+            client.set_folder_timestamp(&source_uuid, "2026-07-31T12:00:00.000Z");
+        assert!(
+            folder_timestamp.is_ok()
+                || folder_timestamp
+                    .as_ref()
+                    .err()
+                    .map(|error| error.to_string().contains("409"))
+                    .unwrap_or(false)
+        );
         Ok(())
     })();
     let _ = std::fs::remove_file(source_path);
