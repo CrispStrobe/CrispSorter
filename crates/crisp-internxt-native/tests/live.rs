@@ -215,6 +215,7 @@ fn run_python_cli<const N: usize>(
         .arg(cli)
         .args(args)
         .env("HOME", &isolated_home)
+        .env("INTERNXT_NO_KEYRING", "1")
         .env("INTERNXT_EMAIL", email)
         .env("INTERNXT_PASSWORD", password);
     if let Ok(secret) = std::env::var("INTERNXT_TFA_SECRET") {
