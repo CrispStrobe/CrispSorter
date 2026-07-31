@@ -327,22 +327,31 @@ pub struct InternxtNativeClient {
     listing_cache: Arc<Mutex<std::collections::HashMap<String, CachedListing>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UploadCheckpoint {
-    version: u8,
-    path: String,
-    bucket_id: String,
-    file_size: u64,
-    modified_ns: u128,
-    part_size: usize,
-    parts: usize,
-    index: String,
-    uuid: String,
-    upload_id: String,
-    urls: Vec<String>,
-    etags: Vec<Option<String>>,
-    created: u64,
+/// Durable state for a resumable upload.
+///
+/// The `index` is the stable file-encryption identity. The AES file key is
+/// deterministically re-derived from that index, the session mnemonic, and
+/// the bucket; it must never be regenerated during a resume. `uuid`,
+/// `upload_id`, presigned URLs, and completed-part ETags are persisted so a
+/// caller can safely inspect or move this state file between processes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UploadResumeState {
+    pub version: u8,
+    pub path: String,
+    pub bucket_id: String,
+    pub file_size: u64,
+    pub modified_ns: u128,
+    pub part_size: usize,
+    pub parts: usize,
+    pub index: String,
+    pub uuid: String,
+    pub upload_id: String,
+    pub urls: Vec<String>,
+    pub etags: Vec<Option<String>>,
+    pub created: u64,
 }
+
+type UploadCheckpoint = UploadResumeState;
 
 fn checkpoint_path(path: &Path, bucket_id: &str) -> PathBuf {
     let mut key = Sha256::new();
@@ -450,6 +459,31 @@ impl InternxtNativeClient {
             http,
             listing_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
+    }
+
+    /// Return the default durable state location used by [`upload_path`].
+    pub fn default_upload_resume_state_path(
+        &self,
+        session: &InternxtSession,
+        path: &Path,
+    ) -> PathBuf {
+        checkpoint_path(path, &session.bucket_id)
+    }
+
+    pub fn load_upload_resume_state(&self, state_path: &Path) -> Result<Option<UploadResumeState>> {
+        load_checkpoint(state_path)
+    }
+
+    pub fn save_upload_resume_state(
+        &self,
+        state_path: &Path,
+        state: &UploadResumeState,
+    ) -> Result<()> {
+        save_checkpoint(state_path, state)
+    }
+
+    pub fn clear_upload_resume_state(&self, state_path: &Path) {
+        remove_checkpoint(state_path);
     }
 
     /// Authenticate using Internxt's compatibility flow that does not upload
@@ -1177,6 +1211,31 @@ impl InternxtNativeClient {
         file_type: &str,
         path: &Path,
     ) -> Result<()> {
+        let state_path = self.default_upload_resume_state_path(session, path);
+        self.upload_path_with_resume_state(
+            session,
+            parent_folder_uuid,
+            plain_name,
+            file_type,
+            path,
+            &state_path,
+        )
+    }
+
+    /// Upload a local file using an explicit durable resume-state file.
+    /// Existing state is validated against the source before reuse; successful
+    /// completion removes the state file. The state file can be inspected or
+    /// persisted by callers through the `load/save/clear_upload_resume_state`
+    /// methods.
+    pub fn upload_path_with_resume_state(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        path: &Path,
+        state_path: &Path,
+    ) -> Result<()> {
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading upload metadata for {}", path.display()))?;
         let file_size = metadata.len();
@@ -1194,7 +1253,7 @@ impl InternxtNativeClient {
                 .div_ceil(16)
                 .saturating_mul(16) as usize;
         }
-        let cp_path = checkpoint_path(path, &session.bucket_id);
+        let cp_path = state_path;
         let mut checkpoint = load_checkpoint(&cp_path)?.filter(|value| {
             value.version == 1
                 && value.path == path.to_string_lossy()
@@ -2694,6 +2753,38 @@ mod tests {
         );
         assert!(!checkpoint.with_extension("tmp").exists());
         remove_checkpoint(&checkpoint);
+    }
+
+    #[test]
+    fn public_resume_state_api_round_trips_explicit_state_files() {
+        let client = InternxtNativeClient::new("http://127.0.0.1:1", "token").unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "crispsorter-explicit-resume-state-{}.json",
+            now_seconds()
+        ));
+        let state = UploadResumeState {
+            version: 1,
+            path: "/data/example.bin".into(),
+            bucket_id: "00".repeat(12),
+            file_size: 32 * 1024 * 1024,
+            modified_ns: 123,
+            part_size: UPLOAD_PART_SIZE,
+            parts: 3,
+            index: "11".repeat(32),
+            uuid: "shard-uuid".into(),
+            upload_id: "multipart-upload-id".into(),
+            urls: vec![
+                "https://one".into(),
+                "https://two".into(),
+                "https://three".into(),
+            ],
+            etags: vec![Some("etag-1".into()), None, Some("etag-3".into())],
+            created: now_seconds(),
+        };
+        client.save_upload_resume_state(&path, &state).unwrap();
+        assert_eq!(client.load_upload_resume_state(&path).unwrap(), Some(state));
+        client.clear_upload_resume_state(&path);
+        assert_eq!(client.load_upload_resume_state(&path).unwrap(), None);
     }
 
     #[test]

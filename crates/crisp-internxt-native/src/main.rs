@@ -49,6 +49,8 @@ enum Command {
         session: PathBuf,
         local: PathBuf,
         remote: PathBuf,
+        #[arg(long)]
+        resume_state: Option<PathBuf>,
     },
     /// Recursively upload a local directory into a remote folder.
     WriteTree {
@@ -218,6 +220,7 @@ fn run() -> Result<()> {
             session,
             local,
             remote,
+            resume_state,
         } => {
             let (client, value) = open(&session)?;
             let parent = remote.parent().unwrap_or_else(|| Path::new("."));
@@ -232,7 +235,18 @@ fn run() -> Result<()> {
                 .context("remote path has no file name")?
                 .to_string_lossy();
             let (stem, ext) = split_name(&name);
-            client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
+            if let Some(state_path) = resume_state {
+                client.upload_path_with_resume_state(
+                    &value,
+                    &folder.uuid,
+                    stem,
+                    ext,
+                    &local,
+                    &state_path,
+                )?;
+            } else {
+                client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
+            }
             println!("uploaded {}", remote.display());
         }
         Command::WriteTree {
