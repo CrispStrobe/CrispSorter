@@ -587,15 +587,17 @@ mod tests {
     #[test]
     fn mutation_methods_use_webdav_destination_headers() {
         let mut server = Server::new();
+        let moved_destination = format!("{}/dav/moved.txt", server.url());
+        let copied_destination = format!("{}/dav/copied.txt", server.url());
         let move_mock = server
             .mock("MOVE", "/dav/source.txt")
-            .match_header("Destination", &format!("{}/dav/moved.txt", server.url()))
+            .match_header("Destination", moved_destination.as_str())
             .match_header("Overwrite", "T")
             .with_status(201)
             .create();
         let copy_mock = server
             .mock("COPY", "/dav/source.txt")
-            .match_header("Destination", &format!("{}/dav/copied.txt", server.url()))
+            .match_header("Destination", copied_destination.as_str())
             .match_header("Overwrite", "F")
             .with_status(201)
             .create();
