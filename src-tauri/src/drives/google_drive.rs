@@ -620,4 +620,33 @@ mod tests {
         permission.assert();
         metadata.assert();
     }
+
+    #[test]
+    fn share_link_surfaces_expired_token_response() {
+        let mut server = Server::new();
+        let list = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"file-1","name":"report.pdf"}]}"#)
+            .create();
+        let permission = server
+            .mock("POST", "/drive/v3/files/file-1/permissions")
+            .match_query(mockito::Matcher::Any)
+            .with_status(401)
+            .with_body(r#"{"error":{"code":401,"message":"Invalid Credentials"}}"#)
+            .create();
+        let drive = GoogleDriveDrive::with_api_base(
+            "test".into(),
+            "expired".into(),
+            None,
+            None,
+            None,
+            format!("{}/drive/v3", server.url()),
+        );
+        let error = drive.share_link(Path::new("report.pdf")).unwrap_err();
+        assert!(error.to_string().contains("HTTP 401"));
+        list.assert();
+        permission.assert();
+    }
 }

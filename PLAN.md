@@ -1476,11 +1476,11 @@ a natural feature.
   inline notification. ✅ Shipped 2026-07-31. Provider-specific links are
   now implemented for OneDrive and Google Drive; WebDAV detection and
   disabled-state discovery remain pending.
-- [>] **Tests.**  Unit: URL format validation per provider, unsupported
+- [x] **Tests.**  Unit: URL format validation per provider, unsupported
   provider returns None, error handling for expired tokens. OneDrive URL
   construction, Google/unsupported-provider coverage, and a hermetic
-  Nextcloud OCS request/response test now pass; Graph error-path coverage
-  and expired-token tests remain.
+  Nextcloud OCS request/response test now pass; Google and Microsoft Graph
+  401 responses are also covered hermetically.
 
 #### Priority 6 — Cloud provider version history
 

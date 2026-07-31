@@ -535,4 +535,26 @@ mod tests {
         );
         mock.assert();
     }
+
+    #[test]
+    fn share_link_surfaces_expired_token_response() {
+        let mut server = Server::new();
+        let mock = server
+            .mock("POST", "/v1.0/me/drive/root:/report.pdf/createLink")
+            .match_header("authorization", "Bearer expired")
+            .with_status(401)
+            .with_body(r#"{"error":{"code":"InvalidAuthenticationToken"}}"#)
+            .create();
+        let drive = OneDriveDrive::with_graph_base(
+            "test".into(),
+            "expired".into(),
+            None,
+            None,
+            None,
+            format!("{}/v1.0", server.url()),
+        );
+        let error = drive.share_link(Path::new("report.pdf")).unwrap_err();
+        assert!(error.to_string().contains("HTTP 401"));
+        mock.assert();
+    }
 }
