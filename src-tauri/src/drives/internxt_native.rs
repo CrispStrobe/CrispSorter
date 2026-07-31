@@ -13,7 +13,8 @@ use ctr::Ctr128BE;
 use md5::{Digest as Md5Digest, Md5};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use sha2::Sha512;
+use sha2::{Sha256, Sha512};
+use unicode_normalization::UnicodeNormalization;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
 type Aes256CbcEnc = cbc::Encryptor<Aes256>;
@@ -110,6 +111,19 @@ impl InternxtSession {
     pub fn decode(serialized: &str) -> Result<Self> {
         serde_json::from_str(serialized).context("parsing Internxt session")
     }
+
+    /// Password for the S3-compatible bridge service, derived from the
+    /// account id rather than stored as a second secret.
+    pub fn bridge_pass(&self) -> String {
+        hex::encode(Sha256::digest(self.user_id.as_bytes()))
+    }
+
+    pub fn bucket_bytes(&self) -> Result<[u8; 12]> {
+        let bytes = hex::decode(&self.bucket_id).context("decoding Internxt bucket id")?;
+        bytes
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket id must contain 12 bytes"))
+    }
 }
 
 /// Derive the 64-byte BIP-39 seed for a mnemonic and optional passphrase.
@@ -117,6 +131,8 @@ impl InternxtSession {
 /// BIP-39 specifies PBKDF2-HMAC-SHA512 with 2048 rounds and the salt prefix
 /// `mnemonic`. The clients pass an empty passphrase for Internxt accounts.
 pub fn mnemonic_seed(mnemonic: &str, passphrase: &str) -> [u8; 64] {
+    let mnemonic = mnemonic.nfkd().collect::<String>();
+    let passphrase = passphrase.nfkd().collect::<String>();
     let salt = format!("mnemonic{passphrase}");
     let mut seed = [0u8; 64];
     pbkdf2::pbkdf2_hmac::<Sha512>(mnemonic.as_bytes(), salt.as_bytes(), 2048, &mut seed);
@@ -374,6 +390,38 @@ mod tests {
         assert_eq!(
             InternxtSession::decode(&session.encode().unwrap()).unwrap(),
             session
+        );
+    }
+
+    #[test]
+    fn session_derives_bridge_password_and_bucket_bytes() {
+        let session = InternxtSession {
+            drive_api_url: String::new(),
+            network_url: String::new(),
+            email: String::new(),
+            token: String::new(),
+            new_token: String::new(),
+            mnemonic: String::new(),
+            user_id: "user-id".into(),
+            root_folder_id: String::new(),
+            bridge_user: String::new(),
+            bucket_id: "00112233445566778899aabb".into(),
+        };
+        assert_eq!(
+            session.bridge_pass(),
+            "a7571ddec1df43045ac667d7c976bd1149fe9a2dbb3fb55357beed582e11538d"
+        );
+        assert_eq!(
+            session.bucket_bytes().unwrap(),
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb]
+        );
+    }
+
+    #[test]
+    fn mnemonic_seed_normalizes_unicode() {
+        assert_eq!(
+            mnemonic_seed("cafe\u{301}", "pass"),
+            mnemonic_seed("caf\u{e9}", "pass")
         );
     }
 }

@@ -2059,6 +2059,7 @@ dependencies = [
  "tokenizers 0.22.2",
  "tokio",
  "tokio-util",
+ "unicode-normalization",
  "usls",
  "uuid 1.23.3",
  "walkdir",

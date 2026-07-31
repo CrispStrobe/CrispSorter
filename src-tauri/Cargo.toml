@@ -180,6 +180,7 @@ lancedb      = { version = "0.26.2", default-features = false }
 lance        = { version = "2.0.0", default-features = false }
 tantivy      = "0.22"
 deunicode    = "1.6.0"
+unicode-normalization = { version = "0.1", optional = true }
 hf-hub       = { version = "0.4.3", features = ["tokio"] }
 # fastembed 5.x has real EmbeddingModel::BGEM3 (8192-token, multilingual) and
 # SparseModel::BGEM3 (multilingual sparse). lancedb has no ort dep so no conflict.
@@ -253,7 +254,7 @@ default = []
 desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
 # P33.1 — native Internxt protocol. Kept opt-in while the client is being
 # verified against the vendor's Python CLI in both directions.
-drive-internxt-native = ["dep:aes", "dep:cbc", "dep:cipher", "dep:ctr", "dep:pbkdf2"]
+drive-internxt-native = ["dep:aes", "dep:cbc", "dep:cipher", "dep:ctr", "dep:pbkdf2", "dep:unicode-normalization"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]
