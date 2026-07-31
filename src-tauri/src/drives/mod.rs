@@ -446,10 +446,22 @@ impl DriveRegistry {
                 config.label.clone(),
                 PathBuf::from(&config.path),
             )),
-            DriveType::Internxt => Box::new(internxt::InternxtDrive::new(
-                config.label.clone(),
-                PathBuf::from(&config.path),
-            )),
+            DriveType::Internxt => {
+                #[cfg(feature = "drive-internxt-native")]
+                {
+                    Box::new(internxt_native_drive::NativeInternxtDrive::from_keychain(
+                        config.label.clone(),
+                        &config.id,
+                    ))
+                }
+                #[cfg(not(feature = "drive-internxt-native"))]
+                {
+                    Box::new(internxt::InternxtDrive::new(
+                        config.label.clone(),
+                        PathBuf::from(&config.path),
+                    ))
+                }
+            }
             DriveType::WebDav => Box::new(webdav::WebDavDrive::new(
                 config.label.clone(),
                 config.path.clone(),
@@ -670,7 +682,10 @@ mod tests {
             msg.contains("iOS") && msg.contains("Android"),
             "should say which platforms cannot do this: {msg}"
         );
-        assert!(msg.contains("WebDAV"), "should offer the alternative: {msg}");
+        assert!(
+            msg.contains("WebDAV"),
+            "should offer the alternative: {msg}"
+        );
     }
 
     #[test]
