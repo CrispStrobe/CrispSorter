@@ -12,6 +12,13 @@ pub struct NativeInternxtDrive {
     session: Result<InternxtSession>,
 }
 
+fn split_remote_name(name: &str) -> (&str, &str) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, extension),
+        _ => (name, "file"),
+    }
+}
+
 impl NativeInternxtDrive {
     pub fn from_keychain(label: impl Into<String>, drive_id: &str) -> Self {
         let session = super::secret::get_session(drive_id)
@@ -107,7 +114,8 @@ impl CloudDrive for NativeInternxtDrive {
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow!("Internxt write path has no filename: {}", path.display()))?
-            .to_string_lossy();
+            .to_string_lossy()
+            .into_owned();
         let parent = path.parent().unwrap_or_else(|| Path::new("/"));
         let (session, client, folder_uuid) = self.resolve_parent(parent, true)?;
         let filename_path = PathBuf::from(filename.as_ref());
@@ -134,6 +142,88 @@ impl CloudDrive for NativeInternxtDrive {
     fn delete(&self, path: &Path) -> Result<()> {
         let (_session, client, item) = self.resolved(path)?;
         client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })
+    }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        self.resolve_parent(path, true).map(|_| ())
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let (_session, client, item) = self.resolved(source)?;
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+        let (_, _, destination_folder_uuid) = self.resolve_parent(destination_parent, false)?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| {
+                anyhow!(
+                    "move destination has no filename: {}",
+                    destination.display()
+                )
+            })?
+            .to_string_lossy()
+            .into_owned();
+
+        if item.name != destination_name {
+            if item.is_dir {
+                client.rename_folder(&item.uuid, &destination_name)?;
+            } else {
+                let (plain_name, file_type) = split_remote_name(&destination_name);
+                client.rename_file(&item.uuid, plain_name, file_type)?;
+            }
+        }
+        let source_parent = source.parent().unwrap_or_else(|| Path::new("/"));
+        if source_parent != destination_parent {
+            if item.is_dir {
+                client.move_folder(&item.uuid, &destination_folder_uuid)?;
+            } else {
+                client.move_file(&item.uuid, &destination_folder_uuid)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let (session, client, item) = self.resolved(source)?;
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+        let (_, _, destination_folder_uuid) = self.resolve_parent(destination_parent, false)?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| {
+                anyhow!(
+                    "copy destination has no filename: {}",
+                    destination.display()
+                )
+            })?
+            .to_string_lossy();
+
+        if item.is_dir {
+            client.copy_folder(
+                &session,
+                &item.uuid,
+                &destination_folder_uuid,
+                Some(&destination_name),
+            )?;
+        } else {
+            // The native copy API takes a plain name and retains the source
+            // extension. Rename the returned item afterward when the full
+            // destination leaf differs from the source leaf.
+            let copied = client.copy_file(&session, &item.uuid, &destination_folder_uuid, None)?;
+            if copied.name != destination_name {
+                let (plain_name, file_type) = split_remote_name(&destination_name);
+                client.rename_file(&copied.uuid, plain_name, file_type)?;
+            }
+        }
+        Ok(())
     }
 
     fn stat(&self, path: &Path) -> Result<FileStat> {
@@ -229,6 +319,11 @@ mod tests {
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
         assert_eq!(drive.label(), "Native Internxt");
         assert_eq!(drive.drive_type(), DriveType::Internxt);
+        let capabilities = drive.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(capabilities.copy);
     }
 
     #[test]
