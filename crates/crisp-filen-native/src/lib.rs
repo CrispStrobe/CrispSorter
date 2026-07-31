@@ -380,6 +380,11 @@ enum ResumableUploadEvent {
     Done { index: usize, result: Result<()> },
 }
 
+enum ResumableDownloadEvent {
+    Progress { index: usize, bytes: u64 },
+    Done { index: usize, result: Result<()> },
+}
+
 impl Default for BatchTransferState {
     fn default() -> Self {
         Self {
@@ -554,8 +559,12 @@ impl FilenNativeClient {
         jobs: Vec<UploadJob>,
         mut progress: F,
     ) -> Result<()> {
+        let mut last_completed = 0;
         self.upload_files_with_byte_progress(jobs, |completed, total, _, _| {
-            progress(completed, total)
+            if completed > last_completed {
+                last_completed = completed;
+                progress(completed, total);
+            }
         })
     }
 
@@ -616,11 +625,17 @@ impl FilenNativeClient {
         conflict: BatchConflictPolicy,
         mut progress: F,
     ) -> Result<()> {
+        let mut last_completed = 0;
         self.upload_files_resumable_with_byte_progress(
             jobs,
             state_path,
             conflict,
-            |completed, total, _, _| progress(completed, total),
+            |completed, total, _, _| {
+                if completed > last_completed {
+                    last_completed = completed;
+                    progress(completed, total);
+                }
+            },
         )
     }
 
@@ -2307,6 +2322,46 @@ impl FilenNativeClient {
         Ok(())
     }
 
+    fn remote_path_size(&self, item: &NativeItem) -> Result<u64> {
+        if !item.is_dir {
+            return Ok(item.size);
+        }
+        self.list_folder(&item.uuid)?
+            .into_iter()
+            .map(|child| self.remote_path_size(&child))
+            .sum()
+    }
+
+    fn download_path_with_progress<F: FnMut(&str, u64, u64)>(
+        &self,
+        item: &NativeItem,
+        local_path: &Path,
+        progress: &mut F,
+    ) -> Result<()> {
+        if item.is_dir {
+            std::fs::create_dir_all(local_path).with_context(|| {
+                format!("creating local Filen destination {}", local_path.display())
+            })?;
+            for child in self.list_folder(&item.uuid)? {
+                self.download_path_with_progress(&child, &local_path.join(&child.name), progress)?;
+            }
+            return Ok(());
+        }
+        if let Some(parent) = local_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(local_path).with_context(|| {
+            format!("creating local Filen destination {}", local_path.display())
+        })?;
+        self.download_file_to_writer_with_progress(item, &mut file, |done, total| {
+            progress(&item.uuid, done, total)
+        })?;
+        Ok(())
+    }
+
     /// Download only the byte range requested. Only the necessary encrypted
     /// chunks are fetched; the first and last plaintext chunks are trimmed
     /// after authenticated decryption.
@@ -2452,8 +2507,12 @@ impl FilenNativeClient {
         items: Vec<NativeItem>,
         mut progress: F,
     ) -> Result<Vec<Vec<u8>>> {
+        let mut last_completed = 0;
         self.download_files_with_byte_progress(items, |completed, total, _, _| {
-            progress(completed, total)
+            if completed > last_completed {
+                last_completed = completed;
+                progress(completed, total);
+            }
         })
     }
 
@@ -2512,6 +2571,30 @@ impl FilenNativeClient {
         conflict: BatchConflictPolicy,
         mut progress: F,
     ) -> Result<()> {
+        let mut last_completed = 0;
+        self.download_paths_resumable_with_byte_progress(
+            jobs,
+            state_path,
+            conflict,
+            |completed, total, _, _| {
+                if completed > last_completed {
+                    last_completed = completed;
+                    progress(completed, total);
+                }
+            },
+        )
+    }
+
+    /// Resumable recursive download with serialized aggregate byte progress.
+    /// Progress includes decrypted chunks from nested files and treats a
+    /// skipped local conflict as completed bytes.
+    pub fn download_paths_resumable_with_byte_progress<F: FnMut(usize, usize, u64, u64)>(
+        &self,
+        jobs: Vec<DownloadPathJob>,
+        state_path: &Path,
+        conflict: BatchConflictPolicy,
+        mut progress: F,
+    ) -> Result<()> {
         let mut state = Self::load_batch_transfer_state(state_path)?.unwrap_or_default();
         anyhow::ensure!(state.version == 1, "unsupported Filen batch state version");
         state.completed.sort_unstable();
@@ -2521,12 +2604,13 @@ impl FilenNativeClient {
         let total = jobs.len();
         let jobs = jobs.as_slice();
         let next = Arc::new(AtomicUsize::new(0));
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel::<ResumableDownloadEvent>();
         let state_path = state_path.to_owned();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 let next = Arc::clone(&next);
                 let sender = sender.clone();
+                let progress_sender = sender.clone();
                 let shared_state = Arc::clone(&shared_state);
                 let state_path = state_path.clone();
                 scope.spawn(move || loop {
@@ -2574,7 +2658,23 @@ impl FilenNativeClient {
                                 return Ok(());
                             }
                         }
-                        self.download_path(&job.item, &job.local_path)?;
+                        let mut file_progress = HashMap::<String, u64>::new();
+                        let mut job_bytes = 0u64;
+                        let mut report_progress = |uuid: &str, done: u64, _total: u64| {
+                            let previous = file_progress.get(uuid).copied().unwrap_or(0);
+                            let current = done.max(previous);
+                            file_progress.insert(uuid.to_owned(), current);
+                            job_bytes += current - previous;
+                            let _ = progress_sender.send(ResumableDownloadEvent::Progress {
+                                index,
+                                bytes: job_bytes,
+                            });
+                        };
+                        self.download_path_with_progress(
+                            &job.item,
+                            &job.local_path,
+                            &mut report_progress,
+                        )?;
                         let mut state = shared_state
                             .lock()
                             .map_err(|_| anyhow!("batch state poisoned"))?;
@@ -2585,17 +2685,44 @@ impl FilenNativeClient {
                         }
                         Ok(())
                     })();
-                    if sender.send(result).is_err() {
+                    if sender
+                        .send(ResumableDownloadEvent::Done { index, result })
+                        .is_err()
+                    {
                         break;
                     }
                 });
             }
             drop(sender);
             let mut completed = 0;
-            for result in receiver {
-                result?;
-                completed += 1;
-                progress(completed, total);
+            let total_bytes = jobs
+                .iter()
+                .map(|job| self.remote_path_size(&job.item))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .sum::<u64>();
+            let mut completed_bytes = 0;
+            let mut per_job_bytes = vec![0u64; total];
+            for event in receiver {
+                match event {
+                    ResumableDownloadEvent::Progress { index, bytes } => {
+                        let previous = per_job_bytes[index];
+                        let current = bytes.max(previous);
+                        per_job_bytes[index] = current;
+                        completed_bytes += current - previous;
+                        progress(completed, total, completed_bytes, total_bytes);
+                    }
+                    ResumableDownloadEvent::Done { index, result } => {
+                        result?;
+                        if per_job_bytes[index] < self.remote_path_size(&jobs[index].item)? {
+                            completed_bytes +=
+                                self.remote_path_size(&jobs[index].item)? - per_job_bytes[index];
+                            per_job_bytes[index] = self.remote_path_size(&jobs[index].item)?;
+                        }
+                        completed += 1;
+                        progress(completed, total, completed_bytes, total_bytes);
+                    }
+                }
             }
             Ok::<_, anyhow::Error>(())
         })?;
@@ -3678,18 +3805,18 @@ mod tests {
         let destination = local.path().join("file.txt");
         let mut progress = Vec::new();
         client
-            .download_paths_resumable(
+            .download_paths_resumable_with_byte_progress(
                 vec![DownloadPathJob {
                     item,
                     local_path: destination.clone(),
                 }],
                 &state_path,
                 BatchConflictPolicy::Replace,
-                |done, total| progress.push((done, total)),
+                |done, total, bytes, total_bytes| progress.push((done, total, bytes, total_bytes)),
             )
             .unwrap();
         assert_eq!(std::fs::read(destination).unwrap(), b"hello");
-        assert_eq!(progress, vec![(1, 1)]);
+        assert_eq!(progress, vec![(0, 1, 5, 5), (1, 1, 5, 5)]);
         assert!(!state_path.exists());
     }
 }

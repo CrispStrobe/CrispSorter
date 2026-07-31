@@ -31,6 +31,8 @@ cross-checks.
   `upload_files_resumable_with_byte_progress` additionally reports serialized
   aggregate chunk progress while retaining those checkpoints.
   `download_paths_resumable` provides the symmetric local-path batch flow.
+  `download_paths_resumable_with_byte_progress` adds serialized decrypted
+  chunk progress for recursive downloads.
 - Uploads support exact resumable state (UUID, upload key, file key, bucket,
   region, chunk size, and completed chunk indices). Downloads support true
   byte ranges, direct-to-writer streaming, and post-transfer hash
