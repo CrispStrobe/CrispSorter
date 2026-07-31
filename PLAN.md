@@ -2503,7 +2503,7 @@ a trap:
     both backends, with identical progress semantics.
   - [x] Add an async API or an explicitly documented blocking-only boundary;
     do not let the facade imply async portability it does not provide.
-  - [ ] Move session persistence behind a caller-supplied secret-store trait;
+  - [x] Move session persistence behind a caller-supplied secret-store trait;
     keep JSON serialization available for CLI/testing but document its
     sensitive contents.
   - [ ] Add CI for formatting, clippy, hermetic tests, package manifests,
