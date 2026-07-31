@@ -180,6 +180,85 @@ pub async fn drive_stat(
         .map_err(|e| e.to_string())
 }
 
+/// Return the safe operation set for a registered drive.
+#[tauri::command]
+pub async fn drive_capabilities(
+    state: State<'_, AppState>,
+    drive_id: String,
+) -> Result<super::DriveCapabilities, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    Ok(DriveRegistry::instantiate(cfg).capabilities())
+}
+
+/// Create a directory on a drive when its capability set permits it.
+#[tauri::command]
+pub async fn drive_create_dir(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().create_dir {
+        return Err(format!("{} does not support create_dir", drive.drive_type().label()));
+    }
+    drive.create_dir(std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Move or rename a path within a drive.
+#[tauri::command]
+pub async fn drive_move_path(
+    state: State<'_, AppState>,
+    drive_id: String,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().move_path {
+        return Err(format!("{} does not support move_path", drive.drive_type().label()));
+    }
+    drive.move_path(std::path::Path::new(&source), std::path::Path::new(&destination))
+        .map_err(|e| e.to_string())
+}
+
+/// Copy a file or directory within a drive.
+#[tauri::command]
+pub async fn drive_copy_path(
+    state: State<'_, AppState>,
+    drive_id: String,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().copy {
+        return Err(format!("{} does not support copy", drive.drive_type().label()));
+    }
+    drive.copy_path(std::path::Path::new(&source), std::path::Path::new(&destination))
+        .map_err(|e| e.to_string())
+}
+
 /// Generate a public share link for a file on a registered drive.
 /// Providers without a public-link implementation return a clear error
 /// rather than silently returning an unusable local URL.

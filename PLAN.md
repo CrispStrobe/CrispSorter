@@ -2601,12 +2601,17 @@ a transfer without leaving the search/catalog workflow.
 
 #### P34.1 — Foundations, P0/P1 (do before broad UI)
 
-- [ ] **Capability-aware CloudDrive API.** Add explicit capabilities and the
-  missing safe primitives (`create_dir`, `rename`, `move`, `copy`, optional
-  recursive listing, streaming reader/writer) while preserving the current
-  synchronous trait boundary for legacy providers.  Do not fake support:
-  unsupported operations must be reported by capability, not discovered by a
-  late HTTP failure.
+- [x] **Capability-aware CloudDrive API (first slice).** Explicit capability
+  discovery now exists, with safe unsupported-operation errors and LocalDrive
+  implementations for recursive copy, move/rename, and create-directory.
+  Remaining providers and streaming fields still need implementation; the
+  follow-up item below owns that work.
+- [ ] **Complete provider capability-aware API.** Add the remaining safe
+  primitives (`create_dir`, `rename`, `move`, `copy`, optional recursive
+  listing, streaming reader/writer) while preserving the current synchronous
+  trait boundary for legacy providers.  Do not fake support: unsupported
+  operations must be reported by capability, not discovered by a late HTTP
+  failure.
 - [ ] **One shared application TransferQueue.** Replace per-command queues
   with an AppState-owned queue shared by GUI, CLI, index promotion, FUSE, and
   cloud-backup paths.  Add queue job registration, progress events, retry

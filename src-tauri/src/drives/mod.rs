@@ -78,6 +78,46 @@ fn unsupported_drive_message(kind: &str) -> String {
 
 // ── Trait ──────────────────────────────────────────────────────────────────
 
+/// Operations a drive can safely perform without probing it first.
+///
+/// The capability set is intentionally explicit: a provider may implement
+/// listing and byte transfers while not supporting server-side rename, copy,
+/// or streaming.  Callers must check this before rendering destructive UI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriveCapabilities {
+    pub list: bool,
+    pub read: bool,
+    pub write: bool,
+    pub delete: bool,
+    pub stat: bool,
+    pub create_dir: bool,
+    pub rename: bool,
+    pub move_path: bool,
+    pub copy: bool,
+    pub streaming: bool,
+    pub share_links: bool,
+    pub versions: bool,
+}
+
+impl DriveCapabilities {
+    fn basic() -> Self {
+        Self {
+            list: true,
+            read: true,
+            write: true,
+            delete: true,
+            stat: true,
+            create_dir: false,
+            rename: false,
+            move_path: false,
+            copy: false,
+            streaming: false,
+            share_links: false,
+            versions: false,
+        }
+    }
+}
+
 /// A file-system-like storage backend.
 pub trait CloudDrive: Send + Sync {
     /// Human-readable label for the drive.
@@ -100,6 +140,33 @@ pub trait CloudDrive: Send + Sync {
 
     /// Underlying type for display.
     fn drive_type(&self) -> DriveType;
+
+    /// Return the operations this backend implements.
+    fn capabilities(&self) -> DriveCapabilities {
+        let mut capabilities = DriveCapabilities::basic();
+        capabilities.share_links = matches!(
+            self.drive_type(),
+            DriveType::OneDrive | DriveType::GoogleDrive
+        );
+        capabilities.versions = capabilities.share_links;
+        capabilities
+    }
+
+    /// Create a directory, including missing parents where the provider
+    /// supports it.
+    fn create_dir(&self, _path: &Path) -> Result<()> {
+        Err(anyhow!("{} does not support create_dir", self.drive_type().label()))
+    }
+
+    /// Rename/move a path within the same provider.
+    fn move_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
+        Err(anyhow!("{} does not support move_path", self.drive_type().label()))
+    }
+
+    /// Copy a path within the same provider.
+    fn copy_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
+        Err(anyhow!("{} does not support copy", self.drive_type().label()))
+    }
 
     // ── P29.5: Share links ───────────────────────────────────────────
 
@@ -289,6 +356,16 @@ impl CloudDrive for LocalDrive {
         DriveType::Local
     }
 
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let p = self.full(path);
         let rd = std::fs::read_dir(&p).with_context(|| format!("list_dir: {}", p.display()))?;
@@ -326,6 +403,50 @@ impl CloudDrive for LocalDrive {
         } else {
             std::fs::remove_file(&p).with_context(|| format!("remove_file: {}", p.display()))
         }
+    }
+
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        let p = self.full(path);
+        std::fs::create_dir_all(&p).with_context(|| format!("create_dir: {}", p.display()))
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let from = self.full(source);
+        let to = self.full(destination);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create_dir_all: {}", parent.display()))?;
+        }
+        std::fs::rename(&from, &to)
+            .with_context(|| format!("move {} -> {}", from.display(), to.display()))
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        fn copy_recursive(source: &Path, destination: &Path) -> Result<()> {
+            let metadata = std::fs::metadata(source)
+                .with_context(|| format!("copy stat: {}", source.display()))?;
+            if metadata.is_dir() {
+                std::fs::create_dir_all(destination)
+                    .with_context(|| format!("copy mkdir: {}", destination.display()))?;
+                for entry in std::fs::read_dir(source)
+                    .with_context(|| format!("copy list: {}", source.display()))?
+                {
+                    let entry = entry.with_context(|| format!("copy entry: {}", source.display()))?;
+                    copy_recursive(&entry.path(), &destination.join(entry.file_name()))?;
+                }
+            } else {
+                if let Some(parent) = destination.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("copy mkdir: {}", parent.display()))?;
+                }
+                std::fs::copy(source, destination).with_context(|| {
+                    format!("copy {} -> {}", source.display(), destination.display())
+                })?;
+            }
+            Ok(())
+        }
+
+        copy_recursive(&self.full(source), &self.full(destination))
     }
 
     fn stat(&self, path: &Path) -> Result<FileStat> {
@@ -581,6 +702,39 @@ mod tests {
     fn local_drive_read_missing_file_errors() {
         let (_tmp, drive) = fixture();
         assert!(drive.read_file(Path::new("does/not/exist")).is_err());
+    }
+
+    #[test]
+    fn local_drive_capabilities_include_safe_mutations() {
+        let (_tmp, drive) = fixture();
+        let caps = drive.capabilities();
+        assert!(caps.create_dir);
+        assert!(caps.rename && caps.move_path && caps.copy);
+        assert!(!caps.share_links);
+    }
+
+    #[test]
+    fn local_drive_mutations_cover_directory_move_and_recursive_copy() {
+        let (_tmp, drive) = fixture();
+        drive.create_dir(Path::new("source/nested")).unwrap();
+        drive
+            .write_file(Path::new("source/nested/file.txt"), b"payload")
+            .unwrap();
+        drive
+            .copy_path(Path::new("source"), Path::new("copied"))
+            .unwrap();
+        assert_eq!(
+            drive.read_file(Path::new("copied/nested/file.txt")).unwrap(),
+            b"payload"
+        );
+        drive
+            .move_path(Path::new("copied"), Path::new("moved"))
+            .unwrap();
+        assert_eq!(
+            drive.read_file(Path::new("moved/nested/file.txt")).unwrap(),
+            b"payload"
+        );
+        assert!(drive.stat(Path::new("copied")).is_err());
     }
 
     #[test]
