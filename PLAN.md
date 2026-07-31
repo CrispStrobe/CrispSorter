@@ -2459,7 +2459,7 @@ a trap:
     multipart as the default and retain explicit concurrent workers.
   - [x] Add persisted resumable download state and resumable recursive
     download state, not only resumable multipart upload state.
-  - [>] Add end-to-end content/hash verification and byte-level progress
+  - [x] Add end-to-end content/hash verification and byte-level progress
     callbacks for single-file upload/download operations.
   - [ ] Add automatic expired-token detection, refresh, and one safe retry;
     preserve the explicit CLI `refresh` command.

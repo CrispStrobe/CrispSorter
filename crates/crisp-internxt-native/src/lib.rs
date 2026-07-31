@@ -342,6 +342,19 @@ struct ProgressReader<R> {
     callback: ProgressCallback,
 }
 
+struct HashingReader<R> {
+    reader: R,
+    hash: Sha256,
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.reader.read(buffer)?;
+        self.hash.update(&buffer[..read]);
+        Ok(read)
+    }
+}
+
 impl<R> ProgressReader<R> {
     fn new(inner: R, path: &str, total_bytes: u64, callback: ProgressCallback) -> Self {
         Self {
@@ -1674,6 +1687,32 @@ impl InternxtNativeClient {
         )?;
         self.clear_listing_cache();
         Ok(())
+    }
+
+    /// Upload a reader and return the plaintext SHA-256 digest after the
+    /// gateway has accepted the file.
+    pub fn upload_reader_verified<R: Read>(
+        &self,
+        session: &InternxtSession,
+        parent_folder_uuid: &str,
+        plain_name: &str,
+        file_type: &str,
+        reader: R,
+        file_size: u64,
+    ) -> Result<String> {
+        let mut hashing = HashingReader {
+            reader,
+            hash: Sha256::new(),
+        };
+        self.upload_reader(
+            session,
+            parent_folder_uuid,
+            plain_name,
+            file_type,
+            &mut hashing,
+            file_size,
+        )?;
+        Ok(hex::encode(hashing.hash.finalize()))
     }
 
     /// Upload from a reader and report byte-level progress after each source
