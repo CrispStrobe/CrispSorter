@@ -2615,6 +2615,9 @@ a transfer without leaving the search/catalog workflow.
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.
+- [x] **Queue job registry and cancellation surface.** The shared queue now
+  retains a bounded recent-job snapshot and exposes Tauri status/cancel
+  commands for the future transfer drawer. ✅ Shipped 2026-07-31.
 - [ ] **Complete shared TransferQueue integration.** Replace remaining
   per-command queues in CLI, FUSE, and provider-facing boundaries. Add queue
   job registration, progress events, retry classification, cancellation, and
