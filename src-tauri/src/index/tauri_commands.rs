@@ -3731,23 +3731,33 @@ pub async fn index_promote_drive_archive(
         .join("drive_retrieve");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir: {e}"))?;
 
-    // Fetch bytes via the registered drive (off the runtime thread).
+    // Fetch bytes via the registered drive through the bounded transfer queue.
+    // The queue runs the synchronous CloudDrive operation in spawn_blocking,
+    // and retries transient provider failures before returning to promotion.
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
-    let drive_id_clone = drive_id.clone();
     let remote = remote_path.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
-        let reg = crate::drives::DriveRegistry::open(&data_dir)
-            .map_err(|e| format!("open registry: {e}"))?;
-        let cfg = reg.drives.iter().find(|d| d.id == drive_id_clone)
-            .ok_or_else(|| format!("drive '{drive_id_clone}' not found"))?
-            .clone();
-        let drive = crate::drives::DriveRegistry::instantiate(&cfg);
-        drive.read_file(std::path::Path::new(&remote))
-            .map_err(|e| format!("read_file: {e:#}"))
-    })
-    .await
-    .map_err(|e| format!("drive read join: {e}"))??;
+    let transfer_queue = crate::sync::transfer_queue::TransferQueue::new();
+    let transfer = transfer_queue.submit_download(
+        drive_id.clone(),
+        std::path::PathBuf::from(&remote),
+        None,
+        move |path| {
+            let reg = crate::drives::DriveRegistry::open(&data_dir)
+                .map_err(|e| anyhow::anyhow!("open registry: {e}"))?;
+            let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+                .ok_or_else(|| anyhow::anyhow!("drive '{}' not found", drive_id))?
+                .clone();
+            let drive = crate::drives::DriveRegistry::instantiate(&cfg);
+            drive.read_file(path)
+                .map_err(|e| anyhow::anyhow!("read_file: {e:#}"))
+        },
+    );
+    let bytes = match transfer.handle.await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(e)) => return Err(format!("drive read: {e:#}")),
+        Err(e) => return Err(format!("drive read queue task: {e}")),
+    };
 
     // Stage the file under app_data/drive_retrieve/ so promote_path can
     // re-read + extract from disk like it does for cb-archive.  We use

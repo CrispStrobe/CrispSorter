@@ -1331,7 +1331,11 @@ independently with no shared concurrency limit or retry policy.
   gates concurrency and retries. The GUI cloud-backup upload/restore path
   is now queue-backed for every configured provider. New GUI
   `drive_read_file` / `drive_write_file` commands also use the queue;
-  lower-level FUSE and provider-call sites remain to be audited.
+  CLI cloud-backup shard backup/restore and index archive promotion reads
+  now use the queue as well. The lower-level FUSE read callback remains
+  intentionally direct because its synchronous filesystem trait cannot
+  safely await the async queue; provider-internal calls still need an
+  explicit shared-queue boundary.
 - [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button).  Listens to `transfer://progress` events.
