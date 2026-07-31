@@ -3545,6 +3545,12 @@
                                 <option value="sftp">SFTP (über OS-Mount)</option>
                             </select>
                         </label>
+                        {#if !isDesktop()}
+                            <p class="drive-dialog-hint">
+                                Auf iOS und Android funktionieren die Python-CLI-Laufwerke nicht.
+                                Für Filen oder Internxt bitte einen extern erreichbaren WebDAV-Endpunkt verwenden.
+                            </p>
+                        {/if}
                         <label class="drive-dialog-row">
                             <span class="drive-dialog-label">
                                 {driveCreateKind === 'webdav' ? 'URL' :

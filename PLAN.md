@@ -2381,8 +2381,8 @@ a trap:
   Whichever one you happen to find first determines whether the feature
   looks impossible or easy.
 
-- [ ] **P33.4 — Document WebDAV as the mobile route.**  Both vendors'
+- [x] **P33.4 — Document WebDAV as the mobile route.**  Both vendors'
   WebDAV gateways run as local daemons, so they do not help on iOS, but any
   *remote* WebDAV works through `drives/webdav.rs` today and is already the
-  fallback named in the new guard's error message.  Say so in the drive
-  picker's help text rather than leaving mobile users to infer it.
+  fallback named in the new guard's error message.  The drive picker now
+  explains this on mobile, and the README names remote WebDAV as the route.
