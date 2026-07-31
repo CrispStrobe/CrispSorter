@@ -2655,6 +2655,9 @@ a transfer without leaving the search/catalog workflow.
   `download_blocking` run synchronous provider/FUSE operations on an isolated
   Tokio worker while sharing the queue semaphore, retry policy, cancellation
   registry, and terminal-job snapshots. ✅ 2026-07-31
+- [x] **FUSE read boundary.** `FuseDriveFs` now routes full-file reads through
+  the blocking download adapter while retaining its synchronous read-only
+  filesystem contract. ✅ 2026-07-31
 - [ ] **Streaming and durable resume.** Expose reader/writer transfers through
   the app facade; persist provider, remote path, upload/session identifiers,
   encryption key material, chunk size, completed chunks, hashes, and timestamps.
