@@ -101,6 +101,12 @@ enum Command {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+    EmptyTrash {
+        session: PathBuf,
+        /// Required because this permanently deletes every trash entry.
+        #[arg(long)]
+        force: bool,
+    },
     Mkdir {
         session: PathBuf,
         remote: PathBuf,
@@ -332,18 +338,15 @@ fn run() -> Result<()> {
             limit,
         } => {
             let (client, _) = open(&session)?;
-            for entry in client
-                .list_trash()?
-                .into_iter()
-                .filter(|item| {
-                    kind.as_deref().is_none_or(|value| {
-                        (value == "folder" && item.is_dir) || (value == "file" && !item.is_dir)
-                    })
-                })
-                .take(limit)
-            {
+            for entry in client.list_trash_filtered(kind.as_deref(), limit)? {
                 print_item(&entry);
             }
+        }
+        Command::EmptyTrash { session, force } => {
+            anyhow::ensure!(force, "emptying trash requires --force");
+            let (client, _) = open(&session)?;
+            let count = client.empty_trash()?;
+            println!("permanently deleted {count} trash entries");
         }
         Command::Mkdir { session, remote } => {
             let (client, value) = open(&session)?;

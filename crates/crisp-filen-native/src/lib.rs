@@ -1955,6 +1955,30 @@ impl FilenNativeClient {
         self.list_folder("trash")
     }
 
+    /// List recoverable trash entries with an optional kind filter and a
+    /// caller-supplied maximum. `kind` accepts `file` or `folder`; `None`
+    /// returns both kinds. A zero limit returns no entries.
+    pub fn list_trash_filtered(
+        &self,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<NativeItem>> {
+        filter_trash_items(self.list_trash()?, kind, limit)
+    }
+
+    /// Permanently delete every currently listed trash entry, sequentially.
+    /// Returns the number of entries successfully removed. This is
+    /// destructive and intentionally does not retry by re-listing, so an
+    /// item added concurrently is left untouched for a later invocation.
+    pub fn empty_trash(&self) -> Result<usize> {
+        let items = self.list_trash_filtered(None, usize::MAX)?;
+        let count = items.len();
+        for item in items {
+            self.delete_permanent(&item.uuid, item.is_dir)?;
+        }
+        Ok(count)
+    }
+
     pub fn upload_file(&self, parent: &str, name: &str, mime: &str, data: &[u8]) -> Result<()> {
         let (key, key_string) = self.new_file_key()?;
         let mut hasher = blake3::Hasher::new();
@@ -2798,6 +2822,26 @@ impl FilenNativeClient {
     }
 }
 
+fn filter_trash_items(
+    items: Vec<NativeItem>,
+    kind: Option<&str>,
+    limit: usize,
+) -> Result<Vec<NativeItem>> {
+    anyhow::ensure!(
+        kind.is_none_or(|value| value == "file" || value == "folder"),
+        "invalid trash kind {kind:?}; expected file or folder"
+    );
+    Ok(items
+        .into_iter()
+        .filter(|item| match kind {
+            Some("file") => !item.is_dir,
+            Some("folder") => item.is_dir,
+            _ => true,
+        })
+        .take(limit)
+        .collect())
+}
+
 #[derive(Debug, Deserialize)]
 struct UploadedChunk {
     bucket: String,
@@ -3243,6 +3287,52 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("transfer cancelled"));
+    }
+
+    #[test]
+    fn trash_filters_validate_kind_and_apply_limit() {
+        let item = |uuid: &str, is_dir: bool| NativeItem {
+            uuid: uuid.into(),
+            name: uuid.into(),
+            is_dir,
+            size: 0,
+            parent: "trash".into(),
+            file_key: None,
+            bucket: String::new(),
+            region: String::new(),
+            chunks: 0,
+            version: 3,
+            mime: String::new(),
+            created: 0,
+            modified: 0,
+            hash: String::new(),
+        };
+        let items = vec![item("file-1", false), item("folder-1", true), item("file-2", false)];
+        assert_eq!(filter_trash_items(items.clone(), Some("file"), 1).unwrap().len(), 1);
+        assert_eq!(
+            filter_trash_items(items.clone(), Some("folder"), usize::MAX)
+                .unwrap()
+                .iter()
+                .map(|entry| entry.uuid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["folder-1"]
+        );
+        assert!(filter_trash_items(items, Some("other"), 10).is_err());
+    }
+
+    #[test]
+    fn hermetic_empty_trash_lists_and_permanently_deletes_entries() {
+        let key = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let metadata = v2_encrypt_metadata(r#"{"name":"old-folder","creation":1}"#, key, *b"abcdefghijkl").unwrap();
+        let gateway = spawn_http_server(vec![
+            format!(
+                r#"{{"status":true,"data":{{"folders":[{{"uuid":"trashed-folder","name":"{}","parent":"trash"}}],"uploads":[]}}}}"#,
+                metadata
+            ),
+            r#"{"status":true,"data":null}"#.into(),
+        ]);
+        let client = FilenNativeClient::from_session(&test_session(gateway)).unwrap();
+        assert_eq!(client.empty_trash().unwrap(), 1);
     }
 
     #[test]

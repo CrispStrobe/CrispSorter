@@ -20,6 +20,7 @@ consumers that need encrypted Filen transfers without spawning Python.
 - Recursive `*`, `?`, and `**` wildcard search
 - Path resolution and bounded recursive path listings
 - Folder creation, move, rename, replace, copy, trash, restore, and deletion
+- Filtered/limited trash listing and explicit `--force` empty-trash support
 - Gateway-safe timestamp metadata updates
 - Streaming uploads/downloads, range downloads, and hash verification
 - Configurable chunk workers, file workers, chunk size, retries, and backoff

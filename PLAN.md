@@ -2480,7 +2480,7 @@ a trap:
     resumable state, and verbose diagnostics.
   - [x] Add a serial-safe transfer mode and make it the default for fragile
     gateways; keep configurable chunk/file worker concurrency as opt-in.
-  - [ ] Complete trash parity with listing filters/limits and empty-trash
+  - [x] Complete trash parity with listing filters/limits and empty-trash
     behavior where supported by the Filen API.
   - [ ] Add a provider-neutral metadata/path result model or conversion layer
     so callers do not have to translate `NativeItem` and `PathListing` by hand.
