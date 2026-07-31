@@ -2663,6 +2663,9 @@ a transfer without leaving the search/catalog workflow.
   encryption key material, chunk size, completed chunks, hashes, and timestamps.
   Resume must refuse incompatible state instead of re-encrypting under a new
   key.  Add large-file tests at 100 MiB and above for every native provider.
+  - [x] Object-safe reader/writer methods now exist on `CloudDrive`; native
+    Filen and Internxt adapters use their bounded streaming APIs and advertise
+    `streaming`, while legacy providers retain checked fallbacks. ✅ 2026-07-31
 - [ ] **Provider capability matrix and test harness.** Add local mock HTTP
   servers and contract tests for listing, mutation, streaming, retries,
   resume, expired auth, share/version behavior, and unsupported operations.

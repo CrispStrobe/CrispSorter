@@ -1,10 +1,11 @@
 //! `CloudDrive` adapter for a keychain-backed native Internxt session.
 
 use anyhow::{anyhow, Result};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use super::internxt_native::{InternxtNativeClient, InternxtSession};
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
 pub struct NativeInternxtDrive {
     label: String,
@@ -159,6 +160,63 @@ impl CloudDrive for NativeInternxtDrive {
     fn drive_type(&self) -> DriveType {
         DriveType::Internxt
     }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            streaming: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
+    fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
+        let (session, client, item) = self.resolved(path)?;
+        anyhow::ensure!(
+            !item.is_dir,
+            "Internxt path is a directory: {}",
+            path.display()
+        );
+        client.download_file_to_writer(&session, &item.uuid, writer)
+    }
+
+    fn write_file_from_reader(
+        &self,
+        path: &Path,
+        reader: &mut dyn Read,
+        size: u64,
+    ) -> Result<()> {
+        let filename = path
+            .file_name()
+            .ok_or_else(|| anyhow!("Internxt write path has no filename: {}", path.display()))?
+            .to_string_lossy();
+        let parent = path.parent().unwrap_or_else(|| Path::new("/"));
+        let (session, client, folder_uuid) = self.resolve_parent(parent, true)?;
+        let filename_path = PathBuf::from(filename.as_ref());
+        let plain_name = filename_path
+            .file_stem()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| filename.to_string());
+        let file_type = filename_path
+            .extension()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Ok(existing) = client.resolve_path(&session, path) {
+            if existing.is_dir {
+                return Err(anyhow!(
+                    "Internxt write path is a directory: {}",
+                    path.display()
+                ));
+            }
+            client.trash(&existing.uuid, "file")?;
+        }
+        client.upload_reader(
+            &session,
+            &folder_uuid,
+            &plain_name,
+            &file_type,
+            reader,
+            size,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -167,7 +225,7 @@ mod tests {
 
     #[test]
     fn drive_metadata_is_available_without_a_session() {
-        super::secret::install_mock_for_tests();
+        crate::drives::secret::install_mock_for_tests();
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
         assert_eq!(drive.label(), "Native Internxt");
         assert_eq!(drive.drive_type(), DriveType::Internxt);
@@ -175,7 +233,7 @@ mod tests {
 
     #[test]
     fn missing_session_is_reported_before_network_access() {
-        super::secret::install_mock_for_tests();
+        crate::drives::secret::install_mock_for_tests();
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
         let error = drive
             .list_dir(Path::new("/"))

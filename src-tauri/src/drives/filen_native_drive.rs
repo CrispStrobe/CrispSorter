@@ -1,8 +1,9 @@
 //! `CloudDrive` adapter for a keychain-backed native Filen session.
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 use anyhow::{anyhow, Result};
 use crisp_filen::{FilenNativeClient, FilenSession};
+use std::io::{Read, Write};
 use std::path::Path;
 
 pub struct NativeFilenDrive {
@@ -119,6 +120,46 @@ impl CloudDrive for NativeFilenDrive {
     fn drive_type(&self) -> DriveType {
         DriveType::Filen
     }
+
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            streaming: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
+    fn read_file_to_writer(&self, path: &Path, mut writer: &mut dyn Write) -> Result<u64> {
+        let (_session, client, item) = self.resolve(path)?;
+        anyhow::ensure!(!item.is_dir, "Filen path is a directory: {}", path.display());
+        client.download_file_to_writer(&item, &mut writer)
+    }
+
+    fn write_file_from_reader(
+        &self,
+        path: &Path,
+        reader: &mut dyn Read,
+        size: u64,
+    ) -> Result<()> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("Filen write path has no filename"))?
+            .to_string_lossy();
+        let parent = path.parent().unwrap_or_else(|| Path::new("/"));
+        let (_session, client, uuid) = self.parent(parent)?;
+        if let Ok(existing) = client.resolve_path(&_session, path) {
+            client.trash(
+                &existing.uuid,
+                if existing.is_dir { "folder" } else { "file" },
+            )?;
+        }
+        client.upload_file_from_reader(
+            &uuid,
+            &name,
+            "application/octet-stream",
+            size,
+            reader,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +167,7 @@ mod tests {
     use super::*;
     #[test]
     fn missing_session_is_reported_without_network() {
-        super::secret::install_mock_for_tests();
+        crate::drives::secret::install_mock_for_tests();
         let drive = NativeFilenDrive::from_keychain("Native Filen", "missing-filendrive");
         assert_eq!(drive.drive_type(), DriveType::Filen);
         assert!(format!("{}", drive.list_dir(Path::new("/")).unwrap_err())

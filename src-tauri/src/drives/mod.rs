@@ -34,6 +34,7 @@ pub mod webdav;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 // ── Platform support for the subprocess-backed drives ──────────────────────
@@ -131,6 +132,32 @@ pub trait CloudDrive: Send + Sync {
 
     /// Write bytes to a path (creates parent directories if needed).
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()>;
+
+    /// Stream a remote file into a caller-provided writer. Legacy providers
+    /// fall back to their whole-buffer API; native streaming providers
+    /// override this without changing the object-safe trait boundary.
+    fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
+        let data = self.read_file(path)?;
+        writer.write_all(&data)?;
+        Ok(data.len() as u64)
+    }
+
+    /// Upload from a caller-provided reader. The exact plaintext size is
+    /// required by encrypted gateways. Legacy providers use a checked,
+    /// bounded-by-size fallback buffer; native providers stream directly.
+    fn write_file_from_reader(
+        &self,
+        path: &Path,
+        reader: &mut dyn Read,
+        size: u64,
+    ) -> Result<()> {
+        let mut data = Vec::new();
+        reader.take(size).read_to_end(&mut data)?;
+        anyhow::ensure!(data.len() as u64 == size, "reader ended before declared size");
+        let mut extra = [0u8; 1];
+        anyhow::ensure!(reader.read(&mut extra)? == 0, "reader has data beyond declared size");
+        self.write_file(path, &data)
+    }
 
     /// Delete a file or empty directory.
     fn delete(&self, path: &Path) -> Result<()>;
@@ -625,6 +652,7 @@ impl DriveRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn fixture() -> (tempfile::TempDir, LocalDrive) {
         let tmp = tempfile::tempdir().unwrap();
@@ -645,6 +673,23 @@ mod tests {
         drive.write_file(Path::new("hello.txt"), b"world").unwrap();
         let bytes = drive.read_file(Path::new("hello.txt")).unwrap();
         assert_eq!(bytes, b"world");
+    }
+
+    #[test]
+    fn streaming_facade_round_trips_with_legacy_provider_fallback() {
+        let (_tmp, drive) = fixture();
+        let mut input = Cursor::new(b"streamed".to_vec());
+        drive
+            .write_file_from_reader(Path::new("stream.txt"), &mut input, 8)
+            .unwrap();
+        let mut output = Vec::new();
+        assert_eq!(
+            drive
+                .read_file_to_writer(Path::new("stream.txt"), &mut output)
+                .unwrap(),
+            8
+        );
+        assert_eq!(output, b"streamed");
     }
 
     #[test]

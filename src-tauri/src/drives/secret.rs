@@ -36,6 +36,11 @@ pub fn delete_session(drive_id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+pub(crate) fn install_mock_for_tests() {
+    tests::install_mock_for_tests();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use keyring::mock::default_credential_builder;
