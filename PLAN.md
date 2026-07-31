@@ -2453,7 +2453,7 @@ a trap:
   fallback named in the new guard's error message.  The drive picker now
   explains this on mobile, and the README names remote WebDAV as the route.
 
-- [ ] **P33.5 — Close the published `crisp-cloud-rs` parity gaps**
+- [x] **P33.5 — Close the published `crisp-cloud-rs` parity gaps**
   (Internxt, Filen, and shared facade).
 
   **Internxt (`crisp-internxt`) — retain its stronger path and CLI surface:**
@@ -2474,13 +2474,12 @@ a trap:
     (Checkpoint: Internxt now uses explicit rustls and HTTP/1.1 transport;
     desktop, aarch64 macOS, and aarch64 iOS cargo checks pass; no
     `openssl-sys` or `native-tls` dependency is present.)
-  - [>] Add unit, local HTTP-harness, cross-client Python/Dart, and live tests
+  - [x] Add unit, local HTTP-harness, cross-client Python/Dart, and live tests
     for every new transfer and refresh path.
-    (Selected this pass: the Rust endpoint/refresh and streaming harness now
-    passes with multipart resume coverage, and presigned PUT diagnostics report
-    per-attempt elapsed time. The CZE Internxt live suite passed 4/4, including
-    100 MiB multipart and Python↔Rust interoperability. The Dart cross-client
-    leg remains open.)
+    (Rust endpoint/refresh and streaming harness passes with multipart resume
+    coverage; presigned PUT diagnostics report per-attempt elapsed time. The
+    CZE Internxt live suite passed 4/4, including 100 MiB multipart and
+    Python↔Rust interoperability. The Dart↔Rust cross-client test passed 1/1.)
 
   **Filen (`crisp-filen`) — retain its stronger crypto and transfer engine:**
 

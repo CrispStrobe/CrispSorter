@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use crisp_internxt::{InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL};
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LARGE_FILE_SIZE: usize = 100 * 1024 * 1024 + 1;
@@ -171,6 +171,131 @@ fn live_cross_client_python_rust_round_trip() {
     result.unwrap();
 }
 
+#[test]
+#[ignore = "mutates a real account and invokes the configured Dart CLI"]
+fn live_cross_client_dart_rust_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("Dart cross-client live test skipped: credentials unavailable");
+        return;
+    };
+    if std::env::var("INTERNXT_DART_READY").as_deref() != Ok("1") {
+        eprintln!(
+            "Dart cross-client live test skipped: set INTERNXT_DART_READY=1 to opt into Dart CLI"
+        );
+        return;
+    }
+    let dart = std::env::var_os("INTERNXT_DART").unwrap_or_else(|| "dart".into());
+    let dart_project = std::env::var_os("INTERNXT_DART_PROJECT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../internxt-dart"));
+    if !dart_project.join("bin/inxt.dart").exists() {
+        eprintln!(
+            "Dart cross-client live test skipped: Dart project not found at {}",
+            dart_project.display()
+        );
+        return;
+    }
+
+    let session = InternxtNativeClient::login_without_keys(
+        DEFAULT_DRIVE_API_URL,
+        &email,
+        &password,
+        tfa.as_deref(),
+    )
+    .unwrap();
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let isolated_home = std::env::temp_dir().join(format!(
+        "crispsorter-internxt-dart-home-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&isolated_home).unwrap();
+    let rust_name = unique_name("crispsorter-rust-to-dart").replace(' ', "-");
+    let dart_name = unique_name("crispsorter-dart-to-rust").replace(' ', "-");
+    let rust_source = std::env::temp_dir().join(format!("{rust_name}.txt"));
+    let dart_source = std::env::temp_dir().join(format!("{dart_name}.txt"));
+    let dart_download_dir = std::env::temp_dir().join(unique_name("crispsorter-dart-download"));
+    std::fs::write(&rust_source, b"written by Rust; read by Dart\n").unwrap();
+    std::fs::write(&dart_source, b"written by Dart; read by Rust\n").unwrap();
+    std::fs::create_dir_all(&dart_download_dir).unwrap();
+
+    let result = (|| -> Result<()> {
+        run_dart_login(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &email,
+            &password,
+            tfa.as_deref(),
+        )?;
+        client.upload_path(
+            &session,
+            &session.root_folder_id,
+            &rust_name,
+            "txt",
+            &rust_source,
+        )?;
+        let rust_item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{rust_name}.txt")))?;
+        run_dart_cli(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &[
+                "download-path".into(),
+                format!("/{}", rust_item.name),
+                "--target".into(),
+                dart_download_dir.to_string_lossy().into_owned(),
+                "--on-conflict".into(),
+                "overwrite".into(),
+            ],
+        )?;
+        assert_eq!(
+            std::fs::read(dart_download_dir.join(&rust_item.name))?,
+            b"written by Rust; read by Dart\n"
+        );
+
+        run_dart_cli(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &[
+                "upload".into(),
+                dart_source.to_string_lossy().into_owned(),
+                "--target".into(),
+                "/".into(),
+                "--on-conflict".into(),
+                "overwrite".into(),
+                "--chunk-workers".into(),
+                "1".into(),
+            ],
+        )?;
+        let dart_item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{dart_name}.txt")))?;
+        let downloaded = dart_download_dir.join(format!("{dart_name}-rust.txt"));
+        client.download_file_to_path(&session, &dart_item.uuid, &downloaded)?;
+        assert_eq!(
+            std::fs::read(downloaded)?,
+            b"written by Dart; read by Rust\n"
+        );
+        Ok(())
+    })();
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{rust_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{dart_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = std::fs::remove_file(rust_source);
+    let _ = std::fs::remove_file(dart_source);
+    let _ = std::fs::remove_dir_all(dart_download_dir);
+    let _ = std::fs::remove_dir_all(isolated_home);
+    result.unwrap();
+}
+
 fn wait_for_remote_path(
     client: &InternxtNativeClient,
     session: &InternxtSession,
@@ -226,6 +351,71 @@ fn run_python_cli<const N: usize>(
     anyhow::ensure!(
         output.status.success(),
         "Python CLI failed ({}): stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_dart_login(
+    dart: &std::ffi::OsStr,
+    project: &Path,
+    home: &Path,
+    email: &str,
+    password: &str,
+    tfa: Option<&str>,
+) -> Result<()> {
+    let mut command = Command::new(dart);
+    command
+        .current_dir(project)
+        .args(["run", "bin/inxt.dart", "login", "--password-stdin"])
+        .env("HOME", home)
+        .env("INTERNXT_EMAIL", email)
+        .env("INTERNXT_PASSWORD", password);
+    if let Some(tfa) = tfa {
+        command.env("INTERNXT_2FA", tfa);
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("starting Dart Internxt CLI login")?;
+    child
+        .stdin
+        .take()
+        .context("opening Dart CLI login stdin")?
+        .write_all(format!("{password}\n").as_bytes())?;
+    let output = child
+        .wait_with_output()
+        .context("waiting for Dart CLI login")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Dart CLI login failed ({}): stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_dart_cli(
+    dart: &std::ffi::OsStr,
+    project: &Path,
+    home: &Path,
+    args: &[String],
+) -> Result<()> {
+    let output = Command::new(dart)
+        .current_dir(project)
+        .args(["run", "bin/inxt.dart"])
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .context("running Dart Internxt CLI")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Dart CLI failed ({}): stdout={} stderr={}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
