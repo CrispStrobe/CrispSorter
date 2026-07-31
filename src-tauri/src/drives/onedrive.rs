@@ -66,6 +66,10 @@ impl OneDriveDrive {
     fn auth_header(&self) -> String {
         format!("Bearer {}", self.access_token)
     }
+
+    fn share_link_url(&self, path: &Path) -> String {
+        format!("{}/createLink", self.item_url(path))
+    }
 }
 
 impl CloudDrive for OneDriveDrive {
@@ -184,6 +188,32 @@ impl CloudDrive for OneDriveDrive {
             is_dir,
             mtime_unix,
         })
+    }
+
+    fn share_link(&self, path: &Path) -> Result<Option<String>> {
+        // Microsoft Graph creates an anonymous read-only sharing link in one
+        // call.  The tenant may disallow anonymous links; Graph then returns
+        // a precise 4xx error which we preserve for the caller.
+        let url = self.share_link_url(path);
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({
+                "type": "view",
+                "scope": "anonymous"
+            }))
+            .send()
+            .with_context(|| format!("OneDrive share_link: {url}"))?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!("OneDrive share_link: HTTP {}", resp.status()));
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .context("OneDrive share_link: parse JSON")?;
+        Ok(body["link"]["webUrl"].as_str().map(str::to_owned))
     }
 
     fn list_versions(&self, path: &Path) -> Result<Vec<FileVersion>> {
@@ -329,5 +359,14 @@ mod tests {
         let url = d.item_url(Path::new("Documents/report.pdf"));
         assert!(url.contains("root:/Documents/report.pdf"));
         assert!(!url.contains("children"));
+    }
+
+    #[test]
+    fn share_link_url_targets_graph_create_link() {
+        let d = OneDriveDrive::new("test".into(), "tok".into(), None, None, None);
+        assert_eq!(
+            d.share_link_url(Path::new("Documents/report.pdf")),
+            "https://graph.microsoft.com/v1.0/me/drive/root:/Documents/report.pdf/createLink"
+        );
     }
 }

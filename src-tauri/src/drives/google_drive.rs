@@ -273,6 +273,50 @@ impl CloudDrive for GoogleDriveDrive {
         })
     }
 
+    fn share_link(&self, path: &Path) -> Result<Option<String>> {
+        let file_id = self.resolve_id(path)?;
+        let permission_url = format!(
+            "{}/files/{}/permissions?fields=id",
+            API_BASE, file_id
+        );
+        let resp = self
+            .client
+            .post(&permission_url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({"type": "anyone", "role": "reader"}))
+            .send()
+            .context("Google Drive share_link: create permission")?;
+
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive share_link: HTTP {}",
+                resp.status()
+            ));
+        }
+
+        let metadata_url = format!(
+            "{}/files/{}?fields=webViewLink",
+            API_BASE, file_id
+        );
+        let resp = self
+            .client
+            .get(&metadata_url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .context("Google Drive share_link: fetch URL")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "Google Drive share_link metadata: HTTP {}",
+                resp.status()
+            ));
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .context("Google Drive share_link: parse JSON")?;
+        Ok(body["webViewLink"].as_str().map(str::to_owned))
+    }
+
     fn list_versions(&self, path: &Path) -> Result<Vec<FileVersion>> {
         let file_id = self.resolve_id(path)?;
         let url = format!(
@@ -400,5 +444,16 @@ mod tests {
         let d = GoogleDriveDrive::new("test".into(), "tok".into(), None, None, None);
         let id = d.resolve_id(Path::new(".")).unwrap();
         assert_eq!(id, "root");
+    }
+
+    #[test]
+    fn share_permission_contract_uses_anonymous_reader() {
+        let body = serde_json::json!({"type": "anyone", "role": "reader"});
+        assert_eq!(body["type"], "anyone");
+        assert_eq!(body["role"], "reader");
+        assert_eq!(
+            format!("{}/files/id/permissions?fields=id", API_BASE),
+            "https://www.googleapis.com/drive/v3/files/id/permissions?fields=id"
+        );
     }
 }

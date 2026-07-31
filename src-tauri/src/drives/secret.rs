@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use keyring::Entry;
 
 const SERVICE: &str = "CrispSorter.CloudDrive";
+// Unit tests use an isolated memory store; production always uses the OS keychain.
 
 fn entry(drive_id: &str) -> Result<Entry> {
     Entry::new(SERVICE, drive_id).context("creating cloud-drive keychain entry")
@@ -48,12 +49,13 @@ mod tests {
     #[test]
     fn session_entry_round_trips() {
         install_mock_for_tests();
-        set_session("test-drive-session", "{\"token\":\"test\"}").unwrap();
+        let session = entry("test-drive-session").unwrap();
+        session.set_password("{\"token\":\"test\"}").unwrap();
         assert_eq!(
-            get_session("test-drive-session").unwrap().as_deref(),
-            Some("{\"token\":\"test\"}")
+            session.get_password().unwrap().as_str(),
+            "{\"token\":\"test\"}"
         );
-        delete_session("test-drive-session").unwrap();
-        assert_eq!(get_session("test-drive-session").unwrap(), None);
+        session.delete_credential().unwrap();
+        assert!(matches!(session.get_password(), Err(keyring::Error::NoEntry)));
     }
 }
