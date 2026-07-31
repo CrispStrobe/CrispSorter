@@ -2475,7 +2475,7 @@ a trap:
 
   - [x] Add token/session refresh and expiry-aware retry behavior, matching
     Internxt's refresh semantics where the Filen gateway permits it.
-  - [ ] Expand the CLI to expose the library's recursive transfers, filters,
+  - [>] Expand the CLI to expose the library's recursive transfers, filters,
     conflict policies, dry-run inspection, timestamp preservation, progress,
     resumable state, and verbose diagnostics.
   - [x] Add a serial-safe transfer mode and make it the default for fragile
