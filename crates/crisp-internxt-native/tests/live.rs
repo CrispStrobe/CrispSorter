@@ -225,8 +225,9 @@ fn run_python_cli<const N: usize>(
     let _ = std::fs::remove_dir_all(&isolated_home);
     anyhow::ensure!(
         output.status.success(),
-        "Python CLI failed ({}): {}",
+        "Python CLI failed ({}): stdout={} stderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
