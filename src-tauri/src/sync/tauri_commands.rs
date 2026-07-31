@@ -1002,6 +1002,8 @@ pub async fn sync_cb_backup_shards(
 ) -> Result<serde_json::Value, String> {
     use crate::drives::DriveRegistry;
     use crate::sync::backup_state::BackupState;
+    use crate::sync::transfer_queue::TransferQueue;
+    use std::sync::Arc;
 
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
@@ -1012,7 +1014,9 @@ pub async fn sync_cb_backup_shards(
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
-    let drive = DriveRegistry::instantiate(&drive_cfg);
+    let drive: Arc<dyn crate::drives::CloudDrive> =
+        Arc::from(DriveRegistry::instantiate(&drive_cfg));
+    let transfer_queue = TransferQueue::new();
 
     let bs = BackupState::open(&data_dir).map_err(|e| e.to_string())?;
     let shard_list = cli.shard_list().await.map_err(|e| e.to_string())?;
@@ -1062,12 +1066,25 @@ pub async fn sync_cb_backup_shards(
         let drive_path = backup_dir.join(format!("{}.tar.gz", si.prefix));
         match cli.shard_export(&si.prefix).await {
             Ok(data) => {
-                if let Err(e) = drive.write_file(&drive_path, &data) {
-                    errors.push(format!("write {}: {e}", si.prefix));
-                } else {
-                    let _ = bs.record_backup(&si.prefix, si.max_indexed_at, &drive_id,
-                        &drive_path.to_string_lossy());
-                    backed_up += 1;
+                let drive_for_transfer = Arc::clone(&drive);
+                let transfer = transfer_queue.submit_upload(
+                    drive_id.clone(),
+                    drive_path.clone(),
+                    data,
+                    move |path, bytes| drive_for_transfer.write_file(path, bytes),
+                );
+                match transfer.handle.await {
+                    Ok(Ok(_)) => {
+                        let _ = bs.record_backup(
+                            &si.prefix,
+                            si.max_indexed_at,
+                            &drive_id,
+                            &drive_path.to_string_lossy(),
+                        );
+                        backed_up += 1;
+                    }
+                    Ok(Err(e)) => errors.push(format!("write {}: {e}", si.prefix)),
+                    Err(e) => errors.push(format!("write {} queue task: {e}", si.prefix)),
                 }
             }
             Err(e) => errors.push(format!("export {}: {e}", si.prefix)),
@@ -1110,6 +1127,8 @@ pub async fn sync_cb_restore_shard(
     date: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use crate::drives::DriveRegistry;
+    use crate::sync::transfer_queue::TransferQueue;
+    use std::sync::Arc;
 
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
@@ -1120,7 +1139,8 @@ pub async fn sync_cb_restore_shard(
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
-    let drive = DriveRegistry::instantiate(&drive_cfg);
+    let drive: Arc<dyn crate::drives::CloudDrive> =
+        Arc::from(DriveRegistry::instantiate(&drive_cfg));
 
     // Resolve the date dir: explicit or most-recent.
     let cb_root = std::path::Path::new("cb-backups");
@@ -1138,8 +1158,19 @@ pub async fn sync_cb_restore_shard(
     };
 
     let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-    let data = drive.read_file(&tar_path)
-        .map_err(|e| format!("read {} from drive: {e}", tar_path.display()))?;
+    let transfer_queue = TransferQueue::new();
+    let drive_for_transfer = Arc::clone(&drive);
+    let transfer = transfer_queue.submit_download(
+        drive_id.clone(),
+        tar_path.clone(),
+        None,
+        move |path| drive_for_transfer.read_file(path),
+    );
+    let data = match transfer.handle.await {
+        Ok(Ok(data)) => data,
+        Ok(Err(e)) => return Err(format!("read {} from drive: {e}", tar_path.display())),
+        Err(e) => return Err(format!("read {} queue task: {e}", tar_path.display())),
+    };
 
     let byte_count = data.len();
     cli.shard_import(&prefix, data).await.map_err(|e| e.to_string())?;

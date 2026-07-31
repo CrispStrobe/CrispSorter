@@ -1324,11 +1324,13 @@ independently with no shared concurrency limit or retry policy.
   released.  `active_count()` for monitoring.  10 unit tests (concurrency
   limit, 4th-job-waits, progress reporting, failure state, transient retry
   recovery, cancellation during retry backoff, serde round-trip).
-- [ ] **Wire all 5 CloudDrive impls through the queue.**  Replace
+- [>] **Wire all 5 CloudDrive impls through the queue.**  Replace
   direct `reqwest` calls in `drives/{internxt,filen,webdav,onedrive,
   gdrive}.rs` upload/download methods with `TransferQueue::submit`.
   Each connector still owns its auth + endpoint logic; the queue only
-  gates concurrency and retries.
+  gates concurrency and retries. The GUI cloud-backup upload/restore path
+  is now queue-backed for every configured provider; direct drive commands
+  remain to be wired.
 - [ ] **Frontend: transfer drawer.**  Collapsible bottom panel showing
   active + queued transfers (filename, provider icon, progress bar,
   speed, cancel button).  Listens to `transfer://progress` events.
