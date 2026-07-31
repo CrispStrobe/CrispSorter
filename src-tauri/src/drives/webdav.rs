@@ -35,7 +35,7 @@ use quick_xml::Reader;
 use std::path::Path;
 use std::time::Duration;
 
-use super::{CloudDrive, DirEntry, DriveType, FileStat};
+use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
@@ -277,6 +277,16 @@ impl CloudDrive for WebDavDrive {
         DriveType::WebDav
     }
 
+    fn capabilities(&self) -> DriveCapabilities {
+        DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
+            ..DriveCapabilities::basic()
+        }
+    }
+
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let url = self.url_for(path);
         let resp = self
@@ -422,6 +432,54 @@ impl CloudDrive for WebDavDrive {
         Ok(())
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        self.ensure_collection(path)
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.ensure_collection(parent)?;
+        }
+        let source_url = self.url_for(source);
+        let destination_url = self.url_for(destination);
+        let response = self
+            .req(reqwest::Method::from_bytes(b"MOVE").unwrap(), &source_url)
+            .header("Destination", destination_url.as_str())
+            .header("Overwrite", "T")
+            .send()
+            .with_context(|| format!("MOVE {source_url} -> {destination_url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!(
+                "WebDAV MOVE {source_url} -> {destination_url} → {status}: {body}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.ensure_collection(parent)?;
+        }
+        let source_url = self.url_for(source);
+        let destination_url = self.url_for(destination);
+        let response = self
+            .req(reqwest::Method::from_bytes(b"COPY").unwrap(), &source_url)
+            .header("Destination", destination_url.as_str())
+            .header("Overwrite", "F")
+            .send()
+            .with_context(|| format!("COPY {source_url} -> {destination_url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!(
+                "WebDAV COPY {source_url} -> {destination_url} → {status}: {body}"
+            ));
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         let url = self.url_for(path);
         let resp = self
@@ -518,6 +576,60 @@ mod tests {
         let d = WebDavDrive::new("dav", "https://example.com/dav/", None, None, false);
         assert_eq!(d.label(), "dav");
         assert_eq!(d.drive_type(), DriveType::WebDav);
+        let capabilities = d.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(capabilities.copy);
+        assert!(!capabilities.streaming);
+    }
+
+    #[test]
+    fn mutation_methods_use_webdav_destination_headers() {
+        let mut server = Server::new();
+        let move_mock = server
+            .mock("MOVE", "/dav/source.txt")
+            .match_header("Destination", &format!("{}/dav/moved.txt", server.url()))
+            .match_header("Overwrite", "T")
+            .with_status(201)
+            .create();
+        let copy_mock = server
+            .mock("COPY", "/dav/source.txt")
+            .match_header("Destination", &format!("{}/dav/copied.txt", server.url()))
+            .match_header("Overwrite", "F")
+            .with_status(201)
+            .create();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/dav/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+
+        drive
+            .move_path(Path::new("source.txt"), Path::new("moved.txt"))
+            .unwrap();
+        drive
+            .copy_path(Path::new("source.txt"), Path::new("copied.txt"))
+            .unwrap();
+        move_mock.assert();
+        copy_mock.assert();
+    }
+
+    #[test]
+    fn create_dir_walks_each_missing_collection() {
+        let mut server = Server::new();
+        let first = server.mock("MKCOL", "/dav/one").with_status(201).create();
+        let second = server
+            .mock("MKCOL", "/dav/one/two")
+            .with_status(201)
+            .create();
+        let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);
+
+        drive.create_dir(Path::new("one/two")).unwrap();
+        first.assert();
+        second.assert();
     }
 
     #[test]

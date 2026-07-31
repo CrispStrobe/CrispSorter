@@ -2617,6 +2617,9 @@ a transfer without leaving the search/catalog workflow.
   trait boundary for legacy providers.  Do not fake support: unsupported
   operations must be reported by capability, not discovered by a late HTTP
   failure.
+  - [x] WebDAV now advertises and implements `create_dir`, `move_path`, and
+    `copy_path` via RFC 4918 MKCOL/MOVE/COPY, with destination and overwrite
+    semantics covered by mock-server unit tests. ✅ 2026-07-31
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.
