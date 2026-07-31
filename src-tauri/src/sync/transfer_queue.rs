@@ -15,9 +15,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{watch, Notify, Semaphore};
 use tokio::task::JoinHandle;
 
@@ -94,6 +95,11 @@ pub struct TransferCancellation {
     notify: Arc<Notify>,
 }
 
+struct JobRecord {
+    progress_rx: watch::Receiver<TransferProgress>,
+    cancellation: TransferCancellation,
+}
+
 impl TransferCancellation {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
@@ -118,6 +124,7 @@ type TransferFn = Arc<dyn Fn() -> Result<Vec<u8>> + Send + Sync + 'static>;
 pub struct TransferQueue {
     semaphore: Arc<Semaphore>,
     max_concurrent: usize,
+    jobs: Arc<Mutex<HashMap<u64, JobRecord>>>,
 }
 
 impl TransferQueue {
@@ -132,6 +139,7 @@ impl TransferQueue {
         Self {
             semaphore: Arc::new(Semaphore::new(max)),
             max_concurrent: max,
+            jobs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -143,6 +151,77 @@ impl TransferQueue {
     /// Number of currently active transfers.
     pub fn active_count(&self) -> usize {
         self.max_concurrent - self.semaphore.available_permits()
+    }
+
+    /// Return a bounded snapshot for the transfer drawer and automation
+    /// clients.  Recent terminal jobs are retained so the UI can show the
+    /// result of a transfer that completed between polls.
+    pub fn snapshot(&self) -> Vec<TransferProgress> {
+        let mut jobs: Vec<_> = self
+            .jobs
+            .lock()
+            .expect("transfer queue job registry poisoned")
+            .values()
+            .map(|job| job.progress_rx.borrow().clone())
+            .collect();
+        jobs.sort_by_key(|job| job.job_id);
+        jobs
+    }
+
+    /// Cancel a queued or active job by ID. Returns `false` when the job is
+    /// not known to this application queue.
+    pub fn cancel(&self, job_id: u64) -> bool {
+        let jobs = self
+            .jobs
+            .lock()
+            .expect("transfer queue job registry poisoned");
+        if let Some(job) = jobs.get(&job_id) {
+            job.cancellation.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn register_job(
+        &self,
+        job_id: u64,
+        progress_rx: watch::Receiver<TransferProgress>,
+        cancellation: TransferCancellation,
+    ) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .expect("transfer queue job registry poisoned");
+        jobs.insert(
+            job_id,
+            JobRecord {
+                progress_rx,
+                cancellation,
+            },
+        );
+        // Evict the oldest terminal entries only; active jobs must remain
+        // cancellable even when many transfers have been submitted.
+        while jobs.len() > 256 {
+            let candidate = jobs
+                .iter()
+                .filter(|(_, job)| {
+                    matches!(
+                        &job.progress_rx.borrow().state,
+                        TransferState::Done
+                            | TransferState::Failed { .. }
+                            | TransferState::Cancelled
+                    )
+                })
+                .map(|(id, _)| *id)
+                .min();
+            match candidate {
+                Some(id) => {
+                    jobs.remove(&id);
+                }
+                None => break,
+            }
+        }
     }
 
     /// Submit an upload job.  The `data` bytes will be written to
@@ -174,6 +253,7 @@ impl TransferQueue {
         let sem = self.semaphore.clone();
         let cancellation = TransferCancellation::default();
         let task_cancellation = cancellation.clone();
+        self.register_job(job_id, rx.clone(), cancellation.clone());
 
         let handle = tokio::spawn(async move {
             run_with_retries(
@@ -227,6 +307,7 @@ impl TransferQueue {
         let sem = self.semaphore.clone();
         let cancellation = TransferCancellation::default();
         let task_cancellation = cancellation.clone();
+        self.register_job(job_id, rx.clone(), cancellation.clone());
 
         let handle = tokio::spawn(async move {
             run_with_retries(
@@ -464,6 +545,49 @@ mod tests {
         let progress = h.progress_rx.borrow().clone();
         assert_eq!(progress.state, TransferState::Done);
         assert_eq!(progress.bytes_total, Some(11));
+    }
+
+    #[tokio::test]
+    async fn snapshot_retains_completed_job() {
+        let queue = TransferQueue::new();
+        let h = queue.submit_upload(
+            "snapshot-drive".into(),
+            PathBuf::from("doc.txt"),
+            b"hello".to_vec(),
+            |_path, _data| Ok(()),
+        );
+        let job_id = h.job_id;
+        h.handle.await.unwrap().unwrap();
+
+        let jobs = queue.snapshot();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, job_id);
+        assert_eq!(jobs[0].state, TransferState::Done);
+    }
+
+    #[tokio::test]
+    async fn cancel_by_job_id_reaches_active_transfer() {
+        let queue = TransferQueue::new();
+        let h = queue.submit_upload(
+            "cancel-drive".into(),
+            PathBuf::from("slow.txt"),
+            vec![1],
+            |_path, _data| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Ok(())
+            },
+        );
+        let mut progress = h.progress_rx.clone();
+        loop {
+            progress.changed().await.unwrap();
+            if progress.borrow().state == TransferState::Active {
+                break;
+            }
+        }
+        assert!(queue.cancel(h.job_id));
+        assert!(h.handle.await.unwrap().is_err());
+        assert_eq!(queue.snapshot()[0].state, TransferState::Cancelled);
+        assert!(!queue.cancel(u64::MAX));
     }
 
     #[tokio::test]

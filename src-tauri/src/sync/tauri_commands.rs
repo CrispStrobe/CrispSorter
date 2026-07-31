@@ -18,6 +18,24 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// Snapshot the shared application transfer queue for the transfer drawer,
+/// status bar, and headless UI integrations.
+#[tauri::command]
+pub async fn transfer_queue_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::transfer_queue::TransferProgress>, String> {
+    Ok(state.transfer_queue.snapshot())
+}
+
+/// Cancel a queued or active shared transfer by its job ID.
+#[tauri::command]
+pub async fn transfer_queue_cancel(
+    state: State<'_, AppState>,
+    job_id: u64,
+) -> Result<bool, String> {
+    Ok(state.transfer_queue.cancel(job_id))
+}
+
 /// Return sync status: pending count, last push/pull timestamps, online state.
 #[tauri::command]
 pub async fn sync_status(
