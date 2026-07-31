@@ -1467,11 +1467,12 @@ impl InternxtNativeClient {
         } else {
             let mut file = File::open(path)
                 .with_context(|| format!("opening upload file {}", path.display()))?;
-            // Keep concurrent presigned PUTs conservative. The gateway/S3
-            // layer intermittently resets one of several simultaneous
-            // 30 MiB connections; bounded concurrency plus retrying the same
-            // URL is more reliable than saturating it.
-            let workers = parts.min(2);
+            // Multipart PUTs are deliberately serialized. The live
+            // gateway/S3 endpoint resets one of several simultaneous 30 MiB
+            // connections (the pre-parallel implementation was reliable),
+            // so retrying a single presigned URL at a time is the safe
+            // default. Ranged downloads remain independently parallel.
+            let workers = 1usize;
             let (job_tx, job_rx) = mpsc::sync_channel::<(usize, String, Vec<u8>)>(workers * 2);
             let job_rx = Arc::new(Mutex::new(job_rx));
             let (result_tx, result_rx) = mpsc::channel::<(usize, Result<String>)>();
