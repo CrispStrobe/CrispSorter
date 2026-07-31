@@ -2630,6 +2630,11 @@ a transfer without leaving the search/catalog workflow.
     Python CLI now exposes `rename` and `mv`; the Rust subprocess adapter
     advertises create/rename/move, while copy remains false because neither
     the Python CLI nor the official Go adapter provides native copy. ✅ 2026-07-31
+  - [x] Native Internxt Rust adapter now advertises and implements folder
+    creation, rename, move, and copy by delegating to the already-tested
+    `InternxtNativeClient` mutations. File copies preserve the provider’s
+    plain-name/type split and apply a follow-up rename when the destination
+    leaf changes. ✅ 2026-07-31
   - [x] **Official Internxt adapter comparison.** The official Go
     [`internxt/rclone-adapter`](https://github.com/internxt/rclone-adapter)
     implements file/folder create, delete, rename, and move, but has no
