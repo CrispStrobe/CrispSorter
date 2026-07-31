@@ -395,6 +395,7 @@ pub struct InternxtNativeClient {
     bearer_token: String,
     http: Client,
     listing_cache: Arc<Mutex<std::collections::HashMap<String, CachedListing>>>,
+    verbose: bool,
 }
 
 /// Durable state for a resumable upload.
@@ -539,7 +540,13 @@ impl InternxtNativeClient {
             bearer_token: bearer_token.into(),
             http,
             listing_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            verbose: false,
         })
+    }
+
+    /// Enable diagnostic transfer logging for CLI/debug consumers.
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
     }
 
     /// Return the default durable state location used by [`upload_path`].
@@ -1323,7 +1330,7 @@ impl InternxtNativeClient {
         path: &Path,
         state_path: &Path,
     ) -> Result<()> {
-        self.upload_path_with_resume_state_with_workers_and_multipart(
+        self.upload_path_with_resume_state_with_workers(
             session,
             parent_folder_uuid,
             plain_name,
@@ -1331,7 +1338,6 @@ impl InternxtNativeClient {
             path,
             state_path,
             1,
-            false,
         )
     }
 
@@ -1352,38 +1358,12 @@ impl InternxtNativeClient {
         state_path: &Path,
         workers: usize,
     ) -> Result<()> {
-        self.upload_path_with_resume_state_with_workers_and_multipart(
-            session,
-            parent_folder_uuid,
-            plain_name,
-            file_type,
-            path,
-            state_path,
-            workers,
-            true,
-        )
-    }
-
-    /// Upload a local file with an explicit worker count and multipart choice.
-    /// The ordinary public upload API is single-part by default; this is the
-    /// opt-in path used by multipart tests and callers.
-    pub fn upload_path_with_resume_state_with_workers_and_multipart(
-        &self,
-        session: &InternxtSession,
-        parent_folder_uuid: &str,
-        plain_name: &str,
-        file_type: &str,
-        path: &Path,
-        state_path: &Path,
-        workers: usize,
-        multipart: bool,
-    ) -> Result<()> {
         let workers = workers.clamp(1, 10);
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading upload metadata for {}", path.display()))?;
         let file_size = metadata.len();
         let modified_ns = file_modified_ns(path)?;
-        let mut part_size = if !multipart || file_size < MULTIPART_MIN_SIZE as u64 {
+        let mut part_size = if file_size < MULTIPART_MIN_SIZE as u64 {
             file_size.max(1) as usize
         } else {
             UPLOAD_PART_SIZE
@@ -1395,6 +1375,12 @@ impl InternxtNativeClient {
                 .div_ceil(parts as u64)
                 .div_ceil(16)
                 .saturating_mul(16) as usize;
+        }
+        if self.verbose {
+            eprintln!(
+                "[verbose] upload layout: {} bytes, {} part(s), {} bytes/part, workers={}",
+                file_size, parts, part_size, workers
+            );
         }
         let cp_path = state_path;
         let mut checkpoint = load_checkpoint(&cp_path)?.filter(|value| {
@@ -1425,6 +1411,9 @@ impl InternxtNativeClient {
                 value.etags.clone(),
             )
         } else {
+            if self.verbose {
+                eprintln!("[verbose] requesting upload URLs (multiparts={parts})");
+            }
             getrandom::getrandom(&mut index)
                 .map_err(|error| anyhow!("generating upload file index: {error}"))?;
             let start_url = format!(
@@ -1544,6 +1533,14 @@ impl InternxtNativeClient {
                         let Some((part, url, encrypted)) = job else {
                             break;
                         };
+                        if client.verbose {
+                            eprintln!(
+                                "[verbose] PUT part {}/{} started ({} bytes)",
+                                part + 1,
+                                parts,
+                                encrypted.len()
+                            );
+                        }
                         let result = client
                             .put_with_retry(&url, encrypted, part + 1, parts)
                             .and_then(|response| {
@@ -1557,6 +1554,14 @@ impl InternxtNativeClient {
                                         anyhow!("Internxt part {} returned no ETag", part + 1)
                                     })
                             });
+                        if client.verbose {
+                            eprintln!(
+                                "[verbose] PUT part {}/{} finished: {}",
+                                part + 1,
+                                parts,
+                                if result.is_ok() { "ok" } else { "error" }
+                            );
+                        }
                         let _ = sender.send((part, result));
                     });
                 }

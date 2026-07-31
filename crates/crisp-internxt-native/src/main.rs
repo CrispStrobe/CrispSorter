@@ -51,11 +51,11 @@ enum Command {
         remote: PathBuf,
         #[arg(long)]
         resume_state: Option<PathBuf>,
-        /// Opt in to true S3 multipart for files >= 100 MiB.
-        #[arg(long)]
-        multipart: bool,
+        /// Print transfer stages and multipart diagnostics.
+        #[arg(short, long)]
+        verbose: bool,
         /// Concurrent multipart PUT workers; 1 is the gateway-safe default.
-        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(usize).range(1..=10))]
+        #[arg(long, default_value_t = 1)]
         multipart_workers: usize,
     },
     /// Recursively upload a local directory into a remote folder.
@@ -241,10 +241,19 @@ fn run() -> Result<()> {
             local,
             remote,
             resume_state,
-            multipart,
+            verbose,
             multipart_workers,
         } => {
-            let (client, value) = open(&session)?;
+            let (mut client, value) = open(&session)?;
+            client.set_verbose(verbose);
+            if verbose {
+                eprintln!(
+                    "[verbose] session loaded; local={} remote={}",
+                    local.display(),
+                    remote.display()
+                );
+                eprintln!("[verbose] multipart=automatic (>=100 MiB), workers={multipart_workers}");
+            }
             let parent = remote.parent().unwrap_or_else(|| Path::new("."));
             let folder = client.resolve_path(&value, parent)?;
             anyhow::ensure!(
@@ -257,29 +266,29 @@ fn run() -> Result<()> {
                 .context("remote path has no file name")?
                 .to_string_lossy();
             let (stem, ext) = split_name(&name);
+            if verbose {
+                let size = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);
+                eprintln!(
+                    "[verbose] resolved parent={} file={} bytes={size}",
+                    parent.display(),
+                    name
+                );
+                eprintln!(
+                    "[verbose] starting encrypted upload; a pause can mean S3 is finishing a part"
+                );
+            }
             if let Some(state_path) = resume_state {
-                if multipart {
-                    client.upload_path_with_resume_state_with_workers(
-                        &value,
-                        &folder.uuid,
-                        stem,
-                        ext,
-                        &local,
-                        &state_path,
-                        multipart_workers,
-                    )?;
-                } else {
-                    client.upload_path_with_resume_state(
-                        &value,
-                        &folder.uuid,
-                        stem,
-                        ext,
-                        &local,
-                        &state_path,
-                    )?;
-                }
+                client.upload_path_with_resume_state_with_workers(
+                    &value,
+                    &folder.uuid,
+                    stem,
+                    ext,
+                    &local,
+                    &state_path,
+                    multipart_workers,
+                )?;
             } else {
-                if !multipart {
+                if multipart_workers == 1 {
                     client.upload_path(&value, &folder.uuid, stem, ext, &local)?;
                 } else {
                     let state_path = client.default_upload_resume_state_path(&value, &local);
@@ -293,6 +302,9 @@ fn run() -> Result<()> {
                         multipart_workers,
                     )?;
                 }
+            }
+            if verbose {
+                eprintln!("[verbose] upload and Drive metadata creation completed");
             }
             println!("uploaded {}", remote.display());
         }
