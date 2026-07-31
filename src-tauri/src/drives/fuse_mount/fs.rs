@@ -5,6 +5,7 @@
 //! on `readdir` and cached in a bidirectional `path ↔ ino` map.
 
 use crate::drives::{CloudDrive, DirEntry, FileStat};
+use crate::sync::transfer_queue::TransferQueue;
 use anyhow::Result;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
@@ -21,6 +22,7 @@ const ATTR_TTL: Duration = Duration::from_secs(5);
 /// FUSE filesystem backed by a `CloudDrive`.
 pub struct FuseDriveFs {
     drive: Arc<dyn CloudDrive>,
+    queue: TransferQueue,
     /// Bidirectional inode ↔ path map, protected by a mutex.
     state: Mutex<InodeState>,
 }
@@ -68,8 +70,15 @@ impl InodeState {
 impl FuseDriveFs {
     /// Create a new FUSE filesystem for the given drive.
     pub fn new(drive: Arc<dyn CloudDrive>) -> Self {
+        Self::with_queue(drive, TransferQueue::new())
+    }
+
+    /// Create a filesystem with an explicit queue, allowing the application
+    /// to share its queue and tests to use a deterministic concurrency limit.
+    pub fn with_queue(drive: Arc<dyn CloudDrive>, queue: TransferQueue) -> Self {
         Self {
             drive,
+            queue,
             state: Mutex::new(InodeState::new()),
         }
     }
@@ -248,9 +257,17 @@ impl Filesystem for FuseDriveFs {
             }
         };
 
-        // Read the entire file (CloudDrive only supports full reads).
-        // TODO: add a local LRU cache to avoid re-downloading.
-        match self.drive.read_file(&file_path) {
+        // Read the entire file (CloudDrive only supports full reads). The
+        // blocking adapter keeps FUSE synchronous while applying the shared
+        // queue's concurrency and retry policy.
+        let drive = Arc::clone(&self.drive);
+        let drive_id = drive.label().to_owned();
+        match self.queue.download_blocking(
+            drive_id,
+            file_path.clone(),
+            None,
+            move |path| drive.read_file(path),
+        ) {
             Ok(data) => {
                 let start = (offset as usize).min(data.len());
                 let end = (start + size as usize).min(data.len());

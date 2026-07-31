@@ -331,6 +331,57 @@ impl TransferQueue {
             cancellation,
         }
     }
+
+    /// Run an upload from a synchronous caller while still using this queue's
+    /// semaphore, retry policy, and job registry.  A short-lived runtime is
+    /// isolated on a worker thread so this is safe from FUSE/provider code
+    /// that cannot await the async queue.
+    pub fn upload_blocking(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        data: Vec<u8>,
+        write_fn: impl Fn(&Path, &[u8]) -> Result<()> + Send + Sync + 'static,
+    ) -> Result<()> {
+        let queue = self.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new()
+                .context("creating transfer queue runtime")?;
+            let _guard = runtime.enter();
+            let transfer = queue.submit_upload(drive_id, remote_path, data, write_fn);
+            match runtime.block_on(transfer.handle) {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(anyhow!("transfer queue task failed: {error}")),
+            }
+        })
+        .join()
+        .map_err(|_| anyhow!("transfer queue worker panicked"))?
+    }
+
+    /// Run a download from a synchronous caller through the shared queue.
+    pub fn download_blocking(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        size_hint: Option<u64>,
+        read_fn: impl Fn(&Path) -> Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Result<Vec<u8>> {
+        let queue = self.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new()
+                .context("creating transfer queue runtime")?;
+            let _guard = runtime.enter();
+            let transfer = queue.submit_download(drive_id, remote_path, size_hint, read_fn);
+            match runtime.block_on(transfer.handle) {
+                Ok(Ok(data)) => Ok(data),
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(anyhow!("transfer queue task failed: {error}")),
+            }
+        })
+        .join()
+        .map_err(|_| anyhow!("transfer queue worker panicked"))?
+    }
 }
 
 impl Default for TransferQueue {
@@ -488,6 +539,39 @@ mod tests {
             "attempt 20 exceeded cap: {:?}",
             d20
         );
+    }
+
+    #[test]
+    fn blocking_adapter_runs_upload_and_download_through_registry() {
+        let queue = TransferQueue::with_concurrency(1);
+        let uploaded = Arc::new(Mutex::new(Vec::new()));
+        let uploaded_for_write = uploaded.clone();
+        queue
+            .upload_blocking(
+                "drive".into(),
+                PathBuf::from("remote.txt"),
+                b"upload".to_vec(),
+                move |_path, data| {
+                    uploaded_for_write.lock().unwrap().extend_from_slice(data);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        let downloaded = queue
+            .download_blocking(
+                "drive".into(),
+                PathBuf::from("remote.txt"),
+                Some(8),
+                |_path| Ok(b"download".to_vec()),
+            )
+            .unwrap();
+
+        assert_eq!(&*uploaded.lock().unwrap(), b"upload");
+        assert_eq!(downloaded, b"download");
+        let snapshot = queue.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().all(|job| job.state == TransferState::Done));
     }
 
     #[tokio::test]
