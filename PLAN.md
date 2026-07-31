@@ -2461,13 +2461,13 @@ a trap:
     download state, not only resumable multipart upload state.
   - [x] Add end-to-end content/hash verification and byte-level progress
     callbacks for single-file upload/download operations.
-  - [ ] Add automatic expired-token detection, refresh, and one safe retry;
+  - [x] Add automatic expired-token detection, refresh, and one safe retry;
     preserve the explicit CLI `refresh` command.
-  - [>] Use explicit rustls-only Reqwest features for the published crate and
+  - [x] Use explicit rustls-only Reqwest features for the published crate and
     verify desktop, macOS, Linux, and iOS builds without OpenSSL.
     (Checkpoint: Internxt now uses explicit rustls and HTTP/1.1 transport;
-    desktop and live gateway checks pass. Cross-platform build verification
-    remains.)
+    desktop, aarch64 macOS, and aarch64 iOS cargo checks pass; no
+    `openssl-sys` or `native-tls` dependency is present.)
   - [ ] Add unit, local HTTP-harness, cross-client Python/Dart, and live tests
     for every new transfer and refresh path.
 

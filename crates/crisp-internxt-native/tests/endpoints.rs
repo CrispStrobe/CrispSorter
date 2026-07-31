@@ -33,6 +33,15 @@ fn response(stream: &mut TcpStream, body: &str) {
     .unwrap();
 }
 
+fn response_status(stream: &mut TcpStream, status: &str, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{}",
+        body.len(), body
+    )
+    .unwrap();
+}
+
 #[test]
 fn drive_and_auth_endpoints_are_exercised_against_http_harness() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -106,4 +115,60 @@ fn drive_and_auth_endpoints_are_exercised_against_http_harness() {
     let paths = server.join().unwrap();
     assert!(paths.iter().any(|p| p == "/users/refresh"));
     assert!(paths.iter().any(|p| p == "/storage/trash/add"));
+}
+
+#[test]
+fn expired_bearer_token_refreshes_and_retries_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        for attempt in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let path = request_path(&mut stream);
+            match attempt {
+                0 => {
+                    assert!(path.starts_with("/folders/content/root/folders"));
+                    response_status(&mut stream, "401 Unauthorized", "unauthorized");
+                }
+                1 => {
+                    assert_eq!(path, "/users/refresh");
+                    response(
+                        &mut stream,
+                        r#"{"token":"refreshed","newToken":"refreshed-new"}"#,
+                    );
+                }
+                2 => {
+                    assert!(path.starts_with("/folders/content/root/folders"));
+                    response(
+                        &mut stream,
+                        r#"{"result":[{"plainName":"Recovered","uuid":"dir"}]}"#,
+                    );
+                }
+                _ => {
+                    assert!(path.starts_with("/folders/content/root/files"));
+                    response(&mut stream, r#"{"result":[]}"#);
+                }
+            }
+        }
+    });
+    let base = format!("http://{address}");
+    let mut session = InternxtSession {
+        drive_api_url: base.clone(),
+        network_url: base.clone(),
+        email: "test@example.invalid".into(),
+        token: "token".into(),
+        new_token: "new-token".into(),
+        mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
+        user_id: "user".into(),
+        root_folder_id: "root".into(),
+        bridge_user: "bridge".into(),
+        bucket_id: "00".repeat(12),
+    };
+    let mut client = InternxtNativeClient::new(&base, "new-token").unwrap();
+    let recovered = client
+        .with_auto_refresh(&mut session, |client, _| client.list_folder("root"))
+        .unwrap();
+    assert_eq!(recovered[0].name, "Recovered");
+    assert_eq!(session.new_token, "refreshed-new");
+    server.join().unwrap();
 }
