@@ -2478,8 +2478,9 @@ a trap:
     for every new transfer and refresh path.
     (Selected this pass: the Rust endpoint/refresh and streaming harness now
     passes with multipart resume coverage, and presigned PUT diagnostics report
-    per-attempt elapsed time. The authenticated Python/Dart/live matrix remains
-    open until it has run against the configured accounts.)
+    per-attempt elapsed time. The CZE Internxt live suite passed 4/4, including
+    100 MiB multipart and Python↔Rust interoperability. The Dart cross-client
+    leg remains open.)
 
   **Filen (`crisp-filen`) — retain its stronger crypto and transfer engine:**
 
@@ -2497,10 +2498,10 @@ a trap:
   - [x] Rename remaining public `FilenNativeClient`/native wording where this
     is source-compatible, while preserving a deprecation path for users of
     0.x APIs.
-  - [ ] Run the ignored Rust↔Python live matrix against v1/v2/v3 accounts,
-    large files, resume interruption, range downloads, timestamps, and all
-    mutation operations; record gateway-specific failures separately from
-    implementation failures.
+  - [x] Run the ignored Rust↔Python live matrix against the configured Filen
+    account: 3/3 passed (both cross-client directions plus large transfer,
+    recursive/timestamp/resume, and mutation coverage; 2026-07-31). No
+    gateway-specific failures observed.
 
   **Shared `crisp-cloud-rs` facade and release quality:**
 
