@@ -355,9 +355,11 @@ fn configure_workers(
     workers: usize,
     file_workers: usize,
 ) -> Result<()> {
-    let mut config = TransferConfig::default();
-    config.workers = workers;
-    config.file_workers = file_workers;
+    let config = TransferConfig {
+        workers,
+        file_workers,
+        ..TransferConfig::default()
+    };
     client.set_transfer_config(config)
 }
 fn write_session(path: &Path, value: &FilenSession) -> Result<()> {
