@@ -2473,9 +2473,10 @@ a trap:
     `openssl-sys` or `native-tls` dependency is present.)
   - [>] Add unit, local HTTP-harness, cross-client Python/Dart, and live tests
     for every new transfer and refresh path.
-    (This pass adds request-level Filen 2FA coverage; the authenticated
-    cross-client matrix remains open until it has run against the configured
-    v1/v2/v3 accounts.)
+    (Selected this pass: the Rust endpoint/refresh and streaming harness now
+    passes with multipart resume coverage, and presigned PUT diagnostics report
+    per-attempt elapsed time. The authenticated Python/Dart/live matrix remains
+    open until it has run against the configured accounts.)
 
   **Filen (`crisp-filen`) — retain its stronger crypto and transfer engine:**
 

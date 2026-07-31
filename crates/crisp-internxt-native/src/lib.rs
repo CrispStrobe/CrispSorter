@@ -2592,6 +2592,7 @@ impl InternxtNativeClient {
     ) -> Result<Response> {
         let mut last_error = None;
         for attempt in 0..self.transfer_config.max_upload_retries {
+            let started = Instant::now();
             match self
                 .http
                 .put(url)
@@ -2599,7 +2600,16 @@ impl InternxtNativeClient {
                 .body(body.clone())
                 .send()
             {
-                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) if response.status().is_success() => {
+                    if self.verbose {
+                        eprintln!(
+                            "[verbose] PUT part {part}/{total} attempt {} completed in {:.3}s",
+                            attempt + 1,
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                    return Ok(response);
+                }
                 Ok(response) if response.status().as_u16() == 403 => {
                     return Err(anyhow!(
                         "Internxt part {part}/{total} upload URL expired (HTTP 403)"
@@ -2611,7 +2621,16 @@ impl InternxtNativeClient {
                         response.status()
                     ));
                 }
-                Err(error) => last_error = Some(error.into()),
+                Err(error) => {
+                    if self.verbose {
+                        eprintln!(
+                            "[verbose] PUT part {part}/{total} attempt {} failed after {:.3}s: {error}",
+                            attempt + 1,
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                    last_error = Some(error.into());
+                }
             }
             if attempt + 1 < self.transfer_config.max_upload_retries {
                 std::thread::sleep(Duration::from_millis(
