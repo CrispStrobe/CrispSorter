@@ -1,11 +1,16 @@
 # crisp-internxt-native
 
-Reusable native Internxt Cloud Drive protocol client for CrispSorter.
+Purpose-built native Internxt Cloud Drive protocol client for CrispSorter.
 
-The crate owns Internxt login transport, session serialization, folder/file
-operations, and file encryption. CrispSorter adds its keychain and
-`CloudDrive` adapter around it. The `crisp-internxt` binary exercises the same
-library without starting Tauri.
+The crate owns Internxt login transport, session serialization, path
+resolution, folder/file operations, and file encryption. CrispSorter adds its
+keychain and `CloudDrive` adapter around it. The `crisp-internxt` binary
+exercises the same library without starting Tauri.
+
+The local `internxt-core` crate is a test-only MIT reference/oracle. It is not
+part of the production dependency graph; its crypto vectors catch drift while
+our implementation remains free to provide path resolution, batching,
+chunking, resume, and the sync adapter shape this app needs.
 
 Build and run the offline protocol check:
 
