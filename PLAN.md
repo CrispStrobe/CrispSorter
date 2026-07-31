@@ -2620,6 +2620,11 @@ a transfer without leaving the search/catalog workflow.
   - [x] WebDAV now advertises and implements `create_dir`, `move_path`, and
     `copy_path` via RFC 4918 MKCOL/MOVE/COPY, with destination and overwrite
     semantics covered by mock-server unit tests. ✅ 2026-07-31
+  - [x] Google Drive now advertises and implements folder creation, rename/
+    move, and copy through Drive API v3 `files` mutations. ✅ 2026-07-31
+  - [x] OneDrive now advertises and implements folder creation and
+    rename/move through Graph mutations. Copy remains explicitly unsupported
+    because Graph exposes it as an asynchronous operation. ✅ 2026-07-31
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.
