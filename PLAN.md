@@ -2389,7 +2389,10 @@ a trap:
   `../internxt-dart` stays the **oracle** (P33.2), not a port source.
 
   (This pass fixes active-token selection after refresh and makes native
-  overwrite resolution use the complete parent path.)
+  overwrite resolution use the complete parent path. The desktop
+  `desktop,drive-internxt-native` Tauri check passes; omitting `desktop` is
+  intentionally unsupported because the desktop capability owns shell/process
+  permissions.)
 
 - [x] **P33.2 — Verify the crypto against the reference client, not our own
   tests.**  `internxt-core` claims byte-for-byte compatibility with the
