@@ -2501,7 +2501,7 @@ a trap:
     cancellation, resume state, and structured error classification.
   - [x] Add cooperative cancellation and bounded concurrency guarantees to
     both backends, with identical progress semantics.
-  - [ ] Add an async API or an explicitly documented blocking-only boundary;
+  - [x] Add an async API or an explicitly documented blocking-only boundary;
     do not let the facade imply async portability it does not provide.
   - [ ] Move session persistence behind a caller-supplied secret-store trait;
     keep JSON serialization available for CLI/testing but document its
