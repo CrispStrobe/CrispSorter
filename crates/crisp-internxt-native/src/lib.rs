@@ -837,4 +837,38 @@ mod tests {
             mnemonic_seed("caf\u{e9}", "pass")
         );
     }
+
+    #[test]
+    fn crypto_matches_the_vendored_internxt_core_engine() {
+        let bucket_hex = hex::encode(BUCKET);
+        assert_eq!(
+            file_key(MNEMONIC, &BUCKET, &INDEX),
+            internxt_core::crypto::generate_file_key(MNEMONIC, &bucket_hex, &INDEX).unwrap()
+        );
+        assert_eq!(
+            InternxtSession {
+                drive_api_url: String::new(),
+                network_url: String::new(),
+                email: String::new(),
+                token: String::new(),
+                new_token: String::new(),
+                mnemonic: String::new(),
+                user_id: "user-id".into(),
+                root_folder_id: String::new(),
+                bridge_user: String::new(),
+                bucket_id: bucket_hex,
+            }
+            .bridge_pass(),
+            internxt_core::crypto::network_password("user-id")
+        );
+        assert_eq!(
+            password_hash("password123", "00112233445566778899aabbccddeeff").unwrap(),
+            internxt_core::crypto::pass_to_hash(
+                "password123",
+                Some("00112233445566778899aabbccddeeff")
+            )
+            .unwrap()
+            .1
+        );
+    }
 }
