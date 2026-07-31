@@ -2612,12 +2612,15 @@ a transfer without leaving the search/catalog workflow.
   trait boundary for legacy providers.  Do not fake support: unsupported
   operations must be reported by capability, not discovered by a late HTTP
   failure.
-- [ ] **One shared application TransferQueue.** Replace per-command queues
-  with an AppState-owned queue shared by GUI, CLI, index promotion, FUSE, and
-  cloud-backup paths.  Add queue job registration, progress events, retry
-  classification, cancellation, and a bounded blocking adapter for the
-  synchronous FUSE/provider boundary.  Keep serial multipart defaults for
-  fragile gateways and configurable workers for testing.
+- [x] **One shared application TransferQueue (GUI slice).** AppState now owns
+  one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
+  restore, and index archive promotion. ✅ Shipped 2026-07-31.
+- [ ] **Complete shared TransferQueue integration.** Replace remaining
+  per-command queues in CLI, FUSE, and provider-facing boundaries. Add queue
+  job registration, progress events, retry classification, cancellation, and
+  a bounded blocking adapter for the synchronous FUSE/provider boundary. Keep
+  serial multipart defaults for fragile gateways and configurable workers for
+  testing.
 - [ ] **Streaming and durable resume.** Expose reader/writer transfers through
   the app facade; persist provider, remote path, upload/session identifiers,
   encryption key material, chunk size, completed chunks, hashes, and timestamps.

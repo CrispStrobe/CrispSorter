@@ -3737,7 +3737,7 @@ pub async fn index_promote_drive_archive(
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
     let remote = remote_path.clone();
-    let transfer_queue = crate::sync::transfer_queue::TransferQueue::new();
+    let transfer_queue = state.transfer_queue.clone();
     let transfer = transfer_queue.submit_download(
         drive_id.clone(),
         std::path::PathBuf::from(&remote),

@@ -1039,6 +1039,9 @@ pub struct AppState {
     pub batch_session_store: Arc<std::sync::Mutex<Option<batch_session::BatchSessionStore>>>,
     /// App data directory, set once in the Tauri setup hook.
     pub data_dir: tokio::sync::Mutex<Option<std::path::PathBuf>>,
+    /// One bounded transfer queue shared by GUI cloud-drive operations.
+    /// CLI invocations have their own process lifetime and use a local queue.
+    pub transfer_queue: sync::transfer_queue::TransferQueue,
 }
 
 // ── Desktop-only sidecar commands ──────────────────────────────────────────
@@ -2757,6 +2760,7 @@ pub fn run() {
             job_queue: Arc::new(std::sync::Mutex::new(None)),
             batch_session_store: Arc::new(std::sync::Mutex::new(None)),
             data_dir: tokio::sync::Mutex::new(None),
+            transfer_queue: sync::transfer_queue::TransferQueue::new(),
         })
         // P32.1a — open PDF editing sessions, keyed by session id.
         .manage(pdf_session::PdfSessions::default())

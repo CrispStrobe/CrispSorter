@@ -294,7 +294,6 @@ pub async fn drive_read_file(
     drive_id: String,
     path: String,
 ) -> Result<Vec<u8>, String> {
-    use crate::sync::transfer_queue::TransferQueue;
     use std::sync::Arc;
 
     let data_dir = state
@@ -312,7 +311,7 @@ pub async fn drive_read_file(
     let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
     let path = std::path::PathBuf::from(path);
     let path_for_transfer = path.clone();
-    let transfer = TransferQueue::new().submit_download(
+    let transfer = state.transfer_queue.clone().submit_download(
         drive_id,
         path,
         None,
@@ -333,7 +332,6 @@ pub async fn drive_write_file(
     path: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    use crate::sync::transfer_queue::TransferQueue;
     use std::sync::Arc;
 
     let data_dir = state
@@ -350,7 +348,7 @@ pub async fn drive_write_file(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
     let path = std::path::PathBuf::from(path);
-    let transfer = TransferQueue::new().submit_upload(drive_id, path, data, move |path, data| {
+    let transfer = state.transfer_queue.clone().submit_upload(drive_id, path, data, move |path, data| {
         drive.write_file(path, data)
     });
     match transfer.handle.await {

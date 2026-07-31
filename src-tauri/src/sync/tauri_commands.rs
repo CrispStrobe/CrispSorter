@@ -1002,7 +1002,6 @@ pub async fn sync_cb_backup_shards(
 ) -> Result<serde_json::Value, String> {
     use crate::drives::DriveRegistry;
     use crate::sync::backup_state::BackupState;
-    use crate::sync::transfer_queue::TransferQueue;
     use std::sync::Arc;
 
     let cli = make_cb_client(&state).await?;
@@ -1016,7 +1015,7 @@ pub async fn sync_cb_backup_shards(
         .clone();
     let drive: Arc<dyn crate::drives::CloudDrive> =
         Arc::from(DriveRegistry::instantiate(&drive_cfg));
-    let transfer_queue = TransferQueue::new();
+    let transfer_queue = state.transfer_queue.clone();
 
     let bs = BackupState::open(&data_dir).map_err(|e| e.to_string())?;
     let shard_list = cli.shard_list().await.map_err(|e| e.to_string())?;
@@ -1127,7 +1126,6 @@ pub async fn sync_cb_restore_shard(
     date: Option<String>,
 ) -> Result<serde_json::Value, String> {
     use crate::drives::DriveRegistry;
-    use crate::sync::transfer_queue::TransferQueue;
     use std::sync::Arc;
 
     let cli = make_cb_client(&state).await?;
@@ -1158,7 +1156,7 @@ pub async fn sync_cb_restore_shard(
     };
 
     let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-    let transfer_queue = TransferQueue::new();
+    let transfer_queue = state.transfer_queue.clone();
     let drive_for_transfer = Arc::clone(&drive);
     let transfer = transfer_queue.submit_download(
         drive_id.clone(),
