@@ -124,8 +124,8 @@ The live suite is opt-in and creates/cleans unique test folders. Provide
 credentials through the shell environment; do not commit them:
 
 ```bash
-source <(sed '/^2CAP=/d' /path/to/.env)
-FILEN_EMAIL="$FILEN_LOGIN" FILEN_PASSWORD="$FILEN_PW" \
+export FILEN_EMAIL="$(sed -n 's/^FILEN_LOGIN=//p' /path/to/.env)"
+export FILEN_PASSWORD="$(sed -n 's/^FILEN_PW=//p' /path/to/.env)"
   cargo test -p crisp-filen-native --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```

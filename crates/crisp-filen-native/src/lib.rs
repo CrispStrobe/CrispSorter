@@ -30,6 +30,32 @@ pub const CHUNK_SIZE: usize = 1024 * 1024;
 pub const TRANSFER_CONCURRENCY: usize = 4;
 pub const LISTING_CACHE_TTL: Duration = Duration::from_secs(600);
 
+fn local_timestamps(metadata: &std::fs::Metadata) -> (i64, i64) {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let created = metadata
+        .created()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(modified);
+    (created, modified)
+}
+
+fn set_local_modified_best_effort(path: &Path, modified: i64) {
+    if modified <= 0 {
+        return;
+    }
+    let value = std::time::UNIX_EPOCH.checked_add(Duration::from_millis(modified as u64));
+    if let Some(value) = value {
+        let _ = std::fs::File::open(path).and_then(|file| file.set_modified(value));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransferConfig {
     pub chunk_size: usize,
@@ -1775,6 +1801,19 @@ impl FilenNativeClient {
         mime: &str,
         local_path: &Path,
     ) -> Result<()> {
+        self.upload_path_with_timestamps(parent, name, mime, local_path, false)
+    }
+
+    /// Recursively upload a local path and optionally preserve local
+    /// creation/modification timestamps in Filen metadata.
+    pub fn upload_path_with_timestamps(
+        &self,
+        parent: &str,
+        name: &str,
+        mime: &str,
+        local_path: &Path,
+        preserve_timestamps: bool,
+    ) -> Result<()> {
         let metadata = std::fs::metadata(local_path)
             .with_context(|| format!("reading local Filen source {}", local_path.display()))?;
         if metadata.is_dir() {
@@ -1785,13 +1824,40 @@ impl FilenNativeClient {
             entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 let child_name = entry.file_name().to_string_lossy().into_owned();
-                self.upload_path(&folder, &child_name, mime, &entry.path())?;
+                self.upload_path_with_timestamps(
+                    &folder,
+                    &child_name,
+                    mime,
+                    &entry.path(),
+                    preserve_timestamps,
+                )?;
+            }
+            if preserve_timestamps {
+                if let Some(item) = self
+                    .list_folder(parent)?
+                    .into_iter()
+                    .find(|item| item.uuid == folder)
+                {
+                    let (created, modified) = local_timestamps(&metadata);
+                    self.update_timestamps(&item, created, modified)?;
+                }
             }
             return Ok(());
         }
         let file = std::fs::File::open(local_path)
             .with_context(|| format!("opening local Filen source {}", local_path.display()))?;
-        self.upload_file_from_reader(parent, name, mime, metadata.len(), file)
+        self.upload_file_from_reader(parent, name, mime, metadata.len(), file)?;
+        if preserve_timestamps {
+            let item = self
+                .list_folder(parent)?
+                .into_iter()
+                .rev()
+                .find(|item| !item.is_dir && item.name == name)
+                .ok_or_else(|| anyhow!("uploaded Filen file {name} not returned by listing"))?;
+            let (created, modified) = local_timestamps(&metadata);
+            self.update_timestamps(&item, created, modified)?;
+        }
+        Ok(())
     }
 
     fn upload_chunks(
@@ -1940,12 +2006,32 @@ impl FilenNativeClient {
     /// Download a remote file or directory to a local path. Directory
     /// contents are recreated recursively; files stream directly to disk.
     pub fn download_path(&self, item: &NativeItem, local_path: &Path) -> Result<()> {
+        self.download_path_with_timestamps(item, local_path, false)
+    }
+
+    /// Recursively download a remote path and optionally preserve remote
+    /// modification timestamps. Local timestamp application is best effort:
+    /// unsupported precision or permissions must not turn a successful
+    /// gateway transfer into a failure.
+    pub fn download_path_with_timestamps(
+        &self,
+        item: &NativeItem,
+        local_path: &Path,
+        preserve_timestamps: bool,
+    ) -> Result<()> {
         if item.is_dir {
             std::fs::create_dir_all(local_path).with_context(|| {
                 format!("creating local Filen destination {}", local_path.display())
             })?;
             for child in self.list_folder(&item.uuid)? {
-                self.download_path(&child, &local_path.join(&child.name))?;
+                self.download_path_with_timestamps(
+                    &child,
+                    &local_path.join(&child.name),
+                    preserve_timestamps,
+                )?;
+            }
+            if preserve_timestamps {
+                set_local_modified_best_effort(local_path, item.modified);
             }
             return Ok(());
         }
@@ -1959,6 +2045,9 @@ impl FilenNativeClient {
             format!("creating local Filen destination {}", local_path.display())
         })?;
         self.download_file_to_writer(item, &mut file)?;
+        if preserve_timestamps {
+            set_local_modified_best_effort(local_path, item.modified);
+        }
         Ok(())
     }
 
@@ -3134,6 +3223,45 @@ mod tests {
         let destination = local.path().join("nested/file.txt");
         client.download_path(&item, &destination).unwrap();
         assert_eq!(std::fs::read(destination).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn download_path_preserves_timestamp_best_effort() {
+        let key = [3u8; 32];
+        let encrypted = encrypt_file_chunk(b"hello", &key, [1u8; 12]).unwrap();
+        let egest = spawn_raw_server(vec![encrypted]);
+        let mut session = test_session("http://127.0.0.1:1".into());
+        session.egest_url = egest;
+        let client = FilenNativeClient::from_session(&session).unwrap();
+        let item = NativeItem {
+            uuid: "timestamped-file".into(),
+            name: "file.txt".into(),
+            is_dir: false,
+            size: 5,
+            parent: "root".into(),
+            file_key: Some(key),
+            bucket: "bucket".into(),
+            region: "region".into(),
+            chunks: 1,
+            version: 2,
+            mime: "text/plain".into(),
+            created: 1_700_000_000_000,
+            modified: 1_700_000_123_000,
+            hash: String::new(),
+        };
+        let local = tempfile::tempdir().unwrap();
+        let destination = local.path().join("file.txt");
+        client
+            .download_path_with_timestamps(&item, &destination, true)
+            .unwrap();
+        let actual = std::fs::metadata(destination)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!((actual - item.modified).abs() < 2_000);
     }
 
     #[test]

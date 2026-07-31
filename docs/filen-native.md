@@ -34,7 +34,10 @@ cross-checks.
   while the `_with_progress` upload/download variants report `(completed,
   total)` bytes. `get_file` fetches and decrypts one file's metadata without a
   parent listing. `upload_path` and `download_path` recursively bridge local
-  files/directories without materializing whole files. Resumable checkpoints
+  files/directories without materializing whole files. The
+  `upload_path_with_timestamps` and `download_path_with_timestamps` variants
+  preserve source/remote timestamps; local timestamp application is best
+  effort. Resumable checkpoints
   can be persisted with `save_upload_resume_state`, restored with
   `load_upload_resume_state`, and removed with `clear_upload_resume_state`.
 
@@ -58,13 +61,14 @@ and crypto vectors. The ignored live suite uses unique folders and verifies both
 directions with `../filen-python`:
 
 ```bash
-source <(sed '/^2CAP=/d' /Users/christianstrobele/code/.env)
-FILEN_EMAIL="$FILEN_LOGIN" FILEN_PASSWORD="$FILEN_PW" \
+export FILEN_EMAIL="$(sed -n 's/^FILEN_LOGIN=//p' /Users/christianstrobele/code/.env)"
+export FILEN_PASSWORD="$(sed -n 's/^FILEN_PW=//p' /Users/christianstrobele/code/.env)"
+FILEN_EMAIL="$FILEN_EMAIL" FILEN_PASSWORD="$FILEN_PASSWORD" \
   cargo test -p crisp-filen-native --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```
 
-Current suite counts: Rust native unit/hermetic tests 31 passing; Python
+Current suite counts: Rust native unit/hermetic tests 32 passing; Python
 suite 30 passing; Dart suite 244 passing with 3 expected live-suite skips when
 credentials are absent. The Rust live cross-client suite has 3 authenticated
 tests covering mutations and both transfer directions.
