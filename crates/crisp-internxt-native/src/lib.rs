@@ -16,7 +16,7 @@ use ripemd::Digest as RipemdDigest;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
 use std::fs::{self, File};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -480,6 +480,21 @@ pub struct UploadResumeState {
 
 type UploadCheckpoint = UploadResumeState;
 
+/// Durable state for a ranged download. The temporary destination contains
+/// decrypted bytes at their final offsets; completed ranges are checkpointed
+/// only after the bytes have been flushed successfully.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadResumeState {
+    pub version: u8,
+    pub path: String,
+    pub file_uuid: String,
+    pub file_size: u64,
+    pub part_size: u64,
+    pub parts: usize,
+    pub completed_parts: Vec<usize>,
+    pub created: u64,
+}
+
 fn checkpoint_path(path: &Path, bucket_id: &str) -> PathBuf {
     let mut key = Sha256::new();
     key.update(path.to_string_lossy().as_bytes());
@@ -543,6 +558,30 @@ fn remove_checkpoint(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+fn save_download_checkpoint(path: &Path, state: &DownloadResumeState) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating checkpoint directory {}", parent.display()))?;
+    }
+    let temporary = path.with_extension("tmp");
+    let bytes = serde_json::to_vec(state).context("serializing download checkpoint")?;
+    fs::write(&temporary, bytes).with_context(|| format!("writing {}", temporary.display()))?;
+    fs::rename(&temporary, path)
+        .with_context(|| format!("installing download checkpoint {}", path.display()))?;
+    Ok(())
+}
+
+fn load_download_checkpoint(path: &Path) -> Result<Option<DownloadResumeState>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+        format!("parsing download checkpoint {}", path.display())
+    })?))
+}
+
 struct EncryptReader<R> {
     reader: R,
     cipher: Aes256Ctr,
@@ -602,6 +641,7 @@ impl InternxtNativeClient {
             .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
         let http = Client::builder()
             .connect_timeout(Duration::from_secs(30))
+            .http1_only()
             .timeout(transfer_config.request_timeout)
             .build()
             .context("building Internxt HTTP client")?;
@@ -669,7 +709,10 @@ impl InternxtNativeClient {
         password: &str,
         tfa_code: Option<&str>,
     ) -> Result<InternxtSession> {
-        let http = Client::new();
+        let http = Client::builder()
+            .http1_only()
+            .build()
+            .context("building Internxt login HTTP client")?;
         let drive_api_url = drive_api_url.trim_end_matches('/');
         let email = email.trim().to_lowercase();
         let security_url = format!("{drive_api_url}/auth/login");
@@ -2061,6 +2104,134 @@ impl InternxtNativeClient {
         Ok(())
     }
 
+    /// Resume a ranged download using an explicit durable checkpoint. The
+    /// checkpoint records completed ranges, while the temporary output file
+    /// stores decrypted bytes at their final offsets.
+    pub fn download_file_to_path_resumable(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        path: &Path,
+        state_path: &Path,
+    ) -> Result<()> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let bucket_id = metadata
+            .get("bucket")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no bucket"))?;
+        let network_id = metadata
+            .get("fileId")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no network file id"))?;
+        let (url, index_hex) = self.download_links(session, bucket_id, network_id)?;
+        let index: [u8; 32] = hex::decode(index_hex)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt file index must contain 32 bytes"))?;
+        let bucket: [u8; 12] = hex::decode(bucket_id)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket must contain 12 bytes"))?;
+        let expected = metadata
+            .get("size")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
+        let part_size = self.transfer_config.download_part_size;
+        let parts = expected.div_ceil(part_size) as usize;
+        if expected < part_size {
+            self.download_file_to_path(session, file_uuid, path)?;
+            remove_checkpoint(state_path);
+            return Ok(());
+        }
+        let probe = self
+            .http
+            .get(&url)
+            .header("range", "bytes=0-0")
+            .send()
+            .context("probing Internxt range support")?;
+        if probe.status().as_u16() != 206 {
+            self.download_file_to_path(session, file_uuid, path)?;
+            remove_checkpoint(state_path);
+            return Ok(());
+        }
+        let mut state = load_download_checkpoint(state_path)?.filter(|value| {
+            value.version == 1
+                && value.path == path.to_string_lossy()
+                && value.file_uuid == file_uuid
+                && value.file_size == expected
+                && value.part_size == part_size
+                && value.parts == parts
+                && value.completed_parts.iter().all(|part| *part < parts)
+        });
+        if state.is_none() {
+            remove_checkpoint(state_path);
+            state = Some(DownloadResumeState {
+                version: 1,
+                path: path.to_string_lossy().into_owned(),
+                file_uuid: file_uuid.to_owned(),
+                file_size: expected,
+                part_size,
+                parts,
+                completed_parts: Vec::new(),
+                created: now_seconds(),
+            });
+            save_download_checkpoint(state_path, state.as_ref().unwrap())?;
+        }
+        let mut state = state.expect("download state initialized");
+        if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension("crispsorter-download-partial");
+        let mut output = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&temporary)
+            .with_context(|| format!("opening {}", temporary.display()))?;
+        output
+            .set_len(expected)
+            .context("sizing resumable download")?;
+        for part in 0..parts {
+            if state.completed_parts.contains(&part) {
+                continue;
+            }
+            let start = part as u64 * part_size;
+            let end = (start + part_size).min(expected);
+            let response = self
+                .http
+                .get(&url)
+                .header("range", format!("bytes={start}-{}", end - 1))
+                .send()
+                .with_context(|| format!("requesting Internxt download range {part}"))?;
+            if response.status().as_u16() != 206 {
+                return Err(anyhow!(
+                    "Internxt download range {part} returned {}",
+                    response.status()
+                ));
+            }
+            let mut encrypted = response.bytes()?.to_vec();
+            if encrypted.len() != (end - start) as usize {
+                return Err(anyhow!(
+                    "Internxt download range {part} returned {} bytes, expected {}",
+                    encrypted.len(),
+                    end - start
+                ));
+            }
+            crypt_at(&mut encrypted, &session.mnemonic, &bucket, &index, start)?;
+            output.seek(SeekFrom::Start(start))?;
+            output.write_all(&encrypted)?;
+            output.sync_data()?;
+            state.completed_parts.push(part);
+            state.completed_parts.sort_unstable();
+            save_download_checkpoint(state_path, &state)?;
+        }
+        output.sync_all()?;
+        drop(output);
+        fs::rename(&temporary, path)
+            .with_context(|| format!("installing resumable download {}", path.display()))?;
+        remove_checkpoint(state_path);
+        Ok(())
+    }
+
     /// Download a large file through bounded, concurrent HTTP ranges. S3
     /// presigned URLs normally honor `Range`; when the probe returns a full
     /// object (HTTP 200), this falls back to the sequential streaming path.
@@ -2985,7 +3156,13 @@ impl InternxtNativeClient {
                         ConflictPolicy::Overwrite => {}
                     }
                 }
-                self.download_file_to_path_ranged(session, &item.uuid, &local)?;
+                let state_path = local.with_extension("crispsorter-download.json");
+                self.download_file_to_path_resumable(
+                    session,
+                    &item.uuid,
+                    &local,
+                    &state_path,
+                )?;
                 if options.preserve_timestamps {
                     if let Some(timestamp) = item.modified_at.as_deref() {
                         set_local_timestamp(&local, timestamp)?;

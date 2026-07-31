@@ -51,6 +51,13 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         file_workers: usize,
     },
+    ResumeUpload {
+        session: PathBuf,
+        local: PathBuf,
+        remote: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+    },
     WriteTree {
         session: PathBuf,
         local: PathBuf,
@@ -89,6 +96,10 @@ enum Command {
     },
     ListTrash {
         session: PathBuf,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
     Mkdir {
         session: PathBuf,
@@ -214,6 +225,47 @@ fn run() -> Result<()> {
                 eprintln!();
             }
         }
+        Command::ResumeUpload {
+            session,
+            local,
+            remote,
+            state,
+        } => {
+            let (client, value) = open(&session)?;
+            let parent = remote.parent().unwrap_or_else(|| Path::new("."));
+            let folder = client.resolve_path(&value, parent)?;
+            anyhow::ensure!(folder.is_dir, "remote parent is not a folder");
+            let name = remote
+                .file_name()
+                .context("remote path has no filename")?
+                .to_string_lossy()
+                .into_owned();
+            let size = std::fs::metadata(&local)?.len();
+            let mut upload = FilenNativeClient::load_upload_resume_state(&state)?.unwrap_or(
+                client.begin_upload(&folder.uuid, &name, "application/octet-stream", size)?,
+            );
+            anyhow::ensure!(
+                upload.parent == folder.uuid,
+                "resume state parent does not match remote destination"
+            );
+            anyhow::ensure!(
+                upload.name == name,
+                "resume state filename does not match remote destination"
+            );
+            anyhow::ensure!(
+                upload.size == size,
+                "resume state size does not match local file"
+            );
+            client.save_upload_resume_state(&state, &upload)?;
+            let result = (|| -> Result<()> {
+                let file = std::fs::File::open(&local)?;
+                client.resume_upload_from_reader(&mut upload, file)
+            })();
+            client.save_upload_resume_state(&state, &upload)?;
+            result?;
+            FilenNativeClient::clear_upload_resume_state(&state)?;
+            println!("resumable upload complete: {}", remote.display());
+        }
         Command::WriteTree {
             session,
             local,
@@ -274,9 +326,22 @@ fn run() -> Result<()> {
             let (client, _) = open(&session)?;
             client.restore(&uuid, &kind)?;
         }
-        Command::ListTrash { session } => {
+        Command::ListTrash {
+            session,
+            kind,
+            limit,
+        } => {
             let (client, _) = open(&session)?;
-            for entry in client.list_trash()? {
+            for entry in client
+                .list_trash()?
+                .into_iter()
+                .filter(|item| {
+                    kind.as_deref().is_none_or(|value| {
+                        (value == "folder" && item.is_dir) || (value == "file" && !item.is_dir)
+                    })
+                })
+                .take(limit)
+            {
                 print_item(&entry);
             }
         }
