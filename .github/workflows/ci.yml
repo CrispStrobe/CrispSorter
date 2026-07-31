@@ -301,3 +301,75 @@ jobs:
         run: |
           cargo package -p crisp-internxt --allow-dirty
           cargo package -p crisp-filen --allow-dirty
+
+  cloud-facade:
+    name: crisp-cloud-rs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    steps:
+      - name: Check out crisp-cloud-rs
+        uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-cloud-rs
+          path: crisp-cloud-rs
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crisp-cloud-rs -> target
+
+      - name: Format facade workspace
+        working-directory: crisp-cloud-rs
+        run: cargo fmt --all -- --check
+
+      - name: Hermetic facade tests
+        working-directory: crisp-cloud-rs
+        run: cargo test --workspace --all-targets
+
+      - name: Clippy facade workspace
+        working-directory: crisp-cloud-rs
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Verify facade package manifest
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: crisp-cloud-rs
+        run: cargo package -p crisp-cloud-rs --allow-dirty
+
+  cloud-live:
+    name: Gated cloud live matrix
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      INTERNXT_LOGIN: ${{ secrets.INTERNXT_LOGIN }}
+      INTERNXT_PW: ${{ secrets.INTERNXT_PW }}
+      FILEN_EMAIL: ${{ secrets.FILEN_EMAIL }}
+      FILEN_PASSWORD: ${{ secrets.FILEN_PASSWORD }}
+    steps:
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run explicitly configured live tests
+        working-directory: repos/CrispSorter
+        run: |
+          if [ -z "$INTERNXT_LOGIN" ] || [ -z "$INTERNXT_PW" ]; then
+            echo "Internxt live tests skipped: workflow secrets are not configured"
+          else
+            cargo test -p crisp-internxt --test live -- --ignored --nocapture --test-threads=1
+          fi
+          if [ -z "$FILEN_EMAIL" ] || [ -z "$FILEN_PASSWORD" ]; then
+            echo "Filen live tests skipped: workflow secrets are not configured"
+          else
+            cargo test -p crisp-filen --test filen_live -- --ignored --nocapture --test-threads=1
+          fi
