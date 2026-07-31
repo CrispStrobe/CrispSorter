@@ -3157,12 +3157,7 @@ impl InternxtNativeClient {
                     }
                 }
                 let state_path = local.with_extension("crispsorter-download.json");
-                self.download_file_to_path_resumable(
-                    session,
-                    &item.uuid,
-                    &local,
-                    &state_path,
-                )?;
+                self.download_file_to_path_resumable(session, &item.uuid, &local, &state_path)?;
                 if options.preserve_timestamps {
                     if let Some(timestamp) = item.modified_at.as_deref() {
                         set_local_timestamp(&local, timestamp)?;
@@ -3657,6 +3652,49 @@ mod tests {
         );
         assert!(!checkpoint.with_extension("tmp").exists());
         remove_checkpoint(&checkpoint);
+    }
+
+    #[test]
+    fn download_checkpoint_round_trips_completed_ranges() {
+        let path = std::env::temp_dir().join(format!(
+            "crispsorter-download-checkpoint-test-{}.json",
+            now_seconds()
+        ));
+        let value = DownloadResumeState {
+            version: 1,
+            path: "/tmp/result.bin".into(),
+            file_uuid: "file-uuid".into(),
+            file_size: 128,
+            part_size: 64,
+            parts: 2,
+            completed_parts: vec![0],
+            created: now_seconds(),
+        };
+        save_download_checkpoint(&path, &value).unwrap();
+        assert_eq!(load_download_checkpoint(&path).unwrap(), Some(value));
+        assert!(!path.with_extension("tmp").exists());
+        remove_checkpoint(&path);
+    }
+
+    #[test]
+    fn download_checkpoint_round_trips_completed_parts() {
+        let path = std::env::temp_dir().join(format!(
+            "crispsorter-download-checkpoint-test-{}.json",
+            now_seconds()
+        ));
+        let value = DownloadResumeState {
+            version: 1,
+            path: "/data/example.bin".into(),
+            file_uuid: "file-uuid".into(),
+            file_size: 64 * 1024 * 1024,
+            part_size: DOWNLOAD_PART_SIZE,
+            parts: 3,
+            completed_parts: vec![0, 2],
+            created: now_seconds(),
+        };
+        save_download_checkpoint(&path, &value).unwrap();
+        assert_eq!(load_download_checkpoint(&path).unwrap(), Some(value));
+        remove_checkpoint(&path);
     }
 
     #[test]
