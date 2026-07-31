@@ -2508,6 +2508,6 @@ a trap:
     sensitive contents.
   - [x] Add CI for formatting, clippy, hermetic tests, package manifests,
     cross-platform builds, and ignored live tests gated by explicit secrets.
-  - [ ] Publish coordinated versions of `crisp-internxt`, `crisp-filen`, and
+  - [x] Publish coordinated versions of `crisp-internxt`, `crisp-filen`, and
     `crisp-cloud-rs`; verify README install commands, crates.io metadata,
     GitHub releases, and license notices after every release.
