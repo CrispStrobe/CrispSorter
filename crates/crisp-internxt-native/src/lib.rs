@@ -16,9 +16,9 @@ use ripemd::Digest as RipemdDigest;
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Sha512};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
@@ -33,6 +33,7 @@ const UPLOAD_PART_SIZE: usize = 30 * 1024 * 1024;
 const MAX_MULTIPARTS: usize = 10_000;
 const MAX_UPLOAD_RETRIES: usize = 3;
 const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
+const DOWNLOAD_PART_SIZE: u64 = 30 * 1024 * 1024;
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
@@ -243,6 +244,7 @@ struct ContentPage {
 /// creation is deliberately separate: the native drive will obtain a token
 /// from the keychain-backed login flow, then use this client for ordinary
 /// drive operations.
+#[derive(Clone)]
 pub struct InternxtNativeClient {
     base_url: String,
     bearer_token: String,
@@ -1007,37 +1009,85 @@ impl InternxtNativeClient {
         } else {
             let mut file = File::open(path)
                 .with_context(|| format!("opening upload file {}", path.display()))?;
-            for part in 0..parts {
-                let offset = part as u64 * part_size as u64;
-                let length = ((file_size - offset) as usize).min(part_size);
-                let mut encrypted = vec![0u8; length];
-                file.read_exact(&mut encrypted)
-                    .with_context(|| format!("reading upload part {}", part + 1))?;
-                crypt_at(
-                    &mut encrypted,
-                    &session.mnemonic,
-                    &session.bucket_bytes()?,
-                    &index,
-                    offset,
-                )?;
-                sha.update(&encrypted);
-                if etags[part].is_some() {
-                    continue;
+            let workers = parts.min(4);
+            let (job_tx, job_rx) = mpsc::sync_channel::<(usize, String, Vec<u8>)>(workers * 2);
+            let job_rx = Arc::new(Mutex::new(job_rx));
+            let (result_tx, result_rx) = mpsc::channel::<(usize, Result<String>)>();
+            let mut jobs = 0usize;
+            let bucket = session.bucket_bytes()?;
+            let mnemonic = session.mnemonic.clone();
+
+            std::thread::scope(|scope| -> Result<()> {
+                for _ in 0..workers {
+                    let receiver = Arc::clone(&job_rx);
+                    let sender = result_tx.clone();
+                    let client = self.clone();
+                    scope.spawn(move || loop {
+                        let job = receiver.lock().ok().and_then(|guard| guard.recv().ok());
+                        let Some((part, url, encrypted)) = job else {
+                            break;
+                        };
+                        let result = client
+                            .put_with_retry(&url, encrypted, part + 1, parts)
+                            .and_then(|response| {
+                                response
+                                    .headers()
+                                    .get("etag")
+                                    .or_else(|| response.headers().get("ETag"))
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(|value| value.trim_matches('"').to_owned())
+                                    .ok_or_else(|| {
+                                        anyhow!("Internxt part {} returned no ETag", part + 1)
+                                    })
+                            });
+                        let _ = sender.send((part, result));
+                    });
                 }
-                let response = self.put_with_retry(&urls[part], encrypted, part + 1, parts)?;
-                let etag = response
-                    .headers()
-                    .get("etag")
-                    .or_else(|| response.headers().get("ETag"))
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| value.trim_matches('"').to_owned())
-                    .ok_or_else(|| anyhow!("Internxt part {} returned no ETag", part + 1))?;
-                etags[part] = Some(etag);
-                if let Some(value) = checkpoint.as_mut() {
-                    value.etags[part] = etags[part].clone();
-                    save_checkpoint(&cp_path, value)?;
+                drop(result_tx);
+
+                let producer_result = (|| -> Result<()> {
+                    for part in 0..parts {
+                        let offset = part as u64 * part_size as u64;
+                        let length = ((file_size - offset) as usize).min(part_size);
+                        let mut encrypted = vec![0u8; length];
+                        file.read_exact(&mut encrypted)
+                            .with_context(|| format!("reading upload part {}", part + 1))?;
+                        crypt_at(&mut encrypted, &mnemonic, &bucket, &index, offset)?;
+                        sha.update(&encrypted);
+                        if etags[part].is_none() {
+                            job_tx
+                                .send((part, urls[part].clone(), encrypted))
+                                .with_context(|| format!("dispatching upload part {}", part + 1))?;
+                            jobs += 1;
+                        }
+                    }
+                    Ok(())
+                })();
+                drop(job_tx);
+
+                let mut first_error = producer_result.err();
+                for _ in 0..jobs {
+                    let (part, result) = result_rx.recv().context("collecting upload part")?;
+                    match result {
+                        Ok(etag) => {
+                            etags[part] = Some(etag);
+                            if let Some(value) = checkpoint.as_mut() {
+                                value.etags[part] = etags[part].clone();
+                                save_checkpoint(&cp_path, value)?;
+                            }
+                        }
+                        Err(error) => {
+                            if first_error.is_none() {
+                                first_error = Some(error);
+                            }
+                        }
+                    }
                 }
-            }
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
+                Ok(())
+            })?;
         }
 
         let hash = hex::encode(<ripemd::Ripemd160 as RipemdDigest>::digest(sha.finalize()));
@@ -1171,6 +1221,140 @@ impl InternxtNativeClient {
         }
         fs::rename(&temporary, path)
             .with_context(|| format!("installing downloaded file {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Download a large file through bounded, concurrent HTTP ranges. S3
+    /// presigned URLs normally honor `Range`; when the probe returns a full
+    /// object (HTTP 200), this falls back to the sequential streaming path.
+    pub fn download_file_to_path_ranged(
+        &self,
+        session: &InternxtSession,
+        file_uuid: &str,
+        path: &Path,
+    ) -> Result<()> {
+        let metadata = self.file_metadata(file_uuid)?;
+        let bucket_id = metadata
+            .get("bucket")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no bucket"))?;
+        let network_id = metadata
+            .get("fileId")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow!("Internxt file metadata has no network file id"))?;
+        let (url, index_hex) = self.download_links(session, bucket_id, network_id)?;
+        let index: [u8; 32] = hex::decode(index_hex)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt file index must contain 32 bytes"))?;
+        let bucket: [u8; 12] = hex::decode(bucket_id)?
+            .try_into()
+            .map_err(|_| anyhow!("Internxt bucket must contain 12 bytes"))?;
+        let expected = metadata
+            .get("size")
+            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+            .ok_or_else(|| anyhow!("Internxt file metadata has no size"))?;
+        if expected < DOWNLOAD_PART_SIZE {
+            return self.download_file_to_path(session, file_uuid, path);
+        }
+
+        let probe = self
+            .http
+            .get(&url)
+            .header("range", "bytes=0-0")
+            .send()
+            .context("probing Internxt range support")?;
+        if probe.status().as_u16() != 206 {
+            return self.download_file_to_path(session, file_uuid, path);
+        }
+
+        let parts = expected.div_ceil(DOWNLOAD_PART_SIZE) as usize;
+        let workers = parts.min(4);
+        let temporary = path.with_extension("crispsorter-partial");
+        if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let output = File::create(&temporary)
+            .with_context(|| format!("creating {}", temporary.display()))?;
+        output.set_len(expected).context("sizing ranged download")?;
+        let output = Arc::new(Mutex::new(output));
+        let (job_tx, job_rx) = mpsc::sync_channel::<usize>(workers * 2);
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        let (result_tx, result_rx) = mpsc::channel::<Result<()>>();
+        let result = std::thread::scope(|scope| -> Result<()> {
+            for _ in 0..workers {
+                let receiver = Arc::clone(&job_rx);
+                let sender = result_tx.clone();
+                let client = self.clone();
+                let url = url.clone();
+                let output = Arc::clone(&output);
+                scope.spawn(move || loop {
+                    let part = receiver.lock().ok().and_then(|guard| guard.recv().ok());
+                    let Some(part) = part else { break };
+                    let start = part as u64 * DOWNLOAD_PART_SIZE;
+                    let end = (start + DOWNLOAD_PART_SIZE).min(expected);
+                    let result = (|| -> Result<()> {
+                        let response = client
+                            .http
+                            .get(&url)
+                            .header("range", format!("bytes={start}-{}", end - 1))
+                            .send()
+                            .with_context(|| format!("requesting Internxt range {part}"))?;
+                        if response.status().as_u16() != 206 {
+                            return Err(anyhow!(
+                                "Internxt range {part} returned {}",
+                                response.status()
+                            ));
+                        }
+                        let mut encrypted = response.bytes()?.to_vec();
+                        if encrypted.len() != (end - start) as usize {
+                            return Err(anyhow!(
+                                "Internxt range {part} returned {} bytes, expected {}",
+                                encrypted.len(),
+                                end - start
+                            ));
+                        }
+                        crypt_at(&mut encrypted, &session.mnemonic, &bucket, &index, start)?;
+                        let mut output = output
+                            .lock()
+                            .map_err(|_| anyhow!("ranged output mutex poisoned"))?;
+                        output.seek(std::io::SeekFrom::Start(start))?;
+                        output.write_all(&encrypted)?;
+                        Ok(())
+                    })();
+                    let failed = result.is_err();
+                    let _ = sender.send(result);
+                    if failed {
+                        // Other workers drain their already-dispatched ranges;
+                        // the caller reports the first error after joining.
+                    }
+                });
+            }
+            drop(result_tx);
+            for part in 0..parts {
+                job_tx.send(part).context("dispatching download range")?;
+            }
+            drop(job_tx);
+            let mut first_error = None;
+            for _ in 0..parts {
+                if let Err(error) = result_rx.recv().context("collecting download range")? {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+            Ok(())
+        });
+        drop(output);
+        if let Err(error) = result {
+            remove_checkpoint(&temporary);
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        fs::rename(&temporary, path)
+            .with_context(|| format!("installing ranged download {}", path.display()))?;
         Ok(())
     }
 

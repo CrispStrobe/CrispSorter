@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
+fn read_request(stream: &mut TcpStream) -> (String, String, Vec<u8>) {
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end;
@@ -37,6 +37,7 @@ fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
     let request_line = headers.lines().next().unwrap().to_owned();
     (
         request_line,
+        headers,
         bytes[header_end..header_end + length].to_vec(),
     )
 }
@@ -48,6 +49,17 @@ fn respond(stream: &mut TcpStream, status: &str, body: &str) {
         body.len()
     )
     .unwrap();
+    stream.flush().unwrap();
+}
+
+fn respond_bytes(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: {content_type}\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
     stream.flush().unwrap();
 }
 
@@ -64,7 +76,7 @@ fn upload_path_streams_ciphertext_and_finishes_file_entry() {
     let server = thread::spawn(move || {
         for _ in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
-            let (request, body) = read_request(&mut stream);
+            let (request, _headers, body) = read_request(&mut stream);
             let path = request.split_whitespace().nth(1).unwrap();
             match path {
                 p if p.contains("/files/start") => {
@@ -133,6 +145,95 @@ fn upload_path_streams_ciphertext_and_finishes_file_entry() {
     assert_eq!(*put_attempts.lock().unwrap(), 2);
     assert_eq!(finish["shards"][0]["uuid"], "shard");
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn ranged_download_assembles_out_of_order_safe_ciphertext() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let bucket = "00".repeat(12);
+    let index = [7u8; 32];
+    let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let plaintext = vec![0x5au8; 30 * 1024 * 1024 + 17];
+    let mut ciphertext = plaintext.clone();
+    crypt(
+        &mut ciphertext,
+        mnemonic,
+        &hex::decode(&bucket).unwrap().try_into().unwrap(),
+        &index,
+    );
+    let ciphertext = Arc::new(ciphertext);
+    let ciphertext_server = Arc::clone(&ciphertext);
+    let bucket_server = bucket.clone();
+    let plaintext_len = plaintext.len();
+    let server = thread::spawn(move || {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (request, headers, _) = read_request(&mut stream);
+            let path = request.split_whitespace().nth(1).unwrap();
+            match path {
+                "/files/file/meta" => respond(
+                    &mut stream,
+                    "200 OK",
+                    &format!(
+                        r#"{{"bucket":"{}","fileId":"net","size":"{}"}}"#,
+                        bucket_server, plaintext_len
+                    ),
+                ),
+                p if p.ends_with("/files/net/info") => respond(
+                    &mut stream,
+                    "200 OK",
+                    &format!(
+                        r#"{{"shards":[{{"url":"http://{address}/object"}}],"index":"{}"}}"#,
+                        hex::encode(index)
+                    ),
+                ),
+                "/object" => {
+                    let range = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':')
+                                .filter(|(name, _)| name.eq_ignore_ascii_case("range"))
+                                .map(|(_, value)| value)
+                        })
+                        .unwrap()
+                        .trim()
+                        .strip_prefix("bytes=")
+                        .unwrap();
+                    let (start, end) = range.split_once('-').unwrap();
+                    let start: usize = start.parse().unwrap();
+                    let end: usize = end.parse().unwrap();
+                    respond_bytes(
+                        &mut stream,
+                        "206 Partial Content",
+                        "application/octet-stream",
+                        &ciphertext_server[start..=end],
+                    );
+                }
+                other => panic!("unexpected ranged test request: {other}"),
+            }
+        }
+    });
+    let session = InternxtSession {
+        drive_api_url: format!("http://{address}"),
+        network_url: format!("http://{address}"),
+        email: "test@example.invalid".to_owned(),
+        token: "token".to_owned(),
+        new_token: "new-token".to_owned(),
+        mnemonic: mnemonic.to_owned(),
+        user_id: "user".to_owned(),
+        root_folder_id: "root".to_owned(),
+        bridge_user: "bridge".to_owned(),
+        bucket_id: bucket,
+    };
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let output = unique_path("ranged-download");
+    client
+        .download_file_to_path_ranged(&session, "file", &output)
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), plaintext);
+    std::fs::remove_file(output).unwrap();
 }
 
 fn unique_path(label: &str) -> PathBuf {
