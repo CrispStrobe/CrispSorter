@@ -1456,7 +1456,8 @@ a natural feature.
 
 - [ ] **`CloudDrive` trait: `share_link(path) → Option<String>`
   method** (default impl returns `None`).  The trait and unsupported-provider
-  behavior are now covered by the drive tests.  Override in
+  behavior are now covered by the drive tests.  OneDrive and Google Drive
+  now override it with their native public-link APIs. Override in
   `OneDriveDrive` (Graph API `POST /me/drive/items/{id}/createLink`
   with `type: "view"`, `scope: "anonymous"`), `GDriveDrive` (Drive
   API `POST /files/{id}/permissions` + `webViewLink`), and
@@ -1468,10 +1469,13 @@ a natural feature.
 - [x] **Frontend: share button on search results.**  When a result's
   `location_uri` starts with `crisp+drive://`, show a share icon.
   Click → calls `drive_share_link` → copies URL to clipboard with an
-  inline notification. ✅ Shipped 2026-07-31. Provider-specific links
-  and disabled-state discovery remain pending.
+  inline notification. ✅ Shipped 2026-07-31. Provider-specific links are
+  now implemented for OneDrive and Google Drive; WebDAV detection and
+  disabled-state discovery remain pending.
 - [ ] **Tests.**  Unit: URL format validation per provider, unsupported
-  provider returns None, error handling for expired tokens.  4+ tests.
+  provider returns None, error handling for expired tokens. OneDrive URL
+  construction and existing Google/unsupported-provider coverage are now
+  present; mock HTTP response coverage remains pending.
 
 #### Priority 6 — Cloud provider version history
 
@@ -2530,3 +2534,197 @@ a trap:
   - [x] Publish coordinated versions of `crisp-internxt`, `crisp-filen`, and
     `crisp-cloud-rs`; verify README install commands, crates.io metadata,
     GitHub releases, and license notices after every release.
+
+### P34 — CrispCloud capability inventory and scoped file-manager roadmap
+
+Audited against the current `../CrispCloud` `main` branch (pulled/fetched
+2026-07-31), its source tree, `README.md`, `HANDOVER.md`, and `PLAN.md`.
+CrispCloud is a general-purpose dual-panel cloud file manager; CrispSorter is
+primarily a document-intelligence/indexing application.  The goal is not to
+clone the whole product indiscriminately.  The goal is to add the file-manager
+surface where it makes CrispSorter's search, duplicate, archive, catalog, and
+cloud-drive results actionable.
+
+#### Inventory — what CrispCloud provides
+
+- **Provider ecosystem:** Filen, Internxt, SFTP, WebDAV, S3, FTP/FTPS,
+  Google Drive, OneDrive/SharePoint, Dropbox, Nextcloud, pCloud, Azure Blob,
+  Backblaze B2, and Hetzner Storage Box.  Native capabilities include OAuth,
+  shared drives/libraries, content hashes, provider versions, S3 signing and
+  presigned URLs, chunked uploads, and provider-specific delta sync.
+- **File-manager operations:** dual panels, tabs, tree/list/grid/column views,
+  breadcrumbs, bookmarks, recursive browsing, create-folder, copy, move,
+  rename, delete, archive browsing, checksums, permissions, symlink handling,
+  drag/drop, file associations, reveal-in-Finder/Explorer, and operation
+  history/undo.
+- **Transfer engine:** streaming upload/download, bounded concurrent queue,
+  retry/backoff, cancellation, pause/resume, persistent multipart resume,
+  foreground mobile transfers, progress/speed/ETA, and a transfer drawer.
+- **Sync/backup:** two-way sync, selective sync, folder watching, offline
+  replay, five conflict policies, scheduled versioned backups, integrity
+  verification, restore, system-tray status, and sync-pair persistence.
+- **Delta sync:** Adler-32 + SHA-256 block maps with end-to-end provider
+  integrations for Nextcloud, pCloud, and S3 range reads.
+- **Sharing/versioning:** provider-native Google Drive, OneDrive, and Dropbox
+  share links, expiry/password options where supported, shared-folder
+  management, version listing/restoration, and text version diff.
+- **Preview/editing/search:** image/SVG/PDF/code/Markdown/CSV/DOCX/XLSX/PPTX/
+  ODT/font/audio/video preview, in-place remote editor, provider full-text
+  search, saved searches, virtual search-result folders, duplicate finder,
+  and LCS diff viewer.
+- **Security/privacy:** AES-GCM provider wrapper, Cryptomator, VeraCrypt,
+  certificate pinning, custom CAs, proxy/SOCKS5, TLS policy, app lock,
+  biometrics, secure clipboard, screenshot blocking, audit log, and privacy
+  indicators.
+- **Extensibility/platform:** Dart CLI with cloud operations and completions,
+  local REST API, plugins, automation rules/webhooks/cron, FUSE, Android
+  DocumentsProvider, iOS FileProvider/share extension/Siri, desktop shell
+  integrations, system tray, PWA/File System Access/OPFS/offline support,
+  crash reporting, auto-update, and nine languages.
+- **Quality:** roughly 4,500 Flutter tests (including provider mocks, widget,
+  golden, fuzz, benchmark, integration, and gated live tests), plus CI builds
+  for its supported platforms.  The README/HANDOVER numbers differ slightly;
+  treat the repository's current test run as authoritative.
+
+#### CrispSorter strengths to preserve
+
+CrispSorter is ahead for local and federated document intelligence: LanceDB +
+Tantivy hybrid/RRF search, dense/sparse/ColBERT/multimodal retrieval, OCR and
+layout extraction, audio/video transcription, translation, document-type
+classification, PDF manipulation, DOCX tooling, DMS metadata/audit/retention,
+`.caf`/`.cidx` archives, cb-api remote search, and the native Internxt/Filen
+Rust clients.  These remain the product centre of gravity.  A file-manager
+surface is valuable because it turns those results into operations: show a
+hit in its remote/local context, compare or open duplicates side-by-side,
+move/rename/archive the selected result, promote an archive entry, and start
+a transfer without leaving the search/catalog workflow.
+
+#### P34.1 — Foundations, P0/P1 (do before broad UI)
+
+- [ ] **Capability-aware CloudDrive API.** Add explicit capabilities and the
+  missing safe primitives (`create_dir`, `rename`, `move`, `copy`, optional
+  recursive listing, streaming reader/writer) while preserving the current
+  synchronous trait boundary for legacy providers.  Do not fake support:
+  unsupported operations must be reported by capability, not discovered by a
+  late HTTP failure.
+- [ ] **One shared application TransferQueue.** Replace per-command queues
+  with an AppState-owned queue shared by GUI, CLI, index promotion, FUSE, and
+  cloud-backup paths.  Add queue job registration, progress events, retry
+  classification, cancellation, and a bounded blocking adapter for the
+  synchronous FUSE/provider boundary.  Keep serial multipart defaults for
+  fragile gateways and configurable workers for testing.
+- [ ] **Streaming and durable resume.** Expose reader/writer transfers through
+  the app facade; persist provider, remote path, upload/session identifiers,
+  encryption key material, chunk size, completed chunks, hashes, and timestamps.
+  Resume must refuse incompatible state instead of re-encrypting under a new
+  key.  Add large-file tests at 100 MiB and above for every native provider.
+- [ ] **Provider capability matrix and test harness.** Add local mock HTTP
+  servers and contract tests for listing, mutation, streaming, retries,
+  resume, expired auth, share/version behavior, and unsupported operations.
+  Keep CZE live tests for Internxt and the configured Filen account gated by
+  explicit environment variables; never use keychain discovery in unit tests.
+- [ ] **Offline queue integration.** On exhausted transfer/network failure,
+  persist a replayable operation with provider/path/state and expose retry,
+  cancel, inspect, and purge commands.  Add reconnect replay through the
+  shared queue with exponential polling backoff.
+
+#### P34.2 — Core file-manager surface, P1
+
+- [ ] **Contextual dual-panel mode.** Add a focused dual-panel workspace,
+  not a separate generic app: left panel is a local/registered-drive folder
+  or search-result context; right panel is the selected document, duplicate
+  group, archive, cloud folder, or comparison target.  Support panel source
+  types `LocalPath`, `CloudDrive`, `SearchResults`, `DuplicateGroup`,
+  `CatalogArchive`, and `RemoteSearchResults`.
+- [ ] **Actionable search results.** From any result: reveal/open in context,
+  select related chunks/duplicates, compare files, copy/move/rename/delete,
+  share, promote remote L1 rows, download for offline use, and send selected
+  items to the batch sorter.  Preserve provenance (`crisp+drive://`,
+  `crisp+cb-archive://`, local path) through every action.
+- [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
+  hashes, locations, provider, indexed state, and document metadata.  Offer
+  safe keep/delete/move/archive actions with dry-run, conflict policy,
+  trash-first behavior, and an undo/audit record.
+- [ ] **Minimal file-manager operations.** Implement folder context, create
+  directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
+  selection.  Defer the full Double Commander keyboard surface until these
+  operations work across LocalDrive and at least Internxt/Filen/WebDAV.
+- [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
+  failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
+  cancellation, and resume availability.  Reuse the existing frontend log
+  and i18n infrastructure rather than creating a second notification system.
+
+#### P34.3 — Sync, backup, and collaboration, P1/P2
+
+- [ ] **General sync pairs.** Add local-folder ↔ CloudDrive pairs with
+  include/exclude globs, one-way/two-way modes, watcher integration, and
+  persisted watermarks.  Keep cloud-backup shard sync as a separate mode.
+- [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
+  sync and file-manager mutations.  Add a manual conflict review panel with
+  local/remote metadata, hashes, preview, and explicit resolution actions.
+- [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
+  finalize endpoints and `push --delta`; integrate providers only where their
+  APIs support random access or range reads.  Keep whole-file fallback for
+  Internxt, Filen, and generic WebDAV until proven safe.
+- [ ] **Share/version commands.** Expose `drive_list_versions` and
+  `drive_restore_version`; add Google/OneDrive response mocks, then add
+  WebDAV/Nextcloud detection only when the server advertises OCS sharing.
+  Add expiry/password options only to providers that actually support them.
+- [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
+  verification, restore selection, retention, and visible history.  Reuse
+  cloud-backup shard machinery where possible instead of duplicating it.
+
+#### P34.4 — Security and provider expansion, P2
+
+- [ ] Wire proxy configuration and certificate pinning through every cloud
+  connector; add custom CA and TLS policy only after the common HTTP client
+  boundary exists.
+- [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
+  as a separate security project; do not mix it with ordinary provider links,
+  indexing, or share-link semantics.  Encrypted filenames disable provider
+  search/share capabilities explicitly.
+- [ ] Add Dropbox, S3, Nextcloud, SFTP, pCloud, Azure Blob, B2, FTP/FTPS, and
+  Hetzner adapters in that order only when a real CrispSorter workflow needs
+  them.  Prioritize S3/Nextcloud/Dropbox before the less-used long tail.
+
+#### P34.5 — UX/platform expansion, P2/P3
+
+- [ ] Add archive browsing, generic text/code editing, saved searches as
+  virtual folders, richer provider full-text search, and file associations.
+- [ ] Add FUSE write support only after the mutation API and queue are stable;
+  retain read-only FUSE for indexing during the transition.
+- [ ] Add local REST API, plugin hooks, cron/webhook automation, and system
+  tray/cloud-transfer status after the core queue and sync state are durable.
+- [ ] Improve mobile file-provider/SAF flows and investigate PWA support only
+  after the desktop contextual dual-panel mode is stable.
+
+#### Explicitly deferred for now
+
+- [ ] Full CrispCloud provider parity (all 14 providers) — defer until the
+  core six-provider workflow proves which providers users actually need.
+- [ ] Dropbox-style password/expiry/share-recipient management — defer until
+  provider capability discovery and basic share/version commands are stable.
+- [ ] Full Cryptomator/VeraCrypt mounting, Tor/onion routing, crash analytics,
+  auto-update, app-store packaging, and every platform shell integration —
+  valuable but not prerequisites for contextual document operations.
+- [ ] A complete independent Double Commander clone — defer.  We do want the
+  useful subset: two contextual panels, selection, comparison, safe mutation,
+  transfer queue, and keyboard shortcuts tied to search/catalog results.
+- [ ] Generic remote full-text search across every provider — defer where the
+  provider lacks a reliable API; CrispSorter's local/cb-api extracted-text
+  index remains the preferred search path.
+
+#### Priority order and definition of success
+
+1. **P0:** capability API, shared queue, streaming/resume, offline replay,
+   provider contract tests.
+2. **P1:** contextual dual-panel workspace, actionable search/duplicate
+   results, safe mutations, transfer drawer, version commands.
+3. **P1/P2:** general sync pairs, conflicts, delta protocol, backup UX.
+4. **P2:** security wiring and the highest-value missing providers.
+5. **P2/P3:** archive/editor/platform/plugin/REST expansion.
+
+The milestone is successful when a user can search a document or duplicate,
+see both its local/cloud context, compare it, choose a safe action, and watch
+that action complete or resume through one durable queue — without leaving
+CrispSorter's indexing and document workflow.
