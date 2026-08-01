@@ -1600,8 +1600,8 @@ source.
   to `CloudDrive`.  `mount_blocking(drive, mount_point)` helper with
   `RO` + `AutoUnmount` mount options.  `FuseMountConfig` (drive_id,
   mount_point, cache_max_bytes with 2 GB default) + `FuseMountStatus`.
-  3 unconditional unit tests (config serde, default cache, status).
-  LRU content cache deferred (TODO in read path).
+  Read results use a bounded byte-based LRU (2 GB default); oversized files
+  bypass the cache.
 - [x] **Tauri commands: `drive_mount(drive_id, mount_point)`,
   `drive_unmount(drive_id)`.** ✅ SHIPPED (2026-08-01). Mount runs on a
   dedicated thread, tracks active mounts, requires an absolute mount point,
@@ -1618,9 +1618,9 @@ source.
   (WinFSP/Dokany is a separate effort).  `doctor` now reports both whether
   the optional Rust feature was compiled and whether the host runtime is
   available.
-- [ ] **Tests.**  ✅ 3 unit tests shipped (config serde).  Integration
-  tests require FUSE privileges — tagged `#[ignore]`.  Cache eviction
-  tests pending (LRU cache not yet implemented).
+- [x] **Tests.**  ✅ 5 unit tests shipped (config serde + LRU eviction).
+  Integration tests require FUSE privileges — tagged `#[ignore]`; cache
+  eviction is covered without requiring FUSE privileges.
 
 #### Priority 10 — Automation rule engine
 
