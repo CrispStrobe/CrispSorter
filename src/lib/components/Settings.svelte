@@ -1469,6 +1469,7 @@
                 unlistenIndexProgress();
                 unlistenDownload();
             };
+            refreshBackupJobs().catch(() => {});
         })();
         return () => cleanup();
     });
@@ -2064,6 +2065,24 @@
     let backupKeepDaily   = $state<number>(7);
     let backupNowBusy     = $state(false);
     let backupNowMsg      = $state('');
+    let backupJobs        = $state<any[]>([]);
+    let backupRuns        = $state<Record<string, any[]>>({});
+    let backupJobsBusy    = $state(false);
+
+    async function refreshBackupJobs() {
+        if (!isDesktop) return;
+        backupJobsBusy = true;
+        try {
+            backupJobs = await invoke<any[]>('backup_job_list');
+            const runs: Record<string, any[]> = {};
+            await Promise.all(backupJobs.map(async (job) => {
+                runs[job.id] = await invoke<any[]>('backup_job_runs', { jobId: job.id, limit: 5 });
+            }));
+            backupRuns = runs;
+        } finally {
+            backupJobsBusy = false;
+        }
+    }
 
     // Stage R — controller.py manifest import.
     let importManifestPath  = $state<string>('');
@@ -4134,6 +4153,34 @@
                     </div>
                     {#if backupNowMsg}
                         <p class="hint" style="margin-top:6px;">{backupNowMsg}</p>
+                    {/if}
+                </div>
+
+                <!-- Persisted backup-job history. Execution and restore remain
+                     explicit; this panel is intentionally read-only for now. -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                        <strong>Backup jobs</strong>
+                        <button type="button" class="btn" onclick={() => refreshBackupJobs()} disabled={backupJobsBusy}>
+                            {backupJobsBusy ? 'Refreshing…' : 'Refresh history'}
+                        </button>
+                    </div>
+                    <p class="hint" style="margin-top:4px;">Configured backup schedules and their recent durable runs.</p>
+                    {#if backupJobs.length === 0}
+                        <p class="hint">No persisted backup jobs.</p>
+                    {:else}
+                        {#each backupJobs as job (job.id)}
+                            <div style="margin-top:8px; padding:8px; background:var(--color-surface-2, rgba(127,127,127,.08)); border-radius:4px;">
+                                <div style="display:flex; justify-content:space-between; gap:8px;">
+                                    <strong>{job.id}</strong>
+                                    <span class="hint">{job.enabled ? 'enabled' : 'disabled'} · {job.last_status ?? 'not run'}</span>
+                                </div>
+                                <div class="hint" style="overflow-wrap:anywhere;">{job.source_root} → {job.remote_root}</div>
+                                {#each (backupRuns[job.id] ?? []) as run (run.id)}
+                                    <div class="hint" style="margin-top:4px;">{run.status} · {run.completed}/{run.planned} files · {run.bytes} bytes</div>
+                                {/each}
+                            </div>
+                        {/each}
                     {/if}
                 </div>
 
