@@ -695,6 +695,42 @@ mod tests {
         (tmp, drive)
     }
 
+    struct CapabilityStub;
+
+    impl CloudDrive for CapabilityStub {
+        fn label(&self) -> &str {
+            "capability-stub"
+        }
+
+        fn list_dir(&self, _path: &Path) -> Result<Vec<DirEntry>> {
+            Ok(Vec::new())
+        }
+
+        fn read_file(&self, _path: &Path) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn write_file(&self, _path: &Path, _data: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        fn delete(&self, _path: &Path) -> Result<()> {
+            Ok(())
+        }
+
+        fn stat(&self, _path: &Path) -> Result<FileStat> {
+            Ok(FileStat {
+                size: 0,
+                is_dir: false,
+                mtime_unix: None,
+            })
+        }
+
+        fn drive_type(&self) -> DriveType {
+            DriveType::WebDav
+        }
+    }
+
     #[test]
     fn local_drive_label_and_type() {
         let (_tmp, drive) = fixture();
@@ -748,6 +784,29 @@ mod tests {
             )
             .expect_err("legacy local drive must reject resumable downloads");
         assert!(error.to_string().contains("does not support durable resumable downloads"));
+    }
+
+    #[test]
+    fn default_unsupported_operations_match_the_capability_contract() {
+        let drive = CapabilityStub;
+        let capabilities = drive.capabilities();
+        assert!(!capabilities.create_dir);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.move_path);
+        assert!(!capabilities.copy);
+        assert!(!capabilities.share_links);
+        assert!(!capabilities.versions);
+
+        assert!(drive.create_dir(Path::new("new")).is_err());
+        assert!(drive
+            .move_path(Path::new("old"), Path::new("new"))
+            .is_err());
+        assert!(drive
+            .copy_path(Path::new("old"), Path::new("new"))
+            .is_err());
+        assert_eq!(drive.share_link(Path::new("file")).unwrap(), None);
+        assert!(drive.list_versions(Path::new("file")).unwrap().is_empty());
+        assert!(drive.restore_version(Path::new("file"), "v1").is_err());
     }
 
     #[test]

@@ -2706,6 +2706,10 @@ a transfer without leaving the search/catalog workflow.
     tests covering write/read/stat/version listing and cleanup; they require
     explicit access-token environment variables and never consult keychains.
     ✅ 2026-08-01
+  - [x] The contract suite now includes a credential-free stub backend that
+    verifies every default unsupported mutation/share/version operation fails
+    or returns the documented empty result in lockstep with capabilities.
+    ✅ 2026-08-01
 - [ ] **Offline queue integration.** On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
