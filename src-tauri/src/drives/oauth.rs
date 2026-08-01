@@ -79,6 +79,98 @@ fn token_endpoint(provider: Provider) -> &'static str {
     }
 }
 
+fn authorization_url(
+    provider: Provider,
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+) -> String {
+    let (authorize, scope) = match provider {
+        Provider::Google => (
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://www.googleapis.com/auth/drive",
+        ),
+        Provider::Microsoft => (
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            "offline_access Files.ReadWrite.All User.Read",
+        ),
+    };
+    format!(
+        "{authorize}?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent",
+        escape(client_id), escape(redirect_uri), escape(scope), escape(state), escape(challenge)
+    )
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_query_component(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => decoded.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let high = hex_digit(bytes[index + 1])
+                    .ok_or_else(|| anyhow!("invalid OAuth callback escape"))?;
+                let low = hex_digit(bytes[index + 2])
+                    .ok_or_else(|| anyhow!("invalid OAuth callback escape"))?;
+                decoded.push((high << 4) | low);
+                index += 2;
+            }
+            b'%' => return Err(anyhow!("truncated OAuth callback escape")),
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8(decoded).context("OAuth callback contains invalid UTF-8")
+}
+
+fn parse_callback_query(query: &str) -> Result<CallbackQuery> {
+    let mut callback = CallbackQuery::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = decode_query_component(key)?;
+        let value = decode_query_component(value)?;
+        match key.as_str() {
+            "code" => callback.code = Some(value),
+            "state" => callback.state = Some(value),
+            "error" => callback.error = Some(value),
+            _ => {}
+        }
+    }
+    Ok(callback)
+}
+
+fn validated_callback_code<'a>(callback: &'a CallbackQuery, expected_state: &str) -> Result<&'a str> {
+    if callback.error.is_some() {
+        return Err(anyhow!("OAuth callback returned an error"));
+    }
+    if callback.state.as_deref() != Some(expected_state) {
+        return Err(anyhow!("OAuth callback state did not match"));
+    }
+    callback
+        .code
+        .as_deref()
+        .filter(|code| !code.is_empty())
+        .ok_or_else(|| anyhow!("OAuth callback did not contain a code"))
+}
+
 fn refresh_at(
     endpoint: &str,
     credentials: &DriveCredentials,
@@ -174,20 +266,7 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
         uuid::Uuid::new_v4().simple()
     );
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let (authorize, scope) = match provider {
-        Provider::Google => (
-            "https://accounts.google.com/o/oauth2/v2/auth",
-            "https://www.googleapis.com/auth/drive",
-        ),
-        Provider::Microsoft => (
-            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-            "offline_access Files.ReadWrite.All User.Read",
-        ),
-    };
-    let url = format!(
-        "{authorize}?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256&access_type=offline&prompt=consent",
-        escape(&client_id), escape(&redirect_uri), escape(scope), escape(&state), escape(&challenge)
-    );
+    let url = authorization_url(provider, &client_id, &redirect_uri, &state, &challenge);
     let callback_redirect_uri = redirect_uri.clone();
     thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else {
@@ -207,22 +286,10 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
             return;
         };
         let query = target.split('?').nth(1).unwrap_or("");
-        let mut code = None;
-        let mut returned_state = None;
-        let mut error = None;
-        for pair in query.split('&') {
-            let mut it = pair.splitn(2, '=');
-            match (it.next(), it.next()) {
-                (Some("code"), Some(value)) => code = Some(value.to_owned()),
-                (Some("state"), Some(value)) => returned_state = Some(value.to_owned()),
-                (Some("error"), Some(value)) => error = Some(value.to_owned()),
-                _ => {}
-            }
-        }
-        let message = if error.is_some() || returned_state.as_deref() != Some(state.as_str()) {
-            "Authentication was cancelled or rejected. You can close this window."
-        } else if let Some(code) = code {
-            match exchange(
+        let message = match parse_callback_query(query)
+            .and_then(|callback| validated_callback_code(&callback, &state).map(str::to_owned))
+        {
+            Ok(code) => match exchange(
                 provider,
                 &client_id,
                 &callback_redirect_uri,
@@ -232,9 +299,11 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
             ) {
                 Ok(()) => "Authentication completed. You can close this window.",
                 Err(_) => "Authentication failed. You can close this window.",
+            },
+            Err(error) if error.to_string().contains("did not contain a code") => {
+                "Authentication did not return a code. You can close this window."
             }
-        } else {
-            "Authentication did not return a code. You can close this window."
+            Err(_) => "Authentication was cancelled or rejected. You can close this window.",
         };
         let body = format!("<html><body><p>{message}</p></body></html>");
         let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
@@ -246,8 +315,8 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
     })
 }
 
-fn exchange(
-    provider: Provider,
+fn exchange_at(
+    endpoint: &str,
     client_id: &str,
     redirect_uri: &str,
     verifier: &str,
@@ -255,7 +324,7 @@ fn exchange(
     drive_id: &str,
 ) -> Result<()> {
     let response = token_request(
-        token_endpoint(provider),
+        endpoint,
         form_body(&[
             ("client_id", client_id),
             ("code", code),
@@ -282,9 +351,28 @@ fn exchange(
     secret::set_credentials(drive_id, &DriveCredentials { ..credentials })
 }
 
+fn exchange(
+    provider: Provider,
+    client_id: &str,
+    redirect_uri: &str,
+    verifier: &str,
+    code: &str,
+    drive_id: &str,
+) -> Result<()> {
+    exchange_at(
+        token_endpoint(provider),
+        client_id,
+        redirect_uri,
+        verifier,
+        code,
+        drive_id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Server;
 
     #[test]
     fn public_provider_and_escape_are_deterministic() {
@@ -294,6 +382,58 @@ mod tests {
             form_body(&[("client_id", "a b"), ("grant_type", "refresh_token")]),
             "client_id=a%20b&grant_type=refresh_token"
         );
+    }
+
+    #[test]
+    fn authorization_url_contains_pkce_and_state_parameters() {
+        let url = authorization_url(
+            Provider::Google,
+            "client id",
+            "http://127.0.0.1:1234/oauth/callback",
+            "state-123",
+            "challenge-abc",
+        );
+        assert!(url.contains("client_id=client%20id"));
+        assert!(url.contains("state=state-123"));
+        assert!(url.contains("code_challenge=challenge-abc"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(!url.contains("client_secret"));
+    }
+
+    #[test]
+    fn callback_state_and_percent_decoding_are_validated() {
+        let callback = parse_callback_query("code=abc%2B123&state=state%2D1").unwrap();
+        assert_eq!(
+            validated_callback_code(&callback, "state-1").unwrap(),
+            "abc+123"
+        );
+        assert!(validated_callback_code(&callback, "wrong").is_err());
+        let rejected = parse_callback_query("error=access_denied&state=state-1").unwrap();
+        assert!(validated_callback_code(&rejected, "state-1").is_err());
+    }
+
+    #[test]
+    fn refresh_request_is_hermetic_and_preserves_rotated_refresh_token() {
+        let mut server = Server::new();
+        let request = server
+            .mock("POST", "/token")
+            .match_header("content-type", "application/x-www-form-urlencoded")
+            .match_body(mockito::Matcher::Exact(
+                "client_id=public&refresh_token=old&grant_type=refresh_token".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"access_token":"new","refresh_token":"rotated"}"#)
+            .create();
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()),
+            refresh_token: Some("old".into()),
+            access_token: Some("expired".into()),
+            ..Default::default()
+        };
+        let updated = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap();
+        assert_eq!(updated.access_token.as_deref(), Some("new"));
+        assert_eq!(updated.refresh_token.as_deref(), Some("rotated"));
+        request.assert();
     }
 
     #[test]
