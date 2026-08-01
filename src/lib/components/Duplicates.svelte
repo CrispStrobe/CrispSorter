@@ -18,6 +18,8 @@
         AlertTriangle
     } from 'lucide-svelte';
     import { i18n } from '$lib/i18n.svelte';
+    import { requestBrowserContext } from '$lib/drives/browserContext';
+    import { duplicateGroupPanel } from '$lib/drives/panels';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +87,10 @@
 
     function addDestination() {
         destinations = [...destinations, ''];
+    }
+
+    function openDuplicateContext(match: DuplicateMatch, index: number): void {
+        requestBrowserContext(duplicateGroupPanel(`${index}:${match.source.path}`));
     }
     function removeDestination(idx: number) {
         destinations = destinations.filter((_, i) => i !== idx);
@@ -295,7 +301,9 @@
                                     onchange={() => toggleSelect(i)}
                                 />
                             </td>
-                            <td class="path-cell" title={m.source.path}>{m.source.path}</td>
+                            <td class="path-cell" title={m.source.path}>
+                                <button class="context-link" onclick={() => openDuplicateContext(m, i)}>{m.source.path}</button>
+                            </td>
                             <td>{formatSize(m.source.size)}</td>
                             <td>
                                 <ul class="dest-list">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cloudDrivePanel, panelSourceKey } from './panels';
+import { cloudDrivePanel, duplicateGroupPanel, panelSourceKey } from './panels';
 
 describe('context panel sources', () => {
     it('keeps a cloud path provenance-safe', () => {
@@ -13,5 +13,6 @@ describe('context panel sources', () => {
         expect(panelSourceKey({ kind: 'DuplicateGroup', groupId: 'g7' })).toBe('duplicates:g7');
         expect(panelSourceKey({ kind: 'RemoteSearchResults', provider: 'internxt', query: 'paper' }))
             .toBe('remote:internxt:paper');
+        expect(panelSourceKey(duplicateGroupPanel('g8').source)).toBe('duplicates:g8');
     });
 });

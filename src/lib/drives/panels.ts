@@ -15,6 +15,10 @@ export function cloudDrivePanel(driveId: string, path: string, title = 'Cloud fi
     return { source: { kind: 'CloudDrive', driveId, path }, title };
 }
 
+export function duplicateGroupPanel(groupId: string, title = 'Duplicate group'): ContextPanel {
+    return { source: { kind: 'DuplicateGroup', groupId }, title };
+}
+
 export function panelSourceKey(source: PanelSource): string {
     switch (source.kind) {
         case 'LocalPath': return `local:${source.path}`;

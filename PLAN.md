@@ -2744,6 +2744,10 @@ a transfer without leaving the search/catalog workflow.
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
   trash-first behavior, and an undo/audit record.
+  - [x] Duplicate-match rows now emit typed `DuplicateGroup` context requests
+    into the browser surface; group identity is derived from the source path
+    and result row, preserving provenance for the forthcoming side-by-side
+    duplicate actions. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

@@ -170,7 +170,13 @@
         {#if rightPanel}
             <div class="context-kicker">Selected context</div>
             <h3>{rightPanel.title}</h3>
-            <code>{rightPanel.source.kind === 'CloudDrive' ? rightPanel.source.path : ''}</code>
+            {#if rightPanel.source.kind === 'CloudDrive'}
+                <code>{rightPanel.source.path}</code>
+            {:else if rightPanel.source.kind === 'DuplicateGroup'}
+                <code>group: {rightPanel.source.groupId}</code>
+            {:else}
+                <code>{rightPanel.source.kind}</code>
+            {/if}
             {#if selectedStat}
                 <dl>
                     <dt>Type</dt><dd>{selectedStat.is_dir ? 'Folder' : 'File'}</dd>
