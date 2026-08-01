@@ -539,6 +539,12 @@ enum BackupJobCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Preview or apply retention to date-named snapshot directories.
+    Prune {
+        job_id: String,
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5200,8 +5206,9 @@ async fn cmd_sync_backup_job(
             }
             let mut files = Vec::new();
             collect_backup_files(&source, &source, &mut files).map_err(|e| e.to_string())?;
+            let snapshot = std::path::Path::new(&job.remote_root).join(backup_snapshot_date());
             if dry_run {
-                emit_backup_run_plan(out, &job, files.len(), files.iter().map(|(_, s)| *s).sum());
+                emit_backup_run_plan(out, &job, &snapshot, files.len(), files.iter().map(|(_, s)| *s).sum());
                 return Ok(());
             }
 
@@ -5225,7 +5232,7 @@ async fn cmd_sync_backup_job(
                     Ok(data) => data,
                     Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
                 };
-                let remote = std::path::Path::new(&job.remote_root).join(&relative);
+                let remote = snapshot.join(&relative);
                 let target = Arc::clone(&drive);
                 let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
                     move |path, data| target.write_file(path, data));
@@ -5250,7 +5257,36 @@ async fn cmd_sync_backup_job(
                 OutFormat::Text => println!("backup job {} completed: {} file(s), {} bytes", job.id, completed, bytes),
             }
         }
-    }
+        BackupJobCmd::Prune { job_id, apply } => {
+            use crate::drives::DriveRegistry;
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive = DriveRegistry::instantiate(&config);
+            let entries = drive.list_dir(std::path::Path::new(&job.remote_root)).map_err(|e| e.to_string())?;
+            let mut snapshots: Vec<_> = entries.into_iter()
+                .filter(|entry| entry.is_dir && is_backup_snapshot(&entry.name))
+                .map(|entry| entry.name).collect();
+            snapshots.sort();
+            let remove_count = snapshots.len().saturating_sub(job.retention_count as usize);
+            let remove = &snapshots[..remove_count];
+            if apply {
+                for name in remove {
+                    delete_remote_tree(drive.as_ref(), &std::path::Path::new(&job.remote_root).join(name))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "job_id": job.id, "apply": apply, "kept": snapshots.len().saturating_sub(remove_count),
+                    "removed": remove, "retention_count": job.retention_count,
+                })),
+                OutFormat::Text => println!("backup job {} retention: {} snapshot(s) {}{}",
+                    job.id, remove.len(), if apply { "deleted " } else { "would delete " }, remove.join(", ")),
+            }
+        }
     Ok(())
 }
 
@@ -5272,15 +5308,46 @@ fn collect_backup_files(
     Ok(())
 }
 
+fn backup_snapshot_date() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let days = secs / 86_400;
+    let z = days as i64 + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn is_backup_snapshot(name: &str) -> bool {
+    name.len() == 10 && name.as_bytes()[4] == b'-' && name.as_bytes()[7] == b'-'
+        && name.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+fn delete_remote_tree(drive: &dyn crate::drives::CloudDrive, path: &std::path::Path) -> anyhow::Result<()> {
+    for entry in drive.list_dir(path)? {
+        let child = path.join(&entry.name);
+        if entry.is_dir { delete_remote_tree(drive, &child)?; } else { drive.delete(&child)?; }
+    }
+    drive.delete(path)
+}
+
 fn emit_backup_run_plan(
     out: OutFormat,
     job: &crate::sync::backup_state::BackupJob,
+    snapshot: &std::path::Path,
     files: usize,
     bytes: u64,
 ) {
     match out {
-        OutFormat::Json => println!("{}", serde_json::json!({"job_id": job.id, "dry_run": true, "files": files, "bytes": bytes})),
-        OutFormat::Text => println!("backup job {} dry-run: {} file(s), {} bytes", job.id, files, bytes),
+        OutFormat::Json => println!("{}", serde_json::json!({"job_id": job.id, "dry_run": true, "snapshot": snapshot, "files": files, "bytes": bytes})),
+        OutFormat::Text => println!("backup job {} dry-run: {} file(s), {} bytes → {}", job.id, files, bytes, snapshot.display()),
     }
 }
 

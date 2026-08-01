@@ -2986,6 +2986,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Added explicit CLI `sync backup-job run <id> [--dry-run]` execution:
       recursive local enumeration, capability checks, queued uploads, optional
       post-upload size verification, and durable success/failure accounting.
+    - [x] Explicit runs now write to UTC date snapshots; CLI
+      `sync backup-job prune <id>` previews retention and requires `--apply`
+      before deleting only date-named snapshot trees.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
 
