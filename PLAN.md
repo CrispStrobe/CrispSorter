@@ -1464,7 +1464,8 @@ will surface.
     the complete remote manifest row; the current UI deliberately does not
     pretend that acknowledging a conflict applies remote content.
 - [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
-  Remaining: manual queue persistence test (needs `sync_conflicts` table).
+  Manual queue persistence/deduplication coverage now ships in
+  `sync::tests::manual_conflicts_are_durable_and_deduplicated`. ✅ 2026-08-01
 
 #### Priority 5 — Share link generation
 
@@ -2817,6 +2818,11 @@ a transfer without leaving the search/catalog workflow.
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
   and i18n infrastructure rather than creating a second notification system.
+  - [x] Drawer now includes provider identity and live ETA alongside bytes,
+    speed, state, cancellation, and offline retry details. ✅ 2026-08-01
+  - [ ] Resume availability remains deferred until queue snapshots carry
+    provider capability/resume-state metadata; no provider is falsely marked
+    resumable in the meantime.
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 

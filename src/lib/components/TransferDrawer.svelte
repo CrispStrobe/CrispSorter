@@ -68,6 +68,16 @@
         return speeds.get(job.job_id) ?? 0;
     }
 
+    function eta(job: TransferProgress): string {
+        const rate = speed(job);
+        if (!job.bytes_total || rate <= 0 || job.bytes_done >= job.bytes_total) return '—';
+        const seconds = Math.ceil((job.bytes_total - job.bytes_done) / rate);
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        const remaining = seconds % 60;
+        return minutes < 60 ? `${minutes}m ${remaining}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    }
+
     function percent(job: TransferProgress): number {
         if (!job.bytes_total) return 0;
         return Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100));
@@ -154,8 +164,10 @@
                             </div>
                             <div class="progress-track"><div class="progress-value" style={`width: ${percent(job)}%`}></div></div>
                             <div class="job-meta">
+                                <span title="Provider">{job.drive_id}</span>
                                 <span>{formatBytes(job.bytes_done)}{job.bytes_total != null ? ` / ${formatBytes(job.bytes_total)}` : ''}</span>
                                 {#if speed(job) > 0}<span>{formatBytes(speed(job))}/s</span>{/if}
+                                {#if stateName(job.state) === 'active'}<span>ETA {eta(job)}</span>{/if}
                                 <span>#{job.job_id}</span>
                             </div>
                         </div>
