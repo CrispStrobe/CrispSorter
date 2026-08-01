@@ -2688,11 +2688,9 @@ a transfer without leaving the search/catalog workflow.
 - [x] **FUSE read boundary.** `FuseDriveFs` now routes full-file reads through
   the blocking download adapter while retaining its synchronous read-only
   filesystem contract. ✅ 2026-07-31
-- [ ] **Streaming and durable resume.** Expose reader/writer transfers through
-  the app facade; persist provider, remote path, upload/session identifiers,
-  encryption key material, chunk size, completed chunks, hashes, and timestamps.
-  Resume must refuse incompatible state instead of re-encrypting under a new
-  key.  Add large-file tests at 100 MiB and above for every native provider.
+- [x] **Streaming and durable resume.** ✅ 2026-08-01. Reader/writer transfers,
+  persisted provider/session/key/chunk checkpoints, compatibility refusal, and
+  100 MiB+ native-provider coverage are now exposed through the app facade.
   - [x] Object-safe reader/writer methods now exist on `CloudDrive`; native
     Filen and Internxt adapters use their bounded streaming APIs and advertise
     `streaming`, while legacy providers retain checked fallbacks. ✅ 2026-07-31
@@ -2745,6 +2743,10 @@ a transfer without leaving the search/catalog workflow.
     ✅ 2026-08-01
   - [x] App startup maintenance now replays pending staged operations every
     30 seconds; failures remain pending for the next connectivity window.
+    ✅ 2026-08-01
+  - [x] Offline replay now records unknown operation types as terminal
+    failures instead of silently leaving them pending forever; the original
+    payload and diagnostic remain inspectable for a newer replay handler.
     ✅ 2026-08-01
 
 #### P34.2 — Core file-manager surface, P1
