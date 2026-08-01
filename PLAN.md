@@ -2680,6 +2680,9 @@ a transfer without leaving the search/catalog workflow.
   a bounded blocking adapter for the synchronous FUSE/provider boundary. Keep
   serial multipart defaults for fragile gateways and configurable workers for
   testing.
+  - [x] Added a process-wide `TransferQueue::shared()` accessor and routed
+    AppState, CLI cloud-backup transfers, and FUSE construction through it;
+    they now share semaphore/backoff/cancellation/job snapshots. ✅ 2026-08-01
 - [x] **Bounded synchronous queue adapter.** `upload_blocking` and
   `download_blocking` run synchronous provider/FUSE operations on an isolated
   Tokio worker while sharing the queue semaphore, retry policy, cancellation

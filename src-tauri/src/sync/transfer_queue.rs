@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
 use tokio::sync::{watch, Notify, Semaphore};
 use tokio::task::JoinHandle;
 
@@ -40,6 +41,7 @@ const BACKOFF_CAP_MS: u64 = 30_000;
 
 /// Monotonically increasing job ID.
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+static SHARED_QUEUE: OnceLock<TransferQueue> = OnceLock::new();
 
 /// Direction of a transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +130,13 @@ pub struct TransferQueue {
 }
 
 impl TransferQueue {
+    /// Return the process-wide application queue.  GUI, CLI-in-process
+    /// helpers, and FUSE boundaries use this accessor so they share the same
+    /// semaphore, cancellation registry, and terminal-job snapshots.
+    pub fn shared() -> Self {
+        SHARED_QUEUE.get_or_init(Self::new).clone()
+    }
+
     /// Create a new queue with the default concurrency limit (3).
     pub fn new() -> Self {
         Self::with_concurrency(DEFAULT_MAX_CONCURRENT)
@@ -517,6 +526,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
+
+    #[test]
+    fn shared_accessor_reuses_one_job_registry() {
+        let first = TransferQueue::shared();
+        let second = TransferQueue::shared();
+        assert!(Arc::ptr_eq(&first.jobs, &second.jobs));
+        assert_eq!(first.max_concurrent(), second.max_concurrent());
+    }
 
     #[test]
     fn backoff_increases_with_attempt() {

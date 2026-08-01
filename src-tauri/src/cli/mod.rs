@@ -5847,7 +5847,7 @@ async fn cmd_sync_cloud_backup(
                 .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
                 Arc::from(DriveRegistry::instantiate(&drive_cfg));
-            let transfer_queue = TransferQueue::new();
+            let transfer_queue = TransferQueue::shared();
 
             let bs = crate::sync::backup_state::BackupState::open(&data_dir)
                 .map_err(|e| e.to_string())?;
@@ -6001,7 +6001,7 @@ async fn cmd_sync_cloud_backup(
             };
 
             let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-            let transfer = TransferQueue::new().submit_download(
+            let transfer = TransferQueue::shared().submit_download(
                 drive_id.clone(),
                 tar_path.clone(),
                 None,

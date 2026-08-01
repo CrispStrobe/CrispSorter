@@ -2826,7 +2826,7 @@ pub fn run() {
             job_queue: Arc::new(std::sync::Mutex::new(None)),
             batch_session_store: Arc::new(std::sync::Mutex::new(None)),
             data_dir: tokio::sync::Mutex::new(None),
-            transfer_queue: sync::transfer_queue::TransferQueue::new(),
+            transfer_queue: sync::transfer_queue::TransferQueue::shared(),
         })
         // P32.1a — open PDF editing sessions, keyed by session id.
         .manage(pdf_session::PdfSessions::default())
