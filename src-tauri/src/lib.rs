@@ -2877,7 +2877,20 @@ pub fn run() {
                             if !enabled { continue; }
                             let Some(url) = url_opt.filter(|s| !s.is_empty()) else { continue };
                             let Ok(Some(token)) = crate::sync::secret::get_token_for_url(&url) else { continue };
-                            let Ok(cli) = crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) else { continue };
+                            let proxy = {
+                                let idx = state.index.lock().await;
+                                let Ok(password) = crate::sync::proxy_secret::get() else { continue };
+                                crate::sync::proxy::ProxyConfig {
+                                    url: idx.config.proxy_url.clone(),
+                                    username: idx.config.proxy_username.clone(),
+                                    password,
+                                }
+                            };
+                            let Ok(cli) = crate::sync::cloud_backup::CloudBackupClient::new_with_proxy(
+                                &url,
+                                &token,
+                                &proxy,
+                            ) else { continue };
                             let data_dir = state.data_dir.lock().await.clone();
                             let Some(data_dir) = data_dir else { continue };
                             let Ok(mgr) = crate::sync::SyncManager::open(&data_dir) else { continue };

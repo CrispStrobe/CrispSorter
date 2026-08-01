@@ -2000,6 +2000,7 @@ pub async fn sync_status_all(
             idx.config.cloud_backup_url.clone().unwrap_or_default(),
         )
     };
+    let proxy = proxy_config_for_app_state(&state).await?;
 
     // Probe cb-api.
     let cb_probe = async {
@@ -2011,7 +2012,7 @@ pub async fn sync_status_all(
             Ok(None)    => return serde_json::json!({"configured": true, "token_present": false}),
             Err(e)      => return serde_json::json!({"configured": true, "error": e.to_string()}),
         };
-        match CloudBackupClient::new(&cb_url_val, &token) {
+        match CloudBackupClient::new_with_proxy(&cb_url_val, &token, &proxy) {
             Ok(cli) => match cli.health().await {
                 Ok(h)  => serde_json::json!({
                     "configured": true,
@@ -2562,6 +2563,7 @@ pub async fn sync_federated_search(
 
     let want_local = enabled.contains("local");
     let want_cb    = enabled.contains("cloud_backup");
+    let proxy = proxy_config_for_app_state(&state).await?;
     #[cfg(feature = "images-crisplens")]
     let want_cl    = enabled.contains("crisplens");
 
@@ -2658,7 +2660,7 @@ pub async fn sync_federated_search(
             Ok(None)    => return (Vec::new(), Some("cloud_backup: no token configured".to_owned())),
             Err(e)      => return (Vec::new(), Some(format!("cloud_backup: keychain error: {e}"))),
         };
-        let cli = match CloudBackupClient::new(&cb_url_val, &token) {
+        let cli = match CloudBackupClient::new_with_proxy(&cb_url_val, &token, &proxy) {
             Ok(c)  => c,
             Err(e) => return (Vec::new(), Some(format!("cloud_backup: client error: {e}"))),
         };
@@ -2850,7 +2852,9 @@ fn cb_client_for_admin(state: &AppState) -> std::pin::Pin<Box<dyn std::future::F
         let token = super::secret::get_token_for_url(&url)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "no API token stored — run sync cloud-backup login first".to_owned())?;
-        let cli = CloudBackupClient::new(&url, &token).map_err(|e| e.to_string())?;
+        let proxy = proxy_config_for_app_state(state).await?;
+        let cli = CloudBackupClient::new_with_proxy(&url, &token, &proxy)
+            .map_err(|e| e.to_string())?;
         Ok((cli, url))
     })
 }

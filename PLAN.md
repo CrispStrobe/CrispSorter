@@ -1660,6 +1660,9 @@ mostly plumbing + settings UI.
   - [x] CLI backup jobs, sync-pair inspection/push/pull, and cloud-backup
     shard backup/restore now share the same proxy-aware drive constructor.
     ✅ 2026-08-01
+  - [x] GUI status/federated-search probes, admin calls, and background
+    cloud-backup outbox drains now use the persisted proxy policy as well.
+    ✅ 2026-08-01
 - [x] **Registered-drive construction path.** ✅ SHIPPED (2026-08-01).
   DriveBrowser, FUSE mount, file transfer, sharing, and version commands now
   load the persisted proxy policy and keychain password before constructing
