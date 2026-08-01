@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use super::proxy::ProxyConfig;
+use self::proxy::ProxyConfig;
 
 // ── Public types ─────────────────────────────────────────────────────────
 
@@ -295,7 +295,7 @@ impl SyncManager {
         let batch = self.claim_batch(64)?;
         if batch.is_empty() { return Ok((0, 0)); }
 
-        let client = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
+        let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
         let mut pushed = 0;
         let mut failed = 0;
 
@@ -374,7 +374,7 @@ impl SyncManager {
             last_pull_ts,
             limit
         );
-        let mut req = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))
+        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))
             .get(&url)
             ;
         if !api_key.is_empty() { req = req.bearer_auth(api_key); }

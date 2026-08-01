@@ -5528,7 +5528,11 @@ async fn cmd_sync_backup_job(
             } else {
                 let ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
                 for id in ids {
-                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::Run { job_id: id, dry_run }).await?;
+                    Box::pin(cmd_sync_backup_job(
+                        out,
+                        data_dir,
+                        BackupJobCmd::Run { job_id: id, dry_run },
+                    )).await?;
                 }
             }
         }

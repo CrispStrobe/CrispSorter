@@ -674,16 +674,10 @@ pub fn ocr_via_pipeline(
     // already computed.
     let detected_lang = guard.detected_lang();
 
-    // CrispEmbed's pipeline also renders the page as markdown (`reading_order`
-    // applied, headings marked). `full_text` stays the indexed body — changing
-    // that would alter every existing row's text — but the markdown is worth
-    // mining for headings, so a scanned document feeds the boosted
-    // `headings_text` field exactly as a native `.md` file does. Empty markdown
-    // (engines that do not produce it) simply yields no headings.
-    let headings = super::text::lift_atx_headings(&res.markdown);
-    if !headings.is_empty() {
-        println!("[ocr] pipeline: lifted {} heading(s) from markdown", headings.len());
-    }
+    // CrispEmbed v0.16.1 exposes the joined OCR body but not the later
+    // markdown/reading-order fields. Keep the body stable and leave heading
+    // extraction to the normal post-processing path.
+    let headings = Vec::new();
 
     Ok(ExtractedDocument {
         full_text: res.full_text,
@@ -737,7 +731,7 @@ pub fn ocr_regions_via_pipeline(
         })
         .collect();
 
-    Ok(apply_reading_order(regions, &res.reading_order))
+    Ok(regions)
 }
 
 /// Reorder regions into the pipeline's reading order.
@@ -1013,6 +1007,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     morph_kernel: s.cleanup.morph_kernel,
                     border_threshold: s.cleanup.border_threshold,
                     deskew_max_angle: s.cleanup.deskew_max_angle,
+                    deskew_consensus: s.cleanup.deskew_consensus,
                     denoise: s.cleanup.denoise,
                 },
                 det_prob_threshold: s.det_prob_threshold,

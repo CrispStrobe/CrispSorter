@@ -2542,7 +2542,7 @@ pub async fn sync_federated_search(
     // false` already produces for an unconfigured install, so callers need no
     // second code path. See PLAN.md P35.4.
     #[cfg(not(feature = "images-crisplens"))]
-    let cl_fut = async { (Vec::<FederatedHit>::new(), None) };
+    let cl_fut = async { (Vec::<FederatedHit>::new(), Option::<String>::None) };
     #[cfg(feature = "images-crisplens")]
     let cl_fut = async {
         if !want_cl { return (Vec::new(), None); }
