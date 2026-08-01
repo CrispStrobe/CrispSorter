@@ -7,8 +7,20 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Branches and PRs: superseding a stale run is the right trade — nobody needs a
+  # verdict on a commit that has already been replaced.
+  #
+  # `main` is the opposite: every commit there is something we want verified, and
+  # a *cancelled* run is not a green one. It reads as "not red" at a glance, which
+  # is exactly how a library that had stopped compiling for everyone survived on
+  # main unnoticed — the last completed run had been cancelled, not failed. With
+  # several agents pushing to main minutes apart, `cancel-in-progress` meant most
+  # runs never reached a conclusion at all.
+  #
+  # So on main the group is unique per commit (nothing to collide with, nothing
+  # cancelled) and cancellation is off; elsewhere the old behaviour stands.
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # Sibling repos referenced by src-tauri/Cargo.toml as path deps:
