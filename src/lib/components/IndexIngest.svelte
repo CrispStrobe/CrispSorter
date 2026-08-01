@@ -2,7 +2,7 @@
     import { invoke, convertFileSrc } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
     import { open as openDialog } from '@tauri-apps/plugin-dialog';
-    import { openPath } from '@tauri-apps/plugin-opener';
+    import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { readDir, readFile, readTextFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
     import { getSetting, saveSetting } from '$lib/store';
@@ -98,8 +98,6 @@
         label: string;
         kind:  string;
         path:  string;
-        username?:    string | null;
-        password?:    string | null;
         insecure_tls?: boolean | null;
     }
     let driveDialogOpen   = $state(false);
@@ -135,7 +133,7 @@
     let driveCreateOpen   = $state(false);
     let driveEditId       = $state<string | null>(null);
     let driveCreateLabel  = $state<string>('');
-    let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav'>('webdav');
+    let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav' | 'onedrive' | 'google_drive'>('webdav');
     let driveCreatePath   = $state<string>('');
     let driveCreateUser   = $state<string>('');
     let driveCreatePass   = $state<string>('');
@@ -143,6 +141,12 @@
     let driveCreateBusy   = $state(false);
     let driveCreateError  = $state<string>('');
     let driveDeletingId   = $state<string | null>(null);
+    let driveAuthEmail    = $state('');
+    let driveAuthPassword = $state('');
+    let driveAuthTfa      = $state('');
+    let driveAuthBusy     = $state(false);
+    let driveAuthError    = $state('');
+    let driveOAuthClientId = $state('');
 
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
@@ -855,13 +859,13 @@
     }
 
     /** Begin editing an existing drive — prefills the form. */
-    function startDriveEdit(d: RegisteredDrive & { username?: string | null; password?: string | null; insecure_tls?: boolean | null }) {
+    function startDriveEdit(d: RegisteredDrive & { insecure_tls?: boolean | null }) {
         driveEditId       = d.id;
         driveCreateLabel  = d.label;
         driveCreateKind   = d.kind as any;
         driveCreatePath   = d.path;
-        driveCreateUser   = d.username ?? '';
-        driveCreatePass   = d.password ?? '';
+        driveCreateUser   = '';
+        driveCreatePass   = '';
         driveCreateInsecure = !!d.insecure_tls;
         driveCreateError  = '';
         driveCreateOpen   = true;
@@ -875,6 +879,11 @@
         driveCreatePass   = '';
         driveCreateInsecure = false;
         driveCreateError  = '';
+        driveAuthEmail = '';
+        driveAuthPassword = '';
+        driveAuthTfa = '';
+        driveAuthError = '';
+        driveOAuthClientId = '';
     }
 
     /** Create or update a drive entry. */
@@ -910,6 +919,43 @@
             driveCreateError = `Fehler: ${e?.message ?? e}`;
         } finally {
             driveCreateBusy = false;
+        }
+    }
+
+    async function loginNativeDrive() {
+        if (!driveEditId || (driveCreateKind !== 'filen' && driveCreateKind !== 'internxt')) return;
+        driveAuthBusy = true;
+        driveAuthError = '';
+        try {
+            await invoke(driveCreateKind === 'filen' ? 'drive_filen_native_login' : 'drive_native_login', {
+                driveId: driveEditId,
+                email: driveAuthEmail.trim(),
+                password: driveAuthPassword,
+                tfaCode: driveAuthTfa.trim() || null,
+                ...(driveCreateKind === 'filen' ? {} : {})
+            });
+            driveAuthPassword = '';
+            driveAuthTfa = '';
+            logInfo(`${driveCreateKind} verbunden; Zugangsdaten wurden nicht gespeichert.`);
+        } catch (e: any) {
+            driveAuthError = String(e?.message ?? e);
+        } finally {
+            driveAuthBusy = false;
+        }
+    }
+
+    async function loginBrowserDrive() {
+        if (!driveEditId || (driveCreateKind !== 'google_drive' && driveCreateKind !== 'onedrive')) return;
+        driveAuthError = '';
+        try {
+            const provider = driveCreateKind === 'google_drive' ? 'google' : 'microsoft';
+            const result = await invoke<{ authorizationUrl: string }>('drive_oauth_start', {
+                driveId: driveEditId, provider, clientId: driveOAuthClientId.trim()
+            });
+            await openUrl(result.authorizationUrl);
+            logInfo('Browser-Anmeldung geöffnet. Nach Abschluss wird der Schlüsselbund automatisch aktualisiert.');
+        } catch (e: any) {
+            driveAuthError = String(e?.message ?? e);
         }
     }
 
@@ -3533,6 +3579,8 @@
                             <select bind:value={driveCreateKind} class="drive-dialog-input"
                                     disabled={driveCreateBusy}>
                                 <option value="webdav">WebDAV (Nextcloud / ownCloud / mailbox.org / Synology)</option>
+                                <option value="google_drive">Google Drive (Browser-Anmeldung)</option>
+                                <option value="onedrive">OneDrive / SharePoint (Browser-Anmeldung)</option>
                                 <!-- Both shell out to a Python CLI, which iOS and
                                      Android forbid; offering them there produced a
                                      spawn error at use time. WebDAV stays available
@@ -3563,7 +3611,9 @@
                                        ? 'https://host/remote.php/dav/files/<user>/'
                                        : driveCreateKind === 'filen' || driveCreateKind === 'internxt'
                                            ? '/Users/.../code/filen-python/cli.py'
-                                           : '/Volumes/...'} />
+                                           : driveCreateKind === 'google_drive' || driveCreateKind === 'onedrive'
+                                               ? '/ (remote root)'
+                                               : '/Volumes/...'} />
                         </label>
                         {#if driveCreateKind === 'webdav'}
                             <label class="drive-dialog-row">
@@ -3587,8 +3637,32 @@
                                 </span>
                             </label>
                             <div class="drive-dialog-hint">
-                                Auth wird im Klartext in <code>drives.json</code> gespeichert.
-                                Für höhere Sicherheit lokal mounten und stattdessen "Lokal" wählen.
+                                Benutzername und Passwort werden ausschließlich im OS-Schlüsselbund gespeichert;
+                                <code>drives.json</code> enthält keine Zugangsdaten.
+                            </div>
+                        {/if}
+                        {#if driveEditId && (driveCreateKind === 'filen' || driveCreateKind === 'internxt')}
+                            <div class="drive-dialog-subsection">
+                                <strong>{driveCreateKind === 'filen' ? 'Filen' : 'Internxt'} anmelden</strong>
+                                <div class="drive-dialog-hint">Die Anmeldung läuft nur im Speicher. Falls der Anbieter 2FA verlangt, den aktuellen TOTP-Code unten eingeben.</div>
+                                <input type="email" bind:value={driveAuthEmail} class="drive-dialog-input" placeholder="E-Mail" autocomplete="username" />
+                                <input type="password" bind:value={driveAuthPassword} class="drive-dialog-input" placeholder="Passwort" autocomplete="current-password" />
+                                <input inputmode="numeric" bind:value={driveAuthTfa} class="drive-dialog-input" placeholder="2FA-Code (optional)" autocomplete="one-time-code" />
+                                <button class="tb-btn" type="button" onclick={loginNativeDrive} disabled={driveAuthBusy || !driveAuthEmail.trim() || !driveAuthPassword}>
+                                    {#if driveAuthBusy}<Loader2 size={13} class="spin" />{:else}<HardDrive size={13} />{/if} Anmelden
+                                </button>
+                                {#if driveAuthError}<div class="drive-dialog-error">{driveAuthError}</div>{/if}
+                            </div>
+                        {/if}
+                        {#if driveEditId && (driveCreateKind === 'google_drive' || driveCreateKind === 'onedrive')}
+                            <div class="drive-dialog-subsection">
+                                <strong>Browser-Anmeldung</strong>
+                                <div class="drive-dialog-hint">OAuth verwendet PKCE und einen lokalen Rückruf. Nur die öffentliche Client-ID wird hier eingegeben; Tokens bleiben im OS-Schlüsselbund.</div>
+                                <input type="text" bind:value={driveOAuthClientId} class="drive-dialog-input" placeholder="Öffentliche OAuth-Client-ID" autocomplete="off" />
+                                <button class="tb-btn" type="button" onclick={loginBrowserDrive} disabled={!driveOAuthClientId.trim()}>
+                                    <ExternalLink size={13} /> Im Browser anmelden
+                                </button>
+                                {#if driveAuthError}<div class="drive-dialog-error">{driveAuthError}</div>{/if}
                             </div>
                         {/if}
                         <div class="drive-dialog-row">
