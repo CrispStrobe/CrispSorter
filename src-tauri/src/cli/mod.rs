@@ -5298,6 +5298,79 @@ async fn cmd_sync_backup_job(
                     job.id, remove.len(), if apply { "deleted " } else { "would delete " }, remove.join(", ")),
             }
         }
+        BackupJobCmd::SnapshotList { job_id, snapshot } => {
+            use crate::drives::{self, DriveRegistry};
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            if !is_backup_snapshot(&snapshot) {
+                return Err("snapshot must be a YYYY-MM-DD directory name".into());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive = DriveRegistry::instantiate(&config);
+            let root = std::path::Path::new(&job.remote_root).join(&snapshot);
+            let mut errors = Vec::new();
+            let entries = drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
+                errors.push(format!("{}: {error}", path.display()));
+            });
+            if !errors.is_empty() { return Err(errors.join("; ")); }
+            let files: Vec<_> = entries.into_iter().map(|entry| serde_json::json!({
+                "path": entry.path.strip_prefix(&root).unwrap_or(&entry.path).to_string_lossy(),
+                "size": entry.size,
+                "mtime_unix": entry.mtime_unix,
+            })).collect();
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&files).unwrap());
+            } else {
+                for entry in files { println!("{}  {}", entry["size"], entry["path"]); }
+            }
+        }
+        BackupJobCmd::Restore { job_id, snapshot, remote_path, destination } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            if !is_backup_snapshot(&snapshot) {
+                return Err("snapshot must be a YYYY-MM-DD directory name".into());
+            }
+            let relative = safe_backup_relative(&remote_path)?;
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(&config));
+            if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
+            let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
+            let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
+            let source = Arc::clone(&drive);
+            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
+                move |path| source.read_file(path));
+            let data = transfer.handle.await.map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            if data.len() as u64 != expected {
+                return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
+            }
+            if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+            let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
+            std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
+            std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
+                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
+            }
+        }
+        BackupJobCmd::Due => {
+            let jobs = store.due_jobs(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+                OutFormat::Text => for job in jobs {
+                    println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
+                },
+            }
+        }
     }
     Ok(())
 }
@@ -6886,79 +6959,6 @@ async fn cmd_cloud_backup_admin(
                         println!("{:<24}  {:<8}  {ts}", &k.name[..k.name.len().min(24)], status);
                     }
                 }
-            }
-        }
-        BackupJobCmd::SnapshotList { job_id, snapshot } => {
-            use crate::drives::{self, DriveRegistry};
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
-            if !is_backup_snapshot(&snapshot) {
-                return Err("snapshot must be a YYYY-MM-DD directory name".into());
-            }
-            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive = DriveRegistry::instantiate(&config);
-            let root = std::path::Path::new(&job.remote_root).join(&snapshot);
-            let mut errors = Vec::new();
-            let entries = drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
-                errors.push(format!("{}: {error}", path.display()));
-            });
-            if !errors.is_empty() { return Err(errors.join("; ")); }
-            let files: Vec<_> = entries.into_iter().map(|entry| serde_json::json!({
-                "path": entry.path.strip_prefix(&root).unwrap_or(&entry.path).to_string_lossy(),
-                "size": entry.size,
-                "mtime_unix": entry.mtime_unix,
-            })).collect();
-            if matches!(out, OutFormat::Json) {
-                println!("{}", serde_json::to_string_pretty(&files).unwrap());
-            } else {
-                for entry in files { println!("{}  {}", entry["size"], entry["path"]); }
-            }
-        }
-        BackupJobCmd::Restore { job_id, snapshot, remote_path, destination } => {
-            use crate::drives::DriveRegistry;
-            use crate::sync::transfer_queue::TransferQueue;
-            use std::sync::Arc;
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
-            if !is_backup_snapshot(&snapshot) {
-                return Err("snapshot must be a YYYY-MM-DD directory name".into());
-            }
-            let relative = safe_backup_relative(&remote_path)?;
-            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(&config));
-            if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
-            let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
-            let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
-            let source = Arc::clone(&drive);
-            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
-                move |path| source.read_file(path));
-            let data = transfer.handle.await.map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            if data.len() as u64 != expected {
-                return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
-            }
-            if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
-            std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
-            std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
-            match out {
-                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
-                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
-            }
-        }
-        BackupJobCmd::Due => {
-            let jobs = store.due_jobs(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
-                .map_err(|e| e.to_string())?;
-            match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
-                OutFormat::Text => for job in jobs {
-                    println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
-                },
             }
         }
     }
