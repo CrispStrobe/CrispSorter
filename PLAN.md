@@ -2745,6 +2745,9 @@ a transfer without leaving the search/catalog workflow.
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
   operations work across LocalDrive and at least Internxt/Filen/WebDAV.
+  - [x] DriveBrowser now exposes capability-gated create-folder, rename,
+    move, copy, delete, refresh, breadcrumb navigation, and selection actions;
+    rename delegates to the provider's tested move/rename primitive.
   - [x] Added the missing `drive_delete_path` Tauri command, distinct from
     drive-registration deletion, with capability gating and provider error
     propagation. ✅ 2026-08-01
@@ -2773,6 +2776,20 @@ a transfer without leaving the search/catalog workflow.
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
   Internxt, Filen, and generic WebDAV until proven safe.
+  - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
+    through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
+    PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). Their ordinary WebDAV API
+    does not advertise the CrispCloud blockmap/changed-block/finalize
+    protocol, so CrispSorter must not pretend that HTTP Range alone is a safe
+    delta upload. Strict authenticated range reads now reject servers that
+    ignore Range; uploads remain whole-file until an explicit blockmap
+    extension is negotiated. Add provider-specific blockmap integration only
+    after a hermetic Nextcloud and ownCloud server contract proves atomic
+    finalize, ETag/If-Match conflict protection, and resume semantics.
+  - [ ] Add gated live Nextcloud and ownCloud tests for auth, recursive
+    listing, range reads, ETag/concurrent-update behavior, OCS share links,
+    and whole-file fallback. Credentials must be explicit environment
+    variables/app passwords; never discover them from keychains in tests.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
@@ -2801,9 +2818,12 @@ a transfer without leaving the search/catalog workflow.
     plaintext fields are migrated once into the OS keychain and redacted.
   - [x] Added separate keychain credentials and disconnect/status commands;
     IPC exposes presence booleans only.
-  - [ ] Add Google and Microsoft authorization-code + PKCE browser flows,
+  - [>] Add Google and Microsoft authorization-code + PKCE browser flows,
     loopback/deep-link callback handling, token refresh, and revocation. Never
     ship a client secret; support user-supplied public client IDs where needed.
+    Desktop loopback PKCE, keychain-only token exchange, explicit refresh,
+    Google revocation, and Microsoft local credential clearing are implemented;
+    mobile deep links and Microsoft’s provider-side logout remain.
   - [ ] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
     native email/password plus conditional TOTP for Filen/Internxt, and
     WebDAV username/password or app-password entry without persistence in UI

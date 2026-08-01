@@ -959,6 +959,26 @@
         }
     }
 
+    async function refreshBrowserDrive() {
+        if (!driveEditId) return;
+        try {
+            await invoke('drive_oauth_refresh', { driveId: driveEditId });
+            logInfo('OAuth-Zugang erneuert; Token bleibt im OS-Schlüsselbund.');
+        } catch (e: any) {
+            driveAuthError = String(e?.message ?? e);
+        }
+    }
+
+    async function disconnectBrowserDrive() {
+        if (!driveEditId) return;
+        try {
+            await invoke('drive_oauth_revoke', { driveId: driveEditId });
+            logInfo('OAuth-Zugang getrennt.');
+        } catch (e: any) {
+            driveAuthError = String(e?.message ?? e);
+        }
+    }
+
     /** Remove a drive entry (drives.json only — does not touch indexed rows). */
     async function deleteDrive(d: RegisteredDrive) {
         const ok = confirm(`Laufwerk "${d.label}" entfernen?\n\nIndexzeilen mit crisp+drive://${d.id}/... bleiben erhalten, lassen sich aber nicht mehr promoten.`);
@@ -3661,6 +3681,12 @@
                                 <input type="text" bind:value={driveOAuthClientId} class="drive-dialog-input" placeholder="Öffentliche OAuth-Client-ID" autocomplete="off" />
                                 <button class="tb-btn" type="button" onclick={loginBrowserDrive} disabled={!driveOAuthClientId.trim()}>
                                     <ExternalLink size={13} /> Im Browser anmelden
+                                </button>
+                                <button class="tb-btn" type="button" onclick={refreshBrowserDrive}>
+                                    <RefreshCw size={13} /> Token erneuern
+                                </button>
+                                <button class="tb-btn" type="button" onclick={disconnectBrowserDrive}>
+                                    <X size={13} /> Trennen
                                 </button>
                                 {#if driveAuthError}<div class="drive-dialog-error">{driveAuthError}</div>{/if}
                             </div>
