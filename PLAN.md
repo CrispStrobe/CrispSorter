@@ -1456,6 +1456,12 @@ will surface.
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
   accept/reject buttons.
+  - [x] Settings now loads the durable queue and renders local/remote
+    title/hash/timestamp metadata with refresh and safe "Keep local"
+    acknowledgement. ✅ 2026-08-01
+  - [ ] Remote acceptance remains deferred until the pull API can rehydrate
+    the complete remote manifest row; the current UI deliberately does not
+    pretend that acknowledging a conflict applies remote content.
 - [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
   Remaining: manual queue persistence test (needs `sync_conflicts` table).
 
