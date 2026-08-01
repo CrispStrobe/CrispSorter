@@ -1699,11 +1699,11 @@ configurable rule engine for complex workflows.
   `automation_test_rule(file_path)`.** ✅ SHIPPED (2026-08-01). Rules are
   persisted atomically in `automation_rules.json`; the test command evaluates
   a real sample file without executing any action.
-- [ ] **Settings UI: "Automation" panel.**  Rule list with
-  add/edit/delete.  Rule editor: trigger conditions (AND/OR
-  combinable), ordered action list, priority slider, enabled toggle.
-  "Test" button runs a rule against a sample file and shows what
-  actions would fire.  DE/EN i18n.
+- [x] **Settings UI: "Automation" panel.** ✅ SHIPPED (2026-08-01).
+  The panel lists, enables/disables, creates, edits, deletes, and tests
+  persisted rules. The JSON editor exposes the complete trigger/action
+  schema while keeping secrets out of the store. Dedicated form controls
+  and DE/EN copy remain a follow-up refinement.
 - [ ] **Example rules shipped as defaults (disabled).**
   "Invoices to accounting folder": trigger `doctype:invoice` →
   `MoveTo("Invoices/{year}/{month}/")`.

@@ -78,6 +78,7 @@
     import { stat, remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { listen } from '@tauri-apps/api/event';
+    import AutomationPanel from './AutomationPanel.svelte';
     import { fetch } from '@tauri-apps/plugin-http';
     import { loadWebLLM, unloadWebLLM, getWebLLMLoadedModel, WEBLLM_MODELS } from '../llm/webllm';
     import type { InitProgressReport } from '@mlc-ai/web-llm';
@@ -3440,6 +3441,8 @@
                     </details>
                 {/if}
             </div>
+
+            <AutomationPanel />
 
             <div class="section-card">
                 <div class="checkbox-group">
