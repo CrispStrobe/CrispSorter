@@ -1450,8 +1450,9 @@ will surface.
   list/ack commands expose the queue for the review surface.
 - [x] **`IndexConfig.conflict_policy` setting.** ✅ 2026-08-01. Default is
   `NewestWins`; Settings persists the five policies through the authoritative
-  index config and sync Tauri boundary. CLI selection remains a follow-up:
-  `--conflict-policy newest|local|remote|keep-both|manual`.
+  index config and sync Tauri boundary. The cloud-backup pull CLI now accepts
+  a one-shot `--conflict-policy newest|local|remote|keep-both|manual` override
+  without rewriting Settings. ✅ 2026-08-01
 - [ ] **Frontend: conflict review panel.**  When `Manual` policy is
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
