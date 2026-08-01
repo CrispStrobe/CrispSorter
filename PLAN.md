@@ -3020,6 +3020,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Settings now edits and persists backup-job source, drive, remote
       root, schedule, retention, verification, and enabled state using the
       same validated Tauri contract as the CLI.
+    - [x] Settings also removes job configuration explicitly without deleting
+      any local or remote snapshot data.
 
 #### P34.4 — Security and provider expansion, P2
 

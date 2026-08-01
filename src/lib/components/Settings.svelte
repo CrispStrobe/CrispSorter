@@ -2144,6 +2144,17 @@
         }
     }
 
+    async function deleteBackupJob(job: any) {
+        if (!window.confirm(`Remove backup job '${job.id}'? Existing snapshots will not be deleted.`)) return;
+        try {
+            await invoke('backup_job_delete', { id: job.id });
+            if (backupEditId === job.id) backupEditId = '';
+            await refreshBackupJobs();
+        } catch (e: any) {
+            backupEditMsg = `Error: ${e}`;
+        }
+    }
+
     async function listBackupSnapshot() {
         if (!backupRestoreJobId || !/^\d{4}-\d{2}-\d{2}$/.test(backupRestoreSnapshot)) {
             backupRestoreMsg = 'Choose a job and enter a YYYY-MM-DD snapshot.';
@@ -4289,7 +4300,10 @@
                                     <span class="hint">{job.enabled ? 'enabled' : 'disabled'} · {job.last_status ?? 'not run'}</span>
                                 </div>
                                 <div class="hint" style="overflow-wrap:anywhere;">{job.source_root} → {job.remote_root}</div>
-                                <button type="button" class="btn" style="margin-top:4px;" onclick={() => editBackupJob(job)}>Edit</button>
+                                <div style="display:flex; gap:6px; margin-top:4px;">
+                                    <button type="button" class="btn" onclick={() => editBackupJob(job)}>Edit</button>
+                                    <button type="button" class="btn danger" onclick={() => deleteBackupJob(job)}>Remove config</button>
+                                </div>
                                 {#each (backupRuns[job.id] ?? []) as run (run.id)}
                                     <div class="hint" style="margin-top:4px;">{run.status} · {run.completed}/{run.planned} files · {run.bytes} bytes</div>
                                 {/each}
