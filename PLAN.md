@@ -2991,6 +2991,11 @@ a transfer without leaving the search/catalog workflow.
       before deleting only date-named snapshot trees.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
+    - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
+      a dated snapshot/file, downloads use the shared queue, remote/local byte
+      sizes are verified, and destination writes are atomic via a partial file.
+      Relative-path validation blocks traversal; GUI restore selection remains
+      for a later frontend slice.
 
 #### P34.4 — Security and provider expansion, P2
 
