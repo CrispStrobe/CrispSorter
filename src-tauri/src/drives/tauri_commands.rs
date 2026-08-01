@@ -2,9 +2,10 @@
 
 use super::{DriveConfig, DriveRegistry, DriveType};
 use crate::AppState;
+use crate::sync::conflict::ConflictPolicy;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
@@ -32,6 +33,107 @@ async fn instantiate_registered(
         password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
     };
     DriveRegistry::instantiate_with_proxy(config, &proxy).map_err(|e| e.to_string())
+}
+
+/// Decide what a file-manager mutation should do when its destination exists.
+/// The source is the incoming version for copy/move purposes; this makes the
+/// persisted sync policy explicit instead of allowing a provider's overwrite
+/// default to decide silently.
+#[derive(Debug, PartialEq, Eq)]
+enum MutationResolution {
+    /// Proceed with the supplied destination.
+    UseDestination,
+    /// Preserve the existing destination and report a successful no-op.
+    Skip,
+    /// Keep both by using this new destination path.
+    KeepBoth(PathBuf),
+}
+
+fn mutation_destination(
+    source_mtime: Option<i64>,
+    destination_mtime: Option<i64>,
+    destination: &Path,
+    policy: ConflictPolicy,
+) -> Result<MutationResolution, String> {
+    match policy {
+        ConflictPolicy::RemoteWins => Ok(MutationResolution::UseDestination),
+        ConflictPolicy::LocalWins => Ok(MutationResolution::Skip),
+        ConflictPolicy::Manual => Err(
+            "destination already exists; manual conflict review is required before mutation"
+                .to_owned(),
+        ),
+        ConflictPolicy::NewestWins => {
+            let source_is_newer = match (source_mtime, destination_mtime) {
+                (Some(source), Some(existing)) => source > existing,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            Ok(if source_is_newer {
+                MutationResolution::UseDestination
+            } else {
+                MutationResolution::Skip
+            })
+        }
+        ConflictPolicy::KeepBoth => {
+            let name = destination
+                .file_name()
+                .ok_or_else(|| "destination has no filename for keep-both".to_owned())?
+                .to_string_lossy();
+            let (stem, extension) = match destination.extension() {
+                Some(extension) => (
+                    name.trim_end_matches(&format!(".{extension}")).to_owned(),
+                    format!(".{extension}"),
+                ),
+                None => (name.into_owned(), String::new()),
+            };
+            Ok(MutationResolution::KeepBoth(
+                destination
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(format!("{stem} (copy){extension}")),
+            ))
+        }
+    }
+}
+
+async fn configured_conflict_policy(state: &AppState) -> ConflictPolicy {
+    state.index.lock().await.config.conflict_policy
+}
+
+/// Resolve an existing destination and return the effective mutation path.
+/// Providers do not expose a portable "not found" error, so a failed stat is
+/// treated as an absent destination; the actual mutation remains authoritative.
+fn resolve_mutation_path(
+    drive: &dyn super::CloudDrive,
+    source: &Path,
+    destination: &Path,
+    policy: ConflictPolicy,
+) -> Result<Option<PathBuf>, String> {
+    if source == destination || drive.stat(destination).is_err() {
+        return Ok(Some(destination.to_owned()));
+    }
+    let source_mtime = drive.stat(source).map_err(|e| e.to_string())?.mtime_unix;
+    let destination_mtime = drive
+        .stat(destination)
+        .map_err(|e| e.to_string())?
+        .mtime_unix;
+    match mutation_destination(source_mtime, destination_mtime, destination, policy)? {
+        MutationResolution::UseDestination => Ok(Some(destination.to_owned())),
+        MutationResolution::Skip => Ok(None),
+        MutationResolution::KeepBoth(mut candidate) => {
+            for index in 2..=1000 {
+                if drive.stat(&candidate).is_err() {
+                    return Ok(Some(candidate));
+                }
+                let name = candidate
+                    .file_name()
+                    .ok_or_else(|| "keep-both candidate has no filename".to_owned())?
+                    .to_string_lossy();
+                candidate.set_file_name(format!("{name} {index}"));
+            }
+            Err("could not find an unused keep-both destination".to_owned())
+        }
+    }
 }
 
 /// Mount a registered drive as a read-only FUSE filesystem for indexing.
@@ -528,6 +630,7 @@ pub async fn drive_move_path(
     drive_id: String,
     source: String,
     destination: String,
+    conflict_policy: Option<ConflictPolicy>,
 ) -> Result<(), String> {
     let data_dir = state
         .data_dir
@@ -548,12 +651,16 @@ pub async fn drive_move_path(
             drive.drive_type().label()
         ));
     }
-    drive
-        .move_path(
-            std::path::Path::new(&source),
-            std::path::Path::new(&destination),
-        )
-        .map_err(|e| e.to_string())
+    let source = Path::new(&source);
+    let destination = Path::new(&destination);
+    let policy = conflict_policy.unwrap_or(configured_conflict_policy(&state).await);
+    if let Some(destination) = resolve_mutation_path(&*drive, source, destination, policy)? {
+        drive
+            .move_path(source, &destination)
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 /// Copy a file or directory within a drive.
@@ -563,6 +670,7 @@ pub async fn drive_copy_path(
     drive_id: String,
     source: String,
     destination: String,
+    conflict_policy: Option<ConflictPolicy>,
 ) -> Result<(), String> {
     let data_dir = state
         .data_dir
@@ -583,12 +691,16 @@ pub async fn drive_copy_path(
             drive.drive_type().label()
         ));
     }
-    drive
-        .copy_path(
-            std::path::Path::new(&source),
-            std::path::Path::new(&destination),
-        )
-        .map_err(|e| e.to_string())
+    let source = Path::new(&source);
+    let destination = Path::new(&destination);
+    let policy = conflict_policy.unwrap_or(configured_conflict_policy(&state).await);
+    if let Some(destination) = resolve_mutation_path(&*drive, source, destination, policy)? {
+        drive
+            .copy_path(source, &destination)
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 /// Delete or trash a file/directory within a registered drive.
@@ -1158,5 +1270,69 @@ mod native_support_tests {
         let support = drive_native_support();
         assert_eq!(support.filen, cfg!(feature = "drive-filen-native"));
         assert_eq!(support.internxt, cfg!(feature = "drive-internxt-native"));
+    }
+}
+
+#[cfg(test)]
+mod mutation_conflict_tests {
+    use super::*;
+
+    #[test]
+    fn newest_only_allows_a_strictly_newer_source() {
+        assert_eq!(
+            mutation_destination(
+                Some(20),
+                Some(10),
+                Path::new("/remote/report.pdf"),
+                ConflictPolicy::NewestWins,
+            )
+            .unwrap(),
+            MutationResolution::UseDestination
+        );
+        assert_eq!(
+            mutation_destination(
+                Some(10),
+                Some(20),
+                Path::new("/remote/report.pdf"),
+                ConflictPolicy::NewestWins,
+            )
+            .unwrap(),
+            MutationResolution::Skip
+        );
+    }
+
+    #[test]
+    fn keep_both_adds_copy_suffix_without_overwrite() {
+        assert_eq!(
+            mutation_destination(
+                Some(10),
+                Some(20),
+                Path::new("/remote/report.pdf"),
+                ConflictPolicy::KeepBoth,
+            )
+            .unwrap(),
+            MutationResolution::KeepBoth(PathBuf::from("/remote/report (copy).pdf"))
+        );
+    }
+
+    #[test]
+    fn manual_conflicts_are_rejected_and_local_wins_skips() {
+        assert!(mutation_destination(
+            Some(10),
+            Some(20),
+            Path::new("report.txt"),
+            ConflictPolicy::Manual,
+        )
+        .is_err());
+        assert_eq!(
+            mutation_destination(
+                Some(30),
+                Some(20),
+                Path::new("report.txt"),
+                ConflictPolicy::LocalWins,
+            )
+            .unwrap(),
+            MutationResolution::Skip
+        );
     }
 }
