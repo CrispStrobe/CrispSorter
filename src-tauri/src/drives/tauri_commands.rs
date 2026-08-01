@@ -12,6 +12,7 @@ pub struct DriveCredentialsStatus {
     pub has_access_token: bool,
     pub has_refresh_token: bool,
     pub has_client_id: bool,
+    pub has_session: bool,
 }
 
 /// Start a public-client OAuth flow. The returned URL may be opened by the
@@ -261,12 +262,16 @@ pub async fn drive_credentials_status(
     let c = super::secret::get_credentials(&drive_id)
         .map_err(|e| format!("reading drive credential status failed: {e:#}"))?
         .unwrap_or_default();
+    let has_session = super::secret::get_session(&drive_id)
+        .map_err(|e| format!("reading drive session status failed: {e:#}"))?
+        .is_some();
     Ok(DriveCredentialsStatus {
         has_username: c.username.is_some(),
         has_password: c.password.is_some(),
         has_access_token: c.access_token.is_some(),
         has_refresh_token: c.refresh_token.is_some(),
         has_client_id: c.client_id.is_some(),
+        has_session,
     })
 }
 

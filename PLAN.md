@@ -2940,6 +2940,10 @@ a transfer without leaving the search/catalog workflow.
     native email/password plus conditional TOTP for Filen/Internxt, and
     WebDAV username/password or app-password entry without persistence in UI
     settings. Add explicit disconnect/re-auth states.
+    - [x] The desktop drive dialog now displays credential/session presence and
+      explicit disconnect/re-auth actions for WebDAV, Filen, Internxt, Google,
+      and OneDrive. Only boolean presence data crosses IPC; secrets remain in
+      the OS keychain. ✅ 2026-08-01
   - [ ] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic

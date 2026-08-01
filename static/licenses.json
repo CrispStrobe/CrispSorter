@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-07-17T09:42:22.850Z",
+  "generatedAt": "2026-08-01T11:31:32.576Z",
   "counts": {
     "frontend": 18,
-    "backend": 1045,
-    "total": 1063
+    "backend": 1051,
+    "total": 1069
   },
   "licenses": [
     {
@@ -1143,6 +1143,14 @@
       "source": "Backend"
     },
     {
+      "name": "const-oid",
+      "version": "0.9.6",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/formats/tree/master/const-oid",
+      "source": "Backend"
+    },
+    {
       "name": "const-random",
       "version": "0.1.18",
       "license": "Apache-2.0 OR MIT",
@@ -1172,6 +1180,14 @@
       "license": "Apache-2.0 OR CC0-1.0 OR MIT-0",
       "author": "Cesar Eduardo Barros <cesarb@cesarb.eti.br>",
       "link": "https://github.com/cesarb/constant_time_eq",
+      "source": "Backend"
+    },
+    {
+      "name": "convert_case",
+      "version": "0.10.0",
+      "license": "MIT",
+      "author": "rutrum <dave@rutrum.net>",
+      "link": "https://github.com/rutrum/convert-case",
       "source": "Backend"
     },
     {
@@ -1296,7 +1312,7 @@
     },
     {
       "name": "crispsorter",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "license": "AGPL-3.0-or-later",
       "author": "CrispSorter contributors",
       "link": "https://crates.io/crates/crispsorter",
@@ -4447,6 +4463,14 @@
       "source": "Backend"
     },
     {
+      "name": "objc2-core-video",
+      "version": "0.3.2",
+      "license": "Apache-2.0 OR MIT OR Zlib",
+      "author": "Various",
+      "link": "https://github.com/madsmtm/objc2",
+      "source": "Backend"
+    },
+    {
       "name": "objc2-encode",
       "version": "4.1.0",
       "license": "MIT",
@@ -5348,6 +5372,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "The Rand Project Developers, The Rust Project Developers",
       "link": "https://github.com/rust-random/rand",
+      "source": "Backend"
+    },
+    {
+      "name": "rand_core",
+      "version": "0.10.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The Rand Project Developers",
+      "link": "https://github.com/rust-random/rand_core",
       "source": "Backend"
     },
     {
@@ -6260,6 +6292,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Stefan Altmayer <stoeoef@gmail.com>",
       "link": "https://github.com/Stoeoef/spade",
+      "source": "Backend"
+    },
+    {
+      "name": "spin",
+      "version": "0.9.9",
+      "license": "MIT",
+      "author": "Mathijs van de Nes <git@mathijs.vd-nes.nl>, John Ericson <git@JohnEricson.me>, Joshua Barretto <joshua.s.barretto@gmail.com>",
+      "link": "https://github.com/mvdnes/spin-rs.git",
       "source": "Backend"
     },
     {
@@ -7300,6 +7340,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>",
       "link": "https://github.com/unicode-rs/unicode-width",
+      "source": "Backend"
+    },
+    {
+      "name": "unicode-xid",
+      "version": "0.2.6",
+      "license": "Apache-2.0 OR MIT",
+      "author": "erick.tryzelaar <erick.tryzelaar@gmail.com>, kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>",
+      "link": "https://github.com/unicode-rs/unicode-xid",
       "source": "Backend"
     },
     {

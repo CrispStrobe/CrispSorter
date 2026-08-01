@@ -147,6 +147,15 @@
     let driveAuthBusy     = $state(false);
     let driveAuthError    = $state('');
     let driveOAuthClientId = $state('');
+    interface DriveCredentialStatus {
+        has_username: boolean;
+        has_password: boolean;
+        has_access_token: boolean;
+        has_refresh_token: boolean;
+        has_client_id: boolean;
+        has_session: boolean;
+    }
+    let driveCredentialStatus = $state<DriveCredentialStatus | null>(null);
 
     /** Active durable job id in crisp_jobs.db (null = no active job yet). */
     let activeJobId = $state<string | null>(null);
@@ -868,7 +877,17 @@
         driveCreatePass   = '';
         driveCreateInsecure = !!d.insecure_tls;
         driveCreateError  = '';
+        driveCredentialStatus = null;
         driveCreateOpen   = true;
+        void loadDriveCredentialStatus(d.id);
+    }
+
+    async function loadDriveCredentialStatus(driveId: string) {
+        try {
+            driveCredentialStatus = await invoke<DriveCredentialStatus>('drive_credentials_status', { driveId });
+        } catch {
+            driveCredentialStatus = null;
+        }
     }
 
     function resetDriveForm() {
@@ -884,6 +903,7 @@
         driveAuthTfa = '';
         driveAuthError = '';
         driveOAuthClientId = '';
+        driveCredentialStatus = null;
     }
 
     /** Create or update a drive entry. */
@@ -936,6 +956,7 @@
             });
             driveAuthPassword = '';
             driveAuthTfa = '';
+            await loadDriveCredentialStatus(driveEditId);
             logInfo(`${driveCreateKind} verbunden; Zugangsdaten wurden nicht gespeichert.`);
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
@@ -953,6 +974,7 @@
                 driveId: driveEditId, provider, clientId: driveOAuthClientId.trim()
             });
             await openUrl(result.authorizationUrl);
+            await loadDriveCredentialStatus(driveEditId);
             logInfo('Browser-Anmeldung geöffnet. Nach Abschluss wird der Schlüsselbund automatisch aktualisiert.');
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
@@ -963,6 +985,7 @@
         if (!driveEditId) return;
         try {
             await invoke('drive_oauth_refresh', { driveId: driveEditId });
+            await loadDriveCredentialStatus(driveEditId);
             logInfo('OAuth-Zugang erneuert; Token bleibt im OS-Schlüsselbund.');
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
@@ -973,6 +996,7 @@
         if (!driveEditId) return;
         try {
             await invoke('drive_oauth_revoke', { driveId: driveEditId });
+            await loadDriveCredentialStatus(driveEditId);
             logInfo('OAuth-Zugang getrennt.');
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
@@ -3660,6 +3684,16 @@
                                 Benutzername und Passwort werden ausschließlich im OS-Schlüsselbund gespeichert;
                                 <code>drives.json</code> enthält keine Zugangsdaten.
                             </div>
+                            {#if driveEditId && driveCredentialStatus}
+                                <div class="drive-dialog-status">
+                                    {driveCredentialStatus.has_password ? 'WebDAV-Anmeldung gespeichert.' : 'Keine WebDAV-Anmeldung gespeichert.'}
+                                    {#if driveCredentialStatus.has_password}
+                                        <button class="tb-btn" type="button" onclick={async () => { await invoke('drive_disconnect', { driveId: driveEditId }); await loadDriveCredentialStatus(driveEditId!); }}>
+                                            Trennen / neu anmelden
+                                        </button>
+                                    {/if}
+                                </div>
+                            {/if}
                         {/if}
                         {#if driveEditId && (driveCreateKind === 'filen' || driveCreateKind === 'internxt')}
                             <div class="drive-dialog-subsection">
@@ -3671,6 +3705,16 @@
                                 <button class="tb-btn" type="button" onclick={loginNativeDrive} disabled={driveAuthBusy || !driveAuthEmail.trim() || !driveAuthPassword}>
                                     {#if driveAuthBusy}<Loader2 size={13} class="spin" />{:else}<HardDrive size={13} />{/if} Anmelden
                                 </button>
+                                {#if driveCredentialStatus}
+                                    <div class="drive-dialog-status">
+                                        {driveCredentialStatus.has_session ? 'Sitzung gespeichert.' : 'Nicht angemeldet.'}
+                                        {#if driveCredentialStatus.has_session}
+                                            <button class="tb-btn" type="button" onclick={async () => { await invoke('drive_native_logout', { driveId: driveEditId }); await loadDriveCredentialStatus(driveEditId!); }}>
+                                                Trennen / neu anmelden
+                                            </button>
+                                        {/if}
+                                    </div>
+                                {/if}
                                 {#if driveAuthError}<div class="drive-dialog-error">{driveAuthError}</div>{/if}
                             </div>
                         {/if}
@@ -3688,6 +3732,11 @@
                                 <button class="tb-btn" type="button" onclick={disconnectBrowserDrive}>
                                     <X size={13} /> Trennen
                                 </button>
+                                {#if driveCredentialStatus}
+                                    <div class="drive-dialog-status">
+                                        {driveCredentialStatus.has_access_token ? 'OAuth-Sitzung gespeichert.' : 'Nicht angemeldet.'}
+                                    </div>
+                                {/if}
                                 {#if driveAuthError}<div class="drive-dialog-error">{driveAuthError}</div>{/if}
                             </div>
                         {/if}
