@@ -174,6 +174,14 @@ pub async fn offline_queue_replay(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    replay_offline_queue(&state, limit.unwrap_or(20).min(100)).await
+}
+
+/// Replay pending staged operations from the background maintenance loop.
+pub async fn replay_offline_queue(
+    state: &AppState,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
     let data_dir = state
         .data_dir
         .lock()
@@ -182,7 +190,7 @@ pub async fn offline_queue_replay(
         .ok_or("data_dir not initialised")?;
     let queue = super::offline_queue::OfflineQueue::open(&data_dir).map_err(|e| e.to_string())?;
     let entries = queue
-        .dequeue_batch(limit.unwrap_or(20).min(100))
+        .dequeue_batch(limit)
         .map_err(|e| e.to_string())?;
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let mut replayed = 0usize;

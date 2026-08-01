@@ -2695,6 +2695,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Failed GUI drive uploads now stage their bytes durably and
     `offline_queue_replay` retries them through the shared TransferQueue.
     ✅ 2026-08-01
+  - [x] App startup maintenance now replays pending staged operations every
+    30 seconds; failures remain pending for the next connectivity window.
+    ✅ 2026-08-01
 
 #### P34.2 — Core file-manager surface, P1
 

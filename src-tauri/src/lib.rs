@@ -2645,6 +2645,17 @@ pub fn run() {
                     loop {
                         ticker.tick().await;
                         if let Some(state) = drain_handle.try_state::<AppState>() {
+                            // Replay staged provider writes opportunistically.
+                            // The shared TransferQueue performs bounded retries;
+                            // a still-offline provider remains pending for the
+                            // next maintenance tick.
+                            match crate::sync::tauri_commands::replay_offline_queue(&state, 4).await {
+                                Ok(result) if result["replayed"].as_u64().unwrap_or(0) > 0
+                                    || result["failed"].as_u64().unwrap_or(0) > 0 => {
+                                    app_log!("info", "offline queue replay: {result}");
+                                }
+                                _ => {}
+                            }
                             let (enabled, url_opt) = {
                                 let idx = state.index.lock().await;
                                 (
