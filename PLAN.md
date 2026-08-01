@@ -3162,9 +3162,9 @@ a transfer without leaving the search/catalog workflow.
     sibling name, and manual rejects until review. Pure decision tests cover
     every mutation policy; the broader preview/resolution surface remains
     open. ✅ 2026-08-01
-  - [ ] Add richer side-by-side preview and one-click resolution for sync-pair
-    divergences; current compare/pull paths require an explicit policy and do
-    not mutate until that policy is supplied.
+  - [x] Settings now provides a read-only sync-pair comparison table with
+    explicit policy selection and local/remote metadata; it never invokes a
+    mutation command. One-click resolution remains deferred. ✅ 2026-08-01
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
