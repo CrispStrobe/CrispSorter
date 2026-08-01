@@ -2692,6 +2692,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Durable inspect/list/retry-failed/purge-failed Tauri commands now
     expose the SQLite offline queue without requiring keychain or network
     access. ✅ 2026-08-01
+  - [x] Failed GUI drive uploads now stage their bytes durably and
+    `offline_queue_replay` retries them through the shared TransferQueue.
+    ✅ 2026-08-01
 
 #### P34.2 — Core file-manager surface, P1
 

@@ -348,12 +348,27 @@ pub async fn drive_write_file(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
     let path = std::path::PathBuf::from(path);
+    let retry_data = data.clone();
+    let retry_path = path.clone();
+    let retry_drive_id = drive_id.clone();
     let transfer = state.transfer_queue.clone().submit_upload(drive_id, path, data, move |path, data| {
         drive.write_file(path, data)
     });
     match transfer.handle.await {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(error)) => Err(error.to_string()),
+        Ok(Err(error)) => {
+            let queued = crate::sync::tauri_commands::queue_failed_drive_upload(
+                &data_dir,
+                &retry_drive_id,
+                &retry_path,
+                &retry_data,
+                &error,
+            );
+            match queued {
+                Ok(id) => Err(format!("{} (queued offline operation {id})", error)),
+                Err(queue_error) => Err(format!("{} (offline queue failed: {queue_error})", error)),
+            }
+        }
         Err(error) => Err(format!("transfer queue task failed: {error}")),
     }
 }

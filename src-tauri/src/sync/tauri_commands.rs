@@ -142,6 +142,98 @@ pub async fn offline_queue_purge_failed(
         .map_err(|e| e.to_string())
 }
 
+/// Persist the bytes for a failed drive write and enqueue a replay descriptor.
+pub(crate) fn queue_failed_drive_upload(
+    data_dir: &std::path::Path,
+    drive_id: &str,
+    remote_path: &std::path::Path,
+    data: &[u8],
+    error: &anyhow::Error,
+) -> anyhow::Result<i64> {
+    let staging = data_dir.join("offline_transfers");
+    std::fs::create_dir_all(&staging)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let local_path = staging.join(format!("{id}.bin"));
+    std::fs::write(&local_path, data)?;
+    let payload = serde_json::json!({
+        "drive_id": drive_id,
+        "remote_path": remote_path,
+        "local_path": local_path,
+        "error": format!("{error:#}"),
+    });
+    super::offline_queue::OfflineQueue::open(data_dir)?.enqueue(
+        "drive_upload",
+        &payload.to_string(),
+        drive_id,
+    )
+}
+
+/// Replay pending staged drive uploads through the shared transfer queue.
+#[tauri::command]
+pub async fn offline_queue_replay(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let queue = super::offline_queue::OfflineQueue::open(&data_dir).map_err(|e| e.to_string())?;
+    let entries = queue
+        .dequeue_batch(limit.unwrap_or(20).min(100))
+        .map_err(|e| e.to_string())?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut replayed = 0usize;
+    let mut failed = 0usize;
+    for entry in entries {
+        if entry.op_type != "drive_upload" {
+            continue;
+        }
+        let result: Result<(), String> = async {
+            let payload: serde_json::Value = serde_json::from_str(&entry.payload)
+                .map_err(|e| format!("invalid offline payload: {e}"))?;
+            let drive_id = payload["drive_id"].as_str().ok_or("offline payload missing drive_id")?;
+            let remote_path = payload["remote_path"].as_str().ok_or("offline payload missing remote_path")?;
+            let local_path = payload["local_path"].as_str().ok_or("offline payload missing local_path")?;
+            let config = registry.drives.iter().find(|d| d.id == drive_id)
+                .ok_or_else(|| format!("drive '{drive_id}' no longer exists"))?;
+            let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+                std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+            let bytes = std::fs::read(local_path).map_err(|e| e.to_string())?;
+            let transfer = state.transfer_queue.clone().submit_upload(
+                drive_id.to_owned(),
+                std::path::PathBuf::from(remote_path),
+                bytes,
+                move |path, data| drive.write_file(path, data),
+            );
+            match transfer.handle.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                let payload: serde_json::Value = serde_json::from_str(&entry.payload)
+                    .map_err(|e| e.to_string())?;
+                if let Some(local_path) = payload["local_path"].as_str() {
+                    let _ = std::fs::remove_file(local_path);
+                }
+                queue.mark_done(entry.id).map_err(|e| e.to_string())?;
+                replayed += 1;
+            }
+            Err(error) => {
+                queue.mark_failed(entry.id, &error).map_err(|e| e.to_string())?;
+                failed += 1;
+            }
+        }
+    }
+    Ok(serde_json::json!({ "replayed": replayed, "failed": failed }))
+}
+
 /// Return sync status: pending count, last push/pull timestamps, online state.
 #[tauri::command]
 pub async fn sync_status(
