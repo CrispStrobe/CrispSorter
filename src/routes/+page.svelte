@@ -22,8 +22,9 @@
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
     import PdfWorkspace from '$lib/components/PdfWorkspace.svelte';
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
+    import DriveBrowser from '$lib/components/DriveBrowser.svelte';
 
-    let activeTab = $state('batch'); // 'batch', 'history', 'chat', 'settings', 'catalog', 'translate'
+    let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
     let showLogs = $state(false);
 
@@ -439,6 +440,8 @@
                 <Settings />
             {:else if activeTab === 'batch'}
                 <BatchReview />
+            {:else if activeTab === 'drives'}
+                <DriveBrowser />
             {:else if activeTab === 'history'}
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}

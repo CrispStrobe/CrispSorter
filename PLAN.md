@@ -2748,6 +2748,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Added the missing `drive_delete_path` Tauri command, distinct from
     drive-registration deletion, with capability gating and provider error
     propagation. ✅ 2026-08-01
+  - [x] Added the first registered-drive browser tab with breadcrumbs,
+    refresh, folder creation, move/copy, and delete actions. It consumes the
+    capability-aware Tauri boundary; dual-panel context and search-result
+    integration remain separate follow-up work. ✅ 2026-08-01
 - [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log

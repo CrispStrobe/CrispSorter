@@ -12,7 +12,8 @@ export const translations = {
             logs: 'Logs',
             translate: 'Translate',
             ocr: 'OCR',
-            pdf: 'PDF Tools'
+            pdf: 'PDF Tools',
+            drives: 'Drives'
         },
         ocrwb: {
             open: 'Open document…',
@@ -1150,7 +1151,8 @@ export const translations = {
             logs: 'Logs',
             translate: 'Übersetzen',
             ocr: 'OCR',
-            pdf: 'PDF-Werkzeuge'
+            pdf: 'PDF-Werkzeuge',
+            drives: 'Laufwerke'
         },
         ocrwb: {
             open: 'Dokument öffnen…',

@@ -8,7 +8,8 @@ import type { ComponentType } from 'svelte';
 import {
 	Database,
 	Eye,
-	FileText,
+    FileText,
+    HardDrive,
 	Image,
 	Languages,
 	Library,
@@ -35,7 +36,8 @@ export interface TabDef {
 
 /** CrispSorter's built-in tabs, in nav order (settings lives in nav-bottom). */
 export const CORE_TABS: TabDef[] = [
-	{ id: 'batch', icon: ListChecks, mobile: true },
+    { id: 'batch', icon: ListChecks, mobile: true },
+    { id: 'drives', icon: HardDrive, separatorBefore: true },
 	{ id: 'chat', icon: MessageSquare, mobile: true },
 	{ id: 'history', icon: Database },
 	{ id: 'catalog', icon: Library, separatorBefore: true, mobile: true },
