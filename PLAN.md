@@ -1624,6 +1624,9 @@ no pinning.  Low effort, meaningful security improvement.
 - [ ] **Wire into cloud drive constructors.**  Each `*Drive::new()`
   that talks to a pinnable endpoint uses `pinned_client()` instead
   of the default `reqwest::Client`.
+  - [x] Every shared proxy/client construction validates the shipped
+    two-pin rotation policy before creating a cloud HTTP client; malformed
+    built-in pin data therefore fails closed. ✅ 2026-08-01
 - [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
   cert (roots rotate on a multi-year cadence).  Include 2 pins per
   provider (current + backup) to survive a CA migration.  Log a

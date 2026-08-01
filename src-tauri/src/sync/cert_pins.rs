@@ -129,6 +129,19 @@ pub fn builtin_pin_sets() -> Vec<PinSet> {
     ]
 }
 
+/// Validate the shipped policy before a connector is constructed.
+///
+/// This is intentionally separate from handshake enforcement: the current
+/// reqwest/native-tls boundary does not expose the validated root chain to a
+/// portable SPKI verifier yet.  Failing closed on malformed built-in policy
+/// prevents a future enforcement boundary from silently consuming bad data.
+pub fn validate_builtin_pin_sets() -> anyhow::Result<()> {
+    for pin_set in builtin_pin_sets() {
+        pin_set.validate()?;
+    }
+    Ok(())
+}
+
 /// Find the pin set that matches a given hostname.
 pub fn find_pin_set<'a>(hostname: &str, pin_sets: &'a [PinSet]) -> Option<&'a PinSet> {
     let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
@@ -216,6 +229,11 @@ mod tests {
     fn find_pin_set_no_match() {
         let sets = builtin_pin_sets();
         assert!(find_pin_set("random.example.com", &sets).is_none());
+    }
+
+    #[test]
+    fn builtins_are_valid_rotation_sets() {
+        validate_builtin_pin_sets().expect("shipped pin policy must validate");
     }
 
     #[test]

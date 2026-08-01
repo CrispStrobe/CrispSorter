@@ -54,6 +54,7 @@ impl ProxyConfig {
 /// support).
 pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
     config.validate()?;
+    super::cert_pins::validate_builtin_pin_sets()?;
     configure_async_builder(config)?
         .build()
         .context("building proxied async client")
@@ -65,6 +66,7 @@ pub fn build_async_client_with_timeout(
     timeout: std::time::Duration,
 ) -> Result<reqwest::Client> {
     config.validate()?;
+    super::cert_pins::validate_builtin_pin_sets()?;
     configure_async_builder(config)?
         .timeout(timeout)
         .build()
@@ -103,6 +105,7 @@ pub fn build_blocking_client_with_options(
     insecure_tls: bool,
 ) -> Result<reqwest::blocking::Client> {
     config.validate()?;
+    super::cert_pins::validate_builtin_pin_sets()?;
     let mut builder = reqwest::blocking::ClientBuilder::new();
 
     if let Some(timeout) = timeout {
