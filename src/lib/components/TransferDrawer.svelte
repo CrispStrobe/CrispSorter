@@ -18,6 +18,7 @@
         remote_path: string;
         bytes_done: number;
         bytes_total: number | null;
+        resume_state: string | null;
         state: TransferState;
     };
 
@@ -186,6 +187,7 @@
                                 {#if speed(job) > 0}<span>{formatBytes(speed(job))}/s</span>{/if}
                                 {#if stateName(job.state) === 'active'}<span>ETA {eta(job)}</span>{/if}
                                 {#if resumeAvailable(job)}<span class="resume-badge">resume available</span>{/if}
+                                {#if job.resume_state}<span class="resume-state" title={job.resume_state}>checkpoint saved</span>{/if}
                                 <span>#{job.job_id}</span>
                             </div>
                         </div>
@@ -252,6 +254,7 @@
     .progress-value { height: 100%; border-radius: inherit; background: #8b5cf6; transition: width .25s ease; }
     .job-meta { color: #71717a; font-size: .64rem; }
     .resume-badge { color: #86efac; }
+    .resume-state { color: #93c5fd; }
     .job-meta span:last-child { margin-left: auto; }
     .cancel { display: grid; place-items: center; border: 0; border-radius: 5px; padding: 5px; color: #a1a1aa; background: transparent; cursor: pointer; }
     .cancel:hover { color: #f87171; background: #3f1f2a; }

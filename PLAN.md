@@ -2832,8 +2832,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Drawer now queries and caches the registered drive's capability
     declaration and shows "resume available" only for the matching native
     upload/download direction. Unknown providers remain unmarked. ✅ 2026-08-01
-  - [ ] Queue-native resume-state metadata remains deferred; the drawer's
-    capability badge does not claim that a currently running job can resume.
+  - [x] Queue-native resume-state metadata is now carried as optional
+    provider checkpoint paths in `TransferProgress` and rendered separately
+    from the capability badge; existing callers remain non-resumable unless
+    they explicitly submit a checkpoint-aware job. ✅ 2026-08-01
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 
