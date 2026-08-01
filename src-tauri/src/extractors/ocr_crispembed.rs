@@ -1007,6 +1007,12 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     morph_kernel: s.cleanup.morph_kernel,
                     border_threshold: s.cleanup.border_threshold,
                     deskew_max_angle: s.cleanup.deskew_max_angle,
+                    // Required field added in CrispEmbed v0.16.1 (the tag both
+                    // workflows pin). Upstream's own `impl Default` sets it true
+                    // — cross-check both skew detectors before rotating — so
+                    // match that rather than invent a value. Not surfaced in our
+                    // settings yet; a follow-up if anyone needs it off.
+                    deskew_consensus: true,
                     denoise: s.cleanup.denoise,
                 },
                 det_prob_threshold: s.det_prob_threshold,
