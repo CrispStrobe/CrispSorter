@@ -9,12 +9,13 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2,
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus,
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
     import { cloudDrivePanel } from '$lib/drives/panels';
+    import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -1004,6 +1005,20 @@
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
     }
 
+    async function addResultToBatch(result: SearchResult): Promise<void> {
+        const path = localPathFromSearchUri(result.location_uri);
+        if (!path) {
+            error = 'Only local search results can be added directly to the batch.';
+            return;
+        }
+        try {
+            const { batchManager } = await import('$lib/batch/store.svelte');
+            batchManager.addItem(path, result.filename || pathBaseName(path), 0);
+        } catch (e: any) {
+            error = `Could not add search result to batch: ${String(e?.message ?? e)}`;
+        }
+    }
+
     function highlightSnippet(text: string, q: string): string {
         if (!text) return '';
         const words = q.trim()
@@ -1406,6 +1421,13 @@
                                     onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
                                     title="Im Laufwerkskontext öffnen">
                                     <FolderOpen size={13} />
+                                </button>
+                            {/if}
+                            {#if localPathFromSearchUri(r.location_uri)}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
+                                    title="Add to batch sorter">
+                                    <ListPlus size={13} />
                                 </button>
                             {/if}
                             {#if r.url}

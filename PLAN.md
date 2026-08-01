@@ -2750,6 +2750,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Search results with `crisp+drive://` provenance can open the
     registered-drive browser at the exact remote path through a shared typed
     context request. ✅ 2026-08-01
+  - [x] Local search results now expose a provenance-safe action that adds
+    the local file to the existing batch sorter; cloud/archive/HTTP URIs are
+    rejected instead of being treated as local paths. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
