@@ -2784,6 +2784,8 @@ a transfer without leaving the search/catalog workflow.
     duplicate group; destructive mutation support remains deferred. ✅ 2026-08-01
   - [x] Reopening a duplicate context restores the latest persisted decision
     for that group instead of resetting to review. ✅ 2026-08-01
+  - [x] The duplicate pane exposes persisted decision history with timestamps
+    and an explicit clear-audit control. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
