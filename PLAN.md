@@ -3006,6 +3006,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Settings now shows persisted backup-job configuration and recent
       durable run history with an explicit refresh action; restore picker and
       job editing remain separate frontend work.
+    - [x] Added Tauri `backup_job_restore` and a Settings snapshot/file picker
+      with atomic verified restore; job editing and richer restore history
+      remain deferred.
 
 #### P34.4 — Security and provider expansion, P2
 

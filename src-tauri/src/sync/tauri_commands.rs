@@ -123,6 +123,52 @@ pub async fn backup_job_snapshot_list(
     }).collect())
 }
 
+/// Restore one selected snapshot file to a local destination atomically.
+#[tauri::command]
+pub async fn backup_job_restore(
+    state: State<'_, AppState>,
+    job_id: String,
+    snapshot: String,
+    remote_path: String,
+    destination: String,
+) -> Result<serde_json::Value, String> {
+    if snapshot.len() != 10 || snapshot.as_bytes().get(4) != Some(&b'-')
+        || snapshot.as_bytes().get(7) != Some(&b'-')
+        || !snapshot.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    { return Err("snapshot must be a YYYY-MM-DD directory name".into()); }
+    let relative = std::path::Path::new(&remote_path);
+    use std::path::Component;
+    if relative.is_absolute() || relative.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err("remote path must be relative and contain no '.', '..', or root components".into());
+    }
+    if destination.trim().is_empty() { return Err("destination is required".into()); }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let job = crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?.job(&job_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
+    let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
+    let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
+    let source = std::sync::Arc::clone(&drive);
+    let transfer = state.transfer_queue.clone().submit_download(job.drive_id.clone(), remote,
+        Some(expected), move |path| source.read_file(path));
+    let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    if data.len() as u64 != expected {
+        return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
+    }
+    let destination = std::path::PathBuf::from(destination);
+    if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
+    std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()}))
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(

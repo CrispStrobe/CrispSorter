@@ -2068,6 +2068,13 @@
     let backupJobs        = $state<any[]>([]);
     let backupRuns        = $state<Record<string, any[]>>({});
     let backupJobsBusy    = $state(false);
+    let backupRestoreJobId = $state('');
+    let backupRestoreSnapshot = $state('');
+    let backupRestorePath = $state('');
+    let backupRestoreDestination = $state('');
+    let backupRestoreEntries = $state<any[]>([]);
+    let backupRestoreBusy = $state(false);
+    let backupRestoreMsg = $state('');
 
     async function refreshBackupJobs() {
         if (!isDesktop) return;
@@ -2081,6 +2088,45 @@
             backupRuns = runs;
         } finally {
             backupJobsBusy = false;
+        }
+    }
+
+    async function listBackupSnapshot() {
+        if (!backupRestoreJobId || !/^\d{4}-\d{2}-\d{2}$/.test(backupRestoreSnapshot)) {
+            backupRestoreMsg = 'Choose a job and enter a YYYY-MM-DD snapshot.';
+            return;
+        }
+        backupRestoreBusy = true;
+        backupRestoreMsg = '';
+        try {
+            backupRestoreEntries = await invoke<any[]>('backup_job_snapshot_list', {
+                jobId: backupRestoreJobId, snapshot: backupRestoreSnapshot,
+            });
+            backupRestoreMsg = `Found ${backupRestoreEntries.length} file(s).`;
+        } catch (e: any) {
+            backupRestoreMsg = `Error: ${e}`;
+        } finally {
+            backupRestoreBusy = false;
+        }
+    }
+
+    async function restoreBackupFile() {
+        if (!backupRestoreJobId || !backupRestoreSnapshot || !backupRestorePath || !backupRestoreDestination) {
+            backupRestoreMsg = 'Choose a job, snapshot, file, and destination.';
+            return;
+        }
+        backupRestoreBusy = true;
+        backupRestoreMsg = 'Restoring…';
+        try {
+            await invoke('backup_job_restore', {
+                jobId: backupRestoreJobId, snapshot: backupRestoreSnapshot,
+                remotePath: backupRestorePath, destination: backupRestoreDestination,
+            });
+            backupRestoreMsg = 'Restore completed.';
+        } catch (e: any) {
+            backupRestoreMsg = `Error: ${e}`;
+        } finally {
+            backupRestoreBusy = false;
         }
     }
 
@@ -4182,6 +4228,30 @@
                             </div>
                         {/each}
                     {/if}
+                    <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--color-border, #444);">
+                        <strong>Restore a backup file</strong>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                            <select bind:value={backupRestoreJobId} style="min-width:150px;">
+                                <option value="">Select job</option>
+                                {#each backupJobs as job (job.id)}<option value={job.id}>{job.id}</option>{/each}
+                            </select>
+                            <input type="text" bind:value={backupRestoreSnapshot} placeholder="YYYY-MM-DD" style="width:120px;" />
+                            <button type="button" class="btn" onclick={listBackupSnapshot} disabled={backupRestoreBusy}>List files</button>
+                        </div>
+                        {#if backupRestoreEntries.length > 0}
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                                <select bind:value={backupRestorePath} style="min-width:240px;">
+                                    <option value="">Select file</option>
+                                    {#each backupRestoreEntries as entry (entry.relative_path)}
+                                        <option value={entry.relative_path}>{entry.relative_path} ({entry.size ?? '?'} bytes)</option>
+                                    {/each}
+                                </select>
+                                <input type="text" bind:value={backupRestoreDestination} placeholder="Local destination path" style="min-width:240px;" />
+                                <button type="button" class="btn" onclick={restoreBackupFile} disabled={backupRestoreBusy}>Restore selected</button>
+                            </div>
+                        {/if}
+                        {#if backupRestoreMsg}<p class="hint" style="margin-top:6px;">{backupRestoreMsg}</p>{/if}
+                    </div>
                 </div>
 
                 <!-- Stage U — restore a shard from cloud drive. -->
