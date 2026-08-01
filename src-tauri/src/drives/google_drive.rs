@@ -19,6 +19,7 @@ const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
 pub struct GoogleDriveDrive {
     label: String,
     api_base: String,
+    upload_base: String,
     access_token: String,
     _refresh_token: Option<String>,
     _client_id: Option<String>,
@@ -52,9 +53,15 @@ impl GoogleDriveDrive {
         client_secret: Option<String>,
         api_base: impl Into<String>,
     ) -> Self {
+        let api_base = api_base.into();
+        let upload_base = api_base
+            .strip_suffix("/drive/v3")
+            .map(|origin| format!("{origin}/upload/drive/v3"))
+            .unwrap_or_else(|| UPLOAD_BASE.to_owned());
         Self {
             label,
-            api_base: api_base.into(),
+            api_base,
+            upload_base,
             access_token,
             _refresh_token: refresh_token,
             _client_id: client_id,
@@ -220,7 +227,7 @@ impl CloudDrive for GoogleDriveDrive {
         });
 
         // Simple upload (< 5MB); resumable upload is a follow-up.
-        let url = format!("{}/files?uploadType=multipart&fields=id", UPLOAD_BASE);
+        let url = format!("{}/files?uploadType=multipart&fields=id", self.upload_base);
 
         let boundary = "crispsorter_boundary";
         let mut body = Vec::new();
@@ -500,7 +507,7 @@ impl CloudDrive for GoogleDriveDrive {
         let data = resp.bytes()?.to_vec();
 
         // Re-upload as the current version via PATCH (update, not create)
-        let update_url = format!("{}/files/{}?uploadType=media", UPLOAD_BASE, file_id);
+        let update_url = format!("{}/files/{}?uploadType=media", self.upload_base, file_id);
         let resp = self
             .client
             .patch(&update_url)
@@ -703,5 +710,55 @@ mod tests {
         assert!(error.to_string().contains("HTTP 401"));
         list.assert();
         permission.assert();
+    }
+
+    #[test]
+    fn versions_list_and_restore_use_expected_endpoints() {
+        let mut server = Server::new();
+        let resolve = server
+            .mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::Any)
+            .expect(2)
+            .with_status(200)
+            .with_body(r#"{"files":[{"id":"file-1","name":"report.pdf"}]}"#)
+            .create();
+        let revisions = server
+            .mock("GET", "/drive/v3/files/file-1/revisions")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(r#"{"revisions":[{"id":"rev-1","modifiedTime":"2024-01-15T10:30:00Z","size":"12","lastModifyingUser":{"displayName":"Alice"}}]}"#)
+            .create();
+        let download = server
+            .mock("GET", "/drive/v3/files/file-1/revisions/rev-1")
+            .match_query(mockito::Matcher::UrlEncoded("alt".into(), "media".into()))
+            .with_status(200)
+            .with_body("restored bytes")
+            .create();
+        let upload = server
+            .mock("PATCH", "/upload/drive/v3/files/file-1")
+            .match_query(mockito::Matcher::UrlEncoded("uploadType".into(), "media".into()))
+            .match_header("content-type", "application/octet-stream")
+            .match_body("restored bytes")
+            .with_status(200)
+            .create();
+        let drive = GoogleDriveDrive::with_api_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/drive/v3", server.url()),
+        );
+
+        let versions = drive.list_versions(Path::new("report.pdf")).unwrap();
+        assert_eq!(versions[0].id, "rev-1");
+        assert_eq!(versions[0].size, Some(12));
+        assert_eq!(versions[0].modifier_name.as_deref(), Some("Alice"));
+        assert!(versions[0].modified_at.is_some());
+        drive.restore_version(Path::new("report.pdf"), "rev-1").unwrap();
+        resolve.assert();
+        revisions.assert();
+        download.assert();
+        upload.assert();
     }
 }

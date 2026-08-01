@@ -2749,8 +2749,9 @@ a transfer without leaving the search/catalog workflow.
   Add expiry/password options only to providers that actually support them.
   - [x] `drive_list_versions` and `drive_restore_version` are now exposed
     through the capability-aware Tauri boundary; unsupported providers fail
-    before network access. Google Drive and OneDrive retain their existing
-    provider HTTP contract coverage. ✅ 2026-08-01
+    before network access. Google Drive and OneDrive now also have hermetic
+    response/request contract coverage for listing and restore; Google’s
+    upload endpoint is injectable alongside its API endpoint. ✅ 2026-08-01
 - [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.
