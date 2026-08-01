@@ -57,6 +57,20 @@ pub async fn backup_job_delete(
         .map_err(|e| e.to_string())
 }
 
+/// Return recent execution history for one backup job.
+#[tauri::command]
+pub async fn backup_job_runs(
+    state: State<'_, AppState>,
+    job_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::sync::backup_state::BackupRun>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_runs(&job_id, limit.unwrap_or(20).min(100))
+        .map_err(|e| e.to_string())
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(

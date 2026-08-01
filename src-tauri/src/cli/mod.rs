@@ -527,6 +527,12 @@ enum BackupJobCmd {
     },
     /// Remove a job definition without deleting any backup data.
     Delete { id: String },
+    /// Show recent durable execution history for a job.
+    Runs {
+        job_id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5162,6 +5168,17 @@ fn cmd_sync_backup_job(
                 println!("{}", serde_json::json!({"id": id, "deleted": deleted}));
             } else {
                 println!("{} {}", if deleted { "deleted" } else { "not found" }, id);
+            }
+        }
+        BackupJobCmd::Runs { job_id, limit } => {
+            let runs = store.list_runs(&job_id, limit.min(100)).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
+                OutFormat::Text => for run in runs {
+                    println!("{}  {:?}  {}/{} completed  {} bytes{}",
+                        run.id, run.status, run.completed, run.planned, run.bytes,
+                        run.error.as_deref().map(|e| format!("  error: {e}")).unwrap_or_default());
+                },
             }
         }
     }

@@ -5,7 +5,7 @@
 //! Lives at `<data-dir>/backup_state.db` (SQLite, one row per prefix).
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -30,6 +30,20 @@ CREATE TABLE IF NOT EXISTS backup_jobs (
     last_run_at     INTEGER,
     last_status     TEXT,
     updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backup_runs (
+    id              TEXT NOT NULL PRIMARY KEY,
+    job_id          TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    planned         INTEGER NOT NULL DEFAULT 0,
+    completed       INTEGER NOT NULL DEFAULT 0,
+    failed          INTEGER NOT NULL DEFAULT 0,
+    verified        INTEGER NOT NULL DEFAULT 0,
+    bytes           INTEGER NOT NULL DEFAULT 0,
+    error           TEXT,
+    started_at      INTEGER NOT NULL,
+    finished_at     INTEGER
 );
 ";
 
@@ -86,12 +100,42 @@ pub struct BackupJob {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRun {
+    pub id: String,
+    pub job_id: String,
+    pub status: BackupRunStatus,
+    pub planned: u64,
+    pub completed: u64,
+    pub failed: u64,
+    pub verified: bool,
+    pub bytes: u64,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
+
 impl BackupState {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join("backup_state.db");
         let conn = Connection::open(&path)
             .with_context(|| format!("opening backup_state.db at {}", path.display()))?;
         conn.execute_batch(SCHEMA).context("backup_state schema")?;
+        conn.execute(
+            "UPDATE backup_runs SET status = 'interrupted', finished_at = ?1,
+             error = COALESCE(error, 'process restarted while backup was running')
+             WHERE status = 'running'",
+            params![now_ms()],
+        ).context("recover interrupted backup runs")?;
         Ok(Self { conn })
     }
 
@@ -211,6 +255,86 @@ impl BackupState {
     pub fn delete_job(&self, id: &str) -> Result<bool> {
         Ok(self.conn.execute("DELETE FROM backup_jobs WHERE id = ?", params![id])? > 0)
     }
+
+    pub fn start_run(&self, job_id: &str, planned: u64) -> Result<BackupRun> {
+        if job_id.trim().is_empty() {
+            anyhow::bail!("backup run job id is required");
+        }
+        let run = BackupRun {
+            id: uuid::Uuid::new_v4().to_string(), job_id: job_id.to_owned(),
+            status: BackupRunStatus::Running, planned, completed: 0, failed: 0,
+            verified: false, bytes: 0, error: None, started_at: now_ms(), finished_at: None,
+        };
+        self.conn.execute(
+            "INSERT INTO backup_runs
+             (id, job_id, status, planned, completed, failed, verified, bytes, error, started_at)
+             VALUES (?1, ?2, 'running', ?3, 0, 0, 0, 0, NULL, ?4)",
+            params![run.id, run.job_id, run.planned, run.started_at],
+        ).context("start backup run")?;
+        Ok(run)
+    }
+
+    pub fn finish_run(
+        &self,
+        id: &str,
+        completed: u64,
+        failed: u64,
+        verified: bool,
+        bytes: u64,
+    ) -> Result<BackupRun> {
+        let status = if failed == 0 { "completed" } else { "failed" };
+        self.conn.execute(
+            "UPDATE backup_runs SET status = ?1, completed = ?2, failed = ?3,
+             verified = ?4, bytes = ?5, finished_at = ?6 WHERE id = ?7",
+            params![status, completed, failed, verified, bytes, now_ms(), id],
+        ).context("finish backup run")?;
+        self.run(id)?.ok_or_else(|| anyhow::anyhow!("backup run '{id}' not found"))
+    }
+
+    pub fn fail_run(&self, id: &str, error: &str) -> Result<BackupRun> {
+        self.conn.execute(
+            "UPDATE backup_runs SET status = 'failed', error = ?1, finished_at = ?2 WHERE id = ?3",
+            params![error, now_ms(), id],
+        ).context("fail backup run")?;
+        self.run(id)?.ok_or_else(|| anyhow::anyhow!("backup run '{id}' not found"))
+    }
+
+    pub fn run(&self, id: &str) -> Result<Option<BackupRun>> {
+        self.conn.query_row(
+            "SELECT id, job_id, status, planned, completed, failed, verified, bytes,
+                    error, started_at, finished_at FROM backup_runs WHERE id = ?",
+            params![id], |row| Self::run_from_row(row),
+        ).optional().context("read backup run")
+    }
+
+    pub fn list_runs(&self, job_id: &str, limit: usize) -> Result<Vec<BackupRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, job_id, status, planned, completed, failed, verified, bytes,
+                    error, started_at, finished_at FROM backup_runs
+             WHERE job_id = ? ORDER BY started_at DESC LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![job_id, limit as i64], Self::run_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().context("list backup runs")
+    }
+
+    fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupRun> {
+        let status: String = row.get(2)?;
+        let status = match status.as_str() {
+            "running" => BackupRunStatus::Running,
+            "completed" => BackupRunStatus::Completed,
+            "failed" => BackupRunStatus::Failed,
+            "interrupted" => BackupRunStatus::Interrupted,
+            other => return Err(rusqlite::Error::InvalidColumnType(
+                2, other.to_owned(), rusqlite::types::Type::Text,
+            )),
+        };
+        Ok(BackupRun {
+            id: row.get(0)?, job_id: row.get(1)?, status,
+            planned: row.get(3)?, completed: row.get(4)?, failed: row.get(5)?,
+            verified: row.get(6)?, bytes: row.get(7)?, error: row.get(8)?,
+            started_at: row.get(9)?, finished_at: row.get(10)?,
+        })
+    }
 }
 
 fn now_ms() -> i64 {
@@ -259,5 +383,22 @@ mod tests {
         assert!(bs.delete_job("documents").unwrap());
         assert!(bs.list_jobs().unwrap().is_empty());
         assert!(BackupSchedule::IntervalMinutes { minutes: 0 }.validate().is_err());
+    }
+
+    #[test]
+    fn backup_run_lifecycle_and_restart_recovery() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bs = BackupState::open(tmp.path()).unwrap();
+        let run = bs.start_run("documents", 3).unwrap();
+        let finished = bs.finish_run(&run.id, 3, 0, true, 42).unwrap();
+        assert_eq!(finished.status, BackupRunStatus::Completed);
+        assert_eq!(bs.list_runs("documents", 10).unwrap().len(), 1);
+
+        let interrupted = bs.start_run("documents", 1).unwrap();
+        drop(bs);
+        let reopened = BackupState::open(tmp.path()).unwrap();
+        let recovered = reopened.run(&interrupted.id).unwrap().unwrap();
+        assert_eq!(recovered.status, BackupRunStatus::Interrupted);
+        assert!(recovered.finished_at.is_some());
     }
 }

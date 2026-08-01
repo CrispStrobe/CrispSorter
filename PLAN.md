@@ -2980,6 +2980,9 @@ a transfer without leaving the search/catalog workflow.
   - [ ] Add scheduler/execution service with crash-safe run records and
     retention enforcement; reuse `cloud_backup` shard export/import and the
     shared transfer queue.
+    - [x] Added durable run lifecycle records, bounded history inspection, and
+      restart recovery (`running` → `interrupted`) with Tauri and CLI history
+      surfaces. Scheduler/execution wiring remains deferred.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
 
