@@ -28,7 +28,7 @@
         error = '';
         try {
             entries = await invoke<Entry[]>('drive_list_dir', { driveId, path });
-            capabilities = await invoke<Capabilities>('drive_capabilities', { driveId });
+            capabilities = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
             selected = null;
         } catch (e) {
             error = String(e);
@@ -78,6 +78,20 @@
         } catch (e) { error = String(e); }
     }
 
+    async function renameSelected() {
+        if (!selected || !capabilities.rename) return;
+        const name = window.prompt('Rename to', selected);
+        if (!name?.trim()) return;
+        try {
+            await invoke('drive_move_path', {
+                driveId,
+                source: joinDrivePath(path, selected),
+                destination: joinDrivePath(path, name.trim()),
+            });
+            await refresh();
+        } catch (e) { error = String(e); }
+    }
+
     async function removeSelected() {
         if (!selected || !capabilities.delete || !window.confirm(`Delete ${selected}?`)) return;
         try { await invoke('drive_delete_path', { driveId, path: joinDrivePath(path, selected) }); await refresh(); }
@@ -110,6 +124,7 @@
         {#if path !== '/'}<button class="crumb" onclick={() => { path = parentDrivePath(path); void refresh(); }}>parent</button>{:else}<span class="crumb current">root</span>{/if}
         <span class="toolbar-spacer"></span>
         <button onclick={createFolder} disabled={!actions.create_dir}><FolderPlus size={15} /> New folder</button>
+        <button onclick={renameSelected} disabled={!actions.rename}>Rename</button>
         <button onclick={() => mutate('move')} disabled={!actions.move}>Move</button>
         <button onclick={() => mutate('copy')} disabled={!actions.copy}><Copy size={15} /> Copy</button>
         <button class="danger" onclick={removeSelected} disabled={!actions.delete}><Trash2 size={15} /> Delete</button>
