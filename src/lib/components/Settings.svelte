@@ -2075,6 +2075,15 @@
     let backupRestoreEntries = $state<any[]>([]);
     let backupRestoreBusy = $state(false);
     let backupRestoreMsg = $state('');
+    let backupEditId = $state('');
+    let backupEditSource = $state('');
+    let backupEditDrive = $state('');
+    let backupEditRemote = $state('');
+    let backupEditSchedule = $state('manual');
+    let backupEditRetention = $state(7);
+    let backupEditVerify = $state(true);
+    let backupEditEnabled = $state(true);
+    let backupEditMsg = $state('');
 
     async function refreshBackupJobs() {
         if (!isDesktop) return;
@@ -2088,6 +2097,50 @@
             backupRuns = runs;
         } finally {
             backupJobsBusy = false;
+        }
+    }
+
+    function editBackupJob(job: any) {
+        backupEditId = job.id;
+        backupEditSource = job.source_root;
+        backupEditDrive = job.drive_id;
+        backupEditRemote = job.remote_root;
+        const schedule = job.schedule ?? { kind: 'manual' };
+        backupEditSchedule = schedule.kind === 'interval_minutes'
+            ? `interval:${schedule.minutes}`
+            : schedule.kind === 'daily' ? `daily:${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}` : 'manual';
+        backupEditRetention = job.retention_count;
+        backupEditVerify = job.verify_integrity;
+        backupEditEnabled = job.enabled;
+        backupEditMsg = '';
+    }
+
+    function backupSchedulePayload(raw: string) {
+        if (raw === 'manual') return { kind: 'manual' };
+        const interval = raw.match(/^interval:(\d+)$/);
+        if (interval) return { kind: 'interval_minutes', minutes: Number(interval[1]) };
+        const daily = raw.match(/^daily:(\d{1,2}):(\d{1,2})$/);
+        if (daily) return { kind: 'daily', hour: Number(daily[1]), minute: Number(daily[2]) };
+        throw new Error('Schedule must be manual, interval:<minutes>, or daily:HH:MM.');
+    }
+
+    async function saveBackupJob() {
+        if (!backupEditId.trim() || !backupEditSource.trim() || !backupEditDrive.trim() || !backupEditRemote.trim()) {
+            backupEditMsg = 'ID, source, drive, and remote path are required.';
+            return;
+        }
+        try {
+            backupEditMsg = 'Saving…';
+            await invoke('backup_job_upsert', { job: {
+                id: backupEditId.trim(), source_root: backupEditSource.trim(), drive_id: backupEditDrive.trim(),
+                remote_root: backupEditRemote.trim(), schedule: backupSchedulePayload(backupEditSchedule),
+                retention_count: Number(backupEditRetention), verify_integrity: backupEditVerify,
+                enabled: backupEditEnabled, last_run_at: null, last_status: null, updated_at: 0,
+            }});
+            backupEditMsg = 'Saved.';
+            await refreshBackupJobs();
+        } catch (e: any) {
+            backupEditMsg = `Error: ${e}`;
         }
     }
 
@@ -4212,6 +4265,20 @@
                         </button>
                     </div>
                     <p class="hint" style="margin-top:4px;">Configured backup schedules and their recent durable runs.</p>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; margin-top:8px;">
+                        <input type="text" bind:value={backupEditId} placeholder="Job ID" />
+                        <input type="text" bind:value={backupEditSource} placeholder="Local source root" />
+                        <input type="text" bind:value={backupEditDrive} placeholder="Drive ID" />
+                        <input type="text" bind:value={backupEditRemote} placeholder="Remote root" />
+                        <input type="text" bind:value={backupEditSchedule} placeholder="manual / interval:60 / daily:02:30" />
+                        <input type="number" min="1" bind:value={backupEditRetention} placeholder="Retention count" />
+                    </div>
+                    <div style="display:flex; gap:12px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+                        <label><input type="checkbox" bind:checked={backupEditVerify} /> Verify remote size</label>
+                        <label><input type="checkbox" bind:checked={backupEditEnabled} /> Enabled</label>
+                        <button type="button" class="btn" onclick={saveBackupJob}>Save job</button>
+                        {#if backupEditMsg}<span class="hint">{backupEditMsg}</span>{/if}
+                    </div>
                     {#if backupJobs.length === 0}
                         <p class="hint">No persisted backup jobs.</p>
                     {:else}
@@ -4222,6 +4289,7 @@
                                     <span class="hint">{job.enabled ? 'enabled' : 'disabled'} · {job.last_status ?? 'not run'}</span>
                                 </div>
                                 <div class="hint" style="overflow-wrap:anywhere;">{job.source_root} → {job.remote_root}</div>
+                                <button type="button" class="btn" style="margin-top:4px;" onclick={() => editBackupJob(job)}>Edit</button>
                                 {#each (backupRuns[job.id] ?? []) as run (run.id)}
                                     <div class="hint" style="margin-top:4px;">{run.status} · {run.completed}/{run.planned} files · {run.bytes} bytes</div>
                                 {/each}
