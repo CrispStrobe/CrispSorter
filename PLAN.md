@@ -1532,7 +1532,7 @@ expose sharing.  Since users store documents on these drives and search
 them via CrispSorter, "share this document" from the search results is
 a natural feature.
 
-- [>] **`CloudDrive` trait: `share_link(path) → Option<String>`
+- [x] **`CloudDrive` trait: `share_link(path) → Option<String>`
   method** (default impl returns `None`).  The trait and unsupported-provider
   behavior are now covered by the drive tests.  OneDrive and Google Drive
   now override it with their native public-link APIs. Override in
@@ -1550,7 +1550,9 @@ a natural feature.
   Click → calls `drive_share_link` → copies URL to clipboard with an
   inline notification. ✅ Shipped 2026-07-31. Provider-specific links are
   now implemented for OneDrive and Google Drive; WebDAV detection and
-  disabled-state discovery remain pending.
+  capability-aware disabled-state discovery is now wired into IndexSearch;
+  providers that do not advertise `share_links` render a disabled action and
+  never issue a share mutation request. ✅ 2026-08-01
 - [x] **Tests.**  Unit: URL format validation per provider, unsupported
   provider returns None, error handling for expired tokens. OneDrive URL
   construction, Google/unsupported-provider coverage, and a hermetic
