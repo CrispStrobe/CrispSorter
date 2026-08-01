@@ -3321,7 +3321,7 @@ a transfer without leaving the search/catalog workflow.
     Desktop loopback PKCE, keychain-only token exchange, explicit refresh,
     Google revocation, and Microsoft local credential clearing are implemented;
     mobile deep links and Microsoft’s provider-side logout remain.
-  - [ ] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
+  - [>] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
     native email/password plus conditional TOTP for Filen/Internxt, and
     WebDAV username/password or app-password entry without persistence in UI
     settings. Add explicit disconnect/re-auth states.
@@ -3335,7 +3335,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Browser OAuth UI now polls only boolean credential presence after
       the loopback callback, with a bounded timeout and no token exposure.
       ✅ 2026-08-01
-  - [ ] Add unit and hermetic HTTP coverage for PKCE/state validation, token
+    - [ ] Mobile deep-link login and provider-specific logout remain deferred.
+  - [>] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic
     credential discovery.
@@ -3354,6 +3355,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Added hermetic authorization-code exchange coverage with an exact
       PKCE token request assertion and mock-keychain verification that access,
       refresh, and public client-ID fields are stored without crossing IPC.
+    - [ ] Gated live auth/read/write tests remain opt-in and require explicit
+      test credentials; no automatic credential discovery is permitted.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
