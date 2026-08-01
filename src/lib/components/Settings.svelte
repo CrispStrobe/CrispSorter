@@ -652,6 +652,7 @@
     /** P13.7 Stage I — tiered-cache opt-in.  When true, pulls
      *  include the body text; when false (default), metadata-only. */
     let indexCloudBackupPullFullText       = $state<boolean>(false);
+    let indexConflictPolicy                = $state<string>('newest_wins');
     /** P13.7 Stage P — local DB size cap in GB (0 = unlimited). */
     let indexLocalMaxSizeGb        = $state<number>(0);
     /** P13.7 Stage N — partition controls.  These don't persist
@@ -1309,6 +1310,9 @@
         indexCloudBackupPushEmbeddings = await getSetting('indexCloudBackupPushEmbeddings', false) as boolean;
         indexCloudBackupPullManifests  = await getSetting('indexCloudBackupPullManifests', false) as boolean;
         indexCloudBackupPullFullText   = await getSetting('indexCloudBackupPullFullText', false) as boolean;
+        try {
+            indexConflictPolicy = await invoke<string>('sync_get_conflict_policy');
+        } catch { /* older/mobile backend: keep the default */ }
         indexLocalExtractionEnabled    = await getSetting('indexLocalExtractionEnabled', true) as boolean;
         indexSkeletonOnly              = await getSetting('indexSkeletonOnly', false) as boolean;
         indexEmbedderModelName         = await getSetting('indexEmbedderModelName', '') as string;
@@ -1656,6 +1660,7 @@
         await saveSetting('indexCloudBackupPushEmbeddings', indexCloudBackupPushEmbeddings);
         await saveSetting('indexCloudBackupPullManifests',  indexCloudBackupPullManifests);
         await saveSetting('indexCloudBackupPullFullText',   indexCloudBackupPullFullText);
+        await saveSetting('indexConflictPolicy',            indexConflictPolicy);
         await saveSetting('indexLocalExtractionEnabled',   indexLocalExtractionEnabled);
         await saveSetting('indexSkeletonOnly',             indexSkeletonOnly);
         await saveSetting('indexEmbedderModelName',        indexEmbedderModelName);
@@ -1824,6 +1829,7 @@
                     cloud_backup_push_embeddings_enabled:    indexCloudBackupPushEmbeddings,
                     cloud_backup_pull_manifests_enabled:     indexCloudBackupPullManifests,
                     cloud_backup_pull_full_text_enabled:     indexCloudBackupPullFullText,
+                    conflict_policy:                         indexConflictPolicy,
                     // P13.7 Stage P — 0 means unlimited (null in Rust).
                     local_max_size_bytes: indexLocalMaxSizeGb > 0
                         ? Math.round(indexLocalMaxSizeGb * 1_000_000_000)
@@ -1835,6 +1841,7 @@
                     embedder_model_name: indexEmbedderModelName.trim() || null,
                 }
             });
+            await invoke('sync_set_conflict_policy', { policy: indexConflictPolicy });
             if (indexEnabled) {
                 indexInitProgress = 'Starte Index-Initialisierung …';
                 indexInitPct      = 2;
@@ -3981,6 +3988,18 @@
                     <span>{i18n.t.settings.index.cloud_backup_pull_full_text ?? 'Pull body text alongside metadata'}</span>
                 </label>
                 <p class="hint">{i18n.t.settings.index.cloud_backup_pull_full_text_hint ?? ''}</p>
+
+                <label for='index-conflict-policy' style='margin-top:14px;'>
+                    Conflict policy
+                </label>
+                <select id='index-conflict-policy' bind:value={indexConflictPolicy}>
+                    <option value='newest_wins'>Newest wins</option>
+                    <option value='local_wins'>Local wins</option>
+                    <option value='remote_wins'>Remote wins</option>
+                    <option value='keep_both'>Keep both</option>
+                    <option value='manual'>Manual review</option>
+                </select>
+                <p class='hint'>Used when sync finds different local and remote content. Manual mutations remain explicit and non-destructive.</p>
 
                 <!-- Stage U — thin-client switch. -->
                 <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">
