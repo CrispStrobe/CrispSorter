@@ -21,6 +21,19 @@ pub struct DriveCredentialsStatus {
     pub has_session: bool,
 }
 
+async fn instantiate_registered(
+    state: &AppState,
+    config: &DriveConfig,
+) -> Result<Box<dyn super::CloudDrive>, String> {
+    let index_config = state.index.lock().await.config.clone();
+    let proxy = crate::sync::proxy::ProxyConfig {
+        url: index_config.proxy_url,
+        username: index_config.proxy_username,
+        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    };
+    DriveRegistry::instantiate_with_proxy(config, &proxy).map_err(|e| e.to_string())
+}
+
 /// Mount a registered drive as a read-only FUSE filesystem for indexing.
 /// The FUSE event loop owns a dedicated thread and therefore never blocks IPC.
 #[tauri::command]
@@ -51,7 +64,7 @@ pub async fn drive_mount(
             return Err(format!("drive '{drive_id}' is already mounted"));
         }
         let drive: std::sync::Arc<dyn super::CloudDrive> =
-            std::sync::Arc::from(DriveRegistry::instantiate(&config));
+            std::sync::Arc::from(instantiate_registered(&state, &config).await?);
         let id = drive_id.clone();
         let point = mount_point.clone();
         let cache_max_bytes = cache_max_bytes.unwrap_or(super::fuse_mount::fs::DEFAULT_CACHE_MAX_BYTES);
@@ -425,7 +438,7 @@ pub async fn drive_list_dir(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     drive
         .list_dir(std::path::Path::new(&path))
         .map_err(|e| e.to_string())
@@ -450,7 +463,7 @@ pub async fn drive_stat(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     drive
         .stat(std::path::Path::new(&path))
         .map_err(|e| e.to_string())
@@ -474,7 +487,7 @@ pub async fn drive_capabilities(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    Ok(DriveRegistry::instantiate(cfg).probed_capabilities())
+    Ok(instantiate_registered(&state, cfg).await?.probed_capabilities())
 }
 
 /// Create a directory on a drive when its capability set permits it.
@@ -496,7 +509,7 @@ pub async fn drive_create_dir(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().create_dir {
         return Err(format!(
             "{} does not support create_dir",
@@ -528,7 +541,7 @@ pub async fn drive_move_path(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().move_path {
         return Err(format!(
             "{} does not support move_path",
@@ -563,7 +576,7 @@ pub async fn drive_copy_path(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().copy {
         return Err(format!(
             "{} does not support copy",
@@ -600,7 +613,7 @@ pub async fn drive_delete_path(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().delete {
         return Err(format!("{} does not support delete", drive.drive_type().label()));
     }
@@ -630,7 +643,7 @@ pub async fn drive_share_link(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     drive
         .share_link(std::path::Path::new(&path))
         .map_err(|e| e.to_string())?
@@ -661,7 +674,7 @@ pub async fn drive_list_versions(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().versions {
         return Err(format!(
             "{} does not support file versions",
@@ -693,7 +706,7 @@ pub async fn drive_restore_version(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive = DriveRegistry::instantiate(cfg);
+    let drive = instantiate_registered(&state, cfg).await?;
     if !drive.capabilities().versions {
         return Err(format!(
             "{} does not support file version restore",
@@ -726,7 +739,7 @@ pub async fn drive_read_file(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
+    let drive: Arc<dyn super::CloudDrive> = Arc::from(instantiate_registered(&state, cfg).await?);
     let path = std::path::PathBuf::from(path);
     let path_for_transfer = path.clone();
     let transfer = state
@@ -764,7 +777,7 @@ pub async fn drive_write_file(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
+    let drive: Arc<dyn super::CloudDrive> = Arc::from(instantiate_registered(&state, cfg).await?);
     let path = std::path::PathBuf::from(path);
     let retry_data = data.clone();
     let retry_path = path.clone();
@@ -884,7 +897,7 @@ pub async fn drive_upload_resumable(
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
-    let drive = DriveRegistry::instantiate(&cfg);
+    let drive = instantiate_registered(&state, &cfg).await?;
     let workers = workers.unwrap_or(1).clamp(1, 10);
     tokio::task::spawn_blocking(move || {
         drive.upload_file_resumable(
@@ -920,7 +933,7 @@ pub async fn drive_download_resumable(
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
-    let drive = DriveRegistry::instantiate(&cfg);
+    let drive = instantiate_registered(&state, &cfg).await?;
     tokio::task::spawn_blocking(move || {
         drive.download_file_resumable(
             std::path::Path::new(&remote_path),

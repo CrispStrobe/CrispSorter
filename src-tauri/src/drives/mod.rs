@@ -708,47 +708,58 @@ impl DriveRegistry {
         }
     }
 
-    /// Instantiate a drive from its config.
+    /// Instantiate a drive from its config using the default network policy.
     pub fn instantiate(config: &DriveConfig) -> Box<dyn CloudDrive> {
+        Self::instantiate_with_proxy(config, &crate::sync::proxy::ProxyConfig::default())
+            .expect("default cloud-drive HTTP client must build")
+    }
+
+    /// Instantiate a drive while applying the app-wide proxy policy.
+    /// Providers without a native HTTP client (Local/Filen/Internxt CLI)
+    /// retain their existing construction path.
+    pub fn instantiate_with_proxy(
+        config: &DriveConfig,
+        proxy: &crate::sync::proxy::ProxyConfig,
+    ) -> Result<Box<dyn CloudDrive>> {
         match config.kind {
             DriveType::Local | DriveType::Sftp => {
                 // Local + raw SFTP both go through `LocalDrive` for now;
                 // SFTP relies on the user mounting the share via OS/FUSE.
-                Box::new(LocalDrive::new(
+                Ok(Box::new(LocalDrive::new(
                     config.label.clone(),
                     PathBuf::from(&config.path),
-                ))
+                )))
             }
             DriveType::Filen => {
                 #[cfg(feature = "drive-filen-native")]
                 {
-                    Box::new(filen_native_drive::NativeFilenDrive::from_keychain(
+                    Ok(Box::new(filen_native_drive::NativeFilenDrive::from_keychain(
                         config.label.clone(),
                         &config.id,
-                    ))
+                    )))
                 }
                 #[cfg(not(feature = "drive-filen-native"))]
                 {
-                    Box::new(filen::FilenDrive::new(
+                    Ok(Box::new(filen::FilenDrive::new(
                         config.label.clone(),
                         PathBuf::from(&config.path),
-                    ))
+                    )))
                 }
             }
             DriveType::Internxt => {
                 #[cfg(feature = "drive-internxt-native")]
                 {
-                    Box::new(internxt_native_drive::NativeInternxtDrive::from_keychain(
+                    Ok(Box::new(internxt_native_drive::NativeInternxtDrive::from_keychain(
                         config.label.clone(),
                         &config.id,
-                    ))
+                    )))
                 }
                 #[cfg(not(feature = "drive-internxt-native"))]
                 {
-                    Box::new(internxt::InternxtDrive::new(
+                    Ok(Box::new(internxt::InternxtDrive::new(
                         config.label.clone(),
                         PathBuf::from(&config.path),
-                    ))
+                    )))
                 }
             }
             DriveType::WebDav => {
@@ -756,20 +767,21 @@ impl DriveRegistry {
                     .ok()
                     .flatten()
                     .unwrap_or_default();
-                Box::new(webdav::WebDavDrive::new(
+                Ok(Box::new(webdav::WebDavDrive::new_with_proxy(
                     config.label.clone(),
                     config.path.clone(),
                     credentials.username.or_else(|| config.username.clone()),
                     credentials.password.or_else(|| config.password.clone()),
                     config.insecure_tls.unwrap_or(false),
-                ))
+                    proxy,
+                )?))
             }
             DriveType::OneDrive => {
                 let credentials = crate::drives::secret::get_credentials(&config.id)
                     .ok()
                     .flatten()
                     .unwrap_or_default();
-                Box::new(onedrive::OneDriveDrive::new(
+                Ok(Box::new(onedrive::OneDriveDrive::new_with_proxy(
                     config.label.clone(),
                     credentials
                         .access_token
@@ -780,14 +792,15 @@ impl DriveRegistry {
                         .or_else(|| config.refresh_token.clone()),
                     credentials.client_id.or_else(|| config.client_id.clone()),
                     None,
-                ))
+                    proxy,
+                )?))
             }
             DriveType::GoogleDrive => {
                 let credentials = crate::drives::secret::get_credentials(&config.id)
                     .ok()
                     .flatten()
                     .unwrap_or_default();
-                Box::new(google_drive::GoogleDriveDrive::new(
+                Ok(Box::new(google_drive::GoogleDriveDrive::new_with_proxy(
                     config.label.clone(),
                     credentials
                         .access_token
@@ -798,7 +811,8 @@ impl DriveRegistry {
                         .or_else(|| config.refresh_token.clone()),
                     credentials.client_id.or_else(|| config.client_id.clone()),
                     None,
-                ))
+                    proxy,
+                )?))
             }
         }
     }
