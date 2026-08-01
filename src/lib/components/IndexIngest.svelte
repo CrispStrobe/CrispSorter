@@ -921,11 +921,14 @@
         void loadDriveCredentialStatus(d.id);
     }
 
-    async function loadDriveCredentialStatus(driveId: string) {
+    async function loadDriveCredentialStatus(driveId: string): Promise<DriveCredentialStatus | null> {
         try {
-            driveCredentialStatus = await invoke<DriveCredentialStatus>('drive_credentials_status', { driveId });
+            const status = await invoke<DriveCredentialStatus>('drive_credentials_status', { driveId });
+            driveCredentialStatus = status;
+            return status;
         } catch {
             driveCredentialStatus = null;
+            return null;
         }
     }
 
@@ -1023,8 +1026,8 @@
             // open; tokens never cross IPC or enter frontend state.
             for (let attempt = 0; attempt < 30; attempt += 1) {
                 await new Promise((resolve) => setTimeout(resolve, 2000));
-                await loadDriveCredentialStatus(driveEditId);
-                if (driveCredentialStatus?.has_access_token && driveCredentialStatus.has_refresh_token) {
+                const status = await loadDriveCredentialStatus(driveEditId);
+                if (status?.has_access_token && status.has_refresh_token) {
                     logInfo('Browser-Anmeldung abgeschlossen; Token liegt ausschließlich im OS-Schlüsselbund.');
                     return;
                 }
