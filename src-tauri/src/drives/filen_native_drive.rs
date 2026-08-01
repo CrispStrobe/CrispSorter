@@ -150,7 +150,13 @@ impl CloudDrive for NativeFilenDrive {
 
     fn capabilities(&self) -> DriveCapabilities {
         DriveCapabilities {
+            create_dir: true,
+            rename: true,
+            move_path: true,
+            copy: true,
             streaming: true,
+            resumable_upload: true,
+            resumable_download: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -205,6 +211,10 @@ mod tests {
         crate::drives::secret::install_mock_for_tests();
         let drive = NativeFilenDrive::from_keychain("Native Filen", "missing-filendrive");
         assert_eq!(drive.drive_type(), DriveType::Filen);
+        let capabilities = drive.capabilities();
+        assert!(capabilities.streaming);
+        assert!(capabilities.resumable_upload);
+        assert!(capabilities.resumable_download);
         assert!(format!("{}", drive.list_dir(Path::new("/")).unwrap_err())
             .contains("native Filen session"));
     }

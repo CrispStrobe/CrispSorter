@@ -192,6 +192,8 @@ impl CloudDrive for NativeInternxtDrive {
             move_path: true,
             copy: true,
             streaming: true,
+            resumable_upload: true,
+            resumable_download: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -303,12 +305,7 @@ impl CloudDrive for NativeInternxtDrive {
         client.download_file_to_writer(&session, &item.uuid, writer)
     }
 
-    fn write_file_from_reader(
-        &self,
-        path: &Path,
-        reader: &mut dyn Read,
-        size: u64,
-    ) -> Result<()> {
+    fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow!("Internxt write path has no filename: {}", path.display()))?
@@ -359,6 +356,9 @@ mod tests {
         assert!(capabilities.rename);
         assert!(capabilities.move_path);
         assert!(capabilities.copy);
+        assert!(capabilities.streaming);
+        assert!(capabilities.resumable_upload);
+        assert!(capabilities.resumable_download);
     }
 
     #[test]

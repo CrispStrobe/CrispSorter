@@ -96,6 +96,8 @@ pub struct DriveCapabilities {
     pub move_path: bool,
     pub copy: bool,
     pub streaming: bool,
+    pub resumable_upload: bool,
+    pub resumable_download: bool,
     pub share_links: bool,
     pub versions: bool,
 }
@@ -113,6 +115,8 @@ impl DriveCapabilities {
             move_path: false,
             copy: false,
             streaming: false,
+            resumable_upload: false,
+            resumable_download: false,
             share_links: false,
             versions: false,
         }
@@ -796,15 +800,24 @@ mod tests {
         // test: capability discovery must not spawn a CLI, make HTTP calls,
         // or consult credentials/keychain state.
         let cases = [
-            (DriveType::Local, true, true, true, true, false, false),
-            (DriveType::Filen, true, true, true, true, false, false),
-            (DriveType::Internxt, true, true, true, false, false, false),
-            (DriveType::WebDav, true, true, true, true, false, false),
-            (DriveType::OneDrive, true, true, true, false, true, true),
-            (DriveType::GoogleDrive, true, true, true, true, true, true),
+            (DriveType::Local, true, true, true, true, false, false, false),
+            (DriveType::Filen, true, true, true, true, false, false, cfg!(feature = "drive-filen-native")),
+            (
+                DriveType::Internxt,
+                true,
+                true,
+                true,
+                cfg!(feature = "drive-internxt-native"),
+                false,
+                false,
+                cfg!(feature = "drive-internxt-native"),
+            ),
+            (DriveType::WebDav, true, true, true, true, false, false, false),
+            (DriveType::OneDrive, true, true, true, false, true, true, false),
+            (DriveType::GoogleDrive, true, true, true, true, true, true, false),
         ];
 
-        for (kind, create_dir, rename, move_path, copy, share_links, versions) in cases {
+        for (kind, create_dir, rename, move_path, copy, share_links, versions, native_transfers) in cases {
             let config = DriveConfig {
                 id: format!("capability-{kind:?}"),
                 label: format!("capability-{kind:?}"),
@@ -825,7 +838,9 @@ mod tests {
             assert_eq!(caps.copy, copy, "{kind:?} copy");
             assert_eq!(caps.share_links, share_links, "{kind:?} share_links");
             assert_eq!(caps.versions, versions, "{kind:?} versions");
-            assert!(!caps.streaming, "{kind:?} streaming is not implemented yet");
+            assert_eq!(caps.streaming, native_transfers, "{kind:?} streaming");
+            assert_eq!(caps.resumable_upload, native_transfers, "{kind:?} resumable upload");
+            assert_eq!(caps.resumable_download, native_transfers, "{kind:?} resumable download");
         }
     }
 

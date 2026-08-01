@@ -2691,6 +2691,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Added a pure provider capability-matrix contract covering all
     non-native drive constructors without network, subprocess, or credential
     access. ✅ 2026-07-31
+  - [x] Capability discovery now explicitly advertises native resumable
+    upload/download support alongside streaming; Filen and Internxt native
+    adapters report all three, while subprocess and legacy providers report
+    unsupported instead of requiring a late operation probe. ✅ 2026-08-01
 - [ ] **Offline queue integration.** On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
