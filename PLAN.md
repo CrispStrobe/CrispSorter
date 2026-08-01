@@ -3319,6 +3319,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Remaining Tauri sync, restore, offline-replay, and shard-transfer
     paths now use the proxy-aware registry constructor instead of silently
     falling back to a default HTTP client.
+  - [x] Native Internxt session refresh now uses the persisted proxy URL,
+    username, and keychain-backed password instead of bypassing policy via
+    the legacy default constructor. ✅ 2026-08-01
   - [x] Headless cloud-backup CLI status, admin, and federated-search clients
     now load the same persisted proxy policy and keychain password.
   - [x] GUI and CLI feed fetching now use the persisted proxy policy through

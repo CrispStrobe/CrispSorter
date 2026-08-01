@@ -1096,9 +1096,18 @@ pub async fn drive_native_refresh(
             .ok_or_else(|| "no native Internxt session is stored".to_owned())?;
         let session = super::internxt_native::InternxtSession::decode(&serialized)
             .map_err(|error| format!("parsing native Internxt session failed: {error:#}"))?;
-        let client = super::internxt_native::InternxtNativeClient::new(
+        let index_config = state.index.lock().await.config.clone();
+        let proxy = super::internxt_native::HttpConfig {
+            proxy_url: index_config.proxy_url,
+            proxy_username: index_config.proxy_username,
+            proxy_password: crate::sync::proxy_secret::get()
+                .map_err(|error| format!("reading proxy password failed: {error}"))?,
+        };
+        let client = super::internxt_native::InternxtNativeClient::new_with_config_and_http(
             &session.drive_api_url,
             session.active_token(),
+            super::internxt_native::TransferConfig::default(),
+            &proxy,
         )
         .map_err(|error| format!("creating native Internxt client failed: {error:#}"))?;
         let refreshed = client
