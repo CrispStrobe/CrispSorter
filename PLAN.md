@@ -3304,8 +3304,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] GUI and CLI feed fetching now use the persisted proxy policy through
     the shared feed HTTP boundary.
   - [x] Tauri cluster-label LLM requests now use the persisted proxy policy;
-    standalone CLI chat remains explicitly separate because it has no
-    settings/data-directory context.
+    standalone CLI chat now has an explicit settings/data-directory path.
+  - [x] CLI chat query accepts optional `--data-dir` (defaulting to the
+    platform app-data directory) and uses the persisted proxy policy.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

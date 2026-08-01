@@ -1209,6 +1209,10 @@ enum ChatCmd {
         /// Files whose text content is appended as context.
         #[arg(long)]
         context_files: Vec<PathBuf>,
+        /// App data directory used to load persisted network settings.
+        /// Defaults to the platform app-data directory.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
     },
     /// Transcribe an audio / video file to text via CrispASR (P13.5 slice A).
     ///
@@ -8575,7 +8579,7 @@ async fn cmd_images_crisplens(
 
 fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
     match cmd {
-        ChatCmd::Query { prompt, llm_url, llm_model, api_key, system, context_files } => {
+        ChatCmd::Query { prompt, llm_url, llm_model, api_key, system, context_files, data_dir } => {
             // Build context from optional files.
             let mut context = String::new();
             for path in &context_files {
@@ -8599,11 +8603,18 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
             }
             messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
+            let data_dir = resolve_data_dir(data_dir)?;
+            let config = crate::index::config_persist::load(&data_dir);
+            let proxy = cli_proxy_config(&config)?;
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all().build().map_err(|e| e.to_string())?;
 
             let reply = rt.block_on(async {
-                let client = reqwest::Client::new();
+                let client = crate::sync::proxy::build_async_client_with_timeout(
+                    &proxy,
+                    std::time::Duration::from_secs(120),
+                )
+                .map_err(|e| e.to_string())?;
                 let body = serde_json::json!({
                     "model": llm_model,
                     "messages": messages,

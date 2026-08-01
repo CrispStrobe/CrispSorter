@@ -934,7 +934,7 @@ pub async fn replay_offline_queue(
                 std::sync::Arc::from(
                     crate::drives::DriveRegistry::instantiate_with_proxy(
                         config,
-                        &proxy_config(&state).await?,
+                        &proxy_config_for_app_state(state).await?,
                     )
                     .map_err(|e| e.to_string())?,
                 );
@@ -1354,6 +1354,12 @@ async fn make_cb_client(state: &State<'_, AppState>) -> Result<CloudBackupClient
 /// keychain-backed password.  The password never crosses the frontend IPC
 /// boundary or enters serialized configuration.
 async fn proxy_config(state: &State<'_, AppState>) -> Result<crate::sync::proxy::ProxyConfig, String> {
+    proxy_config_for_app_state(&*state).await
+}
+
+async fn proxy_config_for_app_state(
+    state: &AppState,
+) -> Result<crate::sync::proxy::ProxyConfig, String> {
     let config = state.index.lock().await.config.clone();
     Ok(crate::sync::proxy::ProxyConfig {
         url: config.proxy_url,

@@ -157,7 +157,7 @@ fn domain_matches(pattern: &str, hostname: &str) -> bool {
             false
         }
     } else {
-        pattern.eq_ignore_ascii_case(hostname)
+        pattern.eq_ignore_ascii_case(&hostname)
     }
 }
 
