@@ -163,6 +163,47 @@
                 }
             );
 
+            type SyncPair = {
+                id: string;
+                local_root: string;
+                mode: 'to_cloud' | 'to_local' | 'two_way';
+                enabled: boolean;
+            };
+            type SyncPairCandidate = { path: string; watched_folder: string };
+            const syncPairPushes = new Set<string>();
+            const unlistenSyncPair = await listen<SyncPairCandidate>(
+                'folder-watch:sync-pair-candidate',
+                async (event) => {
+                    const candidate = event.payload;
+                    if (!candidate?.path) return;
+                    try {
+                        const pairs = await invoke<SyncPair[]>('sync_pair_list');
+                        for (const pair of pairs) {
+                            if (!pair.enabled || pair.mode === 'to_local' || syncPairPushes.has(pair.id)) continue;
+                            const root = pair.local_root.replace(/[\\/]+$/, '');
+                            const changed = candidate.path.replaceAll('\\', '/');
+                            const normalizedRoot = root.replaceAll('\\', '/');
+                            if (changed !== normalizedRoot && !changed.startsWith(`${normalizedRoot}/`)) continue;
+                            syncPairPushes.add(pair.id);
+                            try {
+                                await invoke('sync_pair_push', {
+                                    id: pair.id,
+                                    dryRun: false,
+                                    conflictPolicy: 'local_wins',
+                                });
+                                flog('info', `[sync-pair] watcher push completed: ${pair.id}`);
+                            } catch (error) {
+                                flog('warn', `[sync-pair] watcher push failed for ${pair.id}: ${String(error)}`);
+                            } finally {
+                                syncPairPushes.delete(pair.id);
+                            }
+                        }
+                    } catch (error) {
+                        flog('warn', `[sync-pair] watcher dispatch failed: ${String(error)}`);
+                    }
+                },
+            );
+
             // Resume any watchers configured in a previous session.
             // Migrate the v0.1.32 single-folder shape (watchEnabled +
             // watchFolder) to the v0.1.34 list shape (watchFolders) on
@@ -304,6 +345,7 @@
                 clearInterval(dbStatsTimer);
                 stopQueuePoll();
                 unlistenWatch();
+                unlistenSyncPair();
                 invoke('watch_stop_all').catch(() => {});
             };
         })();

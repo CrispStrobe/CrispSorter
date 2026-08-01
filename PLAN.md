@@ -3076,8 +3076,10 @@ a transfer without leaving the search/catalog workflow.
     recheck entries at the inclusive second-resolution boundary so same-second
     edits cannot be missed, advancing only after success. ✅ 2026-08-01
   - [x] Folder watchers now emit a debounced `folder-watch:sync-pair-candidate`
-    event carrying the changed path and watched root. It is advisory only;
-    remote mutation still requires an explicit sync-pair push. ✅ 2026-08-01
+    event carrying the changed path and watched root. The global app listener
+    now dispatches enabled `ToCloud`/`TwoWay` pairs through `sync_pair_push`
+    with explicit `local_wins` policy and per-pair in-flight deduplication;
+    `ToLocal` and disabled pairs remain untouched. ✅ 2026-08-01
   - [x] Explicit sync-pair pushes now persist a bounded audit ledger with
     dry-run, no-change, and completed outcomes, counts, watermark, and
     timestamps; recent runs are exposed through `sync_pair_runs`. ✅ 2026-08-01
