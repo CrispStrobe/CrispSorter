@@ -2774,18 +2774,24 @@ a transfer without leaving the search/catalog workflow.
   Internxt, Filen, and generic WebDAV until proven safe.
   - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
-    PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). Their ordinary WebDAV API
-    does not advertise the CrispCloud blockmap/changed-block/finalize
-    protocol, so CrispSorter must not pretend that HTTP Range alone is a safe
-    delta upload. Strict authenticated range reads now reject servers that
-    ignore Range; uploads remain whole-file until an explicit blockmap
-    extension is negotiated. Add provider-specific blockmap integration only
-    after a hermetic Nextcloud and ownCloud server contract proves atomic
-    finalize, ETag/If-Match conflict protection, and resume semantics.
-  - [ ] Add gated live Nextcloud and ownCloud tests for auth, recursive
-    listing, range reads, ETag/concurrent-update behavior, OCS share links,
-    and whole-file fallback. Credentials must be explicit environment
-    variables/app passwords; never discover them from keychains in tests.
+    PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud
+    delta protocol is now implemented: detect
+    /index.php/apps/crispcloud_delta/api/status, fetch
+    /api/blockmap/{path}, POST changed blocks to /api/blocks/{path}, and
+    POST /api/finalize/{path}?size=N. ETag-cached server maps select changed
+    blocks; absent app/map falls back to normal full WebDAV transfer.
+    Strict Range validation protects delta download, while ETag/If-Match
+    conflict protection and atomic server finalize remain server-contract
+    work to verify against both patched clients.
+  - [x] Add gated live Nextcloud and ownCloud coverage for app detection,
+    authenticated blockmap fetch, one-block upload/finalize, strict range
+    delta download, and round-trip content verification. The tests use an
+    SSH tunnel to the isolated VPS instances and explicit environment
+    credentials; they never discover credentials from keychains.
+  - [ ] Extend that live matrix with shrink/grow finalization, ETag/
+    concurrent-update behavior, OCS share links, and explicit full-file
+    fallback assertions. The server-side If-Match/atomic-finalize contract
+    remains a prerequisite for marking those cases complete.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
