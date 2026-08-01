@@ -122,6 +122,15 @@ pub struct DeadLetter {
     pub timestamp: u64,
 }
 
+/// A debounced local change that sync-pair runners may inspect. Emitting this
+/// separately from document auto-processing keeps cloud sync opt-in and
+/// prevents a watcher callback from mutating a remote provider implicitly.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncPairCandidateEvent {
+    pub path: String,
+    pub watched_folder: String,
+}
+
 /// Rate-limiting counters — dual: file-count + token-cost.
 struct RateLimits {
     /// Per-folder: (folder_path, hour_start) → count.
@@ -570,6 +579,13 @@ fn handle_event(
             if let Err(e) = app_clone.emit("folder-watch:added", payload) {
                 eprintln!("[watch] emit failed: {e}");
             }
+            let _ = app_clone.emit(
+                "folder-watch:sync-pair-candidate",
+                SyncPairCandidateEvent {
+                    path: path_clone.to_string_lossy().into_owned(),
+                    watched_folder: folder_clone.to_string_lossy().into_owned(),
+                },
+            );
 
             // Auto-process path if mode is not Off.
             if mode != WatchMode::Off {
@@ -781,5 +797,16 @@ mod tests {
         rl.record_tokens(999_999_999);
         // Budget of 0 = unlimited — should still allow.
         assert!(rl.try_increment(&folder, 100, 500, 0));
+    }
+
+    #[test]
+    fn sync_pair_candidate_preserves_path_and_watched_root() {
+        let event = SyncPairCandidateEvent {
+            path: "/docs/report.pdf".into(),
+            watched_folder: "/docs".into(),
+        };
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(json["path"], "/docs/report.pdf");
+        assert_eq!(json["watched_folder"], "/docs");
     }
 }

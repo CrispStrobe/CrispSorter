@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // renders them, so stub the icon imports tabs.ts uses.
 vi.mock('lucide-svelte', () => ({
 	Database: 'i',
+	HardDrive: 'i',
 	FileText: 'i',
 	Languages: 'i',
 	Library: 'i',

@@ -34,6 +34,7 @@ use reqwest::header::AUTHORIZATION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use super::proxy::ProxyConfig;
 
 /// Deserialize a `tags` list tolerating an explicit JSON `null`.  cb-api
 /// emits `"tags": null` for a row with no tags (its Pydantic model is
@@ -596,10 +597,17 @@ impl CloudBackupClient {
     /// of any trailing `/` so concatenation with path constants
     /// never produces `//api/...`.
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .context("building reqwest client")?;
+        Self::new_with_proxy(base_url, api_key, &ProxyConfig::default())
+    }
+
+    /// Build a client using the shared HTTP/SOCKS5 proxy policy while
+    /// retaining the cloud-backup request timeout.
+    pub fn new_with_proxy(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        proxy: &ProxyConfig,
+    ) -> Result<Self> {
+        let client = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
         let url = base_url.into().trim_end_matches('/').to_string();
         Ok(Self { base_url: url, api_key: api_key.into(), client })
     }
@@ -1201,6 +1209,14 @@ mod tests {
 
     fn client_for(server: &Server) -> CloudBackupClient {
         CloudBackupClient::new(server.url(), "cbk_test_key").unwrap()
+    }
+
+    #[test]
+    fn cloud_backup_client_uses_shared_proxy_validation() {
+        let invalid = ProxyConfig { url: Some("not a proxy URL".into()), ..Default::default() };
+        assert!(CloudBackupClient::new_with_proxy("http://localhost", "key", &invalid).is_err());
+        let valid = ProxyConfig { url: Some("socks5://127.0.0.1:9050".into()), ..Default::default() };
+        assert!(CloudBackupClient::new_with_proxy("http://localhost", "key", &valid).is_ok());
     }
 
     // ── manifest_push ────────────────────────────────────────────────

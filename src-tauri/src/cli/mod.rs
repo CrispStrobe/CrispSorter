@@ -556,10 +556,130 @@ enum DrivesCmd {
 
 #[derive(Subcommand, Debug)]
 enum SyncCmd {
+    /// Manage persisted local-folder ↔ cloud-drive sync pairs.
+    Pair {
+        #[command(subcommand)]
+        cmd: SyncPairCmd,
+    },
     /// Cloud-backup HTTP target.
     CloudBackup {
         #[command(subcommand)]
         cmd: CloudBackupCmd,
+    },
+    /// Persist and inspect local/cloud backup-job definitions.
+    BackupJob {
+        #[command(subcommand)]
+        cmd: BackupJobCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum BackupJobCmd {
+    /// List configured jobs, including schedule and last-run status.
+    List,
+    /// Create or update a job. Schedule is manual, interval:<minutes>, or daily:HH:MM.
+    Upsert {
+        id: String,
+        #[arg(long)]
+        source_root: String,
+        #[arg(long)]
+        drive_id: String,
+        #[arg(long)]
+        remote_root: String,
+        #[arg(long, default_value = "manual")]
+        schedule: String,
+        #[arg(long, default_value_t = 7)]
+        retention_count: u32,
+        #[arg(long)]
+        no_verify: bool,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Remove a job definition without deleting any backup data.
+    Delete { id: String },
+    /// Show recent durable execution history for a job.
+    Runs {
+        job_id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Execute one job now; this is explicit and never scheduled implicitly.
+    Run {
+        job_id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Preview or apply retention to date-named snapshot directories.
+    Prune {
+        job_id: String,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// List files available in a dated backup snapshot.
+    SnapshotList { job_id: String, snapshot: String },
+    /// Restore one selected file from a dated snapshot.
+    Restore {
+        job_id: String,
+        snapshot: String,
+        remote_path: String,
+        destination: PathBuf,
+    },
+    /// List enabled jobs whose interval/daily schedule is due now.
+    Due,
+    /// Execute all currently due jobs; suitable for an external scheduler.
+    RunDue {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Opt-in scheduler loop; never starts unless explicitly invoked.
+    Watch {
+        #[arg(long)]
+        once: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 0)]
+        max_cycles: u32,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SyncPairCmd {
+    /// List configured sync pairs.
+    List,
+    /// Preview matching local files without contacting a provider.
+    Plan { id: String },
+    /// Inventory filtered remote files without downloading them.
+    RemotePlan { id: String },
+    /// Compare local and remote metadata under a conflict policy.
+    Compare {
+        id: String,
+        #[arg(long, default_value = "newest-wins")]
+        policy: String,
+    },
+    /// Show recent pair run audit records.
+    Runs {
+        id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Upload newer matching local files through the shared transfer queue.
+    Push {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+        /// Conflict policy for this overwrite-capable push. Until remote
+        /// metadata comparison lands, only local-wins is safe here.
+        #[arg(long, default_value = "local-wins")]
+        conflict_policy: String,
+    },
+    /// Download newer matching remote files through the shared transfer queue.
+    Pull {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+        /// Remote-wins is required because this writes local files.
+        #[arg(long, default_value = "remote-wins")]
+        conflict_policy: String,
     },
 }
 
@@ -2353,6 +2473,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let ocrs_models = crate::extractors::ocr_ocrs::is_ocrs_available();
     let paddle_ocr = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let pdf_extract_ok = true;
+    let fuse_compiled = cfg!(feature = "fuse");
+    let fuse_runtime_available = fuse_compiled && fuse_runtime_available();
     // Check if the default embedder model (BGE-M3) is already cached.
     let model_cache = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
@@ -2370,6 +2492,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
                 "ocrs_models_available": ocrs_models,
                 "paddle_ocr_available": paddle_ocr,
                 "pdf_extract_compiled_in": pdf_extract_ok,
+                "fuse_compiled": fuse_compiled,
+                "fuse_runtime_available": fuse_runtime_available,
                 "embedder_model_cached": embedder_cached,
                 "lance_dir_exists": lance_dir
                     .as_ref()
@@ -2384,6 +2508,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
             println!("OCR ocrs models present:          {}", yn(ocrs_models));
             println!("OCR PaddleOCR compiled:           {}", yn(paddle_ocr));
             println!("PDF extractor (pdf-extract):      {}", yn(pdf_extract_ok));
+            println!("FUSE support compiled:            {}", yn(fuse_compiled));
+            println!("FUSE runtime available:           {}", yn(fuse_runtime_available));
             println!("Embedder model cached:            {}", yn(embedder_cached));
             if let Some(p) = lance_dir {
                 println!("Lance dir: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" });
@@ -2394,6 +2520,26 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
 }
 
 fn yn(b: bool) -> &'static str { if b { "✓" } else { "✗" } }
+
+/// Check the host-side prerequisites for a FUSE mount without trying to
+/// mount anything.  This keeps `doctor` useful in packaged builds where the
+/// optional Rust feature may be present but macFUSE/fuse3 is not installed.
+fn fuse_runtime_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return std::path::Path::new("/dev/fuse").exists()
+            && std::process::Command::new("fusermount3").arg("--version").output().is_ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::path::Path::new("/Library/Filesystems/macfuse.fs").exists()
+            || std::path::Path::new("/Library/Filesystems/fuse-t.fs").exists();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
 
 // ── catalog ────────────────────────────────────────────────────────────────
 
@@ -5118,8 +5264,603 @@ async fn cmd_sync_async(
     cmd: SyncCmd,
 ) -> Result<(), String> {
     match cmd {
+        SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd).await,
         SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
+        SyncCmd::BackupJob { cmd } => cmd_sync_backup_job(out, data_dir, cmd).await,
     }
+}
+
+fn parse_backup_schedule(raw: &str) -> Result<crate::sync::backup_state::BackupSchedule, String> {
+    use crate::sync::backup_state::BackupSchedule;
+    if raw == "manual" {
+        return Ok(BackupSchedule::Manual);
+    }
+    if let Some(minutes) = raw.strip_prefix("interval:") {
+        return minutes.parse::<u64>()
+            .map(|minutes| BackupSchedule::IntervalMinutes { minutes })
+            .map_err(|_| "schedule must be manual, interval:<minutes>, or daily:HH:MM".into());
+    }
+    if let Some(time) = raw.strip_prefix("daily:") {
+        let (hour, minute) = time.split_once(':')
+            .ok_or("schedule must be manual, interval:<minutes>, or daily:HH:MM")?;
+        let hour = hour.parse::<u8>().map_err(|_| "invalid daily hour")?;
+        let minute = minute.parse::<u8>().map_err(|_| "invalid daily minute")?;
+        return Ok(BackupSchedule::Daily { hour, minute });
+    }
+    Err("schedule must be manual, interval:<minutes>, or daily:HH:MM".into())
+}
+
+async fn cmd_sync_backup_job(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: BackupJobCmd,
+) -> Result<(), String> {
+    let store = crate::sync::backup_state::BackupState::open(data_dir)
+        .map_err(|e| e.to_string())?;
+    match cmd {
+        BackupJobCmd::List => {
+            let jobs = store.list_jobs().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+                OutFormat::Text => for job in jobs {
+                    println!("{}  {} → {}  {:?}  {}",
+                        job.id, job.source_root, job.remote_root, job.schedule,
+                        if job.enabled { "enabled" } else { "disabled" });
+                },
+            }
+        }
+        BackupJobCmd::Upsert { id, source_root, drive_id, remote_root, schedule,
+            retention_count, no_verify, disabled } => {
+            let job = crate::sync::backup_state::BackupJob {
+                id, source_root, drive_id, remote_root,
+                schedule: parse_backup_schedule(&schedule)?, retention_count,
+                verify_integrity: !no_verify, enabled: !disabled,
+                last_run_at: None, last_status: None, updated_at: 0,
+            };
+            let saved = store.upsert_job(job).map_err(|e| e.to_string())?;
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&saved).unwrap());
+            } else {
+                println!("saved backup job {}", saved.id);
+            }
+        }
+        BackupJobCmd::Delete { id } => {
+            let deleted = store.delete_job(&id).map_err(|e| e.to_string())?;
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::json!({"id": id, "deleted": deleted}));
+            } else {
+                println!("{} {}", if deleted { "deleted" } else { "not found" }, id);
+            }
+        }
+        BackupJobCmd::Runs { job_id, limit } => {
+            let runs = store.list_runs(&job_id, limit.min(100)).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
+                OutFormat::Text => for run in runs {
+                    println!("{}  {:?}  {}/{} completed  {} bytes{}",
+                        run.id, run.status, run.completed, run.planned, run.bytes,
+                        run.error.as_deref().map(|e| format!("  error: {e}")).unwrap_or_default());
+                },
+            }
+        }
+        BackupJobCmd::Run { job_id, dry_run } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use sha2::{Digest, Sha256};
+            use std::sync::Arc;
+
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            let source = std::path::PathBuf::from(&job.source_root);
+            if !source.is_dir() {
+                return Err(format!("backup source is not a directory: {}", source.display()));
+            }
+            let mut files = Vec::new();
+            collect_backup_files(&source, &source, &mut files).map_err(|e| e.to_string())?;
+            let snapshot = std::path::Path::new(&job.remote_root).join(backup_snapshot_date());
+            if dry_run {
+                emit_backup_run_plan(out, &job, &snapshot, files.len(), files.iter().map(|(_, s)| *s).sum());
+                return Ok(());
+            }
+
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(&config));
+            let capabilities = drive.probed_capabilities();
+            if !capabilities.write || (job.verify_integrity && !capabilities.stat) {
+                return Err(format!("drive '{}' lacks required write/stat capability", job.drive_id));
+            }
+            let run = store.start_run(&job.id, files.len() as u64).map_err(|e| e.to_string())?;
+            let queue = TransferQueue::shared();
+            let mut completed = 0u64;
+            let mut bytes = 0u64;
+            let mut failed = 0u64;
+            for (relative, size) in files {
+                let local = source.join(&relative);
+                let data = match std::fs::read(&local) {
+                    Ok(data) => data,
+                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                };
+                let local_hash = format!("{:x}", Sha256::digest(&data));
+                let remote = snapshot.join(&relative);
+                let target = Arc::clone(&drive);
+                let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
+                    move |path, data| target.write_file(path, data));
+                match transfer.handle.await {
+                    Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
+                    Ok(Ok(_)) => match drive.stat(&remote) {
+                        Ok(stat) if stat.size == size => match drive.read_file(&remote) {
+                            Ok(remote_data) if format!("{:x}", Sha256::digest(&remote_data)) == local_hash => {
+                                completed += 1; bytes += size;
+                            }
+                            Ok(_) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification hash mismatch for {}", relative)); break; }
+                            Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                        },
+                        Ok(stat) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification size mismatch for {}: expected {}, got {}", relative, size, stat.size)); break; }
+                        Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    },
+                    Ok(Err(error)) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                }
+            }
+            if failed > 0 {
+                return Err(format!("backup job '{}' failed after {completed}/{} files", job.id, run.planned));
+            }
+            let finished = store.finish_run(&run.id, completed, 0, job.verify_integrity, bytes)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&finished).unwrap()),
+                OutFormat::Text => println!("backup job {} completed: {} file(s), {} bytes", job.id, completed, bytes),
+            }
+        }
+        BackupJobCmd::Prune { job_id, apply } => {
+            use crate::drives::DriveRegistry;
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive = DriveRegistry::instantiate(&config);
+            let entries = drive.list_dir(std::path::Path::new(&job.remote_root)).map_err(|e| e.to_string())?;
+            let mut snapshots: Vec<_> = entries.into_iter()
+                .filter(|entry| entry.is_dir && is_backup_snapshot(&entry.name))
+                .map(|entry| entry.name).collect();
+            snapshots.sort();
+            let remove_count = snapshots.len().saturating_sub(job.retention_count as usize);
+            let remove = &snapshots[..remove_count];
+            if apply {
+                for name in remove {
+                    delete_remote_tree(drive.as_ref(), &std::path::Path::new(&job.remote_root).join(name))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({
+                    "job_id": job.id, "apply": apply, "kept": snapshots.len().saturating_sub(remove_count),
+                    "removed": remove, "retention_count": job.retention_count,
+                })),
+                OutFormat::Text => println!("backup job {} retention: {} snapshot(s) {}{}",
+                    job.id, remove.len(), if apply { "deleted " } else { "would delete " }, remove.join(", ")),
+            }
+        }
+        BackupJobCmd::SnapshotList { job_id, snapshot } => {
+            use crate::drives::{self, DriveRegistry};
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            if !is_backup_snapshot(&snapshot) {
+                return Err("snapshot must be a YYYY-MM-DD directory name".into());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive = DriveRegistry::instantiate(&config);
+            let root = std::path::Path::new(&job.remote_root).join(&snapshot);
+            let mut errors = Vec::new();
+            let entries = drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
+                errors.push(format!("{}: {error}", path.display()));
+            });
+            if !errors.is_empty() { return Err(errors.join("; ")); }
+            let files: Vec<_> = entries.into_iter().map(|entry| serde_json::json!({
+                "path": entry.path.strip_prefix(&root).unwrap_or(&entry.path).to_string_lossy(),
+                "size": entry.size,
+                "mtime_unix": entry.mtime_unix,
+            })).collect();
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&files).unwrap());
+            } else {
+                for entry in files { println!("{}  {}", entry["size"], entry["path"]); }
+            }
+        }
+        BackupJobCmd::Restore { job_id, snapshot, remote_path, destination } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            if !is_backup_snapshot(&snapshot) {
+                return Err("snapshot must be a YYYY-MM-DD directory name".into());
+            }
+            let relative = safe_backup_relative(&remote_path)?;
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(&config));
+            if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
+            let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
+            let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
+            let source = Arc::clone(&drive);
+            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
+                move |path| source.read_file(path));
+            let data = transfer.handle.await.map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            if data.len() as u64 != expected {
+                return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
+            }
+            if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+            let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
+            std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
+            std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
+                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
+            }
+        }
+        BackupJobCmd::Due => {
+            let jobs = store.due_jobs(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+                OutFormat::Text => for job in jobs {
+                    println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
+                },
+            }
+        }
+        BackupJobCmd::RunDue { dry_run } => {
+            let jobs = store.due_jobs(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+                .map_err(|e| e.to_string())?;
+            if jobs.is_empty() {
+                if matches!(out, OutFormat::Text) { println!("no backup jobs are due"); }
+                else { println!("[]"); }
+            } else {
+                let ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
+                for id in ids {
+                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::Run { job_id: id, dry_run }).await?;
+                }
+            }
+        }
+        BackupJobCmd::Watch { once, dry_run, max_cycles } => {
+            let mut cycles = 0u32;
+            loop {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64).unwrap_or(0);
+                let snapshot = crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
+                    .map_err(|e| e.to_string())?;
+                if !snapshot.due_job_ids.is_empty() {
+                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::RunDue { dry_run }).await?;
+                }
+                cycles = cycles.saturating_add(1);
+                if once || (max_cycles > 0 && cycles >= max_cycles) { break; }
+                let wait_ms = snapshot.next_wake_at.map(|at| at.saturating_sub(now)).unwrap_or(60_000).clamp(1_000, 60_000);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_backup_files(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    out: &mut Vec<(String, u64)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_backup_files(root, &path, out)?;
+        } else if metadata.is_file() {
+            out.push((path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"), metadata.len()));
+        }
+    }
+    Ok(())
+}
+
+fn backup_snapshot_date() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let days = secs / 86_400;
+    let z = days as i64 + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn is_backup_snapshot(name: &str) -> bool {
+    name.len() == 10 && name.as_bytes()[4] == b'-' && name.as_bytes()[7] == b'-'
+        && name.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+fn safe_backup_relative(raw: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+    let path = std::path::Path::new(raw);
+    if path.is_absolute() { return Err("remote path must be relative".into()); }
+    if path.components().any(|component| !matches!(component, Component::Normal(_))) {
+        return Err("remote path may not contain '.', '..', or root components".into());
+    }
+    Ok(path.to_owned())
+}
+
+fn delete_remote_tree(drive: &dyn crate::drives::CloudDrive, path: &std::path::Path) -> anyhow::Result<()> {
+    for entry in drive.list_dir(path)? {
+        let child = path.join(&entry.name);
+        if entry.is_dir { delete_remote_tree(drive, &child)?; } else { drive.delete(&child)?; }
+    }
+    drive.delete(path)
+}
+
+fn emit_backup_run_plan(
+    out: OutFormat,
+    job: &crate::sync::backup_state::BackupJob,
+    snapshot: &std::path::Path,
+    files: usize,
+    bytes: u64,
+) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"job_id": job.id, "dry_run": true, "snapshot": snapshot, "files": files, "bytes": bytes})),
+        OutFormat::Text => println!("backup job {} dry-run: {} file(s), {} bytes → {}", job.id, files, bytes, snapshot.display()),
+    }
+}
+
+async fn cmd_sync_pair(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: SyncPairCmd,
+) -> Result<(), String> {
+    let store = crate::sync::pairs::SyncPairStore::open(data_dir).map_err(|e| e.to_string())?;
+    match cmd {
+        SyncPairCmd::List => {
+            let pairs = store.list().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&pairs).unwrap()),
+                OutFormat::Text => {
+                    for pair in pairs {
+                        println!("{}: {} ↔ {} ({:?}, watermark={})", pair.id, pair.local_root, pair.remote_root, pair.mode, pair.watermark);
+                    }
+                }
+            }
+        }
+        SyncPairCmd::Plan { id } => {
+            let pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let plan = crate::sync::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&plan).unwrap()),
+                OutFormat::Text => {
+                    for entry in plan {
+                        println!("{}  {} bytes  mtime={}", entry.relative_path, entry.size, entry.mtime_unix);
+                    }
+                }
+            }
+        }
+        SyncPairCmd::RemotePlan { id } => {
+            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive = crate::drives::DriveRegistry::instantiate(config);
+            if !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(
+                &*drive, std::path::Path::new(&pair.remote_root), "",
+                &pair.include_globs, &pair.exclude_globs, &mut remote,
+            ).map_err(|e| e.to_string())?;
+            remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&remote).unwrap()),
+                OutFormat::Text => { for entry in remote { println!("{}  {} bytes  mtime={:?}", entry.relative_path, entry.size, entry.mtime_unix); } },
+            }
+        }
+        SyncPairCmd::Compare { id, policy } => {
+            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let policy = parse_conflict_policy(&policy)?;
+            let local = crate::sync::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive = crate::drives::DriveRegistry::instantiate(config);
+            if !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(
+                &*drive, std::path::Path::new(&pair.remote_root), "",
+                &pair.include_globs, &pair.exclude_globs, &mut remote,
+            ).map_err(|e| e.to_string())?;
+            let rows = crate::sync::pairs::compare_plans(&local, &remote, policy);
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
+                OutFormat::Text => { for row in rows { println!("{}: {:?}", row.relative_path, row.action); } },
+            }
+        }
+        SyncPairCmd::Runs { id, limit } => {
+            let runs = store.list_runs(&id, limit).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
+                OutFormat::Text => {
+                    for run in runs {
+                        println!("#{} {} planned={} uploaded={} watermark={}{}", run.id, run.status, run.planned, run.uploaded, run.watermark, run.error.map(|e| format!(" error={e}")).unwrap_or_default());
+                    }
+                }
+            }
+        }
+        SyncPairCmd::Push { id, dry_run, conflict_policy } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+
+            let mut pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToLocal) {
+                return Err("sync pair is configured for remote-to-local direction".into());
+            }
+            let policy = parse_conflict_policy(&conflict_policy)?;
+            if policy != crate::sync::conflict::ConflictPolicy::LocalWins {
+                return Err("sync pair push cannot apply this conflict policy without remote metadata; use --conflict-policy local-wins".into());
+            }
+            let plan = crate::sync::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
+            let started_at = sync_pair_cli_now_ms();
+            if dry_run || plan.is_empty() {
+                let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                    id: 0,
+                    pair_id: pair.id.clone(),
+                    status: if dry_run { "dry_run" } else { "no_changes" }.into(),
+                    planned: plan.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
+                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                });
+                print_sync_pair_push(out, &id, dry_run, plan.len(), 0, pair.watermark);
+                return Ok(());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(config));
+            if !drive.capabilities().write {
+                return Err(format!("{} does not support uploads", drive.drive_type().label()));
+            }
+            let queue = TransferQueue::shared();
+            let mut uploaded = 0usize;
+            let mut watermark = pair.watermark;
+            for entry in &plan {
+                let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+                let bytes = std::fs::read(&local).map_err(|e| format!("reading {}: {e}", local.display()))?;
+                let remote = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let drive_for_upload = drive.clone();
+                let transfer = queue.submit_upload(pair.drive_id.clone(), remote, bytes,
+                    move |path, data| drive_for_upload.write_file(path, data));
+                match transfer.handle.await {
+                    Ok(Ok(_)) => { uploaded += 1; watermark = watermark.max(entry.mtime_unix); }
+                    Ok(Err(error)) => return Err(error.to_string()),
+                    Err(error) => return Err(format!("sync transfer task failed: {error}")),
+                }
+            }
+            pair.watermark = watermark;
+            store.upsert(pair).map_err(|e| e.to_string())?;
+            let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                id: 0, pair_id: id.clone(), status: "completed".into(), planned: plan.len(),
+                uploaded, downloaded: 0, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+            });
+            print_sync_pair_push(out, &id, false, plan.len(), uploaded, watermark);
+        }
+        SyncPairCmd::Pull { id, dry_run, conflict_policy } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+
+            let mut pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToCloud) {
+                return Err("sync pair is configured for local-to-remote direction".into());
+            }
+            if parse_conflict_policy(&conflict_policy)? != crate::sync::conflict::ConflictPolicy::RemoteWins {
+                return Err("sync pair pull writes local files; use --conflict-policy remote-wins".into());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(config));
+            if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote pull", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
+                .map_err(|e| e.to_string())?;
+            remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
+            remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+            let started_at = sync_pair_cli_now_ms();
+            if dry_run || remote.is_empty() {
+                let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                    id: 0, pair_id: pair.id.clone(),
+                    status: if dry_run { "dry_run_pull" } else { "no_changes_pull" }.into(),
+                    planned: remote.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
+                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                });
+                print_sync_pair_pull(out, &id, dry_run, remote.len(), 0, pair.watermark);
+                return Ok(());
+            }
+            let queue = TransferQueue::shared();
+            let mut downloaded = 0usize;
+            let mut watermark = pair.watermark;
+            for entry in &remote {
+                let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+                let drive_for_download = drive.clone();
+                let transfer = queue.submit_download(pair.drive_id.clone(), remote_path, Some(entry.size), move |path| drive_for_download.read_file(path));
+                let bytes = match transfer.handle.await {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(error)) => return Err(error.to_string()),
+                    Err(error) => return Err(format!("sync transfer task failed: {error}")),
+                };
+                if let Some(parent) = local.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+                std::fs::write(local, bytes).map_err(|e| e.to_string())?;
+                downloaded += 1;
+                if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
+            }
+            pair.watermark = watermark;
+            store.upsert(pair).map_err(|e| e.to_string())?;
+            let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                id: 0, pair_id: id.clone(), status: "completed_pull".into(), planned: remote.len(),
+                uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+            });
+            print_sync_pair_pull(out, &id, false, remote.len(), downloaded, watermark);
+        }
+    }
+    Ok(())
+}
+
+fn print_sync_pair_push(out: OutFormat, id: &str, dry_run: bool, planned: usize, uploaded: usize, watermark: i64) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "uploaded": uploaded, "watermark": watermark})),
+        OutFormat::Text => println!("pair {id}: planned={planned} uploaded={uploaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+    }
+}
+
+fn print_sync_pair_pull(out: OutFormat, id: &str, dry_run: bool, planned: usize, downloaded: usize, watermark: i64) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "downloaded": downloaded, "watermark": watermark})),
+        OutFormat::Text => println!("pair {id}: planned={planned} downloaded={downloaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+    }
+}
+
+fn sync_pair_cli_now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
 /// Resolve the bearer token from (in priority order): CB_SYNC_API_KEY

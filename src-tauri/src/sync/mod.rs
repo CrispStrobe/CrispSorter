@@ -20,6 +20,7 @@
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
 pub mod backup_state;
+pub mod backup_scheduler;
 pub mod cert_pins;
 pub mod cloud_backup;
 pub mod conflict;
@@ -38,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use super::proxy::ProxyConfig;
 
 // ── Public types ─────────────────────────────────────────────────────────
 
@@ -279,10 +281,20 @@ impl SyncManager {
         remote_url: &str,
         api_key: &str,
     ) -> Result<(usize, usize)> {
+        self.push_pending_with_proxy(remote_url, api_key, &ProxyConfig::default()).await
+    }
+
+    /// Push pending entries using an explicit HTTP/SOCKS5 proxy policy.
+    pub async fn push_pending_with_proxy(
+        &self,
+        remote_url: &str,
+        api_key: &str,
+        proxy: &ProxyConfig,
+    ) -> Result<(usize, usize)> {
         let batch = self.claim_batch(64)?;
         if batch.is_empty() { return Ok((0, 0)); }
 
-        let client = reqwest::Client::new();
+        let client = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
         let mut pushed = 0;
         let mut failed = 0;
 
@@ -340,6 +352,17 @@ impl SyncManager {
         api_key: &str,
         limit: usize,
     ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
+        self.pull_pending_with_proxy(remote_url, api_key, limit, &ProxyConfig::default()).await
+    }
+
+    /// Pull pending rows using an explicit HTTP/SOCKS5 proxy policy.
+    pub async fn pull_pending_with_proxy(
+        &self,
+        remote_url: &str,
+        api_key: &str,
+        limit: usize,
+        proxy: &ProxyConfig,
+    ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
         let last_pull_ts: i64 = self.get_state("last_pull_ts")?
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -350,9 +373,9 @@ impl SyncManager {
             last_pull_ts,
             limit
         );
-        let mut req = reqwest::Client::new()
+        let mut req = super::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))
             .get(&url)
-            .timeout(Duration::from_secs(30));
+            ;
         if !api_key.is_empty() { req = req.bearer_auth(api_key); }
 
         let resp = req.send().await?;

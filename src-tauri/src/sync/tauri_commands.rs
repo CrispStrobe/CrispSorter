@@ -18,6 +18,170 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// List persisted scheduled/local-cloud backup definitions.
+#[tauri::command]
+pub async fn backup_job_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::sync::backup_state::BackupJob>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_jobs()
+        .map_err(|e| e.to_string())
+}
+
+/// Create or update backup configuration. This stores policy only; a future
+/// scheduler owns execution and will record run status separately.
+#[tauri::command]
+pub async fn backup_job_upsert(
+    state: State<'_, AppState>,
+    job: crate::sync::backup_state::BackupJob,
+) -> Result<crate::sync::backup_state::BackupJob, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .upsert_job(job)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove backup configuration without deleting local or remote data.
+#[tauri::command]
+pub async fn backup_job_delete(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .delete_job(&id)
+        .map_err(|e| e.to_string())
+}
+
+/// Return recent execution history for one backup job.
+#[tauri::command]
+pub async fn backup_job_runs(
+    state: State<'_, AppState>,
+    job_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<crate::sync::backup_state::BackupRun>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_runs(&job_id, limit.unwrap_or(20).min(100))
+        .map_err(|e| e.to_string())
+}
+
+/// Return enabled interval/daily jobs that are due at the current UTC time.
+/// The scheduler owns execution; this command is intentionally read-only.
+#[tauri::command]
+pub async fn backup_job_due(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::sync::backup_state::BackupJob>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64).unwrap_or(0);
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .due_jobs(now)
+        .map_err(|e| e.to_string())
+}
+
+/// Return due job IDs and the next future scheduler wake-up time.
+#[tauri::command]
+pub async fn backup_job_scheduler_snapshot(
+    state: State<'_, AppState>,
+) -> Result<crate::sync::backup_scheduler::BackupSchedulerSnapshot, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64).unwrap_or(0);
+    let store = crate::sync::backup_state::BackupState::open(&data_dir).map_err(|e| e.to_string())?;
+    crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
+        .map_err(|e| e.to_string())
+}
+
+/// Inventory files in a dated backup snapshot for GUI restore selection.
+#[tauri::command]
+pub async fn backup_job_snapshot_list(
+    state: State<'_, AppState>,
+    job_id: String,
+    snapshot: String,
+) -> Result<Vec<crate::sync::backup_state::BackupSnapshotEntry>, String> {
+    if snapshot.len() != 10 || snapshot.as_bytes().get(4) != Some(&b'-')
+        || snapshot.as_bytes().get(7) != Some(&b'-')
+        || !snapshot.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return Err("snapshot must be a YYYY-MM-DD directory name".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let job = crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .job(&job_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
+    let drive = crate::drives::DriveRegistry::instantiate(config);
+    if !drive.probed_capabilities().list { return Err("drive lacks list capability".into()); }
+    let root = std::path::Path::new(&job.remote_root).join(&snapshot);
+    let mut errors = Vec::new();
+    let entries = crate::drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
+        errors.push(format!("{}: {error}", path.display()));
+    });
+    if !errors.is_empty() { return Err(errors.join("; ")); }
+    Ok(entries.into_iter().map(|entry| crate::sync::backup_state::BackupSnapshotEntry {
+        relative_path: entry.path.strip_prefix(&root).unwrap_or(&entry.path)
+            .to_string_lossy().replace('\\', "/"),
+        size: entry.size,
+        mtime_unix: entry.mtime_unix,
+    }).collect())
+}
+
+/// Restore one selected snapshot file to a local destination atomically.
+#[tauri::command]
+pub async fn backup_job_restore(
+    state: State<'_, AppState>,
+    job_id: String,
+    snapshot: String,
+    remote_path: String,
+    destination: String,
+) -> Result<serde_json::Value, String> {
+    if snapshot.len() != 10 || snapshot.as_bytes().get(4) != Some(&b'-')
+        || snapshot.as_bytes().get(7) != Some(&b'-')
+        || !snapshot.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    { return Err("snapshot must be a YYYY-MM-DD directory name".into()); }
+    let relative = std::path::Path::new(&remote_path);
+    use std::path::Component;
+    if relative.is_absolute() || relative.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err("remote path must be relative and contain no '.', '..', or root components".into());
+    }
+    if destination.trim().is_empty() { return Err("destination is required".into()); }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let job = crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?.job(&job_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
+    let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
+    let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
+    let source = std::sync::Arc::clone(&drive);
+    let transfer = state.transfer_queue.clone().submit_download(job.drive_id.clone(), remote,
+        Some(expected), move |path| source.read_file(path));
+    let data = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    if data.len() as u64 != expected {
+        return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
+    }
+    let destination = std::path::PathBuf::from(destination);
+    if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
+    std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()}))
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(
@@ -81,6 +245,97 @@ pub async fn sync_pair_plan(
     super::pairs::plan_local(&pair).map_err(|e| e.to_string())
 }
 
+/// Return recent explicit sync-pair runs for UI/CLI audit surfaces.
+#[tauri::command]
+pub async fn sync_pair_runs(
+    state: State<'_, AppState>,
+    id: String,
+    limit: Option<usize>,
+) -> Result<Vec<super::pairs::SyncPairRun>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_runs(&id, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+/// Inventory remote files for conflict comparison. This performs listing and
+/// metadata/stat calls only; it does not download or mutate provider data.
+#[tauri::command]
+pub async fn sync_pair_remote_plan(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<super::pairs::SyncRemoteEntry>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let pair = super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let drive = crate::drives::DriveRegistry::instantiate(config);
+    if !drive.capabilities().list || !drive.capabilities().stat {
+        return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+    }
+    let mut out = Vec::new();
+    inventory_remote(
+        &*drive,
+        std::path::Path::new(&pair.remote_root),
+        "",
+        &pair.include_globs,
+        &pair.exclude_globs,
+        &mut out,
+    )
+    .map_err(|e| e.to_string())?;
+    out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(out)
+}
+
+/// Compare local and remote metadata under an explicit conflict policy.
+#[tauri::command]
+pub async fn sync_pair_compare(
+    state: State<'_, AppState>,
+    id: String,
+    policy: super::conflict::ConflictPolicy,
+) -> Result<Vec<super::pairs::SyncComparisonEntry>, String> {
+    let local = sync_pair_plan(state.clone(), id.clone()).await?;
+    let remote = sync_pair_remote_plan(state, id).await?;
+    Ok(super::pairs::compare_plans(&local, &remote, policy))
+}
+
+pub(crate) fn inventory_remote(
+    drive: &dyn crate::drives::CloudDrive,
+    directory: &std::path::Path,
+    relative_prefix: &str,
+    includes: &[String],
+    excludes: &[String],
+    out: &mut Vec<super::pairs::SyncRemoteEntry>,
+) -> anyhow::Result<()> {
+    for entry in drive.list_dir(directory)? {
+        let relative = if relative_prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{relative_prefix}/{}", entry.name)
+        };
+        let child = directory.join(&entry.name);
+        if entry.is_dir {
+            inventory_remote(drive, &child, &relative, includes, excludes, out)?;
+        } else if super::pairs::filter_matches(&relative, includes, excludes) {
+            let mtime_unix = drive.stat(&child)?.mtime_unix;
+            out.push(super::pairs::SyncRemoteEntry {
+                relative_path: relative,
+                size: entry.size.unwrap_or(0),
+                mtime_unix,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPairPushResult {
     pub pair_id: String,
@@ -88,6 +343,91 @@ pub struct SyncPairPushResult {
     pub planned: usize,
     pub uploaded: usize,
     pub watermark: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncPairPullResult {
+    pub pair_id: String,
+    pub dry_run: bool,
+    pub planned: usize,
+    pub downloaded: usize,
+    pub watermark: i64,
+}
+
+/// Pull remote files into the local side. This destructive direction requires
+/// an explicit remote-wins policy and is limited to pairs that permit local
+/// writes (`ToLocal` or `TwoWay`).
+#[tauri::command]
+pub async fn sync_pair_pull(
+    state: State<'_, AppState>,
+    id: String,
+    dry_run: Option<bool>,
+    conflict_policy: Option<super::conflict::ConflictPolicy>,
+) -> Result<SyncPairPullResult, String> {
+    if conflict_policy != Some(super::conflict::ConflictPolicy::RemoteWins) {
+        return Err("sync pair pull requires remote-wins conflict policy".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut pair = store.list().map_err(|e| e.to_string())?.into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    if matches!(pair.mode, super::pairs::SyncPairMode::ToCloud) {
+        return Err("sync pair is configured for local-to-remote direction".into());
+    }
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
+        return Err(format!("{} does not support remote pull", drive.drive_type().label()));
+    }
+    let mut remote = Vec::new();
+    inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
+        .map_err(|e| e.to_string())?;
+    remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
+    remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let dry_run = dry_run.unwrap_or(false);
+    let started_at = sync_pair_now_ms();
+    if dry_run || remote.is_empty() {
+        let _ = store.record_run(&super::pairs::SyncPairRun {
+            id: 0, pair_id: pair.id.clone(),
+            status: if dry_run { "dry_run_pull" } else { "no_changes_pull" }.into(),
+            planned: remote.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
+            error: None, started_at, finished_at: sync_pair_now_ms(),
+        });
+        return Ok(SyncPairPullResult { pair_id: pair.id, dry_run, planned: remote.len(), downloaded: 0, watermark: pair.watermark });
+    }
+    let mut downloaded = 0usize;
+    let mut watermark = pair.watermark;
+    for entry in &remote {
+        let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+        let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+        let drive_for_download = drive.clone();
+        let transfer = state.transfer_queue.clone().submit_download(
+            pair.drive_id.clone(), remote_path,
+            Some(entry.size), move |path| drive_for_download.read_file(path),
+        );
+        let bytes = match transfer.handle.await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(error) => return Err(format!("sync transfer task failed: {error}")),
+        };
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
+        downloaded += 1;
+        if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
+    }
+    pair.watermark = watermark;
+    store.upsert(pair).map_err(|e| e.to_string())?;
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0, pair_id: id.clone(), status: "completed_pull".into(), planned: remote.len(),
+        uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_now_ms(),
+    });
+    Ok(SyncPairPullResult { pair_id: id, dry_run: false, planned: remote.len(), downloaded, watermark })
 }
 
 /// Push the local side of a `ToCloud`/`TwoWay` pair through the shared
@@ -98,6 +438,7 @@ pub async fn sync_pair_push(
     state: State<'_, AppState>,
     id: String,
     dry_run: Option<bool>,
+    conflict_policy: Option<super::conflict::ConflictPolicy>,
 ) -> Result<SyncPairPushResult, String> {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -110,9 +451,29 @@ pub async fn sync_pair_push(
     if matches!(pair.mode, super::pairs::SyncPairMode::ToLocal) {
         return Err("sync pair is configured for remote-to-local direction".into());
     }
-    let plan = super::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+    if let Some(policy) = conflict_policy {
+        if policy != super::conflict::ConflictPolicy::LocalWins {
+            return Err(format!(
+                "sync pair push cannot apply {policy:?} without remote metadata; use local-wins or run a remote comparison first"
+            ));
+        }
+    }
+    let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
     let dry_run = dry_run.unwrap_or(false);
+    let started_at = sync_pair_now_ms();
     if dry_run || plan.is_empty() {
+        let _ = store.record_run(&super::pairs::SyncPairRun {
+            id: 0,
+            pair_id: pair.id.clone(),
+            status: if dry_run { "dry_run" } else { "no_changes" }.into(),
+            planned: plan.len(),
+            uploaded: 0,
+            downloaded: 0,
+            watermark: pair.watermark,
+            error: None,
+            started_at,
+            finished_at: sync_pair_now_ms(),
+        });
         return Ok(SyncPairPushResult {
             pair_id: pair.id,
             dry_run,
@@ -122,25 +483,42 @@ pub async fn sync_pair_push(
         });
     }
 
-    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let config = registry
-        .drives
-        .iter()
-        .find(|drive| drive.id == pair.drive_id)
-        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let registry = match crate::drives::DriveRegistry::open(&data_dir) {
+        Ok(registry) => registry,
+        Err(error) => {
+            let message = error.to_string();
+            record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+            return Err(message);
+        }
+    };
+    let config = match registry.drives.iter().find(|drive| drive.id == pair.drive_id) {
+        Some(config) => config,
+        None => {
+            let message = format!("drive '{}' not found", pair.drive_id);
+            record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+            return Err(message);
+        }
+    };
     let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
         std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
     if !drive.capabilities().write {
-        return Err(format!("{} does not support uploads", drive.drive_type().label()));
+        let message = format!("{} does not support uploads", drive.drive_type().label());
+        record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+        return Err(message);
     }
 
     let mut uploaded = 0usize;
     let mut watermark = pair.watermark;
     for entry in &plan {
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let bytes = std::fs::read(&local_path).map_err(|e| {
-            format!("reading {} for sync pair '{}': {e}", local_path.display(), pair.id)
-        })?;
+        let bytes = match std::fs::read(&local_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let message = format!("reading {} for sync pair '{}': {error}", local_path.display(), pair.id);
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
+        };
         let remote_path = std::path::PathBuf::from(format!(
             "{}/{}",
             pair.remote_root.trim_end_matches('/'),
@@ -158,12 +536,36 @@ pub async fn sync_pair_push(
                 uploaded += 1;
                 watermark = watermark.max(entry.mtime_unix);
             }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(error) => return Err(format!("sync transfer task failed: {error}")),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
+            Err(error) => {
+                let message = format!("sync transfer task failed: {error}");
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
         }
     }
     pair.watermark = watermark;
-    store.upsert(pair).map_err(|e| e.to_string())?;
+    if let Err(error) = store.upsert(pair) {
+        let message = error.to_string();
+        record_sync_pair_failure(&store, &id, plan.len(), uploaded, watermark, started_at, &message);
+        return Err(message);
+    }
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0,
+        pair_id: id.clone(),
+        status: "completed".into(),
+        planned: plan.len(),
+        uploaded,
+        downloaded: 0,
+        watermark,
+        error: None,
+        started_at,
+        finished_at: sync_pair_now_ms(),
+    });
     Ok(SyncPairPushResult {
         pair_id: id,
         dry_run: false,
@@ -171,6 +573,36 @@ pub async fn sync_pair_push(
         uploaded,
         watermark,
     })
+}
+
+fn record_sync_pair_failure(
+    store: &super::pairs::SyncPairStore,
+    pair_id: &str,
+    planned: usize,
+    uploaded: usize,
+    watermark: i64,
+    started_at: i64,
+    error: &str,
+) {
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0,
+        pair_id: pair_id.to_owned(),
+        status: "failed".into(),
+        planned,
+        uploaded,
+        downloaded: 0,
+        watermark,
+        error: Some(error.to_owned()),
+        started_at,
+        finished_at: sync_pair_now_ms(),
+    });
+}
+
+fn sync_pair_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Return the persisted conflict policy used by future sync mutations.
@@ -2355,5 +2787,28 @@ mod tests {
     fn rrf_merge_empty_lists() {
         let merged = rrf_merge(vec![], 10);
         assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn remote_inventory_recurses_and_applies_pair_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested/report.pdf"), b"pdf").unwrap();
+        std::fs::write(dir.path().join("nested/skip.txt"), b"txt").unwrap();
+        let drive = crate::drives::LocalDrive::new("inventory", dir.path().to_owned());
+        let mut rows = Vec::new();
+        inventory_remote(
+            &drive,
+            std::path::Path::new("/"),
+            "",
+            &["**/*.pdf".into()],
+            &[],
+            &mut rows,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].relative_path, "nested/report.pdf");
+        assert_eq!(rows[0].size, 3);
+        assert!(rows[0].mtime_unix.is_some());
     }
 }

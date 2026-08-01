@@ -93,7 +93,7 @@ fn filen_live_100m_resumable_round_trip() {
         .unwrap();
     let upload_state = tempfile::NamedTempFile::new().unwrap();
     client.save_upload_resume_state(upload_state.path(), &upload).unwrap();
-    upload = client.load_upload_resume_state(upload_state.path()).unwrap().unwrap();
+    upload = FilenNativeClient::load_upload_resume_state(upload_state.path()).unwrap().unwrap();
     client
         .resume_upload_from_reader(&mut upload, std::fs::File::open(source.path()).unwrap())
         .unwrap();

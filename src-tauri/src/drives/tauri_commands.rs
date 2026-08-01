@@ -3,7 +3,13 @@
 use super::{DriveConfig, DriveRegistry, DriveType};
 use crate::AppState;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use tauri::State;
+
+#[cfg(feature = "fuse")]
+static FUSE_MOUNTS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveCredentialsStatus {
@@ -13,6 +19,114 @@ pub struct DriveCredentialsStatus {
     pub has_refresh_token: bool,
     pub has_client_id: bool,
     pub has_session: bool,
+}
+
+/// Mount a registered drive as a read-only FUSE filesystem for indexing.
+/// The FUSE event loop owns a dedicated thread and therefore never blocks IPC.
+#[tauri::command]
+pub async fn drive_mount(
+    state: State<'_, AppState>,
+    drive_id: String,
+    mount_point: String,
+    cache_max_bytes: Option<u64>,
+) -> Result<(), String> {
+    #[cfg(not(feature = "fuse"))]
+    {
+        let _ = (state, drive_id, mount_point, cache_max_bytes);
+        return Err("FUSE support is not enabled in this build".into());
+    }
+    #[cfg(feature = "fuse")]
+    {
+        let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+        let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+        let config = registry.drives.iter().find(|drive| drive.id == drive_id)
+            .ok_or_else(|| format!("drive '{drive_id}' not found"))?.clone();
+        let mount_point = PathBuf::from(mount_point);
+        if !mount_point.is_absolute() {
+            return Err("FUSE mount point must be an absolute path".into());
+        }
+        let mounts = FUSE_MOUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut active = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?;
+        if active.contains_key(&drive_id) {
+            return Err(format!("drive '{drive_id}' is already mounted"));
+        }
+        let drive: std::sync::Arc<dyn super::CloudDrive> =
+            std::sync::Arc::from(DriveRegistry::instantiate(&config));
+        let id = drive_id.clone();
+        let point = mount_point.clone();
+        let cache_max_bytes = cache_max_bytes.unwrap_or(super::fuse_mount::fs::DEFAULT_CACHE_MAX_BYTES);
+        active.insert(drive_id.clone(), mount_point);
+        drop(active);
+        let spawned = std::thread::Builder::new().name(format!("fuse-{id}")).spawn(move || {
+            if let Err(error) = super::fuse_mount::fs::mount_blocking_with_cache(drive, &point, cache_max_bytes) {
+                eprintln!("FUSE mount {id} failed: {error:#}");
+            }
+            if let Some(mounts) = FUSE_MOUNTS.get() {
+                if let Ok(mut active) = mounts.lock() { active.remove(&id); }
+            }
+        });
+        if let Err(error) = spawned {
+            if let Ok(mut active) = mounts.lock() { active.remove(&drive_id); }
+            return Err(format!("starting FUSE thread: {error}"));
+        }
+        Ok(())
+    }
+}
+
+/// Unmount a drive previously started with [`drive_mount`].
+#[tauri::command]
+pub async fn drive_unmount(drive_id: String) -> Result<(), String> {
+    #[cfg(not(feature = "fuse"))]
+    {
+        let _ = drive_id;
+        return Err("FUSE support is not enabled in this build".into());
+    }
+    #[cfg(feature = "fuse")]
+    {
+        let mounts = FUSE_MOUNTS.get().ok_or("drive is not mounted")?;
+        let mount_point = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?
+            .get(&drive_id).cloned().ok_or("drive is not mounted")?;
+        let path = mount_point.to_string_lossy().into_owned();
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return Err("FUSE unmount is unsupported on this platform".into());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            #[cfg(target_os = "linux")]
+            let output = std::process::Command::new("fusermount3")
+                .arg("-u").arg(&path).output()
+                .or_else(|_| std::process::Command::new("umount").arg(&path).output());
+            #[cfg(target_os = "macos")]
+            let output = std::process::Command::new("umount")
+                .arg(&path).output();
+            let output = output.map_err(|e| format!("unmounting {path}: {e}"))?;
+            if !output.status.success() {
+                return Err(format!("unmounting {path} failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Return the process-local FUSE mounts and their lifecycle state.
+#[tauri::command]
+pub async fn drive_mount_status() -> Result<Vec<super::fuse_mount::FuseMountStatus>, String> {
+    #[cfg(not(feature = "fuse"))]
+    {
+        return Err("FUSE support is not enabled in this build".into());
+    }
+    #[cfg(feature = "fuse")]
+    {
+        let mounts = FUSE_MOUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+        let active = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?;
+        Ok(active.iter().map(|(drive_id, mount_point)| super::fuse_mount::FuseMountStatus {
+            drive_id: drive_id.clone(),
+            mount_point: mount_point.clone(),
+            active: true,
+            cached_bytes: 0,
+            cached_files: 0,
+        }).collect())
+    }
 }
 
 /// Start a public-client OAuth flow. The returned URL may be opened by the

@@ -1567,7 +1567,10 @@ unify local and cloud version tracking.
 - [x] **Tauri commands `drive_list_versions` + `drive_restore_version`.**
   ✅ SHIPPED (2026-08-01); commands enforce provider capability checks before
   making network requests.
-- [ ] **Frontend: version history panel.**  In the document viewer
+- [x] **Frontend: version history panel.**  ✅ SHIPPED (2026-08-01).  The
+  cloud drive context pane combines provider versions with local index
+  history, labels provenance, and offers guarded provider restore.  In the
+  document viewer
   sidebar, when viewing a cloud-backed document, show a "Versions"
   tab listing cloud versions with timestamps and a "Restore" button.
   Merges with the existing local version history from P25.1 into a
@@ -1620,8 +1623,11 @@ mostly plumbing + settings UI.
   8 unit tests (empty config, HTTP/SOCKS5, auth, invalid URL, serde).
 - [ ] **Wire into all cloud-facing code.**  `CloudDrive` constructors,
   `SyncManager`, `cb-api` client, feed fetcher (`feed.rs`), LLM API
-  clients.  Single `build_proxy_client` call site shared via a
-  lazy `OnceCell<reqwest::Client>`.
+  clients.  The shared `CloudBackupClient::new_with_proxy`,
+  `SyncManager::*_with_proxy`, and `fetch_and_parse_with_proxy` boundaries
+  plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
+  their credential/config plumbing is migrated. Single `build_proxy_client`
+  call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
 - [ ] **Settings UI.**  "Network" section: proxy URL input, username,
   password (masked), "Test connection" button (HEAD to
   `https://www.google.com` through the proxy).  DE/EN i18n.
@@ -1643,12 +1649,15 @@ source.
   to `CloudDrive`.  `mount_blocking(drive, mount_point)` helper with
   `RO` + `AutoUnmount` mount options.  `FuseMountConfig` (drive_id,
   mount_point, cache_max_bytes with 2 GB default) + `FuseMountStatus`.
-  3 unconditional unit tests (config serde, default cache, status).
-  LRU content cache deferred (TODO in read path).
-- [ ] **Tauri commands: `drive_mount(drive_id, mount_point)`,
-  `drive_unmount(drive_id)`.**  Mount runs on a dedicated thread
-  (FUSE event loop is blocking).  Unmount via `fuser::MountOption`
-  or `fusermount -u`.
+  Read results use a bounded byte-based LRU (2 GB default); oversized files
+  bypass the cache.
+- [x] **Tauri commands: `drive_mount(drive_id, mount_point, cache_max_bytes)`,
+  `drive_unmount(drive_id)`.** ✅ SHIPPED (2026-08-01). Mount runs on a
+  dedicated thread, tracks active mounts, requires an absolute mount point,
+  and returns a clear feature-disabled error in non-FUSE builds. Unmount uses
+  the platform helper with a safe explicit path argument. The optional cache
+  budget is applied by the FUSE filesystem. `drive_mount_status`
+  exposes the process-local lifecycle registry for UI and automation callers.
 - [ ] **Integration with folder watcher.**  Once mounted, the user
   can point the existing `crispsorter watch <mountpoint>` at the
   FUSE directory.  The watcher sees new/changed files and feeds them
@@ -1656,11 +1665,12 @@ source.
   in the watcher itself — it already works on any filesystem path.
 - [ ] **Platform notes.**  Linux: needs `fuse3` package + user in
   `fuse` group.  macOS: needs macFUSE or FUSE-T.  Windows: deferred
-  (WinFSP/Dokany is a separate effort).  `doctor` command should
-  check for FUSE availability.
-- [ ] **Tests.**  ✅ 3 unit tests shipped (config serde).  Integration
-  tests require FUSE privileges — tagged `#[ignore]`.  Cache eviction
-  tests pending (LRU cache not yet implemented).
+  (WinFSP/Dokany is a separate effort).  `doctor` now reports both whether
+  the optional Rust feature was compiled and whether the host runtime is
+  available.
+- [x] **Tests.**  ✅ 5 unit tests shipped (config serde + LRU eviction).
+  Integration tests require FUSE privileges — tagged `#[ignore]`; cache
+  eviction is covered without requiring FUSE privileges.
 
 #### Priority 10 — Automation rule engine
 
@@ -1683,9 +1693,11 @@ configurable rule engine for complex workflows.
   (after classification, before the default auto-file behaviour).
   If no rules match, falls through to the existing `WatchMode`
   behaviour (backward-compatible).
-- [ ] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
+- [x] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
   `automation_update_rule`, `automation_delete_rule`,
-  `automation_test_rule(file_path)`.**
+  `automation_test_rule(file_path)`.** ✅ SHIPPED (2026-08-01). Rules are
+  persisted atomically in `automation_rules.json`; the test command evaluates
+  a real sample file without executing any action.
 - [ ] **Settings UI: "Automation" panel.**  Rule list with
   add/edit/delete.  Rule editor: trigger conditions (AND/OR
   combinable), ordered action list, priority slider, enabled toggle.
@@ -1697,7 +1709,8 @@ configurable rule engine for complex workflows.
   "Photos to cloud": trigger `ext:jpg,png,heic` + `size > 1MB` →
   `UploadTo(gdrive, "/Photos/{year}/")`.
   "OCR all scans": trigger `folder_prefix:/Scans/` → `RunOcr(smart)`.
-- [ ] **Tests.**  ✅ 13 unit tests shipped with the module (see above).
+- [x] **Tests.**  ✅ 15 unit tests shipped with the module, including atomic
+  persistence and first-run disabled defaults.
 
 ### P30 — crisp-docx deep integration (2026-07-05)
 
@@ -3022,6 +3035,28 @@ a transfer without leaving the search/catalog workflow.
     shared TransferQueue retries, and watermark advancement only after each
     successful upload. Remote comparison and reverse direction remain
     deferred to conflict-aware sync. ✅ 2026-08-01
+  - [x] Pushes now use the persisted watermark as an incremental cutoff;
+    first-run watermark `0` uploads all matching files, while later runs
+    recheck entries at the inclusive second-resolution boundary so same-second
+    edits cannot be missed, advancing only after success. ✅ 2026-08-01
+  - [x] Folder watchers now emit a debounced `folder-watch:sync-pair-candidate`
+    event carrying the changed path and watched root. It is advisory only;
+    remote mutation still requires an explicit sync-pair push. ✅ 2026-08-01
+  - [x] Explicit sync-pair pushes now persist a bounded audit ledger with
+    dry-run, no-change, and completed outcomes, counts, watermark, and
+    timestamps; recent runs are exposed through `sync_pair_runs`. ✅ 2026-08-01
+  - [x] The run ledger now records upload and download counts; existing
+    databases migrate the new `downloaded` column automatically, and Tauri/
+    CLI pulls record dry-run/no-change/completed outcomes. ✅ 2026-08-01
+  - [x] Headless CLI parity now exposes `sync pair list`, `plan`, and `runs`
+    for inspecting configured pairs, filtered local snapshots, and audit
+    history without touching cloud-backup commands. ✅ 2026-08-01
+  - [x] CLI now also supports `sync pair push <id> [--dry-run]`, using the
+    same incremental watermark and shared TransferQueue upload path as the
+    Tauri command. ✅ 2026-08-01
+  - [x] CLI now exposes `sync pair remote-plan` and `sync pair compare
+    --policy`, reusing the provider inventory and metadata comparison path
+    for headless conflict review. ✅ 2026-08-01
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.
@@ -3030,6 +3065,28 @@ a transfer without leaving the search/catalog workflow.
     policy for sync integrations. ✅ 2026-08-01
   - [x] Settings now loads and edits the five policies and persists the choice
     through both the index config and the dedicated sync command. ✅ 2026-08-01
+  - [x] Sync-pair pushes now accept an explicit conflict policy and reject
+    remote-wins, keep-both, manual, and newest-wins until remote metadata is
+    available; only local-wins may safely overwrite in the current local-only
+    comparison boundary. ✅ 2026-08-01
+  - [x] Added read-only `sync_pair_remote_plan` inventory for providers that
+    advertise listing/stat, collecting filtered remote paths, sizes, and
+    modification times without download or mutation. This is the metadata
+    input for the remaining conflict-policy resolver. ✅ 2026-08-01
+  - [x] Added pure metadata comparison and `sync_pair_compare`, classifying
+    local-only, remote-only, unchanged, and divergent paths under explicit
+    newest/local/remote/keep-both/manual policies without mutating either side.
+    ✅ 2026-08-01
+  - [x] Added credential-free recursive remote-inventory coverage using
+    `LocalDrive` as a provider double; filters, sorting, size, and mtime are
+    asserted without network or keychain access. ✅ 2026-08-01
+  - [x] Added explicit remote→local `sync_pair_pull` for `ToLocal` and
+    `TwoWay` pairs. It requires remote-wins, uses provider read/list/stat and
+    the shared transfer queue, applies the remote watermark cutoff, and writes
+    local files only after successful downloads. ✅ 2026-08-01
+  - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
+    same remote-wins guard, inventory cutoff, shared queue, and local-write
+    behavior. ✅ 2026-08-01
 - [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
@@ -3090,9 +3147,70 @@ a transfer without leaving the search/catalog workflow.
     response. Generic WebDAV, offline servers, and rejected OCS requests
     remain unsupported; hermetic positive and negative probe tests pass.
     ✅ 2026-08-01
-- [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
+- [x] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.
+  - [x] Persist validated backup-job definitions (source root, drive, remote
+    root, manual/interval/daily schedule, retention, integrity flag, enabled
+    state) alongside shard watermarks; expose Tauri list/upsert/delete and
+    CLI `sync backup-job list|upsert|delete`. Execution remains explicit until
+    the scheduler and provider-independent restore contract are specified.
+  - [x] Add scheduler/execution service with crash-safe run records and
+    retention enforcement; reuse `cloud_backup` shard export/import and the
+    shared transfer queue.
+    - [x] Added durable run lifecycle records, bounded history inspection, and
+      restart recovery (`running` → `interrupted`) with Tauri and CLI history
+      surfaces. Scheduler/execution wiring remains deferred.
+    - [x] Added explicit CLI `sync backup-job run <id> [--dry-run]` execution:
+      recursive local enumeration, capability checks, queued uploads, optional
+      post-upload size verification, and durable success/failure accounting.
+    - [x] Explicit runs now write to UTC date snapshots; CLI
+      `sync backup-job prune <id>` previews retention and requires `--apply`
+      before deleting only date-named snapshot trees.
+    - [x] Completed/failed runs now update job last-run status, and
+      `sync backup-job due` exposes enabled interval/daily jobs ready for a
+      future background scheduler; manual jobs are never auto-due.
+    - [x] Tauri `backup_job_due` exposes the same read-only due calculation to
+      the GUI/coordinator without duplicating schedule logic.
+    - [x] Run start is now single-flight per job, and restart recovery updates
+      affected jobs to `interrupted`, preventing duplicate scheduler ticks.
+      A SQLite partial unique index enforces the one-running-run invariant
+      across concurrent processes as well.
+    - [x] CLI `sync backup-job run-due [--dry-run]` now provides an explicit
+      external-scheduler entry point that evaluates due policy and reuses the
+      single-flight execution path.
+    - [x] Extracted deterministic UTC `next_due_at` schedule calculation for
+      interval/daily/manual policies, giving a future background coordinator a
+      precise wake-up basis instead of duplicating timing logic.
+    - [x] Added provider-independent `BackupScheduler` snapshots and Tauri
+      `backup_job_scheduler_snapshot`, returning due IDs plus the next future
+      wake-up timestamp without spawning implicit background work.
+    - [x] Added opt-in CLI `sync backup-job watch` with `--once`, `--dry-run`,
+      and bounded `--max-cycles`; it sleeps to the scheduler wake-up and runs
+      due jobs through the guarded execution path without implicit startup.
+  - [x] Add integrity verification and restore-selection UI/CLI with visible
+    backup history; do not mark a run successful before verification completes.
+    - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
+      a dated snapshot/file, downloads use the shared queue, remote/local byte
+      sizes are verified, and destination writes are atomic via a partial file.
+      Relative-path validation blocks traversal; GUI restore selection remains
+      for a later frontend slice.
+    - [x] Tauri `backup_job_snapshot_list` now exposes capability-checked,
+      relative snapshot inventory for GUI restore selection.
+    - [x] Settings now shows persisted backup-job configuration and recent
+      durable run history with an explicit refresh action; restore picker and
+      job editing remain separate frontend work.
+    - [x] Added Tauri `backup_job_restore` and a Settings snapshot/file picker
+      with atomic verified restore; job editing and richer restore history
+      remain deferred.
+    - [x] Settings now edits and persists backup-job source, drive, remote
+      root, schedule, retention, verification, and enabled state using the
+      same validated Tauri contract as the CLI.
+    - [x] Settings also removes job configuration explicitly without deleting
+      any local or remote snapshot data.
+    - [x] Verified backup uploads now compare SHA-256 of the local payload
+      with a remote read-back (plus size/stat), rather than treating matching
+      byte counts as full integrity verification.
 
 #### P34.4 — Security and provider expansion, P2
 
@@ -3123,14 +3241,33 @@ a transfer without leaving the search/catalog workflow.
       explicit disconnect/re-auth actions for WebDAV, Filen, Internxt, Google,
       and OneDrive. Only boolean presence data crosses IPC; secrets remain in
       the OS keychain. ✅ 2026-08-01
+    - [x] Native login UI now detects structured `enter_2fa`/`wrong_2fa`
+      responses and clearly promotes the TOTP field to required state without
+      persisting the code.
   - [ ] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic
     credential discovery.
+    - [x] OAuth callback parsing now rejects duplicate `code`, `state`, and
+      `error` parameters; PKCE challenge generation is extracted and covered
+      against the RFC 7636 verifier vector.
+    - [x] Added hermetic refresh-token preservation/malformed-response tests
+      and Google-style revocation success/failure HTTP tests.
+    - [x] Internxt native login now preserves structured gateway TFA codes and
+      messages in actionable errors, with a secret-free unit test.
+    - [x] The same structured error mapping now covers security-detail and
+      session-hydration failures across the full Internxt login flow.
+    - [x] Keychain-backed credential/session set/get/delete APIs now have
+      isolated mock-keyring round-trip coverage; no OS keychain is consulted
+      by tests.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
   boundary exists.
+  - [x] Cloud-backup and remote-index clients now consume the shared proxy
+    builder; cloud-backup has hermetic valid/invalid proxy construction tests.
+  - [x] Proxy passwords are now excluded from serialization/deserialization,
+    and proxy credentials without a proxy URL fail validation.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

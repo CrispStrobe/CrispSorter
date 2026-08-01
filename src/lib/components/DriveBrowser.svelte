@@ -22,6 +22,8 @@
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
     type FileStat = { size: number; is_dir: boolean; mtime_unix: number | null };
+    type CloudVersion = { id: string; modified_at: number | null; size: number | null; modifier_name: string | null };
+    type LocalVersion = { id: number; version_seq: number; indexed_at: number; title: string | null; file_size: number | null; file_hash: string | null };
     let drives = $state<Drive[]>([]);
     let driveId = $state('');
     let path = $state('/');
@@ -31,6 +33,11 @@
     let error = $state('');
     let selected = $state<string | null>(null);
     let selectedStat = $state<FileStat | null>(null);
+    let cloudVersions = $state<CloudVersion[]>([]);
+    let localVersions = $state<LocalVersion[]>([]);
+    let versionsLoading = $state(false);
+    let versionsError = $state('');
+    let restoringVersion = $state<string | null>(null);
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
@@ -61,10 +68,39 @@
 
     async function selectEntry(name: string) {
         selected = name;
+        cloudVersions = [];
+        localVersions = [];
+        versionsError = '';
         rightPanel = driveId ? cloudDrivePanel(driveId, joinDrivePath(path, name), name) : null;
+        const selectedPath = joinDrivePath(path, name);
         try {
-            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: joinDrivePath(path, name) });
+            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: selectedPath });
         } catch { selectedStat = null; }
+        if (!selectedStat || selectedStat.is_dir || !driveId) return;
+        versionsLoading = true;
+        try {
+            const [caps, cloud, local] = await Promise.all([
+                invoke<DriveCapabilities>('drive_capabilities', { driveId }),
+                invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => []),
+                invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []),
+            ]);
+            cloudVersions = caps.versions ? cloud : [];
+            localVersions = local;
+        } catch (e) { versionsError = String(e); }
+        finally { versionsLoading = false; }
+    }
+
+    async function restoreCloudVersion(version: CloudVersion) {
+        if (!selected || !driveId || restoringVersion) return;
+        if (!window.confirm(`Restore version ${version.id} of ${selected}?`)) return;
+        restoringVersion = version.id;
+        versionsError = '';
+        try {
+            await invoke('drive_restore_version', { driveId, path: joinDrivePath(path, selected), versionId: version.id });
+            await selectEntry(selected);
+            await refresh();
+        } catch (e) { versionsError = String(e); }
+        finally { restoringVersion = null; }
     }
 
     function selectDrive(id: string) {
@@ -159,11 +195,6 @@
         return decision.replace('_', ' ');
     }
 
-    /// Label for a `PanelSource` variant that has no branch in the markup below.
-    /// Every current variant is handled, so inside that `{:else}` the narrowed
-    /// type is `never` and `never.kind` is a type error rather than a fallback.
-    /// Taking the full union here keeps the defensive branch — which is the
-    /// point of it, for whenever a seventh variant lands.
     function sourceKind(source: ContextPanel['source']): string {
         return source.kind;
     }
@@ -244,10 +275,6 @@
                 <div class="context-label">Search results</div>
                 <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
-                <!-- Capture the narrowed source: the `kind` check above does not
-                     survive into the arrow callbacks below, because `rightPanel`
-                     is mutable `$state` and TypeScript cannot prove it still
-                     holds this variant by the time a closure runs. -->
                 {@const dupSource = rightPanel.source}
                 <code>group: {dupSource.groupId}</code>
                 <div class="duplicate-decision">
@@ -306,6 +333,28 @@
                     <dt>Size</dt><dd>{selectedStat.size.toLocaleString()} B</dd>
                     {#if selectedStat.mtime_unix}<dt>Modified</dt><dd>{new Date(selectedStat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
                 </dl>
+                {#if selected && !selectedStat.is_dir}
+                    <section class="versions">
+                        <div class="context-label">Version history</div>
+                        {#if versionsLoading}<div class="muted">Loading versions…</div>
+                        {:else if versionsError}<div class="browser-error">{versionsError}</div>
+                        {:else if !cloudVersions.length && !localVersions.length}<div class="muted">No provider or local versions.</div>
+                        {:else}
+                            {#each cloudVersions as version (version.id)}
+                                <div class="version-row">
+                                    <span><strong>Cloud</strong> · {version.id}<br /><small>{version.modified_at ? new Date(version.modified_at * 1000).toLocaleString() : 'Unknown date'}{version.modifier_name ? ` · ${version.modifier_name}` : ''}</small></span>
+                                    <button onclick={() => restoreCloudVersion(version)} disabled={restoringVersion !== null}>{restoringVersion === version.id ? 'Restoring…' : 'Restore'}</button>
+                                </div>
+                            {/each}
+                            {#each localVersions as version (version.id)}
+                                <div class="version-row local-version">
+                                    <span><strong>Local v{version.version_seq}</strong>{version.title ? ` · ${version.title}` : ''}<br /><small>{new Date(version.indexed_at).toLocaleString()}{version.file_size !== null ? ` · ${version.file_size.toLocaleString()} B` : ''}</small></span>
+                                    <span class="muted">Indexed</span>
+                                </div>
+                            {/each}
+                        {/if}
+                    </section>
+                {/if}
             {/if}
         {:else}
             <div class="empty">Select a file to open its context.</div>
@@ -332,6 +381,7 @@
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
     .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; } .duplicate-decision { display: grid; gap: 4px; margin-top: 12px; } .duplicate-decision select { width: 100%; } .duplicate-undo { justify-self: start; padding: 4px 6px; font-size: .7rem; } .duplicate-audit { margin-top: 14px; font-size: .72rem; } .duplicate-audit summary { cursor: pointer; color: var(--text-muted, #8a8a96); } .audit-list { display: grid; gap: 5px; margin: 8px 0; } .audit-entry { display: grid; gap: 2px; } .audit-entry time { color: var(--text-muted, #8a8a96); font-size: .65rem; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
+    .versions { margin-top: 18px; display: grid; gap: 7px; } .version-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--border, #3a3a44); padding-top: 7px; font-size: .75rem; } .version-row small { color: var(--text-muted, #8a8a96); } .version-row button { padding: 3px 6px; font-size: .7rem; white-space: nowrap; } .local-version { color: var(--text-muted, #8a8a96); }
     .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size, .duplicate-mtime { grid-column: 1 / -1; text-align: left; } .duplicate-mtime { color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-actions { display: flex; gap: 6px; } .duplicate-actions button { padding: 3px 6px; font-size: .7rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
     .danger { color: #ff9a9a; } .browser-error { color: #ff9a9a; padding: 8px; background: #3b2024; border-radius: 6px; } .empty { color: var(--text-muted, #8a8a96); padding: 30px; text-align: center; }

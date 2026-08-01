@@ -148,13 +148,18 @@ fn parse_callback_query(query: &str) -> Result<CallbackQuery> {
         let key = decode_query_component(key)?;
         let value = decode_query_component(value)?;
         match key.as_str() {
-            "code" => callback.code = Some(value),
-            "state" => callback.state = Some(value),
-            "error" => callback.error = Some(value),
+            "code" if callback.code.is_none() => callback.code = Some(value),
+            "state" if callback.state.is_none() => callback.state = Some(value),
+            "error" if callback.error.is_none() => callback.error = Some(value),
+            "code" | "state" | "error" => return Err(anyhow!("duplicate OAuth callback parameter")),
             _ => {}
         }
     }
     Ok(callback)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 fn validated_callback_code<'a>(callback: &'a CallbackQuery, expected_state: &str) -> Result<&'a str> {
@@ -265,7 +270,7 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let challenge = pkce_challenge(&verifier);
     let url = authorization_url(provider, &client_id, &redirect_uri, &state, &challenge);
     let callback_redirect_uri = redirect_uri.clone();
     thread::spawn(move || {
@@ -410,6 +415,17 @@ mod tests {
         assert!(validated_callback_code(&callback, "wrong").is_err());
         let rejected = parse_callback_query("error=access_denied&state=state-1").unwrap();
         assert!(validated_callback_code(&rejected, "state-1").is_err());
+        assert!(parse_callback_query("code=one&code=two&state=state-1").is_err());
+        assert!(parse_callback_query("code=one&state=state-1&state=other").is_err());
+    }
+
+    #[test]
+    fn pkce_challenge_matches_rfc7636_vector() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            pkce_challenge(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]
@@ -434,6 +450,52 @@ mod tests {
         assert_eq!(updated.access_token.as_deref(), Some("new"));
         assert_eq!(updated.refresh_token.as_deref(), Some("rotated"));
         request.assert();
+    }
+
+    #[test]
+    fn refresh_without_rotation_preserves_existing_refresh_token() {
+        let mut server = Server::new();
+        let request = server
+            .mock("POST", "/token")
+            .with_status(200)
+            .with_body(r#"{"access_token":"new"}"#)
+            .create();
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()),
+            refresh_token: Some("keep-me".into()),
+            ..Default::default()
+        };
+        let updated = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap();
+        assert_eq!(updated.access_token.as_deref(), Some("new"));
+        assert_eq!(updated.refresh_token.as_deref(), Some("keep-me"));
+        request.assert();
+    }
+
+    #[test]
+    fn malformed_refresh_response_is_rejected() {
+        let mut server = Server::new();
+        let request = server.mock("POST", "/token").with_status(200)
+            .with_body(r#"{"token":"wrong-field"}"#).create();
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()), refresh_token: Some("old".into()), ..Default::default()
+        };
+        let error = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap_err().to_string();
+        assert!(error.contains("did not contain an access token"));
+        request.assert();
+    }
+
+    #[test]
+    fn revoke_request_is_hermetic_and_rejects_provider_failure() {
+        let mut server = Server::new();
+        let request = server.mock("POST", "/revoke")
+            .match_body(mockito::Matcher::Exact("token=access-token".into()))
+            .with_status(200).create();
+        revoke_at(&format!("{}/revoke", server.url()), "access-token").unwrap();
+        request.assert();
+
+        let failure = server.mock("POST", "/revoke-fail").with_status(401).create();
+        assert!(revoke_at(&format!("{}/revoke-fail", server.url()), "access-token").is_err());
+        failure.assert();
     }
 
     #[test]

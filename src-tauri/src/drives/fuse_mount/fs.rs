@@ -10,7 +10,7 @@ use anyhow::Result;
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,48 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// TTL for cached attributes (5 seconds).
 const ATTR_TTL: Duration = Duration::from_secs(5);
+pub const DEFAULT_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+struct ContentCache {
+    max_bytes: u64,
+    bytes: u64,
+    entries: HashMap<PathBuf, Vec<u8>>,
+    lru: VecDeque<PathBuf>,
+}
+
+impl ContentCache {
+    fn new(max_bytes: u64) -> Self {
+        Self { max_bytes, bytes: 0, entries: HashMap::new(), lru: VecDeque::new() }
+    }
+
+    fn get(&mut self, path: &Path) -> Option<Vec<u8>> {
+        let data = self.entries.get(path)?.clone();
+        self.lru.retain(|item| item != path);
+        self.lru.push_back(path.to_owned());
+        Some(data)
+    }
+
+    fn insert(&mut self, path: PathBuf, data: Vec<u8>) {
+        let size = data.len() as u64;
+        if size > self.max_bytes { return; }
+        if let Some(previous) = self.entries.remove(&path) {
+            self.bytes = self.bytes.saturating_sub(previous.len() as u64);
+            self.lru.retain(|item| item != &path);
+        }
+        while self.bytes + size > self.max_bytes {
+            let Some(oldest) = self.lru.pop_front() else { break; };
+            if let Some(previous) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(previous.len() as u64);
+            }
+        }
+        self.bytes += size;
+        self.entries.insert(path.clone(), data);
+        self.lru.push_back(path);
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> (u64, usize) { (self.bytes, self.entries.len()) }
+}
 
 /// FUSE filesystem backed by a `CloudDrive`.
 pub struct FuseDriveFs {
@@ -25,6 +67,7 @@ pub struct FuseDriveFs {
     queue: TransferQueue,
     /// Bidirectional inode ↔ path map, protected by a mutex.
     state: Mutex<InodeState>,
+    content_cache: Mutex<ContentCache>,
 }
 
 struct InodeState {
@@ -76,10 +119,31 @@ impl FuseDriveFs {
     /// Create a filesystem with an explicit queue, allowing the application
     /// to share its queue and tests to use a deterministic concurrency limit.
     pub fn with_queue(drive: Arc<dyn CloudDrive>, queue: TransferQueue) -> Self {
+        Self::with_queue_and_cache(drive, queue, DEFAULT_CACHE_MAX_BYTES)
+    }
+
+    pub fn with_cache_limit(
+        drive: Arc<dyn CloudDrive>,
+        cache_max_bytes: u64,
+    ) -> Self {
+        Self {
+            drive,
+            queue: TransferQueue::shared(),
+            state: Mutex::new(InodeState::new()),
+            content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
+        }
+    }
+
+    fn with_queue_and_cache(
+        drive: Arc<dyn CloudDrive>,
+        queue: TransferQueue,
+        cache_max_bytes: u64,
+    ) -> Self {
         Self {
             drive,
             queue,
             state: Mutex::new(InodeState::new()),
+            content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
         }
     }
 
@@ -257,23 +321,31 @@ impl Filesystem for FuseDriveFs {
             }
         };
 
-        // Read the entire file (CloudDrive only supports full reads). The
-        // blocking adapter keeps FUSE synchronous while applying the shared
-        // queue's concurrency and retry policy.
-        let drive = Arc::clone(&self.drive);
-        let drive_id = drive.label().to_owned();
-        match self.queue.download_blocking(
-            drive_id,
-            file_path.clone(),
-            None,
-            move |path| drive.read_file(path),
-        ) {
-            Ok(data) => {
+        // Read the entire file (CloudDrive only supports full reads), but
+        // retain bounded results so repeated FUSE page reads do not redownload.
+        let data = if let Some(cached) = self.content_cache.lock().unwrap().get(&file_path) {
+            Some(cached)
+        } else {
+            let drive = Arc::clone(&self.drive);
+            let drive_id = drive.label().to_owned();
+            let fetched = self.queue.download_blocking(
+                drive_id,
+                file_path.clone(),
+                None,
+                move |path| drive.read_file(path),
+            ).ok();
+            if let Some(ref bytes) = fetched {
+                self.content_cache.lock().unwrap().insert(file_path.clone(), bytes.clone());
+            }
+            fetched
+        };
+        match data {
+            Some(data) => {
                 let start = (offset as usize).min(data.len());
                 let end = (start + size as usize).min(data.len());
                 reply.data(&data[start..end]);
             }
-            Err(_) => reply.error(libc::EIO),
+            None => reply.error(libc::EIO),
         }
     }
 
@@ -315,6 +387,32 @@ impl Filesystem for FuseDriveFs {
     }
 }
 
+#[cfg(test)]
+mod cache_tests {
+    use super::ContentCache;
+    use std::path::Path;
+
+    #[test]
+    fn cache_evicts_least_recently_used_entries_by_bytes() {
+        let mut cache = ContentCache::new(5);
+        cache.insert("a".into(), b"123".to_vec());
+        cache.insert("b".into(), b"45".to_vec());
+        assert_eq!(cache.stats(), (5, 2));
+        assert_eq!(cache.get(Path::new("a")).unwrap(), b"123");
+        cache.insert("c".into(), b"xy".to_vec());
+        assert!(cache.get(Path::new("b")).is_none());
+        assert_eq!(cache.stats(), (5, 2));
+    }
+
+    #[test]
+    fn oversized_entries_are_not_cached() {
+        let mut cache = ContentCache::new(2);
+        cache.insert("large".into(), b"123".to_vec());
+        assert!(cache.get(Path::new("large")).is_none());
+        assert_eq!(cache.stats(), (0, 0));
+    }
+}
+
 // ── Mount / unmount helpers ──────────────────────────────────────────────
 
 /// Mount a cloud drive as a read-only FUSE filesystem.
@@ -322,8 +420,17 @@ impl Filesystem for FuseDriveFs {
 /// This function blocks (runs the FUSE event loop) — call it from a
 /// dedicated thread.  Returns when the filesystem is unmounted.
 pub fn mount_blocking(drive: Arc<dyn CloudDrive>, mount_point: &Path) -> Result<()> {
+    mount_blocking_with_cache(drive, mount_point, DEFAULT_CACHE_MAX_BYTES)
+}
+
+/// Mount with an explicit maximum in-memory content-cache size.
+pub fn mount_blocking_with_cache(
+    drive: Arc<dyn CloudDrive>,
+    mount_point: &Path,
+    cache_max_bytes: u64,
+) -> Result<()> {
     std::fs::create_dir_all(mount_point)?;
-    let fs = FuseDriveFs::new(drive);
+    let fs = FuseDriveFs::with_cache_limit(drive, cache_max_bytes);
     let options = vec![
         fuser::MountOption::RO,
         fuser::MountOption::FSName("crispsorter".to_string()),

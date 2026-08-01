@@ -27,7 +27,7 @@ pub struct ProxyConfig {
 
     /// Optional basic-auth password for the proxy.
     /// Should be stored in the OS keychain, not in plaintext config.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing, skip_deserializing)]
     pub password: Option<String>,
 }
 
@@ -35,6 +35,13 @@ impl ProxyConfig {
     /// Returns `true` when no proxy is configured.
     pub fn is_empty(&self) -> bool {
         self.url.is_none()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.url.is_none() && (self.username.is_some() || self.password.is_some()) {
+            anyhow::bail!("proxy credentials require a proxy URL");
+        }
+        Ok(())
     }
 }
 
@@ -46,6 +53,23 @@ impl ProxyConfig {
 /// honours `HTTP_PROXY` / `HTTPS_PROXY` env vars via reqwest's built-in
 /// support).
 pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
+    config.validate()?;
+    configure_async_builder(config)?.build().context("building proxied async client")
+}
+
+/// Build an async client with an explicit request timeout and proxy policy.
+pub fn build_async_client_with_timeout(
+    config: &ProxyConfig,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Client> {
+    config.validate()?;
+    configure_async_builder(config)?
+        .timeout(timeout)
+        .build()
+        .context("building proxied async client")
+}
+
+fn configure_async_builder(config: &ProxyConfig) -> Result<reqwest::ClientBuilder> {
     let mut builder = reqwest::ClientBuilder::new();
 
     if let Some(url) = &config.url {
@@ -57,13 +81,14 @@ pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
         builder = builder.proxy(proxy);
     }
 
-    builder.build().context("building proxied async client")
+    Ok(builder)
 }
 
 /// Build a blocking `reqwest::blocking::Client` with the given proxy config.
 ///
 /// Used by `CloudDrive` implementations which are synchronous.
 pub fn build_blocking_client(config: &ProxyConfig) -> Result<reqwest::blocking::Client> {
+    config.validate()?;
     let mut builder = reqwest::blocking::ClientBuilder::new();
 
     if let Some(url) = &config.url {
@@ -149,6 +174,13 @@ mod tests {
     }
 
     #[test]
+    fn async_client_with_timeout_builds_with_proxy() {
+        let cfg = ProxyConfig { url: Some("http://proxy.example.com:8080".into()), ..Default::default() };
+        let client = build_async_client_with_timeout(&cfg, std::time::Duration::from_secs(3));
+        assert!(client.is_ok());
+    }
+
+    #[test]
     fn config_serde_round_trips() {
         let cfg = ProxyConfig {
             url: Some("socks5h://10.0.0.1:9050".into()),
@@ -167,5 +199,16 @@ mod tests {
         let cfg = ProxyConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
         assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn proxy_password_never_serializes_and_credentials_need_url() {
+        let cfg = ProxyConfig {
+            url: Some("http://proxy.example.com:8080".into()),
+            username: Some("user".into()), password: Some("secret".into()),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("secret"));
+        assert!(ProxyConfig { url: None, username: None, password: Some("secret".into()) }.validate().is_err());
     }
 }

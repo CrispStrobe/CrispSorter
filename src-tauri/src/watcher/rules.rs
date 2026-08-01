@@ -12,6 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::path::PathBuf;
+
+const RULES_FILE: &str = "automation_rules.json";
 
 // ── Trigger types ────────────────────────────────────────────────────────
 
@@ -88,7 +91,7 @@ pub enum Action {
 // ── Rule ─────────────────────────────────────────────────────────────────
 
 /// A complete automation rule.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutomationRule {
     /// Unique rule name.
     pub name: String,
@@ -242,6 +245,28 @@ pub fn default_rules() -> Vec<AutomationRule> {
             }],
         },
     ]
+}
+
+/// Load persisted automation rules, falling back to the disabled examples on
+/// a first run. The file contains no credentials or machine-specific paths.
+pub fn load_rules(data_dir: &Path) -> anyhow::Result<Vec<AutomationRule>> {
+    let path = data_dir.join(RULES_FILE);
+    if !path.exists() {
+        return Ok(default_rules());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+/// Persist the complete rule set atomically so a crash cannot leave a partial
+/// automation configuration behind.
+pub fn save_rules(data_dir: &Path, rules: &[AutomationRule]) -> anyhow::Result<()> {
+    std::fs::create_dir_all(data_dir)?;
+    let path = data_dir.join(RULES_FILE);
+    let partial = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
+    std::fs::write(&partial, serde_json::to_vec_pretty(rules)?)?;
+    std::fs::rename(partial, path)?;
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -565,5 +590,29 @@ mod tests {
         let json = serde_json::to_string(&actions).unwrap();
         let back: Vec<Action> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, actions);
+    }
+
+    #[test]
+    fn persisted_rules_round_trip_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = vec![AutomationRule {
+            name: "test-rule".into(),
+            enabled: true,
+            priority: 4,
+            triggers: vec![Trigger::Extension { patterns: vec!["pdf".into()] }],
+            trigger_mode: TriggerMode::All,
+            actions: vec![Action::Ingest],
+        }];
+        save_rules(dir.path(), &rules).unwrap();
+        assert_eq!(load_rules(dir.path()).unwrap(), rules);
+        assert!(dir.path().join("automation_rules.json").exists());
+    }
+
+    #[test]
+    fn missing_rules_loads_disabled_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let rules = load_rules(dir.path()).unwrap();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().all(|rule| !rule.enabled));
     }
 }

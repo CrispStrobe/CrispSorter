@@ -11,9 +11,6 @@ export type ContextPanel = {
     title: string;
 };
 
-/// A panel whose source variant is known statically. The factories below each
-/// build exactly one variant, so returning the bare `ContextPanel` would throw
-/// that away and force every caller to re-narrow a union it never had.
 export type PanelOf<K extends PanelSource['kind']> = ContextPanel & {
     source: Extract<PanelSource, { kind: K }>;
 };

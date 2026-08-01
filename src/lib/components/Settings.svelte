@@ -1469,6 +1469,7 @@
                 unlistenIndexProgress();
                 unlistenDownload();
             };
+            refreshBackupJobs().catch(() => {});
         })();
         return () => cleanup();
     });
@@ -2064,6 +2065,134 @@
     let backupKeepDaily   = $state<number>(7);
     let backupNowBusy     = $state(false);
     let backupNowMsg      = $state('');
+    let backupJobs        = $state<any[]>([]);
+    let backupRuns        = $state<Record<string, any[]>>({});
+    let backupJobsBusy    = $state(false);
+    let backupRestoreJobId = $state('');
+    let backupRestoreSnapshot = $state('');
+    let backupRestorePath = $state('');
+    let backupRestoreDestination = $state('');
+    let backupRestoreEntries = $state<any[]>([]);
+    let backupRestoreBusy = $state(false);
+    let backupRestoreMsg = $state('');
+    let backupEditId = $state('');
+    let backupEditSource = $state('');
+    let backupEditDrive = $state('');
+    let backupEditRemote = $state('');
+    let backupEditSchedule = $state('manual');
+    let backupEditRetention = $state(7);
+    let backupEditVerify = $state(true);
+    let backupEditEnabled = $state(true);
+    let backupEditMsg = $state('');
+
+    async function refreshBackupJobs() {
+        if (!isDesktop) return;
+        backupJobsBusy = true;
+        try {
+            backupJobs = await invoke<any[]>('backup_job_list');
+            const runs: Record<string, any[]> = {};
+            await Promise.all(backupJobs.map(async (job) => {
+                runs[job.id] = await invoke<any[]>('backup_job_runs', { jobId: job.id, limit: 5 });
+            }));
+            backupRuns = runs;
+        } finally {
+            backupJobsBusy = false;
+        }
+    }
+
+    function editBackupJob(job: any) {
+        backupEditId = job.id;
+        backupEditSource = job.source_root;
+        backupEditDrive = job.drive_id;
+        backupEditRemote = job.remote_root;
+        const schedule = job.schedule ?? { kind: 'manual' };
+        backupEditSchedule = schedule.kind === 'interval_minutes'
+            ? `interval:${schedule.minutes}`
+            : schedule.kind === 'daily' ? `daily:${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}` : 'manual';
+        backupEditRetention = job.retention_count;
+        backupEditVerify = job.verify_integrity;
+        backupEditEnabled = job.enabled;
+        backupEditMsg = '';
+    }
+
+    function backupSchedulePayload(raw: string) {
+        if (raw === 'manual') return { kind: 'manual' };
+        const interval = raw.match(/^interval:(\d+)$/);
+        if (interval) return { kind: 'interval_minutes', minutes: Number(interval[1]) };
+        const daily = raw.match(/^daily:(\d{1,2}):(\d{1,2})$/);
+        if (daily) return { kind: 'daily', hour: Number(daily[1]), minute: Number(daily[2]) };
+        throw new Error('Schedule must be manual, interval:<minutes>, or daily:HH:MM.');
+    }
+
+    async function saveBackupJob() {
+        if (!backupEditId.trim() || !backupEditSource.trim() || !backupEditDrive.trim() || !backupEditRemote.trim()) {
+            backupEditMsg = 'ID, source, drive, and remote path are required.';
+            return;
+        }
+        try {
+            backupEditMsg = 'Saving…';
+            await invoke('backup_job_upsert', { job: {
+                id: backupEditId.trim(), source_root: backupEditSource.trim(), drive_id: backupEditDrive.trim(),
+                remote_root: backupEditRemote.trim(), schedule: backupSchedulePayload(backupEditSchedule),
+                retention_count: Number(backupEditRetention), verify_integrity: backupEditVerify,
+                enabled: backupEditEnabled, last_run_at: null, last_status: null, updated_at: 0,
+            }});
+            backupEditMsg = 'Saved.';
+            await refreshBackupJobs();
+        } catch (e: any) {
+            backupEditMsg = `Error: ${e}`;
+        }
+    }
+
+    async function deleteBackupJob(job: any) {
+        if (!window.confirm(`Remove backup job '${job.id}'? Existing snapshots will not be deleted.`)) return;
+        try {
+            await invoke('backup_job_delete', { id: job.id });
+            if (backupEditId === job.id) backupEditId = '';
+            await refreshBackupJobs();
+        } catch (e: any) {
+            backupEditMsg = `Error: ${e}`;
+        }
+    }
+
+    async function listBackupSnapshot() {
+        if (!backupRestoreJobId || !/^\d{4}-\d{2}-\d{2}$/.test(backupRestoreSnapshot)) {
+            backupRestoreMsg = 'Choose a job and enter a YYYY-MM-DD snapshot.';
+            return;
+        }
+        backupRestoreBusy = true;
+        backupRestoreMsg = '';
+        try {
+            backupRestoreEntries = await invoke<any[]>('backup_job_snapshot_list', {
+                jobId: backupRestoreJobId, snapshot: backupRestoreSnapshot,
+            });
+            backupRestoreMsg = `Found ${backupRestoreEntries.length} file(s).`;
+        } catch (e: any) {
+            backupRestoreMsg = `Error: ${e}`;
+        } finally {
+            backupRestoreBusy = false;
+        }
+    }
+
+    async function restoreBackupFile() {
+        if (!backupRestoreJobId || !backupRestoreSnapshot || !backupRestorePath || !backupRestoreDestination) {
+            backupRestoreMsg = 'Choose a job, snapshot, file, and destination.';
+            return;
+        }
+        backupRestoreBusy = true;
+        backupRestoreMsg = 'Restoring…';
+        try {
+            await invoke('backup_job_restore', {
+                jobId: backupRestoreJobId, snapshot: backupRestoreSnapshot,
+                remotePath: backupRestorePath, destination: backupRestoreDestination,
+            });
+            backupRestoreMsg = 'Restore completed.';
+        } catch (e: any) {
+            backupRestoreMsg = `Error: ${e}`;
+        } finally {
+            backupRestoreBusy = false;
+        }
+    }
 
     // Stage R — controller.py manifest import.
     let importManifestPath  = $state<string>('');
@@ -4135,6 +4264,76 @@
                     {#if backupNowMsg}
                         <p class="hint" style="margin-top:6px;">{backupNowMsg}</p>
                     {/if}
+                </div>
+
+                <!-- Persisted backup-job history. Execution and restore remain
+                     explicit; this panel is intentionally read-only for now. -->
+                <div style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                        <strong>Backup jobs</strong>
+                        <button type="button" class="btn" onclick={() => refreshBackupJobs()} disabled={backupJobsBusy}>
+                            {backupJobsBusy ? 'Refreshing…' : 'Refresh history'}
+                        </button>
+                    </div>
+                    <p class="hint" style="margin-top:4px;">Configured backup schedules and their recent durable runs.</p>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; margin-top:8px;">
+                        <input type="text" bind:value={backupEditId} placeholder="Job ID" />
+                        <input type="text" bind:value={backupEditSource} placeholder="Local source root" />
+                        <input type="text" bind:value={backupEditDrive} placeholder="Drive ID" />
+                        <input type="text" bind:value={backupEditRemote} placeholder="Remote root" />
+                        <input type="text" bind:value={backupEditSchedule} placeholder="manual / interval:60 / daily:02:30" />
+                        <input type="number" min="1" bind:value={backupEditRetention} placeholder="Retention count" />
+                    </div>
+                    <div style="display:flex; gap:12px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+                        <label><input type="checkbox" bind:checked={backupEditVerify} /> Verify remote size</label>
+                        <label><input type="checkbox" bind:checked={backupEditEnabled} /> Enabled</label>
+                        <button type="button" class="btn" onclick={saveBackupJob}>Save job</button>
+                        {#if backupEditMsg}<span class="hint">{backupEditMsg}</span>{/if}
+                    </div>
+                    {#if backupJobs.length === 0}
+                        <p class="hint">No persisted backup jobs.</p>
+                    {:else}
+                        {#each backupJobs as job (job.id)}
+                            <div style="margin-top:8px; padding:8px; background:var(--color-surface-2, rgba(127,127,127,.08)); border-radius:4px;">
+                                <div style="display:flex; justify-content:space-between; gap:8px;">
+                                    <strong>{job.id}</strong>
+                                    <span class="hint">{job.enabled ? 'enabled' : 'disabled'} · {job.last_status ?? 'not run'}</span>
+                                </div>
+                                <div class="hint" style="overflow-wrap:anywhere;">{job.source_root} → {job.remote_root}</div>
+                                <div style="display:flex; gap:6px; margin-top:4px;">
+                                    <button type="button" class="btn" onclick={() => editBackupJob(job)}>Edit</button>
+                                    <button type="button" class="btn danger" onclick={() => deleteBackupJob(job)}>Remove config</button>
+                                </div>
+                                {#each (backupRuns[job.id] ?? []) as run (run.id)}
+                                    <div class="hint" style="margin-top:4px;">{run.status} · {run.completed}/{run.planned} files · {run.bytes} bytes</div>
+                                {/each}
+                            </div>
+                        {/each}
+                    {/if}
+                    <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--color-border, #444);">
+                        <strong>Restore a backup file</strong>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                            <select bind:value={backupRestoreJobId} style="min-width:150px;">
+                                <option value="">Select job</option>
+                                {#each backupJobs as job (job.id)}<option value={job.id}>{job.id}</option>{/each}
+                            </select>
+                            <input type="text" bind:value={backupRestoreSnapshot} placeholder="YYYY-MM-DD" style="width:120px;" />
+                            <button type="button" class="btn" onclick={listBackupSnapshot} disabled={backupRestoreBusy}>List files</button>
+                        </div>
+                        {#if backupRestoreEntries.length > 0}
+                            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                                <select bind:value={backupRestorePath} style="min-width:240px;">
+                                    <option value="">Select file</option>
+                                    {#each backupRestoreEntries as entry (entry.relative_path)}
+                                        <option value={entry.relative_path}>{entry.relative_path} ({entry.size ?? '?'} bytes)</option>
+                                    {/each}
+                                </select>
+                                <input type="text" bind:value={backupRestoreDestination} placeholder="Local destination path" style="min-width:240px;" />
+                                <button type="button" class="btn" onclick={restoreBackupFile} disabled={backupRestoreBusy}>Restore selected</button>
+                            </div>
+                        {/if}
+                        {#if backupRestoreMsg}<p class="hint" style="margin-top:6px;">{backupRestoreMsg}</p>{/if}
+                    </div>
                 </div>
 
                 <!-- Stage U — restore a shard from cloud drive. -->
