@@ -2975,7 +2975,7 @@ a transfer without leaving the search/catalog workflow.
     response. Generic WebDAV, offline servers, and rejected OCS requests
     remain unsupported; hermetic positive and negative probe tests pass.
     ✅ 2026-08-01
-- [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
+- [x] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.
   - [x] Persist validated backup-job definitions (source root, drive, remote
@@ -2983,7 +2983,7 @@ a transfer without leaving the search/catalog workflow.
     state) alongside shard watermarks; expose Tauri list/upsert/delete and
     CLI `sync backup-job list|upsert|delete`. Execution remains explicit until
     the scheduler and provider-independent restore contract are specified.
-  - [ ] Add scheduler/execution service with crash-safe run records and
+  - [x] Add scheduler/execution service with crash-safe run records and
     retention enforcement; reuse `cloud_backup` shard export/import and the
     shared transfer queue.
     - [x] Added durable run lifecycle records, bounded history inspection, and
@@ -3016,7 +3016,7 @@ a transfer without leaving the search/catalog workflow.
     - [x] Added opt-in CLI `sync backup-job watch` with `--once`, `--dry-run`,
       and bounded `--max-cycles`; it sleeps to the scheduler wake-up and runs
       due jobs through the guarded execution path without implicit startup.
-  - [ ] Add integrity verification and restore-selection UI/CLI with visible
+  - [x] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
       a dated snapshot/file, downloads use the shared queue, remote/local byte
