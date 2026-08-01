@@ -1606,6 +1606,9 @@ no pinning.  Low effort, meaningful security improvement.
   warning (not hard-fail) when only the backup pin matches — signals
   an upcoming rotation.
 - [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
+  - [x] Pin-set validation now rejects malformed base64 digests, duplicate
+    primary/backup pins, missing domains, and incomplete rotations; hostname
+    selection normalizes case and trailing dots.
 
 #### Priority 8 — HTTP/SOCKS5 proxy support
 

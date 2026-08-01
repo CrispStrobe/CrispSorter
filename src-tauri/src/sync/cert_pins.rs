@@ -16,6 +16,7 @@
 //! is rejected, while a connection that fails chain validation is
 //! rejected regardless of pins.
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 // ── Pin data ─────────────────────────────────────────────────────────────
@@ -30,6 +31,36 @@ pub struct PinSet {
     /// SHA-256 hashes of the root CA SPKI (hex-encoded).
     /// First entry is the primary; second is backup.
     pub pins: Vec<String>,
+}
+
+impl PinSet {
+    /// Validate a pin set before it is used to select a TLS policy.
+    ///
+    /// Pins are SHA-256 SPKI digests encoded as standard base64, therefore
+    /// every entry must decode to exactly 32 bytes. Two distinct pins are
+    /// required so a rotation cannot accidentally remove the fallback.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.provider.trim().is_empty(), "pin provider is empty");
+        anyhow::ensure!(!self.domains.is_empty(), "pin set has no domains");
+        anyhow::ensure!(
+            self.pins.len() == 2,
+            "pin set must contain primary and backup pins"
+        );
+        anyhow::ensure!(
+            self.pins[0] != self.pins[1],
+            "primary and backup pins are identical"
+        );
+        for pin in &self.pins {
+            let decoded = STANDARD
+                .decode(pin)
+                .map_err(|_| anyhow::anyhow!("pin is not valid base64"))?;
+            anyhow::ensure!(decoded.len() == 32, "pin must decode to a SHA-256 digest");
+        }
+        for domain in &self.domains {
+            anyhow::ensure!(!domain.trim().is_empty(), "pin domain is empty");
+        }
+        Ok(())
+    }
 }
 
 /// Built-in pin sets for major cloud providers.
@@ -100,9 +131,10 @@ pub fn builtin_pin_sets() -> Vec<PinSet> {
 
 /// Find the pin set that matches a given hostname.
 pub fn find_pin_set<'a>(hostname: &str, pin_sets: &'a [PinSet]) -> Option<&'a PinSet> {
+    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
     for ps in pin_sets {
         for domain in &ps.domains {
-            if domain_matches(domain, hostname) {
+            if domain_matches(domain, &hostname) {
                 return Some(ps);
             }
         }
@@ -114,6 +146,8 @@ pub fn find_pin_set<'a>(hostname: &str, pin_sets: &'a [PinSet]) -> Option<&'a Pi
 /// Handles `*.example.com` matching `foo.example.com` but not
 /// `foo.bar.example.com` or `example.com` itself.
 fn domain_matches(pattern: &str, hostname: &str) -> bool {
+    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
+    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_prefix("*.") {
         // Wildcard: hostname must have exactly one label before the suffix.
         if let Some(rest) = hostname.strip_suffix(suffix) {
@@ -227,5 +261,29 @@ mod tests {
         let back: Vec<PinSet> = serde_json::from_str(&json).unwrap();
         assert_eq!(back.len(), sets.len());
         assert_eq!(back[0].provider, sets[0].provider);
+    }
+
+    #[test]
+    fn builtin_pin_sets_validate() {
+        for pin_set in builtin_pin_sets() {
+            pin_set.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn pin_validation_rejects_malformed_rotation() {
+        let invalid = PinSet {
+            provider: "Example".into(),
+            domains: vec!["example.com".into()],
+            pins: vec!["not-base64".into(), "not-base64".into()],
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn hostname_matching_normalizes_case_and_trailing_dot() {
+        let sets = builtin_pin_sets();
+        assert!(find_pin_set("WWW.GOOGLEAPIS.COM.", &sets).is_some());
+        assert!(find_pin_set("Googleapis.com.", &sets).is_none());
     }
 }
