@@ -1614,8 +1614,9 @@ source.
   in the watcher itself — it already works on any filesystem path.
 - [ ] **Platform notes.**  Linux: needs `fuse3` package + user in
   `fuse` group.  macOS: needs macFUSE or FUSE-T.  Windows: deferred
-  (WinFSP/Dokany is a separate effort).  `doctor` command should
-  check for FUSE availability.
+  (WinFSP/Dokany is a separate effort).  `doctor` now reports both whether
+  the optional Rust feature was compiled and whether the host runtime is
+  available.
 - [ ] **Tests.**  ✅ 3 unit tests shipped (config serde).  Integration
   tests require FUSE privileges — tagged `#[ignore]`.  Cache eviction
   tests pending (LRU cache not yet implemented).

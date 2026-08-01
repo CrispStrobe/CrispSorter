@@ -2365,6 +2365,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let ocrs_models = crate::extractors::ocr_ocrs::is_ocrs_available();
     let paddle_ocr = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let pdf_extract_ok = true;
+    let fuse_compiled = cfg!(feature = "fuse");
+    let fuse_runtime_available = fuse_compiled && fuse_runtime_available();
     // Check if the default embedder model (BGE-M3) is already cached.
     let model_cache = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
@@ -2382,6 +2384,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
                 "ocrs_models_available": ocrs_models,
                 "paddle_ocr_available": paddle_ocr,
                 "pdf_extract_compiled_in": pdf_extract_ok,
+                "fuse_compiled": fuse_compiled,
+                "fuse_runtime_available": fuse_runtime_available,
                 "embedder_model_cached": embedder_cached,
                 "lance_dir_exists": lance_dir
                     .as_ref()
@@ -2396,6 +2400,8 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
             println!("OCR ocrs models present:          {}", yn(ocrs_models));
             println!("OCR PaddleOCR compiled:           {}", yn(paddle_ocr));
             println!("PDF extractor (pdf-extract):      {}", yn(pdf_extract_ok));
+            println!("FUSE support compiled:            {}", yn(fuse_compiled));
+            println!("FUSE runtime available:           {}", yn(fuse_runtime_available));
             println!("Embedder model cached:            {}", yn(embedder_cached));
             if let Some(p) = lance_dir {
                 println!("Lance dir: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" });
@@ -2406,6 +2412,26 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
 }
 
 fn yn(b: bool) -> &'static str { if b { "✓" } else { "✗" } }
+
+/// Check the host-side prerequisites for a FUSE mount without trying to
+/// mount anything.  This keeps `doctor` useful in packaged builds where the
+/// optional Rust feature may be present but macFUSE/fuse3 is not installed.
+fn fuse_runtime_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return std::path::Path::new("/dev/fuse").exists()
+            && std::process::Command::new("fusermount3").arg("--version").output().is_ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return std::path::Path::new("/Library/Filesystems/macfuse.fs").exists()
+            || std::path::Path::new("/Library/Filesystems/fuse-t.fs").exists();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
 
 // ── catalog ────────────────────────────────────────────────────────────────
 
