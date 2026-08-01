@@ -750,6 +750,65 @@ impl CloudBackupClient {
             .context("manifest_resolve: parse body")?)
     }
 
+    /// Fetch a server-side delta blockmap. A missing map is a normal first
+    /// upload condition and returns `None` so callers can use full upload.
+    pub async fn delta_blockmap(&self, shard_id: &str) -> Result<Option<serde_json::Value>> {
+        let url = format!("{}/api/v2/shards/{}/blockmap", self.base_url, shard_id);
+        let resp = self.client.get(url).header(AUTHORIZATION, self.auth_header()).send().await
+            .context("delta_blockmap: send")?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND { return Ok(None); }
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!("delta_blockmap: HTTP {status}: {}", resp.text().await.unwrap_or_default());
+        }
+        Ok(Some(resp.json().await.context("delta_blockmap: parse body")?))
+    }
+
+    /// Declare or replace the staged blockmap for one shard.
+    pub async fn delta_put_blockmap(
+        &self,
+        shard_id: &str,
+        blockmap: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v2/shards/{}/blockmap", self.base_url, shard_id);
+        let resp = self.client.put(url).header(AUTHORIZATION, self.auth_header())
+            .json(blockmap).send().await.context("delta_put_blockmap: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!("delta_put_blockmap: HTTP {status}: {}", resp.text().await.unwrap_or_default());
+        }
+        Ok(resp.json().await.context("delta_put_blockmap: parse body")?)
+    }
+
+    /// Upload one changed block into a previously declared staging map.
+    pub async fn delta_put_block(
+        &self,
+        shard_id: &str,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v2/shards/{}/blocks?offset={offset}&size={}", self.base_url, shard_id, data.len());
+        let resp = self.client.put(url).header(AUTHORIZATION, self.auth_header())
+            .body(data).send().await.context("delta_put_block: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!("delta_put_block: HTTP {status}: {}", resp.text().await.unwrap_or_default());
+        }
+        Ok(resp.json().await.context("delta_put_block: parse body")?)
+    }
+
+    /// Finalize a fully populated staged shard.
+    pub async fn delta_finalize(&self, shard_id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v2/shards/{}/finalize", self.base_url, shard_id);
+        let resp = self.client.post(url).header(AUTHORIZATION, self.auth_header()).send().await
+            .context("delta_finalize: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!("delta_finalize: HTTP {status}: {}", resp.text().await.unwrap_or_default());
+        }
+        Ok(resp.json().await.context("delta_finalize: parse body")?)
+    }
+
     /// `POST /api/index/push-embeddings`.  Per-row rejections (e.g.
     /// pack failure) show up in the response's `errors` list but
     /// don't fail the whole batch.
@@ -1395,6 +1454,31 @@ mod tests {
         let response = cli.manifest_resolve("/conflicts/remote file.md", "abc", true).await.unwrap();
         assert_eq!(response.rows[0].full_text.as_deref(), Some("new"));
         m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn delta_transport_round_trip_wire_shapes() {
+        let mut server = Server::new_async().await;
+        let get = server.mock("GET", "/api/v2/shards/demo/blockmap")
+            .with_status(404).create_async().await;
+        let put_map = server.mock("PUT", "/api/v2/shards/demo/blockmap")
+            .with_status(200).with_body(r#"{"block_size":4,"size":4,"blocks":[]}"#)
+            .create_async().await;
+        let put_block = server.mock("PUT", "/api/v2/shards/demo/blocks")
+            .match_query(Matcher::Regex("offset=0&size=4".into()))
+            .with_status(200).with_body(r#"{"accepted":true}"#).create_async().await;
+        let finalize = server.mock("POST", "/api/v2/shards/demo/finalize")
+            .with_status(200).with_body(r#"{"finalized":true,"size":4}"#).create_async().await;
+        let cli = client_for(&server);
+        assert!(cli.delta_blockmap("demo").await.unwrap().is_none());
+        let map = serde_json::json!({"block_size":4,"size":4,"blocks":[]});
+        assert_eq!(cli.delta_put_blockmap("demo", &map).await.unwrap()["size"], 4);
+        assert_eq!(cli.delta_put_block("demo", 0, b"test".to_vec()).await.unwrap()["accepted"], true);
+        assert_eq!(cli.delta_finalize("demo").await.unwrap()["finalized"], true);
+        get.assert_async().await;
+        put_map.assert_async().await;
+        put_block.assert_async().await;
+        finalize.assert_async().await;
     }
 
     #[tokio::test]
