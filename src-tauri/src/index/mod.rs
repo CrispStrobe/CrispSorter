@@ -67,6 +67,7 @@ pub use snippet::{highlight_snippet, SNIPPET_WINDOW};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use crate::sync::conflict::ConflictPolicy;
 
 /// Abstraction over local and remote index backends.
 ///
@@ -397,6 +398,11 @@ pub struct IndexConfig {
     /// the on-demand promotion path into the local cache.
     #[serde(default)]
     pub cloud_backup_pull_full_text_enabled: bool,
+    /// Policy used when a sync pull encounters divergent local and remote
+    /// content. Persisted with the index config so all sync entry points share
+    /// one explicit conflict decision.
+    #[serde(default)]
+    pub conflict_policy: ConflictPolicy,
     /// P13.7 Stage P — soft cap on the local LanceDB on-disk
     /// footprint in bytes.  `None` (default) = unbounded.  When set,
     /// a background 1-hour timer runs `purge_to_size`: oldest rows
@@ -608,6 +614,7 @@ impl Default for IndexConfig {
             cloud_backup_push_embeddings_enabled: false,
             cloud_backup_pull_manifests_enabled: false,
             cloud_backup_pull_full_text_enabled: false,
+            conflict_policy: ConflictPolicy::default(),
             local_max_size_bytes: None,
             local_extraction_enabled: true,
             local_skeleton_only: false,

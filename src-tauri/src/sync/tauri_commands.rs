@@ -18,6 +18,54 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// Return the persisted conflict policy used by future sync mutations.
+#[tauri::command]
+pub async fn sync_get_conflict_policy(
+    state: State<'_, AppState>,
+) -> Result<super::conflict::ConflictPolicy, String> {
+    Ok(state.index.lock().await.config.conflict_policy)
+}
+
+/// Persist the conflict policy shared by sync and file-manager integrations.
+#[tauri::command]
+pub async fn sync_set_conflict_policy(
+    state: State<'_, AppState>,
+    policy: super::conflict::ConflictPolicy,
+) -> Result<super::conflict::ConflictPolicy, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let mut index = state.index.lock().await;
+    index.config.conflict_policy = policy;
+    crate::index::config_persist::save(&data_dir, &index.config)
+        .map_err(|e| format!("persisting conflict policy: {e}"))?;
+    Ok(policy)
+}
+
+#[tauri::command]
+pub async fn sync_list_conflicts(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::PendingConflict>, String> {
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    SyncManager::open(&data_dir).map_err(|e| e.to_string())?
+        .pending_conflicts().map_err(|e| e.to_string())
+}
+
+/// Acknowledge a manual-review item after the caller applies a resolution.
+#[tauri::command]
+pub async fn sync_ack_conflict(
+    state: State<'_, AppState>, id: i64,
+) -> Result<bool, String> {
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    SyncManager::open(&data_dir).map_err(|e| e.to_string())?
+        .remove_conflict(id).map_err(|e| e.to_string())
+}
+
 async fn offline_queue(
     state: &State<'_, AppState>,
 ) -> Result<super::offline_queue::OfflineQueue, String> {
@@ -688,9 +736,10 @@ pub async fn sync_cb_manifest_pull(
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
-    let (local, include_full_text) = {
+    let (local, include_full_text, conflict_policy) = {
         let idx = state.index.lock().await;
-        (idx.local.clone(), idx.config.cloud_backup_pull_full_text_enabled)
+        (idx.local.clone(), idx.config.cloud_backup_pull_full_text_enabled,
+            idx.config.conflict_policy)
     };
     let local = local.ok_or("Local index not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
@@ -719,15 +768,61 @@ pub async fn sync_cb_manifest_pull(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    // Translate each PullRow → DocumentChunk (chunk_index = -1 L1 sentinel).
-    let chunks: Vec<crate::index::schema::DocumentChunk> = pulled.rows.iter().map(|r| {
+    // Translate each PullRow → DocumentChunk, resolving same-path changes
+    // before they reach LanceDB.
+    let mut chunks = Vec::with_capacity(pulled.rows.len());
+    let mut skipped_local = 0usize;
+    let mut queued_manual = 0usize;
+    let mut replaced_remote = 0usize;
+    let mut kept_both = 0usize;
+    for r in &pulled.rows {
         // Build a stable doc_id from the hash so re-pulls of the same
         // file are idempotent (LanceDB upsert by row id).
-        let doc_id = if r.sha256.is_empty() {
+        let base_doc_id = if r.sha256.is_empty() {
             uuid::Uuid::new_v4().to_string()
         } else { r.sha256.clone() };
+        let local_rows = local.conflict_rows_for_location(&r.path)
+            .await.map_err(|e| e.to_string())?;
+        let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
+        let mut doc_id = base_doc_id;
+        if !matching {
+            if let Some(local_row) = local_rows.first() {
+                let resolution = crate::sync::conflict::resolve_conflict(
+                    &crate::sync::conflict::ConflictSide {
+                        doc_id: local_row.doc_id.clone(), source_hash: local_row.source_hash.clone(),
+                        updated_at: local_row.indexed_at, title: local_row.title.clone(),
+                    },
+                    &crate::sync::conflict::ConflictSide {
+                        doc_id: doc_id.clone(), source_hash: r.sha256.clone(),
+                        updated_at: Some(r.indexed_at), title: r.title.clone(),
+                    }, conflict_policy);
+                match resolution {
+                    crate::sync::conflict::Resolution::UseLocal => {
+                        skipped_local += 1;
+                        continue;
+                    }
+                    crate::sync::conflict::Resolution::UseRemote => {
+                        for row in &local_rows {
+                            local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
+                        }
+                        replaced_remote += 1;
+                    }
+                    crate::sync::conflict::Resolution::KeepBoth { remote_doc_id } => {
+                        doc_id = remote_doc_id;
+                        kept_both += 1;
+                    }
+                    crate::sync::conflict::Resolution::NeedsManualReview => {
+                        mgr.enqueue_conflict(&r.path, &local_row.doc_id, &local_row.source_hash,
+                            &r.sha256, local_row.title.as_deref(), r.title.as_deref(), r.indexed_at)
+                            .map_err(|e| e.to_string())?;
+                        queued_manual += 1;
+                        continue;
+                    }
+                }
+            }
+        }
         let row_id = crate::index::ingest::chunk_row_id(&doc_id, -1);
-        crate::index::schema::DocumentChunk {
+        chunks.push(crate::index::schema::DocumentChunk {
             id: row_id,
             doc_id: doc_id.clone(),
             // Use crisp+local:// for now; future improvement is to
@@ -784,8 +879,8 @@ pub async fn sync_cb_manifest_pull(
             embedding_vit: None,
             summary: None,
             doc_status: None,
-        }
-    }).collect();
+        });
+    }
 
     let applied = chunks.len();
     local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
@@ -797,6 +892,10 @@ pub async fn sync_cb_manifest_pull(
     Ok(serde_json::json!({
         "pulled": pulled.rows.len(),
         "applied": applied,
+        "skipped_local": skipped_local,
+        "queued_manual": queued_manual,
+        "replaced_remote": replaced_remote,
+        "kept_both": kept_both,
         "watermark": new_watermark,
         "has_more": pulled.has_more,
     }))
