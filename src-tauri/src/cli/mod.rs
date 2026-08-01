@@ -515,6 +515,10 @@ enum SyncPairCmd {
         id: String,
         #[arg(long)]
         dry_run: bool,
+        /// Conflict policy for this overwrite-capable push. Until remote
+        /// metadata comparison lands, only local-wins is safe here.
+        #[arg(long, default_value = "local-wins")]
+        conflict_policy: String,
     },
 }
 
@@ -5095,7 +5099,7 @@ async fn cmd_sync_pair(
                 }
             }
         }
-        SyncPairCmd::Push { id, dry_run } => {
+        SyncPairCmd::Push { id, dry_run, conflict_policy } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
@@ -5108,6 +5112,10 @@ async fn cmd_sync_pair(
                 .ok_or_else(|| format!("sync pair '{id}' not found"))?;
             if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToLocal) {
                 return Err("sync pair is configured for remote-to-local direction".into());
+            }
+            let policy = parse_conflict_policy(&conflict_policy)?;
+            if policy != crate::sync::conflict::ConflictPolicy::LocalWins {
+                return Err("sync pair push cannot apply this conflict policy without remote metadata; use --conflict-policy local-wins".into());
             }
             let plan = crate::sync::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
             let started_at = sync_pair_cli_now_ms();

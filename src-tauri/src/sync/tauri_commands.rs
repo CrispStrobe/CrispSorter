@@ -112,6 +112,7 @@ pub async fn sync_pair_push(
     state: State<'_, AppState>,
     id: String,
     dry_run: Option<bool>,
+    conflict_policy: Option<super::conflict::ConflictPolicy>,
 ) -> Result<SyncPairPushResult, String> {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
@@ -123,6 +124,13 @@ pub async fn sync_pair_push(
         .ok_or_else(|| format!("sync pair '{id}' not found"))?;
     if matches!(pair.mode, super::pairs::SyncPairMode::ToLocal) {
         return Err("sync pair is configured for remote-to-local direction".into());
+    }
+    if let Some(policy) = conflict_policy {
+        if policy != super::conflict::ConflictPolicy::LocalWins {
+            return Err(format!(
+                "sync pair push cannot apply {policy:?} without remote metadata; use local-wins or run a remote comparison first"
+            ));
+        }
     }
     let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
     let dry_run = dry_run.unwrap_or(false);

@@ -2880,6 +2880,10 @@ a transfer without leaving the search/catalog workflow.
     policy for sync integrations. ✅ 2026-08-01
   - [x] Settings now loads and edits the five policies and persists the choice
     through both the index config and the dedicated sync command. ✅ 2026-08-01
+  - [x] Sync-pair pushes now accept an explicit conflict policy and reject
+    remote-wins, keep-both, manual, and newest-wins until remote metadata is
+    available; only local-wins may safely overwrite in the current local-only
+    comparison boundary. ✅ 2026-08-01
 - [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
