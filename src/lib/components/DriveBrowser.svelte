@@ -159,6 +159,10 @@
         return decision.replace('_', ' ');
     }
 
+    function sourceKind(source: ContextPanel['source']): string {
+        return source.kind;
+    }
+
     onMount(() => {
         duplicateAudit = loadDuplicateAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
@@ -235,21 +239,22 @@
                 <div class="context-label">Search results</div>
                 <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
-                <code>group: {rightPanel.source.groupId}</code>
+                {@const dupSource = rightPanel.source}
+                <code>group: {dupSource.groupId}</code>
                 <div class="duplicate-decision">
                     <span class="context-label">Dry-run decision</span>
-                    <select value={rightPanel.source.decision} onchange={(event) => setDuplicateDecision((event.currentTarget as HTMLSelectElement).value as DuplicateDecision)}>
+                    <select value={dupSource.decision} onchange={(event) => setDuplicateDecision((event.currentTarget as HTMLSelectElement).value as DuplicateDecision)}>
                         <option value="review">Review later</option>
                         <option value="keep_source">Keep source</option>
                         <option value="keep_destination">Keep destination</option>
                         <option value="keep_both">Keep both</option>
                     </select>
-                    {#if duplicateAudit.some((entry) => entry.groupId === rightPanel.source.groupId)}
+                    {#if duplicateAudit.some((entry) => entry.groupId === dupSource.groupId)}
                         <button class="duplicate-undo" onclick={undoDuplicateDecision}>Undo last decision</button>
                     {/if}
                 </div>
                 <ul class="duplicate-context-list">
-                    {#each rightPanel.source.items as item}
+                    {#each dupSource.items as item}
                         <li>
                             <span class="duplicate-role">{item.role}</span>
                             <span class="duplicate-path" title={item.path}>{item.path}</span>
@@ -267,7 +272,7 @@
                     <details class="duplicate-audit">
                         <summary>Decision audit ({duplicateAudit.length})</summary>
                         <div class="audit-list">
-                            {#each duplicateAudit.filter((entry) => entry.groupId === rightPanel.source.groupId).slice().reverse() as entry}
+                            {#each duplicateAudit.filter((entry) => entry.groupId === dupSource.groupId).slice().reverse() as entry}
                                 <div class="audit-entry">
                                     <span>{decisionLabel(entry.previous)} → {decisionLabel(entry.next)}</span>
                                     <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
@@ -284,7 +289,7 @@
                 <div class="context-label">Remote search · {rightPanel.source.provider}</div>
                 <code>{rightPanel.source.query}</code>
             {:else}
-                <code>{rightPanel.source.kind}</code>
+                <code>{sourceKind(rightPanel.source)}</code>
             {/if}
             {#if selectedStat}
                 <dl>

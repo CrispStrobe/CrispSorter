@@ -11,6 +11,10 @@ export type ContextPanel = {
     title: string;
 };
 
+export type PanelOf<K extends PanelSource['kind']> = ContextPanel & {
+    source: Extract<PanelSource, { kind: K }>;
+};
+
 export type DuplicateContextItem = {
     path: string;
     size: number;
@@ -38,7 +42,7 @@ export function duplicateGroupPanel(
     items: DuplicateContextItem[] = [],
     decision: DuplicateDecision = 'review',
     title = 'Duplicate group',
-): ContextPanel {
+): PanelOf<'DuplicateGroup'> {
     return { source: { kind: 'DuplicateGroup', groupId, items, decision }, title };
 }
 

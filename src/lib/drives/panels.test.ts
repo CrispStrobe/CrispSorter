@@ -21,6 +21,7 @@ describe('context panel sources', () => {
             .toBe('local:/Users/alice/paper.pdf');
         expect(panelSourceKey(searchResultsPanel('invoice').source)).toBe('search:invoice');
         expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, mtime: 0, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
-        expect(duplicateGroupPanel('g9', [], 'keep_source').source.decision).toBe('keep_source');
+        const duplicate = duplicateGroupPanel('g9', [], 'keep_source');
+        expect(duplicate.source.decision).toBe('keep_source');
     });
 });
