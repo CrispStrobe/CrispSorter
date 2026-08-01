@@ -181,6 +181,80 @@ pub struct SyncPairPushResult {
     pub watermark: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncPairPullResult {
+    pub pair_id: String,
+    pub dry_run: bool,
+    pub planned: usize,
+    pub downloaded: usize,
+    pub watermark: i64,
+}
+
+/// Pull remote files into the local side. This destructive direction requires
+/// an explicit remote-wins policy and is limited to pairs that permit local
+/// writes (`ToLocal` or `TwoWay`).
+#[tauri::command]
+pub async fn sync_pair_pull(
+    state: State<'_, AppState>,
+    id: String,
+    dry_run: Option<bool>,
+    conflict_policy: Option<super::conflict::ConflictPolicy>,
+) -> Result<SyncPairPullResult, String> {
+    if conflict_policy != Some(super::conflict::ConflictPolicy::RemoteWins) {
+        return Err("sync pair pull requires remote-wins conflict policy".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut pair = store.list().map_err(|e| e.to_string())?.into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    if matches!(pair.mode, super::pairs::SyncPairMode::ToCloud) {
+        return Err("sync pair is configured for local-to-remote direction".into());
+    }
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
+        return Err(format!("{} does not support remote pull", drive.drive_type().label()));
+    }
+    let mut remote = Vec::new();
+    inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
+        .map_err(|e| e.to_string())?;
+    remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
+    remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let dry_run = dry_run.unwrap_or(false);
+    if dry_run || remote.is_empty() {
+        return Ok(SyncPairPullResult { pair_id: pair.id, dry_run, planned: remote.len(), downloaded: 0, watermark: pair.watermark });
+    }
+    let mut downloaded = 0usize;
+    let mut watermark = pair.watermark;
+    for entry in &remote {
+        let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+        let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+        let drive_for_download = drive.clone();
+        let transfer = state.transfer_queue.clone().submit_download(
+            pair.drive_id.clone(), remote_path,
+            Some(entry.size), move |path| drive_for_download.read_file(path),
+        );
+        let bytes = match transfer.handle.await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(error) => return Err(format!("sync transfer task failed: {error}")),
+        };
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
+        downloaded += 1;
+        if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
+    }
+    pair.watermark = watermark;
+    store.upsert(pair).map_err(|e| e.to_string())?;
+    Ok(SyncPairPullResult { pair_id: id, dry_run: false, planned: remote.len(), downloaded, watermark })
+}
+
 /// Push the local side of a `ToCloud`/`TwoWay` pair through the shared
 /// transfer queue. Existing remote entries are intentionally overwritten;
 /// conflict-aware two-way comparison remains a separate PLAN item.
