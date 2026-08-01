@@ -273,7 +273,7 @@ impl BackupState {
             "INSERT INTO backup_runs
              (id, job_id, status, planned, completed, failed, verified, bytes, error, started_at)
              VALUES (?1, ?2, 'running', ?3, 0, 0, 0, 0, NULL, ?4)",
-            params![run.id, run.job_id, run.planned, run.started_at],
+            params![run.id, run.job_id, run.planned as i64, run.started_at],
         ).context("start backup run")?;
         Ok(run)
     }
@@ -290,7 +290,7 @@ impl BackupState {
         self.conn.execute(
             "UPDATE backup_runs SET status = ?1, completed = ?2, failed = ?3,
              verified = ?4, bytes = ?5, finished_at = ?6 WHERE id = ?7",
-            params![status, completed, failed, verified, bytes, now_ms(), id],
+            params![status, completed as i64, failed as i64, verified, bytes as i64, now_ms(), id],
         ).context("finish backup run")?;
         self.run(id)?.ok_or_else(|| anyhow::anyhow!("backup run '{id}' not found"))
     }
@@ -334,8 +334,12 @@ impl BackupState {
         };
         Ok(BackupRun {
             id: row.get(0)?, job_id: row.get(1)?, status,
-            planned: row.get(3)?, completed: row.get(4)?, failed: row.get(5)?,
-            verified: row.get(6)?, bytes: row.get(7)?, error: row.get(8)?,
+            planned: row.get::<_, i64>(3)? as u64,
+            completed: row.get::<_, i64>(4)? as u64,
+            failed: row.get::<_, i64>(5)? as u64,
+            verified: row.get(6)?,
+            bytes: row.get::<_, i64>(7)? as u64,
+            error: row.get(8)?,
             started_at: row.get(9)?, finished_at: row.get(10)?,
         })
     }

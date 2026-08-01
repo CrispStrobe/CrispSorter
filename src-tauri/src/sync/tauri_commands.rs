@@ -460,7 +460,6 @@ pub async fn sync_pair_push(
         dry_run: false,
         planned: plan.len(),
         uploaded,
-        downloaded: 0,
         watermark,
     })
 }
@@ -480,6 +479,7 @@ fn record_sync_pair_failure(
         status: "failed".into(),
         planned,
         uploaded,
+        downloaded: 0,
         watermark,
         error: Some(error.to_owned()),
         started_at,

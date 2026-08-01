@@ -207,16 +207,17 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
 }
 
 fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
-    match pattern.split_first() {
+    match pattern.first().copied() {
         None => path.is_empty(),
-        Some(("**", rest)) => {
+        Some("**") => {
+            let rest = &pattern[1..];
             glob_segments(rest, path)
                 || path
                     .split_first()
                     .is_some_and(|(_, tail)| glob_segments(pattern, tail))
         }
-        Some((segment, rest)) => path.split_first().is_some_and(|(head, tail)| {
-            segment_matches(segment, head) && glob_segments(rest, tail)
+        Some(segment) => path.split_first().is_some_and(|(head, tail)| {
+            segment_matches(segment, head) && glob_segments(&pattern[1..], tail)
         }),
     }
 }
@@ -581,13 +582,13 @@ mod tests {
             SyncRemoteEntry { relative_path: "changed.txt".into(), size: 4, mtime_unix: Some(30) },
             SyncRemoteEntry { relative_path: "remote.txt".into(), size: 5, mtime_unix: Some(1) },
         ];
-        let rows = compare_plans(&local, &remote, super::conflict::ConflictPolicy::NewestWins);
+        let rows = compare_plans(&local, &remote, crate::sync::conflict::ConflictPolicy::NewestWins);
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].action, SyncComparisonAction::UseRemote);
         assert_eq!(rows[1].action, SyncComparisonAction::LocalOnly);
         assert_eq!(rows[2].action, SyncComparisonAction::RemoteOnly);
         assert_eq!(rows[3].action, SyncComparisonAction::Unchanged);
-        let manual = compare_plans(&local, &remote, super::conflict::ConflictPolicy::Manual);
+        let manual = compare_plans(&local, &remote, crate::sync::conflict::ConflictPolicy::Manual);
         assert_eq!(manual[0].action, SyncComparisonAction::ManualReview);
     }
 }
