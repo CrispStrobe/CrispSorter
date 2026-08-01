@@ -3332,6 +3332,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Native login UI now detects structured `enter_2fa`/`wrong_2fa`
       responses and clearly promotes the TOTP field to required state without
       persisting the code.
+    - [x] Browser OAuth UI now polls only boolean credential presence after
+      the loopback callback, with a bounded timeout and no token exposure.
+      ✅ 2026-08-01
   - [ ] Add unit and hermetic HTTP coverage for PKCE/state validation, token
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic

@@ -1009,17 +1009,31 @@
 
     async function loginBrowserDrive() {
         if (!driveEditId || (driveCreateKind !== 'google_drive' && driveCreateKind !== 'onedrive')) return;
+        driveAuthBusy = true;
         driveAuthError = '';
+        driveCredentialStatus = null;
         try {
             const provider = driveCreateKind === 'google_drive' ? 'google' : 'microsoft';
             const result = await invoke<{ authorizationUrl: string }>('drive_oauth_start', {
                 driveId: driveEditId, provider, clientId: driveOAuthClientId.trim()
             });
             await openUrl(result.authorizationUrl);
-            await loadDriveCredentialStatus(driveEditId);
-            logInfo('Browser-Anmeldung geöffnet. Nach Abschluss wird der Schlüsselbund automatisch aktualisiert.');
+            // The loopback callback exchanges the code on a background thread.
+            // Poll only the boolean status command while the browser flow is
+            // open; tokens never cross IPC or enter frontend state.
+            for (let attempt = 0; attempt < 30; attempt += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 2000));
+                await loadDriveCredentialStatus(driveEditId);
+                if (driveCredentialStatus?.has_access_token && driveCredentialStatus.has_refresh_token) {
+                    logInfo('Browser-Anmeldung abgeschlossen; Token liegt ausschließlich im OS-Schlüsselbund.');
+                    return;
+                }
+            }
+            driveAuthError = 'Browser-Anmeldung noch nicht abgeschlossen. Nach dem Callback erneut den Status prüfen.';
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
+        } finally {
+            driveAuthBusy = false;
         }
     }
 
