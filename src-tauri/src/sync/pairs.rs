@@ -54,6 +54,17 @@ pub fn plan_local(pair: &SyncPair) -> Result<Vec<SyncPlanEntry>> {
     Ok(out)
 }
 
+/// Return only local entries newer than the persisted pair watermark.
+/// A watermark of zero intentionally selects every matching file on the
+/// first push. Equal timestamps are retained by the caller's next full plan
+/// and can be rechecked when a provider supplies stronger change metadata.
+pub fn plan_local_since(pair: &SyncPair) -> Result<Vec<SyncPlanEntry>> {
+    Ok(plan_local(pair)?
+        .into_iter()
+        .filter(|entry| entry.mtime_unix > pair.watermark)
+        .collect())
+}
+
 fn visit_local(
     root: &Path,
     directory: &Path,
@@ -331,5 +342,10 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].relative_path, "nested/report.pdf");
         assert_eq!(plan[0].size, 3);
+
+        p.watermark = plan[0].mtime_unix;
+        assert!(plan_local_since(&p).unwrap().is_empty());
+        p.watermark -= 1;
+        assert_eq!(plan_local_since(&p).unwrap().len(), 1);
     }
 }

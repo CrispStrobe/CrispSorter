@@ -2857,6 +2857,9 @@ a transfer without leaving the search/catalog workflow.
     shared TransferQueue retries, and watermark advancement only after each
     successful upload. Remote comparison and reverse direction remain
     deferred to conflict-aware sync. ✅ 2026-08-01
+  - [x] Pushes now use the persisted watermark as an incremental cutoff;
+    first-run watermark `0` uploads all matching files, while later runs
+    skip unchanged local entries and advance only after success. ✅ 2026-08-01
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.

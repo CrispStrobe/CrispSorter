@@ -110,7 +110,7 @@ pub async fn sync_pair_push(
     if matches!(pair.mode, super::pairs::SyncPairMode::ToLocal) {
         return Err("sync pair is configured for remote-to-local direction".into());
     }
-    let plan = super::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+    let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
     let dry_run = dry_run.unwrap_or(false);
     if dry_run || plan.is_empty() {
         return Ok(SyncPairPushResult {
