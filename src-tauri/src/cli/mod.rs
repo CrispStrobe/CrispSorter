@@ -554,6 +554,8 @@ enum BackupJobCmd {
         remote_path: String,
         destination: PathBuf,
     },
+    /// List enabled jobs whose interval/daily schedule is due now.
+    Due,
 }
 
 #[derive(Subcommand, Debug)]
@@ -6946,6 +6948,17 @@ async fn cmd_cloud_backup_admin(
             match out {
                 OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
                 OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
+            }
+        }
+        BackupJobCmd::Due => {
+            let jobs = store.due_jobs(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+                OutFormat::Text => for job in jobs {
+                    println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
+                },
             }
         }
     }

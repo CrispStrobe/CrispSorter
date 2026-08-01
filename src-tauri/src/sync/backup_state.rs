@@ -292,6 +292,11 @@ impl BackupState {
              verified = ?4, bytes = ?5, finished_at = ?6 WHERE id = ?7",
             params![status, completed as i64, failed as i64, verified, bytes as i64, now_ms(), id],
         ).context("finish backup run")?;
+        self.conn.execute(
+            "UPDATE backup_jobs SET last_run_at = ?1, last_status = ?2 WHERE id =
+             (SELECT job_id FROM backup_runs WHERE id = ?3)",
+            params![now_ms(), status, id],
+        ).context("update backup job status")?;
         self.run(id)?.ok_or_else(|| anyhow::anyhow!("backup run '{id}' not found"))
     }
 
@@ -300,6 +305,11 @@ impl BackupState {
             "UPDATE backup_runs SET status = 'failed', error = ?1, finished_at = ?2 WHERE id = ?3",
             params![error, now_ms(), id],
         ).context("fail backup run")?;
+        self.conn.execute(
+            "UPDATE backup_jobs SET last_run_at = ?1, last_status = 'failed' WHERE id =
+             (SELECT job_id FROM backup_runs WHERE id = ?2)",
+            params![now_ms(), id],
+        ).context("update failed backup job status")?;
         self.run(id)?.ok_or_else(|| anyhow::anyhow!("backup run '{id}' not found"))
     }
 
@@ -319,6 +329,29 @@ impl BackupState {
         )?;
         let rows = stmt.query_map(params![job_id, limit as i64], Self::run_from_row)?;
         rows.collect::<Result<Vec<_>, _>>().context("list backup runs")
+    }
+
+    /// Return enabled jobs whose configured schedule is due at `now`.
+    pub fn due_jobs(&self, now: i64) -> Result<Vec<BackupJob>> {
+        let jobs = self.list_jobs()?;
+        let now_seconds = now / 1000;
+        let day = now_seconds.div_euclid(86_400);
+        let day_seconds = now_seconds.rem_euclid(86_400);
+        Ok(jobs.into_iter().filter(|job| {
+            if !job.enabled { return false; }
+            let last_seconds = job.last_run_at.map(|last| last / 1000);
+            match job.schedule {
+                BackupSchedule::Manual => false,
+                BackupSchedule::IntervalMinutes { minutes } => last_seconds
+                    .map(|last| now_seconds.saturating_sub(last) >= minutes.saturating_mul(60) as i64)
+                    .unwrap_or(true),
+                BackupSchedule::Daily { hour, minute } => {
+                    let target = day * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60;
+                    day_seconds >= i64::from(hour) * 3600 + i64::from(minute) * 60
+                        && last_seconds.map(|last| last < target).unwrap_or(true)
+                }
+            }
+        }).collect())
     }
 
     fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupRun> {
@@ -408,5 +441,24 @@ mod tests {
         let recovered = reopened.run(&interrupted.id).unwrap().unwrap();
         assert_eq!(recovered.status, BackupRunStatus::Interrupted);
         assert!(recovered.finished_at.is_some());
+    }
+
+    #[test]
+    fn due_jobs_respects_manual_and_disabled_policies() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bs = BackupState::open(tmp.path()).unwrap();
+        for (id, schedule, enabled) in [
+            ("interval", BackupSchedule::IntervalMinutes { minutes: 5 }, true),
+            ("manual", BackupSchedule::Manual, true),
+            ("disabled", BackupSchedule::IntervalMinutes { minutes: 1 }, false),
+        ] {
+            bs.upsert_job(BackupJob {
+                id: id.into(), source_root: "/src".into(), drive_id: "d".into(),
+                remote_root: "/dst".into(), schedule, retention_count: 1,
+                verify_integrity: true, enabled, last_run_at: None, last_status: None, updated_at: 0,
+            }).unwrap();
+        }
+        let due = bs.due_jobs(1_700_000_000_000).unwrap();
+        assert_eq!(due.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), vec!["interval"]);
     }
 }

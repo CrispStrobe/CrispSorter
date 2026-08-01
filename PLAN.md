@@ -2989,6 +2989,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Explicit runs now write to UTC date snapshots; CLI
       `sync backup-job prune <id>` previews retention and requires `--apply`
       before deleting only date-named snapshot trees.
+    - [x] Completed/failed runs now update job last-run status, and
+      `sync backup-job due` exposes enabled interval/daily jobs ready for a
+      future background scheduler; manual jobs are never auto-due.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
