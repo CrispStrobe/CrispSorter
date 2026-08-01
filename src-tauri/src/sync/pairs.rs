@@ -33,6 +33,123 @@ pub struct SyncPair {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncPlanEntry {
+    pub relative_path: String,
+    pub size: u64,
+    pub mtime_unix: i64,
+}
+
+/// Build a read-only local snapshot for a pair. No provider is contacted and
+/// no watermark is advanced; the eventual runner can compare this plan with
+/// its remote manifest before submitting transfers.
+pub fn plan_local(pair: &SyncPair) -> Result<Vec<SyncPlanEntry>> {
+    let root = Path::new(&pair.local_root);
+    if !root.is_dir() {
+        anyhow::bail!("sync pair local root is not a directory: {}", root.display());
+    }
+    let mut out = Vec::new();
+    visit_local(root, root, pair, &mut out)?;
+    out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(out)
+}
+
+fn visit_local(
+    root: &Path,
+    directory: &Path,
+    pair: &SyncPair,
+    out: &mut Vec<SyncPlanEntry>,
+) -> Result<()> {
+    for item in std::fs::read_dir(directory)? {
+        let item = item?;
+        let path = item.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            visit_local(root, &path, pair, out)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let relative = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+        if !filter_matches(&relative, &pair.include_globs, &pair.exclude_globs) {
+            continue;
+        }
+        let mtime_unix = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        out.push(SyncPlanEntry {
+            relative_path: relative,
+            size: metadata.len(),
+            mtime_unix,
+        });
+    }
+    Ok(())
+}
+
+fn filter_matches(path: &str, includes: &[String], excludes: &[String]) -> bool {
+    let included = includes.is_empty() || includes.iter().any(|p| glob_matches(p, path));
+    included && !excludes.iter().any(|p| glob_matches(p, path))
+}
+
+/// Small dependency-free glob matcher for persisted sync filters. `*` matches
+/// within one path segment, `**` spans segments, and `?` matches one byte.
+pub fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<_> = pattern.trim_matches('/').split('/').collect();
+    let path: Vec<_> = path.trim_matches('/').split('/').collect();
+    glob_segments(&pattern, &path)
+}
+
+fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some(("**", rest)) => {
+            glob_segments(rest, path)
+                || path
+                    .split_first()
+                    .is_some_and(|(_, tail)| glob_segments(pattern, tail))
+        }
+        Some((segment, rest)) => path.split_first().is_some_and(|(head, tail)| {
+            segment_matches(segment, head) && glob_segments(rest, tail)
+        }),
+    }
+}
+
+fn segment_matches(pattern: &str, value: &str) -> bool {
+    let mut p = pattern.chars().peekable();
+    let mut v = value.chars().peekable();
+    while let Some(ch) = p.next() {
+        match ch {
+            '*' => {
+                if p.peek().is_none() {
+                    return true;
+                }
+                let rest: String = p.clone().collect();
+                if segment_matches(&rest, &v.clone().collect::<String>()) {
+                    return true;
+                }
+                while v.next().is_some() {
+                    if segment_matches(&rest, &v.clone().collect::<String>()) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            '?' => {
+                if v.next().is_none() {
+                    return false;
+                }
+            }
+            literal if v.next() != Some(literal) => return false,
+            _ => {}
+        }
+    }
+    v.next().is_none()
+}
+
 pub struct SyncPairStore {
     conn: Connection,
 }
@@ -195,5 +312,24 @@ mod tests {
         assert!(!store.list().unwrap()[0].enabled);
         assert!(store.delete("pair-1").unwrap());
         assert!(!store.delete("pair-1").unwrap());
+    }
+
+    #[test]
+    fn glob_filters_and_local_plan_are_deterministic() {
+        assert!(glob_matches("**/*.pdf", "nested/report.pdf"));
+        assert!(glob_matches("docs/*.pdf", "docs/report.pdf"));
+        assert!(!glob_matches("docs/*.pdf", "docs/nested/report.pdf"));
+        assert!(glob_matches("**/cache/**", "a/cache/b.bin"));
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested/report.pdf"), b"pdf").unwrap();
+        std::fs::write(dir.path().join("skip.txt"), b"skip").unwrap();
+        let mut p = pair();
+        p.local_root = dir.path().to_string_lossy().into_owned();
+        let plan = plan_local(&p).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].relative_path, "nested/report.pdf");
+        assert_eq!(plan[0].size, 3);
     }
 }

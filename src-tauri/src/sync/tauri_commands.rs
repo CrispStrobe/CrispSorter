@@ -62,6 +62,25 @@ pub async fn sync_pair_delete(
         .map_err(|e| e.to_string())
 }
 
+/// Preview the local side of a sync pair without contacting the provider or
+/// advancing its watermark.
+#[tauri::command]
+pub async fn sync_pair_plan(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<super::pairs::SyncPlanEntry>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let pairs = super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list()
+        .map_err(|e| e.to_string())?;
+    let pair = pairs
+        .into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    super::pairs::plan_local(&pair).map_err(|e| e.to_string())
+}
+
 /// Return the persisted conflict policy used by future sync mutations.
 #[tauri::command]
 pub async fn sync_get_conflict_policy(

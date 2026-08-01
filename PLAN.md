@@ -2848,6 +2848,10 @@ a transfer without leaving the search/catalog workflow.
     watermark; Tauri list/upsert/delete commands and SQLite round-trip tests
     are in place. The transfer runner and watcher dispatch remain the next
     scoped step. ✅ 2026-08-01
+  - [x] Added a read-only deterministic local planner with `**`, `*`, and `?`
+    filter semantics plus a `sync_pair_plan` Tauri command. It emits sorted
+    file metadata without contacting a provider or advancing the watermark;
+    transfer execution remains the next step. ✅ 2026-08-01
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.
