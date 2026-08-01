@@ -2758,6 +2758,11 @@ a transfer without leaving the search/catalog workflow.
     rejected instead of being treated as local paths. ✅ 2026-08-01
   - [x] Remote cloud-backup result panes now emit typed provider/query context
     requests into the dual-panel browser. ✅ 2026-08-01
+  - [x] The Catalog browser now emits typed `CatalogArchive` context for the
+    currently opened `.caf`, preserving archive provenance in the right pane.
+    ✅ 2026-08-01
+  - [x] Local search hits now emit typed `LocalPath` context requests alongside
+    the existing external-open and batch-sorter actions. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
@@ -2771,6 +2776,9 @@ a transfer without leaving the search/catalog workflow.
     ✅ 2026-08-01
   - [x] Duplicate context now also renders modification times and provides
     safe open-file and copy-path actions for every candidate. ✅ 2026-08-01
+  - [x] Duplicate context now records a non-destructive dry-run decision
+    (review, keep source, keep destination, or keep both) before mutation
+    policies are implemented. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

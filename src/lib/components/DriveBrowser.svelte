@@ -10,7 +10,7 @@
         parentDrivePath,
         type DriveCapabilities,
     } from '$lib/drives/browser';
-    import { cloudDrivePanel, type ContextPanel } from '$lib/drives/panels';
+    import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
 
     type Drive = { id: string; label: string; kind: string };
@@ -122,6 +122,11 @@
         catch (e) { error = `Could not copy duplicate path: ${String(e)}`; }
     }
 
+    function setDuplicateDecision(decision: DuplicateDecision) {
+        if (rightPanel?.source.kind !== 'DuplicateGroup') return;
+        rightPanel = { ...rightPanel, source: { ...rightPanel.source, decision } };
+    }
+
     onMount(() => {
         const unsubscribe = subscribeBrowserContext((panel) => {
             rightPanel = panel;
@@ -191,6 +196,15 @@
                 <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
                 <code>group: {rightPanel.source.groupId}</code>
+                <div class="duplicate-decision">
+                    <span class="context-label">Dry-run decision</span>
+                    <select value={rightPanel.source.decision} onchange={(event) => setDuplicateDecision((event.currentTarget as HTMLSelectElement).value as DuplicateDecision)}>
+                        <option value="review">Review later</option>
+                        <option value="keep_source">Keep source</option>
+                        <option value="keep_destination">Keep destination</option>
+                        <option value="keep_both">Keep both</option>
+                    </select>
+                </div>
                 <ul class="duplicate-context-list">
                     {#each rightPanel.source.items as item}
                         <li>
@@ -245,7 +259,7 @@
     .context-pane { grid-column: 2; grid-row: 4; border: 1px solid var(--border, #3a3a44); border-radius: 8px; padding: 16px; min-height: 150px; }
     .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
-    .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; }
+    .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; } .duplicate-decision { display: grid; gap: 4px; margin-top: 12px; } .duplicate-decision select { width: 100%; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
     .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size, .duplicate-mtime { grid-column: 1 / -1; text-align: left; } .duplicate-mtime { color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-actions { display: flex; gap: 6px; } .duplicate-actions button { padding: 3px 6px; font-size: .7rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }

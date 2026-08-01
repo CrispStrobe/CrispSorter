@@ -14,7 +14,7 @@
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
-    import { cloudDrivePanel, remoteSearchPanel } from '$lib/drives/panels';
+    import { cloudDrivePanel, localPathPanel, remoteSearchPanel } from '$lib/drives/panels';
     import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
@@ -1009,6 +1009,11 @@
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
     }
 
+    function openLocalInContext(uri: string): void {
+        const path = localPathFromSearchUri(uri);
+        if (path) requestBrowserContext(localPathPanel(path));
+    }
+
     async function addResultToBatch(result: SearchResult): Promise<void> {
         const path = localPathFromSearchUri(result.location_uri);
         if (!path) {
@@ -1428,6 +1433,11 @@
                                 </button>
                             {/if}
                             {#if localPathFromSearchUri(r.location_uri)}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); openLocalInContext(r.location_uri); }}
+                                    title="Open in file context">
+                                    <FolderOpen size={13} />
+                                </button>
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
                                     title="Add to batch sorter">

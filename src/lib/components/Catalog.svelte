@@ -21,6 +21,8 @@
     import { getSetting, saveSetting } from '$lib/store';
     import { flog } from '$lib/log';
     import { i18n } from '$lib/i18n.svelte';
+    import { requestBrowserContext } from '$lib/drives/browserContext';
+    import { catalogArchivePanel } from '$lib/drives/panels';
     import {
         FolderPlus, FilePlus, RefreshCw, Trash2, Eye, Loader2,
         HardDrive, Files, Database
@@ -314,6 +316,10 @@
         }
     }
 
+    function openCatalogInContext(): void {
+        if (browsing) requestBrowserContext(catalogArchivePanel(browsing));
+    }
+
     const filteredEntries = $derived.by(() => {
         const q = browsingFilter.trim().toLowerCase();
         if (!q) return browsingEntries.slice(0, 500);
@@ -503,6 +509,9 @@
                         {:else}
                             <FilePlus size={12} /> {i18n.t.caf_catalog.import_btn}
                         {/if}
+                    </button>
+                    <button class={'btn small'} onclick={openCatalogInContext} title="Open catalog in file context">
+                        <HardDrive size={12} /> Context
                     </button>
                 </header>
                 {#if browsingLoading}
