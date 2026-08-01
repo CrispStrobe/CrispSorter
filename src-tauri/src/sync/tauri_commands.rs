@@ -71,6 +71,21 @@ pub async fn backup_job_runs(
         .map_err(|e| e.to_string())
 }
 
+/// Return enabled interval/daily jobs that are due at the current UTC time.
+/// The scheduler owns execution; this command is intentionally read-only.
+#[tauri::command]
+pub async fn backup_job_due(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::sync::backup_state::BackupJob>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64).unwrap_or(0);
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .due_jobs(now)
+        .map_err(|e| e.to_string())
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(

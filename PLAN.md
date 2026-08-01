@@ -2992,6 +2992,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] Completed/failed runs now update job last-run status, and
       `sync backup-job due` exposes enabled interval/daily jobs ready for a
       future background scheduler; manual jobs are never auto-due.
+    - [x] Tauri `backup_job_due` exposes the same read-only due calculation to
+      the GUI/coordinator without duplicating schedule logic.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
