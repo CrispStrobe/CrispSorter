@@ -1152,11 +1152,14 @@ pub async fn sync_cb_status(
     let mut health = None;
     let mut error = String::new();
     if let Some(ref t) = token {
-        if let Ok(cli) = CloudBackupClient::new(&url, t) {
-            match cli.health().await {
+        match proxy_config(&state).await.and_then(|proxy| {
+            CloudBackupClient::new_with_proxy(&url, t, &proxy).map_err(|e| e.to_string())
+        }) {
+            Ok(cli) => match cli.health().await {
                 Ok(h) => health = Some(h),
                 Err(e) => error = format!("{e}"),
-            }
+            },
+            Err(e) => error = e,
         }
     }
 
@@ -1257,7 +1260,20 @@ async fn make_cb_client(state: &State<'_, AppState>) -> Result<CloudBackupClient
     let token = secret::get_token_for_url(&url)
         .map_err(|e| format!("keychain: {e}"))?
         .ok_or_else(|| "no cloud-backup API key — call sync_cb_set_token first".to_string())?;
-    CloudBackupClient::new(url, token).map_err(|e| e.to_string())
+    let proxy = proxy_config(state).await?;
+    CloudBackupClient::new_with_proxy(url, token, &proxy).map_err(|e| e.to_string())
+}
+
+/// Resolve the shared proxy policy from the persisted index settings and
+/// keychain-backed password.  The password never crosses the frontend IPC
+/// boundary or enters serialized configuration.
+async fn proxy_config(state: &State<'_, AppState>) -> Result<crate::sync::proxy::ProxyConfig, String> {
+    let config = state.index.lock().await.config.clone();
+    Ok(crate::sync::proxy::ProxyConfig {
+        url: config.proxy_url,
+        username: config.proxy_username,
+        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    })
 }
 
 /// Walk the local index for rows newer than the

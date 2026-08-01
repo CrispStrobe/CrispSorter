@@ -3281,6 +3281,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Native Filen and Internxt clients now accept explicit proxy policy at
     session construction, reject malformed proxy credentials before requests,
     and keep proxy secrets in memory only.
+  - [x] Persisted proxy settings and the keychain-backed password now flow
+    through Tauri cloud-backup construction and health probes.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider
