@@ -41,6 +41,17 @@ const LISTING_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 pub const DEFAULT_DRIVE_API_URL: &str = "https://gateway.internxt.com/drive";
 const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
+fn gateway_error(prefix: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let code = parsed.as_ref().and_then(|value| value.get("code")).and_then(|value| value.as_str());
+    let message = parsed.as_ref().and_then(|value| value.get("message")).and_then(|value| value.as_str());
+    match (code, message) {
+        (Some(code), Some(message)) => anyhow!("{prefix} {status} ({code}): {message}"),
+        (Some(code), None) => anyhow!("{prefix} {status} ({code}): {body}"),
+        _ => anyhow!("{prefix} {status}: {body}"),
+    }
+}
+
 /// Bounded transfer knobs for the Internxt gateway.
 ///
 /// The default deliberately uses one multipart worker. The gateway is more
@@ -894,9 +905,7 @@ impl InternxtNativeClient {
         let access_status = access.status();
         let access_body = access.text().context("reading Internxt login access")?;
         if !access_status.is_success() {
-            return Err(anyhow!(
-                "Internxt login access returned {access_status}: {access_body}"
-            ));
+            return Err(gateway_error("Internxt login access returned", access_status, &access_body));
         }
         let access_json: serde_json::Value = serde_json::from_str(&access_body)?;
         let temporary_token = access_json
@@ -4084,5 +4093,17 @@ mod tests {
             .unwrap()
             .1
         );
+    }
+
+    #[test]
+    fn gateway_error_preserves_tfa_code_and_message_without_secrets() {
+        let error = gateway_error(
+            "Internxt login access returned",
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"code":"wrong_2fa","message":"Invalid code"}"#,
+        ).to_string();
+        assert!(error.contains("wrong_2fa"));
+        assert!(error.contains("Invalid code"));
+        assert!(!error.contains("password"));
     }
 }

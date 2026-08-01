@@ -3081,6 +3081,8 @@ a transfer without leaving the search/catalog workflow.
       against the RFC 7636 verifier vector.
     - [x] Added hermetic refresh-token preservation/malformed-response tests
       and Google-style revocation success/failure HTTP tests.
+    - [x] Internxt native login now preserves structured gateway TFA codes and
+      messages in actionable errors, with a secret-free unit test.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
