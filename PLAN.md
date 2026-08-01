@@ -1648,13 +1648,13 @@ mostly plumbing + settings UI.
   Supports `http://`, `https://`, `socks5://`, `socks5h://`.  Falls
   back to default client when no proxy configured (respects env vars).
   8 unit tests (empty config, HTTP/SOCKS5, auth, invalid URL, serde).
-- [ ] **Wire into all cloud-facing code.**  `CloudDrive` constructors,
+  - [x] **Wire into all cloud-facing code.**  `CloudDrive` constructors,
   `SyncManager`, `cb-api` client, feed fetcher (`feed.rs`), LLM API
   clients.  The shared `CloudBackupClient::new_with_proxy`,
-  `SyncManager::*_with_proxy`, and `fetch_and_parse_with_proxy` boundaries
-  plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
-  their credential/config plumbing is migrated. Single `build_proxy_client`
-  call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
+  `SyncManager::*_with_proxy`, `fetch_and_parse_with_proxy`, and
+  `RemoteClient::new_with_proxy` boundaries are now wired throughout
+  production app and CLI paths. A single `build_proxy_client` call site
+  shared via a lazy `OnceCell<reqwest::Client>` remains future work.
   - [x] CLI `drives ls` now uses the persisted proxy policy when constructing
     the registered provider. ✅ 2026-08-01
   - [x] CLI backup jobs, sync-pair inspection/push/pull, and cloud-backup
