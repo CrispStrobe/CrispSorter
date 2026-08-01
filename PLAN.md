@@ -3017,7 +3017,7 @@ a transfer without leaving the search/catalog workflow.
     the existing external-open and batch-sorter actions. ✅ 2026-08-01
   - [x] Local result groups now emit typed `SearchResults` context requests
     carrying the active query into the dual-panel browser. ✅ 2026-08-01
-- [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
+- [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
   trash-first behavior, and an undo/audit record.
@@ -3040,6 +3040,13 @@ a transfer without leaving the search/catalog workflow.
     for that group instead of resetting to review. ✅ 2026-08-01
   - [x] The duplicate pane exposes persisted decision history with timestamps
     and an explicit clear-audit control. ✅ 2026-08-01
+  - [x] The legacy duplicate tab continues to generate reviewable,
+    platform-specific deletion scripts; scripts never execute automatically.
+    ✅ 2026-08-01
+  - [ ] Add provider-aware trash-first mutation with conflict-policy checks,
+    durable undo records, and restore support. This remains deferred until a
+    common reversible-trash contract exists for LocalDrive, Internxt, Filen,
+    and WebDAV.
 - [x] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
