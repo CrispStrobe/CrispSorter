@@ -48,6 +48,117 @@ fn escape(value: &str) -> String {
         .collect()
 }
 
+fn form_body(fields: &[(&str, &str)]) -> String {
+    fields
+        .iter()
+        .map(|(key, value)| format!("{}={}", escape(key), escape(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn token_request(endpoint: &str, body: String) -> Result<serde_json::Value> {
+    reqwest::blocking::Client::new()
+        .post(endpoint)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(body)
+        .send()
+        .context("OAuth token request")?
+        .error_for_status()
+        .context("OAuth token response")?
+        .json()
+        .context("decoding OAuth token response")
+}
+
+fn token_endpoint(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Google => "https://oauth2.googleapis.com/token",
+        Provider::Microsoft => "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    }
+}
+
+fn refresh_at(
+    endpoint: &str,
+    credentials: &DriveCredentials,
+) -> Result<DriveCredentials> {
+    let refresh = credentials
+        .refresh_token
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("no OAuth refresh token is stored"))?;
+    let client_id = credentials
+        .client_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("no public OAuth client ID is stored"))?;
+    let response = token_request(
+        endpoint,
+        form_body(&[
+            ("client_id", client_id),
+            ("refresh_token", refresh),
+            ("grant_type", "refresh_token"),
+        ]),
+    )?;
+    let access = response
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("OAuth refresh response did not contain an access token"))?;
+    let mut updated = credentials.clone();
+    updated.access_token = Some(access.to_owned());
+    if let Some(new_refresh) = response.get("refresh_token").and_then(|value| value.as_str()) {
+        if !new_refresh.is_empty() {
+            updated.refresh_token = Some(new_refresh.to_owned());
+        }
+    }
+    Ok(updated)
+}
+
+pub fn refresh(provider: Provider, drive_id: &str) -> Result<()> {
+    let credentials = secret::get_credentials(drive_id)?
+        .ok_or_else(|| anyhow!("no OAuth credentials are stored"))?;
+    let updated = refresh_at(token_endpoint(provider), &credentials)?;
+    secret::set_credentials(drive_id, &updated)
+}
+
+fn revoke_at(endpoint: &str, token: &str) -> Result<()> {
+    let response = reqwest::blocking::Client::new()
+        .post(endpoint)
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(form_body(&[("token", token)]))
+        .send()
+        .context("OAuth revoke request")?;
+    response
+        .error_for_status()
+        .context("OAuth revoke response")?;
+    Ok(())
+}
+
+/// Revoke a provider token where the provider exposes a documented endpoint.
+/// Microsoft identity platform has no equivalent token-revocation API, so
+/// this clears local credentials and leaves provider-side logout to the user.
+pub fn revoke(provider: Provider, drive_id: &str) -> Result<()> {
+    let credentials = secret::get_credentials(drive_id)?.unwrap_or_default();
+    if provider == Provider::Google {
+        if let Some(token) = credentials
+            .refresh_token
+            .as_deref()
+            .or(credentials.access_token.as_deref())
+        {
+            revoke_at("https://oauth2.googleapis.com/revoke", token)?;
+        }
+        secret::delete_credentials(drive_id)
+    } else {
+        secret::delete_credentials(drive_id)
+            .context("clearing Microsoft OAuth credentials locally")
+    }
+}
+
 pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<StartResult> {
     if client_id.trim().is_empty() {
         return Err(anyhow!("OAuth client ID is required"));
@@ -143,30 +254,16 @@ fn exchange(
     code: &str,
     drive_id: &str,
 ) -> Result<()> {
-    let endpoint = match provider {
-        Provider::Google => "https://oauth2.googleapis.com/token",
-        Provider::Microsoft => "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    };
-    let body = format!(
-        "client_id={}&code={}&redirect_uri={}&grant_type=authorization_code&code_verifier={}",
-        escape(client_id),
-        escape(code),
-        escape(redirect_uri),
-        escape(verifier)
-    );
-    let response: serde_json::Value = reqwest::blocking::Client::new()
-        .post(endpoint)
-        .header(
-            reqwest::header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded",
-        )
-        .body(body)
-        .send()
-        .context("OAuth token request")?
-        .error_for_status()
-        .context("OAuth token response")?
-        .json()
-        .context("decoding OAuth token response")?;
+    let response = token_request(
+        token_endpoint(provider),
+        form_body(&[
+            ("client_id", client_id),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("grant_type", "authorization_code"),
+            ("code_verifier", verifier),
+        ]),
+    )?;
     let access = response
         .get("access_token")
         .and_then(|v| v.as_str())
@@ -188,9 +285,26 @@ fn exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn public_provider_and_escape_are_deterministic() {
         assert_eq!(Provider::parse("onedrive").unwrap(), Provider::Microsoft);
         assert_eq!(escape("a b+/"), "a%20b%2B%2F");
+        assert_eq!(
+            form_body(&[("client_id", "a b"), ("grant_type", "refresh_token")]),
+            "client_id=a%20b&grant_type=refresh_token"
+        );
+    }
+
+    #[test]
+    fn refresh_requires_keychain_material_without_network() {
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()),
+            ..Default::default()
+        };
+        let error = refresh_at("http://127.0.0.1:1", &credentials)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refresh token"));
     }
 }

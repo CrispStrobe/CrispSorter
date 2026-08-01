@@ -135,6 +135,12 @@ pub trait CloudDrive: Send + Sync {
     /// Read a file's bytes.
     fn read_file(&self, path: &Path) -> Result<Vec<u8>>;
 
+    /// Read an inclusive byte range when the provider can guarantee partial
+    /// content semantics. Providers that cannot do this fail explicitly.
+    fn read_range(&self, _path: &Path, _start: u64, _end: u64) -> Result<Vec<u8>> {
+        Err(anyhow!("{} does not support range reads", self.drive_type().label()))
+    }
+
     /// Write bytes to a path (creates parent directories if needed).
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()>;
 

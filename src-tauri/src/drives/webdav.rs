@@ -411,6 +411,27 @@ impl CloudDrive for WebDavDrive {
         Ok(resp.bytes()?.to_vec())
     }
 
+    /// Read an inclusive byte range from a WebDAV resource.
+    fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+        if end < start {
+            return Err(anyhow!("invalid WebDAV byte range {start}..={end}"));
+        }
+        let url = self.url_for(path);
+        let range = format!("bytes={start}-{end}");
+        let response = self
+            .req(reqwest::Method::GET, &url)
+            .header("Range", &range)
+            .send()
+            .with_context(|| format!("GET range {url} ({range})"))?;
+        let status = response.status();
+        if status != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(anyhow!(
+                "WebDAV range GET {url} → {status}; server did not honor Range"
+            ));
+        }
+        Ok(response.bytes()?.to_vec())
+    }
+
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
         // Servers like Nextcloud need the parent collection to exist, so
         // walk the prefix and MKCOL each missing segment.  Idempotent —
@@ -582,6 +603,37 @@ mod tests {
         assert!(capabilities.move_path);
         assert!(capabilities.copy);
         assert!(!capabilities.streaming);
+    }
+
+    #[test]
+    fn range_read_requires_partial_content() {
+        let mut server = Server::new();
+        let mock = server
+            .mock("GET", "/dav/file.bin")
+            .match_header("Range", "bytes=4-7")
+            .with_status(206)
+            .with_body("part")
+            .create();
+        let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);
+        assert_eq!(
+            drive.read_range(Path::new("file.bin"), 4, 7).unwrap(),
+            b"part"
+        );
+        mock.assert();
+    }
+
+    #[test]
+    fn range_read_rejects_servers_that_ignore_range() {
+        let mut server = Server::new();
+        let mock = server
+            .mock("GET", "/dav/file.bin")
+            .with_status(200)
+            .with_body("whole file")
+            .create();
+        let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);
+        let error = drive.read_range(Path::new("file.bin"), 0, 3).unwrap_err();
+        assert!(error.to_string().contains("did not honor Range"));
+        mock.assert();
     }
 
     #[test]

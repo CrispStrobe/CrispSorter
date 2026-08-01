@@ -52,6 +52,39 @@ pub async fn drive_oauth_start(
     .map_err(|e| e.to_string())
 }
 
+/// Refresh an OAuth access token in the OS keychain without returning it over IPC.
+#[tauri::command]
+pub async fn drive_oauth_refresh(
+    state: State<'_, AppState>, drive_id: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg.drives.iter().find(|d| d.id == drive_id).ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let provider = match config.kind {
+        DriveType::GoogleDrive => super::oauth::Provider::Google,
+        DriveType::OneDrive => super::oauth::Provider::Microsoft,
+        _ => return Err("OAuth refresh requires Google Drive or OneDrive".into()),
+    };
+    super::oauth::refresh(provider, &drive_id).map_err(|e| e.to_string())
+}
+
+/// Revoke/clear provider OAuth credentials. Microsoft is cleared locally
+/// because its platform has no token-revocation API.
+#[tauri::command]
+pub async fn drive_oauth_revoke(
+    state: State<'_, AppState>, drive_id: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg.drives.iter().find(|d| d.id == drive_id).ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let provider = match config.kind {
+        DriveType::GoogleDrive => super::oauth::Provider::Google,
+        DriveType::OneDrive => super::oauth::Provider::Microsoft,
+        _ => return Err("OAuth revoke requires Google Drive or OneDrive".into()),
+    };
+    super::oauth::revoke(provider, &drive_id).map_err(|e| e.to_string())
+}
+
 /// List all configured drives.
 #[tauri::command]
 pub async fn drive_list(state: State<'_, AppState>) -> Result<Vec<DriveConfig>, String> {
