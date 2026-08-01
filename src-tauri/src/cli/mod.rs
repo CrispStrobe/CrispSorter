@@ -528,6 +528,15 @@ enum SyncPairCmd {
         #[arg(long, default_value = "local-wins")]
         conflict_policy: String,
     },
+    /// Download newer matching remote files through the shared transfer queue.
+    Pull {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+        /// Remote-wins is required because this writes local files.
+        #[arg(long, default_value = "remote-wins")]
+        conflict_policy: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5216,6 +5225,58 @@ async fn cmd_sync_pair(
             });
             print_sync_pair_push(out, &id, false, plan.len(), uploaded, watermark);
         }
+        SyncPairCmd::Pull { id, dry_run, conflict_policy } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+
+            let mut pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToCloud) {
+                return Err("sync pair is configured for local-to-remote direction".into());
+            }
+            if parse_conflict_policy(&conflict_policy)? != crate::sync::conflict::ConflictPolicy::RemoteWins {
+                return Err("sync pair pull writes local files; use --conflict-policy remote-wins".into());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(config));
+            if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote pull", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
+                .map_err(|e| e.to_string())?;
+            remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
+            remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+            if dry_run || remote.is_empty() {
+                print_sync_pair_pull(out, &id, dry_run, remote.len(), 0, pair.watermark);
+                return Ok(());
+            }
+            let queue = TransferQueue::shared();
+            let mut downloaded = 0usize;
+            let mut watermark = pair.watermark;
+            for entry in &remote {
+                let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+                let drive_for_download = drive.clone();
+                let transfer = queue.submit_download(pair.drive_id.clone(), remote_path, Some(entry.size), move |path| drive_for_download.read_file(path));
+                let bytes = match transfer.handle.await {
+                    Ok(Ok(bytes)) => bytes,
+                    Ok(Err(error)) => return Err(error.to_string()),
+                    Err(error) => return Err(format!("sync transfer task failed: {error}")),
+                };
+                if let Some(parent) = local.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+                std::fs::write(local, bytes).map_err(|e| e.to_string())?;
+                downloaded += 1;
+                if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
+            }
+            pair.watermark = watermark;
+            store.upsert(pair).map_err(|e| e.to_string())?;
+            print_sync_pair_pull(out, &id, false, remote.len(), downloaded, watermark);
+        }
     }
     Ok(())
 }
@@ -5224,6 +5285,13 @@ fn print_sync_pair_push(out: OutFormat, id: &str, dry_run: bool, planned: usize,
     match out {
         OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "uploaded": uploaded, "watermark": watermark})),
         OutFormat::Text => println!("pair {id}: planned={planned} uploaded={uploaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+    }
+}
+
+fn print_sync_pair_pull(out: OutFormat, id: &str, dry_run: bool, planned: usize, downloaded: usize, watermark: i64) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "downloaded": downloaded, "watermark": watermark})),
+        OutFormat::Text => println!("pair {id}: planned={planned} downloaded={downloaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
     }
 }
 

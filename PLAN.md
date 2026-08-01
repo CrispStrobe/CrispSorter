@@ -2899,6 +2899,9 @@ a transfer without leaving the search/catalog workflow.
     `TwoWay` pairs. It requires remote-wins, uses provider read/list/stat and
     the shared transfer queue, applies the remote watermark cutoff, and writes
     local files only after successful downloads. ✅ 2026-08-01
+  - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
+    same remote-wins guard, inventory cutoff, shared queue, and local-write
+    behavior. ✅ 2026-08-01
 - [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
