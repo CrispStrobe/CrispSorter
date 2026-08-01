@@ -3289,6 +3289,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Keychain-backed credential/session set/get/delete APIs now have
       isolated mock-keyring round-trip coverage; no OS keychain is consulted
       by tests.
+    - [x] Added hermetic authorization-code exchange coverage with an exact
+      PKCE token request assertion and mock-keychain verification that access,
+      refresh, and public client-ID fields are stored without crossing IPC.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
