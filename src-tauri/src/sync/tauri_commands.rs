@@ -18,6 +18,50 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// List persisted local-folder ↔ cloud-drive sync pairs.
+#[tauri::command]
+pub async fn sync_pair_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::pairs::SyncPair>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list()
+        .map_err(|e| e.to_string())
+}
+
+/// Create or update a sync-pair definition. Execution is owned by the future
+/// sync runner; this command only persists validated configuration.
+#[tauri::command]
+pub async fn sync_pair_upsert(
+    state: State<'_, AppState>,
+    pair: super::pairs::SyncPair,
+) -> Result<super::pairs::SyncPair, String> {
+    if pair.id.trim().is_empty() || pair.local_root.trim().is_empty()
+        || pair.drive_id.trim().is_empty() || pair.remote_root.trim().is_empty()
+    {
+        return Err("sync pair id, local root, drive id, and remote root are required".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .upsert(pair)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a persisted sync-pair definition without touching either endpoint.
+#[tauri::command]
+pub async fn sync_pair_delete(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .delete(&id)
+        .map_err(|e| e.to_string())
+}
+
 /// Return the persisted conflict policy used by future sync mutations.
 #[tauri::command]
 pub async fn sync_get_conflict_policy(
