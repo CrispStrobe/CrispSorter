@@ -34,6 +34,16 @@ export function encodeDuplicateAudit(entries: DuplicateDecisionAudit[]): string 
     return JSON.stringify(entries.slice(-200));
 }
 
+export function latestDuplicateDecision(
+    entries: DuplicateDecisionAudit[],
+    groupId: string,
+): DuplicateDecision | null {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+        if (entries[index].groupId === groupId) return entries[index].next;
+    }
+    return null;
+}
+
 export function loadDuplicateAudit(): DuplicateDecisionAudit[] {
     try { return decodeDuplicateAudit(localStorage.getItem(STORAGE_KEY)); }
     catch { return []; }

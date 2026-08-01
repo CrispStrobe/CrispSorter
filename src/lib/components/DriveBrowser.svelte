@@ -12,6 +12,7 @@
     } from '$lib/drives/browser';
     import {
         loadDuplicateAudit,
+        latestDuplicateDecision,
         saveDuplicateAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
@@ -152,7 +153,14 @@
     onMount(() => {
         duplicateAudit = loadDuplicateAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
-            rightPanel = panel;
+            if (panel.source.kind === 'DuplicateGroup') {
+                const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
+                rightPanel = restored
+                    ? { ...panel, source: { ...panel.source, decision: restored } }
+                    : panel;
+            } else {
+                rightPanel = panel;
+            }
             if (panel.source.kind === 'CloudDrive') {
                 driveId = panel.source.driveId;
                 path = normalizeDrivePath(panel.source.path);

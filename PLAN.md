@@ -2782,6 +2782,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] The browser persists a bounded versioned audit of decision changes in
     local storage and supports undoing the latest decision for the active
     duplicate group; destructive mutation support remains deferred. ✅ 2026-08-01
+  - [x] Reopening a duplicate context restores the latest persisted decision
+    for that group instead of resetting to review. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
