@@ -6,6 +6,8 @@ export type DriveCapabilities = {
     delete: boolean;
     /** Optional for compatibility with older frontend fixtures. */
     versions?: boolean;
+    /** Optional for compatibility with older frontend fixtures. */
+    share_links?: boolean;
 };
 
 export type DriveBrowserAction = 'create_dir' | 'rename' | 'move' | 'copy' | 'delete';

@@ -83,6 +83,7 @@
     let loading     = $state(false);
     let error       = $state('');
     let shareBusy    = $state<string | null>(null);
+    let shareCapabilities = $state<Record<string, boolean>>({});
     let searched    = $state(false);
     let showFilters = $state(false);
     let expanded    = $state<Set<string>>(new Set());
@@ -990,11 +991,26 @@
         };
     }
 
+    function driveIdFromUri(uri: string): string {
+        return driveUriParts(uri)?.driveId ?? '';
+    }
+
     async function shareDriveFile(uri: string) {
         const parts = driveUriParts(uri);
         if (!parts) return;
         shareBusy = uri;
         try {
+            let supported = shareCapabilities[parts.driveId];
+            if (supported === undefined) {
+                const capabilities = await invoke<{ share_links?: boolean }>('drive_capabilities', {
+                    driveId: parts.driveId
+                });
+                supported = capabilities.share_links === true;
+                shareCapabilities = { ...shareCapabilities, [parts.driveId]: supported };
+            }
+            if (!supported) {
+                throw new Error('This provider does not advertise public share links.');
+            }
             const link = await invoke<string>('drive_share_link', parts);
             await navigator.clipboard.writeText(link);
             error = 'Share link copied to clipboard.';
@@ -1442,6 +1458,12 @@
                                     onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
                                     title="Im Laufwerkskontext öffnen">
                                     <FolderOpen size={13} />
+                                </button>
+                                <button class="open-btn"
+                                    disabled={shareBusy === r.location_uri || shareCapabilities[driveIdFromUri(r.location_uri)] === false}
+                                    onclick={(e) => { e.stopPropagation(); void shareDriveFile(r.location_uri); }}
+                                    title={shareCapabilities[driveIdFromUri(r.location_uri)] === false ? 'Public sharing is not supported' : 'Share link kopieren'}>
+                                    {#if shareBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}<Share2 size={13} />{/if}
                                 </button>
                             {/if}
                             {#if localPathFromSearchUri(r.location_uri)}

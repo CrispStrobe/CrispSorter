@@ -28,6 +28,7 @@ describe('drive browser path contract', () => {
             move_path: true,
             copy: false,
             delete: true,
+            share_links: false,
         };
         expect(availableDriveActions(capabilities, false)).toEqual({
             create_dir: true,

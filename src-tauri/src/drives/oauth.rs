@@ -485,6 +485,39 @@ mod tests {
     }
 
     #[test]
+    fn authorization_code_exchange_stores_tokens_in_keychain() {
+        secret::install_mock_for_tests();
+        let drive_id = "oauth-exchange-hermetic";
+        let _ = secret::delete_credentials(drive_id);
+        let mut server = Server::new();
+        let request = server
+            .mock("POST", "/token")
+            .match_header("content-type", "application/x-www-form-urlencoded")
+            .match_body(mockito::Matcher::Exact(
+                "client_id=public&code=auth-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A1234%2Foauth%2Fcallback&grant_type=authorization_code&code_verifier=verifier".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"access_token":"access","refresh_token":"refresh"}"#)
+            .create();
+
+        exchange_at(
+            &format!("{}/token", server.url()),
+            "public",
+            "http://127.0.0.1:1234/oauth/callback",
+            "verifier",
+            "auth-code",
+            drive_id,
+        )
+        .unwrap();
+        let credentials = secret::get_credentials(drive_id).unwrap().unwrap();
+        assert_eq!(credentials.access_token.as_deref(), Some("access"));
+        assert_eq!(credentials.refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(credentials.client_id.as_deref(), Some("public"));
+        request.assert();
+        secret::delete_credentials(drive_id).unwrap();
+    }
+
+    #[test]
     fn revoke_request_is_hermetic_and_rejects_provider_failure() {
         let mut server = Server::new();
         let request = server.mock("POST", "/revoke")
