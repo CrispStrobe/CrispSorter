@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { catalogArchivePanel, cloudDrivePanel, duplicateGroupPanel, localPathPanel, panelSourceKey, remoteSearchPanel } from './panels';
+import { catalogArchivePanel, cloudDrivePanel, duplicateGroupPanel, localPathPanel, panelSourceKey, remoteSearchPanel, searchResultsPanel } from './panels';
 
 describe('context panel sources', () => {
     it('keeps a cloud path provenance-safe', () => {
@@ -19,6 +19,7 @@ describe('context panel sources', () => {
             .toBe('archive:/catalog/archive.caf');
         expect(panelSourceKey(localPathPanel('/Users/alice/paper.pdf').source))
             .toBe('local:/Users/alice/paper.pdf');
+        expect(panelSourceKey(searchResultsPanel('invoice').source)).toBe('search:invoice');
         expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, mtime: 0, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
         expect(duplicateGroupPanel('g9', [], 'keep_source').source.decision).toBe('keep_source');
     });
