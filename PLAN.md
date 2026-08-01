@@ -3293,6 +3293,9 @@ a transfer without leaving the search/catalog workflow.
     through Tauri cloud-backup construction and health probes.
   - [x] Native Filen/Internxt Tauri adapters now retain that policy and pass
     it into every reusable native client they construct.
+  - [x] Remaining Tauri sync, restore, offline-replay, and shard-transfer
+    paths now use the proxy-aware registry constructor instead of silently
+    falling back to a default HTTP client.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

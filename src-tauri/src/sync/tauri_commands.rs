@@ -120,7 +120,11 @@ pub async fn backup_job_snapshot_list(
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
         .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
-    let drive = crate::drives::DriveRegistry::instantiate(config);
+    let drive = crate::drives::DriveRegistry::instantiate_with_proxy(
+        config,
+        &proxy_config(&state).await?,
+    )
+    .map_err(|e| e.to_string())?;
     if !drive.probed_capabilities().list { return Err("drive lacks list capability".into()); }
     let root = std::path::Path::new(&job.remote_root).join(&snapshot);
     let mut errors = Vec::new();
@@ -162,8 +166,13 @@ pub async fn backup_job_restore(
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
         .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
-    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
-        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> = std::sync::Arc::from(
+        crate::drives::DriveRegistry::instantiate_with_proxy(
+            config,
+            &proxy_config(&state).await?,
+        )
+        .map_err(|e| e.to_string())?,
+    );
     if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
     let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(relative);
     let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
@@ -277,7 +286,11 @@ pub async fn sync_pair_remote_plan(
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
         .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-    let drive = crate::drives::DriveRegistry::instantiate(config);
+    let drive = crate::drives::DriveRegistry::instantiate_with_proxy(
+        config,
+        &proxy_config(&state).await?,
+    )
+    .map_err(|e| e.to_string())?;
     if !drive.capabilities().list || !drive.capabilities().stat {
         return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
     }
@@ -378,8 +391,13 @@ pub async fn sync_pair_pull(
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
         .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
-        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> = std::sync::Arc::from(
+        crate::drives::DriveRegistry::instantiate_with_proxy(
+            config,
+            &proxy_config(&state).await?,
+        )
+        .map_err(|e| e.to_string())?,
+    );
     if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
         return Err(format!("{} does not support remote pull", drive.drive_type().label()));
     }
@@ -499,8 +517,13 @@ pub async fn sync_pair_push(
             return Err(message);
         }
     };
-    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
-        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> = std::sync::Arc::from(
+        crate::drives::DriveRegistry::instantiate_with_proxy(
+            config,
+            &proxy_config(&state).await?,
+        )
+        .map_err(|e| e.to_string())?,
+    );
     if !drive.capabilities().write {
         let message = format!("{} does not support uploads", drive.drive_type().label());
         record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
@@ -851,7 +874,13 @@ pub async fn replay_offline_queue(
             let config = registry.drives.iter().find(|d| d.id == drive_id)
                 .ok_or_else(|| format!("drive '{drive_id}' no longer exists"))?;
             let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
-                std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+                std::sync::Arc::from(
+                    crate::drives::DriveRegistry::instantiate_with_proxy(
+                        config,
+                        &proxy_config(&state).await?,
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
             let bytes = std::fs::read(local_path).map_err(|e| e.to_string())?;
             let transfer = state.transfer_queue.clone().submit_upload(
                 drive_id.to_owned(),
@@ -1992,7 +2021,10 @@ pub async fn sync_cb_backup_shards(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
     let drive: Arc<dyn crate::drives::CloudDrive> =
-        Arc::from(DriveRegistry::instantiate(&drive_cfg));
+        Arc::from(
+            DriveRegistry::instantiate_with_proxy(&drive_cfg, &proxy_config(&state).await?)
+                .map_err(|e| e.to_string())?,
+        );
     let transfer_queue = state.transfer_queue.clone();
 
     let bs = BackupState::open(&data_dir).map_err(|e| e.to_string())?;
@@ -2116,7 +2148,10 @@ pub async fn sync_cb_restore_shard(
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?
         .clone();
     let drive: Arc<dyn crate::drives::CloudDrive> =
-        Arc::from(DriveRegistry::instantiate(&drive_cfg));
+        Arc::from(
+            DriveRegistry::instantiate_with_proxy(&drive_cfg, &proxy_config(&state).await?)
+                .map_err(|e| e.to_string())?,
+        );
 
     // Resolve the date dir: explicit or most-recent.
     let cb_root = std::path::Path::new("cb-backups");
