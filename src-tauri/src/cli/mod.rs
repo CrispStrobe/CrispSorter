@@ -10920,55 +10920,67 @@ mod tests {
 
     #[test]
     fn chat_transcribe_full_args_parse() {
-        // All optional flags set — language hint, explicit model
-        // path, output redirect, pure-rust policy, custom data dir,
-        // Phase 6 routing knobs (policy/fallback/lid-model/lid-method).
-        let cli = Cli::try_parse_from([
-            "crispsorter", "chat", "transcribe",
-            "/tmp/de.mp3",
-            "--backend", "parakeet",
-            "--model", "/models/parakeet.gguf",
-            "--language", "auto",
-            "--output", "/tmp/out.txt",
-            "--data-dir", "/tmp/xdg",
-            "--pure-rust",
-            "--policy", "auto",
-            "--fallback", "whisper",
-            "--lid-model", "/models/ggml-tiny.bin",
-            "--lid-method", "silero",
-            "--translate-to", "en",
-            "--translate-backend", "m2m100-wmt21",
-            "--translate-model", "/models/wmt21-de-en.gguf",
-            "--translate-max-tokens", "512",
-        ])
-        .expect("full-flag transcribe should parse");
-        match cli.command {
-            Command::Chat { cmd: ChatCmd::Transcribe {
-                path, backend, model, language, output, data_dir, pure_rust, stream,
-                transcript_format,
-                policy, fallback_backend, lid_model, lid_method,
-                translate_to, translate_backend, translate_model, translate_max_tokens,
-            } } => {
-                assert!(!stream, "--stream not set in full-args test (covered separately)");
-                assert!(transcript_format.is_none(), "--transcript-format not set in full-args test (covered separately)");
-                assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
-                assert_eq!(backend, "parakeet");
-                assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
-                assert_eq!(language.as_deref(), Some("auto"));
-                assert_eq!(output, "/tmp/out.txt");
-                assert_eq!(data_dir, Some(PathBuf::from("/tmp/xdg")));
-                assert!(pure_rust);
-                assert_eq!(policy, LidPolicy::Auto);
-                assert_eq!(fallback_backend, "whisper");
-                assert_eq!(lid_model, Some(PathBuf::from("/models/ggml-tiny.bin")));
-                assert_eq!(lid_method, LidMethodChoice::Silero);
-                assert_eq!(translate_to.as_deref(), Some("en"));
-                assert_eq!(translate_backend, "m2m100-wmt21");
-                assert_eq!(translate_model, Some(PathBuf::from("/models/wmt21-de-en.gguf")));
-                assert_eq!(translate_max_tokens, 512);
-            }
-            other => panic!("expected Chat Transcribe, got {other:?}"),
-        }
+        // The complete Clap tree is deep enough to overflow libtest's
+        // small worker stack on Ubuntu. Keep the parser assertions intact,
+        // but run them on the same explicitly sized stack as the command
+        // tree tests below.
+        std::thread::Builder::new()
+            .name("chat-transcribe-full-args-test".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                // All optional flags set — language hint, explicit model
+                // path, output redirect, pure-rust policy, custom data dir,
+                // Phase 6 routing knobs (policy/fallback/lid-model/lid-method).
+                let cli = Cli::try_parse_from([
+                    "crispsorter", "chat", "transcribe",
+                    "/tmp/de.mp3",
+                    "--backend", "parakeet",
+                    "--model", "/models/parakeet.gguf",
+                    "--language", "auto",
+                    "--output", "/tmp/out.txt",
+                    "--data-dir", "/tmp/xdg",
+                    "--pure-rust",
+                    "--policy", "auto",
+                    "--fallback", "whisper",
+                    "--lid-model", "/models/ggml-tiny.bin",
+                    "--lid-method", "silero",
+                    "--translate-to", "en",
+                    "--translate-backend", "m2m100-wmt21",
+                    "--translate-model", "/models/wmt21-de-en.gguf",
+                    "--translate-max-tokens", "512",
+                ])
+                .expect("full-flag transcribe should parse");
+                match cli.command {
+                    Command::Chat { cmd: ChatCmd::Transcribe {
+                        path, backend, model, language, output, data_dir, pure_rust, stream,
+                        transcript_format,
+                        policy, fallback_backend, lid_model, lid_method,
+                        translate_to, translate_backend, translate_model, translate_max_tokens,
+                    } } => {
+                        assert!(!stream, "--stream not set in full-args test (covered separately)");
+                        assert!(transcript_format.is_none(), "--transcript-format not set in full-args test (covered separately)");
+                        assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
+                        assert_eq!(backend, "parakeet");
+                        assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
+                        assert_eq!(language.as_deref(), Some("auto"));
+                        assert_eq!(output, "/tmp/out.txt");
+                        assert_eq!(data_dir, Some(PathBuf::from("/tmp/xdg")));
+                        assert!(pure_rust);
+                        assert_eq!(policy, LidPolicy::Auto);
+                        assert_eq!(fallback_backend, "whisper");
+                        assert_eq!(lid_model, Some(PathBuf::from("/models/ggml-tiny.bin")));
+                        assert_eq!(lid_method, LidMethodChoice::Silero);
+                        assert_eq!(translate_to.as_deref(), Some("en"));
+                        assert_eq!(translate_backend, "m2m100-wmt21");
+                        assert_eq!(translate_model, Some(PathBuf::from("/models/wmt21-de-en.gguf")));
+                        assert_eq!(translate_max_tokens, 512);
+                    }
+                    other => panic!("expected Chat Transcribe, got {other:?}"),
+                }
+            })
+            .expect("spawn chat transcribe parser test thread")
+            .join()
+            .expect("chat transcribe parser test thread should not panic");
     }
 
     #[test]
