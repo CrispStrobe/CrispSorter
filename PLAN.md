@@ -2737,6 +2737,9 @@ a transfer without leaving the search/catalog workflow.
   share, promote remote L1 rows, download for offline use, and send selected
   items to the batch sorter.  Preserve provenance (`crisp+drive://`,
   `crisp+cb-archive://`, local path) through every action.
+  - [x] Search results with `crisp+drive://` provenance can open the
+    registered-drive browser at the exact remote path through a shared typed
+    context request. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

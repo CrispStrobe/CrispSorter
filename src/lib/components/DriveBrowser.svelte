@@ -10,6 +10,7 @@
         type DriveCapabilities,
     } from '$lib/drives/browser';
     import { cloudDrivePanel, type ContextPanel } from '$lib/drives/panels';
+    import { subscribeBrowserContext } from '$lib/drives/browserContext';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
@@ -110,7 +111,18 @@
         catch (e) { error = String(e); }
     }
 
-    onMount(() => { void loadDrives(); });
+    onMount(() => {
+        const unsubscribe = subscribeBrowserContext((panel) => {
+            rightPanel = panel;
+            if (panel.source.kind === 'CloudDrive') {
+                driveId = panel.source.driveId;
+                path = normalizeDrivePath(panel.source.path);
+                void refresh();
+            }
+        });
+        void loadDrives();
+        return unsubscribe;
+    });
 </script>
 
 <section class="drive-browser">

@@ -23,10 +23,13 @@
     import PdfWorkspace from '$lib/components/PdfWorkspace.svelte';
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
+    import { subscribeBrowserContext } from '$lib/drives/browserContext';
 
     let activeTab = $state('batch'); // 'batch', 'drives', 'history', 'chat', 'settings', 'catalog', 'translate'
     let navCollapsed = $state(false);
     let showLogs = $state(false);
+
+    $effect(() => subscribeBrowserContext(() => { activeTab = 'drives'; }));
 
     const batchStats = $derived.by(() => {
         const items = batchManager.items;
