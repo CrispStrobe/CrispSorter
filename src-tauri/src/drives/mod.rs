@@ -150,6 +150,20 @@ pub trait CloudDrive: Send + Sync {
         ))
     }
 
+    /// Resume a native-provider download into a durable local checkpoint.
+    fn download_file_resumable(
+        &self,
+        remote_path: &Path,
+        local_path: &Path,
+        state_path: &Path,
+    ) -> Result<()> {
+        let _ = (remote_path, local_path, state_path);
+        Err(anyhow!(
+            "{} does not support durable resumable downloads",
+            self.drive_type().label()
+        ))
+    }
+
     /// Stream a remote file into a caller-provided writer. Legacy providers
     /// fall back to their whole-buffer API; native streaming providers
     /// override this without changing the object-safe trait boundary.

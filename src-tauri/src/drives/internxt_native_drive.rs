@@ -165,6 +165,21 @@ impl CloudDrive for NativeInternxtDrive {
         )
     }
 
+    fn download_file_resumable(
+        &self,
+        remote_path: &Path,
+        local_path: &Path,
+        state_path: &Path,
+    ) -> Result<()> {
+        let (session, client, item) = self.resolved(remote_path)?;
+        anyhow::ensure!(
+            !item.is_dir,
+            "Internxt remote path is a directory: {}",
+            remote_path.display()
+        );
+        client.download_file_to_path_resumable(&session, &item.uuid, local_path, state_path)
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         let (_session, client, item) = self.resolved(path)?;
         client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })

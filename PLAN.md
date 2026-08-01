@@ -2677,6 +2677,10 @@ a transfer without leaving the search/catalog workflow.
     and `drive_upload_resumable`; Filen and Internxt validate the persisted
     destination/source identity before continuing, while legacy providers
     fail explicitly. ✅ 2026-08-01
+  - [x] Internxt ranged-download checkpoints are now exposed through
+    `CloudDrive::download_file_resumable` and `drive_download_resumable`.
+    Filen’s existing batch checkpoint remains file-level only and is not
+    advertised as chunk-resumable. ✅ 2026-08-01
 - [ ] **Provider capability matrix and test harness.** Add local mock HTTP
   servers and contract tests for listing, mutation, streaming, retries,
   resume, expired auth, share/version behavior, and unsupported operations.
