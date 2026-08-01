@@ -29,6 +29,10 @@ export function localPathPanel(path: string, title = 'Local file'): ContextPanel
     return { source: { kind: 'LocalPath', path }, title };
 }
 
+export function searchResultsPanel(query: string, title = 'Search results'): ContextPanel {
+    return { source: { kind: 'SearchResults', query }, title };
+}
+
 export function duplicateGroupPanel(
     groupId: string,
     items: DuplicateContextItem[] = [],

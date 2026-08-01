@@ -14,7 +14,7 @@
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
-    import { cloudDrivePanel, localPathPanel, remoteSearchPanel } from '$lib/drives/panels';
+    import { cloudDrivePanel, localPathPanel, remoteSearchPanel, searchResultsPanel } from '$lib/drives/panels';
     import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
@@ -1014,6 +1014,10 @@
         if (path) requestBrowserContext(localPathPanel(path));
     }
 
+    function openSearchResultsContext(): void {
+        if (query.trim()) requestBrowserContext(searchResultsPanel(query.trim()));
+    }
+
     async function addResultToBatch(result: SearchResult): Promise<void> {
         const path = localPathFromSearchUri(result.location_uri);
         if (!path) {
@@ -1358,6 +1362,13 @@
                         Refine
                     </button>
                 {/if}
+                <button
+                    class="tagcloud-toggle"
+                    onclick={openSearchResultsContext}
+                    title="Open search results in context"
+                >
+                    <FolderOpen size={11} /> Context
+                </button>
                 {#if refinementScope.length > 0}
                     <span class="refine-badge" title="Searching within {refinementScope.length} docs from previous results">
                         Scoped to {refinementScope.length} docs

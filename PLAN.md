@@ -2763,6 +2763,8 @@ a transfer without leaving the search/catalog workflow.
     ✅ 2026-08-01
   - [x] Local search hits now emit typed `LocalPath` context requests alongside
     the existing external-open and batch-sorter actions. ✅ 2026-08-01
+  - [x] Local result groups now emit typed `SearchResults` context requests
+    carrying the active query into the dual-panel browser. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
@@ -2779,9 +2781,13 @@ a transfer without leaving the search/catalog workflow.
   - [x] Duplicate context now records a non-destructive dry-run decision
     (review, keep source, keep destination, or keep both) before mutation
     policies are implemented. ✅ 2026-08-01
-  - [x] The browser keeps a session audit of decision changes and supports
-    undoing the latest decision for the active duplicate group; durable audit
-    persistence remains deferred with destructive mutation support. ✅ 2026-08-01
+  - [x] The browser persists a bounded versioned audit of decision changes in
+    local storage and supports undoing the latest decision for the active
+    duplicate group; destructive mutation support remains deferred. ✅ 2026-08-01
+  - [x] Reopening a duplicate context restores the latest persisted decision
+    for that group instead of resetting to review. ✅ 2026-08-01
+  - [x] The duplicate pane exposes persisted decision history with timestamps
+    and an explicit clear-audit control. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
