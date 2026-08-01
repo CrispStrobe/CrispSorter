@@ -2742,6 +2742,9 @@ a transfer without leaving the search/catalog workflow.
   group, archive, cloud folder, or comparison target.  Support panel source
   types `LocalPath`, `CloudDrive`, `SearchResults`, `DuplicateGroup`,
   `CatalogArchive`, and `RemoteSearchResults`.
+  - [x] The right context pane now renders provenance details for all six
+    typed panel sources, including local paths, catalog archives, and remote
+    search provider/query context. ✅ 2026-08-01
 - [ ] **Actionable search results.** From any result: reveal/open in context,
   select related chunks/duplicates, compare files, copy/move/rename/delete,
   share, promote remote L1 rows, download for offline use, and send selected
@@ -2750,6 +2753,11 @@ a transfer without leaving the search/catalog workflow.
   - [x] Search results with `crisp+drive://` provenance can open the
     registered-drive browser at the exact remote path through a shared typed
     context request. ✅ 2026-08-01
+  - [x] Local search results now expose a provenance-safe action that adds
+    the local file to the existing batch sorter; cloud/archive/HTTP URIs are
+    rejected instead of being treated as local paths. ✅ 2026-08-01
+  - [x] Remote cloud-backup result panes now emit typed provider/query context
+    requests into the dual-panel browser. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
@@ -2761,6 +2769,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Duplicate context requests now carry source/destination paths, sizes,
     hashes, and roles; the browser pane renders the complete group for review.
     ✅ 2026-08-01
+  - [x] Duplicate context now also renders modification times and provides
+    safe open-file and copy-path actions for every candidate. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

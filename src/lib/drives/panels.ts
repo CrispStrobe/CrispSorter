@@ -14,6 +14,7 @@ export type ContextPanel = {
 export type DuplicateContextItem = {
     path: string;
     size: number;
+    mtime: number;
     hash: string | null;
     role: 'source' | 'destination';
 };
@@ -28,6 +29,14 @@ export function duplicateGroupPanel(
     title = 'Duplicate group',
 ): ContextPanel {
     return { source: { kind: 'DuplicateGroup', groupId, items }, title };
+}
+
+export function remoteSearchPanel(
+    provider: string,
+    query: string,
+    title = 'Remote search',
+): ContextPanel {
+    return { source: { kind: 'RemoteSearchResults', provider, query }, title };
 }
 
 export function panelSourceKey(source: PanelSource): string {

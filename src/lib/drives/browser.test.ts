@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
     availableDriveActions,
     joinDrivePath,
+    localPathFromSearchUri,
     normalizeDrivePath,
     parentDrivePath,
+    pathBaseName,
 } from './browser';
 
 describe('drive browser path contract', () => {
@@ -41,5 +43,15 @@ describe('drive browser path contract', () => {
             copy: false,
             delete: true,
         });
+    });
+
+    it('preserves local search provenance and rejects remote schemes', () => {
+        expect(localPathFromSearchUri('crisp+local://host/%2FUsers%2Falice%2Fpaper.pdf'))
+            .toBe('/Users/alice/paper.pdf');
+        expect(localPathFromSearchUri('/Users/alice/paper.pdf')).toBe('/Users/alice/paper.pdf');
+        expect(localPathFromSearchUri('crisp+drive://drive-1/docs/paper.pdf')).toBeNull();
+        expect(localPathFromSearchUri('crisp+cb-archive://archive/paper.pdf')).toBeNull();
+        expect(localPathFromSearchUri('https://example.test/paper.pdf')).toBeNull();
+        expect(pathBaseName('/Users/alice/paper.pdf')).toBe('paper.pdf');
     });
 });

@@ -9,12 +9,13 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2,
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus,
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
-    import { cloudDrivePanel } from '$lib/drives/panels';
+    import { cloudDrivePanel, remoteSearchPanel } from '$lib/drives/panels';
+    import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -895,6 +896,10 @@
         }
     }
 
+    function openRemoteSearchContext(): void {
+        requestBrowserContext(remoteSearchPanel('cloud-backup', query.trim()));
+    }
+
     // P13.7 Stage E + M — download a remote hit's bytes to a
     // user-picked local path via sync_cb_download_file.  Streaming
     // + sha-verified on arrival; failure removes any partial.
@@ -1002,6 +1007,20 @@
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
+    }
+
+    async function addResultToBatch(result: SearchResult): Promise<void> {
+        const path = localPathFromSearchUri(result.location_uri);
+        if (!path) {
+            error = 'Only local search results can be added directly to the batch.';
+            return;
+        }
+        try {
+            const { batchManager } = await import('$lib/batch/store.svelte');
+            batchManager.addItem(path, result.filename || pathBaseName(path), 0);
+        } catch (e: any) {
+            error = `Could not add search result to batch: ${String(e?.message ?? e)}`;
+        }
     }
 
     function highlightSnippet(text: string, q: string): string {
@@ -1408,6 +1427,13 @@
                                     <FolderOpen size={13} />
                                 </button>
                             {/if}
+                            {#if localPathFromSearchUri(r.location_uri)}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
+                                    title="Add to batch sorter">
+                                    <ListPlus size={13} />
+                                </button>
+                            {/if}
                             {#if r.url}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openOriginal(r.url!); }}
@@ -1711,6 +1737,11 @@
                     {/if}
                     · {remoteShards} shard(s) queried
                 </span>
+                {#if remoteResults.length > 0}
+                    <button class="open-btn" onclick={openRemoteSearchContext} title="Open remote results in context">
+                        <FolderOpen size={13} /> Context
+                    </button>
+                {/if}
             </header>
             {#if remoteError}
                 <p class="error">{remoteError}</p>
