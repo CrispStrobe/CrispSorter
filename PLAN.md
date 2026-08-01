@@ -2742,6 +2742,9 @@ a transfer without leaving the search/catalog workflow.
   group, archive, cloud folder, or comparison target.  Support panel source
   types `LocalPath`, `CloudDrive`, `SearchResults`, `DuplicateGroup`,
   `CatalogArchive`, and `RemoteSearchResults`.
+  - [x] The right context pane now renders provenance details for all six
+    typed panel sources, including local paths, catalog archives, and remote
+    search provider/query context. ✅ 2026-08-01
 - [ ] **Actionable search results.** From any result: reveal/open in context,
   select related chunks/duplicates, compare files, copy/move/rename/delete,
   share, promote remote L1 rows, download for offline use, and send selected

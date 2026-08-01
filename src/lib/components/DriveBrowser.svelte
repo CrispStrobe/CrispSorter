@@ -183,6 +183,12 @@
             <h3>{rightPanel.title}</h3>
             {#if rightPanel.source.kind === 'CloudDrive'}
                 <code>{rightPanel.source.path}</code>
+            {:else if rightPanel.source.kind === 'LocalPath'}
+                <code>{rightPanel.source.path}</code>
+                <div class="context-provenance">Local filesystem</div>
+            {:else if rightPanel.source.kind === 'SearchResults'}
+                <div class="context-label">Search results</div>
+                <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
                 <code>group: {rightPanel.source.groupId}</code>
                 <ul class="duplicate-context-list">
@@ -200,6 +206,12 @@
                         </li>
                     {/each}
                 </ul>
+            {:else if rightPanel.source.kind === 'CatalogArchive'}
+                <div class="context-label">Catalog archive</div>
+                <code>{rightPanel.source.archivePath}</code>
+            {:else if rightPanel.source.kind === 'RemoteSearchResults'}
+                <div class="context-label">Remote search · {rightPanel.source.provider}</div>
+                <code>{rightPanel.source.query}</code>
             {:else}
                 <code>{rightPanel.source.kind}</code>
             {/if}
@@ -233,6 +245,7 @@
     .context-pane { grid-column: 2; grid-row: 4; border: 1px solid var(--border, #3a3a44); border-radius: 8px; padding: 16px; min-height: 150px; }
     .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
+    .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
     .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size, .duplicate-mtime { grid-column: 1 / -1; text-align: left; } .duplicate-mtime { color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-actions { display: flex; gap: 6px; } .duplicate-actions button { padding: 3px 6px; font-size: .7rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
