@@ -1094,7 +1094,7 @@ mod tests {
                 true,
                 false,
                 false,
-                false,
+                true,
             ),
             (
                 DriveType::OneDrive,

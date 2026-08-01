@@ -3016,7 +3016,7 @@ mod tests {
         let mut rows = Vec::new();
         inventory_remote(
             &drive,
-            std::path::Path::new("/"),
+            dir.path(),
             "",
             &["**/*.pdf".into()],
             &[],

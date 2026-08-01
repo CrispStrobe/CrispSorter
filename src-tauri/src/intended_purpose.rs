@@ -242,7 +242,7 @@ mod tests {
         // The refusal has to carry the statement and a way out, or a headless
         // operator is stuck with an error they cannot action.
         assert!(err.contains("translate"), "names the operation: {err}");
-        assert!(err.contains("not intended for"), "carries the statement");
+        assert!(err.contains("NOT intended for"), "carries the statement");
         assert!(err.contains("--accept-intended-purpose"), "offers the CLI route");
         assert!(err.contains(ENV), "offers the unattended route");
     }

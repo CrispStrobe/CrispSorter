@@ -7,6 +7,10 @@
 use anyhow::{Context, Result};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 const SERVICE: &str = "CrispSorter.CloudDrive";
 const CREDENTIALS_SERVICE: &str = "CrispSorter.CloudDrive.Auth";
@@ -30,6 +34,12 @@ pub struct DriveCredentials {
     pub client_id: Option<String>,
 }
 
+#[cfg(test)]
+fn test_store() -> &'static Mutex<HashMap<(String, String), String>> {
+    static STORE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn credentials_entry(drive_id: &str) -> Result<Entry> {
     Entry::new(CREDENTIALS_SERVICE, drive_id)
         .context("creating cloud-drive credentials keychain entry")
@@ -38,12 +48,35 @@ fn credentials_entry(drive_id: &str) -> Result<Entry> {
 pub fn set_credentials(drive_id: &str, credentials: &DriveCredentials) -> Result<()> {
     let serialized =
         serde_json::to_string(credentials).context("serializing cloud-drive credentials")?;
+    #[cfg(test)]
+    {
+        test_store()
+            .lock()
+            .expect("test keychain store")
+            .insert((CREDENTIALS_SERVICE.into(), drive_id.into()), serialized);
+        return Ok(());
+    }
+    #[cfg(not(test))]
     credentials_entry(drive_id)?
         .set_password(&serialized)
         .context("storing cloud-drive credentials in keychain")
 }
 
 pub fn get_credentials(drive_id: &str) -> Result<Option<DriveCredentials>> {
+    #[cfg(test)]
+    if let Some(value) = test_store()
+        .lock()
+        .expect("test keychain store")
+        .get(&(CREDENTIALS_SERVICE.into(), drive_id.into()))
+        .cloned()
+    {
+        return serde_json::from_str(&value)
+            .context("parsing cloud-drive credentials from keychain")
+            .map(Some);
+    }
+    #[cfg(test)]
+    return Ok(None);
+    #[cfg(not(test))]
     match credentials_entry(drive_id)?.get_password() {
         Ok(value) => serde_json::from_str(&value)
             .context("parsing cloud-drive credentials from keychain")
@@ -54,6 +87,15 @@ pub fn get_credentials(drive_id: &str) -> Result<Option<DriveCredentials>> {
 }
 
 pub fn delete_credentials(drive_id: &str) -> Result<()> {
+    #[cfg(test)]
+    {
+        test_store()
+            .lock()
+            .expect("test keychain store")
+            .remove(&(CREDENTIALS_SERVICE.into(), drive_id.into()));
+        return Ok(());
+    }
+    #[cfg(not(test))]
     match credentials_entry(drive_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("deleting cloud-drive credentials from keychain"),
@@ -61,12 +103,28 @@ pub fn delete_credentials(drive_id: &str) -> Result<()> {
 }
 
 pub fn set_session(drive_id: &str, serialized_session: &str) -> Result<()> {
+    #[cfg(test)]
+    {
+        test_store()
+            .lock()
+            .expect("test keychain store")
+            .insert((SERVICE.into(), drive_id.into()), serialized_session.into());
+        return Ok(());
+    }
+    #[cfg(not(test))]
     entry(drive_id)?
         .set_password(serialized_session)
         .context("storing cloud-drive session in keychain")
 }
 
 pub fn get_session(drive_id: &str) -> Result<Option<String>> {
+    #[cfg(test)]
+    return Ok(test_store()
+        .lock()
+        .expect("test keychain store")
+        .get(&(SERVICE.into(), drive_id.into()))
+        .cloned());
+    #[cfg(not(test))]
     match entry(drive_id)?.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -75,6 +133,15 @@ pub fn get_session(drive_id: &str) -> Result<Option<String>> {
 }
 
 pub fn delete_session(drive_id: &str) -> Result<()> {
+    #[cfg(test)]
+    {
+        test_store()
+            .lock()
+            .expect("test keychain store")
+            .remove(&(SERVICE.into(), drive_id.into()));
+        return Ok(());
+    }
+    #[cfg(not(test))]
     match entry(drive_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error).context("deleting cloud-drive session from keychain"),
