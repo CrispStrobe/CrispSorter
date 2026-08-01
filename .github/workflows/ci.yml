@@ -271,6 +271,27 @@ jobs:
         with:
           path: repos/CrispSorter
 
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
