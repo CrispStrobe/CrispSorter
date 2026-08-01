@@ -3141,6 +3141,12 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
     same remote-wins guard, inventory cutoff, shared queue, and local-write
     behavior. ✅ 2026-08-01
+  - [x] File-manager move/copy commands now consume the persisted policy (or
+    an explicit override): newest-wins compares provider timestamps,
+    local-wins skips, remote-wins proceeds, keep-both chooses a collision-safe
+    sibling name, and manual rejects until review. Pure decision tests cover
+    every mutation policy; the broader preview/resolution surface remains
+    open. ✅ 2026-08-01
 - [x] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
