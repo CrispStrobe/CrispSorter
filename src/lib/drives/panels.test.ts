@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cloudDrivePanel, duplicateGroupPanel, panelSourceKey } from './panels';
+import { cloudDrivePanel, duplicateGroupPanel, panelSourceKey, remoteSearchPanel } from './panels';
 
 describe('context panel sources', () => {
     it('keeps a cloud path provenance-safe', () => {
@@ -13,6 +13,8 @@ describe('context panel sources', () => {
         expect(panelSourceKey({ kind: 'DuplicateGroup', groupId: 'g7', items: [] })).toBe('duplicates:g7');
         expect(panelSourceKey({ kind: 'RemoteSearchResults', provider: 'internxt', query: 'paper' }))
             .toBe('remote:internxt:paper');
+        expect(panelSourceKey(remoteSearchPanel('cloud-backup', 'paper').source))
+            .toBe('remote:cloud-backup:paper');
         expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, mtime: 0, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
     });
 });

@@ -14,7 +14,7 @@
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
-    import { cloudDrivePanel } from '$lib/drives/panels';
+    import { cloudDrivePanel, remoteSearchPanel } from '$lib/drives/panels';
     import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
@@ -896,6 +896,10 @@
         }
     }
 
+    function openRemoteSearchContext(): void {
+        requestBrowserContext(remoteSearchPanel('cloud-backup', query.trim()));
+    }
+
     // P13.7 Stage E + M — download a remote hit's bytes to a
     // user-picked local path via sync_cb_download_file.  Streaming
     // + sha-verified on arrival; failure removes any partial.
@@ -1733,6 +1737,11 @@
                     {/if}
                     · {remoteShards} shard(s) queried
                 </span>
+                {#if remoteResults.length > 0}
+                    <button class="open-btn" onclick={openRemoteSearchContext} title="Open remote results in context">
+                        <FolderOpen size={13} /> Context
+                    </button>
+                {/if}
             </header>
             {#if remoteError}
                 <p class="error">{remoteError}</p>

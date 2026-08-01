@@ -2756,6 +2756,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Local search results now expose a provenance-safe action that adds
     the local file to the existing batch sorter; cloud/archive/HTTP URIs are
     rejected instead of being treated as local paths. ✅ 2026-08-01
+  - [x] Remote cloud-backup result panes now emit typed provider/query context
+    requests into the dual-panel browser. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
