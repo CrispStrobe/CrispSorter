@@ -11,6 +11,8 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
+use crate::sync::proxy::{build_blocking_client, ProxyConfig};
+
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
 const API_BASE: &str = "https://www.googleapis.com/drive/v3";
@@ -35,14 +37,36 @@ impl GoogleDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
-        Self::with_api_base(
+        Self::new_with_proxy(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            &ProxyConfig::default(),
+        )
+        .expect("default Google Drive HTTP client must build")
+    }
+
+    /// Construct a Google Drive client with the shared HTTP/SOCKS5 policy.
+    pub fn new_with_proxy(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        proxy: &ProxyConfig,
+    ) -> Result<Self> {
+        let client = build_blocking_client(proxy)?;
+        Ok(Self::with_api_base_and_client(
             label,
             access_token,
             refresh_token,
             client_id,
             client_secret,
             API_BASE,
-        )
+            client,
+        ))
     }
 
     fn with_api_base(
@@ -52,6 +76,26 @@ impl GoogleDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
         api_base: impl Into<String>,
+    ) -> Self {
+        Self::with_api_base_and_client(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            api_base,
+            reqwest::blocking::Client::new(),
+        )
+    }
+
+    fn with_api_base_and_client(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        api_base: impl Into<String>,
+        client: reqwest::blocking::Client,
     ) -> Self {
         let api_base = api_base.into();
         let upload_base = api_base
@@ -66,7 +110,7 @@ impl GoogleDriveDrive {
             _refresh_token: refresh_token,
             _client_id: client_id,
             _client_secret: client_secret,
-            client: reqwest::blocking::Client::new(),
+            client,
         }
     }
 
@@ -550,6 +594,23 @@ mod tests {
     use mockito::Server;
 
     #[test]
+    fn proxy_constructor_rejects_invalid_proxy_before_requests() {
+        let proxy = ProxyConfig {
+            url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(GoogleDriveDrive::new_with_proxy(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            &proxy,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn resolve_root() {
         let d = GoogleDriveDrive::new("test".into(), "tok".into(), None, None, None);
         let id = d.resolve_id(Path::new("")).unwrap();
@@ -736,7 +797,10 @@ mod tests {
             .create();
         let upload = server
             .mock("PATCH", "/upload/drive/v3/files/file-1")
-            .match_query(mockito::Matcher::UrlEncoded("uploadType".into(), "media".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "uploadType".into(),
+                "media".into(),
+            ))
             .match_header("content-type", "application/octet-stream")
             .match_body("restored bytes")
             .with_status(200)
@@ -755,7 +819,9 @@ mod tests {
         assert_eq!(versions[0].size, Some(12));
         assert_eq!(versions[0].modifier_name.as_deref(), Some("Alice"));
         assert!(versions[0].modified_at.is_some());
-        drive.restore_version(Path::new("report.pdf"), "rev-1").unwrap();
+        drive
+            .restore_version(Path::new("report.pdf"), "rev-1")
+            .unwrap();
         resolve.assert();
         revisions.assert();
         download.assert();
@@ -780,7 +846,8 @@ mod tests {
         let path = Path::new("_crispsorter_live").join(format!("google-{nonce}.txt"));
         let content = format!("CrispSorter Google Drive live test {nonce}").into_bytes();
         let result = (|| -> Result<()> {
-            drive.create_dir(Path::new("_crispsorter_live"))
+            drive
+                .create_dir(Path::new("_crispsorter_live"))
                 .or_else(|error| {
                     anyhow::ensure!(error.to_string().contains("HTTP 409"));
                     Ok(())

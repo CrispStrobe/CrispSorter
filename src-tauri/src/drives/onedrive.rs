@@ -13,6 +13,8 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::sync::proxy::{build_blocking_client, ProxyConfig};
+
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
 const GRAPH_BASE: &str = "https://graph.microsoft.com/v1.0";
@@ -35,14 +37,36 @@ impl OneDriveDrive {
         client_id: Option<String>,
         client_secret: Option<String>,
     ) -> Self {
-        Self::with_graph_base(
+        Self::new_with_proxy(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            &ProxyConfig::default(),
+        )
+        .expect("default OneDrive HTTP client must build")
+    }
+
+    /// Construct a OneDrive client with the shared HTTP/SOCKS5 policy.
+    pub fn new_with_proxy(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        proxy: &ProxyConfig,
+    ) -> Result<Self> {
+        let client = build_blocking_client(proxy)?;
+        Ok(Self::with_graph_base_and_client(
             label,
             access_token,
             refresh_token,
             client_id,
             client_secret,
             GRAPH_BASE,
-        )
+            client,
+        ))
     }
 
     fn with_graph_base(
@@ -53,6 +77,26 @@ impl OneDriveDrive {
         client_secret: Option<String>,
         graph_base: impl Into<String>,
     ) -> Self {
+        Self::with_graph_base_and_client(
+            label,
+            access_token,
+            refresh_token,
+            client_id,
+            client_secret,
+            graph_base,
+            reqwest::blocking::Client::new(),
+        )
+    }
+
+    fn with_graph_base_and_client(
+        label: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        client_id: Option<String>,
+        client_secret: Option<String>,
+        graph_base: impl Into<String>,
+        client: reqwest::blocking::Client,
+    ) -> Self {
         Self {
             label,
             graph_base: graph_base.into(),
@@ -60,7 +104,7 @@ impl OneDriveDrive {
             _refresh_token: refresh_token,
             _client_id: client_id,
             _client_secret: client_secret,
-            client: reqwest::blocking::Client::new(),
+            client,
         }
     }
 
@@ -94,7 +138,10 @@ impl OneDriveDrive {
     }
 
     fn copy_parent(path: &Path) -> (&Path, &str) {
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
         (path.parent().unwrap_or_else(|| Path::new("")), name)
     }
 }
@@ -504,6 +551,23 @@ mod tests {
     use mockito::Server;
 
     #[test]
+    fn proxy_constructor_rejects_invalid_proxy_before_requests() {
+        let proxy = ProxyConfig {
+            url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(OneDriveDrive::new_with_proxy(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            &proxy,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn iso8601_parse() {
         let ts = chrono_parse_iso8601("2024-01-15T10:30:00Z").unwrap();
         // 2024-01-15 10:30:00 UTC should be around 1705312200
@@ -699,7 +763,10 @@ mod tests {
             .with_body(r#"{"value":[{"id":"v1","lastModifiedDateTime":"2024-01-15T10:30:00Z","size":12,"lastModifiedBy":{"user":{"displayName":"Alice"}}}]}"#)
             .create();
         let restore = server
-            .mock("POST", "/v1.0/me/drive/root:/report.pdf:/versions/v1/restoreVersion")
+            .mock(
+                "POST",
+                "/v1.0/me/drive/root:/report.pdf:/versions/v1/restoreVersion",
+            )
             .match_header("authorization", "Bearer tok")
             .with_status(204)
             .create();
@@ -717,7 +784,9 @@ mod tests {
         assert_eq!(result[0].size, Some(12));
         assert_eq!(result[0].modifier_name.as_deref(), Some("Alice"));
         assert!(result[0].modified_at.is_some());
-        drive.restore_version(Path::new("report.pdf"), "v1").unwrap();
+        drive
+            .restore_version(Path::new("report.pdf"), "v1")
+            .unwrap();
         versions.assert();
         restore.assert();
     }
@@ -740,7 +809,8 @@ mod tests {
         let path = Path::new("_crispsorter_live").join(format!("onedrive-{nonce}.txt"));
         let content = format!("CrispSorter OneDrive live test {nonce}").into_bytes();
         let result = (|| -> Result<()> {
-            drive.create_dir(Path::new("_crispsorter_live"))
+            drive
+                .create_dir(Path::new("_crispsorter_live"))
                 .or_else(|error| {
                     anyhow::ensure!(error.to_string().contains("HTTP 409"));
                     Ok(())

@@ -3276,6 +3276,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] WebDAV now has a shared proxy-aware constructor that preserves its
     timeout and explicit local/self-signed TLS policy; invalid proxy settings
     fail before any request is made.
+  - [x] Google Drive and OneDrive now expose the same proxy-aware client
+    boundary, with invalid configuration rejected before provider requests.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider
