@@ -496,6 +496,37 @@ enum SyncCmd {
         #[command(subcommand)]
         cmd: CloudBackupCmd,
     },
+    /// Persist and inspect local/cloud backup-job definitions.
+    BackupJob {
+        #[command(subcommand)]
+        cmd: BackupJobCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum BackupJobCmd {
+    /// List configured jobs, including schedule and last-run status.
+    List,
+    /// Create or update a job. Schedule is manual, interval:<minutes>, or daily:HH:MM.
+    Upsert {
+        id: String,
+        #[arg(long)]
+        source_root: String,
+        #[arg(long)]
+        drive_id: String,
+        #[arg(long)]
+        remote_root: String,
+        #[arg(long, default_value = "manual")]
+        schedule: String,
+        #[arg(long, default_value_t = 7)]
+        retention_count: u32,
+        #[arg(long)]
+        no_verify: bool,
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// Remove a job definition without deleting any backup data.
+    Delete { id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5067,7 +5098,74 @@ async fn cmd_sync_async(
     match cmd {
         SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd).await,
         SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
+        SyncCmd::BackupJob { cmd } => cmd_sync_backup_job(out, data_dir, cmd),
     }
+}
+
+fn parse_backup_schedule(raw: &str) -> Result<crate::sync::backup_state::BackupSchedule, String> {
+    use crate::sync::backup_state::BackupSchedule;
+    if raw == "manual" {
+        return Ok(BackupSchedule::Manual);
+    }
+    if let Some(minutes) = raw.strip_prefix("interval:") {
+        return minutes.parse::<u64>()
+            .map(|minutes| BackupSchedule::IntervalMinutes { minutes })
+            .map_err(|_| "schedule must be manual, interval:<minutes>, or daily:HH:MM".into());
+    }
+    if let Some(time) = raw.strip_prefix("daily:") {
+        let (hour, minute) = time.split_once(':')
+            .ok_or("schedule must be manual, interval:<minutes>, or daily:HH:MM")?;
+        let hour = hour.parse::<u8>().map_err(|_| "invalid daily hour")?;
+        let minute = minute.parse::<u8>().map_err(|_| "invalid daily minute")?;
+        return Ok(BackupSchedule::Daily { hour, minute });
+    }
+    Err("schedule must be manual, interval:<minutes>, or daily:HH:MM".into())
+}
+
+fn cmd_sync_backup_job(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: BackupJobCmd,
+) -> Result<(), String> {
+    let store = crate::sync::backup_state::BackupState::open(data_dir)
+        .map_err(|e| e.to_string())?;
+    match cmd {
+        BackupJobCmd::List => {
+            let jobs = store.list_jobs().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+                OutFormat::Text => for job in jobs {
+                    println!("{}  {} → {}  {:?}  {}",
+                        job.id, job.source_root, job.remote_root, job.schedule,
+                        if job.enabled { "enabled" } else { "disabled" });
+                },
+            }
+        }
+        BackupJobCmd::Upsert { id, source_root, drive_id, remote_root, schedule,
+            retention_count, no_verify, disabled } => {
+            let job = crate::sync::backup_state::BackupJob {
+                id, source_root, drive_id, remote_root,
+                schedule: parse_backup_schedule(&schedule)?, retention_count,
+                verify_integrity: !no_verify, enabled: !disabled,
+                last_run_at: None, last_status: None, updated_at: 0,
+            };
+            let saved = store.upsert_job(job).map_err(|e| e.to_string())?;
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::to_string_pretty(&saved).unwrap());
+            } else {
+                println!("saved backup job {}", saved.id);
+            }
+        }
+        BackupJobCmd::Delete { id } => {
+            let deleted = store.delete_job(&id).map_err(|e| e.to_string())?;
+            if matches!(out, OutFormat::Json) {
+                println!("{}", serde_json::json!({"id": id, "deleted": deleted}));
+            } else {
+                println!("{} {}", if deleted { "deleted" } else { "not found" }, id);
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn cmd_sync_pair(

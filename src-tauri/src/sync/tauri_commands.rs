@@ -18,6 +18,45 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// List persisted scheduled/local-cloud backup definitions.
+#[tauri::command]
+pub async fn backup_job_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::sync::backup_state::BackupJob>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_jobs()
+        .map_err(|e| e.to_string())
+}
+
+/// Create or update backup configuration. This stores policy only; a future
+/// scheduler owns execution and will record run status separately.
+#[tauri::command]
+pub async fn backup_job_upsert(
+    state: State<'_, AppState>,
+    job: crate::sync::backup_state::BackupJob,
+) -> Result<crate::sync::backup_state::BackupJob, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .upsert_job(job)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove backup configuration without deleting local or remote data.
+#[tauri::command]
+pub async fn backup_job_delete(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .delete_job(&id)
+        .map_err(|e| e.to_string())
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(

@@ -2972,6 +2972,16 @@ a transfer without leaving the search/catalog workflow.
 - [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.
+  - [x] Persist validated backup-job definitions (source root, drive, remote
+    root, manual/interval/daily schedule, retention, integrity flag, enabled
+    state) alongside shard watermarks; expose Tauri list/upsert/delete and
+    CLI `sync backup-job list|upsert|delete`. Execution remains explicit until
+    the scheduler and provider-independent restore contract are specified.
+  - [ ] Add scheduler/execution service with crash-safe run records and
+    retention enforcement; reuse `cloud_backup` shard export/import and the
+    shared transfer queue.
+  - [ ] Add integrity verification and restore-selection UI/CLI with visible
+    backup history; do not mark a run successful before verification completes.
 
 #### P34.4 — Security and provider expansion, P2
 
