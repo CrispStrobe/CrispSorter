@@ -2668,6 +2668,8 @@ pub fn run() {
                 // "no reactor running".
                 tauri::async_runtime::spawn(async move {
                     use std::time::Duration;
+                    let mut replay_delay = Duration::from_secs(60);
+                    let mut next_replay = tokio::time::Instant::now();
                     // 30s feels right: fresh enough that a user
                     // who pushes a manifest then opens cloud-backup
                     // search sees the row within seconds; not so
@@ -2682,16 +2684,32 @@ pub fn run() {
                     loop {
                         ticker.tick().await;
                         if let Some(state) = drain_handle.try_state::<AppState>() {
-                            // Replay staged provider writes opportunistically.
-                            // The shared TransferQueue performs bounded retries;
-                            // a still-offline provider remains pending for the
-                            // next maintenance tick.
-                            match crate::sync::tauri_commands::replay_offline_queue(&state, 4).await {
-                                Ok(result) if result["replayed"].as_u64().unwrap_or(0) > 0
-                                    || result["failed"].as_u64().unwrap_or(0) > 0 => {
-                                    app_log!("info", "offline queue replay: {result}");
+                            if tokio::time::Instant::now() >= next_replay {
+                                // Replay staged provider writes opportunistically.
+                                // The shared TransferQueue performs bounded retries;
+                                // repeated failures back off independently of the
+                                // manifest maintenance ticker.
+                                match crate::sync::tauri_commands::replay_offline_queue(&state, 4).await {
+                                    Ok(result) => {
+                                        let failed = result["failed"].as_u64().unwrap_or(0) as usize;
+                                        replay_delay = crate::sync::offline_queue::next_replay_delay(
+                                            replay_delay,
+                                            failed,
+                                        );
+                                        next_replay = tokio::time::Instant::now() + replay_delay;
+                                        if result["replayed"].as_u64().unwrap_or(0) > 0 || failed > 0 {
+                                            app_log!("info", "offline queue replay: {result}; next attempt in {}s", replay_delay.as_secs());
+                                        }
+                                    }
+                                    Err(error) => {
+                                        replay_delay = crate::sync::offline_queue::next_replay_delay(
+                                            replay_delay,
+                                            1,
+                                        );
+                                        next_replay = tokio::time::Instant::now() + replay_delay;
+                                        app_log!("warn", "offline queue replay failed: {error}; next attempt in {}s", replay_delay.as_secs());
+                                    }
                                 }
-                                _ => {}
                             }
                             let (enabled, url_opt) = {
                                 let idx = state.index.lock().await;

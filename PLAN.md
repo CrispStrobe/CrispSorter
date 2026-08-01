@@ -1412,6 +1412,9 @@ If the network drops mid-sync, operations are lost.
   through the `TransferQueue`.  Exponential backoff on the poll
   interval (60 s → 120 s → 240 s, cap 600 s) to avoid hammering a
   flaky connection.
+  - [x] Startup maintenance now applies independent 60s-to-600s exponential
+    backoff to staged provider replay failures while manifest draining remains
+    on its regular 30s ticker. ✅ 2026-08-01
 - [ ] **Frontend: offline indicator.**  Status bar badge showing
   "N ops queued" when offline queue is non-empty.  Clicking opens a
   list with per-op details and a "Retry now" button.

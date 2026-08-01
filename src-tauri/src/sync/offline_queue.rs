@@ -60,6 +60,24 @@ CREATE INDEX IF NOT EXISTS idx_queued_ops_status ON queued_ops(status);
 
 /// Maximum retries before an operation is marked as permanently failed.
 const MAX_RETRIES: i32 = 10;
+const REPLAY_MIN_SECS: u64 = 60;
+const REPLAY_MAX_SECS: u64 = 600;
+
+/// Select the next background replay delay. A successful or empty replay
+/// returns to the responsive 60-second cadence; repeated failures back off
+/// exponentially to avoid hammering an unavailable provider.
+pub fn next_replay_delay(previous: Duration, failed: usize) -> Duration {
+    if failed == 0 {
+        return Duration::from_secs(REPLAY_MIN_SECS);
+    }
+    Duration::from_secs(
+        previous
+            .as_secs()
+            .max(REPLAY_MIN_SECS)
+            .saturating_mul(2)
+            .min(REPLAY_MAX_SECS),
+    )
+}
 
 #[derive(Clone)]
 pub struct OfflineQueue {
@@ -353,5 +371,14 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, "cancelled");
         assert_eq!(q.stats().unwrap().total, 1);
+    }
+
+    #[test]
+    fn replay_delay_resets_after_success_and_caps_after_failures() {
+        assert_eq!(next_replay_delay(Duration::from_secs(600), 0), Duration::from_secs(60));
+        assert_eq!(next_replay_delay(Duration::from_secs(60), 1), Duration::from_secs(120));
+        assert_eq!(next_replay_delay(Duration::from_secs(240), 1), Duration::from_secs(480));
+        assert_eq!(next_replay_delay(Duration::from_secs(480), 1), Duration::from_secs(600));
+        assert_eq!(next_replay_delay(Duration::from_secs(600), 1), Duration::from_secs(600));
     }
 }
