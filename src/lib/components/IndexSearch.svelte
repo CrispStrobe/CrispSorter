@@ -13,6 +13,8 @@
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
+    import { requestBrowserContext } from '$lib/drives/browserContext';
+    import { cloudDrivePanel } from '$lib/drives/panels';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -997,6 +999,11 @@
         }
     }
 
+    function openDriveInContext(uri: string): void {
+        const parts = driveUriParts(uri);
+        if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
+    }
+
     function highlightSnippet(text: string, q: string): string {
         if (!text) return '';
         const words = q.trim()
@@ -1394,6 +1401,13 @@
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
+                            {#if driveUriParts(r.location_uri)}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
+                                    title="Im Laufwerkskontext öffnen">
+                                    <FolderOpen size={13} />
+                                </button>
+                            {/if}
                             {#if r.url}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openOriginal(r.url!); }}

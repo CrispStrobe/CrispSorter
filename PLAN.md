@@ -1402,6 +1402,9 @@ If the network drops mid-sync, operations are lost.
   exhausts its 5 retries (or gets a connection-refused / DNS error),
   persist it to the offline queue instead of dropping it.  Same for
   `sync cloud-backup push/pull` when the cb-api is unreachable.
+  - [x] GUI drive writes stage failed bytes and enqueue a replay descriptor;
+    startup maintenance and the explicit replay command retry those uploads.
+    ✅ 2026-08-01
 - [ ] **Replay on reconnect.**  Background task
   (`sync/offline_replay.rs`) polls network reachability every 60 s
   (HEAD request to the cb-api `/health` endpoint).  On success,
@@ -1412,6 +1415,10 @@ If the network drops mid-sync, operations are lost.
 - [ ] **Frontend: offline indicator.**  Status bar badge showing
   "N ops queued" when offline queue is non-empty.  Clicking opens a
   list with per-op details and a "Retry now" button.
+  - [x] The existing transfer drawer now surfaces pending/failed counts and
+    provides retry-failed and purge-failed controls. ✅ 2026-08-01
+  - [x] Expanded drawer view now lists queued operation/provider, retry count,
+    status, and the latest error diagnostic. ✅ 2026-08-01
 - [ ] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
 
 #### Priority 4 — Conflict resolution policies
@@ -2737,10 +2744,20 @@ a transfer without leaving the search/catalog workflow.
   share, promote remote L1 rows, download for offline use, and send selected
   items to the batch sorter.  Preserve provenance (`crisp+drive://`,
   `crisp+cb-archive://`, local path) through every action.
+  - [x] Search results with `crisp+drive://` provenance can open the
+    registered-drive browser at the exact remote path through a shared typed
+    context request. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
   trash-first behavior, and an undo/audit record.
+  - [x] Duplicate-match rows now emit typed `DuplicateGroup` context requests
+    into the browser surface; group identity is derived from the source path
+    and result row, preserving provenance for the forthcoming side-by-side
+    duplicate actions. ✅ 2026-08-01
+  - [x] Duplicate context requests now carry source/destination paths, sizes,
+    hashes, and roles; the browser pane renders the complete group for review.
+    ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
@@ -2755,6 +2772,10 @@ a transfer without leaving the search/catalog workflow.
     refresh, folder creation, move/copy, and delete actions. It consumes the
     capability-aware Tauri boundary; dual-panel context and search-result
     integration remain separate follow-up work. ✅ 2026-08-01
+  - [x] Added typed contextual panel sources and a right-hand selection pane
+    to the drive browser. Cloud-drive provenance is retained; search results,
+    duplicate groups, catalog archives, and remote-search sources are modeled
+    for the next integrations. ✅ 2026-08-01
 - [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
