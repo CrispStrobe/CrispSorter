@@ -1606,7 +1606,8 @@ source.
   `drive_unmount(drive_id)`.** ✅ SHIPPED (2026-08-01). Mount runs on a
   dedicated thread, tracks active mounts, requires an absolute mount point,
   and returns a clear feature-disabled error in non-FUSE builds. Unmount uses
-  the platform helper with a safe explicit path argument.
+  the platform helper with a safe explicit path argument. `drive_mount_status`
+  exposes the process-local lifecycle registry for UI and automation callers.
 - [ ] **Integration with folder watcher.**  Once mounted, the user
   can point the existing `crispsorter watch <mountpoint>` at the
   FUSE directory.  The watcher sees new/changed files and feeds them

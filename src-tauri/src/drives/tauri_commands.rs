@@ -102,6 +102,27 @@ pub async fn drive_unmount(drive_id: String) -> Result<(), String> {
     }
 }
 
+/// Return the process-local FUSE mounts and their lifecycle state.
+#[tauri::command]
+pub async fn drive_mount_status() -> Result<Vec<super::fuse_mount::FuseMountStatus>, String> {
+    #[cfg(not(feature = "fuse"))]
+    {
+        return Err("FUSE support is not enabled in this build".into());
+    }
+    #[cfg(feature = "fuse")]
+    {
+        let mounts = FUSE_MOUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+        let active = mounts.lock().map_err(|_| "FUSE mount registry poisoned")?;
+        Ok(active.iter().map(|(drive_id, mount_point)| super::fuse_mount::FuseMountStatus {
+            drive_id: drive_id.clone(),
+            mount_point: mount_point.clone(),
+            active: true,
+            cached_bytes: 0,
+            cached_files: 0,
+        }).collect())
+    }
+}
+
 /// Start a public-client OAuth flow. The returned URL may be opened by the
 /// system browser; tokens are exchanged by the loopback callback thread and
 /// never returned through IPC.
