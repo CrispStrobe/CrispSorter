@@ -676,6 +676,70 @@ pub async fn drive_write_file(
     }
 }
 
+/// Attempt a true CrispCloud delta upload for a local file to a WebDAV
+/// Nextcloud/ownCloud drive. None means the optional server app is absent and
+/// the caller must use the normal full-file upload path.
+#[tauri::command]
+pub async fn drive_delta_upload(
+    state: State<'_, AppState>,
+    drive_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<Option<super::webdav::DeltaTransferResult>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|drive| drive.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    if cfg.kind != DriveType::WebDav {
+        return Err("delta upload currently requires a WebDAV Nextcloud/ownCloud drive".into());
+    }
+    let credentials = super::secret::get_credentials(&drive_id)
+        .map_err(|e| e.to_string())?.unwrap_or_default();
+    let label = cfg.label.clone();
+    let base_url = cfg.path.clone();
+    let insecure_tls = cfg.insecure_tls.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        let drive = super::webdav::WebDavDrive::new(
+            label, base_url, credentials.username, credentials.password, insecure_tls,
+        );
+        drive.delta_upload_file(
+            std::path::Path::new(&local_path),
+            std::path::Path::new(&remote_path),
+        ).map_err(|e| e.to_string())
+    }).await.map_err(|e| format!("delta upload task failed: {e}"))?
+}
+
+/// Attempt a true CrispCloud delta download into an existing local file.
+#[tauri::command]
+pub async fn drive_delta_download(
+    state: State<'_, AppState>,
+    drive_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<Option<super::webdav::DeltaTransferResult>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|drive| drive.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    if cfg.kind != DriveType::WebDav {
+        return Err("delta download currently requires a WebDAV Nextcloud/ownCloud drive".into());
+    }
+    let credentials = super::secret::get_credentials(&drive_id)
+        .map_err(|e| e.to_string())?.unwrap_or_default();
+    let label = cfg.label.clone();
+    let base_url = cfg.path.clone();
+    let insecure_tls = cfg.insecure_tls.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        let drive = super::webdav::WebDavDrive::new(
+            label, base_url, credentials.username, credentials.password, insecure_tls,
+        );
+        drive.delta_download_file(
+            std::path::Path::new(&remote_path),
+            std::path::Path::new(&local_path),
+        ).map_err(|e| e.to_string())
+    }).await.map_err(|e| format!("delta download task failed: {e}"))?
+}
+
 /// Resume a native-provider upload from its durable provider state file.
 /// Providers without a stable encryption/session resume contract fail before
 /// any bytes are read.

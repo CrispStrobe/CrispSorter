@@ -32,6 +32,8 @@
 use anyhow::{anyhow, Context, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -53,6 +55,49 @@ pub struct WebDavDrive {
     username: Option<String>,
     password: Option<String>,
     client: reqwest::blocking::Client,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeltaStatus {
+    app: Option<String>,
+    #[serde(rename = "blockSize")]
+    block_size: Option<u32>,
+    algorithm: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DeltaSignature {
+    #[serde(rename = "blockIndex")]
+    block_index: usize,
+    offset: u64,
+    size: u32,
+    #[serde(rename = "weakHash")]
+    weak_hash: u32,
+    #[serde(rename = "strongHash")]
+    strong_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ServerBlockMap {
+    #[serde(rename = "filePath")]
+    file_path: String,
+    #[serde(rename = "totalSize")]
+    total_size: u64,
+    #[serde(rename = "blockSize")]
+    block_size: u32,
+    #[serde(rename = "blockCount")]
+    block_count: usize,
+    signatures: Vec<DeltaSignature>,
+    etag: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeltaTransferResult {
+    pub changed_blocks: usize,
+    pub total_blocks: usize,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+    pub etag: Option<String>,
 }
 
 impl WebDavDrive {
@@ -113,6 +158,188 @@ impl WebDavDrive {
         url.set_query(None);
         url.set_fragment(None);
         Some(url.to_string())
+    }
+
+    /// The optional CrispCloud server-app endpoint used by the patched
+    /// Nextcloud and ownCloud clients. It is deliberately separate from
+    /// ordinary WebDAV: a normal DAV server must fall back safely.
+    fn delta_app_base(&self) -> Option<String> {
+        let mut url = reqwest::Url::parse(&self.base_url).ok()?;
+        if !url.path().contains("/remote.php/") {
+            return None;
+        }
+        url.set_path("/index.php/apps/crispcloud_delta");
+        url.set_query(None);
+        url.set_fragment(None);
+        Some(url.to_string().trim_end_matches('/').to_owned())
+    }
+
+    fn delta_path_url(&self, route: &str, path: &Path) -> Result<String> {
+        let base = self
+            .delta_app_base()
+            .ok_or_else(|| anyhow!("WebDAV root is not a Nextcloud/ownCloud remote.php root"))?;
+        let clean = path.to_string_lossy().replace('\\', "/");
+        let encoded = percent_encode_segment(clean.trim_start_matches('/'));
+        Ok(format!("{base}/api/{route}/{encoded}"))
+    }
+
+    /// Detect the optional crispcloud_delta server app.
+    pub fn delta_sync_available(&self) -> Result<bool> {
+        let Some(base) = self.delta_app_base() else {
+            return Ok(false);
+        };
+        let response = self
+            .req(reqwest::Method::GET, &format!("{base}/api/status"))
+            .send()
+            .context("checking crispcloud_delta status")?;
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        let status: DeltaStatus = response.json().context("parsing crispcloud_delta status")?;
+        Ok(status.app.as_deref() == Some("crispcloud_delta")
+            && status.algorithm.as_deref() == Some("adler32+sha256")
+            && status.block_size.is_some())
+    }
+
+    fn fetch_delta_map(&self, path: &Path) -> Result<Option<ServerBlockMap>> {
+        if !self.delta_sync_available()? {
+            return Ok(None);
+        }
+        let url = self.delta_path_url("blockmap", path)?;
+        let response = self.req(reqwest::Method::GET, &url).send()?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let response = response.error_for_status()?;
+        let map: ServerBlockMap = response
+            .json()
+            .context("parsing crispcloud_delta block map")?;
+        if map.block_count != map.signatures.len() || map.block_size == 0 {
+            return Err(anyhow!(
+                "invalid crispcloud_delta block map for {}",
+                map.file_path
+            ));
+        }
+        Ok(Some(map))
+    }
+
+    fn blockmap_from_server(map: &ServerBlockMap) -> Result<crate::sync::delta::Blockmap> {
+        let mut blocks = Vec::with_capacity(map.signatures.len());
+        for signature in &map.signatures {
+            let bytes = hex::decode(&signature.strong_hash).with_context(|| {
+                format!("invalid strongHash for block {}", signature.block_index)
+            })?;
+            let strong_hash: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow!("strongHash must be 32 bytes"))?;
+            blocks.push(crate::sync::delta::Block {
+                offset: signature.offset,
+                size: signature.size,
+                weak_hash: signature.weak_hash,
+                strong_hash,
+            });
+        }
+        Ok(crate::sync::delta::Blockmap {
+            file_size: map.total_size,
+            block_size: map.block_size,
+            blocks,
+        })
+    }
+
+    /// Upload only changed blocks through crispcloud_delta. Returns None when
+    /// the optional server app or a remote block map is unavailable, allowing
+    /// callers to perform the normal full WebDAV upload.
+    pub fn delta_upload_file(
+        &self,
+        local_path: &Path,
+        remote_path: &Path,
+    ) -> Result<Option<DeltaTransferResult>> {
+        let Some(remote_map) = self.fetch_delta_map(remote_path)? else {
+            return Ok(None);
+        };
+        let remote = Self::blockmap_from_server(&remote_map)?;
+        let local = crate::sync::delta::compute_local_blockmap_against(local_path, &remote)?;
+        let changed = crate::sync::delta::diff_blockmaps(&local, &remote)?;
+        let total_bytes = local.file_size;
+        let mut transferred_bytes = 0;
+        let mut file = File::open(local_path).context("opening local delta upload")?;
+
+        for block in &changed {
+            let size = block.size as usize;
+            let mut data = vec![0u8; size];
+            file.seek(SeekFrom::Start(block.offset))?;
+            file.read_exact(&mut data)?;
+            let url = format!(
+                "{}?offset={}&size={}",
+                self.delta_path_url("blocks", remote_path)?,
+                block.offset,
+                block.size
+            );
+            let response = self
+                .req(reqwest::Method::POST, &url)
+                .header("Content-Type", "application/octet-stream")
+                .body(data)
+                .send()
+                .with_context(|| format!("uploading delta block at {}", block.offset))?;
+            response.error_for_status()?;
+            transferred_bytes += block.size as u64;
+        }
+
+        let url = format!(
+            "{}?size={}",
+            self.delta_path_url("finalize", remote_path)?,
+            total_bytes
+        );
+        self.req(reqwest::Method::POST, &url)
+            .send()
+            .context("finalizing crispcloud_delta upload")?
+            .error_for_status()?;
+
+        Ok(Some(DeltaTransferResult {
+            changed_blocks: changed.len(),
+            total_blocks: local.blocks.len(),
+            transferred_bytes,
+            total_bytes,
+            etag: remote_map.etag,
+        }))
+    }
+
+    /// Download only blocks that differ from an existing local file through
+    /// WebDAV Range GET, using the server-app block map as the remote truth.
+    pub fn delta_download_file(
+        &self,
+        remote_path: &Path,
+        local_path: &Path,
+    ) -> Result<Option<DeltaTransferResult>> {
+        let Some(remote_map) = self.fetch_delta_map(remote_path)? else {
+            return Ok(None);
+        };
+        if !local_path.exists() {
+            return Ok(None);
+        }
+        let remote = Self::blockmap_from_server(&remote_map)?;
+        let local = crate::sync::delta::compute_local_blockmap_against(local_path, &remote)?;
+        let changed = crate::sync::delta::diff_blockmaps(&remote, &local)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(local_path)?;
+        let mut transferred_bytes = 0;
+        for block in &changed {
+            let end = block.offset + block.size as u64 - 1;
+            let data = self.read_range(remote_path, block.offset, end)?;
+            if data.len() != block.size as usize {
+                return Err(anyhow!("range response size mismatch at {}", block.offset));
+            }
+            file.seek(SeekFrom::Start(block.offset))?;
+            file.write_all(&data)?;
+            transferred_bytes += block.size as u64;
+        }
+        file.set_len(remote.file_size)?;
+        Ok(Some(DeltaTransferResult {
+            changed_blocks: changed.len(),
+            total_blocks: remote.blocks.len(),
+            transferred_bytes,
+            total_bytes: remote.file_size,
+            etag: remote_map.etag,
+        }))
     }
 }
 
@@ -391,7 +618,9 @@ impl CloudDrive for WebDavDrive {
         if body["ocs"]["meta"]["statuscode"].as_i64() != Some(100) {
             return Err(anyhow!(
                 "Nextcloud share_link rejected request: {}",
-                body["ocs"]["meta"]["message"].as_str().unwrap_or("unknown error")
+                body["ocs"]["meta"]["message"]
+                    .as_str()
+                    .unwrap_or("unknown error")
             ));
         }
         Ok(body["ocs"]["data"]["url"].as_str().map(str::to_owned))
@@ -637,6 +866,43 @@ mod tests {
     }
 
     #[test]
+    fn crispcloud_delta_app_is_detected_and_blockmap_is_decoded() {
+        let mut server = Server::new();
+        let status = server
+            .mock("GET", "/index.php/apps/crispcloud_delta/api/status")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"app":"crispcloud_delta","version":"0.1.0","blockSize":4194304,"algorithm":"adler32+sha256"}"#,
+            )
+            .expect(2)
+            .create();
+        let blockmap = server
+            .mock(
+                "GET",
+                "/index.php/apps/crispcloud_delta/api/blockmap/file.bin",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"filePath":"/file.bin","totalSize":4,"blockSize":4194304,"blockCount":1,"signatures":[{"blockIndex":0,"offset":0,"size":4,"weakHash":67371529,"strongHash":"9f64a747e1b97f131fabb6b447296c9b6f020c3f1e8f1c1d5d6f6b6f4e9f2f0a"}],"etag":"etag-1"}"#,
+            )
+            .create();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/remote.php/dav/files/alice/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+        assert!(drive.delta_sync_available().unwrap());
+        let map = drive.fetch_delta_map(Path::new("/file.bin")).unwrap();
+        assert_eq!(map.unwrap().etag.as_deref(), Some("etag-1"));
+        status.assert();
+        blockmap.assert();
+    }
+
+    #[test]
     fn mutation_methods_use_webdav_destination_headers() {
         let mut server = Server::new();
         let moved_destination = format!("{}/dav/moved.txt", server.url());
@@ -757,7 +1023,10 @@ mod tests {
             false,
         );
         assert_eq!(
-            drive.share_link(Path::new("report.pdf")).unwrap().as_deref(),
+            drive
+                .share_link(Path::new("report.pdf"))
+                .unwrap()
+                .as_deref(),
             Some("https://cloud.example/s/abc")
         );
         mock.assert();
@@ -922,6 +1191,89 @@ mod tests {
             .map(|v| !v.is_empty() && v != "0")
             .unwrap_or(false);
         Some(WebDavDrive::new("live-test", url, user, pass, insecure))
+    }
+
+    fn live_delta_drive(prefix: &str) -> Option<WebDavDrive> {
+        let url = std::env::var(format!("{prefix}_URL")).ok()?;
+        let user = std::env::var(format!("{prefix}_USER")).ok()?;
+        let pass = std::env::var(format!("{prefix}_PASS")).ok()?;
+        Some(WebDavDrive::new(
+            prefix,
+            url,
+            Some(user),
+            Some(pass),
+            std::env::var(format!("{prefix}_INSECURE"))
+                .map(|v| !v.is_empty() && v != "0")
+                .unwrap_or(false),
+        ))
+    }
+
+    fn run_live_delta_roundtrip(prefix: &str) {
+        let Some(drive) = live_delta_drive(prefix) else {
+            eprintln!("skip: {prefix}_URL, {prefix}_USER, and {prefix}_PASS must be set");
+            return;
+        };
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let test_tag = prefix.to_ascii_lowercase();
+        let remote_path = std::path::PathBuf::from(format!("/_{test_tag}_delta_{nonce}.bin"));
+        let local_path = std::env::temp_dir().join(format!("{test_tag}-delta-{nonce}.bin"));
+        let old_path = std::env::temp_dir().join(format!("{test_tag}-delta-old-{nonce}.bin"));
+
+        let mut content = vec![b'a'; 2 * crate::sync::delta::DEFAULT_BLOCK_SIZE];
+        content[crate::sync::delta::DEFAULT_BLOCK_SIZE + 17] = b'b';
+        std::fs::write(&local_path, &content).expect("write live delta fixture");
+        drive
+            .write_file(&remote_path, &content)
+            .expect("initial live delta upload failed");
+        std::fs::write(&old_path, &content).expect("write old live delta fixture");
+
+        content[17] = b'c';
+        std::fs::write(&local_path, &content).expect("write changed live delta fixture");
+        let upload = drive
+            .delta_upload_file(&local_path, &remote_path)
+            .expect("live delta upload failed")
+            .expect("crispcloud_delta app was not detected");
+        assert_eq!(upload.total_blocks, 2);
+        assert_eq!(upload.changed_blocks, 1);
+        assert_eq!(
+            upload.transferred_bytes,
+            crate::sync::delta::DEFAULT_BLOCK_SIZE as u64
+        );
+
+        let remote = drive
+            .read_file(&remote_path)
+            .expect("read live delta result");
+        assert_eq!(remote, content);
+
+        let download = drive
+            .delta_download_file(&remote_path, &old_path)
+            .expect("live delta download failed")
+            .expect("delta download unexpectedly fell back");
+        assert_eq!(download.changed_blocks, 1);
+        assert_eq!(
+            std::fs::read(&old_path).expect("read patched live file"),
+            content
+        );
+
+        let _ = drive.delete(&remote_path);
+        let _ = std::fs::remove_file(local_path);
+        let _ = std::fs::remove_file(old_path);
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_delta_nextcloud() {
+        run_live_delta_roundtrip("CRISPSORTER_NEXTCLOUD_DELTA");
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_delta_owncloud() {
+        run_live_delta_roundtrip("CRISPSORTER_OWNCLOUD_DELTA");
     }
 
     #[test]
