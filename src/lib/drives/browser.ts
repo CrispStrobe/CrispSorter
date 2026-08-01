@@ -31,7 +31,7 @@ export function localPathFromSearchUri(uri: string): string | null {
     if (uri.startsWith('crisp+local://')) {
         const rest = uri.slice('crisp+local://'.length);
         const slash = rest.indexOf('/');
-        return slash >= 0 ? decodeURIComponent(rest.slice(slash)) : null;
+        return slash >= 0 ? decodeURIComponent(rest.slice(slash)).replace(/^\/+/, '/') : null;
     }
     if (uri.startsWith('crisp+drive://') || uri.startsWith('crisp+cb-archive://')) return null;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) return null;
