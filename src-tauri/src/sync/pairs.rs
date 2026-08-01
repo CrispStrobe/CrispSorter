@@ -8,6 +8,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +46,76 @@ pub struct SyncRemoteEntry {
     pub relative_path: String,
     pub size: u64,
     pub mtime_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncComparisonAction {
+    LocalOnly,
+    RemoteOnly,
+    Unchanged,
+    UseLocal,
+    UseRemote,
+    KeepBoth,
+    ManualReview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncComparisonEntry {
+    pub relative_path: String,
+    pub local: Option<SyncPlanEntry>,
+    pub remote: Option<SyncRemoteEntry>,
+    pub action: SyncComparisonAction,
+}
+
+/// Compare provider metadata with the local plan. This is intentionally
+/// side-effect free; callers decide whether an action is safe to execute.
+pub fn compare_plans(
+    local: &[SyncPlanEntry],
+    remote: &[SyncRemoteEntry],
+    policy: super::conflict::ConflictPolicy,
+) -> Vec<SyncComparisonEntry> {
+    let mut paths: BTreeMap<String, ()> = BTreeMap::new();
+    for entry in local {
+        paths.entry(entry.relative_path.clone()).or_insert(());
+    }
+    for entry in remote {
+        paths.entry(entry.relative_path.clone()).or_insert(());
+    }
+    let local_by_path: BTreeMap<_, _> = local.iter().map(|e| (e.relative_path.clone(), e)).collect();
+    let remote_by_path: BTreeMap<_, _> = remote.iter().map(|e| (e.relative_path.clone(), e)).collect();
+    paths
+        .into_keys()
+        .map(|path| {
+            let local_entry = local_by_path.get(&path).copied().cloned();
+            let remote_entry = remote_by_path.get(&path).copied().cloned();
+            let action = match (&local_entry, &remote_entry) {
+                (None, Some(_)) => SyncComparisonAction::RemoteOnly,
+                (Some(_), None) => SyncComparisonAction::LocalOnly,
+                (Some(local), Some(remote))
+                    if local.size == remote.size
+                        && Some(local.mtime_unix) == remote.mtime_unix =>
+                {
+                    SyncComparisonAction::Unchanged
+                }
+                (Some(local), Some(remote)) => match policy {
+                    super::conflict::ConflictPolicy::LocalWins => SyncComparisonAction::UseLocal,
+                    super::conflict::ConflictPolicy::RemoteWins => SyncComparisonAction::UseRemote,
+                    super::conflict::ConflictPolicy::KeepBoth => SyncComparisonAction::KeepBoth,
+                    super::conflict::ConflictPolicy::Manual => SyncComparisonAction::ManualReview,
+                    super::conflict::ConflictPolicy::NewestWins => {
+                        if local.mtime_unix >= remote.mtime_unix.unwrap_or(i64::MIN) {
+                            SyncComparisonAction::UseLocal
+                        } else {
+                            SyncComparisonAction::UseRemote
+                        }
+                    }
+                },
+                (None, None) => unreachable!(),
+            };
+            SyncComparisonEntry { relative_path: path, local: local_entry, remote: remote_entry, action }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -445,5 +516,27 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].status, "failed");
         assert_eq!(runs[0].error.as_deref(), Some("offline"));
+    }
+
+    #[test]
+    fn compare_plans_classifies_changes_and_applies_policy() {
+        let local = vec![
+            SyncPlanEntry { relative_path: "same.txt".into(), size: 2, mtime_unix: 10 },
+            SyncPlanEntry { relative_path: "changed.txt".into(), size: 3, mtime_unix: 20 },
+            SyncPlanEntry { relative_path: "local.txt".into(), size: 1, mtime_unix: 1 },
+        ];
+        let remote = vec![
+            SyncRemoteEntry { relative_path: "same.txt".into(), size: 2, mtime_unix: Some(10) },
+            SyncRemoteEntry { relative_path: "changed.txt".into(), size: 4, mtime_unix: Some(30) },
+            SyncRemoteEntry { relative_path: "remote.txt".into(), size: 5, mtime_unix: Some(1) },
+        ];
+        let rows = compare_plans(&local, &remote, super::conflict::ConflictPolicy::NewestWins);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].action, SyncComparisonAction::UseRemote);
+        assert_eq!(rows[1].action, SyncComparisonAction::LocalOnly);
+        assert_eq!(rows[2].action, SyncComparisonAction::RemoteOnly);
+        assert_eq!(rows[3].action, SyncComparisonAction::Unchanged);
+        let manual = compare_plans(&local, &remote, super::conflict::ConflictPolicy::Manual);
+        assert_eq!(manual[0].action, SyncComparisonAction::ManualReview);
     }
 }

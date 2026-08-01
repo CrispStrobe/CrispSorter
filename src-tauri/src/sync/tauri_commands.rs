@@ -131,6 +131,18 @@ pub async fn sync_pair_remote_plan(
     Ok(out)
 }
 
+/// Compare local and remote metadata under an explicit conflict policy.
+#[tauri::command]
+pub async fn sync_pair_compare(
+    state: State<'_, AppState>,
+    id: String,
+    policy: super::conflict::ConflictPolicy,
+) -> Result<Vec<super::pairs::SyncComparisonEntry>, String> {
+    let local = sync_pair_plan(state.clone(), id.clone()).await?;
+    let remote = sync_pair_remote_plan(state, id).await?;
+    Ok(super::pairs::compare_plans(&local, &remote, policy))
+}
+
 fn inventory_remote(
     drive: &dyn crate::drives::CloudDrive,
     directory: &std::path::Path,
