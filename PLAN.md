@@ -1577,8 +1577,10 @@ mostly plumbing + settings UI.
   8 unit tests (empty config, HTTP/SOCKS5, auth, invalid URL, serde).
 - [ ] **Wire into all cloud-facing code.**  `CloudDrive` constructors,
   `SyncManager`, `cb-api` client, feed fetcher (`feed.rs`), LLM API
-  clients.  Single `build_proxy_client` call site shared via a
-  lazy `OnceCell<reqwest::Client>`.
+  clients.  The shared `CloudBackupClient::new_with_proxy` boundary is now
+  wired; remaining providers use their existing constructors until their
+  credential/config plumbing is migrated. Single `build_proxy_client` call
+  site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
 - [ ] **Settings UI.**  "Network" section: proxy URL input, username,
   password (masked), "Test connection" button (HEAD to
   `https://www.google.com` through the proxy).  DE/EN i18n.

@@ -46,6 +46,21 @@ impl ProxyConfig {
 /// honours `HTTP_PROXY` / `HTTPS_PROXY` env vars via reqwest's built-in
 /// support).
 pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
+    configure_async_builder(config)?.build().context("building proxied async client")
+}
+
+/// Build an async client with an explicit request timeout and proxy policy.
+pub fn build_async_client_with_timeout(
+    config: &ProxyConfig,
+    timeout: std::time::Duration,
+) -> Result<reqwest::Client> {
+    configure_async_builder(config)?
+        .timeout(timeout)
+        .build()
+        .context("building proxied async client")
+}
+
+fn configure_async_builder(config: &ProxyConfig) -> Result<reqwest::ClientBuilder> {
     let mut builder = reqwest::ClientBuilder::new();
 
     if let Some(url) = &config.url {
@@ -57,7 +72,7 @@ pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
         builder = builder.proxy(proxy);
     }
 
-    builder.build().context("building proxied async client")
+    Ok(builder)
 }
 
 /// Build a blocking `reqwest::blocking::Client` with the given proxy config.
@@ -145,6 +160,13 @@ mod tests {
             password: Some("p".into()),
         };
         let client = build_async_client(&cfg);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn async_client_with_timeout_builds_with_proxy() {
+        let cfg = ProxyConfig { url: Some("http://proxy.example.com:8080".into()), ..Default::default() };
+        let client = build_async_client_with_timeout(&cfg, std::time::Duration::from_secs(3));
         assert!(client.is_ok());
     }
 
