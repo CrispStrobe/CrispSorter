@@ -10263,6 +10263,7 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::{Matcher, Server};
 
     // ── Unified `search` verb — FederatedHit mapping ─────────────────
 
@@ -10292,6 +10293,51 @@ mod tests {
             summary: None,
             doc_status: None,
         }
+    }
+
+    #[tokio::test]
+    async fn delta_cli_uploads_only_changed_block() {
+        use crate::sync::cloud_backup::CloudBackupClient;
+        use crate::sync::delta::{compute_blockmap_from_bytes, DEFAULT_BLOCK_SIZE};
+
+        let mut server = Server::new_async().await;
+        let first = vec![b'a'; DEFAULT_BLOCK_SIZE];
+        let second = vec![b'b'; DEFAULT_BLOCK_SIZE];
+        let old_second = vec![b'c'; DEFAULT_BLOCK_SIZE];
+        let local = compute_blockmap_from_bytes(
+            &[first.as_slice(), second.as_slice()].concat(),
+            DEFAULT_BLOCK_SIZE,
+        ).unwrap();
+        let remote = compute_blockmap_from_bytes(
+            &[first.as_slice(), old_second.as_slice()].concat(),
+            DEFAULT_BLOCK_SIZE,
+        ).unwrap();
+        let get = server.mock("GET", "/api/v2/shards/file-hash/blockmap")
+            .with_status(200)
+            .with_body(serde_json::to_string(&remote).unwrap())
+            .create_async().await;
+        let put_map = server.mock("PUT", "/api/v2/shards/file-hash/blockmap")
+            .with_status(200)
+            .with_body(serde_json::to_string(&local).unwrap())
+            .create_async().await;
+        let put_changed = server.mock("PUT", "/api/v2/shards/file-hash/blocks")
+            .match_query(Matcher::Regex(format!("offset={}&size={}", DEFAULT_BLOCK_SIZE, DEFAULT_BLOCK_SIZE)))
+            .match_body(Matcher::Exact(second.clone()))
+            .with_status(200).with_body(r#"{"accepted":true}"#)
+            .create_async().await;
+        let finalize = server.mock("POST", "/api/v2/shards/file-hash/finalize")
+            .with_status(200).with_body(r#"{"finalized":true}"#)
+            .create_async().await;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), &[first.as_slice(), second.as_slice()].concat()).unwrap();
+        let client = CloudBackupClient::new(server.url(), "cbk_test_key").unwrap();
+
+        let uploaded = push_delta_file(&client, file.path(), "file-hash").await.unwrap();
+        assert_eq!(uploaded, 1);
+        get.assert_async().await;
+        put_map.assert_async().await;
+        put_changed.assert_async().await;
+        finalize.assert_async().await;
     }
 
     #[test]

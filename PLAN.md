@@ -1416,7 +1416,7 @@ Tantivy segments grow, this becomes the dominant bandwidth cost.
   server).  The current CLI adapter uses each indexed file's source hash
   as its stable shard id; directory-level shard orchestration remains next.
   ✅ 2026-08-01
-- [ ] **cb-api `/api/v2/shards/{id}/blockmap` + `/api/v2/shards/{id}/blocks`
+- [x] **cb-api `/api/v2/shards/{id}/blockmap` + `/api/v2/shards/{id}/blocks`
   endpoints.**  `GET blockmap` returns the stored blockmap JSON.
   `PUT blocks?offset=N&size=M` writes a block at the given offset.
   `POST finalize` commits after all blocks are written.  Blockmap
@@ -1431,10 +1431,10 @@ Tantivy segments grow, this becomes the dominant bandwidth cost.
   Tantivy segments are immutable once written; only the `meta.json` +
   new segments need uploading.  This is documented in the delta module.
   ✅ 2026-08-01
-- [>] **Tests.**  ✅ 12 unit tests shipped with the module (see above), plus
-  hermetic Rust transport coverage and Python staging/generation coverage.
-  Remaining: a CLI-level mock HTTP assertion that counts changed-block
-  requests.
+- [x] **Tests.**  ✅ 12 unit tests shipped with the module (see above), plus
+  hermetic Rust transport, Python staging/generation, and CLI-level mock HTTP
+  coverage asserting that a two-block file sends exactly one changed block.
+  ✅ 2026-08-01
 
 #### Priority 3 — Offline operation queue with replay
 
