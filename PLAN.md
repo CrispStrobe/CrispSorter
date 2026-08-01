@@ -1687,12 +1687,13 @@ configurable rule engine for complex workflows.
   → Vec<Action>`.  `default_rules()` ships 3 example rules (disabled).
   13 unit tests (each trigger type, AND/OR modes, priority ordering,
   match-all, disabled skip, no-match fallthrough, serde round-trips).
-- [ ] **`AutomationEngine` struct.**  Loaded from persisted rules
-  (Tauri store or SQLite).  `evaluate(file_path, metadata) →
-  Vec<Action>`.  Called from the folder watcher's dispatch path
-  (after classification, before the default auto-file behaviour).
-  If no rules match, falls through to the existing `WatchMode`
-  behaviour (backward-compatible).
+- [x] **`AutomationEngine` struct.** ✅ SHIPPED (2026-08-01). Loaded from
+  the atomic `automation_rules.json` store when a folder watch starts and
+  evaluated for initial-scan and create/rename events. Matching actions are
+  emitted as `folder-watch:automation-actions`; the watcher never executes
+  side effects implicitly. The event is intentionally metadata-only for now
+  (doctype/tags are supplied later by the explicit executor), and a no-match
+  result falls through to the existing `WatchMode` behaviour.
 - [x] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
   `automation_update_rule`, `automation_delete_rule`,
   `automation_test_rule(file_path)`.** ✅ SHIPPED (2026-08-01). Rules are

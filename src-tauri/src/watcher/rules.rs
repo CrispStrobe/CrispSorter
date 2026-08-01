@@ -131,6 +131,53 @@ pub struct FileContext<'a> {
     pub tags: &'a [String],
 }
 
+/// Runtime boundary for persisted automation rules.
+///
+/// The engine only evaluates rules and reports actions. It deliberately does
+/// not execute filesystem, cloud, OCR, or notification side effects; callers
+/// decide which actions are permitted and dispatch them explicitly.
+#[derive(Debug, Clone)]
+pub struct AutomationEngine {
+    rules: Vec<AutomationRule>,
+    match_all: bool,
+}
+
+impl AutomationEngine {
+    pub fn new(rules: Vec<AutomationRule>, match_all: bool) -> Self {
+        Self { rules, match_all }
+    }
+
+    pub fn load(data_dir: &Path) -> anyhow::Result<Self> {
+        Ok(Self::new(load_rules(data_dir)?, false))
+    }
+
+    pub fn rules(&self) -> &[AutomationRule] {
+        &self.rules
+    }
+
+    pub fn match_all(&self) -> bool {
+        self.match_all
+    }
+
+    /// Evaluate a filesystem path using metadata available to the watcher.
+    /// Classifier-derived doctype and index-derived tags are intentionally
+    /// absent here and can be supplied by a richer executor later.
+    pub fn evaluate_path(&self, path: &Path) -> Vec<Action> {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return Vec::new();
+        };
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let context = FileContext {
+            path,
+            extension,
+            size: metadata.len(),
+            doctype: None,
+            tags: &[],
+        };
+        evaluate(&context, &self.rules, self.match_all)
+    }
+}
+
 // ── Engine ───────────────────────────────────────────────────────────────
 
 /// Evaluate a file against a set of rules and return the actions to
@@ -292,6 +339,28 @@ mod tests {
             doctype,
             tags,
         }
+    }
+
+    #[test]
+    fn engine_evaluates_path_without_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.PDF");
+        std::fs::write(&path, b"pdf").unwrap();
+        let engine = AutomationEngine::new(
+            vec![AutomationRule {
+                name: "ingest pdf".into(),
+                enabled: true,
+                priority: 0,
+                triggers: vec![Trigger::Extension {
+                    patterns: vec!["pdf".into()],
+                }],
+                trigger_mode: TriggerMode::All,
+                actions: vec![Action::Ingest],
+            }],
+            false,
+        );
+        assert_eq!(engine.evaluate_path(&path), vec![Action::Ingest]);
+        assert_eq!(engine.evaluate_path(&dir.path().join("missing.pdf")), Vec::new());
     }
 
     #[test]

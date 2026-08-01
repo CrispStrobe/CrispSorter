@@ -89,6 +89,16 @@ async fn watch_start(
         Some("sort") => watcher::WatchMode::Sort,
         _ => watcher::WatchMode::Off,
     };
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or_else(|| "data_dir not initialised".to_string())?;
+    let automation = std::sync::Arc::new(
+        watcher::rules::AutomationEngine::load(&data_dir)
+            .map_err(|e| format!("load automation rules failed: {e:#}"))?,
+    );
     let mut guard = state.watcher.lock().await;
     watcher::start(
         &mut guard,
@@ -96,6 +106,7 @@ async fn watch_start(
         path,
         watch_mode,
         initial_scan.unwrap_or(false),
+        automation,
     )
     .map_err(|e| format!("watch_start failed: {e:#}"))
 }

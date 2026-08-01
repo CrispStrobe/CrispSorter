@@ -87,6 +87,15 @@ pub struct AddedEvent {
     pub path: String,
 }
 
+/// Actions emitted after a watcher event matches persisted automation rules.
+/// The frontend or a dedicated executor must explicitly consume this event;
+/// the watcher never performs rule actions itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomationActionsEvent {
+    pub path: String,
+    pub actions: Vec<rules::Action>,
+}
+
 /// Payload for the auto-process batch event.
 #[derive(Debug, Clone, Serialize)]
 pub struct AutoProcessEvent {
@@ -378,6 +387,7 @@ pub fn start(
     folder: PathBuf,
     mode: WatchMode,
     initial_scan: bool,
+    automation: Arc<rules::AutomationEngine>,
 ) -> Result<()> {
     let folder = folder
         .canonicalize()
@@ -401,6 +411,7 @@ pub fn start(
     let daily_token_budget = state.daily_token_budget;
     let app_for_handler = app.clone();
     let folder_for_handler = folder.clone();
+    let automation_for_handler = automation.clone();
 
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         match res {
@@ -415,6 +426,7 @@ pub fn start(
                 hourly_cap,
                 daily_cap,
                 daily_token_budget,
+                &automation_for_handler,
             ),
             Err(e) => eprintln!("[watch] notify error: {e}"),
         }
@@ -433,6 +445,7 @@ pub fn start(
         let folder_scan = folder.clone();
         let queue_scan = state.auto_queue.clone();
         let limits_scan = state.rate_limits.clone();
+        let automation_scan = automation.clone();
         tokio::spawn(async move {
             if let Err(e) = run_initial_scan(
                 &app_scan,
@@ -443,6 +456,7 @@ pub fn start(
                 hourly_cap,
                 daily_cap,
                 daily_token_budget,
+                &automation_scan,
             )
             .await
             {
@@ -480,6 +494,7 @@ async fn run_initial_scan(
     hourly_cap: u32,
     daily_cap: u32,
     daily_token_budget: u64,
+    automation: &rules::AutomationEngine,
 ) -> Result<()> {
     let mut batch: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(folder)
@@ -511,6 +526,7 @@ async fn run_initial_scan(
                 path: p.to_string_lossy().into_owned(),
             };
             let _ = app.emit("folder-watch:added", payload);
+            emit_automation_actions(app, automation, p);
         }
         // Queue for auto-process.
         let paths_str: Vec<String> = batch.iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -544,6 +560,7 @@ fn handle_event(
     hourly_cap: u32,
     daily_cap: u32,
     daily_token_budget: u64,
+    automation: &rules::AutomationEngine,
 ) {
     if !is_relevant_kind(&event.kind) {
         return;
@@ -558,6 +575,7 @@ fn handle_event(
         let auto_queue_clone = auto_queue.clone();
         let rate_limits_clone = rate_limits.clone();
         let folder_clone = watched_folder.to_path_buf();
+        let automation_clone = automation.clone();
         tokio::spawn(async move {
             // Debounce.
             {
@@ -579,6 +597,7 @@ fn handle_event(
             if let Err(e) = app_clone.emit("folder-watch:added", payload) {
                 eprintln!("[watch] emit failed: {e}");
             }
+            emit_automation_actions(&app_clone, &automation_clone, &path_clone);
             let _ = app_clone.emit(
                 "folder-watch:sync-pair-candidate",
                 SyncPairCandidateEvent {
@@ -647,6 +666,26 @@ fn handle_event(
                 });
             }
         });
+    }
+}
+
+fn emit_automation_actions(
+    app: &AppHandle,
+    automation: &rules::AutomationEngine,
+    path: &Path,
+) {
+    let actions = automation.evaluate_path(path);
+    if actions.is_empty() {
+        return;
+    }
+    if let Err(e) = app.emit(
+        "folder-watch:automation-actions",
+        AutomationActionsEvent {
+            path: path.to_string_lossy().into_owned(),
+            actions,
+        },
+    ) {
+        eprintln!("[watch] automation action emit failed: {e}");
     }
 }
 
