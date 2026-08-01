@@ -653,6 +653,63 @@ pub async fn sync_ack_conflict(
         .remove_conflict(id).map_err(|e| e.to_string())
 }
 
+/// Rehydrate and apply the exact remote candidate for a manual conflict.
+/// The server lookup is path+hash scoped and does not advance the pull
+/// watermark, so accepting one item cannot skip unrelated manifest rows.
+#[tauri::command]
+pub async fn sync_accept_remote_conflict(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<serde_json::Value, String> {
+    let data_dir = state.data_dir.lock().await.clone()
+        .ok_or("data_dir not initialised")?;
+    let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
+    let conflict = mgr.pending_conflicts().map_err(|e| e.to_string())?
+        .into_iter().find(|item| item.id == id)
+        .ok_or_else(|| format!("conflict {id} not found"))?;
+    let cli = make_cb_client(&state).await?;
+    let resolved = cli.manifest_resolve(&conflict.path, &conflict.remote_hash, true)
+        .await.map_err(|e| e.to_string())?;
+    let remote = resolved.rows.into_iter().next()
+        .ok_or_else(|| "remote conflict candidate is no longer available".to_string())?;
+    if remote.path != conflict.path || remote.sha256 != conflict.remote_hash {
+        return Err("remote conflict candidate failed identity validation".into());
+    }
+    let local = state.index.lock().await.local.clone()
+        .ok_or("Local index not initialised")?;
+    for row in local.conflict_rows_for_location(&conflict.path).await
+        .map_err(|e| e.to_string())? {
+        local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
+    }
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_millis() as i64;
+    let doc_id = remote.sha256.clone();
+    let chunk = crate::index::schema::DocumentChunk {
+        id: crate::index::ingest::chunk_row_id(&doc_id, -1),
+        doc_id,
+        location_uri: remote.path.clone(), owner_id: remote.owner_id.clone(),
+        filename: Some(remote.filename.clone()), title: remote.title.clone(),
+        author: remote.author.clone(), year: remote.year, ext: Some(remote.ext.clone()),
+        language: remote.language.clone(), page_count: None, headings_text: None,
+        full_text: remote.full_text.clone(), full_text_md: remote.full_text.clone(),
+        embedding: None, embedding_sparse: None, embedding_model: None,
+        chunk_index: -1, chunk_total: 0, chunk_start_char: None, chunk_end_char: None,
+        indexed_at: now_ms, source_hash: remote.sha256.clone(), tags: remote.tags.clone(),
+        metadata_json: Some(format!(r#"{{"level":1,"source":"cb_conflict_accept","cb_indexed_at":{}}}"#, remote.indexed_at)),
+        parent_dir: if remote.parent_dir.is_empty() { None } else { Some(remote.parent_dir.clone()) },
+        volume_id: None, text_translated: None, text_translated_lang: None,
+        audio_duration_seconds: None, audio_codec: None, audio_sample_rate_hz: None,
+        audio_channels: None, audio_bitrate_kbps: None, image_camera_make: None,
+        image_camera_model: None, image_lens_model: None, image_taken_at_unix: None,
+        image_iso: None, multivec_packed: None, multivec_n_tokens: None,
+        url: remote.url.clone(), embedding_omni: None, embedding_vit: None,
+        summary: None, doc_status: None,
+    };
+    local.ingest_batch(&[chunk]).await.map_err(|e| e.to_string())?;
+    mgr.remove_conflict(id).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"id": id, "path": conflict.path, "sha256": conflict.remote_hash, "accepted": true}))
+}
+
 async fn offline_queue(
     state: &State<'_, AppState>,
 ) -> Result<super::offline_queue::OfflineQueue, String> {
