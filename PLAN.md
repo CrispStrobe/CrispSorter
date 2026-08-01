@@ -1412,6 +1412,8 @@ If the network drops mid-sync, operations are lost.
 - [ ] **Frontend: offline indicator.**  Status bar badge showing
   "N ops queued" when offline queue is non-empty.  Clicking opens a
   list with per-op details and a "Retry now" button.
+  - [x] The existing transfer drawer now surfaces pending/failed counts and
+    provides retry-failed and purge-failed controls. ✅ 2026-08-01
 - [ ] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
 
 #### Priority 4 — Conflict resolution policies
@@ -2748,6 +2750,9 @@ a transfer without leaving the search/catalog workflow.
     into the browser surface; group identity is derived from the source path
     and result row, preserving provenance for the forthcoming side-by-side
     duplicate actions. ✅ 2026-08-01
+  - [x] Duplicate context requests now carry source/destination paths, sizes,
+    hashes, and roles; the browser pane renders the complete group for review.
+    ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

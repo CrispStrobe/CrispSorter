@@ -21,9 +21,13 @@
         state: TransferState;
     };
 
+    type OfflineQueueStats = { pending: number; failed: number; total: number };
+
     let jobs = $state<TransferProgress[]>([]);
+    let offline = $state<OfflineQueueStats | null>(null);
     let expanded = $state(false);
     let busy = $state<number | null>(null);
+    let queueBusy = $state(false);
     let previous = new Map<number, { bytes: number; at: number }>();
     let speeds = new Map<number, number>();
 
@@ -75,6 +79,23 @@
         } catch {
             // Browser preview and mobile builds may not expose Tauri commands.
         }
+        try {
+            offline = await invoke<OfflineQueueStats>('offline_queue_status');
+        } catch {
+            // The offline queue is unavailable in browser preview builds.
+        }
+    }
+
+    async function retryFailedQueue() {
+        queueBusy = true;
+        try { await invoke('offline_queue_retry_failed'); await refresh(); }
+        finally { queueBusy = false; }
+    }
+
+    async function purgeFailedQueue() {
+        queueBusy = true;
+        try { await invoke('offline_queue_purge_failed', { olderThanDays: 0 }); await refresh(); }
+        finally { queueBusy = false; }
     }
 
     async function cancel(jobId: number) {
@@ -99,7 +120,7 @@
     }).length);
 </script>
 
-{#if jobs.length > 0}
+{#if jobs.length > 0 || (offline && (offline.pending > 0 || offline.failed > 0))}
     <section class="transfer-drawer" aria-label="Cloud transfers">
         <button class="drawer-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
             <span class="drawer-title"><span class="status-dot" class:busy={activeCount > 0}></span>Transfers</span>
@@ -135,6 +156,20 @@
                 {/each}
             </div>
         {/if}
+        {#if offline && (offline.pending > 0 || offline.failed > 0)}
+            <div class="offline-status" role="status">
+                <div class="offline-copy">
+                    <strong>Offline queue</strong>
+                    <span>{offline.pending} pending · {offline.failed} failed</span>
+                </div>
+                {#if offline.failed > 0}
+                    <div class="offline-actions">
+                        <button onclick={retryFailedQueue} disabled={queueBusy}>Retry failed</button>
+                        <button onclick={purgeFailedQueue} disabled={queueBusy}>Purge failed</button>
+                    </div>
+                {/if}
+            </div>
+        {/if}
     </section>
 {/if}
 
@@ -161,5 +196,10 @@
     .cancel { display: grid; place-items: center; border: 0; border-radius: 5px; padding: 5px; color: #a1a1aa; background: transparent; cursor: pointer; }
     .cancel:hover { color: #f87171; background: #3f1f2a; }
     .cancel:disabled { opacity: .5; cursor: wait; }
+    .offline-status { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-top: 1px solid #3f3f46; background: #211f2c; font-size: .72rem; }
+    .offline-copy { display: grid; gap: 2px; min-width: 0; } .offline-copy span { color: #c4b5fd; }
+    .offline-actions { display: flex; gap: 5px; margin-left: auto; }
+    .offline-actions button { border: 1px solid #4c456b; border-radius: 5px; padding: 4px 6px; color: #ddd6fe; background: transparent; font-size: .66rem; cursor: pointer; }
+    .offline-actions button:disabled { opacity: .5; cursor: wait; }
     @media (max-width: 767px) { .transfer-drawer { right: 8px; bottom: calc(54px + env(safe-area-inset-bottom, 0px)); width: calc(100vw - 16px); } }
 </style>

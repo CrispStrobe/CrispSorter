@@ -10,9 +10,9 @@ describe('context panel sources', () => {
 
     it('distinguishes remote/search/duplicate contexts', () => {
         expect(panelSourceKey({ kind: 'SearchResults', query: 'invoice' })).toBe('search:invoice');
-        expect(panelSourceKey({ kind: 'DuplicateGroup', groupId: 'g7' })).toBe('duplicates:g7');
+        expect(panelSourceKey({ kind: 'DuplicateGroup', groupId: 'g7', items: [] })).toBe('duplicates:g7');
         expect(panelSourceKey({ kind: 'RemoteSearchResults', provider: 'internxt', query: 'paper' }))
             .toBe('remote:internxt:paper');
-        expect(panelSourceKey(duplicateGroupPanel('g8').source)).toBe('duplicates:g8');
+        expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
     });
 });

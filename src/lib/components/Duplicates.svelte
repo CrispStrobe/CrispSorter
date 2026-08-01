@@ -19,7 +19,7 @@
     } from 'lucide-svelte';
     import { i18n } from '$lib/i18n.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
-    import { duplicateGroupPanel } from '$lib/drives/panels';
+    import { duplicateGroupPanel, type DuplicateContextItem } from '$lib/drives/panels';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -90,7 +90,11 @@
     }
 
     function openDuplicateContext(match: DuplicateMatch, index: number): void {
-        requestBrowserContext(duplicateGroupPanel(`${index}:${match.source.path}`));
+        const items: DuplicateContextItem[] = [
+            { ...match.source, role: 'source' },
+            ...match.destinations.map((item) => ({ ...item, role: 'destination' as const })),
+        ];
+        requestBrowserContext(duplicateGroupPanel(`${index}:${match.source.path}`, items));
     }
     function removeDestination(idx: number) {
         destinations = destinations.filter((_, i) => i !== idx);

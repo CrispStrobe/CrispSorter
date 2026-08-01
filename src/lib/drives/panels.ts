@@ -2,7 +2,7 @@ export type PanelSource =
     | { kind: 'LocalPath'; path: string }
     | { kind: 'CloudDrive'; driveId: string; path: string }
     | { kind: 'SearchResults'; query: string }
-    | { kind: 'DuplicateGroup'; groupId: string }
+    | { kind: 'DuplicateGroup'; groupId: string; items: DuplicateContextItem[] }
     | { kind: 'CatalogArchive'; archivePath: string }
     | { kind: 'RemoteSearchResults'; provider: string; query: string };
 
@@ -11,12 +11,23 @@ export type ContextPanel = {
     title: string;
 };
 
+export type DuplicateContextItem = {
+    path: string;
+    size: number;
+    hash: string | null;
+    role: 'source' | 'destination';
+};
+
 export function cloudDrivePanel(driveId: string, path: string, title = 'Cloud files'): ContextPanel {
     return { source: { kind: 'CloudDrive', driveId, path }, title };
 }
 
-export function duplicateGroupPanel(groupId: string, title = 'Duplicate group'): ContextPanel {
-    return { source: { kind: 'DuplicateGroup', groupId }, title };
+export function duplicateGroupPanel(
+    groupId: string,
+    items: DuplicateContextItem[] = [],
+    title = 'Duplicate group',
+): ContextPanel {
+    return { source: { kind: 'DuplicateGroup', groupId, items }, title };
 }
 
 export function panelSourceKey(source: PanelSource): string {

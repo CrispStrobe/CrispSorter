@@ -174,6 +174,16 @@
                 <code>{rightPanel.source.path}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
                 <code>group: {rightPanel.source.groupId}</code>
+                <ul class="duplicate-context-list">
+                    {#each rightPanel.source.items as item}
+                        <li>
+                            <span class="duplicate-role">{item.role}</span>
+                            <span class="duplicate-path" title={item.path}>{item.path}</span>
+                            <span class="entry-size">{item.size.toLocaleString()} B</span>
+                            {#if item.hash}<code class="duplicate-hash" title={item.hash}>{item.hash}</code>{/if}
+                        </li>
+                    {/each}
+                </ul>
             {:else}
                 <code>{rightPanel.source.kind}</code>
             {/if}
@@ -208,6 +218,7 @@
     .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
+    .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size { grid-column: 1 / -1; text-align: left; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
     .danger { color: #ff9a9a; } .browser-error { color: #ff9a9a; padding: 8px; background: #3b2024; border-radius: 6px; } .empty { color: var(--text-muted, #8a8a96); padding: 30px; text-align: center; }
 </style>
