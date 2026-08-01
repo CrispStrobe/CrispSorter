@@ -155,7 +155,7 @@ impl WebDavDrive {
             return None;
         }
         url.set_path("/ocs/v2.php/apps/files_sharing/api/v1/shares");
-        url.set_query(None);
+        url.set_query(Some("format=json"));
         url.set_fragment(None);
         Some(url.to_string())
     }
@@ -624,7 +624,8 @@ impl CloudDrive for WebDavDrive {
         if !status.is_success() {
             return Err(anyhow!("Nextcloud share_link: HTTP {status}"));
         }
-        if body["ocs"]["meta"]["statuscode"].as_i64() != Some(100) {
+        let status_code = body["ocs"]["meta"]["statuscode"].as_i64();
+        if status_code != Some(100) && status_code != Some(200) {
             return Err(anyhow!(
                 "Nextcloud share_link rejected request: {}",
                 body["ocs"]["meta"]["message"]
@@ -1099,6 +1100,7 @@ mod tests {
         let endpoint = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
         let mock = server
             .mock("POST", endpoint)
+            .match_query(Matcher::Any)
             .match_header("OCS-APIRequest", "true")
             .match_body(Matcher::AllOf(vec![
                 Matcher::UrlEncoded("path".into(), "/report.pdf".into()),
@@ -1383,6 +1385,27 @@ mod tests {
         let _ = std::fs::remove_file(old_path);
     }
 
+    fn run_live_share_link(prefix: &str) {
+        let Some(drive) = live_delta_drive(prefix) else {
+            eprintln!("skip: {prefix}_URL, {prefix}_USER, and {prefix}_PASS must be set");
+            return;
+        };
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let remote_path = std::path::PathBuf::from(format!("/_{prefix}_share_{nonce}.txt"));
+        drive
+            .write_file(&remote_path, b"CrispSorter OCS share-link live test")
+            .expect("write live share fixture failed");
+        let result = drive
+            .share_link(&remote_path)
+            .expect("live OCS share request failed")
+            .expect("Nextcloud/ownCloud did not return a public share URL");
+        assert!(result.starts_with("http://") || result.starts_with("https://"));
+        let _ = drive.delete(&remote_path);
+    }
+
     #[test]
     #[ignore]
     fn webdav_live_delta_nextcloud() {
@@ -1393,6 +1416,18 @@ mod tests {
     #[ignore]
     fn webdav_live_delta_owncloud() {
         run_live_delta_roundtrip("CRISPSORTER_OWNCLOUD_DELTA");
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_share_link_nextcloud() {
+        run_live_share_link("CRISPSORTER_NEXTCLOUD_DELTA");
+    }
+
+    #[test]
+    #[ignore]
+    fn webdav_live_share_link_owncloud() {
+        run_live_share_link("CRISPSORTER_OWNCLOUD_DELTA");
     }
 
     #[test]

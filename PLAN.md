@@ -2836,9 +2836,13 @@ a transfer without leaving the search/catalog workflow.
     both Nextcloud and ownCloud return HTTP 412 for stale block and finalize
     mutations, while the existing resize and round-trip cases remain green.
     ✅ 2026-08-01
-  - [ ] Add OCS share-link coverage and verify atomic finalize semantics in
-    the patched desktop clients; the current server validates If-Match before
-    each mutation but does not yet expose a transaction-level lock.
+  - [x] Add OCS share-link coverage for both Nextcloud and ownCloud. The
+    client now requests `format=json` (required by ownCloud) and accepts both
+    OCS success status codes used by the two servers; hermetic request/response
+    and live create/delete tests pass. ✅ 2026-08-01
+  - [ ] Verify atomic finalize semantics in the patched desktop clients; the
+    current server validates If-Match before each mutation but does not yet
+    expose a transaction-level lock.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
