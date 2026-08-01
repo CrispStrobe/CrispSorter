@@ -4836,6 +4836,7 @@ pub struct Cluster {
 /// sends it to the configured LLM for human-readable naming.
 #[tauri::command]
 pub async fn index_label_clusters(
+    state: State<'_, AppState>,
     clusters: Vec<Cluster>,
     llm_url: String,
     llm_model: String,
@@ -4855,7 +4856,17 @@ pub async fn index_label_clusters(
     prompt.push_str("\nLabels:\n");
 
     // Call the LLM via OpenAI-compatible API
-    let client = reqwest::Client::new();
+    let config = state.index.lock().await.config.clone();
+    let proxy = crate::sync::proxy::ProxyConfig {
+        url: config.proxy_url,
+        username: config.proxy_username,
+        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    };
+    let client = crate::sync::proxy::build_async_client_with_timeout(
+        &proxy,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|e| format!("LLM client: {e}"))?;
     let body = serde_json::json!({
         "model": llm_model,
         "messages": [{"role": "user", "content": prompt}],
