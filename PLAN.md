@@ -2674,12 +2674,10 @@ a transfer without leaving the search/catalog workflow.
 - [x] **Queue job registry and cancellation surface.** The shared queue now
   retains a bounded recent-job snapshot and exposes Tauri status/cancel
   commands for the future transfer drawer. ✅ Shipped 2026-07-31.
-- [ ] **Complete shared TransferQueue integration.** Replace remaining
-  per-command queues in CLI, FUSE, and provider-facing boundaries. Add queue
-  job registration, progress events, retry classification, cancellation, and
-  a bounded blocking adapter for the synchronous FUSE/provider boundary. Keep
-  serial multipart defaults for fragile gateways and configurable workers for
-  testing.
+- [x] **Complete shared TransferQueue integration.** ✅ 2026-08-01. CLI, FUSE,
+  and provider-facing boundaries now use the process-wide queue; registration,
+  polling snapshots, retry/backoff, cancellation, and the bounded synchronous
+  adapter are wired. Serial multipart defaults remain provider-controlled.
   - [x] Added a process-wide `TransferQueue::shared()` accessor and routed
     AppState, CLI cloud-backup transfers, and FUSE construction through it;
     they now share semaphore/backoff/cancellation/job snapshots. ✅ 2026-08-01
