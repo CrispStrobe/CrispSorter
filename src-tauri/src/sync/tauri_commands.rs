@@ -143,7 +143,7 @@ pub async fn sync_pair_compare(
     Ok(super::pairs::compare_plans(&local, &remote, policy))
 }
 
-fn inventory_remote(
+pub(crate) fn inventory_remote(
     drive: &dyn crate::drives::CloudDrive,
     directory: &std::path::Path,
     relative_prefix: &str,

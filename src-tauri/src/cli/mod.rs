@@ -504,6 +504,14 @@ enum SyncPairCmd {
     List,
     /// Preview matching local files without contacting a provider.
     Plan { id: String },
+    /// Inventory filtered remote files without downloading them.
+    RemotePlan { id: String },
+    /// Compare local and remote metadata under a conflict policy.
+    Compare {
+        id: String,
+        #[arg(long, default_value = "newest-wins")]
+        policy: String,
+    },
     /// Show recent pair run audit records.
     Runs {
         id: String,
@@ -5086,6 +5094,52 @@ async fn cmd_sync_pair(
                         println!("{}  {} bytes  mtime={}", entry.relative_path, entry.size, entry.mtime_unix);
                     }
                 }
+            }
+        }
+        SyncPairCmd::RemotePlan { id } => {
+            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive = crate::drives::DriveRegistry::instantiate(config);
+            if !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(
+                &*drive, std::path::Path::new(&pair.remote_root), "",
+                &pair.include_globs, &pair.exclude_globs, &mut remote,
+            ).map_err(|e| e.to_string())?;
+            remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&remote).unwrap()),
+                OutFormat::Text => { for entry in remote { println!("{}  {} bytes  mtime={:?}", entry.relative_path, entry.size, entry.mtime_unix); } },
+            }
+        }
+        SyncPairCmd::Compare { id, policy } => {
+            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let policy = parse_conflict_policy(&policy)?;
+            let local = crate::sync::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive = crate::drives::DriveRegistry::instantiate(config);
+            if !drive.capabilities().list || !drive.capabilities().stat {
+                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+            }
+            let mut remote = Vec::new();
+            crate::sync::tauri_commands::inventory_remote(
+                &*drive, std::path::Path::new(&pair.remote_root), "",
+                &pair.include_globs, &pair.exclude_globs, &mut remote,
+            ).map_err(|e| e.to_string())?;
+            let rows = crate::sync::pairs::compare_plans(&local, &remote, policy);
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
+                OutFormat::Text => { for row in rows { println!("{}: {:?}", row.relative_path, row.action); } },
             }
         }
         SyncPairCmd::Runs { id, limit } => {
