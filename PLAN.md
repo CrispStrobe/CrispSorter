@@ -1418,12 +1418,12 @@ Tantivy segments grow, this becomes the dominant bandwidth cost.
   `PUT blocks?offset=N&size=M` writes a block at the given offset.
   `POST finalize` commits after all blocks are written.  Blockmap
   stored alongside each shard in the block-storage volume.
-- [ ] **Lance file awareness.**  Lance `.lance` data files are
+- [x] **Lance file awareness.**  Lance `.lance` data files are
   append-mostly (new row groups appended, old ones rarely rewritten).
   Delta sync naturally exploits this — only the tail blocks change.
   Tantivy segments are immutable once written; only the `meta.json` +
-  new segments need uploading.  Document this in the delta module so
-  future maintainers understand why the savings are so high.
+  new segments need uploading.  This is documented in the delta module.
+  ✅ 2026-08-01
 - [ ] **Tests.**  ✅ 12 unit tests shipped with the module (see above).
   Remaining: integration test with mock HTTP server verifying only
   changed blocks are uploaded.
