@@ -5,6 +5,7 @@
 //! and source URL.  The caller can ingest each entry as a document.
 
 use serde::Serialize;
+use crate::sync::proxy::ProxyConfig;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FeedEntry {
@@ -86,7 +87,19 @@ pub fn parse_feed(data: &[u8]) -> Result<ParsedFeed, String> {
 
 /// Parse a feed from a URL by fetching it first.
 pub async fn fetch_and_parse(url: &str) -> Result<ParsedFeed, String> {
-    let resp = reqwest::get(url).await.map_err(|e| format!("fetch {url}: {e}"))?;
+    fetch_and_parse_with_proxy(url, &ProxyConfig::default()).await
+}
+
+/// Fetch and parse a feed using the shared HTTP/SOCKS5 proxy policy.
+pub async fn fetch_and_parse_with_proxy(
+    url: &str,
+    proxy: &ProxyConfig,
+) -> Result<ParsedFeed, String> {
+    let client = crate::sync::proxy::build_async_client_with_timeout(
+        proxy,
+        std::time::Duration::from_secs(30),
+    ).map_err(|e| format!("feed client: {e}"))?;
+    let resp = client.get(url).send().await.map_err(|e| format!("fetch {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {} from {url}", resp.status()));
     }
