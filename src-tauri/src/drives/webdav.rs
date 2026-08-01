@@ -541,6 +541,7 @@ impl CloudDrive for WebDavDrive {
             rename: true,
             move_path: true,
             copy: true,
+            streaming: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -700,6 +701,20 @@ impl CloudDrive for WebDavDrive {
         Ok(resp.bytes()?.to_vec())
     }
 
+    fn read_file_to_writer(&self, path: &Path, writer: &mut dyn Write) -> Result<u64> {
+        let url = self.url_for(path);
+        let mut response = self
+            .req(reqwest::Method::GET, &url)
+            .send()
+            .with_context(|| format!("GET {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(anyhow!("WebDAV GET {url} → {status}: {body}"));
+        }
+        std::io::copy(&mut response, writer).with_context(|| format!("streaming GET {url}"))
+    }
+
     /// Read an inclusive byte range from a WebDAV resource.
     fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
         if end < start {
@@ -737,6 +752,42 @@ impl CloudDrive for WebDavDrive {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
+            return Err(anyhow!("WebDAV PUT {url} → {status}: {body}"));
+        }
+        Ok(())
+    }
+
+    fn write_file_from_reader(
+        &self,
+        path: &Path,
+        reader: &mut dyn Read,
+        size: u64,
+    ) -> Result<()> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            self.ensure_collection(parent)?;
+        }
+        // reqwest's blocking streaming body requires an owned 'static reader.
+        // Stage to an anonymous temporary file so memory stays bounded while
+        // preserving the exact-size contract required by CloudDrive.
+        let mut staged = tempfile::NamedTempFile::new().context("creating WebDAV staging file")?;
+        // Do the bounded copy explicitly; the temporary file is the only
+        // storage and is removed automatically on every return path.
+        let mut source = reader.take(size);
+        let copied = std::io::copy(&mut source, &mut staged)
+            .context("staging WebDAV upload")?;
+        anyhow::ensure!(copied == size, "reader ended before declared size");
+        let mut extra = [0u8; 1];
+        anyhow::ensure!(reader.read(&mut extra)? == 0, "reader has data beyond declared size");
+        let file = File::open(staged.path()).context("opening WebDAV staging file")?;
+        let url = self.url_for(path);
+        let response = self
+            .req(reqwest::Method::PUT, &url)
+            .body(reqwest::blocking::Body::sized(file, size))
+            .send()
+            .with_context(|| format!("PUT {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
             return Err(anyhow!("WebDAV PUT {url} → {status}: {body}"));
         }
         Ok(())
@@ -891,7 +942,35 @@ mod tests {
         assert!(capabilities.rename);
         assert!(capabilities.move_path);
         assert!(capabilities.copy);
-        assert!(!capabilities.streaming);
+        assert!(capabilities.streaming);
+    }
+
+    #[test]
+    fn streaming_read_and_bounded_write_use_webdav_wire() {
+        let mut server = Server::new();
+        let get = server
+            .mock("GET", "/dav/read.txt")
+            .with_status(200)
+            .with_body("streamed response")
+            .create();
+        let put = server
+            .mock("PUT", "/dav/write.txt")
+            .match_body("streamed request")
+            .with_status(201)
+            .create();
+        let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);
+        let mut output = Vec::new();
+        assert_eq!(
+            drive.read_file_to_writer(Path::new("read.txt"), &mut output).unwrap(),
+            17
+        );
+        assert_eq!(output, b"streamed response");
+        let mut input = &b"streamed request"[..];
+        drive
+            .write_file_from_reader(Path::new("write.txt"), &mut input, 16)
+            .unwrap();
+        get.assert();
+        put.assert();
     }
 
     #[test]

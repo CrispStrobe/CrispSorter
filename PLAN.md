@@ -2832,7 +2832,7 @@ a transfer without leaving the search/catalog workflow.
   implementations for recursive copy, move/rename, and create-directory.
   Remaining providers and streaming fields still need implementation; the
   follow-up item below owns that work.
-- [ ] **Complete provider capability-aware API.** Add the remaining safe
+- [x] **Complete provider capability-aware API.** Add the remaining safe
   primitives (`create_dir`, `rename`, `move`, `copy`, optional recursive
   listing, streaming reader/writer) while preserving the current synchronous
   trait boundary for legacy providers.  Do not fake support: unsupported
@@ -2873,6 +2873,10 @@ a transfer without leaving the search/catalog workflow.
     move; the Rust subprocess adapter now also exposes the Python CLI's
     metadata-preserving `cp` orchestration (the official Go adapter still
     has no provider-level copy operation). ✅ 2026-08-01
+  - [x] WebDAV now advertises bounded streaming. Reads copy the HTTP
+    response directly to the caller's writer; writes stage the exact-size
+    reader to a temporary file before a streaming PUT, avoiding whole-file
+    memory buffering. Hermetic GET/PUT wire coverage added. ✅ 2026-08-01
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.
@@ -2898,7 +2902,8 @@ a transfer without leaving the search/catalog workflow.
   100 MiB+ native-provider coverage are now exposed through the app facade.
   - [x] Object-safe reader/writer methods now exist on `CloudDrive`; native
     Filen and Internxt adapters use their bounded streaming APIs and advertise
-    `streaming`, while legacy providers retain checked fallbacks. ✅ 2026-07-31
+    `streaming`; WebDAV now uses bounded HTTP streaming too, while remaining
+    legacy providers retain checked fallbacks. ✅ 2026-08-01
   - [x] Native resume state is now exposed through `CloudDrive::upload_file_resumable`
     and `drive_upload_resumable`; Filen and Internxt validate the persisted
     destination/source identity before continuing, while legacy providers
