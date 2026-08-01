@@ -171,6 +171,12 @@ pub struct IndexConfig {
     pub backend_type: BackendType,
     pub remote_url: Option<String>,
     pub remote_api_key: Option<String>,
+    /// Optional HTTP/SOCKS5 proxy URL for cloud-facing clients.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    /// Optional proxy username. The password is stored in the OS keychain.
+    #[serde(default)]
+    pub proxy_username: Option<String>,
     pub embedder_model: EmbedderModel,
     pub embedder_device: EmbedderDevice,
     #[serde(default)]
@@ -583,6 +589,8 @@ impl Default for IndexConfig {
             backend_type: BackendType::Local,
             remote_url: None,
             remote_api_key: None,
+            proxy_url: None,
+            proxy_username: None,
             embedder_model: EmbedderModel::BgeM3,
             embedder_device: EmbedderDevice::Auto,
             embedder_backend: EmbedderBackend::Onnx,
