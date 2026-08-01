@@ -39,6 +39,13 @@ export function remoteSearchPanel(
     return { source: { kind: 'RemoteSearchResults', provider, query }, title };
 }
 
+export function catalogArchivePanel(
+    archivePath: string,
+    title = 'Catalog archive',
+): ContextPanel {
+    return { source: { kind: 'CatalogArchive', archivePath }, title };
+}
+
 export function panelSourceKey(source: PanelSource): string {
     switch (source.kind) {
         case 'LocalPath': return `local:${source.path}`;

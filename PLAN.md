@@ -2758,6 +2758,9 @@ a transfer without leaving the search/catalog workflow.
     rejected instead of being treated as local paths. ✅ 2026-08-01
   - [x] Remote cloud-backup result panes now emit typed provider/query context
     requests into the dual-panel browser. ✅ 2026-08-01
+  - [x] The Catalog browser now emits typed `CatalogArchive` context for the
+    currently opened `.caf`, preserving archive provenance in the right pane.
+    ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
