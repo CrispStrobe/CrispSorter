@@ -1594,7 +1594,9 @@ unify local and cloud version tracking.
   by the browser, matching the Rust capability payload; older UI fixtures
   remain compatible when the field is absent.
 - [ ] **Tests.**  ✅ 4 unit tests shipped (see above).  Live tests
-  require OAuth tokens — tagged `#[ignore]`.
+  require OAuth tokens — tagged `#[ignore]`. Frontend version loading now
+  checks `versions` before issuing the provider IPC call, so unsupported
+  providers cannot trigger a late version request. ✅ 2026-08-01
 
 #### Priority 7 — Certificate pinning
 
@@ -3118,10 +3120,15 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
     same remote-wins guard, inventory cutoff, shared queue, and local-write
     behavior. ✅ 2026-08-01
-- [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
+- [x] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
   Internxt, Filen, and generic WebDAV until proven safe.
+  - [x] cb-api staging, Rust transport, CLI `push-manifest --delta`,
+    generation preservation, and changed-block hermetic coverage are shipped;
+    Nextcloud/ownCloud use the separate CrispCloud delta app when available,
+    while Internxt, Filen, and generic WebDAV retain whole-file fallback.
+    ✅ 2026-08-01
   - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud
@@ -3317,6 +3324,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Remaining Tauri sync, restore, offline-replay, and shard-transfer
     paths now use the proxy-aware registry constructor instead of silently
     falling back to a default HTTP client.
+  - [x] Native Internxt session refresh now uses the persisted proxy URL,
+    username, and keychain-backed password instead of bypassing policy via
+    the legacy default constructor. ✅ 2026-08-01
   - [x] Headless cloud-backup CLI status, admin, and federated-search clients
     now load the same persisted proxy policy and keychain password.
   - [x] GUI and CLI feed fetching now use the persisted proxy policy through

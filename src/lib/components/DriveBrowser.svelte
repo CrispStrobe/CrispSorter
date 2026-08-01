@@ -8,6 +8,7 @@
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
+        supportsCloudVersions,
         type DriveCapabilities,
     } from '$lib/drives/browser';
     import {
@@ -79,12 +80,16 @@
         if (!selectedStat || selectedStat.is_dir || !driveId) return;
         versionsLoading = true;
         try {
-            const [caps, cloud, local] = await Promise.all([
-                invoke<DriveCapabilities>('drive_capabilities', { driveId }),
-                invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => []),
-                invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []),
-            ]);
-            cloudVersions = caps.versions === true ? cloud : [];
+            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
+            // Do not even cross the IPC boundary for provider versions when
+            // the capability probe says they are unsupported. The Tauri
+            // command also guards this, but avoiding the call here keeps the
+            // frontend contract honest and avoids needless provider errors.
+            const cloud = supportsCloudVersions(caps)
+                ? await invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => [])
+                : [];
+            const local = await invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []);
+            cloudVersions = cloud;
             localVersions = local;
         } catch (e) { versionsError = String(e); }
         finally { versionsLoading = false; }

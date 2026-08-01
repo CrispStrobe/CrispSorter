@@ -12,6 +12,11 @@ export type DriveCapabilities = {
 
 export type DriveBrowserAction = 'create_dir' | 'rename' | 'move' | 'copy' | 'delete';
 
+/** Whether a provider can be queried for remote file versions. */
+export function supportsCloudVersions(capabilities: DriveCapabilities): boolean {
+    return capabilities.versions === true;
+}
+
 /** Keep provider paths absolute and free of duplicate separators. */
 export function normalizeDrivePath(path: string): string {
     const parts = path.split('/').filter(Boolean);
