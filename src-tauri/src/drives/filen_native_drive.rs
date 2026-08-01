@@ -161,6 +161,47 @@ impl CloudDrive for NativeFilenDrive {
         }
     }
 
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        self.parent(path).map(|_| ())
+    }
+
+    fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let (_session, client, item) = self.resolve(source)?;
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+        let (_session, _client, destination_uuid) = self.parent(destination_parent)?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| anyhow!("move destination has no filename: {}", destination.display()))?
+            .to_string_lossy();
+        if item.name != destination_name {
+            client.rename_item(&item, &destination_name)?;
+        }
+        if item.parent != destination_uuid {
+            client.move_item(&item.uuid, &destination_uuid, item.is_dir)?;
+        }
+        Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let (_session, client, item) = self.resolve(source)?;
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+        let (_session, _client, destination_uuid) = self.parent(destination_parent)?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| anyhow!("copy destination has no filename: {}", destination.display()))?
+            .to_string_lossy();
+        let copied_uuid = client.copy_item(&item, &destination_uuid)?;
+        if item.name != destination_name {
+            let copied = client
+                .list_folder(&destination_uuid)?
+                .into_iter()
+                .find(|candidate| candidate.uuid == copied_uuid)
+                .ok_or_else(|| anyhow!("copied Filen item was not returned by the gateway"))?;
+            client.rename_item(&copied, &destination_name)?;
+        }
+        Ok(())
+    }
+
     fn read_file_to_writer(&self, path: &Path, mut writer: &mut dyn Write) -> Result<u64> {
         let (_session, client, item) = self.resolve(path)?;
         anyhow::ensure!(
@@ -217,5 +258,18 @@ mod tests {
         assert!(capabilities.resumable_download);
         assert!(format!("{}", drive.list_dir(Path::new("/")).unwrap_err())
             .contains("native Filen session"));
+    }
+
+    #[test]
+    fn capabilities_include_native_mutations_without_network() {
+        crate::drives::secret::install_mock_for_tests();
+        let drive = NativeFilenDrive::from_keychain("Native Filen", "missing-filendrive");
+        let capabilities = drive.capabilities();
+        assert!(capabilities.create_dir);
+        assert!(capabilities.rename);
+        assert!(capabilities.move_path);
+        assert!(capabilities.copy);
+        assert!(capabilities.streaming);
+        assert!(!capabilities.versions);
     }
 }

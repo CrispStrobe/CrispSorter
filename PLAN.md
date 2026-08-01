@@ -2635,6 +2635,10 @@ a transfer without leaving the search/catalog workflow.
     `InternxtNativeClient` mutations. File copies preserve the provider’s
     plain-name/type split and apply a follow-up rename when the destination
     leaf changes. ✅ 2026-07-31
+  - [x] Native Filen Rust adapter now advertises and implements folder
+    creation, rename, move, and recursive copy through the native client;
+    its capability declaration is covered without credentials or network.
+    ✅ 2026-08-01
   - [x] **Official Internxt adapter comparison.** The official Go
     [`internxt/rclone-adapter`](https://github.com/internxt/rclone-adapter)
     implements file/folder create, delete, rename, and move, but has no
@@ -2753,8 +2757,9 @@ a transfer without leaving the search/catalog workflow.
   Add expiry/password options only to providers that actually support them.
   - [x] `drive_list_versions` and `drive_restore_version` are now exposed
     through the capability-aware Tauri boundary; unsupported providers fail
-    before network access. Google Drive and OneDrive retain their existing
-    provider HTTP contract coverage. ✅ 2026-08-01
+    before network access. Google Drive and OneDrive now also have hermetic
+    response/request contract coverage for listing and restore; Google’s
+    upload endpoint is injectable alongside its API endpoint. ✅ 2026-08-01
 - [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.

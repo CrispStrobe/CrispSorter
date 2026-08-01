@@ -557,4 +557,37 @@ mod tests {
         assert!(error.to_string().contains("HTTP 401"));
         mock.assert();
     }
+
+    #[test]
+    fn versions_list_and_restore_use_graph_endpoints() {
+        let mut server = Server::new();
+        let versions = server
+            .mock("GET", "/v1.0/me/drive/root:/report.pdf:/versions")
+            .match_header("authorization", "Bearer tok")
+            .with_status(200)
+            .with_body(r#"{"value":[{"id":"v1","lastModifiedDateTime":"2024-01-15T10:30:00Z","size":12,"lastModifiedBy":{"user":{"displayName":"Alice"}}}]}"#)
+            .create();
+        let restore = server
+            .mock("POST", "/v1.0/me/drive/root:/report.pdf:/versions/v1/restoreVersion")
+            .match_header("authorization", "Bearer tok")
+            .with_status(204)
+            .create();
+        let drive = OneDriveDrive::with_graph_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/v1.0", server.url()),
+        );
+
+        let result = drive.list_versions(Path::new("report.pdf")).unwrap();
+        assert_eq!(result[0].id, "v1");
+        assert_eq!(result[0].size, Some(12));
+        assert_eq!(result[0].modifier_name.as_deref(), Some("Alice"));
+        assert!(result[0].modified_at.is_some());
+        drive.restore_version(Path::new("report.pdf"), "v1").unwrap();
+        versions.assert();
+        restore.assert();
+    }
 }
