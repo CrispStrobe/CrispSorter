@@ -5296,6 +5296,7 @@ async fn cmd_sync_backup_job(
                     job.id, remove.len(), if apply { "deleted " } else { "would delete " }, remove.join(", ")),
             }
         }
+    }
     Ok(())
 }
 
