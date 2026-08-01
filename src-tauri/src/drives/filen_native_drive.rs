@@ -102,6 +102,37 @@ impl CloudDrive for NativeFilenDrive {
         }
         c.upload_file(&uuid, &name, "application/octet-stream", data)
     }
+
+    fn upload_file_resumable(
+        &self,
+        local_path: &Path,
+        remote_path: &Path,
+        state_path: &Path,
+        _workers: usize,
+    ) -> Result<()> {
+        let name = remote_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Filen remote path has no filename"))?
+            .to_string_lossy()
+            .into_owned();
+        let parent = remote_path.parent().unwrap_or_else(|| Path::new("/"));
+        let (_session, client, parent_uuid) = self.parent(parent)?;
+        let size = std::fs::metadata(local_path)
+            .map_err(|e| anyhow!("reading resumable upload source: {e}"))?
+            .len();
+        let mut state = FilenNativeClient::load_upload_resume_state(state_path)?
+            .unwrap_or(client.begin_upload(
+                &parent_uuid,
+                &name,
+                "application/octet-stream",
+                size,
+            )?);
+        anyhow::ensure!(state.parent == parent_uuid, "resume state parent mismatch");
+        anyhow::ensure!(state.name == name, "resume state filename mismatch");
+        anyhow::ensure!(state.size == size, "resume state size mismatch");
+        client.resume_upload_from_reader(&mut state, std::fs::File::open(local_path)?)?;
+        FilenNativeClient::clear_upload_resume_state(state_path)
+    }
     fn delete(&self, path: &Path) -> Result<()> {
         let (_s, c, item) = self.resolve(path)?;
         c.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })

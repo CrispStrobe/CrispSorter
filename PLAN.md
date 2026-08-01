@@ -2673,6 +2673,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Object-safe reader/writer methods now exist on `CloudDrive`; native
     Filen and Internxt adapters use their bounded streaming APIs and advertise
     `streaming`, while legacy providers retain checked fallbacks. ✅ 2026-07-31
+  - [x] Native resume state is now exposed through `CloudDrive::upload_file_resumable`
+    and `drive_upload_resumable`; Filen and Internxt validate the persisted
+    destination/source identity before continuing, while legacy providers
+    fail explicitly. ✅ 2026-08-01
 - [ ] **Provider capability matrix and test harness.** Add local mock HTTP
   servers and contract tests for listing, mutation, streaming, retries,
   resume, expired auth, share/version behavior, and unsupported operations.

@@ -358,6 +358,46 @@ pub async fn drive_write_file(
     }
 }
 
+/// Resume a native-provider upload from its durable provider state file.
+/// Providers without a stable encryption/session resume contract fail before
+/// any bytes are read.
+#[tauri::command]
+pub async fn drive_upload_resumable(
+    state: State<'_, AppState>,
+    drive_id: String,
+    local_path: String,
+    remote_path: String,
+    state_path: String,
+    workers: Option<usize>,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?
+        .clone();
+    let drive = DriveRegistry::instantiate(&cfg);
+    let workers = workers.unwrap_or(1).clamp(1, 10);
+    tokio::task::spawn_blocking(move || {
+        drive.upload_file_resumable(
+            std::path::Path::new(&local_path),
+            std::path::Path::new(&remote_path),
+            std::path::Path::new(&state_path),
+            workers,
+        )
+    })
+    .await
+    .map_err(|e| format!("resumable upload task failed: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
 /// Log a native Internxt drive in without persisting the password or
 /// mnemonic. The resulting session is stored under the registered drive id
 /// in the OS keychain. This command is available in all builds so the UI can

@@ -139,6 +139,32 @@ impl CloudDrive for NativeInternxtDrive {
         client.upload_file(&session, &folder_uuid, &plain_name, &file_type, data)
     }
 
+    fn upload_file_resumable(
+        &self,
+        local_path: &Path,
+        remote_path: &Path,
+        state_path: &Path,
+        workers: usize,
+    ) -> Result<()> {
+        let filename = remote_path
+            .file_name()
+            .ok_or_else(|| anyhow!("Internxt remote path has no filename"))?
+            .to_string_lossy()
+            .into_owned();
+        let parent = remote_path.parent().unwrap_or_else(|| Path::new("/"));
+        let (session, client, folder_uuid) = self.resolve_parent(parent, true)?;
+        let (plain_name, file_type) = split_remote_name(&filename);
+        client.upload_path_with_resume_state_with_workers(
+            &session,
+            &folder_uuid,
+            plain_name,
+            file_type,
+            local_path,
+            state_path,
+            workers.max(1),
+        )
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         let (_session, client, item) = self.resolved(path)?;
         client.trash(&item.uuid, if item.is_dir { "folder" } else { "file" })

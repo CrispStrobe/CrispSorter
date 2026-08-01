@@ -133,6 +133,23 @@ pub trait CloudDrive: Send + Sync {
     /// Write bytes to a path (creates parent directories if needed).
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()>;
 
+    /// Resume a native-provider upload from a durable provider-owned state
+    /// file. Legacy providers deliberately reject this instead of silently
+    /// restarting with new encryption/session material.
+    fn upload_file_resumable(
+        &self,
+        local_path: &Path,
+        remote_path: &Path,
+        state_path: &Path,
+        workers: usize,
+    ) -> Result<()> {
+        let _ = (local_path, remote_path, state_path, workers);
+        Err(anyhow!(
+            "{} does not support durable resumable uploads",
+            self.drive_type().label()
+        ))
+    }
+
     /// Stream a remote file into a caller-provided writer. Legacy providers
     /// fall back to their whole-buffer API; native streaming providers
     /// override this without changing the object-safe trait boundary.
