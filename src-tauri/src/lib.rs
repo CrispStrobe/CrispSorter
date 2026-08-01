@@ -2841,6 +2841,40 @@ pub fn run() {
                         ticker.tick().await;
                         if let Some(state) = drain_handle.try_state::<AppState>() {
                             if tokio::time::Instant::now() >= next_replay {
+                                let (cloud_backup_url, proxy) = {
+                                    let idx = state.index.lock().await;
+                                    let url = idx.config.cloud_backup_url.clone().unwrap_or_default();
+                                    drop(idx);
+                                    let proxy = match crate::sync::tauri_commands::proxy_config_for_app_state(&state).await {
+                                        Ok(proxy) => proxy,
+                                        Err(error) => {
+                                            app_log!("warn", "offline queue proxy configuration failed: {error}");
+                                            replay_delay = crate::sync::offline_queue::next_replay_delay(replay_delay, 1);
+                                            next_replay = tokio::time::Instant::now() + replay_delay;
+                                            continue;
+                                        }
+                                    };
+                                    (url, proxy)
+                                };
+                                // Probe once before replaying.  A failed probe
+                                // is a connectivity state, not an operation
+                                // failure: keep queued bytes intact and back
+                                // off without consuming their retry budget.
+                                match crate::sync::offline_replay::probe_reconnect(&cloud_backup_url, &proxy).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        replay_delay = crate::sync::offline_queue::next_replay_delay(replay_delay, 1);
+                                        next_replay = tokio::time::Instant::now() + replay_delay;
+                                        app_log!("info", "offline queue replay deferred: cloud-backup health is not ready; next probe in {}s", replay_delay.as_secs());
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        replay_delay = crate::sync::offline_queue::next_replay_delay(replay_delay, 1);
+                                        next_replay = tokio::time::Instant::now() + replay_delay;
+                                        app_log!("info", "offline queue replay deferred: connectivity probe failed: {error}; next probe in {}s", replay_delay.as_secs());
+                                        continue;
+                                    }
+                                }
                                 // Replay staged provider writes opportunistically.
                                 // The shared TransferQueue performs bounded retries;
                                 // repeated failures back off independently of the

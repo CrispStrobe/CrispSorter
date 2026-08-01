@@ -1464,13 +1464,16 @@ If the network drops mid-sync, operations are lost.
     ✅ 2026-08-01
   - [x] CLI `sync cloud-backup backup-shards` now stages failed drive writes
     and reports the replay operation id to the caller. ✅ 2026-08-01
-- [ ] **Replay on reconnect.**  Background task
+- [>] **Replay on reconnect.**  Background task
   (`sync/offline_replay.rs`) polls network reachability every 60 s
-  (HEAD request to the cb-api `/health` endpoint).  On success,
+  (health request to the cb-api `/api/health` endpoint).  On success,
   drains the offline queue in FIFO order, re-submitting each op
   through the `TransferQueue`.  Exponential backoff on the poll
   interval (60 s → 120 s → 240 s, cap 600 s) to avoid hammering a
   flaky connection.
+  - [x] Shared proxy-aware health probe gates maintenance replay and
+    preserves queued retry budgets when connectivity is unavailable.
+    ✅ 2026-08-01
   - [x] Startup maintenance now applies independent 60s-to-600s exponential
     backoff to staged provider replay failures while manifest draining remains
     on its regular 30s ticker. ✅ 2026-08-01
