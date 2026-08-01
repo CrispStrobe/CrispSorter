@@ -3009,6 +3009,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Extracted deterministic UTC `next_due_at` schedule calculation for
       interval/daily/manual policies, giving a future background coordinator a
       precise wake-up basis instead of duplicating timing logic.
+    - [x] Added provider-independent `BackupScheduler` snapshots and Tauri
+      `backup_job_scheduler_snapshot`, returning due IDs plus the next future
+      wake-up timestamp without spawning implicit background work.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select

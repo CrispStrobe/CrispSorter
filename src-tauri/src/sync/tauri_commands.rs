@@ -86,6 +86,19 @@ pub async fn backup_job_due(
         .map_err(|e| e.to_string())
 }
 
+/// Return due job IDs and the next future scheduler wake-up time.
+#[tauri::command]
+pub async fn backup_job_scheduler_snapshot(
+    state: State<'_, AppState>,
+) -> Result<crate::sync::backup_scheduler::BackupSchedulerSnapshot, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64).unwrap_or(0);
+    let store = crate::sync::backup_state::BackupState::open(&data_dir).map_err(|e| e.to_string())?;
+    crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
+        .map_err(|e| e.to_string())
+}
+
 /// Inventory files in a dated backup snapshot for GUI restore selection.
 #[tauri::command]
 pub async fn backup_job_snapshot_list(

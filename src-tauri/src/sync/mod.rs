@@ -20,6 +20,7 @@
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
 pub mod backup_state;
+pub mod backup_scheduler;
 pub mod cert_pins;
 pub mod cloud_backup;
 pub mod conflict;
