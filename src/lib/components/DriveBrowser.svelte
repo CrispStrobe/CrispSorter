@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import { openPath } from '@tauri-apps/plugin-opener';
     import { ChevronRight, Copy, Folder, FolderPlus, RefreshCw, Trash2 } from 'lucide-svelte';
     import {
         availableDriveActions,
@@ -111,6 +112,16 @@
         catch (e) { error = String(e); }
     }
 
+    async function openDuplicateItem(itemPath: string) {
+        try { await openPath(itemPath); }
+        catch (e) { error = `Could not open duplicate: ${String(e)}`; }
+    }
+
+    async function copyDuplicatePath(itemPath: string) {
+        try { await navigator.clipboard.writeText(itemPath); }
+        catch (e) { error = `Could not copy duplicate path: ${String(e)}`; }
+    }
+
     onMount(() => {
         const unsubscribe = subscribeBrowserContext((panel) => {
             rightPanel = panel;
@@ -180,7 +191,12 @@
                             <span class="duplicate-role">{item.role}</span>
                             <span class="duplicate-path" title={item.path}>{item.path}</span>
                             <span class="entry-size">{item.size.toLocaleString()} B</span>
+                            <span class="duplicate-mtime">{new Date(item.mtime * 1000).toLocaleString()}</span>
                             {#if item.hash}<code class="duplicate-hash" title={item.hash}>{item.hash}</code>{/if}
+                            <span class="duplicate-actions">
+                                <button onclick={() => openDuplicateItem(item.path)}>Open</button>
+                                <button onclick={() => copyDuplicatePath(item.path)}>Copy path</button>
+                            </span>
                         </li>
                     {/each}
                 </ul>
@@ -218,7 +234,7 @@
     .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
-    .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size { grid-column: 1 / -1; text-align: left; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; }
+    .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size, .duplicate-mtime { grid-column: 1 / -1; text-align: left; } .duplicate-mtime { color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-actions { display: flex; gap: 6px; } .duplicate-actions button { padding: 3px 6px; font-size: .7rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
     .danger { color: #ff9a9a; } .browser-error { color: #ff9a9a; padding: 8px; background: #3b2024; border-radius: 6px; } .empty { color: var(--text-muted, #8a8a96); padding: 30px; text-align: center; }
 </style>

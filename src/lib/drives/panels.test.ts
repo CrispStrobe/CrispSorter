@@ -13,6 +13,6 @@ describe('context panel sources', () => {
         expect(panelSourceKey({ kind: 'DuplicateGroup', groupId: 'g7', items: [] })).toBe('duplicates:g7');
         expect(panelSourceKey({ kind: 'RemoteSearchResults', provider: 'internxt', query: 'paper' }))
             .toBe('remote:internxt:paper');
-        expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
+        expect(panelSourceKey(duplicateGroupPanel('g8', [{ path: '/a', size: 1, mtime: 0, hash: null, role: 'source' }]).source)).toBe('duplicates:g8');
     });
 });

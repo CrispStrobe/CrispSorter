@@ -2764,6 +2764,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Duplicate context requests now carry source/destination paths, sizes,
     hashes, and roles; the browser pane renders the complete group for review.
     ✅ 2026-08-01
+  - [x] Duplicate context now also renders modification times and provides
+    safe open-file and copy-path actions for every candidate. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

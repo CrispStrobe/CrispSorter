@@ -14,6 +14,7 @@ export type ContextPanel = {
 export type DuplicateContextItem = {
     path: string;
     size: number;
+    mtime: number;
     hash: string | null;
     role: 'source' | 'destination';
 };
