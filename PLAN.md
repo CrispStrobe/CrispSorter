@@ -1521,7 +1521,10 @@ unify local and cloud version tracking.
 - [x] **Tauri commands `drive_list_versions` + `drive_restore_version`.**
   ✅ SHIPPED (2026-08-01); commands enforce provider capability checks before
   making network requests.
-- [ ] **Frontend: version history panel.**  In the document viewer
+- [x] **Frontend: version history panel.**  ✅ SHIPPED (2026-08-01).  The
+  cloud drive context pane combines provider versions with local index
+  history, labels provenance, and offers guarded provider restore.  In the
+  document viewer
   sidebar, when viewing a cloud-backed document, show a "Versions"
   tab listing cloud versions with timestamps and a "Restore" button.
   Merges with the existing local version history from P25.1 into a
