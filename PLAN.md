@@ -1506,12 +1506,15 @@ will surface.
   - [x] Settings now loads the durable queue and renders local/remote
     title/hash/timestamp metadata with refresh and safe "Keep local"
     acknowledgement. ✅ 2026-08-01
-  - [ ] Remote acceptance remains deferred until the pull API can rehydrate
-    the complete remote manifest row; the current UI deliberately does not
-    pretend that acknowledging a conflict applies remote content.
+  - [x] Settings now offers explicit "Keep remote" acceptance. The client
+    calls the owner-scoped `/api/manifest/resolve` path+hash lookup, validates
+    identity, replaces the local path at the index level, and only
+    then removes the durable conflict. ✅ 2026-08-01
 - [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
   Manual queue persistence/deduplication coverage now ships in
-  `sync::tests::manual_conflicts_are_durable_and_deduplicated`. ✅ 2026-08-01
+  `sync::tests::manual_conflicts_are_durable_and_deduplicated`; the exact
+  manifest resolver has Python API coverage and a Rust hermetic HTTP parser
+  test. ✅ 2026-08-01
 
 #### Priority 5 — Share link generation
 
