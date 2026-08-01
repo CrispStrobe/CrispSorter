@@ -18,9 +18,19 @@ env:
   # Checked out into repos/{name} so that, from repos/CrispSorter/src-tauri,
   # the relative path resolves correctly without any Cargo.toml rewrite.
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: main
+  # Pinned to the SAME tag release.yml uses. Previously CI tracked `main`
+  # while release pinned v0.13.0, so CI never once built what shipped —
+  # three minor versions apart, and the two disagree about the API:
+  # `OcrPipelineResult.markdown` / `.reading_order` exist on main and not on
+  # v0.13.0, so code using them passes CI and breaks the release build.
+  # Keep these two values equal; bump them together.
+  CRISPEMBED_REF: v0.16.1
   CRISPASR_REPO: CrispStrobe/CrispASR
-  CRISPASR_REF: main
+  # Pinned to the same tag release.yml uses, for the reason spelled out above
+  # CRISPEMBED_REF. This one had drifted 18 patch versions: CI tracked `main`
+  # while release pinned v0.8.6. All six prebuilt assets both workflows
+  # download were verified present at v0.16.1 / v0.8.24 before bumping.
+  CRISPASR_REF: v0.8.24
   CRISP_DOCX_REPO: CrispStrobe/crisp-docx
   CRISP_DOCX_REF: main
   # Cargo network resilience. The license scan runs `cargo metadata` (via
@@ -194,6 +204,40 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # ── Prebuilt native libs, so CI can compile the same features release
+      #    ships. Without these, `crispembed` / `crispasr` were in no CI job,
+      #    and every code path behind them — the OCR pipeline, ASR, LID,
+      #    translate-align/nmt — was verified only by a release build, i.e.
+      #    after the tag. Steps mirror release.yml's proven ones; only the
+      #    sibling path differs (`repos/` here vs `_sibling/` there).
+      - name: Download libcrispembed bundle
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-linux-x86_64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispembed-libs.tar.gz "$URL"
+          # Flat tarball; crispembed-sys's `has_prebuilt` looks for
+          # libcrispembed.* directly under <sibling>/build/.
+          mkdir -p ../CrispEmbed/build
+          tar -xzf crispembed-libs.tar.gz -C ../CrispEmbed/build
+          find ../CrispEmbed/build -maxdepth 2 -name "lib*" | head
+
+      - name: Download libcrispasr bundle
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-linux-x86_64.tar.gz"
+          echo "Downloading $URL"
+          curl -fL -o crispasr-libs.tar.gz "$URL"
+          # Tarball top-level dir is `libcrispasr-<platform>/`; strip it so the
+          # contents land where crispasr-sys's `try_existing_build` looks first.
+          mkdir -p ../CrispASR/build-flutter-bundle
+          tar -xzf crispasr-libs.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
+          find ../CrispASR/build-flutter-bundle -maxdepth 4 -name "lib*" | head
+
       - name: Rust dependency cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -222,14 +266,32 @@ jobs:
         # `pdf-zpdf` is included so the feature-gated code compiles here too;
         # a `#[cfg(feature = …)]` block that nobody builds is a block nobody
         # checks.
-        run: cargo test -p crispsorter --lib --features desktop,pdf-zpdf
+        #
+        # The two `drive-*-native` features are here for exactly that reason.
+        # `cargo test -p crisp-filen/-p crisp-internxt` below covers the crates,
+        # but the *glue* — `drives/{filen,internxt}_native_drive.rs` and the
+        # `instantiate` arms in `drives/mod.rs` — only compiles with these on,
+        # and previously compiled in no job at all. It had drifted out of
+        # buildable state unnoticed as a result.
+        #
+        # `crispembed` / `crispasr` (+ the two translate features that depend on
+        # them) are here for the same reason and were the largest hole: the OCR
+        # pipeline, ASR, LID and translate paths were verified only by a release
+        # build — i.e. after the tag. One deliberate difference from release: it
+        # uses `crispasr-vulkan` / `crispembed-vulkan`, CI the plain CPU
+        # features. Those sub-features only select the ggml backend inside the
+        # sibling crates, so the CrispSorter code compiled is identical and CI
+        # needs no Vulkan SDK; backend-specific breakage stays release-only.
+        run: cargo test -p crispsorter --lib --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
         # With `pdf-zpdf`, so the harness's decrypt-with-a-user-password and
         # linearize section runs instead of skipping. That section is the
-        # gate on P32.11 Z4 — the claims zpdf is adopted for.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,pdf-zpdf
+        # gate on P32.11 Z4 — the claims zpdf is adopted for. The native drive
+        # features match the shipped release builds, so the binary CI checks is
+        # the binary users get.
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF

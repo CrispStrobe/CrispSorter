@@ -20,9 +20,9 @@ on:
 # all jobs at once — no more 3-place edits.
 env:
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.13.0
+  CRISPEMBED_REF: v0.16.1   # keep equal to ci.yml's CRISPEMBED_REF
   CRISPASR_REPO: CrispStrobe/CrispASR
-  CRISPASR_REF: v0.8.6
+  CRISPASR_REF: v0.8.24  # keep equal to ci.yml's CRISPASR_REF
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
   CRISPDOCX_REF: b1de892c6092bdf3306e442138475a7f94c19637
   # App Store Connect API key (public identifiers — not secrets).
@@ -70,7 +70,7 @@ jobs:
             # family (ttf-parser, rsa, p256, zune-jpeg) to a cross-compile
             # that only started working today is a risk worth taking
             # separately, not as a side effect of this flip.
-            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf'
+            tauri_args: '--target aarch64-apple-darwin --features desktop,crispasr-metal,crispembed-metal,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             # When set, the matching tarballs are downloaded from each
             # repo's release and extracted into the path that the
             # corresponding -sys crate's `try_existing_build`
@@ -98,7 +98,7 @@ jobs:
             # resources/bin/ which the loader can't find), so we
             # delete it from the release in the same post-step. Users
             # download the portable .zip, unzip, run.
-            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf'
+            tauri_args: '--features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-windows-x86_64-vulkan.tar.gz
             crispembed_lib_asset: crispembed-windows-x86_64.zip
             pdfium_asset: pdfium-win-x64.tgz
@@ -110,7 +110,7 @@ jobs:
             # Same translate features as macOS — see the comment there
             # for what these enable. The crispembed + crispasr libs are
             # already pulled in by the vulkan variants.
-            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf'
+            tauri_args: '--bundles deb --features desktop,crispasr-vulkan,crispembed-vulkan,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native'
             crispasr_lib_asset: libcrispasr-linux-x86_64.tar.gz
             crispembed_lib_asset: crispembed-linux-x86_64.tar.gz
             pdfium_asset: pdfium-linux-x64.tgz
@@ -1312,7 +1312,7 @@ jobs:
           # above still drops the shell/process *grants*, so the plugins are
           # compiled but ungranted (App-Sandbox-clean); no llama-server is
           # bundled (bin/* dropped) so nothing spawns.
-          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop,pdf-zpdf 2>&1 | tail -50
+          npx tauri build --target aarch64-apple-darwin --bundles app --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native 2>&1 | tail -50
           # `find` over a non-existent path (src-tauri/target) exits non-zero and
           # would trip `set -e` AFTER the .app was already built — tolerate it.
           APP=$(find target src-tauri/target -path "*aarch64-apple-darwin/release/bundle/macos/*.app" -type d 2>/dev/null | head -1 || true)
