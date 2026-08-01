@@ -124,6 +124,13 @@ pub struct BackupRun {
     pub finished_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupSnapshotEntry {
+    pub relative_path: String,
+    pub size: Option<u64>,
+    pub mtime_unix: Option<i64>,
+}
+
 impl BackupState {
     pub fn open(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join("backup_state.db");

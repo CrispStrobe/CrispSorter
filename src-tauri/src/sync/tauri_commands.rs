@@ -86,6 +86,43 @@ pub async fn backup_job_due(
         .map_err(|e| e.to_string())
 }
 
+/// Inventory files in a dated backup snapshot for GUI restore selection.
+#[tauri::command]
+pub async fn backup_job_snapshot_list(
+    state: State<'_, AppState>,
+    job_id: String,
+    snapshot: String,
+) -> Result<Vec<crate::sync::backup_state::BackupSnapshotEntry>, String> {
+    if snapshot.len() != 10 || snapshot.as_bytes().get(4) != Some(&b'-')
+        || snapshot.as_bytes().get(7) != Some(&b'-')
+        || !snapshot.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return Err("snapshot must be a YYYY-MM-DD directory name".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let job = crate::sync::backup_state::BackupState::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .job(&job_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?;
+    let drive = crate::drives::DriveRegistry::instantiate(config);
+    if !drive.probed_capabilities().list { return Err("drive lacks list capability".into()); }
+    let root = std::path::Path::new(&job.remote_root).join(&snapshot);
+    let mut errors = Vec::new();
+    let entries = crate::drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
+        errors.push(format!("{}: {error}", path.display()));
+    });
+    if !errors.is_empty() { return Err(errors.join("; ")); }
+    Ok(entries.into_iter().map(|entry| crate::sync::backup_state::BackupSnapshotEntry {
+        relative_path: entry.path.strip_prefix(&root).unwrap_or(&entry.path)
+            .to_string_lossy().replace('\\', "/"),
+        size: entry.size,
+        mtime_unix: entry.mtime_unix,
+    }).collect())
+}
+
 /// List persisted local-folder ↔ cloud-drive sync pairs.
 #[tauri::command]
 pub async fn sync_pair_list(

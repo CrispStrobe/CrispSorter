@@ -3001,6 +3001,8 @@ a transfer without leaving the search/catalog workflow.
       sizes are verified, and destination writes are atomic via a partial file.
       Relative-path validation blocks traversal; GUI restore selection remains
       for a later frontend slice.
+    - [x] Tauri `backup_job_snapshot_list` now exposes capability-checked,
+      relative snapshot inventory for GUI restore selection.
 
 #### P34.4 — Security and provider expansion, P2
 
