@@ -25,6 +25,7 @@ pub mod cloud_backup;
 pub mod conflict;
 pub mod delta;
 pub mod offline_queue;
+pub mod pairs;
 pub mod partition;
 pub mod proxy;
 pub mod secret;
