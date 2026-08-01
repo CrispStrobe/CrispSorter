@@ -3073,6 +3073,9 @@ a transfer without leaving the search/catalog workflow.
     exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
     keychain behavior; add gated live auth/read/write tests with no automatic
     credential discovery.
+    - [x] OAuth callback parsing now rejects duplicate `code`, `state`, and
+      `error` parameters; PKCE challenge generation is extracted and covered
+      against the RFC 7636 verifier vector.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
