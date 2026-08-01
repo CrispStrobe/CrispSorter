@@ -148,25 +148,42 @@ pub async fn sync_pair_push(
         });
     }
 
-    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let config = registry
-        .drives
-        .iter()
-        .find(|drive| drive.id == pair.drive_id)
-        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let registry = match crate::drives::DriveRegistry::open(&data_dir) {
+        Ok(registry) => registry,
+        Err(error) => {
+            let message = error.to_string();
+            record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+            return Err(message);
+        }
+    };
+    let config = match registry.drives.iter().find(|drive| drive.id == pair.drive_id) {
+        Some(config) => config,
+        None => {
+            let message = format!("drive '{}' not found", pair.drive_id);
+            record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+            return Err(message);
+        }
+    };
     let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
         std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
     if !drive.capabilities().write {
-        return Err(format!("{} does not support uploads", drive.drive_type().label()));
+        let message = format!("{} does not support uploads", drive.drive_type().label());
+        record_sync_pair_failure(&store, &pair.id, plan.len(), 0, pair.watermark, started_at, &message);
+        return Err(message);
     }
 
     let mut uploaded = 0usize;
     let mut watermark = pair.watermark;
     for entry in &plan {
         let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-        let bytes = std::fs::read(&local_path).map_err(|e| {
-            format!("reading {} for sync pair '{}': {e}", local_path.display(), pair.id)
-        })?;
+        let bytes = match std::fs::read(&local_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let message = format!("reading {} for sync pair '{}': {error}", local_path.display(), pair.id);
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
+        };
         let remote_path = std::path::PathBuf::from(format!(
             "{}/{}",
             pair.remote_root.trim_end_matches('/'),
@@ -184,12 +201,24 @@ pub async fn sync_pair_push(
                 uploaded += 1;
                 watermark = watermark.max(entry.mtime_unix);
             }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(error) => return Err(format!("sync transfer task failed: {error}")),
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
+            Err(error) => {
+                let message = format!("sync transfer task failed: {error}");
+                record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
+                return Err(message);
+            }
         }
     }
     pair.watermark = watermark;
-    store.upsert(pair).map_err(|e| e.to_string())?;
+    if let Err(error) = store.upsert(pair) {
+        let message = error.to_string();
+        record_sync_pair_failure(&store, &id, plan.len(), uploaded, watermark, started_at, &message);
+        return Err(message);
+    }
     let _ = store.record_run(&super::pairs::SyncPairRun {
         id: 0,
         pair_id: id.clone(),
@@ -208,6 +237,28 @@ pub async fn sync_pair_push(
         uploaded,
         watermark,
     })
+}
+
+fn record_sync_pair_failure(
+    store: &super::pairs::SyncPairStore,
+    pair_id: &str,
+    planned: usize,
+    uploaded: usize,
+    watermark: i64,
+    started_at: i64,
+    error: &str,
+) {
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0,
+        pair_id: pair_id.to_owned(),
+        status: "failed".into(),
+        planned,
+        uploaded,
+        watermark,
+        error: Some(error.to_owned()),
+        started_at,
+        finished_at: sync_pair_now_ms(),
+    });
 }
 
 fn sync_pair_now_ms() -> i64 {
