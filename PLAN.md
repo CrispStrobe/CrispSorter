@@ -3025,6 +3025,9 @@ a transfer without leaving the search/catalog workflow.
     action for offline use; bytes go through the shared `drive_read_file`
     transfer-queue command and are written only to the user-selected path.
     ✅ 2026-08-01
+  - [x] Local and registered-drive result cards now offer a provenance-safe
+    copy-path action; cloud paths retain their drive id and remote path rather
+    than being mistaken for local filesystem paths. ✅ 2026-08-01
 - [>] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

@@ -11,7 +11,7 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus, Download,
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus, Download, Copy,
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1044,6 +1044,19 @@
         }
     }
 
+    async function copyResultPath(uri: string): Promise<void> {
+        const drive = driveUriParts(uri);
+        const local = localPathFromSearchUri(uri);
+        const value = drive ? `${drive.driveId}:${drive.remotePath}` : local;
+        if (!value) return;
+        try {
+            await navigator.clipboard.writeText(value);
+            error = 'Path copied to clipboard.';
+        } catch (e: any) {
+            error = `Could not copy path: ${String(e?.message ?? e)}`;
+        }
+    }
+
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
@@ -1476,6 +1489,13 @@
                                 title="Datei öffnen">
                                 <ExternalLink size={13} />
                             </button>
+                            {#if driveUriParts(r.location_uri) || localPathFromSearchUri(r.location_uri)}
+                                <button class="open-btn"
+                                    onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
+                                    title="Copy path">
+                                    <Copy size={13} />
+                                </button>
+                            {/if}
                             {#if driveUriParts(r.location_uri)}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
