@@ -146,6 +146,7 @@
     let driveAuthTfa      = $state('');
     let driveAuthBusy     = $state(false);
     let driveAuthError    = $state('');
+    let driveAuthNeedsTfa = $state(false);
     let driveOAuthClientId = $state('');
     interface DriveCredentialStatus {
         has_username: boolean;
@@ -902,6 +903,7 @@
         driveAuthPassword = '';
         driveAuthTfa = '';
         driveAuthError = '';
+        driveAuthNeedsTfa = false;
         driveOAuthClientId = '';
         driveCredentialStatus = null;
     }
@@ -946,6 +948,7 @@
         if (!driveEditId || (driveCreateKind !== 'filen' && driveCreateKind !== 'internxt')) return;
         driveAuthBusy = true;
         driveAuthError = '';
+        driveAuthNeedsTfa = false;
         try {
             await invoke(driveCreateKind === 'filen' ? 'drive_filen_native_login' : 'drive_native_login', {
                 driveId: driveEditId,
@@ -960,6 +963,7 @@
             logInfo(`${driveCreateKind} verbunden; Zugangsdaten wurden nicht gespeichert.`);
         } catch (e: any) {
             driveAuthError = String(e?.message ?? e);
+            driveAuthNeedsTfa = /(?:enter_2fa|wrong_2fa|2fa required|two-factor)/i.test(driveAuthError);
         } finally {
             driveAuthBusy = false;
         }
@@ -3701,7 +3705,8 @@
                                 <div class="drive-dialog-hint">Die Anmeldung läuft nur im Speicher. Falls der Anbieter 2FA verlangt, den aktuellen TOTP-Code unten eingeben.</div>
                                 <input type="email" bind:value={driveAuthEmail} class="drive-dialog-input" placeholder="E-Mail" autocomplete="username" />
                                 <input type="password" bind:value={driveAuthPassword} class="drive-dialog-input" placeholder="Passwort" autocomplete="current-password" />
-                                <input inputmode="numeric" bind:value={driveAuthTfa} class="drive-dialog-input" placeholder="2FA-Code (optional)" autocomplete="one-time-code" />
+                                {#if driveAuthNeedsTfa}<div class="drive-dialog-hint">Dieser Anbieter verlangt jetzt einen gültigen TOTP-Code.</div>{/if}
+                                <input inputmode="numeric" bind:value={driveAuthTfa} class="drive-dialog-input" placeholder={driveAuthNeedsTfa ? '2FA-Code erforderlich' : '2FA-Code (optional)'} autocomplete="one-time-code" />
                                 <button class="tb-btn" type="button" onclick={loginNativeDrive} disabled={driveAuthBusy || !driveAuthEmail.trim() || !driveAuthPassword}>
                                     {#if driveAuthBusy}<Loader2 size={13} class="spin" />{:else}<HardDrive size={13} />{/if} Anmelden
                                 </button>
