@@ -211,6 +211,7 @@ jobs:
             patchelf \
             protobuf-compiler \
             libssl-dev \
+            libopenblas0 \
             qpdf \
             poppler-utils
 
