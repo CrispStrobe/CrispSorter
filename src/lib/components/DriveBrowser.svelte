@@ -10,18 +10,17 @@
         parentDrivePath,
         type DriveCapabilities,
     } from '$lib/drives/browser';
+    import {
+        loadDuplicateAudit,
+        saveDuplicateAudit,
+        type DuplicateDecisionAudit,
+    } from '$lib/drives/duplicateAudit';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
     type FileStat = { size: number; is_dir: boolean; mtime_unix: number | null };
-    type DuplicateDecisionAudit = {
-        groupId: string;
-        previous: DuplicateDecision;
-        next: DuplicateDecision;
-        at: number;
-    };
     let drives = $state<Drive[]>([]);
     let driveId = $state('');
     let path = $state('/');
@@ -138,6 +137,7 @@
             next: decision,
             at: Date.now(),
         }];
+        saveDuplicateAudit(duplicateAudit);
         rightPanel = { ...rightPanel, source: { ...rightPanel.source, decision } };
     }
 
@@ -146,9 +146,11 @@
         if (!last || rightPanel?.source.kind !== 'DuplicateGroup' || rightPanel.source.groupId !== last.groupId) return;
         rightPanel = { ...rightPanel, source: { ...rightPanel.source, decision: last.previous } };
         duplicateAudit = duplicateAudit.slice(0, -1);
+        saveDuplicateAudit(duplicateAudit);
     }
 
     onMount(() => {
+        duplicateAudit = loadDuplicateAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
             rightPanel = panel;
             if (panel.source.kind === 'CloudDrive') {
