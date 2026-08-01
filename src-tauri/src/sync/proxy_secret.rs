@@ -18,21 +18,27 @@ pub fn set(password: &str) -> anyhow::Result<()> {
     #[cfg(test)]
     {
         *test_value().lock().expect("test proxy secret") = Some(password.into());
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(test))]
-    Entry::new(SERVICE, ACCOUNT)?.set_password(password)?;
-    Ok(())
+    {
+        Entry::new(SERVICE, ACCOUNT)?.set_password(password)?;
+        Ok(())
+    }
 }
 
 pub fn get() -> anyhow::Result<Option<String>> {
     #[cfg(test)]
-    return Ok(test_value().lock().expect("test proxy secret").clone());
+    {
+        Ok(test_value().lock().expect("test proxy secret").clone())
+    }
     #[cfg(not(test))]
-    match Entry::new(SERVICE, ACCOUNT)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error.into()),
+    {
+        match Entry::new(SERVICE, ACCOUNT)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -40,12 +46,14 @@ pub fn clear() -> anyhow::Result<()> {
     #[cfg(test)]
     {
         *test_value().lock().expect("test proxy secret") = None;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(test))]
-    match Entry::new(SERVICE, ACCOUNT)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error.into()),
+    {
+        match Entry::new(SERVICE, ACCOUNT)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
