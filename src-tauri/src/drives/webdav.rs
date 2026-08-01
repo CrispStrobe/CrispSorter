@@ -903,6 +903,16 @@ mod tests {
     }
 
     #[test]
+    fn delta_upload_falls_back_for_plain_webdav() {
+        let server = Server::new();
+        let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);
+        let result = drive
+            .delta_upload_file(Path::new("missing-local.bin"), Path::new("remote.bin"))
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn mutation_methods_use_webdav_destination_headers() {
         let mut server = Server::new();
         let moved_destination = format!("{}/dav/moved.txt", server.url());
@@ -1258,6 +1268,29 @@ mod tests {
             std::fs::read(&old_path).expect("read patched live file"),
             content
         );
+
+        // Exercise server-side finalize for a shrinking file, then grow it
+        // again so the remote-only blocks are also covered.
+        content = vec![b's'; crate::sync::delta::DEFAULT_BLOCK_SIZE / 2];
+        std::fs::write(&local_path, &content).expect("write shrinking delta fixture");
+        let shrink = drive
+            .delta_upload_file(&local_path, &remote_path)
+            .expect("live shrink upload failed")
+            .expect("delta shrink unexpectedly fell back");
+        assert_eq!(
+            shrink.total_bytes,
+            (crate::sync::delta::DEFAULT_BLOCK_SIZE / 2) as u64
+        );
+        assert_eq!(drive.read_file(&remote_path).unwrap(), content);
+
+        content = vec![b'g'; 2 * crate::sync::delta::DEFAULT_BLOCK_SIZE + 123];
+        std::fs::write(&local_path, &content).expect("write growing delta fixture");
+        let grow = drive
+            .delta_upload_file(&local_path, &remote_path)
+            .expect("live grow upload failed")
+            .expect("delta grow unexpectedly fell back");
+        assert_eq!(grow.total_bytes, content.len() as u64);
+        assert_eq!(drive.read_file(&remote_path).unwrap(), content);
 
         let _ = drive.delete(&remote_path);
         let _ = std::fs::remove_file(local_path);

@@ -2808,14 +2808,14 @@ a transfer without leaving the search/catalog workflow.
     conflict protection and atomic server finalize remain server-contract
     work to verify against both patched clients.
   - [x] Add gated live Nextcloud and ownCloud coverage for app detection,
-    authenticated blockmap fetch, one-block upload/finalize, strict range
-    delta download, and round-trip content verification. The tests use an
-    SSH tunnel to the isolated VPS instances and explicit environment
-    credentials; they never discover credentials from keychains.
-  - [ ] Extend that live matrix with shrink/grow finalization, ETag/
-    concurrent-update behavior, OCS share links, and explicit full-file
-    fallback assertions. The server-side If-Match/atomic-finalize contract
-    remains a prerequisite for marking those cases complete.
+    authenticated blockmap fetch, one-block replacement, shrink/grow
+    finalize, strict range delta download, and round-trip content
+    verification. The tests use an SSH tunnel to the isolated VPS instances
+    and explicit environment credentials; they never discover credentials
+    from keychains. Plain-WebDAV full-upload fallback is unit-tested.
+  - [ ] Extend that live matrix with ETag/concurrent-update behavior and OCS
+    share links. The server-side If-Match/atomic-finalize contract remains a
+    prerequisite for marking those cases complete.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
