@@ -1339,3 +1339,34 @@ mod mutation_conflict_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod credential_status_tests {
+    use super::*;
+
+    #[test]
+    fn credential_status_is_presence_only() {
+        let status = DriveCredentialsStatus {
+            has_username: true,
+            has_password: true,
+            has_access_token: true,
+            has_refresh_token: true,
+            has_client_id: true,
+            has_session: true,
+        };
+        let json = serde_json::to_string(&status).expect("status serializes");
+        for secret in ["password", "access_token", "refresh_token", "token"] {
+            assert!(!json.contains(&format!("\"{secret}\"")));
+        }
+        for field in [
+            "has_username",
+            "has_password",
+            "has_access_token",
+            "has_refresh_token",
+            "has_client_id",
+            "has_session",
+        ] {
+            assert!(json.contains(field), "missing presence field {field}");
+        }
+    }
+}

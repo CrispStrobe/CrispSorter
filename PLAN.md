@@ -3352,6 +3352,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Keychain-backed credential/session set/get/delete APIs now have
       isolated mock-keyring round-trip coverage; no OS keychain is consulted
       by tests.
+    - [x] Credential-status IPC serialization is covered to remain
+      presence-only; secret values cannot be returned by the status DTO.
+      ✅ 2026-08-01
     - [x] Added hermetic authorization-code exchange coverage with an exact
       PKCE token request assertion and mock-keychain verification that access,
       refresh, and public client-ID fields are stored without crossing IPC.
