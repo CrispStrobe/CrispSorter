@@ -1385,7 +1385,7 @@ async fn proxy_config(state: &State<'_, AppState>) -> Result<crate::sync::proxy:
     proxy_config_for_app_state(&*state).await
 }
 
-async fn proxy_config_for_app_state(
+pub(crate) async fn proxy_config_for_app_state(
     state: &AppState,
 ) -> Result<crate::sync::proxy::ProxyConfig, String> {
     let config = state.index.lock().await.config.clone();

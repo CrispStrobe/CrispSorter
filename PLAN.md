@@ -1663,6 +1663,9 @@ mostly plumbing + settings UI.
   - [x] GUI status/federated-search probes, admin calls, and background
     cloud-backup outbox drains now use the persisted proxy policy as well.
     ✅ 2026-08-01
+  - [x] Remote index search/ingest/init and drive manifest/archive index paths
+    now use the shared proxy-aware clients and drive constructors.
+    ✅ 2026-08-01
 - [x] **Registered-drive construction path.** ✅ SHIPPED (2026-08-01).
   DriveBrowser, FUSE mount, file transfer, sharing, and version commands now
   load the persisted proxy policy and keychain password before constructing

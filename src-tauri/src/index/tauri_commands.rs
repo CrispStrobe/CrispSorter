@@ -84,6 +84,7 @@ pub async fn index_search(
         let embedder = lock.embedder.clone();
         let config = lock.config.clone();
         drop(lock);
+        let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
         match mode.as_str() {
             "text" => backend.search_text(&query, &filters, limit).await,
             "vector" => {
@@ -91,13 +92,15 @@ pub async fn index_search(
                     let embedding = embed_query(Some(embedder), &query).await?;
                     backend.search_vector(&embedding, &filters, limit).await
                 } else {
-                    let remote = super::remote_client::RemoteClient::new(
+                    let remote = super::remote_client::RemoteClient::new_with_proxy(
                         config
                             .remote_url
                             .clone()
                             .ok_or("remote_url must be set for Remote backend")?,
                         config.remote_api_key.clone().unwrap_or_default(),
-                    );
+                        &proxy,
+                    )
+                    .map_err(|e| e.to_string())?;
                     remote.search_vector_server(&query, &filters, limit).await
                 }
             }
@@ -108,13 +111,15 @@ pub async fn index_search(
                         .search_hybrid(&query, &embedding, &filters, limit)
                         .await
                 } else {
-                    let remote = super::remote_client::RemoteClient::new(
+                    let remote = super::remote_client::RemoteClient::new_with_proxy(
                         config
                             .remote_url
                             .clone()
                             .ok_or("remote_url must be set for Remote backend")?,
                         config.remote_api_key.clone().unwrap_or_default(),
-                    );
+                        &proxy,
+                    )
+                    .map_err(|e| e.to_string())?;
                     remote.search_hybrid_server(&query, &filters, limit).await
                 }
             }
@@ -1046,10 +1051,13 @@ pub async fn index_ingest_batch(
 
     emit_batch_remote!("writing", "Queueing remote batch …");
     let write_start = std::time::Instant::now();
-    let remote = super::remote_client::RemoteClient::new(
+    let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
+    let remote = super::remote_client::RemoteClient::new_with_proxy(
         config.remote_url.clone().ok_or("remote_url missing for remote backend")?,
         config.remote_api_key.clone().unwrap_or_default(),
-    );
+        &proxy,
+    )
+    .map_err(|e| e.to_string())?;
     let batch = RemoteIngestBatch { chunks };
     let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
     {
@@ -2738,7 +2746,13 @@ pub async fn init_index(
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("remote_url must be set for Remote backend"))?;
             let key = config.remote_api_key.clone().unwrap_or_default();
-            let remote: Arc<dyn IndexBackend> = Arc::new(RemoteClient::new(url, key));
+            let proxy = crate::sync::proxy::ProxyConfig {
+                url: config.proxy_url.clone(),
+                username: config.proxy_username.clone(),
+                password: crate::sync::proxy_secret::get()?,
+            };
+            let remote: Arc<dyn IndexBackend> =
+                Arc::new(RemoteClient::new_with_proxy(url, key, &proxy)?);
 
             emit!("done", "Remote-Index verbunden", 100);
 
@@ -3607,6 +3621,7 @@ pub async fn index_ingest_drive_manifest(
 
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
+    let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
 
     // Walk the drive on a blocking thread (CloudDrive ops are sync).
     let did = drive_id.clone();
@@ -3622,7 +3637,8 @@ pub async fn index_ingest_drive_manifest(
         let cfg = reg.drives.iter().find(|d| d.id == did)
             .ok_or_else(|| format!("drive '{did}' not found"))?
             .clone();
-        let drive = crate::drives::DriveRegistry::instantiate(&cfg);
+        let drive = crate::drives::DriveRegistry::instantiate_with_proxy(&cfg, &proxy)
+            .map_err(|e| format!("instantiate drive: {e}"))?;
         let mut walk_errors: Vec<String> = Vec::new();
         let entries = crate::drives::walk(
             drive.as_ref(),
@@ -3736,6 +3752,7 @@ pub async fn index_promote_drive_archive(
     // and retries transient provider failures before returning to promotion.
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
+    let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
     let remote = remote_path.clone();
     let transfer_queue = state.transfer_queue.clone();
     let transfer = transfer_queue.submit_download(
@@ -3748,7 +3765,8 @@ pub async fn index_promote_drive_archive(
             let cfg = reg.drives.iter().find(|d| d.id == drive_id)
                 .ok_or_else(|| anyhow::anyhow!("drive '{}' not found", drive_id))?
                 .clone();
-            let drive = crate::drives::DriveRegistry::instantiate(&cfg);
+            let drive = crate::drives::DriveRegistry::instantiate_with_proxy(&cfg, &proxy)
+                .map_err(|e| anyhow::anyhow!("instantiate drive: {e}"))?;
             drive.read_file(path)
                 .map_err(|e| anyhow::anyhow!("read_file: {e:#}"))
         },
