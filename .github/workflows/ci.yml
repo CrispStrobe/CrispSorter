@@ -170,6 +170,9 @@ jobs:
       # Sibling path deps resolve relative to repos/CrispSorter/src-tauri,
       # so the repos/ layout below needs no Cargo.toml rewriting.
       CARGO_TERM_COLOR: always
+      # The feature-rich Clap command tree is deep enough that parser tests
+      # can exceed libtest's small default worker stack on Ubuntu.
+      RUST_MIN_STACK: 16777216
     steps:
       - name: Check out CrispSorter
         uses: actions/checkout@v4
