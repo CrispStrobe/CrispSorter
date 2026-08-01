@@ -10,6 +10,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
@@ -90,6 +92,11 @@ impl OneDriveDrive {
     fn share_link_url(&self, path: &Path) -> String {
         format!("{}/createLink", self.item_url(path))
     }
+
+    fn copy_parent(path: &Path) -> (&Path, &str) {
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        (path.parent().unwrap_or_else(|| Path::new("")), name)
+    }
 }
 
 impl CloudDrive for OneDriveDrive {
@@ -105,6 +112,7 @@ impl CloudDrive for OneDriveDrive {
             create_dir: true,
             rename: true,
             move_path: true,
+            copy: true,
             share_links: true,
             versions: true,
             ..DriveCapabilities::basic()
@@ -198,6 +206,88 @@ impl CloudDrive for OneDriveDrive {
             return Err(anyhow!("OneDrive create_dir: HTTP {}", response.status()));
         }
         Ok(())
+    }
+
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let (parent_path, name) = Self::copy_parent(destination);
+        anyhow::ensure!(!name.is_empty(), "OneDrive copy destination has no name");
+
+        // Graph's copy endpoint requires the destination folder's item id,
+        // so resolve it before submitting the asynchronous operation.
+        let parent_url = self.item_url(parent_path);
+        let parent = self
+            .client
+            .get(&parent_url)
+            .header("Authorization", self.auth_header())
+            .send()
+            .with_context(|| format!("OneDrive copy destination: {parent_url}"))?;
+        if !parent.status().is_success() {
+            return Err(anyhow!(
+                "OneDrive copy destination: HTTP {}",
+                parent.status()
+            ));
+        }
+        let parent_body: serde_json::Value = parent
+            .json()
+            .context("OneDrive copy destination: parse JSON")?;
+        let parent_id = parent_body["id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("OneDrive copy destination: response has no item id"))?;
+        let mut parent_reference = serde_json::json!({ "id": parent_id });
+        if let Some(drive_id) = parent_body["parentReference"]["driveId"].as_str() {
+            parent_reference["driveId"] = serde_json::json!(drive_id);
+        }
+
+        let copy_url = format!("{}/copy", self.item_url(source));
+        let response = self
+            .client
+            .post(&copy_url)
+            .header("Authorization", self.auth_header())
+            .json(&serde_json::json!({
+                "name": name,
+                "parentReference": parent_reference
+            }))
+            .send()
+            .with_context(|| format!("OneDrive copy: {copy_url}"))?;
+        if response.status().as_u16() != 202 {
+            return Err(anyhow!("OneDrive copy: HTTP {}", response.status()));
+        }
+        let monitor_url = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .ok_or_else(|| anyhow!("OneDrive copy: response has no monitor Location"))?
+            .to_str()
+            .context("OneDrive copy: invalid monitor Location")?
+            .to_owned();
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let monitor = self
+                .client
+                .get(&monitor_url)
+                .header("Authorization", self.auth_header())
+                .send()
+                .with_context(|| format!("OneDrive copy monitor: {monitor_url}"))?;
+            if monitor.status().is_success() && monitor.status().as_u16() != 202 {
+                if monitor.status().as_u16() == 204 {
+                    return Ok(());
+                }
+                let body: serde_json::Value = monitor
+                    .json()
+                    .context("OneDrive copy monitor: parse JSON")?;
+                if body["status"].as_str() == Some("failed") {
+                    return Err(anyhow!("OneDrive copy monitor: operation failed"));
+                }
+                return Ok(());
+            }
+            if monitor.status().as_u16() != 202 {
+                return Err(anyhow!("OneDrive copy monitor: HTTP {}", monitor.status()));
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!("OneDrive copy monitor: timed out"));
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn move_path(&self, source: &Path, destination: &Path) -> Result<()> {
@@ -455,13 +545,13 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_include_graph_mutations_but_not_copy() {
+    fn capabilities_include_graph_mutations_and_copy() {
         let d = OneDriveDrive::new("test".into(), "tok".into(), None, None, None);
         let capabilities = d.capabilities();
         assert!(capabilities.create_dir);
         assert!(capabilities.rename);
         assert!(capabilities.move_path);
-        assert!(!capabilities.copy);
+        assert!(capabilities.copy);
         assert!(capabilities.share_links);
         assert!(capabilities.versions);
     }
@@ -498,6 +588,47 @@ mod tests {
             .unwrap();
         create.assert();
         move_mock.assert();
+    }
+
+    #[test]
+    fn copy_uses_destination_id_and_polls_graph_monitor() {
+        let mut server = Server::new();
+        let destination = server
+            .mock("GET", "/v1.0/me/drive/root:/Archive")
+            .match_header("authorization", "Bearer tok")
+            .with_status(200)
+            .with_body(r#"{"id":"folder-1","folder":{}}"#)
+            .create();
+        let copy = server
+            .mock("POST", "/v1.0/me/drive/root:/report.pdf/copy")
+            .match_header("authorization", "Bearer tok")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"name":"copy.pdf","parentReference":{"id":"folder-1"}}"#.into(),
+            ))
+            .with_status(202)
+            .with_header("location", &format!("{}/monitor/1", server.url()))
+            .create();
+        let monitor = server
+            .mock("GET", "/monitor/1")
+            .match_header("authorization", "Bearer tok")
+            .with_status(200)
+            .with_body(r#"{"status":"completed"}"#)
+            .create();
+        let drive = OneDriveDrive::with_graph_base(
+            "test".into(),
+            "tok".into(),
+            None,
+            None,
+            None,
+            format!("{}/v1.0", server.url()),
+        );
+
+        drive
+            .copy_path(Path::new("report.pdf"), Path::new("Archive/copy.pdf"))
+            .unwrap();
+        destination.assert();
+        copy.assert();
+        monitor.assert();
     }
 
     #[test]

@@ -2643,8 +2643,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Google Drive now advertises and implements folder creation, rename/
     move, and copy through Drive API v3 `files` mutations. ✅ 2026-07-31
   - [x] OneDrive now advertises and implements folder creation and
-    rename/move through Graph mutations. Copy remains explicitly unsupported
-    because Graph exposes it as an asynchronous operation. ✅ 2026-07-31
+    rename/move through Graph mutations. Server-side copy now resolves the
+    destination folder id, submits Graph's asynchronous copy, and polls its
+    monitor URL to completion with bounded timeout/error handling. ✅ 2026-08-01
   - [x] Filen’s Python CLI adapter now exposes folder creation, rename,
     move, and copy using its `mkdir`/`rename`/`mv`/`cp` commands. Internxt’s
     Python CLI now exposes `rename` and `mv`; the Rust subprocess adapter
