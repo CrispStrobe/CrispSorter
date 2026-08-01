@@ -245,6 +245,14 @@ pub async fn replay_offline_queue(
     let mut failed = 0usize;
     for entry in entries {
         if entry.op_type != "drive_upload" {
+            // Never silently drop a queued operation that this build cannot
+            // replay.  Keeping it pending would make the maintenance loop
+            // select it forever; recording a terminal failure preserves the
+            // payload for inspection and lets the user retry after upgrading
+            // to a build that understands the operation.
+            let error = format!("unsupported offline operation type: {}", entry.op_type);
+            queue.mark_failed(entry.id, &error).map_err(|e| e.to_string())?;
+            failed += 1;
             continue;
         }
         let result: Result<(), String> = async {
