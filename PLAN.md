@@ -3269,6 +3269,9 @@ a transfer without leaving the search/catalog workflow.
     builder; cloud-backup has hermetic valid/invalid proxy construction tests.
   - [x] Proxy passwords are now excluded from serialization/deserialization,
     and proxy credentials without a proxy URL fail validation.
+  - [x] WebDAV now has a shared proxy-aware constructor that preserves its
+    timeout and explicit local/self-signed TLS policy; invalid proxy settings
+    fail before any request is made.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

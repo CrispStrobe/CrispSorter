@@ -54,7 +54,9 @@ impl ProxyConfig {
 /// support).
 pub fn build_async_client(config: &ProxyConfig) -> Result<reqwest::Client> {
     config.validate()?;
-    configure_async_builder(config)?.build().context("building proxied async client")
+    configure_async_builder(config)?
+        .build()
+        .context("building proxied async client")
 }
 
 /// Build an async client with an explicit request timeout and proxy policy.
@@ -88,8 +90,27 @@ fn configure_async_builder(config: &ProxyConfig) -> Result<reqwest::ClientBuilde
 ///
 /// Used by `CloudDrive` implementations which are synchronous.
 pub fn build_blocking_client(config: &ProxyConfig) -> Result<reqwest::blocking::Client> {
+    build_blocking_client_with_options(config, None, false)
+}
+
+/// Build a blocking client with an optional request timeout and explicit
+/// opt-out for TLS certificate verification.  The latter is only intended
+/// for local/self-signed WebDAV endpoints; callers should leave it disabled
+/// for public cloud providers.
+pub fn build_blocking_client_with_options(
+    config: &ProxyConfig,
+    timeout: Option<std::time::Duration>,
+    insecure_tls: bool,
+) -> Result<reqwest::blocking::Client> {
     config.validate()?;
     let mut builder = reqwest::blocking::ClientBuilder::new();
+
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    if insecure_tls {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
 
     if let Some(url) = &config.url {
         let mut proxy =
@@ -175,7 +196,10 @@ mod tests {
 
     #[test]
     fn async_client_with_timeout_builds_with_proxy() {
-        let cfg = ProxyConfig { url: Some("http://proxy.example.com:8080".into()), ..Default::default() };
+        let cfg = ProxyConfig {
+            url: Some("http://proxy.example.com:8080".into()),
+            ..Default::default()
+        };
         let client = build_async_client_with_timeout(&cfg, std::time::Duration::from_secs(3));
         assert!(client.is_ok());
     }
@@ -205,10 +229,17 @@ mod tests {
     fn proxy_password_never_serializes_and_credentials_need_url() {
         let cfg = ProxyConfig {
             url: Some("http://proxy.example.com:8080".into()),
-            username: Some("user".into()), password: Some("secret".into()),
+            username: Some("user".into()),
+            password: Some("secret".into()),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("secret"));
-        assert!(ProxyConfig { url: None, username: None, password: Some("secret".into()) }.validate().is_err());
+        assert!(ProxyConfig {
+            url: None,
+            username: None,
+            password: Some("secret".into())
+        }
+        .validate()
+        .is_err());
     }
 }

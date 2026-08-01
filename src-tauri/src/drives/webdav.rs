@@ -37,6 +37,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::sync::proxy::{build_blocking_client_with_options, ProxyConfig};
+
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -108,24 +110,44 @@ impl WebDavDrive {
         password: Option<String>,
         insecure_tls: bool,
     ) -> Self {
+        Self::new_with_proxy(
+            label,
+            base_url,
+            username,
+            password,
+            insecure_tls,
+            &ProxyConfig::default(),
+        )
+        .expect("default WebDAV HTTP client must build")
+    }
+
+    /// Construct a WebDAV drive with the shared HTTP/SOCKS5 proxy policy.
+    ///
+    /// The legacy `new` constructor remains proxy-free for compatibility;
+    /// registry/application code should use this boundary when a configured
+    /// proxy is available.  Proxy credentials are supplied in-memory by the
+    /// caller and are never part of the serialized drive metadata.
+    pub fn new_with_proxy(
+        label: impl Into<String>,
+        base_url: impl Into<String>,
+        username: Option<String>,
+        password: Option<String>,
+        insecure_tls: bool,
+        proxy: &ProxyConfig,
+    ) -> Result<Self> {
         let mut url = base_url.into();
         if !url.ends_with('/') {
             url.push('/');
         }
-        let mut builder = reqwest::blocking::Client::builder()
-            // Generous default — WebDAV servers can be slow on cold dirs.
-            .timeout(Duration::from_secs(60));
-        if insecure_tls {
-            builder = builder.danger_accept_invalid_certs(true);
-        }
-        let client = builder.build().expect("reqwest blocking client must build");
-        Self {
+        let client =
+            build_blocking_client_with_options(proxy, Some(Duration::from_secs(60)), insecure_tls)?;
+        Ok(Self {
             label: label.into(),
             base_url: url,
             username,
             password,
             client,
-        }
+        })
     }
 
     /// Build the full URL for a path relative to the drive root.
@@ -1120,6 +1142,37 @@ mod tests {
         let d = WebDavDrive::new("d", "https://dav.example.test/files/", None, None, false);
         assert!(d.nextcloud_ocs_url().is_none());
         assert!(d.share_link(Path::new("report.pdf")).unwrap().is_none());
+    }
+
+    #[test]
+    fn constructor_uses_shared_proxy_validation() {
+        let invalid = ProxyConfig {
+            url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(WebDavDrive::new_with_proxy(
+            "d",
+            "https://dav.example.test/dav/",
+            None,
+            None,
+            false,
+            &invalid,
+        )
+        .is_err());
+
+        let valid = ProxyConfig {
+            url: Some("socks5://127.0.0.1:9050".into()),
+            ..Default::default()
+        };
+        assert!(WebDavDrive::new_with_proxy(
+            "d",
+            "https://dav.example.test/dav/",
+            None,
+            None,
+            false,
+            &valid,
+        )
+        .is_ok());
     }
 
     #[test]
