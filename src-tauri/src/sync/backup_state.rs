@@ -86,6 +86,26 @@ impl BackupSchedule {
             Self::Daily { .. } => anyhow::bail!("daily backup time must be a valid 24-hour time"),
         }
     }
+
+    /// Return the next UTC epoch-millisecond at which this schedule is due.
+    pub fn next_due_at(&self, now: i64, last_run_at: Option<i64>) -> Option<i64> {
+        let now_seconds = now.div_euclid(1000);
+        match self {
+            Self::Manual => None,
+            Self::IntervalMinutes { minutes } => Some(last_run_at
+                .map(|last| last.saturating_add(minutes.saturating_mul(60_000) as i64))
+                .unwrap_or(now)),
+            Self::Daily { hour, minute } => {
+                let day = now_seconds.div_euclid(86_400);
+                let target = (day * 86_400 + i64::from(*hour) * 3600 + i64::from(*minute) * 60) * 1000;
+                match last_run_at {
+                    Some(last) if last >= target => Some(target + 86_400_000),
+                    None => Some(target),
+                    Some(_) => Some(target),
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -356,24 +376,8 @@ impl BackupState {
 
     /// Return enabled jobs whose configured schedule is due at `now`.
     pub fn due_jobs(&self, now: i64) -> Result<Vec<BackupJob>> {
-        let jobs = self.list_jobs()?;
-        let now_seconds = now / 1000;
-        let day = now_seconds.div_euclid(86_400);
-        let day_seconds = now_seconds.rem_euclid(86_400);
-        Ok(jobs.into_iter().filter(|job| {
-            if !job.enabled { return false; }
-            let last_seconds = job.last_run_at.map(|last| last / 1000);
-            match job.schedule {
-                BackupSchedule::Manual => false,
-                BackupSchedule::IntervalMinutes { minutes } => last_seconds
-                    .map(|last| now_seconds.saturating_sub(last) >= minutes.saturating_mul(60) as i64)
-                    .unwrap_or(true),
-                BackupSchedule::Daily { hour, minute } => {
-                    let target = day * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60;
-                    day_seconds >= i64::from(hour) * 3600 + i64::from(minute) * 60
-                        && last_seconds.map(|last| last < target).unwrap_or(true)
-                }
-            }
+        Ok(self.list_jobs()?.into_iter().filter(|job| {
+            job.enabled && job.schedule.next_due_at(now, job.last_run_at).is_some_and(|due| due <= now)
         }).collect())
     }
 
@@ -484,5 +488,15 @@ mod tests {
         }
         let due = bs.due_jobs(1_700_000_000_000).unwrap();
         assert_eq!(due.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(), vec!["interval"]);
+    }
+
+    #[test]
+    fn schedule_next_due_is_deterministic() {
+        let now = 1_700_000_000_000i64;
+        assert_eq!(BackupSchedule::Manual.next_due_at(now, None), None);
+        assert_eq!(BackupSchedule::IntervalMinutes { minutes: 5 }.next_due_at(now, None), Some(now));
+        assert_eq!(BackupSchedule::IntervalMinutes { minutes: 5 }.next_due_at(now, Some(now)), Some(now + 300_000));
+        let daily = BackupSchedule::Daily { hour: 2, minute: 30 };
+        assert!(daily.next_due_at(now, None).is_some());
     }
 }

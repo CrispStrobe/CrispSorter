@@ -3005,6 +3005,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] CLI `sync backup-job run-due [--dry-run]` now provides an explicit
       external-scheduler entry point that evaluates due policy and reuses the
       single-flight execution path.
+    - [x] Extracted deterministic UTC `next_due_at` schedule calculation for
+      interval/daily/manual policies, giving a future background coordinator a
+      precise wake-up basis instead of duplicating timing logic.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
