@@ -2474,6 +2474,7 @@ impl FilenNativeClient {
         }
         let mut partial = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&partial_path)

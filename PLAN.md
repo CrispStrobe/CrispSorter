@@ -2699,6 +2699,9 @@ a transfer without leaving the search/catalog workflow.
     upload/download support alongside streaming; Filen and Internxt native
     adapters report all three, while subprocess and legacy providers report
     unsupported instead of requiring a late operation probe. ✅ 2026-08-01
+  - [x] Provider-neutral contract tests now pin the legacy fallback boundary:
+    streaming readers reject short/overlong input, and resumable operations
+    return explicit unsupported errors without probing a provider. ✅ 2026-08-01
 - [ ] **Offline queue integration.** On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
