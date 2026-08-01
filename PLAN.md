@@ -2635,6 +2635,10 @@ a transfer without leaving the search/catalog workflow.
     `InternxtNativeClient` mutations. File copies preserve the provider’s
     plain-name/type split and apply a follow-up rename when the destination
     leaf changes. ✅ 2026-07-31
+  - [x] Native Filen Rust adapter now advertises and implements folder
+    creation, rename, move, and recursive copy through the native client;
+    its capability declaration is covered without credentials or network.
+    ✅ 2026-08-01
   - [x] **Official Internxt adapter comparison.** The official Go
     [`internxt/rclone-adapter`](https://github.com/internxt/rclone-adapter)
     implements file/folder create, delete, rename, and move, but has no

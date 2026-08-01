@@ -282,7 +282,12 @@ jobs:
 
       - name: Format cloud crates
         working-directory: repos/CrispSorter
-        run: cargo fmt --package crisp-internxt --package crisp-filen -- --check
+        run: |
+          rustfmt --edition 2021 --check \
+            crates/crisp-internxt-native/src/lib.rs \
+            crates/crisp-internxt-native/src/main.rs \
+            crates/crisp-filen-native/src/lib.rs \
+            crates/crisp-filen-native/src/main.rs
 
       - name: Test cloud crates
         working-directory: repos/CrispSorter

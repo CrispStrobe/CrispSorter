@@ -54,7 +54,10 @@ fn set_local_modified_best_effort(path: &Path, modified: i64) {
     }
     let value = std::time::UNIX_EPOCH.checked_add(Duration::from_millis(modified as u64));
     if let Some(value) = value {
-        let _ = std::fs::File::open(path).and_then(|file| file.set_modified(value));
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(value));
     }
 }
 
