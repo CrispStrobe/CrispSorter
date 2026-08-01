@@ -10322,7 +10322,7 @@ mod tests {
             .create_async().await;
         let put_changed = server.mock("PUT", "/api/v2/shards/file-hash/blocks")
             .match_query(Matcher::Regex(format!("offset={}&size={}", DEFAULT_BLOCK_SIZE, DEFAULT_BLOCK_SIZE)))
-            .match_body(Matcher::Exact(second.clone()))
+            .match_body(Matcher::Exact(String::from_utf8(second.clone()).unwrap()))
             .with_status(200).with_body(r#"{"accepted":true}"#)
             .create_async().await;
         let finalize = server.mock("POST", "/api/v2/shards/file-hash/finalize")
