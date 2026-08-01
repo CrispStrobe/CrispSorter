@@ -1007,7 +1007,6 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     morph_kernel: s.cleanup.morph_kernel,
                     border_threshold: s.cleanup.border_threshold,
                     deskew_max_angle: s.cleanup.deskew_max_angle,
-                    deskew_consensus: s.cleanup.deskew_consensus,
                     denoise: s.cleanup.denoise,
                 },
                 det_prob_threshold: s.det_prob_threshold,

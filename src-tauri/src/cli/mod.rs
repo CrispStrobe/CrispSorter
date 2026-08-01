@@ -5544,7 +5544,11 @@ async fn cmd_sync_backup_job(
                 let snapshot = crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
                     .map_err(|e| e.to_string())?;
                 if !snapshot.due_job_ids.is_empty() {
-                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::RunDue { dry_run }).await?;
+                    Box::pin(cmd_sync_backup_job(
+                        out,
+                        data_dir,
+                        BackupJobCmd::RunDue { dry_run },
+                    )).await?;
                 }
                 cycles = cycles.saturating_add(1);
                 if once || (max_cycles > 0 && cycles >= max_cycles) { break; }

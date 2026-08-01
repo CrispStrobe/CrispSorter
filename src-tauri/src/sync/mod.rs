@@ -374,9 +374,8 @@ impl SyncManager {
             last_pull_ts,
             limit
         );
-        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))
-            .get(&url)
-            ;
+        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?
+            .get(&url);
         if !api_key.is_empty() { req = req.bearer_auth(api_key); }
 
         let resp = req.send().await?;
