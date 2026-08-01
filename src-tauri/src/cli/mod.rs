@@ -11280,17 +11280,26 @@ mod global_arg_collision_tests {
 
     #[test]
     fn no_subcommand_shadows_a_global_argument() {
-        let cmd = super::Cli::command();
-        let globals: Vec<String> = cmd
-            .get_arguments()
-            .filter(|a| a.is_global_set())
-            .map(|a| a.get_id().to_string())
-            .collect();
-        assert!(!globals.is_empty(), "expected at least one global argument");
+        let clashes = std::thread::Builder::new()
+            .name("cli-global-collision-test".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cmd = super::Cli::command();
+                let globals: Vec<String> = cmd
+                    .get_arguments()
+                    .filter(|a| a.is_global_set())
+                    .map(|a| a.get_id().to_string())
+                    .collect();
+                assert!(!globals.is_empty(), "expected at least one global argument");
 
-        let mut clashes = Vec::new();
-        collect(&cmd, &globals, "crispsorter", &mut clashes);
-
+                let mut clashes = Vec::new();
+                collect(&cmd, &globals, "crispsorter", &mut clashes);
+                (globals, clashes)
+            })
+            .expect("spawn CLI global-collision test thread")
+            .join()
+            .expect("CLI global-collision test thread should not panic");
+        let (globals, clashes) = clashes;
         assert!(
             clashes.is_empty(),
             "these subcommand arguments shadow a global argument ({globals:?}) and will \
@@ -11303,7 +11312,13 @@ mod global_arg_collision_tests {
     /// whole tree so a malformed definition surfaces in CI.
     #[test]
     fn the_command_tree_builds() {
-        super::Cli::command().debug_assert();
+        std::thread::Builder::new()
+            .name("cli-command-tree-assert".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| super::Cli::command().debug_assert())
+            .expect("spawn CLI command-tree assertion thread")
+            .join()
+            .expect("CLI command-tree assertion thread should not panic");
     }
 }
 
