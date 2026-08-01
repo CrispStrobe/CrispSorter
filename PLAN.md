@@ -2852,6 +2852,11 @@ a transfer without leaving the search/catalog workflow.
     filter semantics plus a `sync_pair_plan` Tauri command. It emits sorted
     file metadata without contacting a provider or advancing the watermark;
     transfer execution remains the next step. ✅ 2026-08-01
+  - [x] Added explicit local→cloud `sync_pair_push` execution for `ToCloud`
+    and `TwoWay` pairs, with dry-run mode, provider write-capability checks,
+    shared TransferQueue retries, and watermark advancement only after each
+    successful upload. Remote comparison and reverse direction remain
+    deferred to conflict-aware sync. ✅ 2026-08-01
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.

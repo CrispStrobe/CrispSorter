@@ -81,6 +81,98 @@ pub async fn sync_pair_plan(
     super::pairs::plan_local(&pair).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncPairPushResult {
+    pub pair_id: String,
+    pub dry_run: bool,
+    pub planned: usize,
+    pub uploaded: usize,
+    pub watermark: i64,
+}
+
+/// Push the local side of a `ToCloud`/`TwoWay` pair through the shared
+/// transfer queue. Existing remote entries are intentionally overwritten;
+/// conflict-aware two-way comparison remains a separate PLAN item.
+#[tauri::command]
+pub async fn sync_pair_push(
+    state: State<'_, AppState>,
+    id: String,
+    dry_run: Option<bool>,
+) -> Result<SyncPairPushResult, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut pair = store
+        .list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    if matches!(pair.mode, super::pairs::SyncPairMode::ToLocal) {
+        return Err("sync pair is configured for remote-to-local direction".into());
+    }
+    let plan = super::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+    let dry_run = dry_run.unwrap_or(false);
+    if dry_run || plan.is_empty() {
+        return Ok(SyncPairPushResult {
+            pair_id: pair.id,
+            dry_run,
+            planned: plan.len(),
+            uploaded: 0,
+            watermark: pair.watermark,
+        });
+    }
+
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry
+        .drives
+        .iter()
+        .find(|drive| drive.id == pair.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let drive: std::sync::Arc<dyn crate::drives::CloudDrive> =
+        std::sync::Arc::from(crate::drives::DriveRegistry::instantiate(config));
+    if !drive.capabilities().write {
+        return Err(format!("{} does not support uploads", drive.drive_type().label()));
+    }
+
+    let mut uploaded = 0usize;
+    let mut watermark = pair.watermark;
+    for entry in &plan {
+        let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+        let bytes = std::fs::read(&local_path).map_err(|e| {
+            format!("reading {} for sync pair '{}': {e}", local_path.display(), pair.id)
+        })?;
+        let remote_path = std::path::PathBuf::from(format!(
+            "{}/{}",
+            pair.remote_root.trim_end_matches('/'),
+            entry.relative_path
+        ));
+        let drive_for_upload = drive.clone();
+        let transfer = state.transfer_queue.clone().submit_upload(
+            pair.drive_id.clone(),
+            remote_path,
+            bytes,
+            move |path, data| drive_for_upload.write_file(path, data),
+        );
+        match transfer.handle.await {
+            Ok(Ok(_)) => {
+                uploaded += 1;
+                watermark = watermark.max(entry.mtime_unix);
+            }
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(error) => return Err(format!("sync transfer task failed: {error}")),
+        }
+    }
+    pair.watermark = watermark;
+    store.upsert(pair).map_err(|e| e.to_string())?;
+    Ok(SyncPairPushResult {
+        pair_id: id,
+        dry_run: false,
+        planned: plan.len(),
+        uploaded,
+        watermark,
+    })
+}
+
 /// Return the persisted conflict policy used by future sync mutations.
 #[tauri::command]
 pub async fn sync_get_conflict_policy(
