@@ -60,6 +60,10 @@ pub struct TransferProgress {
     pub remote_path: String,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
+    /// Durable provider checkpoint associated with this job, when the
+    /// caller supplied one.  This is metadata only: the provider operation
+    /// remains responsible for validating and consuming the checkpoint.
+    pub resume_state: Option<String>,
     pub state: TransferState,
 }
 
@@ -246,6 +250,20 @@ impl TransferQueue {
         data: Vec<u8>,
         write_fn: impl Fn(&Path, &[u8]) -> Result<()> + Send + Sync + 'static,
     ) -> TransferHandle {
+        self.submit_upload_with_resume(drive_id, remote_path, data, None, write_fn)
+    }
+
+    /// Submit an upload and expose its durable provider checkpoint in queue
+    /// snapshots.  The ordinary upload API remains unchanged for callers
+    /// that do not support native resume.
+    pub fn submit_upload_with_resume(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        data: Vec<u8>,
+        resume_state: Option<PathBuf>,
+        write_fn: impl Fn(&Path, &[u8]) -> Result<()> + Send + Sync + 'static,
+    ) -> TransferHandle {
         let size = data.len() as u64;
         let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -256,6 +274,7 @@ impl TransferQueue {
             remote_path: remote_path.to_string_lossy().into_owned(),
             bytes_done: 0,
             bytes_total: Some(size),
+            resume_state: resume_state.as_ref().map(|p| p.display().to_string()),
             state: TransferState::Queued,
         };
         let (tx, rx) = watch::channel(initial);
@@ -271,6 +290,7 @@ impl TransferQueue {
                 drive_id,
                 remote_path.clone(),
                 Some(size),
+                resume_state.as_ref().map(|p| p.display().to_string()),
                 sem,
                 tx,
                 task_cancellation,
@@ -301,6 +321,18 @@ impl TransferQueue {
         size_hint: Option<u64>,
         read_fn: impl Fn(&Path) -> Result<Vec<u8>> + Send + Sync + 'static,
     ) -> TransferHandle {
+        self.submit_download_with_resume(drive_id, remote_path, size_hint, None, read_fn)
+    }
+
+    /// Submit a download with optional durable provider checkpoint metadata.
+    pub fn submit_download_with_resume(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        size_hint: Option<u64>,
+        resume_state: Option<PathBuf>,
+        read_fn: impl Fn(&Path) -> Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> TransferHandle {
         let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
 
         let initial = TransferProgress {
@@ -310,6 +342,7 @@ impl TransferQueue {
             remote_path: remote_path.to_string_lossy().into_owned(),
             bytes_done: 0,
             bytes_total: size_hint,
+            resume_state: resume_state.as_ref().map(|p| p.display().to_string()),
             state: TransferState::Queued,
         };
         let (tx, rx) = watch::channel(initial);
@@ -325,6 +358,7 @@ impl TransferQueue {
                 drive_id,
                 remote_path.clone(),
                 size_hint,
+                resume_state.as_ref().map(|p| p.display().to_string()),
                 sem,
                 tx,
                 task_cancellation,
@@ -423,6 +457,7 @@ async fn run_with_retries(
     drive_id: String,
     remote_path: PathBuf,
     bytes_total: Option<u64>,
+    resume_state: Option<String>,
     semaphore: Arc<Semaphore>,
     tx: watch::Sender<TransferProgress>,
     cancellation: TransferCancellation,
@@ -437,6 +472,7 @@ async fn run_with_retries(
         remote_path: remote_str.clone(),
         bytes_done,
         bytes_total,
+        resume_state: resume_state.clone(),
         state,
     };
 
@@ -646,6 +682,29 @@ mod tests {
         let progress = h.progress_rx.borrow().clone();
         assert_eq!(progress.state, TransferState::Done);
         assert_eq!(progress.bytes_total, Some(11));
+    }
+
+    #[tokio::test]
+    async fn resume_checkpoint_is_exposed_in_progress_and_snapshot() {
+        let queue = TransferQueue::new();
+        let checkpoint = tempfile::tempdir().unwrap().path().join("upload-state.json");
+        let h = queue.submit_upload_with_resume(
+            "native-drive".into(),
+            PathBuf::from("large.bin"),
+            vec![1, 2, 3],
+            Some(checkpoint.clone()),
+            |_path, _data| Ok(()),
+        );
+
+        assert_eq!(
+            h.progress_rx.borrow().resume_state.as_deref(),
+            Some(checkpoint.to_string_lossy().as_ref())
+        );
+        h.handle.await.unwrap().unwrap();
+        assert_eq!(
+            queue.snapshot()[0].resume_state.as_deref(),
+            Some(checkpoint.to_string_lossy().as_ref())
+        );
     }
 
     #[tokio::test]

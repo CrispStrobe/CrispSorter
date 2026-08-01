@@ -2711,7 +2711,7 @@ a transfer without leaving the search/catalog workflow.
     round-trip with persisted upload and download checkpoints; it requires
     explicit `FILEN_EMAIL`/`FILEN_PASSWORD` and never discovers credentials.
     ✅ 2026-08-01
-- [ ] **Provider capability matrix and test harness.** Add local mock HTTP
+- [x] **Provider capability matrix and test harness.** ✅ 2026-08-01. Add local mock HTTP
   servers and contract tests for listing, mutation, streaming, retries,
   resume, expired auth, share/version behavior, and unsupported operations.
   Keep CZE live tests for Internxt and the configured Filen account gated by
@@ -2734,7 +2734,7 @@ a transfer without leaving the search/catalog workflow.
     verifies every default unsupported mutation/share/version operation fails
     or returns the documented empty result in lockstep with capabilities.
     ✅ 2026-08-01
-- [ ] **Offline queue integration.** On exhausted transfer/network failure,
+- [x] **Offline queue integration.** ✅ 2026-08-01. On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
   shared queue with exponential polling backoff.
@@ -2833,8 +2833,10 @@ a transfer without leaving the search/catalog workflow.
   - [x] Drawer now queries and caches the registered drive's capability
     declaration and shows "resume available" only for the matching native
     upload/download direction. Unknown providers remain unmarked. ✅ 2026-08-01
-  - [ ] Queue-native resume-state metadata remains deferred; the drawer's
-    capability badge does not claim that a currently running job can resume.
+  - [x] Queue-native resume-state metadata is now carried as optional
+    provider checkpoint paths in `TransferProgress` and rendered separately
+    from the capability badge; existing callers remain non-resumable unless
+    they explicitly submit a checkpoint-aware job. ✅ 2026-08-01
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 
