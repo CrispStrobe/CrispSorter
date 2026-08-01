@@ -120,13 +120,9 @@ impl CloudDrive for NativeFilenDrive {
         let size = std::fs::metadata(local_path)
             .map_err(|e| anyhow!("reading resumable upload source: {e}"))?
             .len();
-        let mut state = FilenNativeClient::load_upload_resume_state(state_path)?
-            .unwrap_or(client.begin_upload(
-                &parent_uuid,
-                &name,
-                "application/octet-stream",
-                size,
-            )?);
+        let mut state = FilenNativeClient::load_upload_resume_state(state_path)?.unwrap_or(
+            client.begin_upload(&parent_uuid, &name, "application/octet-stream", size)?,
+        );
         anyhow::ensure!(state.parent == parent_uuid, "resume state parent mismatch");
         anyhow::ensure!(state.name == name, "resume state filename mismatch");
         anyhow::ensure!(state.size == size, "resume state size mismatch");
@@ -161,16 +157,30 @@ impl CloudDrive for NativeFilenDrive {
 
     fn read_file_to_writer(&self, path: &Path, mut writer: &mut dyn Write) -> Result<u64> {
         let (_session, client, item) = self.resolve(path)?;
-        anyhow::ensure!(!item.is_dir, "Filen path is a directory: {}", path.display());
+        anyhow::ensure!(
+            !item.is_dir,
+            "Filen path is a directory: {}",
+            path.display()
+        );
         client.download_file_to_writer(&item, &mut writer)
     }
 
-    fn write_file_from_reader(
+    fn download_file_resumable(
         &self,
-        path: &Path,
-        reader: &mut dyn Read,
-        size: u64,
+        remote_path: &Path,
+        local_path: &Path,
+        state_path: &Path,
     ) -> Result<()> {
+        let (_session, client, item) = self.resolve(remote_path)?;
+        anyhow::ensure!(
+            !item.is_dir,
+            "Filen resumable download path is a directory: {}",
+            remote_path.display()
+        );
+        client.download_file_to_path_resumable(&item, local_path, state_path)
+    }
+
+    fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
         let name = path
             .file_name()
             .ok_or_else(|| anyhow!("Filen write path has no filename"))?
@@ -183,13 +193,7 @@ impl CloudDrive for NativeFilenDrive {
                 if existing.is_dir { "folder" } else { "file" },
             )?;
         }
-        client.upload_file_from_reader(
-            &uuid,
-            &name,
-            "application/octet-stream",
-            size,
-            reader,
-        )
+        client.upload_file_from_reader(&uuid, &name, "application/octet-stream", size, reader)
     }
 }
 

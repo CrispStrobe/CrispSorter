@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -428,6 +428,25 @@ pub struct UploadResumeState {
     pub completed_chunks: Vec<usize>,
     pub bucket: String,
     pub region: String,
+}
+
+/// Durable per-chunk checkpoint for a single Filen download.
+///
+/// The local partial file is only promoted after every chunk has been
+/// authenticated and written.  Keeping the remote identity and metadata in
+/// the checkpoint prevents a stale state file from being applied to a
+/// replacement with the same path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadResumeState {
+    pub version: u8,
+    pub file_uuid: String,
+    pub path: String,
+    pub file_size: u64,
+    pub chunks: usize,
+    pub chunk_size: usize,
+    pub remote_hash: String,
+    pub remote_modified: i64,
+    pub completed_chunks: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1466,6 +1485,36 @@ impl FilenNativeClient {
         Ok(())
     }
 
+    pub fn save_download_resume_state(path: &Path, state: &DownloadResumeState) -> Result<()> {
+        let encoded = serde_json::to_vec_pretty(state)?;
+        let temporary = path.with_extension("filen-download.tmp");
+        std::fs::write(&temporary, encoded)
+            .with_context(|| format!("writing Filen download checkpoint {}", path.display()))?;
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("installing Filen download checkpoint {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn load_download_resume_state(path: &Path) -> Result<Option<DownloadResumeState>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("reading Filen download checkpoint {}", path.display()))?;
+        Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!("parsing Filen download checkpoint {}", path.display())
+        })?))
+    }
+
+    pub fn clear_download_resume_state(path: &Path) -> Result<()> {
+        if path.exists() {
+            std::fs::remove_file(path).with_context(|| {
+                format!("removing Filen download checkpoint {}", path.display())
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn save_batch_transfer_state(path: &Path, state: &BatchTransferState) -> Result<()> {
         let encoded = serde_json::to_vec_pretty(state)?;
         let temporary = path.with_extension("filen-batch.tmp");
@@ -2338,6 +2387,130 @@ impl FilenNativeClient {
         writer: &mut W,
     ) -> Result<u64> {
         self.download_chunks_to_writer(item, 0, item.chunks.max(1) as usize, writer)
+    }
+
+    /// Download a file with durable per-chunk resume state.
+    ///
+    /// Each chunk is fetched and authenticated independently.  A failed
+    /// transfer leaves both the partial file and its checkpoint in place, so
+    /// retrying skips completed chunks and never re-encrypts or replaces the
+    /// destination with incomplete data.
+    pub fn download_file_to_path_resumable(
+        &self,
+        item: &NativeItem,
+        local_path: &Path,
+        state_path: &Path,
+    ) -> Result<()> {
+        anyhow::ensure!(!item.is_dir, "cannot resumably download a Filen directory");
+        let chunks = item.chunks as usize;
+        if item.size == 0 || chunks == 0 {
+            if let Some(parent) = local_path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::File::create(local_path)?;
+            Self::clear_download_resume_state(state_path)?;
+            return Ok(());
+        }
+
+        let chunk_size = self.transfer_config.chunk_size;
+        let path_string = local_path.to_string_lossy().into_owned();
+        let partial_path = local_path.with_extension("filen-download-partial");
+        let compatible = |state: &DownloadResumeState| {
+            state.version == 1
+                && state.file_uuid == item.uuid
+                && state.path == path_string
+                && state.file_size == item.size
+                && state.chunks == chunks
+                && state.chunk_size == chunk_size
+                && state.remote_hash == item.hash
+                && state.remote_modified == item.modified
+                && state.completed_chunks.iter().all(|&index| index < chunks)
+                && std::fs::metadata(&partial_path)
+                    .map(|metadata| metadata.len() == item.size)
+                    .unwrap_or(false)
+        };
+        let mut state = match Self::load_download_resume_state(state_path)? {
+            Some(state) if compatible(&state) => state,
+            Some(_) => {
+                Self::clear_download_resume_state(state_path)?;
+                DownloadResumeState {
+                    version: 1,
+                    file_uuid: item.uuid.clone(),
+                    path: path_string.clone(),
+                    file_size: item.size,
+                    chunks,
+                    chunk_size,
+                    remote_hash: item.hash.clone(),
+                    remote_modified: item.modified,
+                    completed_chunks: Vec::new(),
+                }
+            }
+            None => DownloadResumeState {
+                version: 1,
+                file_uuid: item.uuid.clone(),
+                path: path_string.clone(),
+                file_size: item.size,
+                chunks,
+                chunk_size,
+                remote_hash: item.hash.clone(),
+                remote_modified: item.modified,
+                completed_chunks: Vec::new(),
+            },
+        };
+        state.completed_chunks.sort_unstable();
+        state.completed_chunks.dedup();
+
+        if let Some(parent) = local_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut partial = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&partial_path)
+            .with_context(|| {
+                format!("opening Filen partial download {}", partial_path.display())
+            })?;
+        partial.set_len(item.size)?;
+        Self::save_download_resume_state(state_path, &state)?;
+
+        for chunk in 0..chunks {
+            if state.completed_chunks.binary_search(&chunk).is_ok() {
+                continue;
+            }
+            let data = self.download_chunks(item, chunk, chunk + 1)?;
+            let offset = (chunk as u64)
+                .checked_mul(chunk_size as u64)
+                .ok_or_else(|| anyhow!("Filen download offset overflow"))?;
+            partial.seek(SeekFrom::Start(offset))?;
+            let remaining = item.size.saturating_sub(offset) as usize;
+            anyhow::ensure!(remaining > 0, "Filen download chunk exceeds file size");
+            partial.write_all(&data[..data.len().min(remaining)])?;
+            partial.flush()?;
+            state.completed_chunks.push(chunk);
+            state.completed_chunks.sort_unstable();
+            state.completed_chunks.dedup();
+            Self::save_download_resume_state(state_path, &state)?;
+        }
+
+        anyhow::ensure!(
+            state.completed_chunks.len() == chunks,
+            "Filen download checkpoint incomplete"
+        );
+        drop(partial);
+        std::fs::rename(&partial_path, local_path).with_context(|| {
+            format!(
+                "installing completed Filen download {}",
+                local_path.display()
+            )
+        })?;
+        Self::clear_download_resume_state(state_path)
     }
 
     /// Streaming download with `(completed_bytes, total_bytes)` progress.
@@ -3529,6 +3702,33 @@ mod tests {
         FilenNativeClient::clear_upload_resume_state(&path).unwrap();
         assert_eq!(
             FilenNativeClient::load_upload_resume_state(&path).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn download_resume_state_persists_and_clears_checkpoint_file() {
+        let state = DownloadResumeState {
+            version: 1,
+            file_uuid: "uuid".into(),
+            path: "/tmp/file.bin".into(),
+            file_size: 25,
+            chunks: 4,
+            chunk_size: 8,
+            remote_hash: "hash".into(),
+            remote_modified: 123,
+            completed_chunks: vec![0, 2],
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("download.json");
+        FilenNativeClient::save_download_resume_state(&path, &state).unwrap();
+        assert_eq!(
+            FilenNativeClient::load_download_resume_state(&path).unwrap(),
+            Some(state)
+        );
+        FilenNativeClient::clear_download_resume_state(&path).unwrap();
+        assert_eq!(
+            FilenNativeClient::load_download_resume_state(&path).unwrap(),
             None
         );
     }
