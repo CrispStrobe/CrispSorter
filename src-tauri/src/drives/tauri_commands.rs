@@ -4,8 +4,10 @@ use super::{DriveConfig, DriveRegistry, DriveType};
 use crate::AppState;
 use crate::sync::conflict::ConflictPolicy;
 use serde::Serialize;
+#[cfg(feature = "fuse")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "fuse")]
 use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
@@ -81,8 +83,9 @@ fn mutation_destination(
                 .to_string_lossy();
             let (stem, extension) = match destination.extension() {
                 Some(extension) => (
-                    name.trim_end_matches(&format!(".{extension}")).to_owned(),
-                    format!(".{extension}"),
+                    name.trim_end_matches(&format!(".{}", extension.to_string_lossy()))
+                        .to_owned(),
+                    format!(".{}", extension.to_string_lossy()),
                 ),
                 None => (name.into_owned(), String::new()),
             };
