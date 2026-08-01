@@ -2814,18 +2814,23 @@ a transfer without leaving the search/catalog workflow.
     /api/blockmap/{path}, POST changed blocks to /api/blocks/{path}, and
     POST /api/finalize/{path}?size=N. ETag-cached server maps select changed
     blocks; absent app/map falls back to normal full WebDAV transfer.
-    Strict Range validation protects delta download, while ETag/If-Match
-    conflict protection and atomic server finalize remain server-contract
-    work to verify against both patched clients.
+    Strict Range validation protects delta download. The shared
+    crispcloud_delta server now accepts optional If-Match validators and Rust
+    sends the fetched ETag on every block/finalize mutation; stale maps return
+    HTTP 412 without mutation.
   - [x] Add gated live Nextcloud and ownCloud coverage for app detection,
     authenticated blockmap fetch, one-block replacement, shrink/grow
     finalize, strict range delta download, and round-trip content
     verification. The tests use an SSH tunnel to the isolated VPS instances
     and explicit environment credentials; they never discover credentials
     from keychains. Plain-WebDAV full-upload fallback is unit-tested.
-  - [ ] Extend that live matrix with ETag/concurrent-update behavior and OCS
-    share links. The server-side If-Match/atomic-finalize contract remains a
-    prerequisite for marking those cases complete.
+  - [x] Extend the live matrix with stale ETag/concurrent-update behavior:
+    both Nextcloud and ownCloud return HTTP 412 for stale block and finalize
+    mutations, while the existing resize and round-trip cases remain green.
+    ✅ 2026-08-01
+  - [ ] Add OCS share-link coverage and verify atomic finalize semantics in
+    the patched desktop clients; the current server validates If-Match before
+    each mutation but does not yet expose a transaction-level lock.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.

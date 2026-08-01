@@ -258,6 +258,7 @@ impl WebDavDrive {
             return Ok(None);
         };
         let remote = Self::blockmap_from_server(&remote_map)?;
+        let expected_etag = remote_map.etag.clone();
         let local = crate::sync::delta::compute_local_blockmap_against(local_path, &remote)?;
         let changed = crate::sync::delta::diff_blockmaps(&local, &remote)?;
         let total_bytes = local.file_size;
@@ -275,9 +276,13 @@ impl WebDavDrive {
                 block.offset,
                 block.size
             );
-            let response = self
+            let mut request = self
                 .req(reqwest::Method::POST, &url)
-                .header("Content-Type", "application/octet-stream")
+                .header("Content-Type", "application/octet-stream");
+            if let Some(etag) = &expected_etag {
+                request = request.header("If-Match", format!("\"{etag}\""));
+            }
+            let response = request
                 .body(data)
                 .send()
                 .with_context(|| format!("uploading delta block at {}", block.offset))?;
@@ -290,7 +295,11 @@ impl WebDavDrive {
             self.delta_path_url("finalize", remote_path)?,
             total_bytes
         );
-        self.req(reqwest::Method::POST, &url)
+        let mut request = self.req(reqwest::Method::POST, &url);
+        if let Some(etag) = &expected_etag {
+            request = request.header("If-Match", format!("\"{etag}\""));
+        }
+        request
             .send()
             .context("finalizing crispcloud_delta upload")?
             .error_for_status()?;
@@ -910,6 +919,83 @@ mod tests {
             .delta_upload_file(Path::new("missing-local.bin"), Path::new("remote.bin"))
             .unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn delta_upload_sends_blockmap_etag_as_if_match() {
+        let mut server = Server::new();
+        let block_size = crate::sync::delta::DEFAULT_BLOCK_SIZE;
+        let old = vec![b'a'; block_size];
+        let mut local = old.clone();
+        local[0] = b'b';
+        let map = crate::sync::delta::compute_blockmap_from_bytes(&old, block_size).unwrap();
+        let signature = &map.blocks[0];
+        let blockmap = serde_json::json!({
+            "filePath": "/file.bin",
+            "totalSize": block_size,
+            "blockSize": block_size,
+            "blockCount": 1,
+            "signatures": [{
+                "blockIndex": 0,
+                "offset": signature.offset,
+                "size": signature.size,
+                "weakHash": signature.weak_hash,
+                "strongHash": hex::encode(signature.strong_hash),
+            }],
+            "etag": "etag-1",
+        });
+        let status = server
+            .mock("GET", "/index.php/apps/crispcloud_delta/api/status")
+            .with_status(200)
+            .with_body(
+                r#"{"app":"crispcloud_delta","blockSize":4194304,"algorithm":"adler32+sha256"}"#,
+            )
+            .create();
+        let map_mock = server
+            .mock(
+                "GET",
+                "/index.php/apps/crispcloud_delta/api/blockmap/file.bin",
+            )
+            .with_status(200)
+            .with_body(blockmap.to_string())
+            .create();
+        let block_mock = server
+            .mock(
+                "POST",
+                "/index.php/apps/crispcloud_delta/api/blocks/file.bin",
+            )
+            .match_query(Matcher::Any)
+            .match_header("If-Match", "\"etag-1\"")
+            .with_status(200)
+            .create();
+        let finalize_mock = server
+            .mock(
+                "POST",
+                "/index.php/apps/crispcloud_delta/api/finalize/file.bin",
+            )
+            .match_query(Matcher::Any)
+            .match_header("If-Match", "\"etag-1\"")
+            .with_status(200)
+            .create();
+        let local_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(local_file.path(), &local).unwrap();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/remote.php/dav/files/alice/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+
+        let result = drive
+            .delta_upload_file(local_file.path(), Path::new("file.bin"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.changed_blocks, 1);
+        status.assert();
+        map_mock.assert();
+        block_mock.assert();
+        finalize_mock.assert();
     }
 
     #[test]
