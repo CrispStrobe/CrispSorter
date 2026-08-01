@@ -523,6 +523,34 @@ impl CloudDrive for WebDavDrive {
         }
     }
 
+    fn probed_capabilities(&self) -> DriveCapabilities {
+        let mut capabilities = self.capabilities();
+        let Some(url) = self.nextcloud_ocs_url() else {
+            return capabilities;
+        };
+
+        let response = self
+            .req(reqwest::Method::GET, &url)
+            .timeout(Duration::from_secs(5))
+            .header("OCS-APIRequest", "true")
+            .header("Accept", "application/json")
+            .send();
+        let Ok(response) = response else {
+            return capabilities;
+        };
+        if !response.status().is_success() {
+            return capabilities;
+        }
+        let Ok(body) = response.json::<serde_json::Value>() else {
+            return capabilities;
+        };
+        let status_code = body["ocs"]["meta"]["statuscode"].as_i64();
+        if status_code == Some(100) || status_code == Some(200) {
+            capabilities.share_links = true;
+        }
+        capabilities
+    }
+
     fn list_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
         let url = self.url_for(path);
         let resp = self
@@ -1127,6 +1155,57 @@ mod tests {
                 .as_deref(),
             Some("https://cloud.example/s/abc")
         );
+        mock.assert();
+    }
+
+    #[test]
+    fn probed_capabilities_enable_ocs_sharing_only_when_advertised() {
+        let mut server = Server::new();
+        let endpoint = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
+        let mock = server
+            .mock("GET", endpoint)
+            .match_query(Matcher::UrlEncoded("format".into(), "json".into()))
+            .match_header("OCS-APIRequest", "true")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ocs":{"meta":{"status":"ok","statuscode":100}}}"#)
+            .create();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/remote.php/dav/files/alice/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+
+        let capabilities = drive.probed_capabilities();
+        assert!(capabilities.share_links);
+        assert!(!capabilities.versions);
+        mock.assert();
+    }
+
+    #[test]
+    fn probed_capabilities_keep_sharing_disabled_when_ocs_rejects() {
+        let mut server = Server::new();
+        let endpoint = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
+        let mock = server
+            .mock("GET", endpoint)
+            .match_query(Matcher::UrlEncoded("format".into(), "json".into()))
+            .match_header("OCS-APIRequest", "true")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ocs":{"meta":{"status":"failure","statuscode":403}}}"#)
+            .create();
+        let drive = WebDavDrive::new(
+            "d",
+            format!("{}/remote.php/dav/files/alice/", server.url()),
+            Some("alice".into()),
+            Some("pw".into()),
+            false,
+        );
+
+        let capabilities = drive.probed_capabilities();
+        assert!(!capabilities.share_links);
         mock.assert();
     }
 

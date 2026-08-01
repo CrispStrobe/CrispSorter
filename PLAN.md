@@ -1518,7 +1518,9 @@ unify local and cloud version tracking.
   `GET /revisions`, `restore_version` via download-revision +
   PATCH-upload (GDrive has no native restore endpoint).
   4 unit tests (DriveType::label, FileVersion serde, default methods).
-- [ ] **Tauri commands `drive_list_versions` + `drive_restore_version`.**
+- [x] **Tauri commands `drive_list_versions` + `drive_restore_version`.**
+  ✅ SHIPPED (2026-08-01); commands enforce provider capability checks before
+  making network requests.
 - [ ] **Frontend: version history panel.**  In the document viewer
   sidebar, when viewing a cloud-backed document, show a "Versions"
   tab listing cloud versions with timestamps and a "Restore" button.
@@ -2895,6 +2897,11 @@ a transfer without leaving the search/catalog workflow.
     before network access. Google Drive and OneDrive now also have hermetic
     response/request contract coverage for listing and restore; Google’s
     upload endpoint is injectable alongside its API endpoint. ✅ 2026-08-01
+  - [x] WebDAV capability discovery now probes only Nextcloud/ownCloud-style
+    `remote.php` roots and enables `share_links` only for an OCS success
+    response. Generic WebDAV, offline servers, and rejected OCS requests
+    remain unsupported; hermetic positive and negative probe tests pass.
+    ✅ 2026-08-01
 - [ ] **Backup UX.** Add scheduled local/cloud backup configuration, integrity
   verification, restore selection, retention, and visible history.  Reuse
   cloud-backup shard machinery where possible instead of duplicating it.

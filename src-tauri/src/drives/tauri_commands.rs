@@ -355,7 +355,7 @@ pub async fn drive_capabilities(
         .iter()
         .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
-    Ok(DriveRegistry::instantiate(cfg).capabilities())
+    Ok(DriveRegistry::instantiate(cfg).probed_capabilities())
 }
 
 /// Create a directory on a drive when its capability set permits it.

@@ -222,6 +222,13 @@ pub trait CloudDrive: Send + Sync {
         capabilities
     }
 
+    /// Probe provider-advertised capabilities when a backend has a safe,
+    /// provider-specific discovery endpoint. The default is deliberately
+    /// side-effect free and preserves the static capability set.
+    fn probed_capabilities(&self) -> DriveCapabilities {
+        self.capabilities()
+    }
+
     /// Create a directory, including missing parents where the provider
     /// supports it.
     fn create_dir(&self, _path: &Path) -> Result<()> {
