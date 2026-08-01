@@ -2983,6 +2983,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Added durable run lifecycle records, bounded history inspection, and
       restart recovery (`running` → `interrupted`) with Tauri and CLI history
       surfaces. Scheduler/execution wiring remains deferred.
+    - [x] Added explicit CLI `sync backup-job run <id> [--dry-run]` execution:
+      recursive local enumeration, capability checks, queued uploads, optional
+      post-upload size verification, and durable success/failure accounting.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
 

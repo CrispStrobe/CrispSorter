@@ -252,6 +252,10 @@ impl BackupState {
         rows.collect::<Result<Vec<_>, _>>().context("list backup jobs")
     }
 
+    pub fn job(&self, id: &str) -> Result<Option<BackupJob>> {
+        Ok(self.list_jobs()?.into_iter().find(|job| job.id == id))
+    }
+
     pub fn delete_job(&self, id: &str) -> Result<bool> {
         Ok(self.conn.execute("DELETE FROM backup_jobs WHERE id = ?", params![id])? > 0)
     }

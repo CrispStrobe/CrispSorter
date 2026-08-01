@@ -533,6 +533,12 @@ enum BackupJobCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Execute one job now; this is explicit and never scheduled implicitly.
+    Run {
+        job_id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5104,7 +5110,7 @@ async fn cmd_sync_async(
     match cmd {
         SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd).await,
         SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
-        SyncCmd::BackupJob { cmd } => cmd_sync_backup_job(out, data_dir, cmd),
+        SyncCmd::BackupJob { cmd } => cmd_sync_backup_job(out, data_dir, cmd).await,
     }
 }
 
@@ -5128,7 +5134,7 @@ fn parse_backup_schedule(raw: &str) -> Result<crate::sync::backup_state::BackupS
     Err("schedule must be manual, interval:<minutes>, or daily:HH:MM".into())
 }
 
-fn cmd_sync_backup_job(
+async fn cmd_sync_backup_job(
     out: OutFormat,
     data_dir: &std::path::Path,
     cmd: BackupJobCmd,
@@ -5181,8 +5187,101 @@ fn cmd_sync_backup_job(
                 },
             }
         }
+        BackupJobCmd::Run { job_id, dry_run } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+
+            let job = store.job(&job_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
+            let source = std::path::PathBuf::from(&job.source_root);
+            if !source.is_dir() {
+                return Err(format!("backup source is not a directory: {}", source.display()));
+            }
+            let mut files = Vec::new();
+            collect_backup_files(&source, &source, &mut files).map_err(|e| e.to_string())?;
+            if dry_run {
+                emit_backup_run_plan(out, &job, files.len(), files.iter().map(|(_, s)| *s).sum());
+                return Ok(());
+            }
+
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(&config));
+            let capabilities = drive.probed_capabilities();
+            if !capabilities.write || (job.verify_integrity && !capabilities.stat) {
+                return Err(format!("drive '{}' lacks required write/stat capability", job.drive_id));
+            }
+            let run = store.start_run(&job.id, files.len() as u64).map_err(|e| e.to_string())?;
+            let queue = TransferQueue::shared();
+            let mut completed = 0u64;
+            let mut bytes = 0u64;
+            let mut failed = 0u64;
+            for (relative, size) in files {
+                let local = source.join(&relative);
+                let data = match std::fs::read(&local) {
+                    Ok(data) => data,
+                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                };
+                let remote = std::path::Path::new(&job.remote_root).join(&relative);
+                let target = Arc::clone(&drive);
+                let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
+                    move |path, data| target.write_file(path, data));
+                match transfer.handle.await {
+                    Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
+                    Ok(Ok(_)) => match drive.stat(&remote) {
+                        Ok(stat) if stat.size == size => { completed += 1; bytes += size; }
+                        Ok(stat) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification size mismatch for {}: expected {}, got {}", relative, size, stat.size)); break; }
+                        Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    },
+                    Ok(Err(error)) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                }
+            }
+            if failed > 0 {
+                return Err(format!("backup job '{}' failed after {completed}/{} files", job.id, run.planned));
+            }
+            let finished = store.finish_run(&run.id, completed, 0, job.verify_integrity, bytes)
+                .map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&finished).unwrap()),
+                OutFormat::Text => println!("backup job {} completed: {} file(s), {} bytes", job.id, completed, bytes),
+            }
+        }
     }
     Ok(())
+}
+
+fn collect_backup_files(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+    out: &mut Vec<(String, u64)>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_backup_files(root, &path, out)?;
+        } else if metadata.is_file() {
+            out.push((path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"), metadata.len()));
+        }
+    }
+    Ok(())
+}
+
+fn emit_backup_run_plan(
+    out: OutFormat,
+    job: &crate::sync::backup_state::BackupJob,
+    files: usize,
+    bytes: u64,
+) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"job_id": job.id, "dry_run": true, "files": files, "bytes": bytes})),
+        OutFormat::Text => println!("backup job {} dry-run: {} file(s), {} bytes", job.id, files, bytes),
+    }
 }
 
 async fn cmd_sync_pair(
