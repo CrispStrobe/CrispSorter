@@ -1594,7 +1594,9 @@ unify local and cloud version tracking.
   by the browser, matching the Rust capability payload; older UI fixtures
   remain compatible when the field is absent.
 - [ ] **Tests.**  ✅ 4 unit tests shipped (see above).  Live tests
-  require OAuth tokens — tagged `#[ignore]`.
+  require OAuth tokens — tagged `#[ignore]`. Frontend version loading now
+  checks `versions` before issuing the provider IPC call, so unsupported
+  providers cannot trigger a late version request. ✅ 2026-08-01
 
 #### Priority 7 — Certificate pinning
 
