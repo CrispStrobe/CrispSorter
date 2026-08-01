@@ -2761,6 +2761,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] The Catalog browser now emits typed `CatalogArchive` context for the
     currently opened `.caf`, preserving archive provenance in the right pane.
     ✅ 2026-08-01
+  - [x] Local search hits now emit typed `LocalPath` context requests alongside
+    the existing external-open and batch-sorter actions. ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,

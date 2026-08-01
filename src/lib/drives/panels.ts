@@ -23,6 +23,10 @@ export function cloudDrivePanel(driveId: string, path: string, title = 'Cloud fi
     return { source: { kind: 'CloudDrive', driveId, path }, title };
 }
 
+export function localPathPanel(path: string, title = 'Local file'): ContextPanel {
+    return { source: { kind: 'LocalPath', path }, title };
+}
+
 export function duplicateGroupPanel(
     groupId: string,
     items: DuplicateContextItem[] = [],
