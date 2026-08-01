@@ -43,8 +43,14 @@ const INTERNXT_NETWORK_URL: &str = "https://gateway.internxt.com/network";
 
 fn gateway_error(prefix: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-    let code = parsed.as_ref().and_then(|value| value.get("code")).and_then(|value| value.as_str());
-    let message = parsed.as_ref().and_then(|value| value.get("message")).and_then(|value| value.as_str());
+    let code = parsed
+        .as_ref()
+        .and_then(|value| value.get("code"))
+        .and_then(|value| value.as_str());
+    let message = parsed
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str());
     match (code, message) {
         (Some(code), Some(message)) => anyhow!("{prefix} {status} ({code}): {message}"),
         (Some(code), None) => anyhow!("{prefix} {status} ({code}): {body}"),
@@ -89,9 +95,7 @@ impl HttpConfig {
         if let Some(url) = &self.proxy_url {
             let mut proxy = reqwest::Proxy::all(url)
                 .with_context(|| format!("invalid Internxt proxy URL: {url}"))?;
-            if let (Some(username), Some(password)) =
-                (&self.proxy_username, &self.proxy_password)
-            {
+            if let (Some(username), Some(password)) = (&self.proxy_username, &self.proxy_password) {
                 proxy = proxy.basic_auth(username, password);
             }
             builder = builder.proxy(proxy);
@@ -924,7 +928,11 @@ impl InternxtNativeClient {
             .text()
             .context("reading Internxt login security details")?;
         if !security_status.is_success() {
-            return Err(gateway_error("Internxt login security returned", security_status, &security_body));
+            return Err(gateway_error(
+                "Internxt login security returned",
+                security_status,
+                &security_body,
+            ));
         }
         let encrypted_salt = serde_json::from_str::<serde_json::Value>(&security_body)?
             .get("sKey")
@@ -949,7 +957,11 @@ impl InternxtNativeClient {
         let access_status = access.status();
         let access_body = access.text().context("reading Internxt login access")?;
         if !access_status.is_success() {
-            return Err(gateway_error("Internxt login access returned", access_status, &access_body));
+            return Err(gateway_error(
+                "Internxt login access returned",
+                access_status,
+                &access_body,
+            ));
         }
         let access_json: serde_json::Value = serde_json::from_str(&access_body)?;
         let temporary_token = access_json
@@ -968,7 +980,11 @@ impl InternxtNativeClient {
         let refresh_status = refresh.status();
         let refresh_body = refresh.text().context("reading Internxt login hydration")?;
         if !refresh_status.is_success() {
-            return Err(gateway_error("Internxt login hydration returned", refresh_status, &refresh_body));
+            return Err(gateway_error(
+                "Internxt login hydration returned",
+                refresh_status,
+                &refresh_body,
+            ));
         }
         let hydrated: serde_json::Value = serde_json::from_str(&refresh_body)?;
         let user = hydrated
@@ -4173,7 +4189,8 @@ mod tests {
             "Internxt login access returned",
             reqwest::StatusCode::UNAUTHORIZED,
             r#"{"code":"wrong_2fa","message":"Invalid code"}"#,
-        ).to_string();
+        )
+        .to_string();
         assert!(error.contains("wrong_2fa"));
         assert!(error.contains("Invalid code"));
         assert!(!error.contains("password"));
