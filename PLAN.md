@@ -2884,6 +2884,10 @@ a transfer without leaving the search/catalog workflow.
     remote-wins, keep-both, manual, and newest-wins until remote metadata is
     available; only local-wins may safely overwrite in the current local-only
     comparison boundary. ✅ 2026-08-01
+  - [x] Added read-only `sync_pair_remote_plan` inventory for providers that
+    advertise listing/stat, collecting filtered remote paths, sizes, and
+    modification times without download or mutation. This is the metadata
+    input for the remaining conflict-policy resolver. ✅ 2026-08-01
 - [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for

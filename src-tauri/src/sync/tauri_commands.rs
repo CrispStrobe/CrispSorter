@@ -95,6 +95,71 @@ pub async fn sync_pair_runs(
         .map_err(|e| e.to_string())
 }
 
+/// Inventory remote files for conflict comparison. This performs listing and
+/// metadata/stat calls only; it does not download or mutate provider data.
+#[tauri::command]
+pub async fn sync_pair_remote_plan(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<super::pairs::SyncRemoteEntry>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let pair = super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|pair| pair.id == id)
+        .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+    let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+        .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+    let drive = crate::drives::DriveRegistry::instantiate(config);
+    if !drive.capabilities().list || !drive.capabilities().stat {
+        return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+    }
+    let mut out = Vec::new();
+    inventory_remote(
+        &*drive,
+        std::path::Path::new(&pair.remote_root),
+        "",
+        &pair.include_globs,
+        &pair.exclude_globs,
+        &mut out,
+    )
+    .map_err(|e| e.to_string())?;
+    out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(out)
+}
+
+fn inventory_remote(
+    drive: &dyn crate::drives::CloudDrive,
+    directory: &std::path::Path,
+    relative_prefix: &str,
+    includes: &[String],
+    excludes: &[String],
+    out: &mut Vec<super::pairs::SyncRemoteEntry>,
+) -> anyhow::Result<()> {
+    for entry in drive.list_dir(directory)? {
+        let relative = if relative_prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{relative_prefix}/{}", entry.name)
+        };
+        let child = directory.join(&entry.name);
+        if entry.is_dir {
+            inventory_remote(drive, &child, &relative, includes, excludes, out)?;
+        } else if super::pairs::filter_matches(&relative, includes, excludes) {
+            let mtime_unix = drive.stat(&child)?.mtime_unix;
+            out.push(super::pairs::SyncRemoteEntry {
+                relative_path: relative,
+                size: entry.size.unwrap_or(0),
+                mtime_unix,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPairPushResult {
     pub pair_id: String,

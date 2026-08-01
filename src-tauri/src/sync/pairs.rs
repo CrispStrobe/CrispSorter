@@ -41,6 +41,13 @@ pub struct SyncPlanEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncRemoteEntry {
+    pub relative_path: String,
+    pub size: u64,
+    pub mtime_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncPairRun {
     pub id: i64,
     pub pair_id: String,
@@ -114,7 +121,7 @@ fn visit_local(
     Ok(())
 }
 
-fn filter_matches(path: &str, includes: &[String], excludes: &[String]) -> bool {
+pub(crate) fn filter_matches(path: &str, includes: &[String], excludes: &[String]) -> bool {
     let included = includes.is_empty() || includes.iter().any(|p| glob_matches(p, path));
     included && !excludes.iter().any(|p| glob_matches(p, path))
 }
