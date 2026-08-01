@@ -1452,12 +1452,15 @@ If the network drops mid-sync, operations are lost.
   `purge_old(max_age)`.  Max 10 retries before permanent failure.
   6 unit tests (FIFO, mark_done, retry escalation, retry-all-reset,
   stats).
-- [ ] **Enqueue on network failure.**  When a `TransferQueue` job
+- [>] **Enqueue on network failure.**  When a `TransferQueue` job
   exhausts its 5 retries (or gets a connection-refused / DNS error),
   persist it to the offline queue instead of dropping it.  Same for
   `sync cloud-backup push/pull` when the cb-api is unreachable.
   - [x] GUI drive writes stage failed bytes and enqueue a replay descriptor;
     startup maintenance and the explicit replay command retry those uploads.
+    ✅ 2026-08-01
+  - [x] GUI sync-pair uploads and cloud-backup shard uploads now stage the
+    failed bytes and enqueue replay descriptors after queue exhaustion.
     ✅ 2026-08-01
 - [ ] **Replay on reconnect.**  Background task
   (`sync/offline_replay.rs`) polls network reachability every 60 s

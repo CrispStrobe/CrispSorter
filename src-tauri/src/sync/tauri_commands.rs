@@ -547,6 +547,9 @@ pub async fn sync_pair_push(
             pair.remote_root.trim_end_matches('/'),
             entry.relative_path
         ));
+        let retry_data = bytes.clone();
+        let retry_path = remote_path.clone();
+        let retry_drive_id = pair.drive_id.clone();
         let drive_for_upload = drive.clone();
         let transfer = state.transfer_queue.clone().submit_upload(
             pair.drive_id.clone(),
@@ -561,11 +564,36 @@ pub async fn sync_pair_push(
             }
             Ok(Err(error)) => {
                 let message = error.to_string();
+                let queued = queue_failed_drive_upload(
+                    &data_dir,
+                    &retry_drive_id,
+                    &retry_path,
+                    &retry_data,
+                    &error,
+                );
+                let message = match queued {
+                    Ok(id) => format!("{message} (queued offline operation {id})"),
+                    Err(queue_error) => format!(
+                        "{message} (offline queue failed: {queue_error})"
+                    ),
+                };
                 record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
                 return Err(message);
             }
             Err(error) => {
-                let message = format!("sync transfer task failed: {error}");
+                let transfer_error = anyhow::anyhow!("sync transfer task failed: {error}");
+                let message = match queue_failed_drive_upload(
+                    &data_dir,
+                    &retry_drive_id,
+                    &retry_path,
+                    &retry_data,
+                    &transfer_error,
+                ) {
+                    Ok(id) => format!("{transfer_error} (queued offline operation {id})"),
+                    Err(queue_error) => format!(
+                        "{transfer_error} (offline queue failed: {queue_error})"
+                    ),
+                };
                 record_sync_pair_failure(&store, &pair.id, plan.len(), uploaded, watermark, started_at, &message);
                 return Err(message);
             }
@@ -2138,6 +2166,8 @@ pub async fn sync_cb_backup_shards(
         let drive_path = backup_dir.join(format!("{}.tar.gz", si.prefix));
         match cli.shard_export(&si.prefix).await {
             Ok(data) => {
+                let retry_data = data.clone();
+                let retry_path = drive_path.clone();
                 let drive_for_transfer = Arc::clone(&drive);
                 let transfer = transfer_queue.submit_upload(
                     drive_id.clone(),
@@ -2155,8 +2185,41 @@ pub async fn sync_cb_backup_shards(
                         );
                         backed_up += 1;
                     }
-                    Ok(Err(e)) => errors.push(format!("write {}: {e}", si.prefix)),
-                    Err(e) => errors.push(format!("write {} queue task: {e}", si.prefix)),
+                    Ok(Err(e)) => {
+                        let queued = crate::sync::tauri_commands::queue_failed_drive_upload(
+                            &data_dir,
+                            &drive_id,
+                            &retry_path,
+                            &retry_data,
+                            &e,
+                        );
+                        errors.push(match queued {
+                            Ok(id) => format!(
+                                "write {}: {e} (queued offline operation {id})",
+                                si.prefix
+                            ),
+                            Err(queue_error) => format!(
+                                "write {}: {e} (offline queue failed: {queue_error})",
+                                si.prefix
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        let transfer_error = anyhow::anyhow!("write {} queue task: {e}", si.prefix);
+                        let queued = crate::sync::tauri_commands::queue_failed_drive_upload(
+                            &data_dir,
+                            &drive_id,
+                            &retry_path,
+                            &retry_data,
+                            &transfer_error,
+                        );
+                        errors.push(match queued {
+                            Ok(id) => format!("{transfer_error} (queued offline operation {id})"),
+                            Err(queue_error) => format!(
+                                "{transfer_error} (offline queue failed: {queue_error})"
+                            ),
+                        });
+                    }
                 }
             }
             Err(e) => errors.push(format!("export {}: {e}", si.prefix)),
