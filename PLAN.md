@@ -2859,7 +2859,8 @@ a transfer without leaving the search/catalog workflow.
     deferred to conflict-aware sync. ✅ 2026-08-01
   - [x] Pushes now use the persisted watermark as an incremental cutoff;
     first-run watermark `0` uploads all matching files, while later runs
-    skip unchanged local entries and advance only after success. ✅ 2026-08-01
+    recheck entries at the inclusive second-resolution boundary so same-second
+    edits cannot be missed, advancing only after success. ✅ 2026-08-01
   - [x] Folder watchers now emit a debounced `folder-watch:sync-pair-candidate`
     event carrying the changed path and watched root. It is advisory only;
     remote mutation still requires an explicit sync-pair push. ✅ 2026-08-01

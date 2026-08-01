@@ -5249,7 +5249,7 @@ async fn cmd_sync_pair(
             let mut remote = Vec::new();
             crate::sync::tauri_commands::inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
                 .map_err(|e| e.to_string())?;
-            remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
+            remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
             remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
             let started_at = sync_pair_cli_now_ms();
             if dry_run || remote.is_empty() {

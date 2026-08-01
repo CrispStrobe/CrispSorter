@@ -222,7 +222,7 @@ pub async fn sync_pair_pull(
     let mut remote = Vec::new();
     inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
         .map_err(|e| e.to_string())?;
-    remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
+    remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
     remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     let dry_run = dry_run.unwrap_or(false);
     let started_at = sync_pair_now_ms();
