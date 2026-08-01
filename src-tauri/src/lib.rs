@@ -2818,6 +2818,8 @@ pub fn run() {
             sync::tauri_commands::sync_pull,
             sync::tauri_commands::sync_enqueue,
             sync::tauri_commands::sync_clear_failed,
+            sync::tauri_commands::sync_offline_enqueue,
+            sync::tauri_commands::sync_offline_cancel,
             // P13.7 Step 5 — cloud-backup HTTP API target
             sync::tauri_commands::sync_cb_status,
             sync::tauri_commands::sync_cb_set_token,
@@ -3154,6 +3156,8 @@ pub fn run() {
             sync::tauri_commands::sync_pull,
             sync::tauri_commands::sync_enqueue,
             sync::tauri_commands::sync_clear_failed,
+            sync::tauri_commands::sync_offline_enqueue,
+            sync::tauri_commands::sync_offline_cancel,
             sync::tauri_commands::sync_cb_status,
             sync::tauri_commands::sync_cb_set_token,
             sync::tauri_commands::sync_cb_clear_token,

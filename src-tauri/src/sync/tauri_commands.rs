@@ -18,6 +18,41 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+async fn offline_queue(
+    state: &State<'_, AppState>,
+) -> Result<super::offline_queue::OfflineQueue, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    super::offline_queue::OfflineQueue::open(&data_dir).map_err(|e| e.to_string())
+}
+
+/// Add a replayable provider operation. The payload remains opaque JSON so
+/// provider-specific resume state can evolve independently.
+#[tauri::command]
+pub async fn sync_offline_enqueue(
+    state: State<'_, AppState>,
+    op_type: String,
+    payload: String,
+    provider_id: String,
+) -> Result<i64, String> {
+    offline_queue(&state)
+        .await?
+        .enqueue(&op_type, &payload, &provider_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sync_offline_cancel(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<bool, String> {
+    offline_queue(&state).await?.cancel(id).map_err(|e| e.to_string())
+}
+
 /// Snapshot the shared application transfer queue for the transfer drawer,
 /// status bar, and headless UI integrations.
 #[tauri::command]
@@ -53,7 +88,7 @@ pub async fn offline_queue_status(
         .map_err(|e| e.to_string())
 }
 
-/// Return pending offline operations in FIFO order.
+/// Return persisted offline operations in FIFO order, including diagnostics.
 #[tauri::command]
 pub async fn offline_queue_list(
     state: State<'_, AppState>,
@@ -67,7 +102,8 @@ pub async fn offline_queue_list(
         .ok_or("data_dir not initialised")?;
     super::offline_queue::OfflineQueue::open(&data_dir)
         .map_err(|e| e.to_string())?
-        .dequeue_batch(limit.unwrap_or(100).min(1000))
+        .list()
+        .map(|ops| ops.into_iter().take(limit.unwrap_or(100).min(1000)).collect())
         .map_err(|e| e.to_string())
 }
 
