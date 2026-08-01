@@ -9,9 +9,11 @@
         parentDrivePath,
         type DriveCapabilities,
     } from '$lib/drives/browser';
+    import { cloudDrivePanel, type ContextPanel } from '$lib/drives/panels';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
+    type FileStat = { size: number; is_dir: boolean; mtime_unix: number | null };
     let drives = $state<Drive[]>([]);
     let driveId = $state('');
     let path = $state('/');
@@ -20,6 +22,8 @@
     let loading = $state(false);
     let error = $state('');
     let selected = $state<string | null>(null);
+    let selectedStat = $state<FileStat | null>(null);
+    let rightPanel = $state<ContextPanel | null>(null);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
     async function refresh() {
@@ -46,6 +50,14 @@
         } catch (e) { error = String(e); }
     }
 
+    async function selectEntry(name: string) {
+        selected = name;
+        rightPanel = driveId ? cloudDrivePanel(driveId, joinDrivePath(path, name), name) : null;
+        try {
+            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: joinDrivePath(path, name) });
+        } catch { selectedStat = null; }
+    }
+
     function selectDrive(id: string) {
         driveId = id;
         path = '/';
@@ -56,7 +68,7 @@
         if (entry.is_dir) {
             path = joinDrivePath(path, entry.name);
             void refresh();
-        } else selected = entry.name;
+        } else void selectEntry(entry.name);
     }
 
     async function createFolder() {
@@ -127,10 +139,27 @@
             </button>
         {:else}<div class="empty">This folder is empty.</div>{/each}
     </div>{/if}
+    <aside class="context-pane">
+        {#if rightPanel}
+            <div class="context-kicker">Selected context</div>
+            <h3>{rightPanel.title}</h3>
+            <code>{rightPanel.source.kind === 'CloudDrive' ? rightPanel.source.path : ''}</code>
+            {#if selectedStat}
+                <dl>
+                    <dt>Type</dt><dd>{selectedStat.is_dir ? 'Folder' : 'File'}</dd>
+                    <dt>Size</dt><dd>{selectedStat.size.toLocaleString()} B</dd>
+                    {#if selectedStat.mtime_unix}<dt>Modified</dt><dd>{new Date(selectedStat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
+                </dl>
+            {/if}
+        {:else}
+            <div class="empty">Select a file to open its context.</div>
+        {/if}
+    </aside>
 </section>
 
 <style>
-    .drive-browser { display: flex; flex-direction: column; gap: 12px; padding: 24px; height: 100%; box-sizing: border-box; }
+    .drive-browser { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .35fr); gap: 12px; padding: 24px; height: 100%; box-sizing: border-box; align-content: start; }
+    .browser-header, .browser-toolbar, .browser-error, .empty { grid-column: 1 / -1; }
     .browser-header, .browser-toolbar { display: flex; align-items: center; gap: 10px; }
     .browser-header { justify-content: space-between; }
     h2 { margin: 0; font-size: 1.25rem; } p { margin: 4px 0 0; }
@@ -139,8 +168,13 @@
     button { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; } button:disabled { opacity: .45; cursor: default; } .icon-button { padding: 7px; }
     .browser-toolbar { flex-wrap: wrap; padding: 8px; background: var(--surface, #202027); border-radius: 8px; }
     .crumb { border: 0; background: transparent; padding: 3px 4px; } .crumb.current { color: var(--text-muted, #8a8a96); } .toolbar-spacer { flex: 1; }
-    .entry-list { display: flex; flex-direction: column; border: 1px solid var(--border, #3a3a44); border-radius: 8px; overflow: hidden; }
+    .entry-list { grid-column: 1; grid-row: 4; display: flex; flex-direction: column; border: 1px solid var(--border, #3a3a44); border-radius: 8px; overflow: hidden; }
     .entry { width: 100%; border: 0; border-bottom: 1px solid var(--border, #3a3a44); border-radius: 0; text-align: left; } .entry:last-child { border-bottom: 0; } .entry.selected { background: #263b58; }
     .entry-name { flex: 1; } .entry-size { margin-left: auto; } .file-dot { width: 10px; height: 12px; border: 1px solid #8993a4; border-radius: 2px; }
+    .context-pane { grid-column: 2; grid-row: 4; border: 1px solid var(--border, #3a3a44); border-radius: 8px; padding: 16px; min-height: 150px; }
+    .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
+    .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
+    @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
     .danger { color: #ff9a9a; } .browser-error { color: #ff9a9a; padding: 8px; background: #3b2024; border-radius: 6px; } .empty { color: var(--text-muted, #8a8a96); padding: 30px; text-align: center; }
 </style>

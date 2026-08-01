@@ -2752,6 +2752,10 @@ a transfer without leaving the search/catalog workflow.
     refresh, folder creation, move/copy, and delete actions. It consumes the
     capability-aware Tauri boundary; dual-panel context and search-result
     integration remain separate follow-up work. ✅ 2026-08-01
+  - [x] Added typed contextual panel sources and a right-hand selection pane
+    to the drive browser. Cloud-drive provenance is retained; search results,
+    duplicate groups, catalog archives, and remote-search sources are modeled
+    for the next integrations. ✅ 2026-08-01
 - [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
