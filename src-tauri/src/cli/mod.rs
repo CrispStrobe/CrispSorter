@@ -51,9 +51,30 @@ use std::process::ExitCode;
 /// fails on any name that is in one and not the other, so the list cannot
 /// drift again.
 pub const SUBCOMMANDS: &[&str] = &[
-    "version", "doctor", "catalog", "index", "batch", "chat", "images",
-    "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx",
-    "search", "watch", "drives", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
+    "version",
+    "doctor",
+    "catalog",
+    "index",
+    "batch",
+    "chat",
+    "images",
+    "sync",
+    "ocr",
+    "kie",
+    "table",
+    "math-ocr",
+    "zone",
+    "pdf",
+    "docx",
+    "search",
+    "watch",
+    "drives",
+    "intended-purpose",
+    "manpage",
+    "completion",
+    "help",
+    "--help",
+    "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -80,7 +101,11 @@ struct Cli {
     /// acknowledgement is recorded in the data dir with the statement version
     /// and a timestamp. `CRISPSORTER_ACCEPT_INTENDED_PURPOSE=1` does the same
     /// without writing a record, for ephemeral/CI runs. See docs/ai-act.md.
-    #[arg(long = "accept-intended-purpose", global = true, default_value_t = false)]
+    #[arg(
+        long = "accept-intended-purpose",
+        global = true,
+        default_value_t = false
+    )]
     accept_intended_purpose: bool,
     #[command(subcommand)]
     command: Command,
@@ -1134,9 +1159,7 @@ enum CrispLensCmd {
     /// (`GET /api/images/{image_id}/faces`).
     // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
     #[cfg(feature = "images-crisplens-identify")]
-    ImageFaces {
-        image_id: i64,
-    },
+    ImageFaces { image_id: i64 },
     /// Run a semantic search on CrispLens via
     /// `/api/search/semantic` (embedding-based over the
     /// `ai_description` text column).  Falls back to a 404 against
@@ -1551,13 +1574,9 @@ enum PdfCmd {
         out: PathBuf,
     },
     /// Check if a PDF is encrypted.
-    IsEncrypted {
-        file: PathBuf,
-    },
+    IsEncrypted { file: PathBuf },
     /// Detect digital signatures in a PDF.
-    Signatures {
-        file: PathBuf,
-    },
+    Signatures { file: PathBuf },
     /// Black out text patterns. VISUAL ONLY — page text is not removed.
     ///
     /// Strips matches from the /Info dictionary and draws boxes over
@@ -1865,14 +1884,30 @@ fn parse_page_spec(spec: &str, max_pages: usize) -> Result<Vec<usize>, String> {
         let part = part.trim();
         if part.contains('-') {
             let mut split = part.splitn(2, '-');
-            let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
-            let end: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
+            let start: usize = split
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .map_err(|_| format!("bad range: {part}"))?;
+            let end: usize = split
+                .next()
+                .unwrap()
+                .trim()
+                .parse()
+                .map_err(|_| format!("bad range: {part}"))?;
             if start < 1 || end < start || end > max_pages {
-                return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+                return Err(format!(
+                    "range {start}-{end} out of bounds (1..{max_pages})"
+                ));
             }
-            for i in start..=end { out.push(i - 1); }
+            for i in start..=end {
+                out.push(i - 1);
+            }
         } else {
-            let n: usize = part.parse().map_err(|_| format!("bad page number: {part}"))?;
+            let n: usize = part
+                .parse()
+                .map_err(|_| format!("bad page number: {part}"))?;
             if n < 1 || n > max_pages {
                 return Err(format!("page {n} out of bounds (1..{max_pages})"));
             }
@@ -1888,10 +1923,22 @@ fn parse_split_ranges(spec: &str, max_pages: usize) -> Result<Vec<(usize, usize)
     for part in spec.split(',') {
         let part = part.trim();
         let mut split = part.splitn(2, '-');
-        let start: usize = split.next().unwrap().trim().parse().map_err(|_| format!("bad range: {part}"))?;
-        let end: usize = split.next().ok_or_else(|| format!("range needs start-end: {part}"))?.trim().parse().map_err(|_| format!("bad range: {part}"))?;
+        let start: usize = split
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad range: {part}"))?;
+        let end: usize = split
+            .next()
+            .ok_or_else(|| format!("range needs start-end: {part}"))?
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad range: {part}"))?;
         if start < 1 || end < start || end > max_pages {
-            return Err(format!("range {start}-{end} out of bounds (1..{max_pages})"));
+            return Err(format!(
+                "range {start}-{end} out of bounds (1..{max_pages})"
+            ));
         }
         out.push((start - 1, end)); // 0-based start, exclusive end
     }
@@ -1954,7 +2001,11 @@ pub fn run() -> ExitCode {
             // clap prints help / errors to stderr already; exit code
             // matches clap's convention.
             e.print().ok();
-            return if e.use_stderr() { ExitCode::from(2) } else { ExitCode::SUCCESS };
+            return if e.use_stderr() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            };
         }
     };
 
@@ -1987,16 +2038,23 @@ pub fn run() -> ExitCode {
         Command::Version => cmd_version(cli.format),
         Command::Doctor => cmd_doctor(cli.format),
         Command::Catalog { cmd } => match cmd {
-            CatalogCmd::Scan { folder, out, hash, max_size } => {
-                cmd_catalog_scan(cli.format, folder, out, hash, max_size)
-            }
+            CatalogCmd::Scan {
+                folder,
+                out,
+                hash,
+                max_size,
+            } => cmd_catalog_scan(cli.format, folder, out, hash, max_size),
             CatalogCmd::Info { path } => cmd_catalog_info(cli.format, path),
-            CatalogCmd::Browse { path, filter, limit } => {
-                cmd_catalog_browse(cli.format, path, filter, limit)
-            }
-            CatalogCmd::FindDupes { source, destinations, strategy } => {
-                cmd_catalog_find_dupes(cli.format, source, destinations, strategy)
-            }
+            CatalogCmd::Browse {
+                path,
+                filter,
+                limit,
+            } => cmd_catalog_browse(cli.format, path, filter, limit),
+            CatalogCmd::FindDupes {
+                source,
+                destinations,
+                strategy,
+            } => cmd_catalog_find_dupes(cli.format, source, destinations, strategy),
         },
         Command::Index { data_dir, cmd } => cmd_index(cli.format, data_dir, cmd),
         Command::Batch { data_dir, cmd } => cmd_batch(cli.format, data_dir, cmd),
@@ -2009,13 +2067,38 @@ pub fn run() -> ExitCode {
         Command::IntendedPurpose { cmd } => cmd_intended_purpose(cli.format, cmd),
         Command::Drives { data_dir, cmd } => cmd_drives(cli.format, data_dir, cmd),
         Command::Search {
-            query, data_dir, limit, local_only, cloud_only, ext, lang,
-            folder_prefix, author, year_min, year_max, url_domain, tag,
-            collection_ids, embed_text,
+            query,
+            data_dir,
+            limit,
+            local_only,
+            cloud_only,
+            ext,
+            lang,
+            folder_prefix,
+            author,
+            year_min,
+            year_max,
+            url_domain,
+            tag,
+            collection_ids,
+            embed_text,
         } => cmd_search(
-            cli.format, data_dir, query, limit, local_only, cloud_only, ext, lang,
-            folder_prefix, author, year_min, year_max, url_domain, tag,
-            collection_ids, embed_text,
+            cli.format,
+            data_dir,
+            query,
+            limit,
+            local_only,
+            cloud_only,
+            ext,
+            lang,
+            folder_prefix,
+            author,
+            year_min,
+            year_max,
+            url_domain,
+            tag,
+            collection_ids,
+            embed_text,
         ),
         Command::Completion { shell } => {
             use clap::CommandFactory;
@@ -2027,30 +2110,99 @@ pub fn run() -> ExitCode {
         }
         Command::Manpage { out } => cmd_manpage(out),
         Command::Ocr {
-            file, engine, source_type, det_model, rec_model, cleanup, denoise,
-            nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
-            sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
-            restore_engine, restore_task, dewarp_engine,
-            vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
+            file,
+            engine,
+            source_type,
+            det_model,
+            rec_model,
+            cleanup,
+            denoise,
+            nafnet_model,
+            layout,
+            layout_engine,
+            layout_threshold,
+            drop_headers_footers,
+            punct_model,
+            min_chars,
+            min_confidence,
+            render,
+            out,
+            pdfa,
+            stamp,
+            sr,
+            sr_model,
+            sr_max_px,
+            sr_engine,
+            restore,
+            restore_model,
+            dewarp,
+            restore_engine,
+            restore_task,
+            dewarp_engine,
+            vlm_ocr_model,
+            vlm_ocr_engine,
+            truecase_model,
+            lid_model,
+            tess_model_dir,
         } => cmd_ocr(
-            cli.format, file, engine, source_type, det_model, rec_model, cleanup,
-            denoise, nafnet_model, layout, layout_engine, layout_threshold, drop_headers_footers,
-            punct_model, min_chars, min_confidence, render, out, pdfa, stamp,
-            sr, sr_model, sr_max_px, sr_engine, restore, restore_model, dewarp,
-            restore_engine, restore_task, dewarp_engine,
-            vlm_ocr_model, vlm_ocr_engine, truecase_model, lid_model, tess_model_dir,
+            cli.format,
+            file,
+            engine,
+            source_type,
+            det_model,
+            rec_model,
+            cleanup,
+            denoise,
+            nafnet_model,
+            layout,
+            layout_engine,
+            layout_threshold,
+            drop_headers_footers,
+            punct_model,
+            min_chars,
+            min_confidence,
+            render,
+            out,
+            pdfa,
+            stamp,
+            sr,
+            sr_model,
+            sr_max_px,
+            sr_engine,
+            restore,
+            restore_model,
+            dewarp,
+            restore_engine,
+            restore_task,
+            dewarp_engine,
+            vlm_ocr_model,
+            vlm_ocr_engine,
+            truecase_model,
+            lid_model,
+            tess_model_dir,
         ),
-        Command::Kie { file, labels, threshold, lilt, lilt_model, data_dir } => {
-            cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir)
-        }
+        Command::Kie {
+            file,
+            labels,
+            threshold,
+            lilt,
+            lilt_model,
+            data_dir,
+        } => cmd_kie(
+            cli.format, file, labels, threshold, lilt, lilt_model, data_dir,
+        ),
         Command::MathOcr { file, model } => cmd_math_ocr(file, model),
-        Command::Table { file, ocr_model, grid, out } => {
-            cmd_table(cli.format, file, ocr_model, grid, out)
-        }
-        Command::Zone { file, template, data_dir } => {
-            cmd_zone(cli.format, file, template, data_dir)
-        }
+        Command::Table {
+            file,
+            ocr_model,
+            grid,
+            out,
+        } => cmd_table(cli.format, file, ocr_model, grid, out),
+        Command::Zone {
+            file,
+            template,
+            data_dir,
+        } => cmd_zone(cli.format, file, template, data_dir),
     };
 
     match result {
@@ -2121,7 +2273,11 @@ fn cmd_ocr(
             engine: engine.clone(),
             det_model: det_model.clone(),
             rec_model: rec_model.clone(),
-            cleanup: OcrCleanupSpec { enabled: cleanup, denoise, ..Default::default() },
+            cleanup: OcrCleanupSpec {
+                enabled: cleanup,
+                denoise,
+                ..Default::default()
+            },
             det_prob_threshold: 0.3,
             det_box_threshold: 0.5,
             det_target_short: 736,
@@ -2231,8 +2387,9 @@ fn cmd_ocr(
     let bytes = crate::extractors::ocr_render::render(&pages, fmt, pdfa)
         .map_err(|e| format!("render failed: {e:#}"))?;
     match &out_path {
-        Some(p) => std::fs::write(p, &bytes)
-            .map_err(|e| format!("writing {}: {e}", p.display()))?,
+        Some(p) => {
+            std::fs::write(p, &bytes).map_err(|e| format!("writing {}: {e}", p.display()))?
+        }
         None if fmt.is_binary() => {
             return Err(format!(
                 "--render {render} produces binary output; pass --out <FILE>"
@@ -2246,8 +2403,11 @@ fn cmd_ocr(
     if let (Some(ref text), Some(ref p)) = (&stamp, &out_path) {
         if !text.is_empty() && fmt == OcrOutputFormat::Pdf {
             let config = crate::pdf_ops::WatermarkConfig {
-                text: text.clone(), font_size: 10.0, angle: 0.0,
-                opacity: 0.5, color: [0.3, 0.3, 0.3],
+                text: text.clone(),
+                font_size: 10.0,
+                angle: 0.0,
+                opacity: 0.5,
+                color: [0.3, 0.3, 0.3],
             };
             crate::pdf_ops::add_watermark(p, &config, None, p)?;
             eprintln!("Stamp applied: {text}");
@@ -2298,9 +2458,8 @@ fn cmd_kie(
         if doc.full_text.trim().is_empty() {
             return Err("no text extracted from document".into());
         }
-        let handle = crate::index::ner::NerHandle::new(
-            model, labels, threshold, 0, 200_000, cache_dir,
-        );
+        let handle =
+            crate::index::ner::NerHandle::new(model, labels, threshold, 0, 200_000, cache_dir);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2392,7 +2551,6 @@ fn cmd_table(
     Ok(())
 }
 
-
 fn cmd_zone(
     out: OutFormat,
     file: PathBuf,
@@ -2420,7 +2578,8 @@ fn cmd_zone(
     });
     let store = crate::index::templates::TemplateStore::open_or_create(&data_dir)
         .map_err(|e| format!("opening template store: {e}"))?;
-    let template = store.get_template_by_name(&template_name)
+    let template = store
+        .get_template_by_name(&template_name)
         .map_err(|e| format!("looking up template: {e}"))?
         .ok_or_else(|| format!("template '{}' not found", template_name))?;
 
@@ -2428,7 +2587,10 @@ fn cmd_zone(
         .map_err(|e| format!("zone extraction: {e:#}"))?;
 
     match out {
-        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&results).unwrap_or_default()),
+        OutFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&results).unwrap_or_default()
+        ),
         OutFormat::Text => {
             if results.is_empty() {
                 println!("No zones in template '{}'.", template_name);
@@ -2462,7 +2624,11 @@ fn cmd_version(out: OutFormat) -> Result<(), String> {
             println!("{}", payload);
         }
         OutFormat::Text => {
-            println!("crispsorter {v} ({}/{})", std::env::consts::OS, std::env::consts::ARCH);
+            println!(
+                "crispsorter {v} ({}/{})",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
         }
     }
     Ok(())
@@ -2477,10 +2643,15 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
     let fuse_runtime_available = fuse_compiled && fuse_runtime_available();
     // Check if the default embedder model (BGE-M3) is already cached.
     let model_cache = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
+        .map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Library/Application Support/com.crispstrobe.crispsorter/models")
+        })
         .unwrap_or_default();
-    let embedder_cached = model_cache.exists() &&
-        std::fs::read_dir(&model_cache).map(|d| d.count() > 0).unwrap_or(false);
+    let embedder_cached = model_cache.exists()
+        && std::fs::read_dir(&model_cache)
+            .map(|d| d.count() > 0)
+            .unwrap_or(false);
     let lance_dir = std::env::var_os("HOME").map(|h| {
         std::path::PathBuf::from(h)
             .join("Library/Application Support/com.crispstrobe.crispsorter/lance")
@@ -2509,17 +2680,30 @@ fn cmd_doctor(out: OutFormat) -> Result<(), String> {
             println!("OCR PaddleOCR compiled:           {}", yn(paddle_ocr));
             println!("PDF extractor (pdf-extract):      {}", yn(pdf_extract_ok));
             println!("FUSE support compiled:            {}", yn(fuse_compiled));
-            println!("FUSE runtime available:           {}", yn(fuse_runtime_available));
+            println!(
+                "FUSE runtime available:           {}",
+                yn(fuse_runtime_available)
+            );
             println!("Embedder model cached:            {}", yn(embedder_cached));
             if let Some(p) = lance_dir {
-                println!("Lance dir: {} ({})", p.display(), if p.exists() { "exists" } else { "absent" });
+                println!(
+                    "Lance dir: {} ({})",
+                    p.display(),
+                    if p.exists() { "exists" } else { "absent" }
+                );
             }
         }
     }
     Ok(())
 }
 
-fn yn(b: bool) -> &'static str { if b { "✓" } else { "✗" } }
+fn yn(b: bool) -> &'static str {
+    if b {
+        "✓"
+    } else {
+        "✗"
+    }
+}
 
 /// Check the host-side prerequisites for a FUSE mount without trying to
 /// mount anything.  This keeps `doctor` useful in packaged builds where the
@@ -2528,7 +2712,10 @@ fn fuse_runtime_available() -> bool {
     #[cfg(target_os = "linux")]
     {
         return std::path::Path::new("/dev/fuse").exists()
-            && std::process::Command::new("fusermount3").arg("--version").output().is_ok();
+            && std::process::Command::new("fusermount3")
+                .arg("--version")
+                .output()
+                .is_ok();
     }
     #[cfg(target_os = "macos")]
     {
@@ -2551,12 +2738,14 @@ fn cmd_catalog_scan(
     max_size: Option<u64>,
 ) -> Result<(), String> {
     let opts = crate::catalog::scan::ScanOptions {
-        hash: hash.as_deref().and_then(|s| match s.to_ascii_lowercase().as_str() {
-            "md5" => Some(crate::catalog::scan::HashAlgo::Md5),
-            "sha1" => Some(crate::catalog::scan::HashAlgo::Sha1),
-            "sha256" => Some(crate::catalog::scan::HashAlgo::Sha256),
-            _ => None,
-        }),
+        hash: hash
+            .as_deref()
+            .and_then(|s| match s.to_ascii_lowercase().as_str() {
+                "md5" => Some(crate::catalog::scan::HashAlgo::Md5),
+                "sha1" => Some(crate::catalog::scan::HashAlgo::Sha1),
+                "sha256" => Some(crate::catalog::scan::HashAlgo::Sha256),
+                _ => None,
+            }),
         max_size_bytes: max_size,
         follow_symlinks: false,
     };
@@ -2582,8 +2771,12 @@ fn cmd_catalog_scan(
             println!("{}", payload);
         }
         OutFormat::Text => {
-            println!("scanned {} files ({} bytes total) → {}",
-                     idx.len(), idx.total_size(), out_caf.display());
+            println!(
+                "scanned {} files ({} bytes total) → {}",
+                idx.len(),
+                idx.total_size(),
+                out_caf.display()
+            );
         }
     }
     Ok(())
@@ -2668,7 +2861,11 @@ fn cmd_catalog_browse(
         "{} entries total, {} shown{}",
         idx.len(),
         shown,
-        if filter.is_some() { " (after filter)" } else { "" }
+        if filter.is_some() {
+            " (after filter)"
+        } else {
+            ""
+        }
     );
     Ok(())
 }
@@ -3082,8 +3279,7 @@ fn resolve_data_dir(override_: Option<PathBuf>) -> Result<PathBuf, String> {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                    .join(".local/share")
+                PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
             });
         return Ok(base.join("com.crispstrobe.crispsorter"));
     }
@@ -3104,11 +3300,7 @@ fn cmd_index(out: OutFormat, data_dir: Option<PathBuf>, cmd: IndexCmd) -> Result
     rt.block_on(cmd_index_async(out, data_dir, cmd))
 }
 
-async fn cmd_index_async(
-    out: OutFormat,
-    data_dir: PathBuf,
-    cmd: IndexCmd,
-) -> Result<(), String> {
+async fn cmd_index_async(out: OutFormat, data_dir: PathBuf, cmd: IndexCmd) -> Result<(), String> {
     match cmd {
         IndexCmd::Stats => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
@@ -3168,9 +3360,10 @@ async fn cmd_index_async(
                         println!("{payload}");
                     }
                     OutFormat::Text => {
-                        let title = r.title.as_deref().unwrap_or(
-                            r.filename.as_deref().unwrap_or("(unknown)"),
-                        );
+                        let title = r
+                            .title
+                            .as_deref()
+                            .unwrap_or(r.filename.as_deref().unwrap_or("(unknown)"));
                         let author = r.author.as_deref().unwrap_or("");
                         let year = r.year.map(|y| y.to_string()).unwrap_or_default();
                         let ext = r.ext.as_deref().unwrap_or("");
@@ -3209,30 +3402,30 @@ async fn cmd_index_async(
             if !fts_dir.exists() {
                 return Err("FTS index not found — run the app and ingest some files first".into());
             }
-            let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
-                .map_err(|e| e.to_string())?;
+            let fts =
+                crate::index::FtsIndex::open_or_create(&fts_dir).map_err(|e| e.to_string())?;
 
             // Parse the post-hoc filters (size + date) BEFORE running
             // the search so a bad value bails fast.  Both human-byte
             // and ISO-date parsing live as local helpers below.
             let min_size_bytes = match min_size.as_deref() {
-                Some(s) => Some(parse_human_size(s)
-                    .map_err(|e| format!("--min-size {s}: {e}"))?),
+                Some(s) => Some(parse_human_size(s).map_err(|e| format!("--min-size {s}: {e}"))?),
                 None => None,
             };
             let max_size_bytes = match max_size.as_deref() {
-                Some(s) => Some(parse_human_size(s)
-                    .map_err(|e| format!("--max-size {s}: {e}"))?),
+                Some(s) => Some(parse_human_size(s).map_err(|e| format!("--max-size {s}: {e}"))?),
                 None => None,
             };
             let after_unix = match after.as_deref() {
-                Some(s) => Some(parse_iso_date_to_unix(s)
-                    .map_err(|e| format!("--after {s}: {e}"))?),
+                Some(s) => {
+                    Some(parse_iso_date_to_unix(s).map_err(|e| format!("--after {s}: {e}"))?)
+                }
                 None => None,
             };
             let before_unix = match before.as_deref() {
-                Some(s) => Some(parse_iso_date_to_unix(s)
-                    .map_err(|e| format!("--before {s}: {e}"))?),
+                Some(s) => {
+                    Some(parse_iso_date_to_unix(s).map_err(|e| format!("--before {s}: {e}"))?)
+                }
                 None => None,
             };
 
@@ -3265,16 +3458,13 @@ async fn cmd_index_async(
             // ── Image search path ──────────────────────────────────────
             if let Some(ref img_path) = image {
                 if !img_path.exists() {
-                    return Err(format!(
-                        "image file not found: {}",
-                        img_path.display()
-                    ));
+                    return Err(format!("image file not found: {}", img_path.display()));
                 }
                 let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                     .await
                     .map_err(|e| e.to_string())?;
-                let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
-                    .map_err(|e| e.to_string())?;
+                let fts =
+                    crate::index::FtsIndex::open_or_create(&fts_dir).map_err(|e| e.to_string())?;
                 let engine = crate::index::SearchEngine::new(
                     std::sync::Arc::new(fts),
                     std::sync::Arc::new(local),
@@ -3330,11 +3520,9 @@ async fn cmd_index_async(
             // separate command (`index list`).
             let q_trimmed = query.trim();
             if q_trimmed.is_empty() {
-                return Err(
-                    "search query is empty — use `index list` to enumerate \
+                return Err("search query is empty — use `index list` to enumerate \
                      without BM25, or pass a wildcard like `*` to match all"
-                        .into(),
-                );
+                    .into());
             }
             let hits = fts
                 .search(q_trimmed, &filters, limit.saturating_mul(4))
@@ -3371,8 +3559,10 @@ async fn cmd_index_async(
             // `{"fs_size": int, "fs_mtime": unix_seconds, ...}`.
             // Parse cheaply (per-row JSON) — at CLI scale (10⁴ rows)
             // this is microseconds.
-            if min_size_bytes.is_some() || max_size_bytes.is_some()
-                || after_unix.is_some() || before_unix.is_some()
+            if min_size_bytes.is_some()
+                || max_size_bytes.is_some()
+                || after_unix.is_some()
+                || before_unix.is_some()
             {
                 rows.retain(|r| {
                     let blob: serde_json::Value = r
@@ -3461,31 +3651,38 @@ async fn cmd_index_async(
             eprintln!("{} result(s)", rows.len());
         }
 
-        IndexCmd::Ingest { paths, owner_id, model, device } => {
+        IndexCmd::Ingest {
+            paths,
+            owner_id,
+            model,
+            device,
+        } => {
             use crate::index::embedder::{EmbedderConfig, EmbedderDevice, EmbedderModel};
             use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
             use sha2::{Digest, Sha256};
 
-            let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
+            let owner = owner_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string());
 
             // Parse model + device (same logic as Init).
             let m = match model.to_ascii_lowercase().replace('-', "_").as_str() {
-                "bge_m3" | "bgem3"          => EmbedderModel::BgeM3,
-                "multilingual_e5_small"     => EmbedderModel::MultilingualE5Small,
-                "multilingual_e5_base"      => EmbedderModel::MultilingualE5Base,
-                "multilingual_e5_large"     => EmbedderModel::MultilingualE5Large,
+                "bge_m3" | "bgem3" => EmbedderModel::BgeM3,
+                "multilingual_e5_small" => EmbedderModel::MultilingualE5Small,
+                "multilingual_e5_base" => EmbedderModel::MultilingualE5Base,
+                "multilingual_e5_large" => EmbedderModel::MultilingualE5Large,
                 "bge_small_en_v1.5" | "bge_small_en" => EmbedderModel::BgeSmallEnV15,
-                "bge_base_en_v1.5"  | "bge_base_en"  => EmbedderModel::BgeBaseEnV15,
+                "bge_base_en_v1.5" | "bge_base_en" => EmbedderModel::BgeBaseEnV15,
                 "bge_large_en_v1.5" | "bge_large_en" => EmbedderModel::BgeLargeEnV15,
-                "nomic_embed_text_v1.5" | "nomic"     => EmbedderModel::NomicEmbedTextV15,
-                "all_minilm_l6_v2"  | "minilm"        => EmbedderModel::AllMiniLmL6V2,
+                "nomic_embed_text_v1.5" | "nomic" => EmbedderModel::NomicEmbedTextV15,
+                "all_minilm_l6_v2" | "minilm" => EmbedderModel::AllMiniLmL6V2,
                 _ => EmbedderModel::BgeM3,
             };
             let d = match device.to_ascii_lowercase().as_str() {
-                "cuda"          => EmbedderDevice::Cuda,
+                "cuda" => EmbedderDevice::Cuda,
                 "metal" | "mps" => EmbedderDevice::Metal,
-                "auto"          => EmbedderDevice::Auto,
-                _               => EmbedderDevice::Cpu,
+                "auto" => EmbedderDevice::Auto,
+                _ => EmbedderDevice::Cpu,
             };
 
             let cache_dir = data_dir.join("models");
@@ -3493,7 +3690,8 @@ async fn cmd_index_async(
             let embedder_config = EmbedderConfig::new(m, d, cache_dir);
             eprintln!("loading embedder model ({})…", model);
             let embedder = crate::index::embedder::Embedder::new(embedder_config)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             // The table has to be as wide as the model that fills it. This was
             // hardcoded to 1024 (bge-m3's width), so every narrower model —
             // MiniLM and both e5-small variants are 384, nomic is 768 — built a
@@ -3502,7 +3700,8 @@ async fn cmd_index_async(
             let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
 
             let local = crate::index::LocalIndex::open_or_create(&data_dir, dims)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             if local.dims != dims {
                 return Err(format!(
                     "this index stores {}-dim embeddings but --model {model} produces {dims}. \
@@ -3530,7 +3729,8 @@ async fn cmd_index_async(
             for path in &paths {
                 if path.is_dir() {
                     for entry in jwalk::WalkDir::new(path)
-                        .into_iter().filter_map(|e| e.ok())
+                        .into_iter()
+                        .filter_map(|e| e.ok())
                         .filter(|e| e.file_type().is_file())
                     {
                         files.push(entry.path().to_path_buf());
@@ -3547,17 +3747,33 @@ async fn cmd_index_async(
             let mut errs = 0usize;
             for p in &files {
                 let bytes = match std::fs::read(p) {
-                    Ok(b) => b, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("skip {}: {e}", p.display());
+                        errs += 1;
+                        continue;
+                    }
                 };
-                let mut h = Sha256::new(); h.update(&bytes);
+                let mut h = Sha256::new();
+                h.update(&bytes);
                 let source_hash = hex::encode(h.finalize());
                 let extracted = match tokio::task::spawn_blocking({
                     let pp = p.clone();
                     move || crate::extractors::extract_text_from_path(&pp)
-                }).await {
+                })
+                .await
+                {
                     Ok(Ok(e)) => e,
-                    Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
-                    Err(e)    => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Ok(Err(e)) => {
+                        eprintln!("skip {}: {e}", p.display());
+                        errs += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("skip {}: {e}", p.display());
+                        errs += 1;
+                        continue;
+                    }
                 };
                 let loc = crate::index::location::FileLocation::Local {
                     user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
@@ -3566,12 +3782,25 @@ async fn cmd_index_async(
                 };
                 let meta = p.metadata().ok();
                 let raw = RawDocument {
-                    full_text: extracted.full_text, full_text_md: String::new(),
-                    headings: extracted.headings, title: None, author: None, year: None,
-                    filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                    ext: extracted.ext, language: String::new(),
-                    source_hash, location_uri: loc.to_uri(), owner_id: owner.clone(), tags: vec![],
-                    mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
+                    full_text: extracted.full_text,
+                    full_text_md: String::new(),
+                    headings: extracted.headings,
+                    title: None,
+                    author: None,
+                    year: None,
+                    filename: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    ext: extracted.ext,
+                    language: String::new(),
+                    source_hash,
+                    location_uri: loc.to_uri(),
+                    owner_id: owner.clone(),
+                    tags: vec![],
+                    mtime_unix: meta
+                        .as_ref()
+                        .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs() as i64),
                     file_size: meta.map(|m| m.len() as i64),
@@ -3580,17 +3809,44 @@ async fn cmd_index_async(
                     translated_text: extracted.translated_text,
                     translated_to_lang: extracted.translated_to_lang,
                     // P13.6 Step 7 — audio L2 from the symphonia probe.
-                    audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+                    audio_duration_seconds: extracted
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.duration_seconds),
                     audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
-                    audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
-                    audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
-                    audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+                    audio_sample_rate_hz: extracted
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+                    audio_channels: extracted
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.channels.map(|c| c as i32)),
+                    audio_bitrate_kbps: extracted
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
                     // P13.6 Step 9 — image L2 (EXIF) curated subset.
-                    image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
-                    image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
-                    image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
-                    image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
-                    image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+                    image_camera_make: extracted
+                        .image_exif
+                        .as_ref()
+                        .and_then(|e| e.camera_make.clone()),
+                    image_camera_model: extracted
+                        .image_exif
+                        .as_ref()
+                        .and_then(|e| e.camera_model.clone()),
+                    image_lens_model: extracted
+                        .image_exif
+                        .as_ref()
+                        .and_then(|e| e.lens_model.clone()),
+                    image_taken_at_unix: extracted
+                        .image_exif
+                        .as_ref()
+                        .and_then(|e| e.taken_at_unix),
+                    image_iso: extracted
+                        .image_exif
+                        .as_ref()
+                        .and_then(|e| e.iso.map(|i| i as i32)),
                     multivec_packed: None,
                     multivec_n_tokens: None,
                     url: None,
@@ -3600,14 +3856,22 @@ async fn cmd_index_async(
                 match pipeline.ingest_document(raw).await {
                     Ok(stats) => {
                         match out {
-                            OutFormat::Json => println!("{}", serde_json::json!({
-                                "path": p.display().to_string(), "chunks": stats.chunk_count
-                            })),
-                            OutFormat::Text => println!("✓ {} ({} chunks)", p.display(), stats.chunk_count),
+                            OutFormat::Json => println!(
+                                "{}",
+                                serde_json::json!({
+                                    "path": p.display().to_string(), "chunks": stats.chunk_count
+                                })
+                            ),
+                            OutFormat::Text => {
+                                println!("✓ {} ({} chunks)", p.display(), stats.chunk_count)
+                            }
                         }
                         ok += 1;
                     }
-                    Err(e) => { eprintln!("error {}: {e}", p.display()); errs += 1; }
+                    Err(e) => {
+                        eprintln!("error {}: {e}", p.display());
+                        errs += 1;
+                    }
                 }
             }
             eprintln!("{ok} ingested, {errs} errors");
@@ -3645,15 +3909,20 @@ async fn cmd_index_async(
 
             // Parse device.
             let d = match device.to_ascii_lowercase().as_str() {
-                "cuda"           => EmbedderDevice::Cuda,
-                "metal" | "mps"  => EmbedderDevice::Metal,
-                "auto"           => EmbedderDevice::Auto,
-                _                => EmbedderDevice::Cpu,
+                "cuda" => EmbedderDevice::Cuda,
+                "metal" | "mps" => EmbedderDevice::Metal,
+                "auto" => EmbedderDevice::Auto,
+                _ => EmbedderDevice::Cpu,
             };
 
             let cache = data_dir.join("models");
             std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-            eprintln!("downloading {} (device={:?}) → {}", model, d, cache.display());
+            eprintln!(
+                "downloading {} (device={:?}) → {}",
+                model,
+                d,
+                cache.display()
+            );
 
             let config = EmbedderConfig::new(m, d, cache.clone());
             // Embedder::new is async and downloads the model on first call.
@@ -3662,9 +3931,12 @@ async fn cmd_index_async(
                 .map_err(|e| e.to_string())?;
 
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "model": model, "cache": cache.display().to_string(), "status": "ready"
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "model": model, "cache": cache.display().to_string(), "status": "ready"
+                    })
+                ),
                 OutFormat::Text => println!("model '{}' ready in {}", model, cache.display()),
             }
         }
@@ -3680,24 +3952,37 @@ async fn cmd_index_async(
             for r in &rows {
                 match out {
                     OutFormat::Json => {
-                        println!("{}", serde_json::json!({
-                            "doc_id":       r.doc_id,
-                            "reason":       r.reason,
-                            "retryable":    r.retryable,
-                            "filename":     r.filename,
-                            "location_uri": r.location_uri,
-                        }));
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "doc_id":       r.doc_id,
+                                "reason":       r.reason,
+                                "retryable":    r.retryable,
+                                "filename":     r.filename,
+                                "location_uri": r.location_uri,
+                            })
+                        );
                     }
                     OutFormat::Text => {
-                        let label = if r.retryable { "(retryable)" } else { "          " };
+                        let label = if r.retryable {
+                            "(retryable)"
+                        } else {
+                            "          "
+                        };
                         let name = r.filename.as_deref().unwrap_or(&r.location_uri);
                         println!("{:<12} {} {}", r.reason, label, name);
                     }
                 }
             }
-            eprintln!("{} failed extraction(s){}",
+            eprintln!(
+                "{} failed extraction(s){}",
                 rows.len(),
-                if retryable_only { " (retryable only)" } else { "" });
+                if retryable_only {
+                    " (retryable only)"
+                } else {
+                    ""
+                }
+            );
         }
 
         IndexCmd::RetryFailed { dry_run } => {
@@ -3705,16 +3990,28 @@ async fn cmd_index_async(
                 .await
                 .map_err(|e| e.to_string())?;
             if dry_run {
-                let rows = local.list_failed_extractions(true).await.map_err(|e| e.to_string())?;
+                let rows = local
+                    .list_failed_extractions(true)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 for r in &rows {
-                    println!("would retry: {} ({})", r.filename.as_deref().unwrap_or(&r.doc_id), r.reason);
+                    println!(
+                        "would retry: {} ({})",
+                        r.filename.as_deref().unwrap_or(&r.doc_id),
+                        r.reason
+                    );
                 }
                 eprintln!("{} row(s) would be retried (dry-run)", rows.len());
             } else {
-                let n = local.retry_all_failed_extractions().await.map_err(|e| e.to_string())?;
+                let n = local
+                    .retry_all_failed_extractions()
+                    .await
+                    .map_err(|e| e.to_string())?;
                 match out {
                     OutFormat::Json => println!("{}", serde_json::json!({ "retried": n })),
-                    OutFormat::Text => println!("cleared {n} failed extraction(s) — bg_ingest will re-attempt on next run"),
+                    OutFormat::Text => println!(
+                        "cleared {n} failed extraction(s) — bg_ingest will re-attempt on next run"
+                    ),
                 }
             }
         }
@@ -3724,12 +4021,22 @@ async fn cmd_index_async(
                 .await
                 .map_err(|e| e.to_string())?;
             // List retryable failures (timeout / other).
-            let rows = local.list_failed_extractions(true).await.map_err(|e| e.to_string())?;
+            let rows = local
+                .list_failed_extractions(true)
+                .await
+                .map_err(|e| e.to_string())?;
             if dry_run {
                 for r in &rows {
-                    println!("would mark permanent: {} ({})", r.filename.as_deref().unwrap_or(&r.doc_id), r.reason);
+                    println!(
+                        "would mark permanent: {} ({})",
+                        r.filename.as_deref().unwrap_or(&r.doc_id),
+                        r.reason
+                    );
                 }
-                eprintln!("{} row(s) would be permanently skipped (dry-run)", rows.len());
+                eprintln!(
+                    "{} row(s) would be permanently skipped (dry-run)",
+                    rows.len()
+                );
             } else {
                 // Mark each row's extraction_failure.reason as "unsupported"
                 // so the worker treats it as non-retryable on future runs.
@@ -3743,11 +4050,17 @@ async fn cmd_index_async(
                 );
                 let mut n = 0usize;
                 for row in &rows {
-                    let _ = local.update_l2_fields(
-                        &row.doc_id,
-                        None, None, None, None, None,
-                        Some(&new_meta),
-                    ).await;
+                    let _ = local
+                        .update_l2_fields(
+                            &row.doc_id,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(&new_meta),
+                        )
+                        .await;
                     n += 1;
                 }
                 match out {
@@ -3757,7 +4070,12 @@ async fn cmd_index_async(
             }
         }
 
-        IndexCmd::ExportCidx { dest, volume_id, include_embeddings, include_fts } => {
+        IndexCmd::ExportCidx {
+            dest,
+            volume_id,
+            include_embeddings,
+            include_fts,
+        } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -3767,43 +4085,58 @@ async fn cmd_index_async(
                 .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::json!({
-                        "dest": dest.display().to_string(),
-                        "rows_exported": rows,
-                        "volume_id": volume_id,
-                        "embeddings": include_embeddings,
-                        "fts": include_fts,
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "dest": dest.display().to_string(),
+                            "rows_exported": rows,
+                            "volume_id": volume_id,
+                            "embeddings": include_embeddings,
+                            "fts": include_fts,
+                        })
+                    );
                 }
                 OutFormat::Text => {
-                    println!("exported {rows} row(s) → {}{}",
+                    println!(
+                        "exported {rows} row(s) → {}{}",
                         dest.display(),
-                        if include_fts { " (+ FTS index)" } else { "" });
+                        if include_fts { " (+ FTS index)" } else { "" }
+                    );
                 }
             }
         }
 
-        IndexCmd::IngestCbManifest { manifest_db, owner_id } => {
+        IndexCmd::IngestCbManifest {
+            manifest_db,
+            owner_id,
+        } => {
             use rusqlite::{Connection, OpenFlags};
             if !manifest_db.exists() {
                 return Err(format!("not found: {}", manifest_db.display()));
             }
-            let owner = owner_id.clone().unwrap_or_else(|| uuid::Uuid::nil().to_string());
+            let owner = owner_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::nil().to_string());
             eprintln!("opening manifest: {}", manifest_db.display());
             let conn = Connection::open_with_flags(&manifest_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|e| format!("open sqlite: {e}"))?;
-            let mut stmt = conn.prepare(
-                "SELECT file_path, file_size_bytes, modified_time, file_hash, archived_in
-                 FROM source_files WHERE status NOT IN ('deleted','error') ORDER BY file_path"
-            ).map_err(|e| e.to_string())?;
-            let rows: Vec<(String,i64,f64,Option<String>,Option<i64>)> = stmt
-                .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))
+            let mut stmt = conn
+                .prepare(
+                    "SELECT file_path, file_size_bytes, modified_time, file_hash, archived_in
+                 FROM source_files WHERE status NOT IN ('deleted','error') ORDER BY file_path",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<(String, i64, f64, Option<String>, Option<i64>)> = stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
             eprintln!("found {} rows", rows.len());
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
                 .map_err(|e| e.to_string())?;
             let pipe = crate::index::IngestPipeline::new(
@@ -3815,30 +4148,70 @@ async fn cmd_index_async(
             let mut ingested = 0usize;
             const BATCH: usize = 64;
             for chunk in rows.chunks(BATCH) {
-                let entries: Vec<crate::index::ingest::L1FileEntry> = chunk.iter().map(|(path,size,mtime,hash,archived_in)| {
-                    let hash_str = hash.clone().unwrap_or_default();
-                    let doc_id = if hash_str.is_empty() { uuid::Uuid::new_v4().to_string() } else { hash_str.clone() };
-                    let location_uri = if let Some(aid) = archived_in {
-                        crate::index::location::FileLocation::CbArchive { archive_id: *aid, file_hash: hash_str.clone(), original_path: path.clone() }.to_uri()
-                    } else {
-                        crate::index::location::FileLocation::Local { user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()), machine_id: uuid::Uuid::nil(), path: std::path::PathBuf::from(path) }.to_uri()
-                    };
-                    let p = std::path::Path::new(path);
-                    crate::index::ingest::L1FileEntry {
-                        doc_id, location_uri, owner_id: owner.clone(),
-                        filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                        ext: p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default(),
-                        source_hash: hash_str,
-                        mtime_ms: (*mtime * 1000.0) as i64, ctime_ms: 0, size: *size,
-                        parent_dir: p.parent().and_then(|d| d.to_str()).unwrap_or("").to_owned(),
-                        volume_id: None,
-                    }
-                }).collect();
-                if let Ok(stats) = pipe.ingest_l1(&entries).await { ingested += stats.chunk_count; }
+                let entries: Vec<crate::index::ingest::L1FileEntry> = chunk
+                    .iter()
+                    .map(|(path, size, mtime, hash, archived_in)| {
+                        let hash_str = hash.clone().unwrap_or_default();
+                        let doc_id = if hash_str.is_empty() {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            hash_str.clone()
+                        };
+                        let location_uri = if let Some(aid) = archived_in {
+                            crate::index::location::FileLocation::CbArchive {
+                                archive_id: *aid,
+                                file_hash: hash_str.clone(),
+                                original_path: path.clone(),
+                            }
+                            .to_uri()
+                        } else {
+                            crate::index::location::FileLocation::Local {
+                                user_id: uuid::Uuid::parse_str(&owner)
+                                    .unwrap_or_else(|_| uuid::Uuid::nil()),
+                                machine_id: uuid::Uuid::nil(),
+                                path: std::path::PathBuf::from(path),
+                            }
+                            .to_uri()
+                        };
+                        let p = std::path::Path::new(path);
+                        crate::index::ingest::L1FileEntry {
+                            doc_id,
+                            location_uri,
+                            owner_id: owner.clone(),
+                            filename: p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            ext: p
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                                .unwrap_or_default(),
+                            source_hash: hash_str,
+                            mtime_ms: (*mtime * 1000.0) as i64,
+                            ctime_ms: 0,
+                            size: *size,
+                            parent_dir: p
+                                .parent()
+                                .and_then(|d| d.to_str())
+                                .unwrap_or("")
+                                .to_owned(),
+                            volume_id: None,
+                        }
+                    })
+                    .collect();
+                if let Ok(stats) = pipe.ingest_l1(&entries).await {
+                    ingested += stats.chunk_count;
+                }
             }
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({ "ingested": ingested, "total": rows.len() })),
-                OutFormat::Text => println!("ingested {ingested} / {} rows from manifest", rows.len()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({ "ingested": ingested, "total": rows.len() })
+                ),
+                OutFormat::Text => {
+                    println!("ingested {ingested} / {} rows from manifest", rows.len())
+                }
             }
         }
 
@@ -3850,11 +4223,14 @@ async fn cmd_index_async(
             let docs = idx.count_docs().await.map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::json!({
-                        "path": path.display().to_string(),
-                        "docs": docs,
-                        "chunks": chunks,
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "path": path.display().to_string(),
+                            "docs": docs,
+                            "chunks": chunks,
+                        })
+                    );
                 }
                 OutFormat::Text => {
                     println!("Documents : {docs}");
@@ -3901,22 +4277,35 @@ async fn cmd_index_async(
             use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
 
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Fetch the row for its location_uri + ext.
-            let batches = local.fetch_by_doc_ids(&[doc_id.clone()])
-                .await.map_err(|e| e.to_string())?;
+            let batches = local
+                .fetch_by_doc_ids(&[doc_id.clone()])
+                .await
+                .map_err(|e| e.to_string())?;
             // Empty score map = every row scores 0.0; we don't care
             // about ranking here, just lifting the row metadata.
             let empty_scores = std::collections::HashMap::<String, f32>::new();
-            let rows = crate::index::local_index::batches_to_search_results_with_scores(&batches, &empty_scores)
-                .map_err(|e| e.to_string())?;
-            let row = rows.into_iter().next()
+            let rows = crate::index::local_index::batches_to_search_results_with_scores(
+                &batches,
+                &empty_scores,
+            )
+            .map_err(|e| e.to_string())?;
+            let row = rows
+                .into_iter()
+                .next()
                 .ok_or_else(|| format!("no row found for doc_id {doc_id}"))?;
 
             // URI → local path via the canonical helper.
             let path = crate::images::tauri_commands::location_uri_to_local_path(&row.location_uri)
-                .ok_or_else(|| format!("non-local URI {}: CLI promote needs the file on disk", row.location_uri))?;
+                .ok_or_else(|| {
+                    format!(
+                        "non-local URI {}: CLI promote needs the file on disk",
+                        row.location_uri
+                    )
+                })?;
             if !path.exists() {
                 return Err(format!("file not present on disk: {}", path.display()));
             }
@@ -3937,9 +4326,9 @@ async fn cmd_index_async(
             let cfg = crate::index::config_persist::load(&data_dir);
             let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
             let device = match cfg.embedder_device {
-                crate::index::embedder::EmbedderDevice::Auto  => ED::Auto,
-                crate::index::embedder::EmbedderDevice::Cpu   => ED::Cpu,
-                crate::index::embedder::EmbedderDevice::Cuda  => ED::Cuda,
+                crate::index::embedder::EmbedderDevice::Auto => ED::Auto,
+                crate::index::embedder::EmbedderDevice::Cpu => ED::Cpu,
+                crate::index::embedder::EmbedderDevice::Cuda => ED::Cuda,
                 crate::index::embedder::EmbedderDevice::Metal => ED::Metal,
             };
             // P19 — NER honours the same persisted config as the embedder.
@@ -3947,7 +4336,8 @@ async fn cmd_index_async(
             let embedder_config = EmbedderConfig::new(cfg.embedder_model, device, cache_dir);
             eprintln!("loading embedder for L3 reingest…");
             let embedder = crate::index::embedder::Embedder::new(embedder_config)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             let embedder_arc = std::sync::Arc::new(tokio::sync::Mutex::new(embedder));
             let fts = crate::index::FtsIndex::open_or_create(&data_dir.join("fts"))
                 .map_err(|e| e.to_string())?;
@@ -3967,8 +4357,8 @@ async fn cmd_index_async(
                 use sha2::{Digest, Sha256};
                 let p = path.clone();
                 tokio::task::spawn_blocking(move || -> Result<String, String> {
-                    let bytes = std::fs::read(&p)
-                        .map_err(|e| format!("read {}: {e}", p.display()))?;
+                    let bytes =
+                        std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
                     let mut h = Sha256::new();
                     h.update(&bytes);
                     Ok(hex::encode(h.finalize()))
@@ -3977,45 +4367,73 @@ async fn cmd_index_async(
                 .map_err(|e| format!("sha join: {e}"))??
             };
             let raw = RawDocument {
-                full_text:    extracted.full_text.clone(),
+                full_text: extracted.full_text.clone(),
                 full_text_md: extracted.full_text.clone(),
-                headings:     extracted.headings.clone(),
-                title:        path.file_stem().map(|s| s.to_string_lossy().into_owned()),
-                author:       None,
-                year:         None,
-                filename:     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                ext:          extracted.ext.clone(),
-                language:     extracted.language.clone().unwrap_or_default(),
+                headings: extracted.headings.clone(),
+                title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
+                author: None,
+                year: None,
+                filename: path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                ext: extracted.ext.clone(),
+                language: extracted.language.clone().unwrap_or_default(),
                 source_hash,
                 location_uri: row.location_uri.clone(),
-                owner_id:     row.owner_id.clone(),
-                tags:         vec![],
-                mtime_unix:   p_meta.as_ref().and_then(|m| m.modified().ok())
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64),
-                file_size:    p_meta.as_ref().map(|m| m.len() as i64),
-                volume_id:    crate::volume::volume_id_for_path(&path),
-                parent_dir:   path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
-                translated_text:        extracted.translated_text.clone(),
-                translated_to_lang:     extracted.translated_to_lang.clone(),
+                owner_id: row.owner_id.clone(),
+                tags: vec![],
+                mtime_unix: p_meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64),
+                file_size: p_meta.as_ref().map(|m| m.len() as i64),
+                volume_id: crate::volume::volume_id_for_path(&path),
+                parent_dir: path.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+                translated_text: extracted.translated_text.clone(),
+                translated_to_lang: extracted.translated_to_lang.clone(),
                 audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
-                audio_codec:            extracted.audio.as_ref().and_then(|a| a.codec.clone()),
-                audio_sample_rate_hz:   extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
-                audio_channels:         extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
-                audio_bitrate_kbps:     extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
-                image_camera_make:      extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
-                image_camera_model:     extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
-                image_lens_model:       extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
-                image_taken_at_unix:    extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
-                image_iso:              extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+                audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+                audio_sample_rate_hz: extracted
+                    .audio
+                    .as_ref()
+                    .and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+                audio_channels: extracted
+                    .audio
+                    .as_ref()
+                    .and_then(|a| a.channels.map(|c| c as i32)),
+                audio_bitrate_kbps: extracted
+                    .audio
+                    .as_ref()
+                    .and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+                image_camera_make: extracted
+                    .image_exif
+                    .as_ref()
+                    .and_then(|e| e.camera_make.clone()),
+                image_camera_model: extracted
+                    .image_exif
+                    .as_ref()
+                    .and_then(|e| e.camera_model.clone()),
+                image_lens_model: extracted
+                    .image_exif
+                    .as_ref()
+                    .and_then(|e| e.lens_model.clone()),
+                image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+                image_iso: extracted
+                    .image_exif
+                    .as_ref()
+                    .and_then(|e| e.iso.map(|i| i as i32)),
                 multivec_packed: None,
                 multivec_n_tokens: None,
                 url: None,
                 embedding_omni: None,
                 embedding_vit: None,
             };
-            let stats = pipeline.reingest_document(raw)
-                .await.map_err(|e| format!("reingest: {e:#}"))?;
+            let stats = pipeline
+                .reingest_document(raw)
+                .await
+                .map_err(|e| format!("reingest: {e:#}"))?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -4036,17 +4454,19 @@ async fn cmd_index_async(
             }
         }
         IndexCmd::Purge { max_size, dry_run } => {
-            let max_bytes = parse_size_str(&max_size)
-                .map_err(|e| format!("--max-size: {e}"))?;
+            let max_bytes = parse_size_str(&max_size).map_err(|e| format!("--max-size: {e}"))?;
             let lance_dir = data_dir.join("lance");
             let current = crate::index::local_index::dir_size_bytes(&lance_dir);
             if current <= max_bytes {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({
-                        "status": "already_within_cap",
-                        "current_bytes": current,
-                        "max_bytes": max_bytes,
-                    })),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "already_within_cap",
+                            "current_bytes": current,
+                            "max_bytes": max_bytes,
+                        })
+                    ),
                     OutFormat::Text => println!(
                         "index is already within cap ({} ≤ {} bytes); nothing to do",
                         current, max_bytes
@@ -4056,15 +4476,20 @@ async fn cmd_index_async(
             }
             if dry_run {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({
-                        "dry_run": true,
-                        "current_bytes": current,
-                        "max_bytes": max_bytes,
-                        "excess_bytes": current.saturating_sub(max_bytes),
-                    })),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "dry_run": true,
+                            "current_bytes": current,
+                            "max_bytes": max_bytes,
+                            "excess_bytes": current.saturating_sub(max_bytes),
+                        })
+                    ),
                     OutFormat::Text => println!(
                         "dry-run: would purge up to {} bytes (current {}, cap {})",
-                        current.saturating_sub(max_bytes), current, max_bytes
+                        current.saturating_sub(max_bytes),
+                        current,
+                        max_bytes
                     ),
                 }
                 return Ok(());
@@ -4099,7 +4524,11 @@ async fn cmd_index_async(
 
             let cfg = crate::index::config_persist::load(&data_dir);
             let cb_push_enabled = cfg.cloud_backup_push_manifests_enabled
-                && cfg.cloud_backup_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+                && cfg
+                    .cloud_backup_url
+                    .as_deref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
 
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
@@ -4114,11 +4543,15 @@ async fn cmd_index_async(
             );
             let mgr_opt = if cb_push_enabled {
                 crate::sync::SyncManager::open(&data_dir).ok()
-            } else { None };
+            } else {
+                None
+            };
 
             let owner = if owner_id.is_empty() {
                 uuid::Uuid::nil().to_string()
-            } else { owner_id.clone() };
+            } else {
+                owner_id.clone()
+            };
 
             let mut total_scanned = 0usize;
             let mut total_written = 0usize;
@@ -4136,20 +4569,22 @@ async fn cmd_index_async(
                     Ok(m) => m,
                     Err(_) => continue,
                 };
-                let mtime_unix = meta.modified().ok()
+                let mtime_unix = meta
+                    .modified()
+                    .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64);
                 let file_size = meta.len() as i64;
-                let filename = fp.file_name()
+                let filename = fp
+                    .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let ext = fp.extension()
+                let ext = fp
+                    .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                let parent_dir = fp.parent()
-                    .and_then(|d| d.to_str())
-                    .map(|s| s.to_owned());
+                let parent_dir = fp.parent().and_then(|d| d.to_str()).map(|s| s.to_owned());
 
                 let bytes = match std::fs::read(&fp) {
                     Ok(b) => b,
@@ -4237,7 +4672,10 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
-            let groups = local.url_duplicates(limit).await.map_err(|e| e.to_string())?;
+            let groups = local
+                .url_duplicates(limit)
+                .await
+                .map_err(|e| e.to_string())?;
             if groups.is_empty() {
                 match out {
                     OutFormat::Json => println!("[]"),
@@ -4246,14 +4684,21 @@ async fn cmd_index_async(
             } else {
                 match out {
                     OutFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&groups).unwrap_or_default());
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&groups).unwrap_or_default()
+                        );
                     }
                     OutFormat::Text => {
                         println!("{} duplicate groups:\n", groups.len());
                         for g in &groups {
                             println!("  {} ({} copies)", g.url, g.count);
                             for item in &g.items {
-                                println!("    - {} ({})", item.title.as_deref().unwrap_or("untitled"), item.location_uri);
+                                println!(
+                                    "    - {} ({})",
+                                    item.title.as_deref().unwrap_or("untitled"),
+                                    item.location_uri
+                                );
                             }
                             println!();
                         }
@@ -4265,12 +4710,16 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
-            let clusters = local.cluster_documents(k)
+            let clusters = local
+                .cluster_documents(k)
                 .await
                 .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&clusters).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&clusters).unwrap_or_default()
+                    );
                 }
                 OutFormat::Text => {
                     if clusters.is_empty() {
@@ -4290,12 +4739,16 @@ async fn cmd_index_async(
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
                 .await
                 .map_err(|e| e.to_string())?;
-            let facets = local.tag_facets(&Default::default(), limit)
+            let facets = local
+                .tag_facets(&Default::default(), limit)
                 .await
                 .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&facets).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&facets).unwrap_or_default()
+                    );
                 }
                 OutFormat::Text => {
                     if facets.is_empty() {
@@ -4310,28 +4763,35 @@ async fn cmd_index_async(
         }
         IndexCmd::MountCidx { path } => {
             let idx = crate::index::LocalIndex::open_cidx(&path)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             let docs = idx.count_docs().await.map_err(|e| e.to_string())?;
             let chunks = idx.count().await.map_err(|e| e.to_string())?;
             let fts_dir = path.join("fts");
             let has_fts = fts_dir.exists();
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "path": path.display().to_string(),
-                    "docs": docs,
-                    "chunks": chunks,
-                    "has_fts": has_fts,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "path": path.display().to_string(),
+                        "docs": docs,
+                        "chunks": chunks,
+                        "has_fts": has_fts,
+                    })
+                ),
                 OutFormat::Text => println!(
                     "mounted {}: {} docs, {} chunks{}",
-                    path.display(), docs, chunks,
+                    path.display(),
+                    docs,
+                    chunks,
                     if has_fts { ", FTS available" } else { "" }
                 ),
             }
         }
         IndexCmd::SearchCidx { path, query, limit } => {
             let idx = crate::index::LocalIndex::open_cidx(&path)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             let fts_dir = path.join("fts");
             let fts = if fts_dir.exists() {
                 crate::index::FtsIndex::open_or_create(&fts_dir).ok()
@@ -4339,26 +4799,44 @@ async fn cmd_index_async(
                 None
             };
             if let Some(fts) = fts {
-                let hits = fts.search(&query, &Default::default(), limit)
+                let hits = fts
+                    .search(&query, &Default::default(), limit)
                     .map_err(|e| e.to_string())?;
                 let doc_ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
-                let batches = idx.fetch_by_doc_ids(&doc_ids).await.map_err(|e| e.to_string())?;
-                let empty = std::collections::HashMap::<String, f32>::new();
-                let rows = crate::index::local_index::batches_to_search_results_with_scores(&batches, &empty)
+                let batches = idx
+                    .fetch_by_doc_ids(&doc_ids)
+                    .await
                     .map_err(|e| e.to_string())?;
+                let empty = std::collections::HashMap::<String, f32>::new();
+                let rows = crate::index::local_index::batches_to_search_results_with_scores(
+                    &batches, &empty,
+                )
+                .map_err(|e| e.to_string())?;
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default()),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&rows).unwrap_or_default()
+                    ),
                     OutFormat::Text => {
                         println!("{} results from .cidx:", rows.len());
                         for r in &rows {
-                            println!("  {} — {}", r.filename.as_deref().unwrap_or("?"), r.location_uri);
+                            println!(
+                                "  {} — {}",
+                                r.filename.as_deref().unwrap_or("?"),
+                                r.location_uri
+                            );
                         }
                     }
                 }
             } else {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({"error": "no FTS index in cidx"})),
-                    OutFormat::Text => println!("No FTS index found in {}; use --include-fts when exporting.", path.display()),
+                    OutFormat::Json => {
+                        println!("{}", serde_json::json!({"error": "no FTS index in cidx"}))
+                    }
+                    OutFormat::Text => println!(
+                        "No FTS index found in {}; use --include-fts when exporting.",
+                        path.display()
+                    ),
                 }
             }
         }
@@ -4368,15 +4846,21 @@ async fn cmd_index_async(
                 let models = crispembed::CrispEmbed::list_models();
                 match out {
                     OutFormat::Json => {
-                        let entries: Vec<serde_json::Value> = models.iter().map(|m| {
-                            serde_json::json!({
-                                "name": m.name,
-                                "desc": m.desc,
-                                "filename": m.filename,
-                                "size": m.size,
+                        let entries: Vec<serde_json::Value> = models
+                            .iter()
+                            .map(|m| {
+                                serde_json::json!({
+                                    "name": m.name,
+                                    "desc": m.desc,
+                                    "filename": m.filename,
+                                    "size": m.size,
+                                })
                             })
-                        }).collect();
-                        println!("{}", serde_json::to_string_pretty(&entries).unwrap_or_default());
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&entries).unwrap_or_default()
+                        );
                     }
                     OutFormat::Text => {
                         if models.is_empty() {
@@ -4393,43 +4877,66 @@ async fn cmd_index_async(
             {
                 match out {
                     OutFormat::Json => println!("[]"),
-                    OutFormat::Text => println!("CrispEmbed not compiled in; no model registry available."),
+                    OutFormat::Text => {
+                        println!("CrispEmbed not compiled in; no model registry available.")
+                    }
                 }
             }
         }
         IndexCmd::Versions { doc_id, path } => {
             let store = crate::index::versioning::VersionStore::open_or_create(&data_dir)
                 .map_err(|e| e.to_string())?;
-            let versions = store.get_versions(doc_id.as_deref(), path.as_deref())
+            let versions = store
+                .get_versions(doc_id.as_deref(), path.as_deref())
                 .map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&versions).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&versions).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    if versions.is_empty() { println!("No version history found."); }
-                    else {
+                    if versions.is_empty() {
+                        println!("No version history found.");
+                    } else {
                         for v in &versions {
-                            println!("v{} — {} ({})", v.version_seq, v.doc_id,
-                                v.title.as_deref().unwrap_or("untitled"));
+                            println!(
+                                "v{} — {} ({})",
+                                v.version_seq,
+                                v.doc_id,
+                                v.title.as_deref().unwrap_or("untitled")
+                            );
                         }
                     }
                 }
             }
         }
-        IndexCmd::AuditLog { action, doc_id, limit } => {
-            let log = crate::audit::AuditLog::open_or_create(&data_dir)
-                .map_err(|e| e.to_string())?;
-            let entries = log.query(None, action.as_deref(), doc_id.as_deref(), limit, 0)
+        IndexCmd::AuditLog {
+            action,
+            doc_id,
+            limit,
+        } => {
+            let log =
+                crate::audit::AuditLog::open_or_create(&data_dir).map_err(|e| e.to_string())?;
+            let entries = log
+                .query(None, action.as_deref(), doc_id.as_deref(), limit, 0)
                 .map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entries).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    if entries.is_empty() { println!("No audit entries."); }
-                    else {
+                    if entries.is_empty() {
+                        println!("No audit entries.");
+                    } else {
                         for e in &entries {
-                            println!("[{}] {} {} — {}",
-                                e.user_agent, e.action,
+                            println!(
+                                "[{}] {} {} — {}",
+                                e.user_agent,
+                                e.action,
                                 e.doc_id.as_deref().unwrap_or(""),
-                                e.detail);
+                                e.detail
+                            );
                         }
                     }
                 }
@@ -4440,72 +4947,133 @@ async fn cmd_index_async(
                 .map_err(|e| e.to_string())?;
             let rules = store.list_rules().map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rules).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rules).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    if rules.is_empty() { println!("No retention rules."); }
-                    else {
+                    if rules.is_empty() {
+                        println!("No retention rules.");
+                    } else {
                         for r in &rules {
-                            println!("{}: {} match={} archive={}d delete={}d {}",
-                                r.id, r.name, r.match_value,
+                            println!(
+                                "{}: {} match={} archive={}d delete={}d {}",
+                                r.id,
+                                r.name,
+                                r.match_value,
                                 r.archive_after_days.unwrap_or(-1),
                                 r.delete_after_days.unwrap_or(-1),
-                                if r.enabled { "ON" } else { "OFF" });
+                                if r.enabled { "ON" } else { "OFF" }
+                            );
                         }
                     }
                 }
             }
         }
-        IndexCmd::RetentionAdd { name, match_type, match_value, archive_after_days, delete_after_days } => {
+        IndexCmd::RetentionAdd {
+            name,
+            match_type,
+            match_value,
+            archive_after_days,
+            delete_after_days,
+        } => {
             let store = crate::index::retention::RetentionStore::open_or_create(&data_dir)
                 .map_err(|e| e.to_string())?;
-            let id = store.add_rule(&name, &match_type, &match_value, archive_after_days, delete_after_days)
+            let id = store
+                .add_rule(
+                    &name,
+                    &match_type,
+                    &match_value,
+                    archive_after_days,
+                    delete_after_days,
+                )
                 .map_err(|e| e.to_string())?;
             eprintln!("Added retention rule #{id}: {name}");
         }
         IndexCmd::Compare { doc_id_a, doc_id_b } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
-            let text_a = local.fetch_full_text(&doc_id_a).await.map_err(|e| e.to_string())?;
-            let text_b = local.fetch_full_text(&doc_id_b).await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
+            let text_a = local
+                .fetch_full_text(&doc_id_a)
+                .await
+                .map_err(|e| e.to_string())?;
+            let text_b = local
+                .fetch_full_text(&doc_id_b)
+                .await
+                .map_err(|e| e.to_string())?;
             let result = crate::index::comparison::compare_texts(&text_a, &text_b);
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    println!("Words A: {} | Words B: {} | Added: {} | Removed: {} | Changed: {:.1}%",
-                        result.total_words_a, result.total_words_b,
-                        result.added_words, result.removed_words,
-                        result.changed_ratio * 100.0);
+                    println!(
+                        "Words A: {} | Words B: {} | Added: {} | Removed: {} | Changed: {:.1}%",
+                        result.total_words_a,
+                        result.total_words_b,
+                        result.added_words,
+                        result.removed_words,
+                        result.changed_ratio * 100.0
+                    );
                 }
             }
         }
-        IndexCmd::EntityGraph { min_cooccurrence: _, max_nodes } => {
+        IndexCmd::EntityGraph {
+            min_cooccurrence: _,
+            max_nodes,
+        } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
-            let facets = local.tag_facets(&Default::default(), 500)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
+            let facets = local
+                .tag_facets(&Default::default(), 500)
+                .await
+                .map_err(|e| e.to_string())?;
             // Filter to entity tags
-            let entity_tags: Vec<_> = facets.into_iter()
-                .filter(|f| f.tag.contains(':') && matches!(f.tag.split(':').next().unwrap_or(""), "person" | "org" | "loc" | "date"))
+            let entity_tags: Vec<_> = facets
+                .into_iter()
+                .filter(|f| {
+                    f.tag.contains(':')
+                        && matches!(
+                            f.tag.split(':').next().unwrap_or(""),
+                            "person" | "org" | "loc" | "date"
+                        )
+                })
                 .take(max_nodes)
                 .collect();
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&entity_tags).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entity_tags).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    if entity_tags.is_empty() { println!("No entity tags found (run NER at ingest)."); }
-                    else {
-                        for t in &entity_tags { println!("  {} ({})", t.tag, t.count); }
+                    if entity_tags.is_empty() {
+                        println!("No entity tags found (run NER at ingest).");
+                    } else {
+                        for t in &entity_tags {
+                            println!("  {} ({})", t.tag, t.count);
+                        }
                     }
                 }
             }
         }
         #[cfg(feature = "desktop")]
         IndexCmd::Feed { url } => {
-            let feed = crate::extractors::feed::fetch_and_parse(&url).await
+            let feed = crate::extractors::feed::fetch_and_parse(&url)
+                .await
                 .map_err(|e| format!("feed: {e}"))?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&feed).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&feed).unwrap_or_default()
+                ),
                 OutFormat::Text => {
-                    println!("Feed: {}", feed.feed_title.as_deref().unwrap_or("(untitled)"));
+                    println!(
+                        "Feed: {}",
+                        feed.feed_title.as_deref().unwrap_or("(untitled)")
+                    );
                     println!("{} entries", feed.entries.len());
                     for e in feed.entries.iter().take(10) {
                         println!("  · {} — {}", e.title, e.url.as_deref().unwrap_or(""));
@@ -4517,10 +5085,18 @@ async fn cmd_index_async(
         IndexCmd::Feed { .. } => {
             return Err("feed command requires --features desktop".into());
         }
-        IndexCmd::Export { doc_id, to, out: out_path } => {
+        IndexCmd::Export {
+            doc_id,
+            to,
+            out: out_path,
+        } => {
             let local = crate::index::LocalIndex::open_or_create(&data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
-            let text = local.fetch_full_text(&doc_id).await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
+            let text = local
+                .fetch_full_text(&doc_id)
+                .await
+                .map_err(|e| e.to_string())?;
             let title = doc_id.clone(); // Use doc_id as fallback title
             match to.as_str() {
                 #[cfg(feature = "desktop")]
@@ -4549,12 +5125,12 @@ pub fn parse_size_str_pub(s: &str) -> Result<u64, String> {
 /// Parse a byte-count string with optional SI suffix (G / M / K).
 fn parse_size_str(s: &str) -> Result<u64, String> {
     let s = s.trim();
-    let (digits, suffix) = s.split_at(
-        s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len())
-    );
-    let base: u64 = digits.parse().map_err(|_| format!("not a number: {digits}"))?;
+    let (digits, suffix) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let base: u64 = digits
+        .parse()
+        .map_err(|_| format!("not a number: {digits}"))?;
     let multiplier = match suffix.to_uppercase().as_str() {
-        ""  | "B" => 1u64,
+        "" | "B" => 1u64,
         "K" | "KB" => 1_000,
         "M" | "MB" => 1_000_000,
         "G" | "GB" => 1_000_000_000,
@@ -4568,10 +5144,15 @@ fn parse_size_str(s: &str) -> Result<u64, String> {
 
 #[cfg(feature = "desktop")]
 fn cmd_watch(folder: PathBuf, _all_exts: bool) -> Result<(), String> {
-    use notify::{RecommendedWatcher, RecursiveMode, Watcher, event::{EventKind, CreateKind, ModifyKind, RenameMode}};
+    use notify::{
+        event::{CreateKind, EventKind, ModifyKind, RenameMode},
+        RecommendedWatcher, RecursiveMode, Watcher,
+    };
     use std::sync::mpsc;
 
-    let folder = folder.canonicalize().map_err(|e| format!("cannot resolve path: {e}"))?;
+    let folder = folder
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve path: {e}"))?;
     if !folder.is_dir() {
         return Err(format!("not a directory: {}", folder.display()));
     }
@@ -4585,9 +5166,11 @@ fn cmd_watch(folder: PathBuf, _all_exts: bool) -> Result<(), String> {
             }
         },
         notify::Config::default(),
-    ).map_err(|e| format!("watcher init failed: {e}"))?;
+    )
+    .map_err(|e| format!("watcher init failed: {e}"))?;
 
-    watcher.watch(&folder, RecursiveMode::Recursive)
+    watcher
+        .watch(&folder, RecursiveMode::Recursive)
         .map_err(|e| format!("watch failed: {e}"))?;
 
     for event in rx {
@@ -4598,13 +5181,17 @@ fn cmd_watch(folder: PathBuf, _all_exts: bool) -> Result<(), String> {
                 | EventKind::Modify(ModifyKind::Name(RenameMode::To))
                 | EventKind::Modify(ModifyKind::Name(RenameMode::Both))
         );
-        if !dominated { continue; }
+        if !dominated {
+            continue;
+        }
         for path in &event.paths {
             let name = match path.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n,
                 None => continue,
             };
-            if name.starts_with('.') || name.ends_with('~') { continue; }
+            if name.starts_with('.') || name.ends_with('~') {
+                continue;
+            }
             let ext = match path.extension().and_then(|e| e.to_str()) {
                 Some(e) => e.to_ascii_lowercase(),
                 None => continue,
@@ -4649,7 +5236,13 @@ fn parse_page_rect(spec: &str) -> Result<(usize, f64, f64, f64, f64), String> {
     if page == 0 {
         return Err("pages are 1-based".into());
     }
-    Ok((page - 1, num(parts[1])?, num(parts[2])?, num(parts[3])?, num(parts[4])?))
+    Ok((
+        page - 1,
+        num(parts[1])?,
+        num(parts[2])?,
+        num(parts[3])?,
+        num(parts[4])?,
+    ))
 }
 
 /// Parse `r,g,b` with each component in 0.0–1.0.
@@ -4678,107 +5271,240 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&info).unwrap()),
                 OutFormat::Text => {
                     println!("{} pages", info.page_count);
-                    if let Some(ref t) = info.title { println!("Title:    {t}"); }
-                    if let Some(ref a) = info.author { println!("Author:   {a}"); }
-                    if let Some(ref s) = info.subject { println!("Subject:  {s}"); }
-                    if let Some(ref k) = info.keywords { println!("Keywords: {k}"); }
-                    if let Some(ref p) = info.producer { println!("Producer: {p}"); }
-                    if let Some(ref c) = info.creator { println!("Creator:  {c}"); }
+                    if let Some(ref t) = info.title {
+                        println!("Title:    {t}");
+                    }
+                    if let Some(ref a) = info.author {
+                        println!("Author:   {a}");
+                    }
+                    if let Some(ref s) = info.subject {
+                        println!("Subject:  {s}");
+                    }
+                    if let Some(ref k) = info.keywords {
+                        println!("Keywords: {k}");
+                    }
+                    if let Some(ref p) = info.producer {
+                        println!("Producer: {p}");
+                    }
+                    if let Some(ref c) = info.creator {
+                        println!("Creator:  {c}");
+                    }
                     for p in &info.pages {
-                        println!("  Page {}: {:.0} x {:.0} pt, rot {}°", p.page_number, p.width_pt, p.height_pt, p.rotation);
+                        println!(
+                            "  Page {}: {:.0} x {:.0} pt, rot {}°",
+                            p.page_number, p.width_pt, p.height_pt, p.rotation
+                        );
                     }
                 }
             }
             Ok(())
         }
-        PdfCmd::Merge { files, out: out_path } => {
+        PdfCmd::Merge {
+            files,
+            out: out_path,
+        } => {
             let paths: Vec<&std::path::Path> = files.iter().map(|f| f.as_path()).collect();
             let total = pdf_ops::merge_pdfs(&paths, &out_path)?;
-            eprintln!("Merged {} files → {} ({total} pages)", files.len(), out_path.display());
+            eprintln!(
+                "Merged {} files → {} ({total} pages)",
+                files.len(),
+                out_path.display()
+            );
             Ok(())
         }
-        PdfCmd::Split { file, pages, out_dir } => {
+        PdfCmd::Split {
+            file,
+            pages,
+            out_dir,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let ranges = parse_split_ranges(&pages, info.page_count)?;
-            let dir = out_dir.unwrap_or_else(|| file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf());
-            let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "doc".into());
+            let dir = out_dir.unwrap_or_else(|| {
+                file.parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf()
+            });
+            let stem = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "doc".into());
             let outputs = pdf_ops::split_pdf(&file, &ranges, &dir, &stem)?;
-            for o in &outputs { eprintln!("  → {o}"); }
+            for o in &outputs {
+                eprintln!("  → {o}");
+            }
             Ok(())
         }
-        PdfCmd::Extract { file, pages, out: out_path } => {
+        PdfCmd::Extract {
+            file,
+            pages,
+            out: out_path,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let indices = parse_page_spec(&pages, info.page_count)?;
             pdf_ops::extract_pages(&file, &indices, &out_path)?;
             eprintln!("Extracted {} pages → {}", indices.len(), out_path.display());
             Ok(())
         }
-        PdfCmd::Remove { file, pages, out: out_path } => {
+        PdfCmd::Remove {
+            file,
+            pages,
+            out: out_path,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let indices = parse_page_spec(&pages, info.page_count)?;
             pdf_ops::remove_pages(&file, &indices, &out_path)?;
             eprintln!("Removed {} pages → {}", indices.len(), out_path.display());
             Ok(())
         }
-        PdfCmd::Reorder { file, order, out: out_path } => {
+        PdfCmd::Reorder {
+            file,
+            order,
+            out: out_path,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let new_order = parse_page_spec(&order, info.page_count)?;
             pdf_ops::reorder_pages(&file, &new_order, &out_path)?;
             eprintln!("Reordered → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Rotate { file, pages, degrees, out: out_path } => {
+        PdfCmd::Rotate {
+            file,
+            pages,
+            degrees,
+            out: out_path,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let indices = match pages {
                 Some(spec) => parse_page_spec(&spec, info.page_count)?,
                 None => (0..info.page_count).collect(),
             };
             pdf_ops::rotate_pages(&file, &indices, degrees, &out_path)?;
-            eprintln!("Rotated {} pages by {degrees}° → {}", indices.len(), out_path.display());
+            eprintln!(
+                "Rotated {} pages by {degrees}° → {}",
+                indices.len(),
+                out_path.display()
+            );
             Ok(())
         }
-        PdfCmd::Crop { file, pages, rect, out: out_path } => {
+        PdfCmd::Crop {
+            file,
+            pages,
+            rect,
+            out: out_path,
+        } => {
             let info = pdf_ops::pdf_info(&file)?;
             let indices = match pages {
                 Some(spec) => parse_page_spec(&spec, info.page_count)?,
                 None => (0..info.page_count).collect(),
             };
-            let parts: Vec<f64> = rect.split(',').map(|s| s.trim().parse::<f64>().map_err(|_| format!("bad rect: {rect}"))).collect::<Result<_, _>>()?;
-            if parts.len() != 4 { return Err("rect must be x,y,w,h".into()); }
-            pdf_ops::crop_pages(&file, &indices, parts[0], parts[1], parts[2], parts[3], &out_path)?;
+            let parts: Vec<f64> = rect
+                .split(',')
+                .map(|s| {
+                    s.trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("bad rect: {rect}"))
+                })
+                .collect::<Result<_, _>>()?;
+            if parts.len() != 4 {
+                return Err("rect must be x,y,w,h".into());
+            }
+            pdf_ops::crop_pages(
+                &file, &indices, parts[0], parts[1], parts[2], parts[3], &out_path,
+            )?;
             eprintln!("Cropped {} pages → {}", indices.len(), out_path.display());
             Ok(())
         }
-        PdfCmd::Number { file, out: out_path, position, font_size, style, start, skip_first } => {
-            let config = pdf_ops::PageNumberConfig { position, font_size, format: style, start_number: start, skip_first };
+        PdfCmd::Number {
+            file,
+            out: out_path,
+            position,
+            font_size,
+            style,
+            start,
+            skip_first,
+        } => {
+            let config = pdf_ops::PageNumberConfig {
+                position,
+                font_size,
+                format: style,
+                start_number: start,
+                skip_first,
+            };
             pdf_ops::add_page_numbers(&file, &config, &out_path)?;
             eprintln!("Added page numbers → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Watermark { file, text, out: out_path, font_size, angle, opacity } => {
-            let config = pdf_ops::WatermarkConfig { text, font_size, angle, opacity, color: [0.5, 0.5, 0.5] };
+        PdfCmd::Watermark {
+            file,
+            text,
+            out: out_path,
+            font_size,
+            angle,
+            opacity,
+        } => {
+            let config = pdf_ops::WatermarkConfig {
+                text,
+                font_size,
+                angle,
+                opacity,
+                color: [0.5, 0.5, 0.5],
+            };
             pdf_ops::add_watermark(&file, &config, None, &out_path)?;
             eprintln!("Added watermark → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::InsertBlank { file, at, out: out_path } => {
-            if at < 1 { return Err("--at must be >= 1".into()); }
+        PdfCmd::InsertBlank {
+            file,
+            at,
+            out: out_path,
+        } => {
+            if at < 1 {
+                return Err("--at must be >= 1".into());
+            }
             pdf_ops::insert_blank_page(&file, at - 1, 612.0, 792.0, &out_path)?;
-            eprintln!("Inserted blank page at position {at} → {}", out_path.display());
+            eprintln!(
+                "Inserted blank page at position {at} → {}",
+                out_path.display()
+            );
             Ok(())
         }
-        PdfCmd::Metadata { file, out: out_path, title, author, subject, keywords } => {
-            let edits = pdf_ops::MetadataEdit { title, author, subject, keywords };
+        PdfCmd::Metadata {
+            file,
+            out: out_path,
+            title,
+            author,
+            subject,
+            keywords,
+        } => {
+            let edits = pdf_ops::MetadataEdit {
+                title,
+                author,
+                subject,
+                keywords,
+            };
             pdf_ops::edit_metadata(&file, &edits, &out_path)?;
             eprintln!("Updated metadata → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Decrypt { file, password, out: out_path } => {
+        PdfCmd::Decrypt {
+            file,
+            password,
+            out: out_path,
+        } => {
             pdf_ops::decrypt_pdf(&file, &password, &out_path)?;
             eprintln!("Decrypted → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Encrypt { file, owner_password, user_password, out: out_path, no_print, no_copy, no_modify, legacy_rc4 } => {
+        PdfCmd::Encrypt {
+            file,
+            owner_password,
+            user_password,
+            out: out_path,
+            no_print,
+            no_copy,
+            no_modify,
+            legacy_rc4,
+        } => {
             let config = pdf_ops::EncryptConfig {
                 owner_password,
                 user_password,
@@ -4800,7 +5526,10 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             eprintln!("Encrypted → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Sanitise { file, out: out_path } => {
+        PdfCmd::Sanitise {
+            file,
+            out: out_path,
+        } => {
             let stripped = pdf_ops::sanitise_pdf(&file, &out_path)?;
             if stripped.is_empty() {
                 eprintln!("No hidden metadata found → {}", out_path.display());
@@ -4814,7 +5543,11 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             println!("{}", if enc { "encrypted" } else { "not encrypted" });
             Ok(())
         }
-        PdfCmd::Redact { file, patterns, out: out_path } => {
+        PdfCmd::Redact {
+            file,
+            patterns,
+            out: out_path,
+        } => {
             let pats: Vec<String> = patterns.split(',').map(|s| s.trim().to_string()).collect();
             let count = pdf_ops::redact_text_patterns(&file, &pats, &out_path)?;
             eprintln!("Blacked out {count} pattern(s) → {}", out_path.display());
@@ -4824,7 +5557,11 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             );
             Ok(())
         }
-        PdfCmd::RedactRegions { file, rects, out: out_path } => {
+        PdfCmd::RedactRegions {
+            file,
+            rects,
+            out: out_path,
+        } => {
             let mut specs = Vec::with_capacity(rects.len());
             for r in &rects {
                 let (page, x, y, w, h) = parse_page_rect(r)?;
@@ -4838,19 +5575,29 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
                 out_path.display()
             );
             if report.runs_dropped > 0 {
-                eprintln!("{} composite-font run(s) removed whole.", report.runs_dropped);
+                eprintln!(
+                    "{} composite-font run(s) removed whole.",
+                    report.runs_dropped
+                );
             }
             for w in &report.warnings {
                 eprintln!("WARNING: {w}");
             }
             Ok(())
         }
-        PdfCmd::SubstituteText { file, find, replace, out: out_path } => {
+        PdfCmd::SubstituteText {
+            file,
+            find,
+            replace,
+            out: out_path,
+        } => {
             let subs = vec![crate::pdf_text_edit::Substitution { find, replace }];
             let report = crate::pdf_text_edit::substitute_text(&file, &subs, &out_path)?;
             eprintln!(
                 "Replaced {} occurrence(s) across {} page(s) → {}",
-                report.replacements, report.pages_changed, out_path.display()
+                report.replacements,
+                report.pages_changed,
+                out_path.display()
             );
             if report.skipped > 0 {
                 eprintln!("{} occurrence(s) left alone.", report.skipped);
@@ -4869,7 +5616,10 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
                     for a in &annots {
                         println!(
                             "  p{} {:<10} {:>7.1},{:<7.1} {}",
-                            a.page + 1, a.ann_type, a.x, a.y,
+                            a.page + 1,
+                            a.ann_type,
+                            a.x,
+                            a.y,
                             a.text.lines().next().unwrap_or("")
                         );
                     }
@@ -4877,16 +5627,27 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             }
             Ok(())
         }
-        PdfCmd::ExportAnnotations { file, to, out: out_path } => {
+        PdfCmd::ExportAnnotations {
+            file,
+            to,
+            out: out_path,
+        } => {
             let annots = crate::pdf_annots::read_annotations_from_path(&file)?;
-            let title = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let title = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
             let body = match to.as_str() {
                 "csv" => crate::pdf_annots::to_csv(&annots),
                 "json" => serde_json::to_string_pretty(&annots).map_err(|e| e.to_string())?,
                 _ => crate::pdf_annots::to_markdown(&annots, &title),
             };
             std::fs::write(&out_path, body).map_err(|e| e.to_string())?;
-            eprintln!("Exported {} annotation(s) → {}", annots.len(), out_path.display());
+            eprintln!(
+                "Exported {} annotation(s) → {}",
+                annots.len(),
+                out_path.display()
+            );
             Ok(())
         }
         PdfCmd::FormFields { file } => {
@@ -4907,37 +5668,61 @@ fn cmd_pdf(out: OutFormat, cmd: PdfCmd) -> Result<(), String> {
             }
             Ok(())
         }
-        PdfCmd::FlattenForm { file, out: out_path } => {
+        PdfCmd::FlattenForm {
+            file,
+            out: out_path,
+        } => {
             let n = crate::pdf_forms::flatten_form(&file, &out_path)?;
             eprintln!("Flattened {n} field(s) → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::FillForm { file, set, out: out_path } => {
+        PdfCmd::FillForm {
+            file,
+            set,
+            out: out_path,
+        } => {
             let mut values = std::collections::HashMap::new();
             for pair in &set {
-                let (k, v) = pair.split_once('=').ok_or_else(|| {
-                    format!("--set expects name=value (got {pair:?})")
-                })?;
+                let (k, v) = pair
+                    .split_once('=')
+                    .ok_or_else(|| format!("--set expects name=value (got {pair:?})"))?;
                 values.insert(k.trim().to_string(), v.to_string());
             }
             let n = crate::pdf_forms::fill_fields(&file, &values, &out_path)?;
             eprintln!("Filled {n} field(s) → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Overprint { file, rect, text, font_size, out: out_path } => {
+        PdfCmd::Overprint {
+            file,
+            rect,
+            text,
+            font_size,
+            out: out_path,
+        } => {
             let (page, x, y, w, h) = parse_page_rect(&rect)?;
             let spec = crate::pdf_text_edit::OverprintSpec {
-                page, x, y, w, h,
-                text, font_size,
+                page,
+                x,
+                y,
+                w,
+                h,
+                text,
+                font_size,
                 ..Default::default()
             };
             let n = crate::pdf_text_edit::overprint(&file, &[spec], &out_path)?;
             eprintln!("Overprinted {n} region(s) → {}", out_path.display());
-            eprintln!("NOTE: this covers the old text; it is still in the file. \
-Use `pdf redact-regions` first if it must be removed.");
+            eprintln!(
+                "NOTE: this covers the old text; it is still in the file. \
+Use `pdf redact-regions` first if it must be removed."
+            );
             Ok(())
         }
-        PdfCmd::ImportAnnotations { file, doc_id, data_dir } => {
+        PdfCmd::ImportAnnotations {
+            file,
+            doc_id,
+            data_dir,
+        } => {
             let dir = resolve_data_dir(data_dir)?;
             let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
                 .map_err(|e| e.to_string())?;
@@ -4947,7 +5732,12 @@ Use `pdf redact-regions` first if it must be removed.");
             eprintln!("Imported {n} of {} annotation(s) under {id}", annots.len());
             Ok(())
         }
-        PdfCmd::StampAnnotations { file, doc_id, out: out_path, data_dir } => {
+        PdfCmd::StampAnnotations {
+            file,
+            doc_id,
+            out: out_path,
+            data_dir,
+        } => {
             let dir = resolve_data_dir(data_dir)?;
             let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
                 .map_err(|e| e.to_string())?;
@@ -4962,12 +5752,20 @@ Use `pdf redact-regions` first if it must be removed.");
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&titles).unwrap()),
                 OutFormat::Text => {
                     println!("{} book(s)", titles.len());
-                    for t in &titles { println!("  {t}"); }
+                    for t in &titles {
+                        println!("  {t}");
+                    }
                 }
             }
             Ok(())
         }
-        PdfCmd::KindleImport { file, doc_id, title, document, data_dir } => {
+        PdfCmd::KindleImport {
+            file,
+            doc_id,
+            title,
+            document,
+            data_dir,
+        } => {
             let dir = resolve_data_dir(data_dir)?;
             let store = crate::index::annotations::AnnotationStore::open_or_create(&dir)
                 .map_err(|e| e.to_string())?;
@@ -4978,7 +5776,11 @@ Use `pdf redact-regions` first if it must be removed.");
                 None => None,
             };
             let summary = crate::kindle_import::import_clippings(
-                &store, &text, &doc_id, title.as_deref(), doc_text.as_deref(),
+                &store,
+                &text,
+                &doc_id,
+                title.as_deref(),
+                doc_text.as_deref(),
                 crate::kindle_import::DEFAULT_MIN_SCORE,
             )?;
             match out {
@@ -4996,7 +5798,14 @@ Use `pdf redact-regions` first if it must be removed.");
             }
             Ok(())
         }
-        PdfCmd::Sign { file, cert, password, out: out_path, reason, location } => {
+        PdfCmd::Sign {
+            file,
+            cert,
+            password,
+            out: out_path,
+            reason,
+            location,
+        } => {
             let config = pdf_ops::SignConfig {
                 cert_path: cert.to_string_lossy().into_owned(),
                 cert_password: password,
@@ -5008,13 +5817,19 @@ Use `pdf redact-regions` first if it must be removed.");
             eprintln!("Signed → {}", out_path.display());
             Ok(())
         }
-        PdfCmd::Pdfa { file, out: out_path } => {
+        PdfCmd::Pdfa {
+            file,
+            out: out_path,
+        } => {
             pdf_ops::convert_to_pdfa(&file, &out_path)?;
             eprintln!("PDF/A-2b metadata added → {}", out_path.display());
             Ok(())
         }
         PdfCmd::Compress {
-            file, out: out_path, no_object_streams, no_stream_compression,
+            file,
+            out: out_path,
+            no_object_streams,
+            no_stream_compression,
             max_objects_per_stream,
         } => {
             let options = crate::pdf_compress::CompressOptions {
@@ -5042,7 +5857,11 @@ Use `pdf redact-regions` first if it must be removed.");
                         report.bytes_after,
                         report.savings_ratio() * 100.0,
                         report.streams_compressed,
-                        if report.used_object_streams { ", object streams used" } else { "" },
+                        if report.used_object_streams {
+                            ", object streams used"
+                        } else {
+                            ""
+                        },
                         out_path.display()
                     );
                     if report.bytes_after >= report.bytes_before {
@@ -5056,13 +5875,27 @@ Use `pdf redact-regions` first if it must be removed.");
             Ok(())
         }
         PdfCmd::TextRegion {
-            file, rect, text, font, size, align, vertical_align, line_height,
-            padding, color, border, out: out_path,
+            file,
+            rect,
+            text,
+            font,
+            size,
+            align,
+            vertical_align,
+            line_height,
+            padding,
+            color,
+            border,
+            out: out_path,
         } => {
             use crate::pdf_text_region::{Align, TextRegion, VerticalAlign};
             let (page, x, y, w, h) = parse_page_rect(&rect)?;
             let region = TextRegion {
-                page, x, y, w, h,
+                page,
+                x,
+                y,
+                w,
+                h,
                 text,
                 font: crate::pdf_base14::Base14::from_name(&font).ok_or_else(|| {
                     format!(
@@ -5089,19 +5922,14 @@ Use `pdf redact-regions` first if it must be removed.");
                 padding,
                 draw_border: border,
             };
-            let reports =
-                crate::pdf_text_region::draw_region(&file, &[region], &out_path)?;
+            let reports = crate::pdf_text_region::draw_region(&file, &[region], &out_path)?;
             let report = reports.into_iter().next().unwrap_or_default();
             match out {
                 OutFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&report).unwrap());
                 }
                 OutFormat::Text => {
-                    eprintln!(
-                        "Drew {} line(s) → {}",
-                        report.lines,
-                        out_path.display()
-                    );
+                    eprintln!("Drew {} line(s) → {}", report.lines, out_path.display());
                     if report.overflow {
                         eprintln!(
                             "WARNING: {} line(s) did not fit and were NOT drawn — \
@@ -5120,7 +5948,10 @@ Use `pdf redact-regions` first if it must be removed.");
             }
             Ok(())
         }
-        PdfCmd::Linearize { file, out: out_path } => {
+        PdfCmd::Linearize {
+            file,
+            out: out_path,
+        } => {
             #[cfg(feature = "pdf-zpdf")]
             {
                 let before = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
@@ -5146,14 +5977,14 @@ Use `pdf redact-regions` first if it must be removed.");
                 ))
             }
         }
-        PdfCmd::Repair { file, out: out_path } => {
+        PdfCmd::Repair {
+            file,
+            out: out_path,
+        } => {
             #[cfg(feature = "pdf-zpdf")]
             {
                 let pages = pdf_ops::repair_pdf(&file, &out_path)?;
-                eprintln!(
-                    "Recovered {pages} page(s) → {}",
-                    out_path.display()
-                );
+                eprintln!("Recovered {pages} page(s) → {}", out_path.display());
                 eprintln!(
                     "NOTE: recovery is best-effort. Compare the page count and the text \
                      against what you expect before discarding the original."
@@ -5170,7 +6001,10 @@ Use `pdf redact-regions` first if it must be removed.");
                 ))
             }
         }
-        PdfCmd::Text { file, out: out_path } => {
+        PdfCmd::Text {
+            file,
+            out: out_path,
+        } => {
             let doc = crate::extractors::extract_text_from_path(&file)
                 .map_err(|e| format!("extract {}: {e:#}", file.display()))?;
             // An empty result from a scan is the normal case, not an error —
@@ -5217,21 +6051,41 @@ Use `pdf redact-regions` first if it must be removed.");
         PdfCmd::Signatures { file } => {
             let sigs = pdf_ops::detect_signatures(&file)?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&sigs).unwrap_or_default()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&sigs).unwrap_or_default()
+                ),
                 OutFormat::Text => {
                     if sigs.is_empty() {
                         println!("No digital signatures found.");
                     } else {
                         for (i, s) in sigs.iter().enumerate() {
                             println!("Signature {}:", i + 1);
-                            if let Some(ref n) = s.name { println!("  Signer:     {n}"); }
-                            if let Some(ref r) = s.reason { println!("  Reason:     {r}"); }
-                            if let Some(ref l) = s.location { println!("  Location:   {l}"); }
-                            if let Some(ref d) = s.date { println!("  Date:       {d}"); }
-                            if let Some(ref f) = s.filter { println!("  Filter:     {f}"); }
-                            if let Some(ref sf) = s.sub_filter { println!("  Sub-filter: {sf}"); }
-                            if let Some(p) = s.page { println!("  Page:       {p}"); }
-                            println!("  ByteRange:  {}", if s.has_byte_range { "yes" } else { "no" });
+                            if let Some(ref n) = s.name {
+                                println!("  Signer:     {n}");
+                            }
+                            if let Some(ref r) = s.reason {
+                                println!("  Reason:     {r}");
+                            }
+                            if let Some(ref l) = s.location {
+                                println!("  Location:   {l}");
+                            }
+                            if let Some(ref d) = s.date {
+                                println!("  Date:       {d}");
+                            }
+                            if let Some(ref f) = s.filter {
+                                println!("  Filter:     {f}");
+                            }
+                            if let Some(ref sf) = s.sub_filter {
+                                println!("  Sub-filter: {sf}");
+                            }
+                            if let Some(p) = s.page {
+                                println!("  Page:       {p}");
+                            }
+                            println!(
+                                "  ByteRange:  {}",
+                                if s.has_byte_range { "yes" } else { "no" }
+                            );
                         }
                     }
                 }
@@ -5276,12 +6130,14 @@ fn parse_backup_schedule(raw: &str) -> Result<crate::sync::backup_state::BackupS
         return Ok(BackupSchedule::Manual);
     }
     if let Some(minutes) = raw.strip_prefix("interval:") {
-        return minutes.parse::<u64>()
+        return minutes
+            .parse::<u64>()
             .map(|minutes| BackupSchedule::IntervalMinutes { minutes })
             .map_err(|_| "schedule must be manual, interval:<minutes>, or daily:HH:MM".into());
     }
     if let Some(time) = raw.strip_prefix("daily:") {
-        let (hour, minute) = time.split_once(':')
+        let (hour, minute) = time
+            .split_once(':')
             .ok_or("schedule must be manual, interval:<minutes>, or daily:HH:MM")?;
         let hour = hour.parse::<u8>().map_err(|_| "invalid daily hour")?;
         let minute = minute.parse::<u8>().map_err(|_| "invalid daily minute")?;
@@ -5295,27 +6151,49 @@ async fn cmd_sync_backup_job(
     data_dir: &std::path::Path,
     cmd: BackupJobCmd,
 ) -> Result<(), String> {
-    let store = crate::sync::backup_state::BackupState::open(data_dir)
-        .map_err(|e| e.to_string())?;
+    let store =
+        crate::sync::backup_state::BackupState::open(data_dir).map_err(|e| e.to_string())?;
     match cmd {
         BackupJobCmd::List => {
             let jobs = store.list_jobs().map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
-                OutFormat::Text => for job in jobs {
-                    println!("{}  {} → {}  {:?}  {}",
-                        job.id, job.source_root, job.remote_root, job.schedule,
-                        if job.enabled { "enabled" } else { "disabled" });
-                },
+                OutFormat::Text => {
+                    for job in jobs {
+                        println!(
+                            "{}  {} → {}  {:?}  {}",
+                            job.id,
+                            job.source_root,
+                            job.remote_root,
+                            job.schedule,
+                            if job.enabled { "enabled" } else { "disabled" }
+                        );
+                    }
+                }
             }
         }
-        BackupJobCmd::Upsert { id, source_root, drive_id, remote_root, schedule,
-            retention_count, no_verify, disabled } => {
+        BackupJobCmd::Upsert {
+            id,
+            source_root,
+            drive_id,
+            remote_root,
+            schedule,
+            retention_count,
+            no_verify,
+            disabled,
+        } => {
             let job = crate::sync::backup_state::BackupJob {
-                id, source_root, drive_id, remote_root,
-                schedule: parse_backup_schedule(&schedule)?, retention_count,
-                verify_integrity: !no_verify, enabled: !disabled,
-                last_run_at: None, last_status: None, updated_at: 0,
+                id,
+                source_root,
+                drive_id,
+                remote_root,
+                schedule: parse_backup_schedule(&schedule)?,
+                retention_count,
+                verify_integrity: !no_verify,
+                enabled: !disabled,
+                last_run_at: None,
+                last_status: None,
+                updated_at: 0,
             };
             let saved = store.upsert_job(job).map_err(|e| e.to_string())?;
             if matches!(out, OutFormat::Json) {
@@ -5333,14 +6211,27 @@ async fn cmd_sync_backup_job(
             }
         }
         BackupJobCmd::Runs { job_id, limit } => {
-            let runs = store.list_runs(&job_id, limit.min(100)).map_err(|e| e.to_string())?;
+            let runs = store
+                .list_runs(&job_id, limit.min(100))
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
-                OutFormat::Text => for run in runs {
-                    println!("{}  {:?}  {}/{} completed  {} bytes{}",
-                        run.id, run.status, run.completed, run.planned, run.bytes,
-                        run.error.as_deref().map(|e| format!("  error: {e}")).unwrap_or_default());
-                },
+                OutFormat::Text => {
+                    for run in runs {
+                        println!(
+                            "{}  {:?}  {}/{} completed  {} bytes{}",
+                            run.id,
+                            run.status,
+                            run.completed,
+                            run.planned,
+                            run.bytes,
+                            run.error
+                                .as_deref()
+                                .map(|e| format!("  error: {e}"))
+                                .unwrap_or_default()
+                        );
+                    }
+                }
             }
         }
         BackupJobCmd::Run { job_id, dry_run } => {
@@ -5349,30 +6240,50 @@ async fn cmd_sync_backup_job(
             use sha2::{Digest, Sha256};
             use std::sync::Arc;
 
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
+            let job = store
+                .job(&job_id)
+                .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
             let source = std::path::PathBuf::from(&job.source_root);
             if !source.is_dir() {
-                return Err(format!("backup source is not a directory: {}", source.display()));
+                return Err(format!(
+                    "backup source is not a directory: {}",
+                    source.display()
+                ));
             }
             let mut files = Vec::new();
             collect_backup_files(&source, &source, &mut files).map_err(|e| e.to_string())?;
             let snapshot = std::path::Path::new(&job.remote_root).join(backup_snapshot_date());
             if dry_run {
-                emit_backup_run_plan(out, &job, &snapshot, files.len(), files.iter().map(|(_, s)| *s).sum());
+                emit_backup_run_plan(
+                    out,
+                    &job,
+                    &snapshot,
+                    files.len(),
+                    files.iter().map(|(_, s)| *s).sum(),
+                );
                 return Ok(());
             }
 
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?
+                .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
                 Arc::from(DriveRegistry::instantiate(&config));
             let capabilities = drive.probed_capabilities();
             if !capabilities.write || (job.verify_integrity && !capabilities.stat) {
-                return Err(format!("drive '{}' lacks required write/stat capability", job.drive_id));
+                return Err(format!(
+                    "drive '{}' lacks required write/stat capability",
+                    job.drive_id
+                ));
             }
-            let run = store.start_run(&job.id, files.len() as u64).map_err(|e| e.to_string())?;
+            let run = store
+                .start_run(&job.id, files.len() as u64)
+                .map_err(|e| e.to_string())?;
             let queue = TransferQueue::shared();
             let mut completed = 0u64;
             let mut bytes = 0u64;
@@ -5381,87 +6292,170 @@ async fn cmd_sync_backup_job(
                 let local = source.join(&relative);
                 let data = match std::fs::read(&local) {
                     Ok(data) => data,
-                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    Err(error) => {
+                        failed += 1;
+                        let _ = store.fail_run(&run.id, &error.to_string());
+                        break;
+                    }
                 };
                 let local_hash = format!("{:x}", Sha256::digest(&data));
                 let remote = snapshot.join(&relative);
                 let target = Arc::clone(&drive);
-                let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
-                    move |path, data| target.write_file(path, data));
+                let transfer = queue.submit_upload(
+                    job.drive_id.clone(),
+                    remote.clone(),
+                    data,
+                    move |path, data| target.write_file(path, data),
+                );
                 match transfer.handle.await {
-                    Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
+                    Ok(Ok(_)) if !job.verify_integrity => {
+                        completed += 1;
+                        bytes += size;
+                    }
                     Ok(Ok(_)) => match drive.stat(&remote) {
                         Ok(stat) if stat.size == size => match drive.read_file(&remote) {
-                            Ok(remote_data) if format!("{:x}", Sha256::digest(&remote_data)) == local_hash => {
-                                completed += 1; bytes += size;
+                            Ok(remote_data)
+                                if format!("{:x}", Sha256::digest(&remote_data)) == local_hash =>
+                            {
+                                completed += 1;
+                                bytes += size;
                             }
-                            Ok(_) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification hash mismatch for {}", relative)); break; }
-                            Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                            Ok(_) => {
+                                failed += 1;
+                                let _ = store.fail_run(
+                                    &run.id,
+                                    &format!("verification hash mismatch for {}", relative),
+                                );
+                                break;
+                            }
+                            Err(error) => {
+                                failed += 1;
+                                let _ = store.fail_run(&run.id, &error.to_string());
+                                break;
+                            }
                         },
-                        Ok(stat) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification size mismatch for {}: expected {}, got {}", relative, size, stat.size)); break; }
-                        Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                        Ok(stat) => {
+                            failed += 1;
+                            let _ = store.fail_run(
+                                &run.id,
+                                &format!(
+                                    "verification size mismatch for {}: expected {}, got {}",
+                                    relative, size, stat.size
+                                ),
+                            );
+                            break;
+                        }
+                        Err(error) => {
+                            failed += 1;
+                            let _ = store.fail_run(&run.id, &error.to_string());
+                            break;
+                        }
                     },
-                    Ok(Err(error)) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
-                    Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                    Ok(Err(error)) => {
+                        failed += 1;
+                        let _ = store.fail_run(&run.id, &error.to_string());
+                        break;
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        let _ = store.fail_run(&run.id, &error.to_string());
+                        break;
+                    }
                 }
             }
             if failed > 0 {
-                return Err(format!("backup job '{}' failed after {completed}/{} files", job.id, run.planned));
+                return Err(format!(
+                    "backup job '{}' failed after {completed}/{} files",
+                    job.id, run.planned
+                ));
             }
-            let finished = store.finish_run(&run.id, completed, 0, job.verify_integrity, bytes)
+            let finished = store
+                .finish_run(&run.id, completed, 0, job.verify_integrity, bytes)
                 .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&finished).unwrap()),
-                OutFormat::Text => println!("backup job {} completed: {} file(s), {} bytes", job.id, completed, bytes),
+                OutFormat::Text => println!(
+                    "backup job {} completed: {} file(s), {} bytes",
+                    job.id, completed, bytes
+                ),
             }
         }
         BackupJobCmd::Prune { job_id, apply } => {
             use crate::drives::DriveRegistry;
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
+            let job = store
+                .job(&job_id)
+                .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?
+                .clone();
             let drive = DriveRegistry::instantiate(&config);
-            let entries = drive.list_dir(std::path::Path::new(&job.remote_root)).map_err(|e| e.to_string())?;
-            let mut snapshots: Vec<_> = entries.into_iter()
+            let entries = drive
+                .list_dir(std::path::Path::new(&job.remote_root))
+                .map_err(|e| e.to_string())?;
+            let mut snapshots: Vec<_> = entries
+                .into_iter()
                 .filter(|entry| entry.is_dir && is_backup_snapshot(&entry.name))
-                .map(|entry| entry.name).collect();
+                .map(|entry| entry.name)
+                .collect();
             snapshots.sort();
             let remove_count = snapshots.len().saturating_sub(job.retention_count as usize);
             let remove = &snapshots[..remove_count];
             if apply {
                 for name in remove {
-                    delete_remote_tree(drive.as_ref(), &std::path::Path::new(&job.remote_root).join(name))
-                        .map_err(|e| e.to_string())?;
+                    delete_remote_tree(
+                        drive.as_ref(),
+                        &std::path::Path::new(&job.remote_root).join(name),
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
             }
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "job_id": job.id, "apply": apply, "kept": snapshots.len().saturating_sub(remove_count),
-                    "removed": remove, "retention_count": job.retention_count,
-                })),
-                OutFormat::Text => println!("backup job {} retention: {} snapshot(s) {}{}",
-                    job.id, remove.len(), if apply { "deleted " } else { "would delete " }, remove.join(", ")),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "job_id": job.id, "apply": apply, "kept": snapshots.len().saturating_sub(remove_count),
+                        "removed": remove, "retention_count": job.retention_count,
+                    })
+                ),
+                OutFormat::Text => println!(
+                    "backup job {} retention: {} snapshot(s) {}{}",
+                    job.id,
+                    remove.len(),
+                    if apply { "deleted " } else { "would delete " },
+                    remove.join(", ")
+                ),
             }
         }
         BackupJobCmd::SnapshotList { job_id, snapshot } => {
             use crate::drives::{self, DriveRegistry};
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
+            let job = store
+                .job(&job_id)
+                .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
             if !is_backup_snapshot(&snapshot) {
                 return Err("snapshot must be a YYYY-MM-DD directory name".into());
             }
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?
+                .clone();
             let drive = DriveRegistry::instantiate(&config);
             let root = std::path::Path::new(&job.remote_root).join(&snapshot);
             let mut errors = Vec::new();
             let entries = drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
                 errors.push(format!("{}: {error}", path.display()));
             });
-            if !errors.is_empty() { return Err(errors.join("; ")); }
+            if !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
             let files: Vec<_> = entries.into_iter().map(|entry| serde_json::json!({
                 "path": entry.path.strip_prefix(&root).unwrap_or(&entry.path).to_string_lossy(),
                 "size": entry.size,
@@ -5470,85 +6464,167 @@ async fn cmd_sync_backup_job(
             if matches!(out, OutFormat::Json) {
                 println!("{}", serde_json::to_string_pretty(&files).unwrap());
             } else {
-                for entry in files { println!("{}  {}", entry["size"], entry["path"]); }
+                for entry in files {
+                    println!("{}  {}", entry["size"], entry["path"]);
+                }
             }
         }
-        BackupJobCmd::Restore { job_id, snapshot, remote_path, destination } => {
+        BackupJobCmd::Restore {
+            job_id,
+            snapshot,
+            remote_path,
+            destination,
+        } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
-            let job = store.job(&job_id).map_err(|e| e.to_string())?
+            let job = store
+                .job(&job_id)
+                .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("backup job '{job_id}' not found"))?;
             if !is_backup_snapshot(&snapshot) {
                 return Err("snapshot must be a YYYY-MM-DD directory name".into());
             }
             let relative = safe_backup_relative(&remote_path)?;
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
-                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(&config));
-            if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
-            let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
-            let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == job.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?
+                .clone();
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(&config));
+            if !drive.probed_capabilities().read {
+                return Err("drive lacks read capability".into());
+            }
+            let remote = std::path::Path::new(&job.remote_root)
+                .join(&snapshot)
+                .join(&relative);
+            let expected = drive
+                .stat(&remote)
+                .map_err(|e| format!("stat remote file: {e}"))?
+                .size;
             let source = Arc::clone(&drive);
-            let transfer = TransferQueue::shared().submit_download(job.drive_id.clone(), remote, Some(expected),
-                move |path| source.read_file(path));
-            let data = transfer.handle.await.map_err(|e| e.to_string())?
+            let transfer = TransferQueue::shared().submit_download(
+                job.drive_id.clone(),
+                remote,
+                Some(expected),
+                move |path| source.read_file(path),
+            );
+            let data = transfer
+                .handle
+                .await
+                .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
             if data.len() as u64 != expected {
-                return Err(format!("restore verification failed: expected {expected} bytes, got {}", data.len()));
+                return Err(format!(
+                    "restore verification failed: expected {expected} bytes, got {}",
+                    data.len()
+                ));
             }
-            if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-            let partial = destination.with_extension(format!("restore-partial-{}", std::process::id()));
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let partial =
+                destination.with_extension(format!("restore-partial-{}", std::process::id()));
             std::fs::write(&partial, &data).map_err(|e| e.to_string())?;
             std::fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})),
-                OutFormat::Text => println!("restored {} ({} bytes) → {}", relative.display(), data.len(), destination.display()),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": data.len()})
+                ),
+                OutFormat::Text => println!(
+                    "restored {} ({} bytes) → {}",
+                    relative.display(),
+                    data.len(),
+                    destination.display()
+                ),
             }
         }
         BackupJobCmd::Due => {
-            let jobs = store.due_jobs(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+            let jobs = store
+                .due_jobs(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                )
                 .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
-                OutFormat::Text => for job in jobs {
-                    println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
-                },
+                OutFormat::Text => {
+                    for job in jobs {
+                        println!(
+                            "{}  {:?}  {} → {}",
+                            job.id, job.schedule, job.source_root, job.remote_root
+                        );
+                    }
+                }
             }
         }
         BackupJobCmd::RunDue { dry_run } => {
-            let jobs = store.due_jobs(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+            let jobs = store
+                .due_jobs(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                )
                 .map_err(|e| e.to_string())?;
             if jobs.is_empty() {
-                if matches!(out, OutFormat::Text) { println!("no backup jobs are due"); }
-                else { println!("[]"); }
+                if matches!(out, OutFormat::Text) {
+                    println!("no backup jobs are due");
+                } else {
+                    println!("[]");
+                }
             } else {
                 let ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
                 for id in ids {
                     Box::pin(cmd_sync_backup_job(
                         out,
                         data_dir,
-                        BackupJobCmd::Run { job_id: id, dry_run },
-                    )).await?;
+                        BackupJobCmd::Run {
+                            job_id: id,
+                            dry_run,
+                        },
+                    ))
+                    .await?;
                 }
             }
         }
-        BackupJobCmd::Watch { once, dry_run, max_cycles } => {
+        BackupJobCmd::Watch {
+            once,
+            dry_run,
+            max_cycles,
+        } => {
             let mut cycles = 0u32;
             loop {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64).unwrap_or(0);
-                let snapshot = crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
-                    .map_err(|e| e.to_string())?;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let snapshot =
+                    crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
+                        .map_err(|e| e.to_string())?;
                 if !snapshot.due_job_ids.is_empty() {
-                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::RunDue { dry_run }).await?;
+                    Box::pin(cmd_sync_backup_job(
+                        out,
+                        data_dir,
+                        BackupJobCmd::RunDue { dry_run },
+                    ))
+                    .await?;
                 }
                 cycles = cycles.saturating_add(1);
-                if once || (max_cycles > 0 && cycles >= max_cycles) { break; }
-                let wait_ms = snapshot.next_wake_at.map(|at| at.saturating_sub(now)).unwrap_or(60_000).clamp(1_000, 60_000);
+                if once || (max_cycles > 0 && cycles >= max_cycles) {
+                    break;
+                }
+                let wait_ms = snapshot
+                    .next_wake_at
+                    .map(|at| at.saturating_sub(now))
+                    .unwrap_or(60_000)
+                    .clamp(1_000, 60_000);
                 tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
             }
         }
@@ -5568,15 +6644,23 @@ fn collect_backup_files(
         if metadata.is_dir() {
             collect_backup_files(root, &path, out)?;
         } else if metadata.is_file() {
-            out.push((path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"), metadata.len()));
+            out.push((
+                path.strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                metadata.len(),
+            ));
         }
     }
     Ok(())
 }
 
 fn backup_snapshot_date() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let days = secs / 86_400;
     let z = days as i64 + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
@@ -5592,24 +6676,41 @@ fn backup_snapshot_date() -> String {
 }
 
 fn is_backup_snapshot(name: &str) -> bool {
-    name.len() == 10 && name.as_bytes()[4] == b'-' && name.as_bytes()[7] == b'-'
-        && name.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    name.len() == 10
+        && name.as_bytes()[4] == b'-'
+        && name.as_bytes()[7] == b'-'
+        && name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 fn safe_backup_relative(raw: &str) -> Result<std::path::PathBuf, String> {
     use std::path::Component;
     let path = std::path::Path::new(raw);
-    if path.is_absolute() { return Err("remote path must be relative".into()); }
-    if path.components().any(|component| !matches!(component, Component::Normal(_))) {
+    if path.is_absolute() {
+        return Err("remote path must be relative".into());
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
         return Err("remote path may not contain '.', '..', or root components".into());
     }
     Ok(path.to_owned())
 }
 
-fn delete_remote_tree(drive: &dyn crate::drives::CloudDrive, path: &std::path::Path) -> anyhow::Result<()> {
+fn delete_remote_tree(
+    drive: &dyn crate::drives::CloudDrive,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
     for entry in drive.list_dir(path)? {
         let child = path.join(&entry.name);
-        if entry.is_dir { delete_remote_tree(drive, &child)?; } else { drive.delete(&child)?; }
+        if entry.is_dir {
+            delete_remote_tree(drive, &child)?;
+        } else {
+            drive.delete(&child)?;
+        }
     }
     drive.delete(path)
 }
@@ -5622,8 +6723,17 @@ fn emit_backup_run_plan(
     bytes: u64,
 ) {
     match out {
-        OutFormat::Json => println!("{}", serde_json::json!({"job_id": job.id, "dry_run": true, "snapshot": snapshot, "files": files, "bytes": bytes})),
-        OutFormat::Text => println!("backup job {} dry-run: {} file(s), {} bytes → {}", job.id, files, bytes, snapshot.display()),
+        OutFormat::Json => println!(
+            "{}",
+            serde_json::json!({"job_id": job.id, "dry_run": true, "snapshot": snapshot, "files": files, "bytes": bytes})
+        ),
+        OutFormat::Text => println!(
+            "backup job {} dry-run: {} file(s), {} bytes → {}",
+            job.id,
+            files,
+            bytes,
+            snapshot.display()
+        ),
     }
 }
 
@@ -5640,7 +6750,10 @@ async fn cmd_sync_pair(
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&pairs).unwrap()),
                 OutFormat::Text => {
                     for pair in pairs {
-                        println!("{}: {} ↔ {} ({:?}, watermark={})", pair.id, pair.local_root, pair.remote_root, pair.mode, pair.watermark);
+                        println!(
+                            "{}: {} ↔ {} ({:?}, watermark={})",
+                            pair.id, pair.local_root, pair.remote_root, pair.mode, pair.watermark
+                        );
                     }
                 }
             }
@@ -5657,55 +6770,99 @@ async fn cmd_sync_pair(
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&plan).unwrap()),
                 OutFormat::Text => {
                     for entry in plan {
-                        println!("{}  {} bytes  mtime={}", entry.relative_path, entry.size, entry.mtime_unix);
+                        println!(
+                            "{}  {} bytes  mtime={}",
+                            entry.relative_path, entry.size, entry.mtime_unix
+                        );
                     }
                 }
             }
         }
         SyncPairCmd::RemotePlan { id } => {
-            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+            let pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
                 .find(|pair| pair.id == id)
                 .ok_or_else(|| format!("sync pair '{id}' not found"))?;
-            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+            let registry =
+                crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
             let drive = crate::drives::DriveRegistry::instantiate(config);
             if !drive.capabilities().list || !drive.capabilities().stat {
-                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+                return Err(format!(
+                    "{} does not support remote inventory",
+                    drive.drive_type().label()
+                ));
             }
             let mut remote = Vec::new();
             crate::sync::tauri_commands::inventory_remote(
-                &*drive, std::path::Path::new(&pair.remote_root), "",
-                &pair.include_globs, &pair.exclude_globs, &mut remote,
-            ).map_err(|e| e.to_string())?;
+                &*drive,
+                std::path::Path::new(&pair.remote_root),
+                "",
+                &pair.include_globs,
+                &pair.exclude_globs,
+                &mut remote,
+            )
+            .map_err(|e| e.to_string())?;
             remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&remote).unwrap()),
-                OutFormat::Text => { for entry in remote { println!("{}  {} bytes  mtime={:?}", entry.relative_path, entry.size, entry.mtime_unix); } },
+                OutFormat::Text => {
+                    for entry in remote {
+                        println!(
+                            "{}  {} bytes  mtime={:?}",
+                            entry.relative_path, entry.size, entry.mtime_unix
+                        );
+                    }
+                }
             }
         }
         SyncPairCmd::Compare { id, policy } => {
-            let pair = store.list().map_err(|e| e.to_string())?.into_iter()
+            let pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
                 .find(|pair| pair.id == id)
                 .ok_or_else(|| format!("sync pair '{id}' not found"))?;
             let policy = parse_conflict_policy(&policy)?;
             let local = crate::sync::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
-            let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+            let registry =
+                crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
             let drive = crate::drives::DriveRegistry::instantiate(config);
             if !drive.capabilities().list || !drive.capabilities().stat {
-                return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
+                return Err(format!(
+                    "{} does not support remote inventory",
+                    drive.drive_type().label()
+                ));
             }
             let mut remote = Vec::new();
             crate::sync::tauri_commands::inventory_remote(
-                &*drive, std::path::Path::new(&pair.remote_root), "",
-                &pair.include_globs, &pair.exclude_globs, &mut remote,
-            ).map_err(|e| e.to_string())?;
+                &*drive,
+                std::path::Path::new(&pair.remote_root),
+                "",
+                &pair.include_globs,
+                &pair.exclude_globs,
+                &mut remote,
+            )
+            .map_err(|e| e.to_string())?;
             let rows = crate::sync::pairs::compare_plans(&local, &remote, policy);
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
-                OutFormat::Text => { for row in rows { println!("{}: {:?}", row.relative_path, row.action); } },
+                OutFormat::Text => {
+                    for row in rows {
+                        println!("{}: {:?}", row.relative_path, row.action);
+                    }
+                }
             }
         }
         SyncPairCmd::Runs { id, limit } => {
@@ -5714,12 +6871,24 @@ async fn cmd_sync_pair(
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
                 OutFormat::Text => {
                     for run in runs {
-                        println!("#{} {} planned={} uploaded={} watermark={}{}", run.id, run.status, run.planned, run.uploaded, run.watermark, run.error.map(|e| format!(" error={e}")).unwrap_or_default());
+                        println!(
+                            "#{} {} planned={} uploaded={} watermark={}{}",
+                            run.id,
+                            run.status,
+                            run.planned,
+                            run.uploaded,
+                            run.watermark,
+                            run.error.map(|e| format!(" error={e}")).unwrap_or_default()
+                        );
                     }
                 }
             }
         }
-        SyncPairCmd::Push { id, dry_run, conflict_policy } => {
+        SyncPairCmd::Push {
+            id,
+            dry_run,
+            conflict_policy,
+        } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
@@ -5744,32 +6913,53 @@ async fn cmd_sync_pair(
                     id: 0,
                     pair_id: pair.id.clone(),
                     status: if dry_run { "dry_run" } else { "no_changes" }.into(),
-                    planned: plan.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
-                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                    planned: plan.len(),
+                    uploaded: 0,
+                    downloaded: 0,
+                    watermark: pair.watermark,
+                    error: None,
+                    started_at,
+                    finished_at: sync_pair_cli_now_ms(),
                 });
                 print_sync_pair_push(out, &id, dry_run, plan.len(), 0, pair.watermark);
                 return Ok(());
             }
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
             let drive: Arc<dyn crate::drives::CloudDrive> =
                 Arc::from(DriveRegistry::instantiate(config));
             if !drive.capabilities().write {
-                return Err(format!("{} does not support uploads", drive.drive_type().label()));
+                return Err(format!(
+                    "{} does not support uploads",
+                    drive.drive_type().label()
+                ));
             }
             let queue = TransferQueue::shared();
             let mut uploaded = 0usize;
             let mut watermark = pair.watermark;
             for entry in &plan {
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
-                let bytes = std::fs::read(&local).map_err(|e| format!("reading {}: {e}", local.display()))?;
-                let remote = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let bytes = std::fs::read(&local)
+                    .map_err(|e| format!("reading {}: {e}", local.display()))?;
+                let remote = std::path::PathBuf::from(format!(
+                    "{}/{}",
+                    pair.remote_root.trim_end_matches('/'),
+                    entry.relative_path
+                ));
                 let drive_for_upload = drive.clone();
-                let transfer = queue.submit_upload(pair.drive_id.clone(), remote, bytes,
-                    move |path, data| drive_for_upload.write_file(path, data));
+                let transfer =
+                    queue.submit_upload(pair.drive_id.clone(), remote, bytes, move |path, data| {
+                        drive_for_upload.write_file(path, data)
+                    });
                 match transfer.handle.await {
-                    Ok(Ok(_)) => { uploaded += 1; watermark = watermark.max(entry.mtime_unix); }
+                    Ok(Ok(_)) => {
+                        uploaded += 1;
+                        watermark = watermark.max(entry.mtime_unix);
+                    }
                     Ok(Err(error)) => return Err(error.to_string()),
                     Err(error) => return Err(format!("sync transfer task failed: {error}")),
                 }
@@ -5777,44 +6967,96 @@ async fn cmd_sync_pair(
             pair.watermark = watermark;
             store.upsert(pair).map_err(|e| e.to_string())?;
             let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
-                id: 0, pair_id: id.clone(), status: "completed".into(), planned: plan.len(),
-                uploaded, downloaded: 0, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                id: 0,
+                pair_id: id.clone(),
+                status: "completed".into(),
+                planned: plan.len(),
+                uploaded,
+                downloaded: 0,
+                watermark,
+                error: None,
+                started_at,
+                finished_at: sync_pair_cli_now_ms(),
             });
             print_sync_pair_push(out, &id, false, plan.len(), uploaded, watermark);
         }
-        SyncPairCmd::Pull { id, dry_run, conflict_policy } => {
+        SyncPairCmd::Pull {
+            id,
+            dry_run,
+            conflict_policy,
+        } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
 
-            let mut pair = store.list().map_err(|e| e.to_string())?.into_iter()
+            let mut pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
                 .find(|pair| pair.id == id)
                 .ok_or_else(|| format!("sync pair '{id}' not found"))?;
             if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToCloud) {
                 return Err("sync pair is configured for local-to-remote direction".into());
             }
-            if parse_conflict_policy(&conflict_policy)? != crate::sync::conflict::ConflictPolicy::RemoteWins {
-                return Err("sync pair pull writes local files; use --conflict-policy remote-wins".into());
+            if parse_conflict_policy(&conflict_policy)?
+                != crate::sync::conflict::ConflictPolicy::RemoteWins
+            {
+                return Err(
+                    "sync pair pull writes local files; use --conflict-policy remote-wins".into(),
+                );
             }
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
-            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+            let config = registry
+                .drives
+                .iter()
+                .find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(config));
-            if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
-                return Err(format!("{} does not support remote pull", drive.drive_type().label()));
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(config));
+            if !drive.capabilities().read
+                || !drive.capabilities().list
+                || !drive.capabilities().stat
+            {
+                return Err(format!(
+                    "{} does not support remote pull",
+                    drive.drive_type().label()
+                ));
             }
             let mut remote = Vec::new();
-            crate::sync::tauri_commands::inventory_remote(&*drive, std::path::Path::new(&pair.remote_root), "", &pair.include_globs, &pair.exclude_globs, &mut remote)
-                .map_err(|e| e.to_string())?;
-            remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
+            crate::sync::tauri_commands::inventory_remote(
+                &*drive,
+                std::path::Path::new(&pair.remote_root),
+                "",
+                &pair.include_globs,
+                &pair.exclude_globs,
+                &mut remote,
+            )
+            .map_err(|e| e.to_string())?;
+            remote.retain(|entry| {
+                entry
+                    .mtime_unix
+                    .map(|mtime| mtime >= pair.watermark)
+                    .unwrap_or(true)
+            });
             remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
             let started_at = sync_pair_cli_now_ms();
             if dry_run || remote.is_empty() {
                 let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
-                    id: 0, pair_id: pair.id.clone(),
-                    status: if dry_run { "dry_run_pull" } else { "no_changes_pull" }.into(),
-                    planned: remote.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
-                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                    id: 0,
+                    pair_id: pair.id.clone(),
+                    status: if dry_run {
+                        "dry_run_pull"
+                    } else {
+                        "no_changes_pull"
+                    }
+                    .into(),
+                    planned: remote.len(),
+                    uploaded: 0,
+                    downloaded: 0,
+                    watermark: pair.watermark,
+                    error: None,
+                    started_at,
+                    finished_at: sync_pair_cli_now_ms(),
                 });
                 print_sync_pair_pull(out, &id, dry_run, remote.len(), 0, pair.watermark);
                 return Ok(());
@@ -5823,25 +7065,46 @@ async fn cmd_sync_pair(
             let mut downloaded = 0usize;
             let mut watermark = pair.watermark;
             for entry in &remote {
-                let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let remote_path = std::path::PathBuf::from(format!(
+                    "{}/{}",
+                    pair.remote_root.trim_end_matches('/'),
+                    entry.relative_path
+                ));
                 let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
                 let drive_for_download = drive.clone();
-                let transfer = queue.submit_download(pair.drive_id.clone(), remote_path, Some(entry.size), move |path| drive_for_download.read_file(path));
+                let transfer = queue.submit_download(
+                    pair.drive_id.clone(),
+                    remote_path,
+                    Some(entry.size),
+                    move |path| drive_for_download.read_file(path),
+                );
                 let bytes = match transfer.handle.await {
                     Ok(Ok(bytes)) => bytes,
                     Ok(Err(error)) => return Err(error.to_string()),
                     Err(error) => return Err(format!("sync transfer task failed: {error}")),
                 };
-                if let Some(parent) = local.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+                if let Some(parent) = local.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
                 std::fs::write(local, bytes).map_err(|e| e.to_string())?;
                 downloaded += 1;
-                if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
+                if let Some(mtime) = entry.mtime_unix {
+                    watermark = watermark.max(mtime);
+                }
             }
             pair.watermark = watermark;
             store.upsert(pair).map_err(|e| e.to_string())?;
             let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
-                id: 0, pair_id: id.clone(), status: "completed_pull".into(), planned: remote.len(),
-                uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                id: 0,
+                pair_id: id.clone(),
+                status: "completed_pull".into(),
+                planned: remote.len(),
+                uploaded: 0,
+                downloaded,
+                watermark,
+                error: None,
+                started_at,
+                finished_at: sync_pair_cli_now_ms(),
             });
             print_sync_pair_pull(out, &id, false, remote.len(), downloaded, watermark);
         }
@@ -5849,22 +7112,51 @@ async fn cmd_sync_pair(
     Ok(())
 }
 
-fn print_sync_pair_push(out: OutFormat, id: &str, dry_run: bool, planned: usize, uploaded: usize, watermark: i64) {
+fn print_sync_pair_push(
+    out: OutFormat,
+    id: &str,
+    dry_run: bool,
+    planned: usize,
+    uploaded: usize,
+    watermark: i64,
+) {
     match out {
-        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "uploaded": uploaded, "watermark": watermark})),
-        OutFormat::Text => println!("pair {id}: planned={planned} uploaded={uploaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+        OutFormat::Json => println!(
+            "{}",
+            serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "uploaded": uploaded, "watermark": watermark})
+        ),
+        OutFormat::Text => println!(
+            "pair {id}: planned={planned} uploaded={uploaded} watermark={watermark}{}",
+            if dry_run { " (dry-run)" } else { "" }
+        ),
     }
 }
 
-fn print_sync_pair_pull(out: OutFormat, id: &str, dry_run: bool, planned: usize, downloaded: usize, watermark: i64) {
+fn print_sync_pair_pull(
+    out: OutFormat,
+    id: &str,
+    dry_run: bool,
+    planned: usize,
+    downloaded: usize,
+    watermark: i64,
+) {
     match out {
-        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "downloaded": downloaded, "watermark": watermark})),
-        OutFormat::Text => println!("pair {id}: planned={planned} downloaded={downloaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+        OutFormat::Json => println!(
+            "{}",
+            serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "downloaded": downloaded, "watermark": watermark})
+        ),
+        OutFormat::Text => println!(
+            "pair {id}: planned={planned} downloaded={downloaded} watermark={watermark}{}",
+            if dry_run { " (dry-run)" } else { "" }
+        ),
     }
 }
 
 fn sync_pair_cli_now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Resolve the bearer token from (in priority order): CB_SYNC_API_KEY
@@ -5882,16 +7174,17 @@ fn cb_resolve_token(url: &str) -> Result<Option<String>, String> {
 
 fn parse_conflict_policy(value: &str) -> Result<crate::sync::conflict::ConflictPolicy, String> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "newest" | "newest-wins" | "newest_wins" =>
-            Ok(crate::sync::conflict::ConflictPolicy::NewestWins),
-        "local" | "local-wins" | "local_wins" =>
-            Ok(crate::sync::conflict::ConflictPolicy::LocalWins),
-        "remote" | "remote-wins" | "remote_wins" =>
-            Ok(crate::sync::conflict::ConflictPolicy::RemoteWins),
-        "keep-both" | "keep_both" | "both" =>
-            Ok(crate::sync::conflict::ConflictPolicy::KeepBoth),
-        "manual" | "review" =>
-            Ok(crate::sync::conflict::ConflictPolicy::Manual),
+        "newest" | "newest-wins" | "newest_wins" => {
+            Ok(crate::sync::conflict::ConflictPolicy::NewestWins)
+        }
+        "local" | "local-wins" | "local_wins" => {
+            Ok(crate::sync::conflict::ConflictPolicy::LocalWins)
+        }
+        "remote" | "remote-wins" | "remote_wins" => {
+            Ok(crate::sync::conflict::ConflictPolicy::RemoteWins)
+        }
+        "keep-both" | "keep_both" | "both" => Ok(crate::sync::conflict::ConflictPolicy::KeepBoth),
+        "manual" | "review" => Ok(crate::sync::conflict::ConflictPolicy::Manual),
         other => Err(format!(
             "unknown conflict policy `{other}`; use newest|local|remote|keep-both|manual"
         )),
@@ -5912,17 +7205,19 @@ async fn cmd_sync_cloud_backup(
     // they don't need a live HTTP client.  Route those first.
     if let CloudBackupCmd::Login { token } = &cmd {
         if url.is_empty() {
-            return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
+            return Err(
+                "cloud_backup_url not configured — set it in the GUI Settings first".into(),
+            );
         }
-        let raw = token.clone()
+        let raw = token
+            .clone()
             .or_else(|| std::env::var("CB_SYNC_API_KEY").ok())
             .ok_or_else(|| "no token supplied — pass --token or set CB_SYNC_API_KEY".to_string())?;
         let raw = raw.trim().to_owned();
         if raw.is_empty() {
             return Err("token is empty".into());
         }
-        crate::sync::secret::set_token_for_url(&url, &raw)
-            .map_err(|e| format!("keychain: {e}"))?;
+        crate::sync::secret::set_token_for_url(&url, &raw).map_err(|e| format!("keychain: {e}"))?;
         match out {
             OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "url": url})),
             OutFormat::Text => println!("ok — stored API key for {url}"),
@@ -5932,13 +7227,15 @@ async fn cmd_sync_cloud_backup(
     if matches!(cmd, CloudBackupCmd::Logout) {
         if url.is_empty() {
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "noop": "no URL configured"})),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({"ok": true, "noop": "no URL configured"})
+                ),
                 OutFormat::Text => println!("ok (no URL configured — nothing to log out from)"),
             }
             return Ok(());
         }
-        crate::sync::secret::clear_token_for_url(&url)
-            .map_err(|e| format!("keychain: {e}"))?;
+        crate::sync::secret::clear_token_for_url(&url).map_err(|e| format!("keychain: {e}"))?;
         match out {
             OutFormat::Json => println!("{}", serde_json::json!({"ok": true})),
             OutFormat::Text => println!("ok — cleared API key from keychain"),
@@ -5960,20 +7257,31 @@ async fn cmd_sync_cloud_backup(
     if url.is_empty() {
         return Err("cloud_backup_url not configured — set it in the GUI Settings first".into());
     }
-    let token = cb_resolve_token(&url)?
-        .ok_or_else(|| "no API key — `crispsorter sync cloud-backup login --token cbk_...` first \
-                        (or set CB_SYNC_API_KEY)".to_string())?;
+    let token = cb_resolve_token(&url)?.ok_or_else(|| {
+        "no API key — `crispsorter sync cloud-backup login --token cbk_...` first \
+                        (or set CB_SYNC_API_KEY)"
+            .to_string()
+    })?;
     let client = CloudBackupClient::new(&url, &token).map_err(|e| e.to_string())?;
     let mgr = crate::sync::SyncManager::open(data_dir).map_err(|e| e.to_string())?;
 
     match cmd {
         CloudBackupCmd::Status => {
             let health = client.health().await.ok();
-            let push_ts = mgr.get_state("cb_last_manifest_push_ts").ok().flatten()
+            let push_ts = mgr
+                .get_state("cb_last_manifest_push_ts")
+                .ok()
+                .flatten()
                 .and_then(|s| s.parse::<i64>().ok());
-            let pull_ts = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
+            let pull_ts = mgr
+                .get_state("cb_last_manifest_pull_ts")
+                .ok()
+                .flatten()
                 .and_then(|s| s.parse::<i64>().ok());
-            let emb_ts = mgr.get_state("cb_last_embeddings_push_ts").ok().flatten()
+            let emb_ts = mgr
+                .get_state("cb_last_embeddings_push_ts")
+                .ok()
+                .flatten()
                 .and_then(|s| s.parse::<i64>().ok());
             match out {
                 OutFormat::Json => println!(
@@ -5989,14 +7297,25 @@ async fn cmd_sync_cloud_backup(
                 OutFormat::Text => {
                     println!("Cloud-backup URL : {url}");
                     if let Some(h) = &health {
-                        println!("  health          : ok={} version={} shared_catalog={}",
-                                 h.ok, h.version, h.shared_catalog);
+                        println!(
+                            "  health          : ok={} version={} shared_catalog={}",
+                            h.ok, h.version, h.shared_catalog
+                        );
                     } else {
                         println!("  health          : unreachable");
                     }
-                    println!("  last push (ms)  : {}", push_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
-                    println!("  last pull (ms)  : {}", pull_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
-                    println!("  last emb (ms)   : {}", emb_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into()));
+                    println!(
+                        "  last push (ms)  : {}",
+                        push_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into())
+                    );
+                    println!(
+                        "  last pull (ms)  : {}",
+                        pull_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into())
+                    );
+                    println!(
+                        "  last emb (ms)   : {}",
+                        emb_ts.map(|n| n.to_string()).unwrap_or_else(|| "—".into())
+                    );
                 }
             }
         }
@@ -6005,26 +7324,44 @@ async fn cmd_sync_cloud_backup(
             use crate::sync::cloud_backup::ManifestRow;
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
 
-            let last_ts: i64 = mgr.get_state("cb_last_manifest_push_ts").ok().flatten()
-                .and_then(|s| s.parse().ok()).unwrap_or(0);
+            let last_ts: i64 = mgr
+                .get_state("cb_last_manifest_push_ts")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
             // Stage A — use the new push-candidate projection so
             // full_text flows along with the metadata.
-            let candidates = local.list_documents_for_push(last_ts, limit)
-                .await.map_err(|e| e.to_string())?;
+            let candidates = local
+                .list_documents_for_push(last_ts, limit)
+                .await
+                .map_err(|e| e.to_string())?;
 
             let mut rows: Vec<ManifestRow> = Vec::new();
             let mut max_ts = last_ts;
             for c in &candidates {
-                let meta = c.metadata_json.as_deref()
+                let meta = c
+                    .metadata_json
+                    .as_deref()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                     .unwrap_or(serde_json::Value::Null);
                 let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0);
-                let fs_mtime = meta.get("fs_mtime").and_then(|v| v.as_f64())
-                    .or_else(|| meta.get("fs_mtime").and_then(|v| v.as_i64()).map(|i| i as f64))
+                let fs_mtime = meta
+                    .get("fs_mtime")
+                    .and_then(|v| v.as_f64())
+                    .or_else(|| {
+                        meta.get("fs_mtime")
+                            .and_then(|v| v.as_i64())
+                            .map(|i| i as f64)
+                    })
                     .unwrap_or(0.0);
-                let path = meta.get("fs_path").and_then(|v| v.as_str()).map(|s| s.to_string())
+                let path = meta
+                    .get("fs_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
                     .unwrap_or_else(|| c.location_uri.clone());
                 max_ts = max_ts.max(c.indexed_at);
                 rows.push(ManifestRow {
@@ -6046,17 +7383,24 @@ async fn cmd_sync_cloud_backup(
                     url: None,
                     tags: vec![],
                 });
-                if rows.len() >= limit { break; }
+                if rows.len() >= limit {
+                    break;
+                }
             }
             let pushed = rows.len();
             if pushed == 0 {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({"pushed": 0, "watermark": last_ts})),
+                    OutFormat::Json => {
+                        println!("{}", serde_json::json!({"pushed": 0, "watermark": last_ts}))
+                    }
                     OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
                 }
                 return Ok(());
             }
-            let resp = client.manifest_push(&rows).await.map_err(|e| e.to_string())?;
+            let resp = client
+                .manifest_push(&rows)
+                .await
+                .map_err(|e| e.to_string())?;
             mgr.set_state("cb_last_manifest_push_ts", &max_ts.to_string())
                 .map_err(|e| e.to_string())?;
             match out {
@@ -6072,7 +7416,11 @@ async fn cmd_sync_cloud_backup(
                 OutFormat::Text => println!(
                     "pushed {pushed} row(s) (server accepted {}, watermark={max_ts}){}",
                     resp.accepted,
-                    if pushed == limit { " — more available, re-run to drain" } else { "" }
+                    if pushed == limit {
+                        " — more available, re-run to drain"
+                    } else {
+                        ""
+                    }
                 ),
             }
         }
@@ -6081,40 +7429,54 @@ async fn cmd_sync_cloud_backup(
             use crate::sync::cloud_backup::EmbeddingRow;
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
-            let last_ts: i64 = mgr.get_state("cb_last_embeddings_push_ts").ok().flatten()
-                .and_then(|s| s.parse().ok()).unwrap_or(0);
-            let candidates = local.list_chunks_with_embeddings(last_ts, limit)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
+            let last_ts: i64 = mgr
+                .get_state("cb_last_embeddings_push_ts")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let candidates = local
+                .list_chunks_with_embeddings(last_ts, limit)
+                .await
+                .map_err(|e| e.to_string())?;
             if candidates.is_empty() {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({
-                        "pushed": 0, "watermark": last_ts,
-                    })),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "pushed": 0, "watermark": last_ts,
+                        })
+                    ),
                     OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
                 }
                 return Ok(());
             }
 
             let mut max_ts = last_ts;
-            let rows: Vec<EmbeddingRow> = candidates.iter().map(|c| {
-                max_ts = max_ts.max(c.indexed_at);
-                EmbeddingRow {
-                    doc_id:      c.doc_id.clone(),
-                    chunk_index: c.chunk_index,
-                    // model_id is required server-side; default to
-                    // a sentinel when LocalIndex didn't record one
-                    // (legacy rows from before embedding_model was
-                    // wired).
-                    model_id:    c.model_id.clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    embedding:   c.embedding.clone(),
-                    sparse_json: c.sparse_json.clone(),
-                }
-            }).collect();
+            let rows: Vec<EmbeddingRow> = candidates
+                .iter()
+                .map(|c| {
+                    max_ts = max_ts.max(c.indexed_at);
+                    EmbeddingRow {
+                        doc_id: c.doc_id.clone(),
+                        chunk_index: c.chunk_index,
+                        // model_id is required server-side; default to
+                        // a sentinel when LocalIndex didn't record one
+                        // (legacy rows from before embedding_model was
+                        // wired).
+                        model_id: c.model_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                        embedding: c.embedding.clone(),
+                        sparse_json: c.sparse_json.clone(),
+                    }
+                })
+                .collect();
 
             let pushed = rows.len();
-            let resp = client.embeddings_push(&rows).await
+            let resp = client
+                .embeddings_push(&rows)
+                .await
                 .map_err(|e| e.to_string())?;
             mgr.set_state("cb_last_embeddings_push_ts", &max_ts.to_string())
                 .map_err(|e| e.to_string())?;
@@ -6140,34 +7502,51 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::Pull { limit, include_full_text, conflict_policy } => {
+        CloudBackupCmd::Pull {
+            limit,
+            include_full_text,
+            conflict_policy,
+        } => {
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
-            let conflict_policy = conflict_policy.as_deref()
-                .map(parse_conflict_policy).transpose()?
+                .await
+                .map_err(|e| e.to_string())?;
+            let conflict_policy = conflict_policy
+                .as_deref()
+                .map(parse_conflict_policy)
+                .transpose()?
                 .unwrap_or(cfg.conflict_policy);
-            let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
-                .and_then(|s| s.parse().ok()).unwrap_or(0);
+            let last_ts: i64 = mgr
+                .get_state("cb_last_manifest_pull_ts")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
             // CLI flag overrides the Settings checkbox for one-shot headless use.
-            let pull_full_text =
-                include_full_text || cfg.cloud_backup_pull_full_text_enabled;
-            let resp = client.manifest_pull_with_options(last_ts, limit, pull_full_text)
-                .await.map_err(|e| e.to_string())?;
+            let pull_full_text = include_full_text || cfg.cloud_backup_pull_full_text_enabled;
+            let resp = client
+                .manifest_pull_with_options(last_ts, limit, pull_full_text)
+                .await
+                .map_err(|e| e.to_string())?;
             if resp.rows.is_empty() {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({
-                        "pulled": 0, "applied": 0, "watermark": last_ts, "has_more": resp.has_more,
-                    })),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({
+                            "pulled": 0, "applied": 0, "watermark": last_ts, "has_more": resp.has_more,
+                        })
+                    ),
                     OutFormat::Text => println!("nothing newer than watermark {last_ts}"),
                 }
                 return Ok(());
             }
 
             let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
                 .as_millis() as i64;
-            let mut selected: Vec<(&crate::sync::cloud_backup::PullRow, String)> = Vec::with_capacity(resp.rows.len());
+            let mut selected: Vec<(&crate::sync::cloud_backup::PullRow, String)> =
+                Vec::with_capacity(resp.rows.len());
             let mut skipped_local = 0usize;
             let mut queued_manual = 0usize;
             let mut replaced_remote = 0usize;
@@ -6175,22 +7554,32 @@ async fn cmd_sync_cloud_backup(
             for r in &resp.rows {
                 let base_doc_id = if r.sha256.is_empty() {
                     uuid::Uuid::new_v4().to_string()
-                } else { r.sha256.clone() };
-                let local_rows = local.conflict_rows_for_location(&r.path)
-                    .await.map_err(|e| e.to_string())?;
+                } else {
+                    r.sha256.clone()
+                };
+                let local_rows = local
+                    .conflict_rows_for_location(&r.path)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
                 let mut doc_id = base_doc_id;
                 if !matching {
                     if let Some(local_row) = local_rows.first() {
                         let resolution = crate::sync::conflict::resolve_conflict(
                             &crate::sync::conflict::ConflictSide {
-                                doc_id: local_row.doc_id.clone(), source_hash: local_row.source_hash.clone(),
-                                updated_at: local_row.indexed_at, title: local_row.title.clone(),
+                                doc_id: local_row.doc_id.clone(),
+                                source_hash: local_row.source_hash.clone(),
+                                updated_at: local_row.indexed_at,
+                                title: local_row.title.clone(),
                             },
                             &crate::sync::conflict::ConflictSide {
-                                doc_id: doc_id.clone(), source_hash: r.sha256.clone(),
-                                updated_at: Some(r.indexed_at), title: r.title.clone(),
-                            }, conflict_policy);
+                                doc_id: doc_id.clone(),
+                                source_hash: r.sha256.clone(),
+                                updated_at: Some(r.indexed_at),
+                                title: r.title.clone(),
+                            },
+                            conflict_policy,
+                        );
                         match resolution {
                             crate::sync::conflict::Resolution::UseLocal => {
                                 skipped_local += 1;
@@ -6198,7 +7587,10 @@ async fn cmd_sync_cloud_backup(
                             }
                             crate::sync::conflict::Resolution::UseRemote => {
                                 for row in &local_rows {
-                                    local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
+                                    local
+                                        .delete_doc(&row.doc_id)
+                                        .await
+                                        .map_err(|e| e.to_string())?;
                                 }
                                 replaced_remote += 1;
                             }
@@ -6207,9 +7599,16 @@ async fn cmd_sync_cloud_backup(
                                 kept_both += 1;
                             }
                             crate::sync::conflict::Resolution::NeedsManualReview => {
-                                mgr.enqueue_conflict(&r.path, &local_row.doc_id, &local_row.source_hash,
-                                    &r.sha256, local_row.title.as_deref(), r.title.as_deref(), r.indexed_at)
-                                    .map_err(|e| e.to_string())?;
+                                mgr.enqueue_conflict(
+                                    &r.path,
+                                    &local_row.doc_id,
+                                    &local_row.source_hash,
+                                    &r.sha256,
+                                    local_row.title.as_deref(),
+                                    r.title.as_deref(),
+                                    r.indexed_at,
+                                )
+                                .map_err(|e| e.to_string())?;
                                 queued_manual += 1;
                                 continue;
                             }
@@ -6218,77 +7617,87 @@ async fn cmd_sync_cloud_backup(
                 }
                 selected.push((r, doc_id));
             }
-            let chunks: Vec<crate::index::schema::DocumentChunk> = selected.iter().map(|(r, doc_id)| {
-                crate::index::schema::DocumentChunk {
-                    id: crate::index::ingest::chunk_row_id(doc_id, 0),
-                    doc_id: doc_id.clone(),
-                    location_uri: r.path.clone(),
-                    owner_id: r.owner_id.clone(),
-                    filename: Some(r.filename.clone()),
-                    title: r.title.clone(),
-                    author: r.author.clone(),
-                    year: r.year,
-                    ext: Some(r.ext.clone()),
-                    language: r.language.clone(),
-                    page_count: None,
-                    headings_text: None,
-                    // Stage A — carry server-side full_text into the
-                    // local L1 row so subsequent `crispsorter index
-                    // search` finds remote rows by body text.
-                    full_text: r.full_text.clone(),
-                    full_text_md: r.full_text.clone(),
-                    embedding: None,
-                    embedding_sparse: None,
-                    embedding_model: None,
-                    // chunk_index = 0 so the row is treated as a
-                    // representative chunk by the local search
-                    // helpers (`fetch_by_doc_ids` filters on
-                    // chunk_index = 0).  Using -1 marked the row as
-                    // L1-manifest-only and made it invisible to
-                    // local search, defeating the offline-search
-                    // story we want for pulled wallabag rows.
-                    chunk_index: 0,
-                    chunk_total: 1,
-                    chunk_start_char: None,
-                    chunk_end_char: None,
-                    indexed_at: now_ms,
-                    source_hash: r.sha256.clone(),
-                    // v107 — carry tags from the pulled row into the
-                    // local DocumentChunk.tags column (already a
-                    // List<Utf8> in the LanceDB schema).
-                    tags: r.tags.clone(),
-                    metadata_json: Some(format!(
-                        r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
-                        r.indexed_at
-                    )),
-                    parent_dir: if r.parent_dir.is_empty() { None } else { Some(r.parent_dir.clone()) },
-                    volume_id: None,
-                    text_translated: None,
-                    text_translated_lang: None,
-                    audio_duration_seconds: None,
-                    audio_codec: None,
-                    audio_sample_rate_hz: None,
-                    audio_channels: None,
-                    audio_bitrate_kbps: None,
-                    image_camera_make: None,
-                    image_camera_model: None,
-                    image_lens_model: None,
-                    image_taken_at_unix: None,
-                    image_iso: None,
-                    multivec_packed: None,
-                    multivec_n_tokens: None,
-                    // v106 — Carry url from the pulled row into the
-                    // local L1 chunk so `crispsorter index search`
-                    // can filter by source URL.
-                    url: r.url.clone(),
-                    embedding_omni: None,
-                    embedding_vit: None,
-                    summary: None,
-                    doc_status: None,
-                }
-            }).collect();
+            let chunks: Vec<crate::index::schema::DocumentChunk> = selected
+                .iter()
+                .map(|(r, doc_id)| {
+                    crate::index::schema::DocumentChunk {
+                        id: crate::index::ingest::chunk_row_id(doc_id, 0),
+                        doc_id: doc_id.clone(),
+                        location_uri: r.path.clone(),
+                        owner_id: r.owner_id.clone(),
+                        filename: Some(r.filename.clone()),
+                        title: r.title.clone(),
+                        author: r.author.clone(),
+                        year: r.year,
+                        ext: Some(r.ext.clone()),
+                        language: r.language.clone(),
+                        page_count: None,
+                        headings_text: None,
+                        // Stage A — carry server-side full_text into the
+                        // local L1 row so subsequent `crispsorter index
+                        // search` finds remote rows by body text.
+                        full_text: r.full_text.clone(),
+                        full_text_md: r.full_text.clone(),
+                        embedding: None,
+                        embedding_sparse: None,
+                        embedding_model: None,
+                        // chunk_index = 0 so the row is treated as a
+                        // representative chunk by the local search
+                        // helpers (`fetch_by_doc_ids` filters on
+                        // chunk_index = 0).  Using -1 marked the row as
+                        // L1-manifest-only and made it invisible to
+                        // local search, defeating the offline-search
+                        // story we want for pulled wallabag rows.
+                        chunk_index: 0,
+                        chunk_total: 1,
+                        chunk_start_char: None,
+                        chunk_end_char: None,
+                        indexed_at: now_ms,
+                        source_hash: r.sha256.clone(),
+                        // v107 — carry tags from the pulled row into the
+                        // local DocumentChunk.tags column (already a
+                        // List<Utf8> in the LanceDB schema).
+                        tags: r.tags.clone(),
+                        metadata_json: Some(format!(
+                            r#"{{"level":1,"source":"cb_sync_pull","cb_indexed_at":{}}}"#,
+                            r.indexed_at
+                        )),
+                        parent_dir: if r.parent_dir.is_empty() {
+                            None
+                        } else {
+                            Some(r.parent_dir.clone())
+                        },
+                        volume_id: None,
+                        text_translated: None,
+                        text_translated_lang: None,
+                        audio_duration_seconds: None,
+                        audio_codec: None,
+                        audio_sample_rate_hz: None,
+                        audio_channels: None,
+                        audio_bitrate_kbps: None,
+                        image_camera_make: None,
+                        image_camera_model: None,
+                        image_lens_model: None,
+                        image_taken_at_unix: None,
+                        image_iso: None,
+                        multivec_packed: None,
+                        multivec_n_tokens: None,
+                        // v106 — Carry url from the pulled row into the
+                        // local L1 chunk so `crispsorter index search`
+                        // can filter by source URL.
+                        url: r.url.clone(),
+                        embedding_omni: None,
+                        embedding_vit: None,
+                        summary: None,
+                        doc_status: None,
+                    }
+                })
+                .collect();
             let applied = chunks.len();
-            local.ingest_batch(&chunks).await.map_err(|e| e.to_string())?;
+            local
+                .ingest_batch(&chunks)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // v107 follow-up — also write each L1 chunk's metadata +
             // body into Tantivy so `crispsorter index search`
@@ -6314,18 +7723,21 @@ async fn cmd_sync_cloud_backup(
                         // Delete any prior entry for this doc_id so
                         // re-pulls don't double-index.  Soft-fail.
                         let _ = fts.delete_document(&mut writer, &c.doc_id);
-                        if fts.add_document(
-                            &mut writer,
-                            crate::index::fts_index::TantivyInput {
-                                doc_id: &c.doc_id,
-                                owner_id: owner,
-                                language,
-                                title,
-                                headings: heading_join,
-                                body,
-                                body_translated: c.text_translated.as_deref(),
-                            },
-                        ).is_ok() {
+                        if fts
+                            .add_document(
+                                &mut writer,
+                                crate::index::fts_index::TantivyInput {
+                                    doc_id: &c.doc_id,
+                                    owner_id: owner,
+                                    language,
+                                    title,
+                                    headings: heading_join,
+                                    body,
+                                    body_translated: c.text_translated.as_deref(),
+                                },
+                            )
+                            .is_ok()
+                        {
                             wrote += 1;
                         }
                     }
@@ -6360,8 +7772,10 @@ async fn cmd_sync_cloud_backup(
 
         CloudBackupCmd::Search { query, limit } => {
             // Display command — request the lean payload (snippet, no body).
-            let resp = client.search(&query, limit.clamp(1, 500), false)
-                .await.map_err(|e| e.to_string())?;
+            let resp = client
+                .search(&query, limit.clamp(1, 500), false)
+                .await
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -6376,12 +7790,8 @@ async fn cmd_sync_cloud_backup(
                     } else {
                         println!("{} match(es) for {query:?}:", resp.rows.len());
                         for h in &resp.rows {
-                            let title = h.title.as_deref()
-                                .unwrap_or(h.filename.as_str());
-                            println!(
-                                "  [{:>6.3}] {:<60.60}  {}",
-                                h.score, title, h.path
-                            );
+                            let title = h.title.as_deref().unwrap_or(h.filename.as_str());
+                            println!("  [{:>6.3}] {:<60.60}  {}", h.score, title, h.path);
                             // Strip the server's <mark> tags for plain-text
                             // terminal output.
                             if let Some(snip) = h.snippet.as_deref() {
@@ -6419,7 +7829,9 @@ async fn cmd_sync_cloud_backup(
                     let mut buf = vec![0u8; 1 << 20];
                     loop {
                         let n = f.read(&mut buf).map_err(|e| format!("read: {e}"))?;
-                        if n == 0 { break; }
+                        if n == 0 {
+                            break;
+                        }
                         h.update(&buf[..n]);
                     }
                     Ok(format!("{:x}", h.finalize()))
@@ -6427,8 +7839,10 @@ async fn cmd_sync_cloud_backup(
                 .await
                 .map_err(|e| format!("hash join: {e}"))??
             };
-            let resp = client.upload_file_by_hash(&sha, &path)
-                .await.map_err(|e| e.to_string())?;
+            let resp = client
+                .upload_file_by_hash(&sha, &path)
+                .await
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -6441,7 +7855,11 @@ async fn cmd_sync_cloud_backup(
                 ),
                 OutFormat::Text => println!(
                     "{} {} ({} bytes) → {}",
-                    if resp.stored { "uploaded" } else { "already-present" },
+                    if resp.stored {
+                        "uploaded"
+                    } else {
+                        "already-present"
+                    },
                     resp.sha256,
                     resp.size_bytes,
                     resp.local_blob_path,
@@ -6449,29 +7867,43 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::Partition { root, max_shards, group_depth } => {
+        CloudBackupCmd::Partition {
+            root,
+            max_shards,
+            group_depth,
+        } => {
             use crate::sync::partition::{
                 partition_assignments, FileSize, PartitionMap, PartitionOptions,
             };
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
-                .await.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             // Full-scan: partition is a periodic re-compute, not
             // incremental.  At catalog scale (≤ 10M rows) this is
             // one Lance query.
-            let candidates = local.list_documents_for_push(0, 10_000_000)
-                .await.map_err(|e| e.to_string())?;
+            let candidates = local
+                .list_documents_for_push(0, 10_000_000)
+                .await
+                .map_err(|e| e.to_string())?;
             let mut files: Vec<FileSize> = Vec::new();
             for c in &candidates {
-                let meta = c.metadata_json.as_deref()
+                let meta = c
+                    .metadata_json
+                    .as_deref()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                     .unwrap_or(serde_json::Value::Null);
                 let fs_size = meta.get("fs_size").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
-                let raw_path = meta.get("fs_path").and_then(|v| v.as_str())
+                let raw_path = meta
+                    .get("fs_path")
+                    .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| c.location_uri.clone());
                 let file_path = std::path::PathBuf::from(&raw_path);
                 if file_path.starts_with(&root) {
-                    files.push(FileSize { path: file_path, size: fs_size });
+                    files.push(FileSize {
+                        path: file_path,
+                        size: fs_size,
+                    });
                 }
             }
             let opts = PartitionOptions {
@@ -6481,7 +7913,8 @@ async fn cmd_sync_cloud_backup(
             };
             let assignments = partition_assignments(&root, &files, &opts);
             let num_files = assignments.len();
-            let num_shards = assignments.iter()
+            let num_shards = assignments
+                .iter()
                 .map(|a| a.collection_id.as_str())
                 .collect::<std::collections::HashSet<_>>()
                 .len();
@@ -6504,14 +7937,19 @@ async fn cmd_sync_cloud_backup(
                 ),
                 OutFormat::Text => {
                     println!("partitioned {num_files} file(s) under {}", root.display());
-                    println!("  shards allocated : {num_shards} (of max {})", opts.max_shards);
+                    println!(
+                        "  shards allocated : {num_shards} (of max {})",
+                        opts.max_shards
+                    );
                     println!("  group depth      : {}", opts.group_depth);
                     println!("  sample collections:");
                     let mut seen = std::collections::HashSet::new();
                     for a in &assignments {
                         if seen.insert(a.collection_id.clone()) {
                             println!("    {}", a.collection_id);
-                            if seen.len() >= 12 { break; }
+                            if seen.len() >= 12 {
+                                break;
+                            }
                         }
                     }
                 }
@@ -6519,8 +7957,10 @@ async fn cmd_sync_cloud_backup(
         }
 
         CloudBackupCmd::EmbedQuery { text, model } => {
-            let resp = client.embed_query(&text, model.as_deref())
-                .await.map_err(|e| e.to_string())?;
+            let resp = client
+                .embed_query(&text, model.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -6533,24 +7973,43 @@ async fn cmd_sync_cloud_backup(
                 OutFormat::Text => {
                     println!("model: {}", resp.model);
                     println!("dim:   {}", resp.dim);
-                    let preview: Vec<String> = resp.embedding.iter()
+                    let preview: Vec<String> = resp
+                        .embedding
+                        .iter()
                         .take(8)
                         .map(|f| format!("{f:.4}"))
                         .collect();
-                    println!("vec:   [{}, …] (showing first 8 of {})",
-                             preview.join(", "), resp.embedding.len());
+                    println!(
+                        "vec:   [{}, …] (showing first 8 of {})",
+                        preview.join(", "),
+                        resp.embedding.len()
+                    );
                 }
             }
         }
 
         CloudBackupCmd::HybridSearch {
-            q, embed_text, embed_model, ext, lang, folder_prefix,
-            author, collection_ids, year_min, year_max,
-            bytes_local, url_domain, tag, limit,
+            q,
+            embed_text,
+            embed_model,
+            ext,
+            lang,
+            folder_prefix,
+            author,
+            collection_ids,
+            year_min,
+            year_max,
+            bytes_local,
+            url_domain,
+            tag,
+            limit,
         } => {
             use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
             let filters = HybridSearchFilters {
-                ext: ext.iter().map(|e| e.to_lowercase().trim_start_matches('.').to_string()).collect(),
+                ext: ext
+                    .iter()
+                    .map(|e| e.to_lowercase().trim_start_matches('.').to_string())
+                    .collect(),
                 owner_ids: vec![],
                 languages: lang.clone(),
                 parent_dir_prefix: folder_prefix.clone(),
@@ -6582,7 +8041,8 @@ async fn cmd_sync_cloud_backup(
                         "used_text":      resp.used_text,
                         "used_vector":    resp.used_vector,
                         "shards_queried": resp.shards_queried,
-                    })).map_err(|e| e.to_string())?
+                    }))
+                    .map_err(|e| e.to_string())?
                 ),
                 OutFormat::Text => {
                     if resp.rows.is_empty() {
@@ -6590,16 +8050,17 @@ async fn cmd_sync_cloud_backup(
                     } else {
                         println!(
                             "{} hit(s) (text={} vector={} shards={}):",
-                            resp.total, resp.used_text, resp.used_vector,
-                            resp.shards_queried,
+                            resp.total, resp.used_text, resp.used_vector, resp.shards_queried,
                         );
                         for h in &resp.rows {
-                            let title = h.title.as_deref().unwrap_or_else(
-                                || h.filename.as_deref().unwrap_or("(no title)")
-                            );
+                            let title = h
+                                .title
+                                .as_deref()
+                                .unwrap_or_else(|| h.filename.as_deref().unwrap_or("(no title)"));
                             println!(
                                 "  [{:>6.3}] {:<60.60}  {}",
-                                h.score, title,
+                                h.score,
+                                title,
                                 h.path.as_deref().unwrap_or(""),
                             );
                         }
@@ -6609,8 +8070,7 @@ async fn cmd_sync_cloud_backup(
         }
 
         CloudBackupCmd::EmbedModels => {
-            let resp = client.embed_models().await
-                .map_err(|e| e.to_string())?;
+            let resp = client.embed_models().await.map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -6633,16 +8093,16 @@ async fn cmd_sync_cloud_backup(
 
         CloudBackupCmd::Drain { batch_size } => {
             let n = batch_size.clamp(1, 1024);
-            let (pushed, failed) = mgr.drain_cb_outbox(&client, n)
-                .await.map_err(|e| e.to_string())?;
+            let (pushed, failed) = mgr
+                .drain_cb_outbox(&client, n)
+                .await
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
                     serde_json::json!({ "pushed": pushed, "failed": failed })
                 ),
-                OutFormat::Text => println!(
-                    "drained outbox: pushed={pushed} failed={failed}"
-                ),
+                OutFormat::Text => println!("drained outbox: pushed={pushed} failed={failed}"),
             }
         }
 
@@ -6657,8 +8117,10 @@ async fn cmd_sync_cloud_backup(
                     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
                 }
             }
-            let bytes = client.download_file_by_hash(&sha, &dest)
-                .await.map_err(|e| e.to_string())?;
+            let bytes = client
+                .download_file_by_hash(&sha, &dest)
+                .await
+                .map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => println!(
                     "{}",
@@ -6668,26 +8130,35 @@ async fn cmd_sync_cloud_backup(
                         "dest_path": dest.display().to_string(),
                     })
                 ),
-                OutFormat::Text => println!(
-                    "downloaded {} bytes → {}",
-                    bytes, dest.display()
-                ),
+                OutFormat::Text => println!("downloaded {} bytes → {}", bytes, dest.display()),
             }
         }
 
         // Login/Logout already handled above.
         CloudBackupCmd::Login { .. } | CloudBackupCmd::Logout => unreachable!(),
 
-        CloudBackupCmd::BackupShards { drive_id, shard, force, keep_daily } => {
-            use crate::drives::{DriveRegistry, DriveConfig};
+        CloudBackupCmd::BackupShards {
+            drive_id,
+            shard,
+            force,
+            keep_daily,
+        } => {
+            use crate::drives::{DriveConfig, DriveRegistry};
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
 
             // Resolve drive.
             let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-            let drive_cfg: DriveConfig = registry.drives.iter()
+            let drive_cfg: DriveConfig = registry
+                .drives
+                .iter()
                 .find(|d| d.id == drive_id)
-                .ok_or_else(|| format!("drive '{}' not found; run `crispsorter drives list`", drive_id))?
+                .ok_or_else(|| {
+                    format!(
+                        "drive '{}' not found; run `crispsorter drives list`",
+                        drive_id
+                    )
+                })?
                 .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
                 Arc::from(DriveRegistry::instantiate(&drive_cfg));
@@ -6698,11 +8169,15 @@ async fn cmd_sync_cloud_backup(
 
             // List shards from VPS.
             let shard_list = client.shard_list().await.map_err(|e| e.to_string())?;
-            let shards_to_backup: Vec<_> = shard_list.shards.iter()
+            let shards_to_backup: Vec<_> = shard_list
+                .shards
+                .iter()
                 .filter(|s| {
                     // Scope to requested prefix if given.
                     if let Some(ref requested) = shard {
-                        if &s.prefix != requested { return false; }
+                        if &s.prefix != requested {
+                            return false;
+                        }
                     }
                     // Skip unchanged shards unless --force.
                     if !force {
@@ -6718,7 +8193,10 @@ async fn cmd_sync_cloud_backup(
 
             if shards_to_backup.is_empty() {
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({"backed_up": 0, "skipped": shard_list.shards.len()})),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({"backed_up": 0, "skipped": shard_list.shards.len()})
+                    ),
                     OutFormat::Text => println!("all shards up-to-date; nothing to back up"),
                 }
                 return Ok(());
@@ -6737,13 +8215,13 @@ async fn cmd_sync_cloud_backup(
                 let z = days as i64 + 719468;
                 let era = if z >= 0 { z } else { z - 146096 } / 146097;
                 let doe = z - era * 146097;
-                let yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
-                let y   = yoe + era * 400;
-                let doy = doe - (365*yoe + yoe/4 - yoe/100);
-                let mp  = (5*doy + 2)/153;
-                let d   = doy - (153*mp+2)/5 + 1;
-                let m   = if mp < 10 { mp + 3 } else { mp - 9 };
-                let y   = if m <= 2 { y + 1 } else { y };
+                let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+                let y = yoe + era * 400;
+                let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+                let mp = (5 * doy + 2) / 153;
+                let d = doy - (153 * mp + 2) / 5 + 1;
+                let m = if mp < 10 { mp + 3 } else { mp - 9 };
+                let y = if m <= 2 { y + 1 } else { y };
                 format!("{:04}-{:02}-{:02}", y, m, d)
             };
             let backup_dir = std::path::Path::new("cb-backups").join(&today);
@@ -6772,8 +8250,12 @@ async fn cmd_sync_cloud_backup(
                                 );
                                 backed_up += 1;
                             }
-                            Ok(Err(e)) => errors.push(format!("write {} to drive: {e}", shard_info.prefix)),
-                            Err(e) => errors.push(format!("write {} queue task: {e}", shard_info.prefix)),
+                            Ok(Err(e)) => {
+                                errors.push(format!("write {} to drive: {e}", shard_info.prefix))
+                            }
+                            Err(e) => {
+                                errors.push(format!("write {} queue task: {e}", shard_info.prefix))
+                            }
                         }
                     }
                     Err(e) => errors.push(format!("export {}: {e}", shard_info.prefix)),
@@ -6784,7 +8266,8 @@ async fn cmd_sync_cloud_backup(
             if keep_daily > 0 {
                 let cb_root = std::path::Path::new("cb-backups");
                 if let Ok(entries) = drive.list_dir(cb_root) {
-                    let mut dirs: Vec<String> = entries.iter()
+                    let mut dirs: Vec<String> = entries
+                        .iter()
                         .filter(|e| e.is_dir)
                         .map(|e| e.name.clone())
                         .collect();
@@ -6803,25 +8286,36 @@ async fn cmd_sync_cloud_backup(
             }
 
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "backed_up": backed_up,
-                    "errors":    errors,
-                    "date_dir":  today,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "backed_up": backed_up,
+                        "errors":    errors,
+                        "date_dir":  today,
+                    })
+                ),
                 OutFormat::Text => {
                     println!("backed up {backed_up} shard(s) → cb-backups/{today}/");
-                    for e in &errors { eprintln!("error: {e}"); }
+                    for e in &errors {
+                        eprintln!("error: {e}");
+                    }
                 }
             }
         }
 
-        CloudBackupCmd::RestoreShard { prefix, drive_id, date } => {
+        CloudBackupCmd::RestoreShard {
+            prefix,
+            drive_id,
+            date,
+        } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
             use std::sync::Arc;
 
             let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-            let drive_cfg = registry.drives.iter()
+            let drive_cfg = registry
+                .drives
+                .iter()
                 .find(|d| d.id == drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", drive_id))?
                 .clone();
@@ -6834,7 +8328,8 @@ async fn cmd_sync_cloud_backup(
                 d
             } else {
                 // Pick the lexicographically latest backup directory.
-                let mut dirs: Vec<String> = drive.list_dir(cb_root)
+                let mut dirs: Vec<String> = drive
+                    .list_dir(cb_root)
                     .map_err(|e| format!("list cb-backups: {e}"))?
                     .into_iter()
                     .filter(|e| e.is_dir)
@@ -6857,7 +8352,10 @@ async fn cmd_sync_cloud_backup(
                 Err(e) => return Err(format!("read {} queue task: {e}", tar_path.display())),
             };
 
-            client.shard_import(&prefix, data).await.map_err(|e| e.to_string())?;
+            client
+                .shard_import(&prefix, data)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // Update backup state so next incremental backup knows about this.
             if let Ok(bs) = crate::sync::backup_state::BackupState::open(&data_dir) {
@@ -6866,18 +8364,26 @@ async fn cmd_sync_cloud_backup(
             }
 
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "restored": prefix,
-                    "from_drive": drive_id,
-                    "date": date_dir,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "restored": prefix,
+                        "from_drive": drive_id,
+                        "date": date_dir,
+                    })
+                ),
                 OutFormat::Text => println!("restored shard {prefix} from {drive_id}:{date_dir}"),
             }
         }
 
-        CloudBackupCmd::ImportFromManifestDb { manifest_db, owner_id, batch_size, dry_run } => {
-            use rusqlite::{Connection as RConn, OpenFlags};
+        CloudBackupCmd::ImportFromManifestDb {
+            manifest_db,
+            owner_id,
+            batch_size,
+            dry_run,
+        } => {
             use crate::sync::cloud_backup::ManifestRow;
+            use rusqlite::{Connection as RConn, OpenFlags};
             use std::path::Path as StdPath;
 
             if !manifest_db.exists() {
@@ -6887,24 +8393,28 @@ async fn cmd_sync_cloud_backup(
             // ── watermark state ──────────────────────────────────────
             let state_path = data_dir.join("manifest_import_state.db");
             let state_conn = RConn::open(&state_path).map_err(|e| e.to_string())?;
-            state_conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS manifest_imports \
-                 (db_path TEXT PRIMARY KEY, last_source_id INTEGER NOT NULL DEFAULT 0)"
-            ).map_err(|e| e.to_string())?;
-            let db_key = manifest_db.canonicalize()
+            state_conn
+                .execute_batch(
+                    "CREATE TABLE IF NOT EXISTS manifest_imports \
+                 (db_path TEXT PRIMARY KEY, last_source_id INTEGER NOT NULL DEFAULT 0)",
+                )
+                .map_err(|e| e.to_string())?;
+            let db_key = manifest_db
+                .canonicalize()
                 .unwrap_or_else(|_| manifest_db.clone())
                 .to_string_lossy()
                 .into_owned();
-            let mut watermark: i64 = state_conn.query_row(
-                "SELECT last_source_id FROM manifest_imports WHERE db_path = ?",
-                rusqlite::params![&db_key],
-                |r| r.get(0),
-            ).unwrap_or(0i64);
+            let mut watermark: i64 = state_conn
+                .query_row(
+                    "SELECT last_source_id FROM manifest_imports WHERE db_path = ?",
+                    rusqlite::params![&db_key],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0i64);
 
             // ── read source_files ────────────────────────────────────
-            let src = RConn::open_with_flags(
-                &manifest_db, OpenFlags::SQLITE_OPEN_READ_ONLY,
-            ).map_err(|e| e.to_string())?;
+            let src = RConn::open_with_flags(&manifest_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| e.to_string())?;
 
             let owner = if owner_id.is_empty() {
                 // Server will rewrite to authenticated key's owner_id.
@@ -6914,66 +8424,81 @@ async fn cmd_sync_cloud_backup(
             };
 
             let mut total_imported = 0usize;
-            let mut total_skipped  = 0usize;
-            let mut max_source_id  = watermark;
+            let mut total_skipped = 0usize;
+            let mut max_source_id = watermark;
 
             loop {
-                let mut stmt = src.prepare(
-                    "SELECT source_id, file_path, file_hash, file_size_bytes, \
+                let mut stmt = src
+                    .prepare(
+                        "SELECT source_id, file_path, file_hash, file_size_bytes, \
                             modified_time, archived_in \
                      FROM source_files \
                      WHERE source_id > ? AND file_hash IS NOT NULL \
                      ORDER BY source_id \
-                     LIMIT ?"
-                ).map_err(|e| e.to_string())?;
+                     LIMIT ?",
+                    )
+                    .map_err(|e| e.to_string())?;
 
                 struct SrcRow {
-                    source_id:  i64,
-                    file_path:  String,
-                    file_hash:  String,
+                    source_id: i64,
+                    file_path: String,
+                    file_hash: String,
                     size_bytes: i64,
-                    mtime:      f64,
+                    mtime: f64,
                     archived_in: Option<i64>,
                 }
-                let rows: Vec<SrcRow> = stmt.query_map(
-                    rusqlite::params![watermark, batch_size as i64],
-                    |r| Ok(SrcRow {
-                        source_id:   r.get(0)?,
-                        file_path:   r.get(1)?,
-                        file_hash:   r.get(2)?,
-                        size_bytes:  r.get(3)?,
-                        mtime:       r.get::<_, f64>(4).unwrap_or(0.0),
-                        archived_in: r.get(5)?,
-                    }),
-                ).map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
+                let rows: Vec<SrcRow> = stmt
+                    .query_map(rusqlite::params![watermark, batch_size as i64], |r| {
+                        Ok(SrcRow {
+                            source_id: r.get(0)?,
+                            file_path: r.get(1)?,
+                            file_hash: r.get(2)?,
+                            size_bytes: r.get(3)?,
+                            mtime: r.get::<_, f64>(4).unwrap_or(0.0),
+                            archived_in: r.get(5)?,
+                        })
+                    })
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
 
-                if rows.is_empty() { break; }
+                if rows.is_empty() {
+                    break;
+                }
 
-                let manifest_rows: Vec<ManifestRow> = rows.iter()
+                let manifest_rows: Vec<ManifestRow> = rows
+                    .iter()
                     .map(|r| {
                         let p = StdPath::new(&r.file_path);
-                        let filename  = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let ext       = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        let parent_dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                        let filename = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let ext = p
+                            .extension()
+                            .map(|e| e.to_string_lossy().to_lowercase())
+                            .unwrap_or_default();
+                        let parent_dir = p
+                            .parent()
+                            .map(|d| d.to_string_lossy().into_owned())
+                            .unwrap_or_default();
                         ManifestRow {
-                            path:        r.file_path.clone(),
-                            size_bytes:  r.size_bytes,
-                            sha256:      r.file_hash.clone(),
-                            mtime_unix:  r.mtime,
-                            owner_id:    owner.clone(),
+                            path: r.file_path.clone(),
+                            size_bytes: r.size_bytes,
+                            sha256: r.file_hash.clone(),
+                            mtime_unix: r.mtime,
+                            owner_id: owner.clone(),
                             filename,
                             ext,
                             parent_dir,
-                            language:    None,
-                            title:       None,
-                            author:      None,
-                            year:        None,
-                            full_text:   None,
+                            language: None,
+                            title: None,
+                            author: None,
+                            year: None,
+                            full_text: None,
                             collection_id: None,
                             archived_in: r.archived_in,
-                            url:         None,
+                            url: None,
                             tags: vec![],
                         }
                     })
@@ -6984,7 +8509,8 @@ async fn cmd_sync_cloud_backup(
                 if dry_run {
                     total_skipped += manifest_rows.len();
                 } else {
-                    let resp = client.manifest_push(&manifest_rows)
+                    let resp = client
+                        .manifest_push(&manifest_rows)
                         .await
                         .map_err(|e| e.to_string())?;
                     total_imported += resp.accepted;
@@ -6999,16 +8525,21 @@ async fn cmd_sync_cloud_backup(
                 }
 
                 watermark = new_max;
-                if rows.len() < batch_size { break; }
+                if rows.len() < batch_size {
+                    break;
+                }
             }
 
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "imported":   total_imported,
-                    "skipped":    total_skipped,
-                    "watermark":  max_source_id,
-                    "dry_run":    dry_run,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "imported":   total_imported,
+                        "skipped":    total_skipped,
+                        "watermark":  max_source_id,
+                        "dry_run":    dry_run,
+                    })
+                ),
                 OutFormat::Text => {
                     if dry_run {
                         println!("dry-run: would import {total_skipped} rows");
@@ -7022,13 +8553,16 @@ async fn cmd_sync_cloud_backup(
         CloudBackupCmd::ExtractStatus => {
             let resp = client.extract_status().await.map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "pending":         resp.pending,
-                    "in_progress":     resp.in_progress,
-                    "done":            resp.done,
-                    "failed":          resp.failed,
-                    "worker_db_found": resp.worker_db_found,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "pending":         resp.pending,
+                        "in_progress":     resp.in_progress,
+                        "done":            resp.done,
+                        "failed":          resp.failed,
+                        "worker_db_found": resp.worker_db_found,
+                    })
+                ),
                 OutFormat::Text => {
                     if !resp.worker_db_found {
                         println!("VPS worker-state DB not found (worker never ran?)");
@@ -7066,30 +8600,44 @@ async fn cmd_cloud_backup_admin(
     // for these routes).  If no token stored, pass a dummy to keep the
     // client happy (admin routes don't enforce bearer auth server-side).
     let token = crate::sync::secret::get_token_for_url(url)
-        .ok().flatten().unwrap_or_else(|| "placeholder".to_string());
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "placeholder".to_string());
     let client = CloudBackupClient::new(url, &token).map_err(|e| e.to_string())?;
 
-    let CloudBackupCmd::Admin { sub } = cmd else { unreachable!() };
+    let CloudBackupCmd::Admin { sub } = cmd else {
+        unreachable!()
+    };
 
     match sub {
-        AdminSubCmd::Mint { name, owner_id, admin_token } => {
+        AdminSubCmd::Mint {
+            name,
+            owner_id,
+            admin_token,
+        } => {
             let resp = client
                 .admin_mint(&admin_token, &name, owner_id.as_deref())
                 .await
                 .map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "raw_key":  resp.raw_key,
-                    "name":     resp.name,
-                    "owner_id": resp.owner_id,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "raw_key":  resp.raw_key,
+                        "name":     resp.name,
+                        "owner_id": resp.owner_id,
+                    })
+                ),
                 OutFormat::Text => {
                     println!("API key minted.  Copy now — this is the only time it's shown:");
                     println!();
                     println!("  {}", resp.raw_key);
                     println!();
                     println!("Set it on a client as:");
-                    println!("  crispsorter sync cloud-backup login --token {}", resp.raw_key);
+                    println!(
+                        "  crispsorter sync cloud-backup login --token {}",
+                        resp.raw_key
+                    );
                 }
             }
         }
@@ -7099,10 +8647,13 @@ async fn cmd_cloud_backup_admin(
                 .await
                 .map_err(|e| e.to_string())?;
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "revoked": resp.revoked,
-                    "name":    resp.name,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "revoked": resp.revoked,
+                        "name":    resp.name,
+                    })
+                ),
                 OutFormat::Text => {
                     if resp.revoked {
                         println!("revoked: {}", resp.name);
@@ -7125,11 +8676,15 @@ async fn cmd_cloud_backup_admin(
                 } else {
                     println!("{:<24}  {:<8}  created_at", "name", "status");
                     for k in &keys {
-                        let status = if k.revoked_at.is_some() { "revoked" } else { "active" };
+                        let status = if k.revoked_at.is_some() {
+                            "revoked"
+                        } else {
+                            "active"
+                        };
                         let ts = {
                             let secs = k.created_at / 1000;
-                            let dt = std::time::UNIX_EPOCH
-                                + std::time::Duration::from_secs(secs as u64);
+                            let dt =
+                                std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
                             let elapsed = dt.elapsed().unwrap_or_default();
                             if elapsed.as_secs() < 86400 {
                                 format!("{} sec ago", elapsed.as_secs())
@@ -7137,7 +8692,11 @@ async fn cmd_cloud_backup_admin(
                                 format!("{} days ago", elapsed.as_secs() / 86400)
                             }
                         };
-                        println!("{:<24}  {:<8}  {ts}", &k.name[..k.name.len().min(24)], status);
+                        println!(
+                            "{:<24}  {:<8}  {ts}",
+                            &k.name[..k.name.len().min(24)],
+                            status
+                        );
                     }
                 }
             }
@@ -7168,12 +8727,20 @@ fn local_result_to_federated(
         author: r.author.clone(),
         year: r.year,
         language: r.language.clone(),
-        sha256: if r.source_hash.is_empty() { None } else { Some(r.source_hash.clone()) },
+        sha256: if r.source_hash.is_empty() {
+            None
+        } else {
+            Some(r.source_hash.clone())
+        },
         size_bytes: None,
         snippet: highlight_snippet(&r.snippet, q, SNIPPET_WINDOW),
         location_uri: Some(r.location_uri),
         url: r.url,
-        tags: if r.tags.is_empty() { None } else { Some(r.tags) },
+        tags: if r.tags.is_empty() {
+            None
+        } else {
+            Some(r.tags)
+        },
     }
 }
 
@@ -7240,9 +8807,22 @@ fn cmd_search(
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
     rt.block_on(cmd_search_async(
-        out, &data_dir, query, limit, local_only, cloud_only, ext, lang,
-        folder_prefix, author, year_min, year_max, url_domain, tag,
-        collection_ids, embed_text,
+        out,
+        &data_dir,
+        query,
+        limit,
+        local_only,
+        cloud_only,
+        ext,
+        lang,
+        folder_prefix,
+        author,
+        year_min,
+        year_max,
+        url_domain,
+        tag,
+        collection_ids,
+        embed_text,
     ))
 }
 
@@ -7312,7 +8892,10 @@ async fn cmd_search_async(
     if want_local {
         let fts_dir = data_dir.join("fts");
         if !fts_dir.exists() {
-            errors.insert("local", "FTS index not found — ingest some files first".into());
+            errors.insert(
+                "local",
+                "FTS index not found — ingest some files first".into(),
+            );
         } else {
             let filters = crate::index::SearchFilters {
                 language: lang.clone(),
@@ -7325,8 +8908,8 @@ async fn cmd_search_async(
                 ..Default::default()
             };
             let leg: Result<Vec<FederatedHit>, String> = async {
-                let fts = crate::index::FtsIndex::open_or_create(&fts_dir)
-                    .map_err(|e| e.to_string())?;
+                let fts =
+                    crate::index::FtsIndex::open_or_create(&fts_dir).map_err(|e| e.to_string())?;
                 let hits = fts
                     .search(&q, &filters, limit.saturating_mul(4))
                     .map_err(|e| e.to_string())?;
@@ -7358,7 +8941,9 @@ async fn cmd_search_async(
             .await;
             match leg {
                 Ok(fed) => lists.push(fed),
-                Err(e) => { errors.insert("local", e); }
+                Err(e) => {
+                    errors.insert("local", e);
+                }
             }
         }
     }
@@ -7409,7 +8994,9 @@ async fn cmd_search_async(
             .await;
             match leg {
                 Ok(fed) => lists.push(fed),
-                Err(e) => { errors.insert("cloud_backup", e); }
+                Err(e) => {
+                    errors.insert("cloud_backup", e);
+                }
             }
         }
     }
@@ -7422,10 +9009,13 @@ async fn cmd_search_async(
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v.into()))
                 .collect();
-            println!("{}", serde_json::json!({
-                "rows":   merged,
-                "errors": errs,
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "rows":   merged,
+                    "errors": errs,
+                })
+            );
         }
         OutFormat::Text => {
             for (k, v) in &errors {
@@ -7435,9 +9025,7 @@ async fn cmd_search_async(
                 println!("no results");
             } else {
                 for h in &merged {
-                    let name = h.title.as_deref()
-                        .or(h.filename.as_deref())
-                        .unwrap_or("?");
+                    let name = h.title.as_deref().or(h.filename.as_deref()).unwrap_or("?");
                     println!("[{}] {name}  (score {:.4})", h.source, h.score);
                     if let Some(ref u) = h.url {
                         println!("   url:   {u}");
@@ -7464,12 +9052,17 @@ async fn cmd_cloud_backup_federated(
     cfg: crate::index::IndexConfig,
     cmd: CloudBackupCmd,
 ) -> Result<(), String> {
-    use crate::sync::tauri_commands::rrf_merge;
-    use crate::sync::cloud_backup::FederatedHit;
     #[cfg(feature = "images-crisplens")]
     use crate::images::crisplens::tauri_commands::get_json;
+    use crate::sync::cloud_backup::FederatedHit;
+    use crate::sync::tauri_commands::rrf_merge;
 
-    let CloudBackupCmd::FederatedSearch { query, backends, limit } = cmd else {
+    let CloudBackupCmd::FederatedSearch {
+        query,
+        backends,
+        limit,
+    } = cmd
+    else {
         unreachable!()
     };
 
@@ -7486,9 +9079,9 @@ async fn cmd_cloud_backup_federated(
         }
     };
     let want_local = enabled.contains("local");
-    let want_cb    = enabled.contains("cloud_backup");
+    let want_cb = enabled.contains("cloud_backup");
     #[cfg(feature = "images-crisplens")]
-    let want_cl    = enabled.contains("crisplens");
+    let want_cl = enabled.contains("crisplens");
 
     let mut lists: Vec<Vec<FederatedHit>> = Vec::new();
     let mut errors: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
@@ -7500,62 +9093,77 @@ async fn cmd_cloud_backup_federated(
             errors.insert("local", "FTS index not found".into());
         } else {
             match crate::index::FtsIndex::open_or_create(&fts_dir) {
-                Err(e) => { errors.insert("local", e.to_string()); }
-                Ok(fts) => {
-                    match fts.search(&q, &Default::default(), limit * 4) {
-                        Err(e) => { errors.insert("local", e.to_string()); }
-                        Ok(hits) => {
-                            let local_res: Result<Vec<_>, String> = async {
-                                let li = crate::index::LocalIndex::open_or_create(
-                                    data_dir, 1024,
-                                ).await.map_err(|e| e.to_string())?;
-                                let ids: Vec<String> = hits.iter()
-                                    .map(|h| h.doc_id.clone()).collect();
-                                let meta: std::collections::HashMap<String, _> = li
-                                    .fetch_search_results_by_ids_filtered(&ids, None)
-                                    .await
-                                    .unwrap_or_default()
+                Err(e) => {
+                    errors.insert("local", e.to_string());
+                }
+                Ok(fts) => match fts.search(&q, &Default::default(), limit * 4) {
+                    Err(e) => {
+                        errors.insert("local", e.to_string());
+                    }
+                    Ok(hits) => {
+                        let local_res: Result<Vec<_>, String> = async {
+                            let li = crate::index::LocalIndex::open_or_create(data_dir, 1024)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            let ids: Vec<String> = hits.iter().map(|h| h.doc_id.clone()).collect();
+                            let meta: std::collections::HashMap<String, _> = li
+                                .fetch_search_results_by_ids_filtered(&ids, None)
+                                .await
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|r| (r.doc_id.clone(), r))
+                                .collect();
+                            Ok(hits
+                                .iter()
+                                .filter_map(|h| meta.get(&h.doc_id).cloned())
+                                .collect())
+                        }
+                        .await;
+                        match local_res {
+                            Err(e) => {
+                                errors.insert("local", e);
+                            }
+                            Ok(rows) => {
+                                let fed: Vec<FederatedHit> = rows
                                     .into_iter()
-                                    .map(|r| (r.doc_id.clone(), r))
+                                    .enumerate()
+                                    .map(|(i, r)| FederatedHit {
+                                        id: format!("local:{}", r.doc_id),
+                                        source: "local".into(),
+                                        score: r.score,
+                                        rrf_rank: i + 1,
+                                        filename: r.filename,
+                                        path: Some(r.location_uri.clone()),
+                                        ext: r.ext,
+                                        title: r.title,
+                                        author: r.author,
+                                        year: r.year,
+                                        language: r.language,
+                                        sha256: if r.source_hash.is_empty() {
+                                            None
+                                        } else {
+                                            Some(r.source_hash)
+                                        },
+                                        size_bytes: None,
+                                        snippet: if r.snippet.is_empty() {
+                                            None
+                                        } else {
+                                            Some(r.snippet)
+                                        },
+                                        location_uri: Some(r.location_uri),
+                                        url: r.url.clone(),
+                                        tags: if r.tags.is_empty() {
+                                            None
+                                        } else {
+                                            Some(r.tags.clone())
+                                        },
+                                    })
                                     .collect();
-                                Ok(hits.iter()
-                                   .filter_map(|h| meta.get(&h.doc_id).cloned())
-                                   .collect())
-                            }.await;
-                            match local_res {
-                                Err(e) => { errors.insert("local", e); }
-                                Ok(rows) => {
-                                    let fed: Vec<FederatedHit> = rows.into_iter()
-                                        .enumerate()
-                                        .map(|(i, r)| FederatedHit {
-                                            id: format!("local:{}", r.doc_id),
-                                            source: "local".into(),
-                                            score: r.score,
-                                            rrf_rank: i + 1,
-                                            filename: r.filename,
-                                            path: Some(r.location_uri.clone()),
-                                            ext: r.ext,
-                                            title: r.title,
-                                            author: r.author,
-                                            year: r.year,
-                                            language: r.language,
-                                            sha256: if r.source_hash.is_empty() { None }
-                                                    else { Some(r.source_hash) },
-                                            size_bytes: None,
-                                            snippet: if r.snippet.is_empty() { None }
-                                                     else { Some(r.snippet) },
-                                            location_uri: Some(r.location_uri),
-                                            url: r.url.clone(),
-                                            tags: if r.tags.is_empty() { None }
-                                                  else { Some(r.tags.clone()) },
-                                        })
-                                        .collect();
-                                    lists.push(fed);
-                                }
+                                lists.push(fed);
                             }
                         }
                     }
-                }
+                },
             }
         }
     }
@@ -7563,49 +9171,63 @@ async fn cmd_cloud_backup_federated(
     // ── Cloud-backup ─────────────────────────────────────────────────────
     if want_cb {
         let url = cfg.cloud_backup_url.clone().unwrap_or_default();
-        let token = if url.is_empty() { String::new() }
-            else {
-                crate::sync::secret::get_token_for_url(&url)
-                    .ok().flatten().unwrap_or_default()
-            };
+        let token = if url.is_empty() {
+            String::new()
+        } else {
+            crate::sync::secret::get_token_for_url(&url)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        };
         if url.is_empty() {
             errors.insert("cloud_backup", "not configured".into());
         } else if token.is_empty() {
             errors.insert("cloud_backup", "no API token stored".into());
         } else {
             match crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) {
-                Err(e) => { errors.insert("cloud_backup", e.to_string()); }
+                Err(e) => {
+                    errors.insert("cloud_backup", e.to_string());
+                }
                 Ok(cli) => {
                     // Display-only federated leg — lean payload + server snippet
                     // (fall back to truncating full_text for older servers).
                     match cli.search(&q, limit, false).await {
-                        Err(e) => { errors.insert("cloud_backup", e.to_string()); }
+                        Err(e) => {
+                            errors.insert("cloud_backup", e.to_string());
+                        }
                         Ok(resp) => {
-                            let fed: Vec<FederatedHit> = resp.rows.into_iter()
+                            let fed: Vec<FederatedHit> = resp
+                                .rows
+                                .into_iter()
                                 .enumerate()
                                 .map(|(i, h)| {
                                     let snippet = h.snippet.clone().or_else(|| {
                                         h.full_text.as_ref().map(|t| t.chars().take(300).collect())
                                     });
                                     FederatedHit {
-                                    id: format!("cloud_backup:{}", h.sha256),
-                                    source: "cloud_backup".into(),
-                                    score: h.score,
-                                    rrf_rank: i + 1,
-                                    filename: Some(h.filename),
-                                    path: Some(h.path.clone()),
-                                    ext: Some(h.ext),
-                                    title: h.title,
-                                    author: h.author,
-                                    year: h.year,
-                                    language: h.language,
-                                    sha256: Some(h.sha256),
-                                    size_bytes: Some(h.size_bytes),
-                                    snippet,
-                                    location_uri: None,
-                                    url: h.url,
-                                    tags: if h.tags.is_empty() { None } else { Some(h.tags) },
-                                }})
+                                        id: format!("cloud_backup:{}", h.sha256),
+                                        source: "cloud_backup".into(),
+                                        score: h.score,
+                                        rrf_rank: i + 1,
+                                        filename: Some(h.filename),
+                                        path: Some(h.path.clone()),
+                                        ext: Some(h.ext),
+                                        title: h.title,
+                                        author: h.author,
+                                        year: h.year,
+                                        language: h.language,
+                                        sha256: Some(h.sha256),
+                                        size_bytes: Some(h.size_bytes),
+                                        snippet,
+                                        location_uri: None,
+                                        url: h.url,
+                                        tags: if h.tags.is_empty() {
+                                            None
+                                        } else {
+                                            Some(h.tags)
+                                        },
+                                    }
+                                })
                                 .collect();
                             lists.push(fed);
                         }
@@ -7618,18 +9240,24 @@ async fn cmd_cloud_backup_federated(
     // ── CrispLens ────────────────────────────────────────────────────────
     #[cfg(feature = "images-crisplens")]
     if want_cl {
-        let encoded: String = q.chars().flat_map(|c| {
-            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
-                vec![c]
-            } else {
-                format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
-            }
-        }).collect();
+        let encoded: String = q
+            .chars()
+            .flat_map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect::<Vec<_>>()
+                }
+            })
+            .collect();
         let path = format!("/api/search/semantic?q={encoded}&limit={limit}");
         match get_json::<Vec<crisplens_protocol::SearchHit>>(data_dir, &path) {
-            Err(e) => { errors.insert("crisplens", e); }
+            Err(e) => {
+                errors.insert("crisplens", e);
+            }
             Ok(hits) => {
-                let fed: Vec<FederatedHit> = hits.into_iter()
+                let fed: Vec<FederatedHit> = hits
+                    .into_iter()
                     .enumerate()
                     .map(|(i, h)| FederatedHit {
                         id: format!("crisplens:{}", h.id),
@@ -7664,10 +9292,13 @@ async fn cmd_cloud_backup_federated(
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v.into()))
                 .collect();
-            println!("{}", serde_json::json!({
-                "hits":   merged,
-                "errors": errs,
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "hits":   merged,
+                    "errors": errs,
+                })
+            );
         }
         OutFormat::Text => {
             for (k, v) in &errors {
@@ -7677,8 +9308,8 @@ async fn cmd_cloud_backup_federated(
                 println!("no results");
             } else {
                 for h in &merged {
-                    let name  = h.filename.as_deref().unwrap_or("?");
-                    let src   = &h.source;
+                    let name = h.filename.as_deref().unwrap_or("?");
+                    let src = &h.source;
                     let score = h.score;
                     println!("[{src}] {name}  (score {score:.4})");
                     if let Some(ref p) = h.path {
@@ -7697,11 +9328,7 @@ async fn cmd_cloud_backup_federated(
 
 // ── images (P13) ──────────────────────────────────────────────────────────
 
-fn cmd_images(
-    out: OutFormat,
-    data_dir: Option<PathBuf>,
-    cmd: ImagesCmd,
-) -> Result<(), String> {
+fn cmd_images(out: OutFormat, data_dir: Option<PathBuf>, cmd: ImagesCmd) -> Result<(), String> {
     // Subcommands that don't need the index: extensions / thumbnail / exif.
     // They get short-circuited here so a missing data dir is never an
     // obstacle for the file-mode operations.  Borrow patterns so `cmd`
@@ -7720,7 +9347,12 @@ fn cmd_images(
         }
         return Ok(());
     }
-    if let ImagesCmd::Thumbnail { path, size, out: out_path } = &cmd {
+    if let ImagesCmd::Thumbnail {
+        path,
+        size,
+        out: out_path,
+    } = &cmd
+    {
         return cmd_images_thumbnail_file(path, *size, out_path.as_deref());
     }
     if let ImagesCmd::Exif { path } = &cmd {
@@ -7741,11 +9373,7 @@ fn cmd_images(
     rt.block_on(cmd_images_async(out, data_dir, cmd))
 }
 
-async fn cmd_images_async(
-    out: OutFormat,
-    data_dir: PathBuf,
-    cmd: ImagesCmd,
-) -> Result<(), String> {
+async fn cmd_images_async(out: OutFormat, data_dir: PathBuf, cmd: ImagesCmd) -> Result<(), String> {
     use std::sync::Arc;
     let local = Arc::new(
         crate::index::LocalIndex::open_or_create(&data_dir, 1024)
@@ -7758,9 +9386,7 @@ async fn cmd_images_async(
     let folder_to_prefix = |p: Option<PathBuf>| p.map(|f| f.to_string_lossy().into_owned());
 
     match cmd {
-        ImagesCmd::Extensions
-        | ImagesCmd::Thumbnail { .. }
-        | ImagesCmd::Exif { .. } => {
+        ImagesCmd::Extensions | ImagesCmd::Thumbnail { .. } | ImagesCmd::Exif { .. } => {
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
         }
 
@@ -7769,7 +9395,11 @@ async fn cmd_images_async(
             return cmd_images_crisplens(out, &data_dir, cmd).await;
         }
 
-        ImagesCmd::NearDuplicates { threshold, ext, folder } => {
+        ImagesCmd::NearDuplicates {
+            threshold,
+            ext,
+            folder,
+        } => {
             let filters = ListFilters {
                 parent_dir_prefix: folder_to_prefix(folder),
                 ext: if ext.is_empty() { None } else { Some(ext) },
@@ -7792,16 +9422,24 @@ async fn cmd_images_async(
                     if groups.is_empty() {
                         println!("no near-duplicate clusters at threshold {threshold}");
                     } else {
-                        println!("{} near-dup clusters (threshold {threshold}):", groups.len());
+                        println!(
+                            "{} near-dup clusters (threshold {threshold}):",
+                            groups.len()
+                        );
                         for g in &groups {
                             println!();
-                            println!("  rep phash: 0x{}  ({} members)",
-                                g.representative_phash_hex, g.items.len());
+                            println!(
+                                "  rep phash: 0x{}  ({} members)",
+                                g.representative_phash_hex,
+                                g.items.len()
+                            );
                             for it in &g.items {
                                 let name = it.image.filename.as_deref().unwrap_or(&it.image.doc_id);
                                 let ext = it.image.ext.as_deref().unwrap_or("?");
-                                println!("    .{ext:<6} d={:<3} {name}\t{}",
-                                    it.distance_from_rep, it.image.location_uri);
+                                println!(
+                                    "    .{ext:<6} d={:<3} {name}\t{}",
+                                    it.distance_from_rep, it.image.location_uri
+                                );
                             }
                         }
                     }
@@ -7947,8 +9585,8 @@ fn cmd_images_thumbnail_file(
     out_path: Option<&std::path::Path>,
 ) -> Result<(), String> {
     use std::io::Write;
-    let bytes = crate::images::thumbnail::generate_thumbnail(path, size)
-        .map_err(|e| e.to_string())?;
+    let bytes =
+        crate::images::thumbnail::generate_thumbnail(path, size).map_err(|e| e.to_string())?;
     match out_path {
         Some(p) => std::fs::write(p, &bytes).map_err(|e| format!("write {}: {e}", p.display())),
         None => std::io::stdout()
@@ -7962,8 +9600,8 @@ fn cmd_images_exif_file(out: OutFormat, path: &std::path::Path) -> Result<(), St
     let summary = crate::images::exif::read_exif(path).map_err(|e| e.to_string())?;
     match out {
         OutFormat::Json => {
-            let json = serde_json::to_string(&summary)
-                .map_err(|e| format!("serialize exif: {e}"))?;
+            let json =
+                serde_json::to_string(&summary).map_err(|e| format!("serialize exif: {e}"))?;
             println!("{json}");
         }
         OutFormat::Text => {
@@ -7978,19 +9616,47 @@ fn cmd_images_exif_file(out: OutFormat, path: &std::path::Path) -> Result<(), St
                     }
                 };
             }
-            row!("Camera make:",  summary.camera_make.as_ref());
+            row!("Camera make:", summary.camera_make.as_ref());
             row!("Camera model:", summary.camera_model.as_ref());
-            row!("Lens:",         summary.lens_model.as_ref());
-            row!("Taken at:",     summary.taken_at.as_ref());
-            row!("Taken (unix):", summary.taken_at_unix.map(|v| v.to_string()).as_ref());
-            row!("Dimensions:",   summary.width.zip(summary.height).map(|(w, h)| format!("{w} × {h}")).as_ref());
-            row!("Aperture:",     summary.f_number.map(|v| format!("f/{v:.1}")).as_ref());
-            row!("Exposure:",     summary.exposure_time.as_ref());
-            row!("ISO:",          summary.iso.map(|v| v.to_string()).as_ref());
-            row!("Focal length:", summary.focal_length_mm.map(|v| format!("{v:.1} mm")).as_ref());
-            row!("GPS lat:",      summary.gps_lat.map(|v| format!("{v:.6}")).as_ref());
-            row!("GPS lon:",      summary.gps_lon.map(|v| format!("{v:.6}")).as_ref());
-            row!("Orientation:",  summary.orientation.map(|v| v.to_string()).as_ref());
+            row!("Lens:", summary.lens_model.as_ref());
+            row!("Taken at:", summary.taken_at.as_ref());
+            row!(
+                "Taken (unix):",
+                summary.taken_at_unix.map(|v| v.to_string()).as_ref()
+            );
+            row!(
+                "Dimensions:",
+                summary
+                    .width
+                    .zip(summary.height)
+                    .map(|(w, h)| format!("{w} × {h}"))
+                    .as_ref()
+            );
+            row!(
+                "Aperture:",
+                summary.f_number.map(|v| format!("f/{v:.1}")).as_ref()
+            );
+            row!("Exposure:", summary.exposure_time.as_ref());
+            row!("ISO:", summary.iso.map(|v| v.to_string()).as_ref());
+            row!(
+                "Focal length:",
+                summary
+                    .focal_length_mm
+                    .map(|v| format!("{v:.1} mm"))
+                    .as_ref()
+            );
+            row!(
+                "GPS lat:",
+                summary.gps_lat.map(|v| format!("{v:.6}")).as_ref()
+            );
+            row!(
+                "GPS lon:",
+                summary.gps_lon.map(|v| format!("{v:.6}")).as_ref()
+            );
+            row!(
+                "Orientation:",
+                summary.orientation.map(|v| v.to_string()).as_ref()
+            );
         }
     }
     Ok(())
@@ -8024,10 +9690,13 @@ async fn cmd_images_crisplens(
             };
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::json!({
-                        "settings":      s,
-                        "authenticated": authenticated,
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "settings":      s,
+                            "authenticated": authenticated,
+                        })
+                    );
                 }
                 OutFormat::Text => {
                     println!("backend            : {:?}", s.backend);
@@ -8069,18 +9738,28 @@ async fn cmd_images_crisplens(
         CrispLensCmd::SessionStatus => {
             let s = settings::load(data_dir);
             let url = s.normalised_url().to_owned();
-            let authenticated = !url.is_empty()
-                && matches!(secret::get_session_for_url(&url), Ok(Some(_)));
+            let authenticated =
+                !url.is_empty() && matches!(secret::get_session_for_url(&url), Ok(Some(_)));
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "url":           url,
-                    "authenticated": authenticated,
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "url":           url,
+                        "authenticated": authenticated,
+                    })
+                ),
                 OutFormat::Text => {
                     if url.is_empty() {
                         println!("(no CrispLens URL configured)");
                     } else {
-                        println!("{url}: {}", if authenticated { "authenticated" } else { "no stored session" });
+                        println!(
+                            "{url}: {}",
+                            if authenticated {
+                                "authenticated"
+                            } else {
+                                "no stored session"
+                            }
+                        );
                     }
                 }
             }
@@ -8090,10 +9769,9 @@ async fn cmd_images_crisplens(
             let s = settings::load(data_dir);
             let url = s.normalised_url().to_owned();
             if url.is_empty() {
-                return Err(
-                    "no CrispLens URL configured — run \
-                     `crispsorter images crisplens set-url <URL> --enable` first".to_string(),
-                );
+                return Err("no CrispLens URL configured — run \
+                     `crispsorter images crisplens set-url <URL> --enable` first"
+                    .to_string());
             }
             // Password resolution order: --password flag, then
             // CRISPLENS_PASSWORD env var.  Never read from a
@@ -8112,7 +9790,10 @@ async fn cmd_images_crisplens(
             .map_err(|e| format!("login join: {e}"))??;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&outcome).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&outcome).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     println!("logged in as {} ({})", outcome.username, outcome.role);
@@ -8128,7 +9809,10 @@ async fn cmd_images_crisplens(
                 .map_err(|e| format!("status join: {e}"))?;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&status).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&status).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     if !status.tier2_configured {
@@ -8150,7 +9834,10 @@ async fn cmd_images_crisplens(
                     }
                     println!("authenticated  : {}", status.authenticated);
                     if let Some(u) = &status.username {
-                        println!("user           : {u} ({})", status.role.as_deref().unwrap_or(""));
+                        println!(
+                            "user           : {u} ({})",
+                            status.role.as_deref().unwrap_or("")
+                        );
                     }
                     if !status.error.is_empty() {
                         println!("note           : {}", status.error);
@@ -8167,7 +9854,10 @@ async fn cmd_images_crisplens(
                 .map_err(|e| format!("watchfolders join: {e}"))??;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&folders).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&folders).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     if folders.is_empty() {
@@ -8175,12 +9865,26 @@ async fn cmd_images_crisplens(
                     } else {
                         println!("{} watchfolder(s):", folders.len());
                         for f in &folders {
-                            let rec  = f.recursive_bool().map(|b| if b { "rec" } else { "flat" }).unwrap_or("?");
-                            let auto = f.auto_scan_bool().map(|b| if b { "auto" } else { "manual" }).unwrap_or("?");
-                            let en   = f.enabled_bool().map(|b| if b { "on" } else { "off" }).unwrap_or("?");
-                            println!("  [{:>3}] {:4} {:6} {:3}  {}",
+                            let rec = f
+                                .recursive_bool()
+                                .map(|b| if b { "rec" } else { "flat" })
+                                .unwrap_or("?");
+                            let auto = f
+                                .auto_scan_bool()
+                                .map(|b| if b { "auto" } else { "manual" })
+                                .unwrap_or("?");
+                            let en = f
+                                .enabled_bool()
+                                .map(|b| if b { "on" } else { "off" })
+                                .unwrap_or("?");
+                            println!(
+                                "  [{:>3}] {:4} {:6} {:3}  {}",
                                 f.id.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
-                                rec, auto, en, f.path);
+                                rec,
+                                auto,
+                                en,
+                                f.path
+                            );
                         }
                     }
                 }
@@ -8193,14 +9897,16 @@ async fn cmd_images_crisplens(
             use crate::images::crisplens::tauri_commands::get_json;
             use crisplens_protocol::Person;
             let dd = data_dir.to_path_buf();
-            let people: Vec<Person> = tokio::task::spawn_blocking(move || {
-                get_json::<Vec<Person>>(&dd, "/api/people")
-            })
-            .await
-            .map_err(|e| format!("people join: {e}"))??;
+            let people: Vec<Person> =
+                tokio::task::spawn_blocking(move || get_json::<Vec<Person>>(&dd, "/api/people"))
+                    .await
+                    .map_err(|e| format!("people join: {e}"))??;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&people).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&people).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     if people.is_empty() {
@@ -8208,7 +9914,10 @@ async fn cmd_images_crisplens(
                     } else {
                         println!("{} person cluster(s):", people.len());
                         for p in &people {
-                            let app = p.appearances.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
+                            let app = p
+                                .appearances
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "?".into());
                             println!("  [{:>3}] {:>4}×  {}", p.id, app, p.name);
                         }
                     }
@@ -8223,14 +9932,16 @@ async fn cmd_images_crisplens(
             use crisplens_protocol::Face;
             let dd = data_dir.to_path_buf();
             let path = format!("/api/images/{image_id}/faces");
-            let faces: Vec<Face> = tokio::task::spawn_blocking(move || {
-                get_json::<Vec<Face>>(&dd, &path)
-            })
-            .await
-            .map_err(|e| format!("faces join: {e}"))??;
+            let faces: Vec<Face> =
+                tokio::task::spawn_blocking(move || get_json::<Vec<Face>>(&dd, &path))
+                    .await
+                    .map_err(|e| format!("faces join: {e}"))??;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&faces).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&faces).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     if faces.is_empty() {
@@ -8239,8 +9950,14 @@ async fn cmd_images_crisplens(
                         println!("{} face(s) in image {image_id}:", faces.len());
                         for f in &faces {
                             let person = f.person_name.as_deref().unwrap_or("(unknown)");
-                            let conf   = f.detection_confidence.map(|c| format!("{c:.2}")).unwrap_or_else(|| "?".into());
-                            let verif  = f.verified_bool().map(|b| if b { "✓" } else { "·" }).unwrap_or("·");
+                            let conf = f
+                                .detection_confidence
+                                .map(|c| format!("{c:.2}"))
+                                .unwrap_or_else(|| "?".into());
+                            let verif = f
+                                .verified_bool()
+                                .map(|b| if b { "✓" } else { "·" })
+                                .unwrap_or("·");
                             println!("  [{:>3}] {verif} det={conf}  bbox=t{:.2},r{:.2},b{:.2},l{:.2}  {}",
                                 f.face_id, f.bbox.top, f.bbox.right, f.bbox.bottom, f.bbox.left, person);
                         }
@@ -8278,8 +9995,9 @@ async fn cmd_images_crisplens(
             let resolved = tokio::task::spawn_blocking(move || {
                 match get_json_inner::<CrispLensImage>(&dd, &url_path) {
                     Ok(opt) => Ok::<_, String>(opt),
-                    Err(e) if e.contains("HTTP 404") || e.to_lowercase().contains("not found")
-                        => Ok::<_, String>(None),
+                    Err(e) if e.contains("HTTP 404") || e.to_lowercase().contains("not found") => {
+                        Ok::<_, String>(None)
+                    }
                     Err(e) => Err(e),
                 }
             })
@@ -8288,7 +10006,10 @@ async fn cmd_images_crisplens(
 
             match (out, &resolved) {
                 (OutFormat::Json, _) => {
-                    println!("{}", serde_json::to_string(&resolved).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&resolved).map_err(|e| e.to_string())?
+                    );
                 }
                 (OutFormat::Text, None) => {
                     println!("(no CrispLens image with that hash)");
@@ -8296,12 +10017,18 @@ async fn cmd_images_crisplens(
                 (OutFormat::Text, Some(img)) => {
                     println!("CrispLens image #{} — {}", img.id, img.filename);
                     println!("  path     : {}", img.filepath);
-                    if let Some(s) = img.file_size { println!("  size     : {s} B"); }
+                    if let Some(s) = img.file_size {
+                        println!("  size     : {s} B");
+                    }
                     if let (Some(w), Some(h)) = (img.width, img.height) {
                         println!("  dims     : {w} × {h}");
                     }
-                    if let Some(t) = &img.taken_at { println!("  taken_at : {t}"); }
-                    if let Some(fc) = img.face_count { println!("  faces    : {fc}"); }
+                    if let Some(t) = &img.taken_at {
+                        println!("  taken_at : {t}");
+                    }
+                    if let Some(fc) = img.face_count {
+                        println!("  faces    : {fc}");
+                    }
                 }
             }
         }
@@ -8321,14 +10048,16 @@ async fn cmd_images_crisplens(
                 })
                 .collect();
             let path = format!("/api/search?q={encoded_q}&limit={limit}");
-            let hits: Vec<SearchHit> = tokio::task::spawn_blocking(move || {
-                get_json::<Vec<SearchHit>>(&dd, &path)
-            })
-            .await
-            .map_err(|e| format!("search join: {e}"))??;
+            let hits: Vec<SearchHit> =
+                tokio::task::spawn_blocking(move || get_json::<Vec<SearchHit>>(&dd, &path))
+                    .await
+                    .map_err(|e| format!("search join: {e}"))??;
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::to_string(&hits).map_err(|e| e.to_string())?);
+                    println!(
+                        "{}",
+                        serde_json::to_string(&hits).map_err(|e| e.to_string())?
+                    );
                 }
                 OutFormat::Text => {
                     if hits.is_empty() {
@@ -8337,7 +10066,10 @@ async fn cmd_images_crisplens(
                         println!("{} semantic match(es) for {q:?}:", hits.len());
                         for h in &hits {
                             let faces = h.face_count.map(|n| format!("{n}f")).unwrap_or_default();
-                            let score = h.score.map(|s| format!("s={s:.3}")).unwrap_or_else(|| "      ".into());
+                            let score = h
+                                .score
+                                .map(|s| format!("s={s:.3}"))
+                                .unwrap_or_else(|| "      ".into());
                             println!("  [{:>4}] {score} {:6}  {}", h.id, faces, h.filename);
                         }
                     }
@@ -8352,7 +10084,10 @@ async fn cmd_images_crisplens(
                 // Same convention as the Tauri command — empty URL
                 // is no-op success.
                 match out {
-                    OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "noop": "no URL configured"})),
+                    OutFormat::Json => println!(
+                        "{}",
+                        serde_json::json!({"ok": true, "noop": "no URL configured"})
+                    ),
                     OutFormat::Text => println!("ok (no URL configured — nothing to log out from)"),
                 }
                 return Ok(());
@@ -8370,9 +10105,7 @@ async fn cmd_images_crisplens(
         // `images_crisplens_image_push` so headless / scripted pushes
         // share the same dedup + auth path the GUI uses.
         CrispLensCmd::Push { path, visibility } => {
-            use crate::images::crisplens::tauri_commands::{
-                get_json_inner, sha256_file,
-            };
+            use crate::images::crisplens::tauri_commands::{get_json_inner, sha256_file};
             use crisplens_protocol::Image as CrispLensImage;
 
             let s = settings::load(data_dir);
@@ -8382,7 +10115,9 @@ async fn cmd_images_crisplens(
             let url = s.normalised_url().to_owned();
             let cookie = secret::get_session_for_url(&url)
                 .map_err(|e| format!("keychain: {e}"))?
-                .ok_or_else(|| "no CrispLens session — `crispsorter images crisplens login` first".to_string())?;
+                .ok_or_else(|| {
+                    "no CrispLens session — `crispsorter images crisplens login` first".to_string()
+                })?;
 
             // Hash + dedup precheck.
             let abs_path = std::fs::canonicalize(&path)
@@ -8392,8 +10127,8 @@ async fn cmd_images_crisplens(
             let (sha, dedup) = tokio::task::spawn_blocking(move || {
                 let sha = sha256_file(&p_for_hash)?;
                 let dedup_path = format!("/api/images/by-hash/{sha}");
-                let dedup = get_json_inner::<CrispLensImage>(&dd_for_dedup, &dedup_path)
-                    .unwrap_or(None);
+                let dedup =
+                    get_json_inner::<CrispLensImage>(&dd_for_dedup, &dedup_path).unwrap_or(None);
                 Ok::<_, String>((sha, dedup))
             })
             .await
@@ -8413,7 +10148,9 @@ async fn cmd_images_crisplens(
                     OutFormat::Text => println!(
                         "already indexed: server_image_id={} faces={} sha256={sha}",
                         hit.id,
-                        hit.face_count.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
+                        hit.face_count
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "?".into()),
                     ),
                 }
                 return Ok(());
@@ -8423,55 +10160,62 @@ async fn cmd_images_crisplens(
             let p_for_upload = abs_path.clone();
             let url_for_upload = url.clone();
             let visibility_for_upload = visibility.clone();
-            let upload_result: serde_json::Value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-                let bytes = std::fs::read(&p_for_upload)
-                    .map_err(|e| format!("read {}: {e}", p_for_upload.display()))?;
-                let filename = p_for_upload
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "upload.bin".to_string());
-                let mime = match p_for_upload.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
-                    "jpg" | "jpeg" => "image/jpeg",
-                    "png" => "image/png",
-                    "gif" => "image/gif",
-                    "webp" => "image/webp",
-                    "tif" | "tiff" => "image/tiff",
-                    "bmp" => "image/bmp",
-                    "heic" => "image/heic",
-                    "heif" => "image/heif",
-                    _ => "application/octet-stream",
-                };
-                let form = reqwest::blocking::multipart::Form::new()
-                    .text("local_path", p_for_upload.to_string_lossy().into_owned())
-                    .text("visibility", visibility_for_upload)
-                    .part(
-                        "file",
-                        reqwest::blocking::multipart::Part::bytes(bytes)
-                            .file_name(filename)
-                            .mime_str(mime)
-                            .map_err(|e| format!("mime: {e}"))?,
-                    );
-                let client = reqwest::blocking::Client::builder()
-                    .cookie_store(true)
-                    .timeout(std::time::Duration::from_secs(120))
-                    .build()
-                    .map_err(|e| format!("http client init: {e}"))?;
-                let resp = client
-                    .post(format!("{url_for_upload}/api/ingest/upload-local"))
-                    .header("Cookie", format!("session={cookie}"))
-                    .multipart(form)
-                    .send()
-                    .map_err(|e| format!("POST upload-local: {e}"))?;
-                let status = resp.status();
-                if !status.is_success() {
-                    let body = resp.text().unwrap_or_default();
-                    return Err(format!("HTTP {status}: {body}"));
-                }
-                resp.json::<serde_json::Value>()
-                    .map_err(|e| format!("upload-local body not JSON: {e}"))
-            })
-            .await
-            .map_err(|e| format!("upload join: {e}"))??;
+            let upload_result: serde_json::Value =
+                tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+                    let bytes = std::fs::read(&p_for_upload)
+                        .map_err(|e| format!("read {}: {e}", p_for_upload.display()))?;
+                    let filename = p_for_upload
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "upload.bin".to_string());
+                    let mime = match p_for_upload
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "jpg" | "jpeg" => "image/jpeg",
+                        "png" => "image/png",
+                        "gif" => "image/gif",
+                        "webp" => "image/webp",
+                        "tif" | "tiff" => "image/tiff",
+                        "bmp" => "image/bmp",
+                        "heic" => "image/heic",
+                        "heif" => "image/heif",
+                        _ => "application/octet-stream",
+                    };
+                    let form = reqwest::blocking::multipart::Form::new()
+                        .text("local_path", p_for_upload.to_string_lossy().into_owned())
+                        .text("visibility", visibility_for_upload)
+                        .part(
+                            "file",
+                            reqwest::blocking::multipart::Part::bytes(bytes)
+                                .file_name(filename)
+                                .mime_str(mime)
+                                .map_err(|e| format!("mime: {e}"))?,
+                        );
+                    let client = reqwest::blocking::Client::builder()
+                        .cookie_store(true)
+                        .timeout(std::time::Duration::from_secs(120))
+                        .build()
+                        .map_err(|e| format!("http client init: {e}"))?;
+                    let resp = client
+                        .post(format!("{url_for_upload}/api/ingest/upload-local"))
+                        .header("Cookie", format!("session={cookie}"))
+                        .multipart(form)
+                        .send()
+                        .map_err(|e| format!("POST upload-local: {e}"))?;
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let body = resp.text().unwrap_or_default();
+                        return Err(format!("HTTP {status}: {body}"));
+                    }
+                    resp.json::<serde_json::Value>()
+                        .map_err(|e| format!("upload-local body not JSON: {e}"))
+                })
+                .await
+                .map_err(|e| format!("upload join: {e}"))??;
 
             match out {
                 OutFormat::Json => {
@@ -8481,21 +10225,27 @@ async fn cmd_images_crisplens(
                     });
                     if let serde_json::Value::Object(ref mut map) = envelope {
                         if let serde_json::Value::Object(server_map) = upload_result {
-                            for (k, v) in server_map { map.insert(k, v); }
+                            for (k, v) in server_map {
+                                map.insert(k, v);
+                            }
                         }
                     }
                     println!("{envelope}");
                 }
                 OutFormat::Text => {
-                    let image_id = upload_result.get("image_id")
+                    let image_id = upload_result
+                        .get("image_id")
                         .and_then(|v| v.as_i64())
                         .map(|i| i.to_string())
                         .unwrap_or_else(|| "?".into());
-                    let face_count = upload_result.get("face_count")
+                    let face_count = upload_result
+                        .get("face_count")
                         .and_then(|v| v.as_i64())
                         .map(|i| i.to_string())
                         .unwrap_or_else(|| "?".into());
-                    println!("uploaded: server_image_id={image_id} faces={face_count} sha256={sha}");
+                    println!(
+                        "uploaded: server_image_id={image_id} faces={face_count} sha256={sha}"
+                    );
                 }
             }
         }
@@ -8523,13 +10273,17 @@ async fn cmd_images_crisplens(
                     println!("{}", serde_json::to_string(&v).map_err(|e| e.to_string())?);
                 }
                 (OutFormat::Text, Some(v)) => {
-                    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("(unnamed)");
+                    let name = v
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("(unnamed)");
                     let count = v.get("face_count").and_then(|x| x.as_i64()).unwrap_or(0);
                     println!("Person #{id} — {name} ({count} faces)");
                     if let Some(images) = v.get("images").and_then(|x| x.as_array()) {
                         for img in images {
                             let img_id = img.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
-                            let filename = img.get("filename").and_then(|x| x.as_str()).unwrap_or("");
+                            let filename =
+                                img.get("filename").and_then(|x| x.as_str()).unwrap_or("");
                             println!("  [{img_id:>4}]  {filename}");
                         }
                     }
@@ -8544,13 +10298,24 @@ async fn cmd_images_crisplens(
 
 fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
     match cmd {
-        ChatCmd::Query { prompt, llm_url, llm_model, api_key, system, context_files } => {
+        ChatCmd::Query {
+            prompt,
+            llm_url,
+            llm_model,
+            api_key,
+            system,
+            context_files,
+        } => {
             // Build context from optional files.
             let mut context = String::new();
             for path in &context_files {
                 match crate::extractors::extract_text_from_path(path) {
                     Ok(doc) if !doc.full_text.is_empty() => {
-                        context.push_str(&format!("\n--- {} ---\n{}\n", path.display(), doc.full_text));
+                        context.push_str(&format!(
+                            "\n--- {} ---\n{}\n",
+                            path.display(),
+                            doc.full_text
+                        ));
                     }
                     _ => eprintln!("warning: could not extract text from {}", path.display()),
                 }
@@ -8569,7 +10334,9 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
             messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
             let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all().build().map_err(|e| e.to_string())?;
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
 
             let reply = rt.block_on(async {
                 let client = reqwest::Client::new();
@@ -8579,7 +10346,10 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
                     "stream": false,
                 });
                 let mut req = client
-                    .post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
+                    .post(format!(
+                        "{}/chat/completions",
+                        llm_url.trim_end_matches('/')
+                    ))
                     .json(&body);
                 if !api_key.is_empty() {
                     req = req.bearer_auth(&api_key);
@@ -8596,29 +10366,76 @@ fn cmd_chat(out: OutFormat, cmd: ChatCmd) -> Result<(), String> {
             })?;
 
             match out {
-                OutFormat::Json => println!("{}", serde_json::json!({
-                    "prompt": prompt, "reply": reply
-                })),
+                OutFormat::Json => println!(
+                    "{}",
+                    serde_json::json!({
+                        "prompt": prompt, "reply": reply
+                    })
+                ),
                 OutFormat::Text => println!("{reply}"),
             }
         }
         ChatCmd::Transcribe {
-            path, backend, model, language, output, data_dir, pure_rust, stream,
+            path,
+            backend,
+            model,
+            language,
+            output,
+            data_dir,
+            pure_rust,
+            stream,
             transcript_format,
-            policy, fallback_backend, lid_model, lid_method,
-            translate_to, translate_backend, translate_model, translate_max_tokens,
+            policy,
+            fallback_backend,
+            lid_model,
+            lid_method,
+            translate_to,
+            translate_backend,
+            translate_model,
+            translate_max_tokens,
         } => {
             cmd_chat_transcribe(
-                out, path, backend, model, language, output, data_dir, pure_rust, stream,
+                out,
+                path,
+                backend,
+                model,
+                language,
+                output,
+                data_dir,
+                pure_rust,
+                stream,
                 transcript_format,
-                policy, fallback_backend, lid_model, lid_method,
-                translate_to, translate_backend, translate_model, translate_max_tokens,
+                policy,
+                fallback_backend,
+                lid_model,
+                lid_method,
+                translate_to,
+                translate_backend,
+                translate_model,
+                translate_max_tokens,
             )?;
         }
         ChatCmd::Tts {
-            text, backend, model, voice, voice_ref_text, speaker, output, data_dir,
+            text,
+            backend,
+            model,
+            voice,
+            voice_ref_text,
+            speaker,
+            output,
+            data_dir,
         } => {
-            cmd_chat_tts(out, text, backend, model, voice, voice_ref_text, speaker, output, data_dir)?;
+            cmd_chat_tts(
+                out,
+                text,
+                backend,
+                model,
+                voice,
+                voice_ref_text,
+                speaker,
+                output,
+                data_dir,
+            )?;
         }
     }
     Ok(())
@@ -8707,14 +10524,10 @@ async fn resolve_whisper_lid_model_path(
                      doesn't list it"
                 )
             })?;
-        let path = crispasr::cache_ensure_file(
-            &entry.filename,
-            &entry.url,
-            false,
-            Some(&cache_str),
-        )
-        .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
-        .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
+        let path =
+            crispasr::cache_ensure_file(&entry.filename, &entry.url, false, Some(&cache_str))
+                .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
+                .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
         Ok(path)
     })
     .await
@@ -8754,14 +10567,10 @@ async fn resolve_audio_lid_model_path(
                      add an entry in crispasr_model_registry.cpp"
                 )
             })?;
-        let path = crispasr::cache_ensure_file(
-            &entry.filename,
-            &entry.url,
-            false,
-            Some(&cache_str),
-        )
-        .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
-        .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
+        let path =
+            crispasr::cache_ensure_file(&entry.filename, &entry.url, false, Some(&cache_str))
+                .map_err(|e| anyhow::anyhow!("cache_ensure_file for {}: {e}", entry.filename))?
+                .ok_or_else(|| anyhow::anyhow!("cache returned no path for {}", entry.filename))?;
         Ok(path)
     })
     .await
@@ -9000,8 +10809,8 @@ fn cmd_chat_transcribe(
                 decoded.pcm,
                 language.clone(),
                 false, // translate-to-EN on whisper is opt-in via the
-                       // --policy translate path; not exposed on --stream
-                       // for the same reason translate_to is deferred above.
+                // --policy translate path; not exposed on --stream
+                // for the same reason translate_to is deferred above.
                 |partial| {
                     eprint!("{partial}");
                     let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -9020,7 +10829,9 @@ fn cmd_chat_transcribe(
                     .to_string()
             })?;
             let translate_config = match &translate_model {
-                Some(p) => crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy()),
+                Some(p) => {
+                    crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy())
+                }
                 None => crate::asr::AsrConfig::new(&translate_backend),
             };
             let translate_cache_dir = asr_cache_dir(data_dir.clone())?;
@@ -9075,15 +10886,19 @@ fn cmd_chat_transcribe(
             .to_string(),
             TranscriptFormat::Txt => final_emit.clone(),
             // Unreachable: guarded above.
-            TranscriptFormat::Srt | TranscriptFormat::Vtt => unreachable!(
-                "--stream + srt/vtt was supposed to error before this point"
-            ),
+            TranscriptFormat::Srt | TranscriptFormat::Vtt => {
+                unreachable!("--stream + srt/vtt was supposed to error before this point")
+            }
         };
         write_chat_output(&output, &payload)?;
         return Ok(());
     }
 
-    eprintln!("transcribing via {} (policy={:?})…", primary_config.display_name(), policy);
+    eprintln!(
+        "transcribing via {} (policy={:?})…",
+        primary_config.display_name(),
+        policy
+    );
     let result = rt
         .block_on(crate::asr::transcribe_with_lid_routing(
             decoded.pcm,
@@ -9116,7 +10931,9 @@ fn cmd_chat_transcribe(
             })?;
 
         let translate_config = match &translate_model {
-            Some(p) => crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy()),
+            Some(p) => {
+                crate::asr::AsrConfig::with_model_path(&translate_backend, p.to_string_lossy())
+            }
             None => crate::asr::AsrConfig::new(&translate_backend),
         };
         let translate_cache_dir = asr_cache_dir(data_dir.clone())?;
@@ -9177,23 +10994,19 @@ fn cmd_chat_transcribe(
         TranscriptFormat::Txt => final_text.clone(),
         TranscriptFormat::Srt => {
             if result.segments.is_empty() {
-                return Err(
-                    "SRT requested but the backend returned no segments — \
+                return Err("SRT requested but the backend returned no segments — \
                      check that the model supports timestamped output \
                      (Whisper does; some others don't)."
-                        .to_string(),
-                );
+                    .to_string());
             }
             format_segments_srt(&result.segments)
         }
         TranscriptFormat::Vtt => {
             if result.segments.is_empty() {
-                return Err(
-                    "VTT requested but the backend returned no segments — \
+                return Err("VTT requested but the backend returned no segments — \
                      check that the model supports timestamped output \
                      (Whisper does; some others don't)."
-                        .to_string(),
-                );
+                    .to_string());
             }
             format_segments_vtt(&result.segments)
         }
@@ -9214,9 +11027,7 @@ fn parse_human_size(s: &str) -> Result<i64, String> {
         return Err("empty size string".into());
     }
     // Find the boundary between the numeric prefix and the unit.
-    let split = s
-        .find(|c: char| c.is_ascii_alphabetic())
-        .unwrap_or(s.len());
+    let split = s.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(s.len());
     let (num_str, unit_str) = s.split_at(split);
     let num: f64 = num_str
         .trim()
@@ -9604,14 +11415,20 @@ struct SortPlanItem {
     src: String,
     dst: String,
 }
-fn default_move() -> String { "move".to_owned() }
+fn default_move() -> String {
+    "move".to_owned()
+}
 
 fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result<(), String> {
     let data_dir = resolve_data_dir(data_dir)?;
     match cmd {
-        BatchCmd::Add { paths, level, job_id } => {
-            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
-                .map_err(|e| e.to_string())?;
+        BatchCmd::Add {
+            paths,
+            level,
+            job_id,
+        } => {
+            let queue =
+                crate::jobs::JobQueue::open_or_create(&data_dir).map_err(|e| e.to_string())?;
 
             // Expand folders to individual files.
             let mut files: Vec<crate::jobs::FileEntry> = Vec::new();
@@ -9651,17 +11468,18 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                     .map_err(|e| e.to_string())?
             };
 
-            let added = queue
-                .add_files(&jid, &files)
-                .map_err(|e| e.to_string())?;
+            let added = queue.add_files(&jid, &files).map_err(|e| e.to_string())?;
 
             match out {
                 OutFormat::Json => {
-                    println!("{}", serde_json::json!({
-                        "job_id": jid,
-                        "files_added": added,
-                        "total_queued": files.len(),
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "job_id": jid,
+                            "files_added": added,
+                            "total_queued": files.len(),
+                        })
+                    );
                 }
                 OutFormat::Text => {
                     println!("job {jid}: queued {added} file(s)");
@@ -9671,15 +11489,17 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
         }
 
         BatchCmd::List { job_id, status } => {
-            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
-                .map_err(|e| e.to_string())?;
+            let queue =
+                crate::jobs::JobQueue::open_or_create(&data_dir).map_err(|e| e.to_string())?;
             if let Some(jid) = job_id {
                 let files = queue
                     .list_files(&jid, status.as_deref(), 10_000, 0)
                     .map_err(|e| e.to_string())?;
                 for f in &files {
                     match out {
-                        OutFormat::Json => println!("{}", serde_json::to_string(f).unwrap_or_default()),
+                        OutFormat::Json => {
+                            println!("{}", serde_json::to_string(f).unwrap_or_default())
+                        }
                         OutFormat::Text => {
                             println!("[{}] {}", f.status, f.file_path);
                             if let Some(ref e) = f.error_text {
@@ -9693,13 +11513,18 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                 let jobs = queue.list_jobs().map_err(|e| e.to_string())?;
                 for j in &jobs {
                     match out {
-                        OutFormat::Json => println!("{}", serde_json::to_string(j).unwrap_or_default()),
+                        OutFormat::Json => {
+                            println!("{}", serde_json::to_string(j).unwrap_or_default())
+                        }
                         OutFormat::Text => {
                             println!(
                                 "[{}] {} — {}/{} done  {} err  type={}",
-                                j.status, j.id,
-                                j.done_files, j.total_files,
-                                j.error_files, j.job_type
+                                j.status,
+                                j.id,
+                                j.done_files,
+                                j.total_files,
+                                j.error_files,
+                                j.job_type
                             );
                         }
                     }
@@ -9708,9 +11533,19 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
             }
         }
 
-        BatchCmd::Process { job_id, limit, llm_url, llm_model, api_key, export_path, path_template, out_plan, dry_run } => {
-            let queue = crate::jobs::JobQueue::open_or_create(&data_dir)
-                .map_err(|e| e.to_string())?;
+        BatchCmd::Process {
+            job_id,
+            limit,
+            llm_url,
+            llm_model,
+            api_key,
+            export_path,
+            path_template,
+            out_plan,
+            dry_run,
+        } => {
+            let queue =
+                crate::jobs::JobQueue::open_or_create(&data_dir).map_err(|e| e.to_string())?;
 
             // Find job.
             let effective_job_id = if let Some(jid) = job_id {
@@ -9725,22 +11560,36 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
             };
 
             let files = queue
-                .list_files(&effective_job_id, Some("pending"), limit.unwrap_or(10_000) as i64, 0)
+                .list_files(
+                    &effective_job_id,
+                    Some("pending"),
+                    limit.unwrap_or(10_000) as i64,
+                    0,
+                )
                 .map_err(|e| e.to_string())?;
 
             if files.is_empty() {
                 eprintln!("no pending files in job {effective_job_id}");
                 return Ok(());
             }
-            eprintln!("processing {} file(s) from job {effective_job_id}…", files.len());
+            eprintln!(
+                "processing {} file(s) from job {effective_job_id}…",
+                files.len()
+            );
 
             // Build tokio runtime for async HTTP + extraction.
             let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all().build().map_err(|e| e.to_string())?;
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
 
             let mut plan_items: Vec<serde_json::Value> = Vec::new();
-            let sanitize = |s: &str| s.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
-                .chars().take(100).collect::<String>();
+            let sanitize = |s: &str| {
+                s.replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
+                    .chars()
+                    .take(100)
+                    .collect::<String>()
+            };
 
             for file in &files {
                 let p = std::path::PathBuf::from(&file.file_path);
@@ -9750,18 +11599,24 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                 }
 
                 // Extract text.
-                let extracted = rt.block_on(tokio::task::spawn_blocking({
-                    let pp = p.clone();
-                    move || crate::extractors::extract_text_from_path(&pp)
-                }))
-                    .map_err(|e| e.to_string())?.ok();
+                let extracted = rt
+                    .block_on(tokio::task::spawn_blocking({
+                        let pp = p.clone();
+                        move || crate::extractors::extract_text_from_path(&pp)
+                    }))
+                    .map_err(|e| e.to_string())?
+                    .ok();
 
-                let text_sample = extracted.as_ref()
+                let text_sample = extracted
+                    .as_ref()
                     .map(|e| e.full_text.chars().take(4000).collect::<String>())
                     .unwrap_or_default();
 
                 // Call LLM.
-                let filename = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let filename = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 let prompt = format!(
                     "Extract bibliographic metadata from the text and filename.\n\
                      Output ONLY in this XML format:\n\
@@ -9769,40 +11624,56 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                      Use \"Unknown\" when unavailable.\n\nFilename: \"{filename}\"\n\nText:\n{text_sample}"
                 );
 
-                let (title, author, year) = rt.block_on(async {
-                    let client = reqwest::Client::new();
-                    let body = serde_json::json!({
-                        "model": llm_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": false
-                    });
-                    let mut req = client.post(format!("{}/chat/completions", llm_url.trim_end_matches('/')))
-                        .json(&body);
-                    if !api_key.is_empty() {
-                        req = req.bearer_auth(&api_key);
-                    }
-                    let resp = req.send().await.ok()?.json::<serde_json::Value>().await.ok()?;
-                    let text = resp["choices"][0]["message"]["content"].as_str()?.to_owned();
-                    let title  = regex_capture(&text, r"<TITLE>(.*?)</TITLE>");
-                    let author = regex_capture(&text, r"<AUTHOR>(.*?)</AUTHOR>");
-                    let year   = regex_capture(&text, r"<YEAR>(\d{4})</YEAR>");
-                    Some((title, author, year))
-                }).unwrap_or_default();
+                let (title, author, year) = rt
+                    .block_on(async {
+                        let client = reqwest::Client::new();
+                        let body = serde_json::json!({
+                            "model": llm_model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": false
+                        });
+                        let mut req = client
+                            .post(format!(
+                                "{}/chat/completions",
+                                llm_url.trim_end_matches('/')
+                            ))
+                            .json(&body);
+                        if !api_key.is_empty() {
+                            req = req.bearer_auth(&api_key);
+                        }
+                        let resp = req
+                            .send()
+                            .await
+                            .ok()?
+                            .json::<serde_json::Value>()
+                            .await
+                            .ok()?;
+                        let text = resp["choices"][0]["message"]["content"]
+                            .as_str()?
+                            .to_owned();
+                        let title = regex_capture(&text, r"<TITLE>(.*?)</TITLE>");
+                        let author = regex_capture(&text, r"<AUTHOR>(.*?)</AUTHOR>");
+                        let year = regex_capture(&text, r"<YEAR>(\d{4})</YEAR>");
+                        Some((title, author, year))
+                    })
+                    .unwrap_or_default();
 
-                let title_s  = title.as_deref().unwrap_or("Unknown Title");
+                let title_s = title.as_deref().unwrap_or("Unknown Title");
                 let author_s = author.as_deref().unwrap_or("Unknown Author");
-                let year_s   = year.as_deref().unwrap_or("0000");
-                let ext      = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let year_s = year.as_deref().unwrap_or("0000");
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
 
                 // Compute destination path.
                 let relative = path_template
-                    .replace("{Title}",    &sanitize(title_s))
-                    .replace("{Author}",   &sanitize(author_s))
-                    .replace("{Year}",     &sanitize(year_s))
+                    .replace("{Title}", &sanitize(title_s))
+                    .replace("{Author}", &sanitize(author_s))
+                    .replace("{Year}", &sanitize(year_s))
                     .replace("{Filename}", &sanitize(&filename))
-                    .replace("{Ext}",      ext);
+                    .replace("{Ext}", ext);
                 let base = export_path.clone().unwrap_or_else(|| {
-                    p.parent().map(|d| d.join("Sorted")).unwrap_or_else(|| std::path::PathBuf::from("Sorted"))
+                    p.parent()
+                        .map(|d| d.join("Sorted"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("Sorted"))
                 });
                 let has_ext_token = path_template.contains("{Ext}");
                 let dst = if has_ext_token {
@@ -9820,7 +11691,8 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                 }));
 
                 if !dry_run {
-                    queue.mark_done(&effective_job_id, &[file.row_id])
+                    queue
+                        .mark_done(&effective_job_id, &[file.row_id])
                         .map_err(|e| e.to_string())?;
                 }
 
@@ -9839,22 +11711,33 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
             } else {
                 println!("{plan_str}");
             }
-            eprintln!("{} items in plan{}", plan_items.len(), if dry_run { " (dry-run)" } else { "" });
+            eprintln!(
+                "{} items in plan{}",
+                plan_items.len(),
+                if dry_run { " (dry-run)" } else { "" }
+            );
         }
 
-        BatchCmd::Apply { plan, mode, dry_run } => {
+        BatchCmd::Apply {
+            plan,
+            mode,
+            dry_run,
+        } => {
             let json = if plan == "-" {
                 use std::io::Read;
                 let mut s = String::new();
-                std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+                std::io::stdin()
+                    .read_to_string(&mut s)
+                    .map_err(|e| e.to_string())?;
                 s
             } else {
-                std::fs::read_to_string(&plan)
-                    .map_err(|e| format!("reading {plan}: {e}"))?
+                std::fs::read_to_string(&plan).map_err(|e| format!("reading {plan}: {e}"))?
             };
-            let mut p: SortPlan = serde_json::from_str(&json)
-                .map_err(|e| format!("parsing plan: {e}"))?;
-            if let Some(m) = mode { p.mode = m; }
+            let mut p: SortPlan =
+                serde_json::from_str(&json).map_err(|e| format!("parsing plan: {e}"))?;
+            if let Some(m) = mode {
+                p.mode = m;
+            }
 
             let is_move = p.mode == "move";
             let mut done = 0usize;
@@ -9868,7 +11751,12 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                     continue;
                 }
                 if dry_run {
-                    println!("{} {} -> {}", if is_move { "mv" } else { "cp" }, item.src, item.dst);
+                    println!(
+                        "{} {} -> {}",
+                        if is_move { "mv" } else { "cp" },
+                        item.src,
+                        item.dst
+                    );
                     done += 1;
                     continue;
                 }
@@ -9889,22 +11777,30 @@ fn cmd_batch(out: OutFormat, data_dir: Option<PathBuf>, cmd: BatchCmd) -> Result
                 match result {
                     Ok(()) => {
                         match out {
-                            OutFormat::Json => println!("{}", serde_json::json!({"ok": true, "src": item.src, "dst": item.dst})),
+                            OutFormat::Json => println!(
+                                "{}",
+                                serde_json::json!({"ok": true, "src": item.src, "dst": item.dst})
+                            ),
                             OutFormat::Text => println!("ok  {}", item.dst),
                         }
                         done += 1;
                     }
                     Err(e) => {
                         match out {
-                            OutFormat::Json => println!("{}", serde_json::json!({"ok": false, "src": item.src, "error": e.to_string()})),
+                            OutFormat::Json => println!(
+                                "{}",
+                                serde_json::json!({"ok": false, "src": item.src, "error": e.to_string()})
+                            ),
                             OutFormat::Text => eprintln!("err {} -> {}: {e}", item.src, item.dst),
                         }
                         errs += 1;
                     }
                 }
             }
-            eprintln!("{done} ok, {errs} errors{}",
-                if dry_run { " (dry-run)" } else { "" });
+            eprintln!(
+                "{done} ok, {errs} errors{}",
+                if dry_run { " (dry-run)" } else { "" }
+            );
         }
     }
     Ok(())
@@ -9919,13 +11815,18 @@ fn regex_capture(text: &str, pattern: &str) -> Option<String> {
     let close_tag_start = pattern.rfind('<')?;
     let close_tag = &pattern[close_tag_start..]; // "</TITLE>"
     let tag_name = &open_tag[1..open_tag.len() - 1]; // "TITLE"
-    let _ = close_tag; let _ = tag_name;
+    let _ = close_tag;
+    let _ = tag_name;
 
     let start = text.find(open_tag)? + open_tag.len();
-    let end_tag = format!("</{}>", &open_tag[1..open_tag.len()-1]);
+    let end_tag = format!("</{}>", &open_tag[1..open_tag.len() - 1]);
     let end = text[start..].find(&end_tag)?;
     let content = text[start..start + end].trim().to_owned();
-    if content.is_empty() { None } else { Some(content) }
+    if content.is_empty() {
+        None
+    } else {
+        Some(content)
+    }
 }
 
 fn load_or_scan(path: &str) -> Result<crate::catalog::index::FileIndex, String> {
@@ -9936,7 +11837,10 @@ fn load_or_scan(path: &str) -> Result<crate::catalog::index::FileIndex, String> 
         crate::catalog::scan::scan_dir(&p, crate::catalog::scan::ScanOptions::default())
             .map_err(|e| format!("scanning {}: {e}", p.display()))
     } else {
-        Err(format!("{} is neither a .caf file nor a directory", p.display()))
+        Err(format!(
+            "{} is neither a .caf file nor a directory",
+            p.display()
+        ))
     }
 }
 
@@ -9997,7 +11901,9 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                     }
                 }
             }
-            if report.issues.is_empty() { Ok(()) } else {
+            if report.issues.is_empty() {
+                Ok(())
+            } else {
                 Err(format!("{} issue(s)", report.issues.len()))
             }
         }
@@ -10013,15 +11919,19 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                         // reported no conflict here because our side had not
                         // touched these lines, and the Android build is what
                         // caught it.)
-                        sections: schema.sections.iter().map(|s| crate::docx_tools::DocxSection {
-                            page_width_pt: s.page_width_pt,
-                            page_height_pt: s.page_height_pt,
-                            left_margin_pt: s.left_margin_pt,
-                            right_margin_pt: s.right_margin_pt,
-                            top_margin_pt: s.top_margin_pt,
-                            bottom_margin_pt: s.bottom_margin_pt,
-                            orientation: s.orientation.clone(),
-                        }).collect(),
+                        sections: schema
+                            .sections
+                            .iter()
+                            .map(|s| crate::docx_tools::DocxSection {
+                                page_width_pt: s.page_width_pt,
+                                page_height_pt: s.page_height_pt,
+                                left_margin_pt: s.left_margin_pt,
+                                right_margin_pt: s.right_margin_pt,
+                                top_margin_pt: s.top_margin_pt,
+                                bottom_margin_pt: s.bottom_margin_pt,
+                                orientation: s.orientation.clone(),
+                            })
+                            .collect(),
                         default_font: schema.default_font.clone(),
                         default_font_size_pt: schema.default_font_size_pt,
                         style_count: schema.styles.styles.len(),
@@ -10029,7 +11939,10 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                     println!("{}", serde_json::to_string_pretty(&bp).unwrap());
                 }
                 OutFormat::Text => {
-                    println!("Font:     {} {:.0}pt", schema.default_font, schema.default_font_size_pt);
+                    println!(
+                        "Font:     {} {:.0}pt",
+                        schema.default_font, schema.default_font_size_pt
+                    );
                     println!("Styles:   {}", schema.styles.styles.len());
                     println!("Sections: {}", schema.sections.len());
                     // Section geometry is optional: a `w:sectPr` may omit
@@ -10037,15 +11950,20 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
                     // what the document does not state rather than a
                     // plausible-looking default.
                     let pt = |v: Option<f64>| {
-                        v.map(|x| format!("{x:.0}")).unwrap_or_else(|| "—".to_string())
+                        v.map(|x| format!("{x:.0}"))
+                            .unwrap_or_else(|| "—".to_string())
                     };
                     for (i, s) in schema.sections.iter().enumerate() {
                         let orient = s.orientation.as_deref().unwrap_or("portrait");
                         println!(
                             "  §{}: {}×{} pt ({orient}), margins L{} R{} T{} B{}",
-                            i + 1, pt(s.page_width_pt), pt(s.page_height_pt),
-                            pt(s.left_margin_pt), pt(s.right_margin_pt),
-                            pt(s.top_margin_pt), pt(s.bottom_margin_pt),
+                            i + 1,
+                            pt(s.page_width_pt),
+                            pt(s.page_height_pt),
+                            pt(s.left_margin_pt),
+                            pt(s.right_margin_pt),
+                            pt(s.top_margin_pt),
+                            pt(s.bottom_margin_pt),
                         );
                     }
                 }
@@ -10054,13 +11972,17 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
         }
         DocxCmd::Headings { file } => {
             let pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
-            let inferences = crisp_docx_core::infer_heading_levels(&pkg, None)
-                .map_err(|e| e.to_string())?;
+            let inferences =
+                crisp_docx_core::infer_heading_levels(&pkg, None).map_err(|e| e.to_string())?;
             match out {
                 OutFormat::Json => {
-                    let items: Vec<crate::docx_tools::InferredHeading> = inferences.iter().map(|h| {
-                        crate::docx_tools::InferredHeading { level: h.heading_level, text: h.preview.clone() }
-                    }).collect();
+                    let items: Vec<crate::docx_tools::InferredHeading> = inferences
+                        .iter()
+                        .map(|h| crate::docx_tools::InferredHeading {
+                            level: h.heading_level,
+                            text: h.preview.clone(),
+                        })
+                        .collect();
                     println!("{}", serde_json::to_string_pretty(&items).unwrap());
                 }
                 OutFormat::Text => {
@@ -10076,7 +11998,11 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             }
             Ok(())
         }
-        DocxCmd::Restyle { source, blueprint, out: out_path } => {
+        DocxCmd::Restyle {
+            source,
+            blueprint,
+            out: out_path,
+        } => {
             let source_pkg = crisp_docx_core::open(&source).map_err(|e| e.to_string())?;
             let mut blueprint_pkg = crisp_docx_core::open(&blueprint).map_err(|e| e.to_string())?;
             crisp_docx_core::transplant_body(&mut blueprint_pkg, &source_pkg)
@@ -10085,11 +12011,19 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             eprintln!("Restyled → {}", out_path.display());
             Ok(())
         }
-        DocxCmd::ConvertNotes { file, to, out: out_path } => {
+        DocxCmd::ConvertNotes {
+            file,
+            to,
+            out: out_path,
+        } => {
             let target = match to.to_ascii_lowercase().as_str() {
                 "footnotes" | "footnote" => crisp_docx_core::NotesKind::Footnotes,
                 "endnotes" | "endnote" => crisp_docx_core::NotesKind::Endnotes,
-                other => return Err(format!("unknown target '{other}', expected 'footnotes' or 'endnotes'")),
+                other => {
+                    return Err(format!(
+                        "unknown target '{other}', expected 'footnotes' or 'endnotes'"
+                    ))
+                }
             };
             let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
             crisp_docx_core::convert_notes_kind(&mut pkg, target).map_err(|e| e.to_string())?;
@@ -10097,32 +12031,47 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             eprintln!("Converted notes → {}", out_path.display());
             Ok(())
         }
-        DocxCmd::StripRsids { file, out: out_path } => {
+        DocxCmd::StripRsids {
+            file,
+            out: out_path,
+        } => {
             let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
             let count = crisp_docx_core::strip_rsids(&mut pkg).map_err(|e| e.to_string())?;
             crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
             eprintln!("Stripped {count} rsid attributes → {}", out_path.display());
             Ok(())
         }
-        DocxCmd::NormalizeQuotes { file, style, out: out_path } => {
+        DocxCmd::NormalizeQuotes {
+            file,
+            style,
+            out: out_path,
+        } => {
             let qs = crate::docx_tools::parse_quote_style(&style)?;
             let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
             crisp_docx_core::normalize_quotes_in_package(
-                &mut pkg, qs, crisp_docx_core::QuoteOptions::default(),
-            ).map_err(|e| e.to_string())?;
+                &mut pkg,
+                qs,
+                crisp_docx_core::QuoteOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
             crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
             eprintln!("Normalized quotes → {}", out_path.display());
             Ok(())
         }
-        DocxCmd::InjectFootnotes { file, notes, out: out_path } => {
+        DocxCmd::InjectFootnotes {
+            file,
+            notes,
+            out: out_path,
+        } => {
             let mut map: std::collections::BTreeMap<u32, String> = Default::default();
             for pair in &notes {
-                let (n, text) = pair.split_once('=').ok_or_else(|| {
-                    format!("--note expects N=text (got {pair:?})")
-                })?;
-                let n: u32 = n.trim().parse().map_err(|_| {
-                    format!("not a marker number: {:?}", n.trim())
-                })?;
+                let (n, text) = pair
+                    .split_once('=')
+                    .ok_or_else(|| format!("--note expects N=text (got {pair:?})"))?;
+                let n: u32 = n
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("not a marker number: {:?}", n.trim()))?;
                 if map.insert(n, text.to_string()).is_some() {
                     // Two texts for one marker means one of them was going
                     // to be dropped; say which rather than picking.
@@ -10132,8 +12081,8 @@ fn cmd_docx(out: OutFormat, cmd: DocxCmd) -> Result<(), String> {
             let mut pkg = crisp_docx_core::open(&file).map_err(|e| e.to_string())?;
             let refs: std::collections::BTreeMap<u32, &str> =
                 map.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            let report = crisp_docx_core::inject_footnotes(&mut pkg, &refs)
-                .map_err(|e| e.to_string())?;
+            let report =
+                crisp_docx_core::inject_footnotes(&mut pkg, &refs).map_err(|e| e.to_string())?;
             crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
             eprintln!(
                 "Injected {} of {} note(s) → {}",
@@ -10192,8 +12141,14 @@ mod tests {
         assert_eq!(fed.source, "local");
         assert_eq!(fed.id, "local:doc-1");
         assert_eq!(fed.rrf_rank, 1);
-        assert_eq!(fed.url.as_deref(), Some("https://www.spiegel.de/wirtschaft/x"));
-        assert_eq!(fed.tags.as_deref(), Some(&["pocket-import".to_string()][..]));
+        assert_eq!(
+            fed.url.as_deref(),
+            Some("https://www.spiegel.de/wirtschaft/x")
+        );
+        assert_eq!(
+            fed.tags.as_deref(),
+            Some(&["pocket-import".to_string()][..])
+        );
         assert_eq!(fed.sha256.as_deref(), Some("abc123"));
         let snip = fed.snippet.expect("snippet");
         assert!(snip.contains("<mark>Schimmelpilz</mark>"), "got: {snip}");
@@ -10229,7 +12184,10 @@ mod tests {
         assert_eq!(fed.id, "cloud_backup:deadbeef");
         assert_eq!(fed.rrf_rank, 3);
         assert_eq!(fed.url.as_deref(), Some("https://example.com/x"));
-        assert_eq!(fed.tags.as_deref(), Some(&["pocket-import".to_string()][..]));
+        assert_eq!(
+            fed.tags.as_deref(),
+            Some(&["pocket-import".to_string()][..])
+        );
         let snip = fed.snippet.expect("snippet");
         assert!(snip.contains("<mark>schimmelpilz</mark>"), "got: {snip}");
     }
@@ -10237,12 +12195,27 @@ mod tests {
     #[test]
     fn hybrid_hit_without_body_has_no_snippet() {
         let h = crate::sync::cloud_backup::HybridSearchHit {
-            doc_id: "d".into(), sha256: "s".into(), owner_id: "o".into(),
-            path: None, filename: None, ext: None, parent_dir: None,
-            language: None, title: None, author: None, year: None,
-            size_bytes: None, mtime_unix: None, indexed_at: 0,
-            full_text: None, score: 0.1, score_text: None, score_vector: None,
-            collection_id: None, url: None, tags: None,
+            doc_id: "d".into(),
+            sha256: "s".into(),
+            owner_id: "o".into(),
+            path: None,
+            filename: None,
+            ext: None,
+            parent_dir: None,
+            language: None,
+            title: None,
+            author: None,
+            year: None,
+            size_bytes: None,
+            mtime_unix: None,
+            indexed_at: 0,
+            full_text: None,
+            score: 0.1,
+            score_text: None,
+            score_vector: None,
+            collection_id: None,
+            url: None,
+            tags: None,
         };
         let fed = hybrid_hit_to_federated(0, h, "q");
         assert!(fed.snippet.is_none());
@@ -10258,10 +12231,11 @@ mod tests {
         assert_eq!(parse_human_size("100B").unwrap(), 100);
         assert_eq!(parse_human_size("100KB").unwrap(), 100 * 1024);
         assert_eq!(parse_human_size("100MB").unwrap(), 100 * 1024 * 1024);
-        assert_eq!(parse_human_size("1.5GB").unwrap(),
-                   (1.5_f64 * 1024.0 * 1024.0 * 1024.0).round() as i64);
-        assert_eq!(parse_human_size("2TB").unwrap(),
-                   2_i64 * 1024_i64.pow(4));
+        assert_eq!(
+            parse_human_size("1.5GB").unwrap(),
+            (1.5_f64 * 1024.0 * 1024.0 * 1024.0).round() as i64
+        );
+        assert_eq!(parse_human_size("2TB").unwrap(), 2_i64 * 1024_i64.pow(4));
     }
 
     #[test]
@@ -10361,7 +12335,10 @@ mod tests {
     fn images_extensions_parses() {
         let cli = Cli::try_parse_from(["crispsorter", "images", "extensions"]).unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Extensions, .. } => (),
+            Command::Images {
+                cmd: ImagesCmd::Extensions,
+                ..
+            } => (),
             other => panic!("expected Images Extensions, got {other:?}"),
         }
     }
@@ -10370,10 +12347,20 @@ mod tests {
     fn images_list_accepts_limit_and_ext() {
         // value_delimiter = ',' should split jpg,png into two strings.
         let cli = Cli::try_parse_from([
-            "crispsorter", "images", "list", "--limit", "5", "--ext", "jpg,png",
-        ]).unwrap();
+            "crispsorter",
+            "images",
+            "list",
+            "--limit",
+            "5",
+            "--ext",
+            "jpg,png",
+        ])
+        .unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::List { limit, ext, folder }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::List { limit, ext, folder },
+                ..
+            } => {
                 assert_eq!(limit, 5);
                 assert_eq!(ext, vec!["jpg".to_owned(), "png".to_owned()]);
                 assert!(folder.is_none());
@@ -10385,12 +12372,20 @@ mod tests {
     #[test]
     fn images_count_accepts_folder_and_ext_overrides() {
         let cli = Cli::try_parse_from([
-            "crispsorter", "images", "count",
-            "--folder", "/tmp/photos",
-            "--ext", "heic",
-        ]).unwrap();
+            "crispsorter",
+            "images",
+            "count",
+            "--folder",
+            "/tmp/photos",
+            "--ext",
+            "heic",
+        ])
+        .unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Count { ext, folder }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Count { ext, folder },
+                ..
+            } => {
                 assert_eq!(ext, vec!["heic".to_owned()]);
                 assert_eq!(folder.as_deref(), Some(std::path::Path::new("/tmp/photos")));
             }
@@ -10401,11 +12396,21 @@ mod tests {
     #[test]
     fn images_thumbnail_accepts_size_and_out() {
         let cli = Cli::try_parse_from([
-            "crispsorter", "images", "thumbnail", "/tmp/x.jpg",
-            "--size", "512", "--out", "/tmp/x.png",
-        ]).unwrap();
+            "crispsorter",
+            "images",
+            "thumbnail",
+            "/tmp/x.jpg",
+            "--size",
+            "512",
+            "--out",
+            "/tmp/x.png",
+        ])
+        .unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Thumbnail { path, size, out }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Thumbnail { path, size, out },
+                ..
+            } => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/x.jpg"));
                 assert_eq!(size, 512);
                 assert_eq!(out.as_deref(), Some(std::path::Path::new("/tmp/x.png")));
@@ -10416,9 +12421,13 @@ mod tests {
 
     #[test]
     fn images_thumbnail_defaults_size_to_256_and_out_to_stdout() {
-        let cli = Cli::try_parse_from(["crispsorter", "images", "thumbnail", "/tmp/x.jpg"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["crispsorter", "images", "thumbnail", "/tmp/x.jpg"]).unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Thumbnail { size, out, .. }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Thumbnail { size, out, .. },
+                ..
+            } => {
                 assert_eq!(size, 256);
                 assert!(out.is_none(), "default --out should be None (= stdout)");
             }
@@ -10430,7 +12439,10 @@ mod tests {
     fn images_exif_parses_with_path_only() {
         let cli = Cli::try_parse_from(["crispsorter", "images", "exif", "/tmp/x.jpg"]).unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Exif { path }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Exif { path },
+                ..
+            } => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/x.jpg"));
             }
             other => panic!("expected Images Exif, got {other:?}"),
@@ -10440,14 +12452,25 @@ mod tests {
     #[test]
     fn images_duplicates_accepts_ext_and_folder_overrides() {
         let cli = Cli::try_parse_from([
-            "crispsorter", "images", "duplicates",
-            "--ext", "jpg,heic",
-            "--folder", "/Users/me/Photos",
-        ]).unwrap();
+            "crispsorter",
+            "images",
+            "duplicates",
+            "--ext",
+            "jpg,heic",
+            "--folder",
+            "/Users/me/Photos",
+        ])
+        .unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Duplicates { ext, folder }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Duplicates { ext, folder },
+                ..
+            } => {
                 assert_eq!(ext, vec!["jpg".to_owned(), "heic".to_owned()]);
-                assert_eq!(folder.as_deref(), Some(std::path::Path::new("/Users/me/Photos")));
+                assert_eq!(
+                    folder.as_deref(),
+                    Some(std::path::Path::new("/Users/me/Photos"))
+                );
             }
             other => panic!("expected Images Duplicates, got {other:?}"),
         }
@@ -10457,7 +12480,10 @@ mod tests {
     fn images_duplicates_parses_with_defaults() {
         let cli = Cli::try_parse_from(["crispsorter", "images", "duplicates"]).unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::Duplicates { ext, folder }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::Duplicates { ext, folder },
+                ..
+            } => {
                 assert!(ext.is_empty());
                 assert!(folder.is_none());
             }
@@ -10469,7 +12495,15 @@ mod tests {
     fn images_near_duplicates_uses_default_threshold() {
         let cli = Cli::try_parse_from(["crispsorter", "images", "near-duplicates"]).unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::NearDuplicates { threshold, ext, folder }, .. } => {
+            Command::Images {
+                cmd:
+                    ImagesCmd::NearDuplicates {
+                        threshold,
+                        ext,
+                        folder,
+                    },
+                ..
+            } => {
                 // Spec calls for default = 8.
                 assert_eq!(threshold, 8);
                 assert!(ext.is_empty());
@@ -10482,10 +12516,18 @@ mod tests {
     #[test]
     fn images_near_duplicates_accepts_threshold_override() {
         let cli = Cli::try_parse_from([
-            "crispsorter", "images", "near-duplicates", "--threshold", "12",
-        ]).unwrap();
+            "crispsorter",
+            "images",
+            "near-duplicates",
+            "--threshold",
+            "12",
+        ])
+        .unwrap();
         match cli.command {
-            Command::Images { cmd: ImagesCmd::NearDuplicates { threshold, .. }, .. } => {
+            Command::Images {
+                cmd: ImagesCmd::NearDuplicates { threshold, .. },
+                ..
+            } => {
                 assert_eq!(threshold, 12);
             }
             other => panic!("expected Images NearDuplicates, got {other:?}"),
@@ -10497,13 +12539,28 @@ mod tests {
         // --data-dir is `global = true` on the Images variant, so it
         // can be supplied either before or after the subcommand name.
         for argv in [
-            vec!["crispsorter", "images", "--data-dir", "/tmp/x", "extensions"],
-            vec!["crispsorter", "images", "extensions", "--data-dir", "/tmp/x"],
+            vec![
+                "crispsorter",
+                "images",
+                "--data-dir",
+                "/tmp/x",
+                "extensions",
+            ],
+            vec![
+                "crispsorter",
+                "images",
+                "extensions",
+                "--data-dir",
+                "/tmp/x",
+            ],
         ] {
             let cli = Cli::try_parse_from(argv.clone())
                 .unwrap_or_else(|e| panic!("failed parsing {argv:?}: {e}"));
             match cli.command {
-                Command::Images { data_dir, cmd: ImagesCmd::Extensions } => {
+                Command::Images {
+                    data_dir,
+                    cmd: ImagesCmd::Extensions,
+                } => {
                     assert_eq!(data_dir.as_deref(), Some(std::path::Path::new("/tmp/x")));
                 }
                 other => panic!("expected Images Extensions, got {other:?}"),
@@ -10520,16 +12577,30 @@ mod tests {
         // adds --policy/--fallback/--lid-model/--lid-method to this
         // variant — they all have defaults so the bare command still
         // parses; this test pins those defaults.
-        let cli = Cli::try_parse_from([
-            "crispsorter", "chat", "transcribe", "/tmp/foo.wav",
-        ])
-        .expect("transcribe with just a path should parse");
+        let cli = Cli::try_parse_from(["crispsorter", "chat", "transcribe", "/tmp/foo.wav"])
+            .expect("transcribe with just a path should parse");
         match cli.command {
-            Command::Chat { cmd: ChatCmd::Transcribe {
-                path, backend, model, language, output, pure_rust, stream,
-                policy, fallback_backend, lid_model, lid_method,
-                translate_to, translate_backend, translate_model, translate_max_tokens, ..
-            } } => {
+            Command::Chat {
+                cmd:
+                    ChatCmd::Transcribe {
+                        path,
+                        backend,
+                        model,
+                        language,
+                        output,
+                        pure_rust,
+                        stream,
+                        policy,
+                        fallback_backend,
+                        lid_model,
+                        lid_method,
+                        translate_to,
+                        translate_backend,
+                        translate_model,
+                        translate_max_tokens,
+                        ..
+                    },
+            } => {
                 assert_eq!(path, PathBuf::from("/tmp/foo.wav"));
                 assert_eq!(backend, "whisper", "default backend must be whisper");
                 assert!(model.is_none());
@@ -10562,18 +12633,27 @@ mod tests {
         // (e.g. `value_enum` → string list) silently breaking the
         // SRT/VTT path.
         for (cli_arg, expect) in [
-            ("txt",  Some(TranscriptFormat::Txt)),
+            ("txt", Some(TranscriptFormat::Txt)),
             ("json", Some(TranscriptFormat::Json)),
-            ("srt",  Some(TranscriptFormat::Srt)),
-            ("vtt",  Some(TranscriptFormat::Vtt)),
+            ("srt", Some(TranscriptFormat::Srt)),
+            ("vtt", Some(TranscriptFormat::Vtt)),
         ] {
             let cli = Cli::try_parse_from([
-                "crispsorter", "chat", "transcribe", "/tmp/foo.wav",
-                "--transcript-format", cli_arg,
+                "crispsorter",
+                "chat",
+                "transcribe",
+                "/tmp/foo.wav",
+                "--transcript-format",
+                cli_arg,
             ])
             .unwrap_or_else(|e| panic!("--transcript-format {cli_arg} should parse: {e}"));
             match cli.command {
-                Command::Chat { cmd: ChatCmd::Transcribe { transcript_format, .. } } => {
+                Command::Chat {
+                    cmd:
+                        ChatCmd::Transcribe {
+                            transcript_format, ..
+                        },
+                } => {
                     assert_eq!(transcript_format, expect);
                 }
                 other => panic!("expected Chat Transcribe, got {other:?}"),
@@ -10641,7 +12721,10 @@ mod tests {
         // The whitespace-only segment must NOT produce a cue 3.
         assert!(!out.contains("3\n"), "empty segments must be skipped");
         // Cues separated by a blank line (SRT idiom).
-        assert!(out.ends_with("\n\n"), "SRT must end with a blank line: {out:?}");
+        assert!(
+            out.ends_with("\n\n"),
+            "SRT must end with a blank line: {out:?}"
+        );
     }
 
     #[test]
@@ -10681,12 +12764,12 @@ mod tests {
             );
         }
         let non_multilingual = [
-            "distil-whisper",       // EN-only by training
-            "parakeet",             // FastConformer-TDT, not whisper
-            "qwen3",                // LLM-based, not whisper
-            "",                     // empty / unknown
-            "Whisper",              // case-sensitive — caller passes the
-                                    // registry-canonical name
+            "distil-whisper", // EN-only by training
+            "parakeet",       // FastConformer-TDT, not whisper
+            "qwen3",          // LLM-based, not whisper
+            "",               // empty / unknown
+            "Whisper",        // case-sensitive — caller passes the
+                              // registry-canonical name
         ];
         for b in non_multilingual {
             assert!(
@@ -10713,11 +12796,17 @@ mod tests {
         // transcribe path.  Pin that the flag flips a bool field
         // through clap correctly.
         let cli = Cli::try_parse_from([
-            "crispsorter", "chat", "transcribe", "/tmp/foo.wav", "--stream",
+            "crispsorter",
+            "chat",
+            "transcribe",
+            "/tmp/foo.wav",
+            "--stream",
         ])
         .expect("--stream should parse");
         match cli.command {
-            Command::Chat { cmd: ChatCmd::Transcribe { stream, .. } } => {
+            Command::Chat {
+                cmd: ChatCmd::Transcribe { stream, .. },
+            } => {
                 assert!(stream);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
@@ -10730,33 +12819,70 @@ mod tests {
         // path, output redirect, pure-rust policy, custom data dir,
         // Phase 6 routing knobs (policy/fallback/lid-model/lid-method).
         let cli = Cli::try_parse_from([
-            "crispsorter", "chat", "transcribe",
+            "crispsorter",
+            "chat",
+            "transcribe",
             "/tmp/de.mp3",
-            "--backend", "parakeet",
-            "--model", "/models/parakeet.gguf",
-            "--language", "auto",
-            "--output", "/tmp/out.txt",
-            "--data-dir", "/tmp/xdg",
+            "--backend",
+            "parakeet",
+            "--model",
+            "/models/parakeet.gguf",
+            "--language",
+            "auto",
+            "--output",
+            "/tmp/out.txt",
+            "--data-dir",
+            "/tmp/xdg",
             "--pure-rust",
-            "--policy", "auto",
-            "--fallback", "whisper",
-            "--lid-model", "/models/ggml-tiny.bin",
-            "--lid-method", "silero",
-            "--translate-to", "en",
-            "--translate-backend", "m2m100-wmt21",
-            "--translate-model", "/models/wmt21-de-en.gguf",
-            "--translate-max-tokens", "512",
+            "--policy",
+            "auto",
+            "--fallback",
+            "whisper",
+            "--lid-model",
+            "/models/ggml-tiny.bin",
+            "--lid-method",
+            "silero",
+            "--translate-to",
+            "en",
+            "--translate-backend",
+            "m2m100-wmt21",
+            "--translate-model",
+            "/models/wmt21-de-en.gguf",
+            "--translate-max-tokens",
+            "512",
         ])
         .expect("full-flag transcribe should parse");
         match cli.command {
-            Command::Chat { cmd: ChatCmd::Transcribe {
-                path, backend, model, language, output, data_dir, pure_rust, stream,
-                transcript_format,
-                policy, fallback_backend, lid_model, lid_method,
-                translate_to, translate_backend, translate_model, translate_max_tokens,
-            } } => {
-                assert!(!stream, "--stream not set in full-args test (covered separately)");
-                assert!(transcript_format.is_none(), "--transcript-format not set in full-args test (covered separately)");
+            Command::Chat {
+                cmd:
+                    ChatCmd::Transcribe {
+                        path,
+                        backend,
+                        model,
+                        language,
+                        output,
+                        data_dir,
+                        pure_rust,
+                        stream,
+                        transcript_format,
+                        policy,
+                        fallback_backend,
+                        lid_model,
+                        lid_method,
+                        translate_to,
+                        translate_backend,
+                        translate_model,
+                        translate_max_tokens,
+                    },
+            } => {
+                assert!(
+                    !stream,
+                    "--stream not set in full-args test (covered separately)"
+                );
+                assert!(
+                    transcript_format.is_none(),
+                    "--transcript-format not set in full-args test (covered separately)"
+                );
                 assert_eq!(path, PathBuf::from("/tmp/de.mp3"));
                 assert_eq!(backend, "parakeet");
                 assert_eq!(model, Some(PathBuf::from("/models/parakeet.gguf")));
@@ -10770,7 +12896,10 @@ mod tests {
                 assert_eq!(lid_method, LidMethodChoice::Silero);
                 assert_eq!(translate_to.as_deref(), Some("en"));
                 assert_eq!(translate_backend, "m2m100-wmt21");
-                assert_eq!(translate_model, Some(PathBuf::from("/models/wmt21-de-en.gguf")));
+                assert_eq!(
+                    translate_model,
+                    Some(PathBuf::from("/models/wmt21-de-en.gguf"))
+                );
                 assert_eq!(translate_max_tokens, 512);
             }
             other => panic!("expected Chat Transcribe, got {other:?}"),
@@ -10781,10 +12910,8 @@ mod tests {
     fn chat_tts_requires_output_path() {
         // `--output` is the only mandatory flag beyond the text
         // positional — clap should reject if it's missing.
-        let err = Cli::try_parse_from([
-            "crispsorter", "chat", "tts", "Hello world",
-        ])
-        .expect_err("tts without --output must error");
+        let err = Cli::try_parse_from(["crispsorter", "chat", "tts", "Hello world"])
+            .expect_err("tts without --output must error");
         let msg = err.to_string();
         assert!(
             msg.contains("--output") || msg.contains("output"),
@@ -10800,10 +12927,16 @@ mod tests {
         // session load.  Drift here would let the runtime panic on
         // surprising upstream state.
         let err = Cli::try_parse_from([
-            "crispsorter", "chat", "tts", "hi",
-            "--output", "/tmp/out.wav",
-            "--voice", "/voices/sophia.gguf",
-            "--speaker", "tara",
+            "crispsorter",
+            "chat",
+            "tts",
+            "hi",
+            "--output",
+            "/tmp/out.wav",
+            "--voice",
+            "/voices/sophia.gguf",
+            "--speaker",
+            "tara",
         ])
         .expect_err("voice + speaker should conflict");
         assert!(
@@ -10821,9 +12954,14 @@ mod tests {
         // arguments were not provided: --voice <VOICE>" — anchor
         // on the missing-arg name, not the literal verb.
         let err = Cli::try_parse_from([
-            "crispsorter", "chat", "tts", "hi",
-            "--output", "/tmp/out.wav",
-            "--voice-ref-text", "reading test",
+            "crispsorter",
+            "chat",
+            "tts",
+            "hi",
+            "--output",
+            "/tmp/out.wav",
+            "--voice-ref-text",
+            "reading test",
         ])
         .expect_err("voice-ref-text without voice should error");
         let msg = err.to_string();
@@ -10846,8 +12984,7 @@ mod tests {
         base.push(format!("crispsorter_chat_out_{nanos}"));
         let path = base.join("sub").join("transcript.txt");
 
-        write_chat_output(&path.to_string_lossy(), "hello world")
-            .expect("write_chat_output");
+        write_chat_output(&path.to_string_lossy(), "hello world").expect("write_chat_output");
         assert!(path.exists(), "output file must exist");
 
         let body = std::fs::read_to_string(&path).unwrap();
@@ -10881,16 +13018,28 @@ mod tests {
         assert_eq!(page, 2);
         assert_eq!((x, y, w, h), (72.0, 100.5, 200.0, 50.0));
         // Whitespace around the components is normal from a shell.
-        assert_eq!(super::parse_page_rect(" 1 , 0 , 0 , 10 , 10 ").unwrap().0, 0);
+        assert_eq!(
+            super::parse_page_rect(" 1 , 0 , 0 , 10 , 10 ").unwrap().0,
+            0
+        );
     }
 
     #[test]
     fn page_rect_rejects_page_zero_and_malformed_specs() {
         // Page 0 would silently mean "page 1" if we let it through.
         assert!(super::parse_page_rect("0,0,0,10,10").is_err());
-        assert!(super::parse_page_rect("1,0,0,10").is_err(), "too few fields");
-        assert!(super::parse_page_rect("1,0,0,10,10,10").is_err(), "too many fields");
-        assert!(super::parse_page_rect("1,x,0,10,10").is_err(), "non-numeric");
+        assert!(
+            super::parse_page_rect("1,0,0,10").is_err(),
+            "too few fields"
+        );
+        assert!(
+            super::parse_page_rect("1,0,0,10,10,10").is_err(),
+            "too many fields"
+        );
+        assert!(
+            super::parse_page_rect("1,x,0,10,10").is_err(),
+            "non-numeric"
+        );
         assert!(super::parse_page_rect("").is_err());
     }
 
@@ -10910,14 +13059,27 @@ mod tests {
     fn pdf_compress_parses_with_its_opt_outs() {
         use clap::Parser;
         let cli = super::Cli::try_parse_from([
-            "crispsorter", "pdf", "compress", "in.pdf", "--out", "out.pdf",
-            "--no-object-streams", "--max-objects-per-stream", "50",
+            "crispsorter",
+            "pdf",
+            "compress",
+            "in.pdf",
+            "--out",
+            "out.pdf",
+            "--no-object-streams",
+            "--max-objects-per-stream",
+            "50",
         ])
         .expect("compress should parse");
         match cli.command {
-            super::Command::Pdf { cmd: super::PdfCmd::Compress {
-                no_object_streams, no_stream_compression, max_objects_per_stream, ..
-            } } => {
+            super::Command::Pdf {
+                cmd:
+                    super::PdfCmd::Compress {
+                        no_object_streams,
+                        no_stream_compression,
+                        max_objects_per_stream,
+                        ..
+                    },
+            } => {
                 assert!(no_object_streams);
                 assert!(!no_stream_compression);
                 assert_eq!(max_objects_per_stream, Some(50));
@@ -10930,16 +13092,37 @@ mod tests {
     fn pdf_text_region_parses_and_validates_its_enums() {
         use clap::Parser;
         let cli = super::Cli::try_parse_from([
-            "crispsorter", "pdf", "text-region", "in.pdf",
-            "--rect", "1,72,600,300,120", "--text", "hello",
-            "--font", "times-italic", "--size", "9", "--align", "justify",
-            "--valign", "middle", "--out", "out.pdf",
+            "crispsorter",
+            "pdf",
+            "text-region",
+            "in.pdf",
+            "--rect",
+            "1,72,600,300,120",
+            "--text",
+            "hello",
+            "--font",
+            "times-italic",
+            "--size",
+            "9",
+            "--align",
+            "justify",
+            "--valign",
+            "middle",
+            "--out",
+            "out.pdf",
         ])
         .expect("text-region should parse");
         match cli.command {
-            super::Command::Pdf { cmd: super::PdfCmd::TextRegion {
-                font, align, vertical_align, size, ..
-            } } => {
+            super::Command::Pdf {
+                cmd:
+                    super::PdfCmd::TextRegion {
+                        font,
+                        align,
+                        vertical_align,
+                        size,
+                        ..
+                    },
+            } => {
                 assert_eq!(font, "times-italic");
                 assert_eq!(align, "justify");
                 assert_eq!(vertical_align, "middle");
@@ -10949,16 +13132,42 @@ mod tests {
         }
         // A face with no width table would wrap wrongly, so clap must
         // refuse it rather than let it reach the layout code.
-        assert!(super::Cli::try_parse_from([
-            "crispsorter", "pdf", "text-region", "in.pdf",
-            "--rect", "1,0,0,10,10", "--text", "x", "--font", "comic-sans",
-            "--out", "o.pdf",
-        ]).is_err(), "unknown --font must be rejected");
-        assert!(super::Cli::try_parse_from([
-            "crispsorter", "pdf", "text-region", "in.pdf",
-            "--rect", "1,0,0,10,10", "--text", "x", "--align", "middle",
-            "--out", "o.pdf",
-        ]).is_err(), "--align does not take a vertical alignment");
+        assert!(
+            super::Cli::try_parse_from([
+                "crispsorter",
+                "pdf",
+                "text-region",
+                "in.pdf",
+                "--rect",
+                "1,0,0,10,10",
+                "--text",
+                "x",
+                "--font",
+                "comic-sans",
+                "--out",
+                "o.pdf",
+            ])
+            .is_err(),
+            "unknown --font must be rejected"
+        );
+        assert!(
+            super::Cli::try_parse_from([
+                "crispsorter",
+                "pdf",
+                "text-region",
+                "in.pdf",
+                "--rect",
+                "1,0,0,10,10",
+                "--text",
+                "x",
+                "--align",
+                "middle",
+                "--out",
+                "o.pdf",
+            ])
+            .is_err(),
+            "--align does not take a vertical alignment"
+        );
     }
 
     #[test]
@@ -10966,13 +13175,24 @@ mod tests {
         use clap::Parser;
         for name in crate::pdf_base14::Base14::NAMES {
             let cli = super::Cli::try_parse_from([
-                "crispsorter", "pdf", "text-region", "in.pdf",
-                "--rect", "1,0,0,100,100", "--text", "x", "--font", name,
-                "--out", "o.pdf",
+                "crispsorter",
+                "pdf",
+                "text-region",
+                "in.pdf",
+                "--rect",
+                "1,0,0,100,100",
+                "--text",
+                "x",
+                "--font",
+                name,
+                "--out",
+                "o.pdf",
             ])
             .unwrap_or_else(|e| panic!("clap rejected {name}: {e}"));
             match cli.command {
-                super::Command::Pdf { cmd: super::PdfCmd::TextRegion { font, .. } } => {
+                super::Command::Pdf {
+                    cmd: super::PdfCmd::TextRegion { font, .. },
+                } => {
                     assert!(
                         crate::pdf_base14::Base14::from_name(&font).is_some(),
                         "clap accepts {font} but from_name does not"
@@ -10986,20 +13206,23 @@ mod tests {
     #[test]
     fn pdf_text_parses_with_and_without_an_output_file() {
         use clap::Parser;
-        let to_stdout = super::Cli::try_parse_from(
-            ["crispsorter", "pdf", "text", "in.pdf"],
-        ).expect("pdf text should parse");
+        let to_stdout = super::Cli::try_parse_from(["crispsorter", "pdf", "text", "in.pdf"])
+            .expect("pdf text should parse");
         match to_stdout.command {
-            super::Command::Pdf { cmd: super::PdfCmd::Text { out, .. } } => {
+            super::Command::Pdf {
+                cmd: super::PdfCmd::Text { out, .. },
+            } => {
                 assert!(out.is_none());
             }
             other => panic!("wrong subcommand: {other:?}"),
         }
-        let to_file = super::Cli::try_parse_from(
-            ["crispsorter", "pdf", "text", "in.pdf", "--out", "t.txt"],
-        ).expect("pdf text --out should parse");
+        let to_file =
+            super::Cli::try_parse_from(["crispsorter", "pdf", "text", "in.pdf", "--out", "t.txt"])
+                .expect("pdf text --out should parse");
         match to_file.command {
-            super::Command::Pdf { cmd: super::PdfCmd::Text { out, .. } } => {
+            super::Command::Pdf {
+                cmd: super::PdfCmd::Text { out, .. },
+            } => {
                 assert_eq!(out.as_deref(), Some(std::path::Path::new("t.txt")));
             }
             other => panic!("wrong subcommand: {other:?}"),
@@ -11010,22 +13233,40 @@ mod tests {
     fn docx_inject_footnotes_parses_repeated_notes() {
         use clap::Parser;
         let cli = super::Cli::try_parse_from([
-            "crispsorter", "docx", "inject-footnotes", "in.docx",
-            "--note", "1=See Barth, KD II/2", "--note", "2=ibid.",
-            "--out", "out.docx",
+            "crispsorter",
+            "docx",
+            "inject-footnotes",
+            "in.docx",
+            "--note",
+            "1=See Barth, KD II/2",
+            "--note",
+            "2=ibid.",
+            "--out",
+            "out.docx",
         ])
         .expect("inject-footnotes should parse");
         match cli.command {
-            super::Command::Docx { cmd: super::DocxCmd::InjectFootnotes { notes, .. } } => {
+            super::Command::Docx {
+                cmd: super::DocxCmd::InjectFootnotes { notes, .. },
+            } => {
                 assert_eq!(notes.len(), 2);
                 assert_eq!(notes[0], "1=See Barth, KD II/2");
             }
             other => panic!("wrong subcommand: {other:?}"),
         }
         // A note without any text to insert is a mistake worth catching.
-        assert!(super::Cli::try_parse_from([
-            "crispsorter", "docx", "inject-footnotes", "in.docx", "--out", "o.docx",
-        ]).is_err(), "--note is required");
+        assert!(
+            super::Cli::try_parse_from([
+                "crispsorter",
+                "docx",
+                "inject-footnotes",
+                "in.docx",
+                "--out",
+                "o.docx",
+            ])
+            .is_err(),
+            "--note is required"
+        );
     }
 
     // ── parse_page_spec tests ─────────────────────────────────────────
@@ -11043,7 +13284,10 @@ mod tests {
     }
     #[test]
     fn parse_page_spec_mixed() {
-        assert_eq!(super::parse_page_spec("1,3-5,7", 10).unwrap(), vec![0, 2, 3, 4, 6]);
+        assert_eq!(
+            super::parse_page_spec("1,3-5,7", 10).unwrap(),
+            vec![0, 2, 3, 4, 6]
+        );
     }
     #[test]
     fn parse_page_spec_out_of_range() {
@@ -11073,7 +13317,10 @@ mod tests {
     }
     #[test]
     fn parse_split_ranges_multiple() {
-        assert_eq!(super::parse_split_ranges("1-5,6-10", 10).unwrap(), vec![(0, 5), (5, 10)]);
+        assert_eq!(
+            super::parse_split_ranges("1-5,6-10", 10).unwrap(),
+            vec![(0, 5), (5, 10)]
+        );
     }
     #[test]
     fn parse_split_ranges_out_of_range() {
@@ -11220,9 +13467,7 @@ mod cli_mode_detection_tests {
             vec!["crispsorter", "-f", "text", "search", "query"],
         ] {
             assert!(
-                argv.iter()
-                    .skip(1)
-                    .any(|a| super::SUBCOMMANDS.contains(a)),
+                argv.iter().skip(1).any(|a| super::SUBCOMMANDS.contains(a)),
                 "{argv:?} would have launched the GUI"
             );
         }
@@ -11267,11 +13512,7 @@ mod conflict_policy_cli_tests {
 // way to discover an id. Two error messages already told users to run
 // `crispsorter drives list` before this existed.
 
-fn cmd_drives(
-    out: OutFormat,
-    data_dir: Option<PathBuf>,
-    cmd: DrivesCmd,
-) -> Result<(), String> {
+fn cmd_drives(out: OutFormat, data_dir: Option<PathBuf>, cmd: DrivesCmd) -> Result<(), String> {
     use crate::drives::{DriveRegistry, DriveType};
 
     let data_dir = resolve_data_dir(data_dir)?;
@@ -11317,7 +13558,10 @@ fn cmd_drives(
             } else if registry.drives.is_empty() {
                 println!("no drives registered — add one in the GUI under Index → drives");
             } else {
-                println!("{:<38}  {:<12}  {:<10}  {}", "ID", "KIND", "TRANSPORT", "LABEL");
+                println!(
+                    "{:<38}  {:<12}  {:<10}  {}",
+                    "ID", "KIND", "TRANSPORT", "LABEL"
+                );
                 for d in &registry.drives {
                     println!(
                         "{:<38}  {:<12}  {:<10}  {}",
@@ -11331,7 +13575,11 @@ fn cmd_drives(
             Ok(())
         }
 
-        DrivesCmd::Ls { drive_id, path, json } => {
+        DrivesCmd::Ls {
+            drive_id,
+            path,
+            json,
+        } => {
             let json = json || matches!(out, OutFormat::Json);
             let cfg = registry
                 .drives
@@ -11348,9 +13596,9 @@ fn cmd_drives(
             if json {
                 let rows: Vec<_> = entries
                     .iter()
-                    .map(|e| {
-                        serde_json::json!({"name": e.name, "is_dir": e.is_dir, "size": e.size})
-                    })
+                    .map(
+                        |e| serde_json::json!({"name": e.name, "is_dir": e.is_dir, "size": e.size}),
+                    )
                     .collect();
                 println!(
                     "{}",
@@ -11364,9 +13612,16 @@ fn cmd_drives(
                     let size = if e.is_dir {
                         "-".to_owned()
                     } else {
-                        e.size.map(|s| s.to_string()).unwrap_or_else(|| "?".to_owned())
+                        e.size
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "?".to_owned())
                     };
-                    println!("{}  {:>12}  {}", if e.is_dir { "d" } else { "-" }, size, e.name);
+                    println!(
+                        "{}  {:>12}  {}",
+                        if e.is_dir { "d" } else { "-" },
+                        size,
+                        e.name
+                    );
                 }
             }
             Ok(())
@@ -11413,10 +13668,7 @@ fn cmd_intended_purpose(out: OutFormat, cmd: IntendedPurposeCmd) -> Result<(), S
                         if r.via.is_empty() { "unknown" } else { &r.via },
                         ip::STATEMENT_VERSION
                     ),
-                    None => println!(
-                        "acknowledged: {current}  (no record in {})",
-                        dir.display()
-                    ),
+                    None => println!("acknowledged: {current}  (no record in {})", dir.display()),
                 }
             }
             Ok(())

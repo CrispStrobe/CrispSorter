@@ -11,9 +11,9 @@
 //!
 //! Gated behind `--features crispembed`.
 
-use anyhow::Result;
 #[cfg(feature = "crispembed")]
 use anyhow::Context;
+use anyhow::Result;
 use std::path::Path;
 #[cfg(feature = "crispembed")]
 use std::sync::Mutex;
@@ -83,7 +83,11 @@ fn save_rgb_temp(
     rgb: Vec<u8>,
 ) -> Option<(tempfile::NamedTempFile, std::path::PathBuf)> {
     let img = image::RgbImage::from_raw(w, h, rgb)?;
-    let tmp = tempfile::Builder::new().prefix(prefix).suffix(".png").tempfile().ok()?;
+    let tmp = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".png")
+        .tempfile()
+        .ok()?;
     image::DynamicImage::ImageRgb8(img).save(tmp.path()).ok()?;
     let p = tmp.path().to_path_buf();
     Some((tmp, p))
@@ -113,9 +117,17 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
     let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .get_or_init(|| {
+            crispembed::CrispScanCleanup::new(None, 0)
+                .ok()
+                .map(Mutex::new)
+        })
         .as_ref()?;
-    let (out, ow, oh) = eng.lock().ok()?.process(img.as_raw(), w as i32, h as i32, 3).ok()?;
+    let (out, ow, oh) = eng
+        .lock()
+        .ok()?
+        .process(img.as_raw(), w as i32, h as i32, 3)
+        .ok()?;
     save_rgb_stable("cleaned_", ow as u32, oh as u32, out)
 }
 
@@ -131,7 +143,11 @@ pub fn detect_page_split(path: &Path) -> Option<i32> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
     let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .get_or_init(|| {
+            crispembed::CrispScanCleanup::new(None, 0)
+                .ok()
+                .map(Mutex::new)
+        })
         .as_ref()?;
     eng.lock()
         .ok()?
@@ -153,7 +169,11 @@ pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
     let img = image::open(path).ok()?.to_rgb8();
     let (w, h) = (img.width(), img.height());
     let eng = SCAN_CLEANUP
-        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .get_or_init(|| {
+            crispembed::CrispScanCleanup::new(None, 0)
+                .ok()
+                .map(Mutex::new)
+        })
         .as_ref()?;
     eng.lock()
         .ok()?
@@ -308,8 +328,10 @@ pub fn restore_page(
             let eng = INSTRUCTIR
                 .get_or_init(|| crispembed::CrispInstructIR::new(&m, 0).map(Mutex::new))
                 .as_ref()?;
-            let (o, _ow, _oh) =
-                eng.lock().ok()?.process(rgb.as_raw(), w as i32, h as i32, task)?;
+            let (o, _ow, _oh) = eng
+                .lock()
+                .ok()?
+                .process(rgb.as_raw(), w as i32, h as i32, task)?;
             o
         }
         _ => {
@@ -345,7 +367,11 @@ pub fn dewarp_page(
         crispembed::dewarp(gray.as_raw(), w as i32, h as i32).ok()?
     };
     let img = image::GrayImage::from_raw(ow as u32, oh as u32, out)?;
-    let tmp = tempfile::Builder::new().prefix("ocr_dewarp_").suffix(".png").tempfile().ok()?;
+    let tmp = tempfile::Builder::new()
+        .prefix("ocr_dewarp_")
+        .suffix(".png")
+        .tempfile()
+        .ok()?;
     image::DynamicImage::ImageLuma8(img).save(tmp.path()).ok()?;
     let p = tmp.path().to_path_buf();
     Some((tmp, p))
@@ -453,7 +479,10 @@ pub fn kie_extract_lilt(
     let fields = kie
         .extract(img, &label_refs, threshold)
         .map_err(|e| anyhow::anyhow!("LiLT KIE extract: {e}"))?;
-    Ok(fields.into_iter().map(|f| (f.label, f.value, f.score)).collect())
+    Ok(fields
+        .into_iter()
+        .map(|f| (f.label, f.value, f.score))
+        .collect())
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -484,9 +513,7 @@ pub fn table_grid(_path: &Path) -> Result<(i32, i32)> {
 /// have no text.
 #[cfg(feature = "crispembed")]
 pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
-    let path_str = path
-        .to_str()
-        .context("image path is not valid UTF-8")?;
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
     let pipeline = OCR_PIPELINE.get_or_init(|| {
         let det = crispembed::CrispEmbed::resolve_model(DEFAULT_DET_MODEL, Some(true))
@@ -511,10 +538,7 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
         let by = b.y + b.h / 2.0;
         ay.partial_cmp(&by)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a.x.partial_cmp(&b.x)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+            .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let full_text = sorted
@@ -562,9 +586,7 @@ pub fn ocr_via_crispembed_custom(
     det_model: &str,
     rec_model: &str,
 ) -> Result<ExtractedDocument> {
-    let path_str = path
-        .to_str()
-        .context("image path is not valid UTF-8")?;
+    let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
     let det = crispembed::CrispEmbed::resolve_model(det_model, Some(true))
         .unwrap_or_else(|_| det_model.to_string());
@@ -582,10 +604,7 @@ pub fn ocr_via_crispembed_custom(
         let by = b.y + b.h / 2.0;
         ay.partial_cmp(&by)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a.x.partial_cmp(&b.x)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+            .then(a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let full_text = sorted
@@ -642,10 +661,7 @@ static OCR_ORCH: std::sync::OnceLock<Mutex<crispembed::CrispOcrPipeline>> =
 /// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
 /// cleanup + NAFNet denoise + accept-gate escalation) on an image.
 #[cfg(feature = "crispembed")]
-pub fn ocr_via_pipeline(
-    path: &Path,
-    cfg: &super::OcrPipelineConfig,
-) -> Result<ExtractedDocument> {
+pub fn ocr_via_pipeline(path: &Path, cfg: &super::OcrPipelineConfig) -> Result<ExtractedDocument> {
     let path_str = path.to_str().context("image path is not valid UTF-8")?;
 
     let orch = OCR_ORCH.get_or_init(|| Mutex::new(build_pipeline(cfg)));
@@ -766,7 +782,9 @@ fn apply_reading_order(
         regions.into_iter().map(Some).collect();
 
     for &idx in order {
-        let Ok(i) = usize::try_from(idx) else { continue };
+        let Ok(i) = usize::try_from(idx) else {
+            continue;
+        };
         if i >= slots.len() || taken[i] {
             continue;
         }
@@ -837,7 +855,8 @@ pub fn ocr_regions_detailed(
         .regions
         .into_iter()
         .map(|r| {
-            let confidence = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
+            let confidence =
+                effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
             RegionConf {
                 text: r.text,
                 x: r.x,
@@ -1007,7 +1026,6 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
                     morph_kernel: s.cleanup.morph_kernel,
                     border_threshold: s.cleanup.border_threshold,
                     deskew_max_angle: s.cleanup.deskew_max_angle,
-                    deskew_consensus: s.cleanup.deskew_consensus,
                     denoise: s.cleanup.denoise,
                 },
                 det_prob_threshold: s.det_prob_threshold,
@@ -1036,10 +1054,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> crispembed::CrispOcrPipelin
 }
 
 #[cfg(not(feature = "crispembed"))]
-pub fn ocr_via_pipeline(
-    path: &Path,
-    _cfg: &super::OcrPipelineConfig,
-) -> Result<ExtractedDocument> {
+pub fn ocr_via_pipeline(path: &Path, _cfg: &super::OcrPipelineConfig) -> Result<ExtractedDocument> {
     Err(anyhow::anyhow!(
         "CrispEmbed OCR pipeline requires --features crispembed; skipped {}",
         path.display()
@@ -1112,7 +1127,10 @@ mod tests {
         std::fs::write(&p, b"\x89PNG").unwrap();
         let err = ocr_via_crispembed(&p);
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("requires --features crispembed"));
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("requires --features crispembed"));
     }
 
     #[cfg(not(feature = "crispembed"))]
@@ -1201,7 +1219,10 @@ mod tests {
         let img = image::RgbImage::from_pixel(400, 120, image::Rgb([255, 255, 255]));
         img.save(&img_path).unwrap();
 
-        let mut cfg = super::super::OcrPipelineConfig { enabled: true, ..Default::default() };
+        let mut cfg = super::super::OcrPipelineConfig {
+            enabled: true,
+            ..Default::default()
+        };
         cfg.stages.push(super::super::OcrStageSpec {
             source_type: "auto".into(),
             engine: "tesseract".into(),
@@ -1256,10 +1277,17 @@ mod tests {
     fn restore_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "noisy.png", 96, 64);
-        let cfg = super::super::OcrPipelineConfig { restore: true, ..Default::default() };
+        let cfg = super::super::OcrPipelineConfig {
+            restore: true,
+            ..Default::default()
+        };
         let (_g, out) = restore_page(&p, &cfg).expect("Restormer should restore");
         let img = image::open(&out).expect("restored image decodes");
-        assert_eq!((img.width(), img.height()), (96, 64), "Restormer keeps dimensions");
+        assert_eq!(
+            (img.width(), img.height()),
+            (96, 64),
+            "Restormer keeps dimensions"
+        );
     }
 
     #[cfg(feature = "crispembed")]
@@ -1282,10 +1310,14 @@ mod tests {
                 restore_task: task.into(),
                 ..Default::default()
             };
-            let (_g, out) = restore_page(&p, &cfg)
-                .unwrap_or_else(|| panic!("{engine}/{task} should restore"));
+            let (_g, out) =
+                restore_page(&p, &cfg).unwrap_or_else(|| panic!("{engine}/{task} should restore"));
             let img = image::open(&out).expect("restored image decodes");
-            assert_eq!((img.width(), img.height()), (96, 64), "{engine}: keeps dimensions");
+            assert_eq!(
+                (img.width(), img.height()),
+                (96, 64),
+                "{engine}: keeps dimensions"
+            );
         }
     }
 
@@ -1301,7 +1333,11 @@ mod tests {
             assert_eq!(instructir_task_id("super_resolution"), 4);
             assert_eq!(instructir_task_id("low_light"), 5);
             assert_eq!(instructir_task_id("enhance"), 6);
-            assert_eq!(instructir_task_id("bogus"), 0, "unknown falls back to denoise");
+            assert_eq!(
+                instructir_task_id("bogus"),
+                0,
+                "unknown falls back to denoise"
+            );
         }
     }
 
@@ -1321,7 +1357,11 @@ mod tests {
             let (_g, out) = super_resolve_page(&p, &cfg)
                 .unwrap_or_else(|| panic!("{engine} SR should upscale"));
             let img = image::open(&out).expect("SR image decodes");
-            assert!(img.width() > 64, "{engine}: upscaled wider ({})", img.width());
+            assert!(
+                img.width() > 64,
+                "{engine}: upscaled wider ({})",
+                img.width()
+            );
         }
     }
 
@@ -1331,7 +1371,10 @@ mod tests {
     fn dewarp_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "warp.png", 256, 128);
-        let cfg = super::super::OcrPipelineConfig { dewarp: true, ..Default::default() };
+        let cfg = super::super::OcrPipelineConfig {
+            dewarp: true,
+            ..Default::default()
+        };
         // Dewarp may return None on a synthetic page (too few real text lines);
         // the contract is "runs without panicking, output decodes if produced".
         if let Some((_g, out)) = dewarp_page(&p, &cfg) {
@@ -1381,10 +1424,16 @@ mod tests {
     fn ocr_regions_detailed_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "text.png", 320, 96);
-        let cfg = super::super::OcrPipelineConfig { enabled: true, ..Default::default() };
+        let cfg = super::super::OcrPipelineConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let regions = super::ocr_regions_detailed(&p, &cfg).expect("detailed OCR runs");
         for r in &regions {
-            assert!(r.confidence >= 0.0 && r.confidence <= 1.0, "confidence in [0,1]");
+            assert!(
+                r.confidence >= 0.0 && r.confidence <= 1.0,
+                "confidence in [0,1]"
+            );
             // char_conf is either empty or roughly aligned to the text length.
             if !r.char_conf.is_empty() {
                 assert!(r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)));
@@ -1426,7 +1475,11 @@ mod tests {
                 y: r.y,
                 w: r.w,
                 h: r.h,
-                confidence: super::effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len()),
+                confidence: super::effective_confidence(
+                    r.confidence,
+                    r.rec_confidence,
+                    r.char_conf.len(),
+                ),
                 char_conf: r.char_conf,
             })
             .collect()
@@ -1450,7 +1503,10 @@ mod tests {
         for engine in ["dbnet_trocr", "surya", "tesseract", "parseq"] {
             let regions = run_engine_fresh(&p, engine);
             for r in &regions {
-                assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");
+                assert!(
+                    (0.0..=1.0).contains(&r.confidence),
+                    "{engine}: confidence range"
+                );
                 assert!(
                     r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)),
                     "{engine}: char_conf values are valid probabilities"
@@ -1467,11 +1523,22 @@ mod tests {
     fn ocr_engines_charconf_vlm_live() {
         let tmp = tempfile::TempDir::new().unwrap();
         let p = synth_page(tmp.path(), "vlm.png", 320, 96);
-        for engine in ["got", "glm", "qwen2vl", "internvl2",
-                       "deepseek_ocr2", "pix2struct", "granite_vision", "lightonocr"] {
+        for engine in [
+            "got",
+            "glm",
+            "qwen2vl",
+            "internvl2",
+            "deepseek_ocr2",
+            "pix2struct",
+            "granite_vision",
+            "lightonocr",
+        ] {
             let regions = run_engine_fresh(&p, engine);
             for r in &regions {
-                assert!((0.0..=1.0).contains(&r.confidence), "{engine}: confidence range");
+                assert!(
+                    (0.0..=1.0).contains(&r.confidence),
+                    "{engine}: confidence range"
+                );
                 assert!(
                     r.char_conf.iter().all(|&c| (0.0..=1.0).contains(&c)),
                     "{engine}: token confidences are valid probabilities"
