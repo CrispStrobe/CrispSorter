@@ -70,7 +70,7 @@ impl InodeState {
 impl FuseDriveFs {
     /// Create a new FUSE filesystem for the given drive.
     pub fn new(drive: Arc<dyn CloudDrive>) -> Self {
-        Self::with_queue(drive, TransferQueue::new())
+        Self::with_queue(drive, TransferQueue::shared())
     }
 
     /// Create a filesystem with an explicit queue, allowing the application

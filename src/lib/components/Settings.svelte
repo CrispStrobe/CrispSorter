@@ -653,6 +653,14 @@
      *  include the body text; when false (default), metadata-only. */
     let indexCloudBackupPullFullText       = $state<boolean>(false);
     let indexConflictPolicy                = $state<string>('newest_wins');
+    type PendingConflict = {
+        id: number; path: string; local_doc_id: string; local_hash: string;
+        remote_hash: string; local_title?: string; remote_title?: string;
+        remote_indexed_at: number; created_at: number;
+    };
+    let pendingConflicts = $state<PendingConflict[]>([]);
+    let conflictsBusy = $state(false);
+    let conflictsMessage = $state('');
     /** P13.7 Stage P — local DB size cap in GB (0 = unlimited). */
     let indexLocalMaxSizeGb        = $state<number>(0);
     /** P13.7 Stage N — partition controls.  These don't persist
@@ -1313,6 +1321,7 @@
         try {
             indexConflictPolicy = await invoke<string>('sync_get_conflict_policy');
         } catch { /* older/mobile backend: keep the default */ }
+        await refreshConflicts();
         indexLocalExtractionEnabled    = await getSetting('indexLocalExtractionEnabled', true) as boolean;
         indexSkeletonOnly              = await getSetting('indexSkeletonOnly', false) as boolean;
         indexEmbedderModelName         = await getSetting('indexEmbedderModelName', '') as string;
@@ -1931,6 +1940,37 @@
         } catch {
             indexCloudBackupStatus = null;
         }
+    }
+
+    async function refreshConflicts() {
+        try {
+            pendingConflicts = await invoke<PendingConflict[]>('sync_list_conflicts');
+            conflictsMessage = '';
+        } catch {
+            // Older mobile builds do not expose the desktop sync queue.
+            pendingConflicts = [];
+        }
+    }
+
+    async function keepLocalConflict(conflict: PendingConflict) {
+        conflictsBusy = true;
+        conflictsMessage = '';
+        try {
+            await invoke('sync_ack_conflict', { id: conflict.id });
+            pendingConflicts = pendingConflicts.filter((item) => item.id !== conflict.id);
+            conflictsMessage = `Kept local version for ${conflict.path}`;
+        } catch (e: any) {
+            conflictsMessage = `Could not acknowledge conflict: ${e}`;
+        } finally {
+            conflictsBusy = false;
+        }
+    }
+
+    function conflictTimestamp(value: number): string {
+        // Older cb-api deployments used Unix seconds; current deployments
+        // use milliseconds. Accept both while the queue is migrated.
+        const millis = value < 1_000_000_000_000 ? value * 1000 : value;
+        return new Date(millis).toLocaleString();
     }
 
     // ── Stage T — admin key management handlers ──────────────────────────
@@ -4000,6 +4040,42 @@
                     <option value='manual'>Manual review</option>
                 </select>
                 <p class='hint'>Used when sync finds different local and remote content. Manual mutations remain explicit and non-destructive.</p>
+
+                {#if pendingConflicts.length > 0 || indexConflictPolicy === 'manual'}
+                    <div class="conflict-review" style="margin-top:14px; padding:10px; border:1px solid var(--color-border, #444); border-radius:6px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                            <strong>Conflict review ({pendingConflicts.length})</strong>
+                            <button type="button" class="btn" onclick={refreshConflicts} disabled={conflictsBusy}>Refresh</button>
+                        </div>
+                        <p class="hint">Manual pulls remain unapplied until reviewed. Keeping local rejects the remote candidate safely; accepting remote is deferred until the server can rehydrate the complete manifest row.</p>
+                        {#if pendingConflicts.length === 0}
+                            <p class="hint">No unresolved conflicts.</p>
+                        {:else}
+                            {#each pendingConflicts as conflict (conflict.id)}
+                                <div style="margin-top:10px; padding:8px; background:var(--color-surface-2, rgba(127,127,127,.08)); border-radius:4px;">
+                                    <div style="font-weight:600; overflow-wrap:anywhere;">{conflict.path}</div>
+                                    <div class="conflict-columns" style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:6px;">
+                                        <div>
+                                            <div class="hint">Local</div>
+                                            <div style="overflow-wrap:anywhere;">{conflict.local_title || conflict.local_doc_id}</div>
+                                            <code style="font-size:.78em; overflow-wrap:anywhere;">{conflict.local_hash || 'no hash'}</code>
+                                        </div>
+                                        <div>
+                                            <div class="hint">Remote</div>
+                                            <div style="overflow-wrap:anywhere;">{conflict.remote_title || conflict.remote_hash}</div>
+                                            <code style="font-size:.78em; overflow-wrap:anywhere;">{conflict.remote_hash || 'no hash'}</code>
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
+                                        <span class="hint">Remote indexed {conflictTimestamp(conflict.remote_indexed_at)}</span>
+                                        <button type="button" class="btn danger" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
+                                    </div>
+                                </div>
+                            {/each}
+                        {/if}
+                        {#if conflictsMessage}<p class="hint">{conflictsMessage}</p>{/if}
+                    </div>
+                {/if}
 
                 <!-- Stage U — thin-client switch. -->
                 <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer;">

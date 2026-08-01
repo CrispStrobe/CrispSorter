@@ -527,6 +527,9 @@ enum CloudBackupCmd {
         /// `cloud_backup_pull_full_text_enabled` IndexConfig flag.
         #[arg(long)]
         include_full_text: bool,
+        /// One-shot conflict policy override.  Does not rewrite Settings.
+        #[arg(long, value_name = "POLICY")]
+        conflict_policy: Option<String>,
     },
     /// Store an API key in the OS keychain for the configured URL.
     /// Reads the raw key from `--token` or, if absent, from the
@@ -5033,6 +5036,24 @@ fn cb_resolve_token(url: &str) -> Result<Option<String>, String> {
     crate::sync::secret::get_token_for_url(url).map_err(|e| format!("keychain: {e}"))
 }
 
+fn parse_conflict_policy(value: &str) -> Result<crate::sync::conflict::ConflictPolicy, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "newest" | "newest-wins" | "newest_wins" =>
+            Ok(crate::sync::conflict::ConflictPolicy::NewestWins),
+        "local" | "local-wins" | "local_wins" =>
+            Ok(crate::sync::conflict::ConflictPolicy::LocalWins),
+        "remote" | "remote-wins" | "remote_wins" =>
+            Ok(crate::sync::conflict::ConflictPolicy::RemoteWins),
+        "keep-both" | "keep_both" | "both" =>
+            Ok(crate::sync::conflict::ConflictPolicy::KeepBoth),
+        "manual" | "review" =>
+            Ok(crate::sync::conflict::ConflictPolicy::Manual),
+        other => Err(format!(
+            "unknown conflict policy `{other}`; use newest|local|remote|keep-both|manual"
+        )),
+    }
+}
+
 async fn cmd_sync_cloud_backup(
     out: OutFormat,
     data_dir: &std::path::Path,
@@ -5275,10 +5296,13 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::Pull { limit, include_full_text } => {
+        CloudBackupCmd::Pull { limit, include_full_text, conflict_policy } => {
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
                 .await.map_err(|e| e.to_string())?;
+            let conflict_policy = conflict_policy.as_deref()
+                .map(parse_conflict_policy).transpose()?
+                .unwrap_or(cfg.conflict_policy);
             let last_ts: i64 = mgr.get_state("cb_last_manifest_pull_ts").ok().flatten()
                 .and_then(|s| s.parse().ok()).unwrap_or(0);
             // CLI flag overrides the Settings checkbox for one-shot headless use.
@@ -5299,12 +5323,60 @@ async fn cmd_sync_cloud_backup(
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
                 .as_millis() as i64;
-            let chunks: Vec<crate::index::schema::DocumentChunk> = resp.rows.iter().map(|r| {
-                let doc_id = if r.sha256.is_empty() {
+            let mut selected: Vec<(&crate::sync::cloud_backup::PullRow, String)> = Vec::with_capacity(resp.rows.len());
+            let mut skipped_local = 0usize;
+            let mut queued_manual = 0usize;
+            let mut replaced_remote = 0usize;
+            let mut kept_both = 0usize;
+            for r in &resp.rows {
+                let base_doc_id = if r.sha256.is_empty() {
                     uuid::Uuid::new_v4().to_string()
                 } else { r.sha256.clone() };
+                let local_rows = local.conflict_rows_for_location(&r.path)
+                    .await.map_err(|e| e.to_string())?;
+                let matching = local_rows.iter().any(|row| row.source_hash == r.sha256);
+                let mut doc_id = base_doc_id;
+                if !matching {
+                    if let Some(local_row) = local_rows.first() {
+                        let resolution = crate::sync::conflict::resolve_conflict(
+                            &crate::sync::conflict::ConflictSide {
+                                doc_id: local_row.doc_id.clone(), source_hash: local_row.source_hash.clone(),
+                                updated_at: local_row.indexed_at, title: local_row.title.clone(),
+                            },
+                            &crate::sync::conflict::ConflictSide {
+                                doc_id: doc_id.clone(), source_hash: r.sha256.clone(),
+                                updated_at: Some(r.indexed_at), title: r.title.clone(),
+                            }, conflict_policy);
+                        match resolution {
+                            crate::sync::conflict::Resolution::UseLocal => {
+                                skipped_local += 1;
+                                continue;
+                            }
+                            crate::sync::conflict::Resolution::UseRemote => {
+                                for row in &local_rows {
+                                    local.delete_doc(&row.doc_id).await.map_err(|e| e.to_string())?;
+                                }
+                                replaced_remote += 1;
+                            }
+                            crate::sync::conflict::Resolution::KeepBoth { remote_doc_id } => {
+                                doc_id = remote_doc_id;
+                                kept_both += 1;
+                            }
+                            crate::sync::conflict::Resolution::NeedsManualReview => {
+                                mgr.enqueue_conflict(&r.path, &local_row.doc_id, &local_row.source_hash,
+                                    &r.sha256, local_row.title.as_deref(), r.title.as_deref(), r.indexed_at)
+                                    .map_err(|e| e.to_string())?;
+                                queued_manual += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                selected.push((r, doc_id));
+            }
+            let chunks: Vec<crate::index::schema::DocumentChunk> = selected.iter().map(|(r, doc_id)| {
                 crate::index::schema::DocumentChunk {
-                    id: crate::index::ingest::chunk_row_id(&doc_id, -1),
+                    id: crate::index::ingest::chunk_row_id(doc_id, 0),
                     doc_id: doc_id.clone(),
                     location_uri: r.path.clone(),
                     owner_id: r.owner_id.clone(),
@@ -5427,11 +5499,15 @@ async fn cmd_sync_cloud_backup(
                 OutFormat::Json => println!("{}", serde_json::json!({
                     "pulled": resp.rows.len(),
                     "applied": applied,
+                    "skipped_local": skipped_local,
+                    "queued_manual": queued_manual,
+                    "replaced_remote": replaced_remote,
+                    "kept_both": kept_both,
                     "watermark": resp.max_indexed_at,
                     "has_more": resp.has_more,
                 })),
                 OutFormat::Text => println!(
-                    "pulled {} row(s), applied {applied} (watermark={}){}",
+                    "pulled {} row(s), applied {applied}, skipped_local={skipped_local}, queued_manual={queued_manual}, replaced_remote={replaced_remote}, kept_both={kept_both} (watermark={}){}",
                     resp.rows.len(), resp.max_indexed_at,
                     if resp.has_more { " — more available, re-run to drain" } else { "" }
                 ),
@@ -5771,7 +5847,7 @@ async fn cmd_sync_cloud_backup(
                 .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
                 Arc::from(DriveRegistry::instantiate(&drive_cfg));
-            let transfer_queue = TransferQueue::new();
+            let transfer_queue = TransferQueue::shared();
 
             let bs = crate::sync::backup_state::BackupState::open(&data_dir)
                 .map_err(|e| e.to_string())?;
@@ -5925,7 +6001,7 @@ async fn cmd_sync_cloud_backup(
             };
 
             let tar_path = cb_root.join(&date_dir).join(format!("{prefix}.tar.gz"));
-            let transfer = TransferQueue::new().submit_download(
+            let transfer = TransferQueue::shared().submit_download(
                 drive_id.clone(),
                 tar_path.clone(),
                 None,
@@ -10302,5 +10378,28 @@ mod cli_mode_detection_tests {
                 "{argv:?} was claimed by the CLI"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod conflict_policy_cli_tests {
+    #[test]
+    fn accepts_documented_policy_spellings() {
+        use crate::sync::conflict::ConflictPolicy;
+        for (input, expected) in [
+            ("newest", ConflictPolicy::NewestWins),
+            ("local_wins", ConflictPolicy::LocalWins),
+            ("remote-wins", ConflictPolicy::RemoteWins),
+            ("both", ConflictPolicy::KeepBoth),
+            ("review", ConflictPolicy::Manual),
+        ] {
+            assert_eq!(super::parse_conflict_policy(input).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_policy_with_guidance() {
+        let error = super::parse_conflict_policy("overwrite").unwrap_err();
+        assert!(error.contains("newest|local|remote|keep-both|manual"));
     }
 }

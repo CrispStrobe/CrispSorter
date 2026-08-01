@@ -1450,14 +1450,22 @@ will surface.
   list/ack commands expose the queue for the review surface.
 - [x] **`IndexConfig.conflict_policy` setting.** ✅ 2026-08-01. Default is
   `NewestWins`; Settings persists the five policies through the authoritative
-  index config and sync Tauri boundary. CLI selection remains a follow-up:
-  `--conflict-policy newest|local|remote|keep-both|manual`.
+  index config and sync Tauri boundary. The cloud-backup pull CLI now accepts
+  a one-shot `--conflict-policy newest|local|remote|keep-both|manual` override
+  without rewriting Settings. ✅ 2026-08-01
 - [ ] **Frontend: conflict review panel.**  When `Manual` policy is
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
   accept/reject buttons.
+  - [x] Settings now loads the durable queue and renders local/remote
+    title/hash/timestamp metadata with refresh and safe "Keep local"
+    acknowledgement. ✅ 2026-08-01
+  - [ ] Remote acceptance remains deferred until the pull API can rehydrate
+    the complete remote manifest row; the current UI deliberately does not
+    pretend that acknowledging a conflict applies remote content.
 - [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
-  Remaining: manual queue persistence test (needs `sync_conflicts` table).
+  Manual queue persistence/deduplication coverage now ships in
+  `sync::tests::manual_conflicts_are_durable_and_deduplicated`. ✅ 2026-08-01
 
 #### Priority 5 — Share link generation
 
@@ -2666,12 +2674,13 @@ a transfer without leaving the search/catalog workflow.
 - [x] **Queue job registry and cancellation surface.** The shared queue now
   retains a bounded recent-job snapshot and exposes Tauri status/cancel
   commands for the future transfer drawer. ✅ Shipped 2026-07-31.
-- [ ] **Complete shared TransferQueue integration.** Replace remaining
-  per-command queues in CLI, FUSE, and provider-facing boundaries. Add queue
-  job registration, progress events, retry classification, cancellation, and
-  a bounded blocking adapter for the synchronous FUSE/provider boundary. Keep
-  serial multipart defaults for fragile gateways and configurable workers for
-  testing.
+- [x] **Complete shared TransferQueue integration.** ✅ 2026-08-01. CLI, FUSE,
+  and provider-facing boundaries now use the process-wide queue; registration,
+  polling snapshots, retry/backoff, cancellation, and the bounded synchronous
+  adapter are wired. Serial multipart defaults remain provider-controlled.
+  - [x] Added a process-wide `TransferQueue::shared()` accessor and routed
+    AppState, CLI cloud-backup transfers, and FUSE construction through it;
+    they now share semaphore/backoff/cancellation/job snapshots. ✅ 2026-08-01
 - [x] **Bounded synchronous queue adapter.** `upload_blocking` and
   `download_blocking` run synchronous provider/FUSE operations on an isolated
   Tokio worker while sharing the queue semaphore, retry policy, cancellation
@@ -2810,6 +2819,13 @@ a transfer without leaving the search/catalog workflow.
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
   and i18n infrastructure rather than creating a second notification system.
+  - [x] Drawer now includes provider identity and live ETA alongside bytes,
+    speed, state, cancellation, and offline retry details. ✅ 2026-08-01
+  - [x] Drawer now queries and caches the registered drive's capability
+    declaration and shows "resume available" only for the matching native
+    upload/download direction. Unknown providers remain unmarked. ✅ 2026-08-01
+  - [ ] Queue-native resume-state metadata remains deferred; the drawer's
+    capability badge does not claim that a currently running job can resume.
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 
