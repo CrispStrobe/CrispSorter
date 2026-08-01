@@ -1774,8 +1774,17 @@ async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
 /// P24.5 — Parse an RSS/Atom feed from a URL.
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFeed, String> {
-    extractors::feed::fetch_and_parse(&url).await
+async fn feed_fetch_and_parse(
+    state: tauri::State<'_, AppState>,
+    url: String,
+) -> Result<extractors::feed::ParsedFeed, String> {
+    let config = state.index.lock().await.config.clone();
+    let proxy = sync::proxy::ProxyConfig {
+        url: config.proxy_url,
+        username: config.proxy_username,
+        password: sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    };
+    extractors::feed::fetch_and_parse_with_proxy(&url, &proxy).await
 }
 
 /// P24.5 — Parse a local feed file (XML).

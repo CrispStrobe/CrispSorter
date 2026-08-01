@@ -3301,6 +3301,8 @@ a transfer without leaving the search/catalog workflow.
     falling back to a default HTTP client.
   - [x] Headless cloud-backup CLI status, admin, and federated-search clients
     now load the same persisted proxy policy and keychain password.
+  - [x] GUI and CLI feed fetching now use the persisted proxy policy through
+    the shared feed HTTP boundary.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

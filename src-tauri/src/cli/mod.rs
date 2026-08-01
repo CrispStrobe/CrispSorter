@@ -4500,7 +4500,9 @@ async fn cmd_index_async(
         }
         #[cfg(feature = "desktop")]
         IndexCmd::Feed { url } => {
-            let feed = crate::extractors::feed::fetch_and_parse(&url).await
+            let config = crate::index::config_persist::load(&data_dir);
+            let proxy = cli_proxy_config(&config)?;
+            let feed = crate::extractors::feed::fetch_and_parse_with_proxy(&url, &proxy).await
                 .map_err(|e| format!("feed: {e}"))?;
             match out {
                 OutFormat::Json => println!("{}", serde_json::to_string_pretty(&feed).unwrap_or_default()),
