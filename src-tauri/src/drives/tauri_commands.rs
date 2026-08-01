@@ -53,16 +53,20 @@ pub async fn drive_mount(
             std::sync::Arc::from(DriveRegistry::instantiate(&config));
         let id = drive_id.clone();
         let point = mount_point.clone();
-        active.insert(drive_id, mount_point);
+        active.insert(drive_id.clone(), mount_point);
         drop(active);
-        std::thread::Builder::new().name(format!("fuse-{id}")).spawn(move || {
+        let spawned = std::thread::Builder::new().name(format!("fuse-{id}")).spawn(move || {
             if let Err(error) = super::fuse_mount::fs::mount_blocking(drive, &point) {
                 eprintln!("FUSE mount {id} failed: {error:#}");
             }
             if let Some(mounts) = FUSE_MOUNTS.get() {
                 if let Ok(mut active) = mounts.lock() { active.remove(&id); }
             }
-        }).map_err(|e| format!("starting FUSE thread: {e}"))?;
+        });
+        if let Err(error) = spawned {
+            if let Ok(mut active) = mounts.lock() { active.remove(&drive_id); }
+            return Err(format!("starting FUSE thread: {error}"));
+        }
         Ok(())
     }
 }
