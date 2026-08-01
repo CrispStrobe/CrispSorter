@@ -3022,6 +3022,9 @@ a transfer without leaving the search/catalog workflow.
       same validated Tauri contract as the CLI.
     - [x] Settings also removes job configuration explicitly without deleting
       any local or remote snapshot data.
+    - [x] Verified backup uploads now compare SHA-256 of the local payload
+      with a remote read-back (plus size/stat), rather than treating matching
+      byte counts as full integrity verification.
 
 #### P34.4 — Security and provider expansion, P2
 

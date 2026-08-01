@@ -5212,6 +5212,7 @@ async fn cmd_sync_backup_job(
         BackupJobCmd::Run { job_id, dry_run } => {
             use crate::drives::DriveRegistry;
             use crate::sync::transfer_queue::TransferQueue;
+            use sha2::{Digest, Sha256};
             use std::sync::Arc;
 
             let job = store.job(&job_id).map_err(|e| e.to_string())?
@@ -5248,6 +5249,7 @@ async fn cmd_sync_backup_job(
                     Ok(data) => data,
                     Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
                 };
+                let local_hash = format!("{:x}", Sha256::digest(&data));
                 let remote = snapshot.join(&relative);
                 let target = Arc::clone(&drive);
                 let transfer = queue.submit_upload(job.drive_id.clone(), remote.clone(), data,
@@ -5255,7 +5257,13 @@ async fn cmd_sync_backup_job(
                 match transfer.handle.await {
                     Ok(Ok(_)) if !job.verify_integrity => { completed += 1; bytes += size; }
                     Ok(Ok(_)) => match drive.stat(&remote) {
-                        Ok(stat) if stat.size == size => { completed += 1; bytes += size; }
+                        Ok(stat) if stat.size == size => match drive.read_file(&remote) {
+                            Ok(remote_data) if format!("{:x}", Sha256::digest(&remote_data)) == local_hash => {
+                                completed += 1; bytes += size;
+                            }
+                            Ok(_) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification hash mismatch for {}", relative)); break; }
+                            Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
+                        },
                         Ok(stat) => { failed += 1; let _ = store.fail_run(&run.id, &format!("verification size mismatch for {}: expected {}, got {}", relative, size, stat.size)); break; }
                         Err(error) => { failed += 1; let _ = store.fail_run(&run.id, &error.to_string()); break; }
                     },
