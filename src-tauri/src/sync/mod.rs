@@ -19,8 +19,8 @@
 //! A single row in `sync_state` tracks `last_pull_ts` and `last_push_ts`
 //! so the UI chip can show "synced 2 min ago" or "3 pending".
 
-pub mod backup_scheduler;
 pub mod backup_state;
+pub mod backup_scheduler;
 pub mod cert_pins;
 pub mod cloud_backup;
 pub mod conflict;
@@ -34,32 +34,32 @@ pub mod secret;
 pub mod tauri_commands;
 pub mod transfer_queue;
 
-use self::proxy::ProxyConfig;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use self::proxy::ProxyConfig;
 
 // ── Public types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxEntry {
-    pub id: i64,
-    pub op: String,
-    pub payload: String,
-    pub retries: i32,
-    pub last_err: Option<String>,
-    pub queued_at: i64,
+    pub id:         i64,
+    pub op:         String,
+    pub payload:    String,
+    pub retries:    i32,
+    pub last_err:   Option<String>,
+    pub queued_at:  i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncStatus {
-    pub pending_count: usize,
-    pub last_push_ts: Option<i64>,
-    pub last_pull_ts: Option<i64>,
-    pub remote_online: bool,
+    pub pending_count:  usize,
+    pub last_push_ts:   Option<i64>,
+    pub last_pull_ts:   Option<i64>,
+    pub remote_online:  bool,
 }
 
 /// A cloud-backup pull conflict awaiting an explicit user decision.
@@ -122,9 +122,7 @@ impl SyncManager {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     /// Enqueue an operation for deferred push to the remote server.
@@ -157,19 +155,18 @@ impl SyncManager {
              FROM sync_outbox WHERE retries < 10
              ORDER BY queued_at ASC LIMIT ?1",
         )?;
-        let rows = stmt
-            .query_map([limit as i64], |r| {
-                Ok(OutboxEntry {
-                    id: r.get(0)?,
-                    op: r.get(1)?,
-                    payload: r.get(2)?,
-                    retries: r.get(3)?,
-                    last_err: r.get(4)?,
-                    queued_at: r.get(5)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(OutboxEntry {
+                id:        r.get(0)?,
+                op:        r.get(1)?,
+                payload:   r.get(2)?,
+                retries:   r.get(3)?,
+                last_err:  r.get(4)?,
+                queued_at: r.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
         Ok(rows)
     }
 
@@ -180,27 +177,24 @@ impl SyncManager {
              FROM sync_outbox WHERE op = ?1 AND retries < 10
              ORDER BY queued_at ASC LIMIT ?2",
         )?;
-        let rows = stmt
-            .query_map(rusqlite::params![op, limit as i64], |r| {
-                Ok(OutboxEntry {
-                    id: r.get(0)?,
-                    op: r.get(1)?,
-                    payload: r.get(2)?,
-                    retries: r.get(3)?,
-                    last_err: r.get(4)?,
-                    queued_at: r.get(5)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt.query_map(rusqlite::params![op, limit as i64], |r| {
+            Ok(OutboxEntry {
+                id:        r.get(0)?,
+                op:        r.get(1)?,
+                payload:   r.get(2)?,
+                retries:   r.get(3)?,
+                last_err:  r.get(4)?,
+                queued_at: r.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
         Ok(rows)
     }
 
     /// Mark an entry as successfully pushed (delete it).
     pub fn mark_done(&self, id: i64) -> Result<()> {
-        self.conn
-            .lock()
-            .unwrap()
+        self.conn.lock().unwrap()
             .execute("DELETE FROM sync_outbox WHERE id = ?1", [id])?;
         Ok(())
     }
@@ -216,11 +210,9 @@ impl SyncManager {
 
     pub fn get_state(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT value FROM sync_state WHERE key = ?1", [key], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(|e| e.into())
+        conn.query_row("SELECT value FROM sync_state WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.into())
     }
 
     pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
@@ -233,13 +225,8 @@ impl SyncManager {
 
     /// Add a manual-review conflict idempotently.
     pub fn enqueue_conflict(
-        &self,
-        path: &str,
-        local_doc_id: &str,
-        local_hash: &str,
-        remote_hash: &str,
-        local_title: Option<&str>,
-        remote_title: Option<&str>,
+        &self, path: &str, local_doc_id: &str, local_hash: &str,
+        remote_hash: &str, local_title: Option<&str>, remote_title: Option<&str>,
         remote_indexed_at: i64,
     ) -> Result<()> {
         self.conn.lock().unwrap().execute(
@@ -247,16 +234,8 @@ impl SyncManager {
              (path, local_doc_id, local_hash, remote_hash, local_title,
               remote_title, remote_indexed_at, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                path,
-                local_doc_id,
-                local_hash,
-                remote_hash,
-                local_title,
-                remote_title,
-                remote_indexed_at,
-                now_ms()
-            ],
+            params![path, local_doc_id, local_hash, remote_hash, local_title,
+                remote_title, remote_indexed_at, now_ms()],
         )?;
         Ok(())
     }
@@ -269,31 +248,19 @@ impl SyncManager {
                     local_title, remote_title, remote_indexed_at, created_at
              FROM sync_conflicts ORDER BY created_at ASC, id ASC",
         )?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(PendingConflict {
-                    id: r.get(0)?,
-                    path: r.get(1)?,
-                    local_doc_id: r.get(2)?,
-                    local_hash: r.get(3)?,
-                    remote_hash: r.get(4)?,
-                    local_title: r.get(5)?,
-                    remote_title: r.get(6)?,
-                    remote_indexed_at: r.get(7)?,
-                    created_at: r.get(8)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map([], |r| Ok(PendingConflict {
+            id: r.get(0)?, path: r.get(1)?, local_doc_id: r.get(2)?,
+            local_hash: r.get(3)?, remote_hash: r.get(4)?,
+            local_title: r.get(5)?, remote_title: r.get(6)?,
+            remote_indexed_at: r.get(7)?, created_at: r.get(8)?,
+        }))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     pub fn remove_conflict(&self, id: i64) -> Result<bool> {
-        Ok(self
-            .conn
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM sync_conflicts WHERE id = ?1", [id])?
-            > 0)
+        Ok(self.conn.lock().unwrap().execute(
+            "DELETE FROM sync_conflicts WHERE id = ?1", [id]
+        )? > 0)
     }
 
     /// Check if the remote server is reachable (quick GET /health).
@@ -310,9 +277,12 @@ impl SyncManager {
 
     /// Push all pending entries to the remote server.
     /// Returns (pushed, failed) counts.
-    pub async fn push_pending(&self, remote_url: &str, api_key: &str) -> Result<(usize, usize)> {
-        self.push_pending_with_proxy(remote_url, api_key, &ProxyConfig::default())
-            .await
+    pub async fn push_pending(
+        &self,
+        remote_url: &str,
+        api_key: &str,
+    ) -> Result<(usize, usize)> {
+        self.push_pending_with_proxy(remote_url, api_key, &ProxyConfig::default()).await
     }
 
     /// Push pending entries using an explicit HTTP/SOCKS5 proxy policy.
@@ -323,9 +293,7 @@ impl SyncManager {
         proxy: &ProxyConfig,
     ) -> Result<(usize, usize)> {
         let batch = self.claim_batch(64)?;
-        if batch.is_empty() {
-            return Ok((0, 0));
-        }
+        if batch.is_empty() { return Ok((0, 0)); }
 
         let client = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?;
         let mut pushed = 0;
@@ -335,27 +303,17 @@ impl SyncManager {
             let endpoint = match entry.op.as_str() {
                 "ingest" => format!("{}/v1/ingest/batch", remote_url.trim_end_matches('/')),
                 "delete" => format!("{}/v1/docs", remote_url.trim_end_matches('/')),
-                "move" => format!("{}/v1/docs/location", remote_url.trim_end_matches('/')),
-                _ => {
-                    self.mark_error(entry.id, "unknown op").ok();
-                    failed += 1;
-                    continue;
-                }
+                "move"   => format!("{}/v1/docs/location", remote_url.trim_end_matches('/')),
+                _        => { self.mark_error(entry.id, "unknown op").ok(); failed += 1; continue; }
             };
 
             let payload: serde_json::Value = match serde_json::from_str(&entry.payload) {
                 Ok(v) => v,
-                Err(e) => {
-                    self.mark_error(entry.id, &e.to_string()).ok();
-                    failed += 1;
-                    continue;
-                }
+                Err(e) => { self.mark_error(entry.id, &e.to_string()).ok(); failed += 1; continue; }
             };
 
             let mut req = client.post(&endpoint).json(&payload);
-            if !api_key.is_empty() {
-                req = req.bearer_auth(api_key);
-            }
+            if !api_key.is_empty() { req = req.bearer_auth(api_key); }
 
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -395,8 +353,7 @@ impl SyncManager {
         api_key: &str,
         limit: usize,
     ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
-        self.pull_pending_with_proxy(remote_url, api_key, limit, &ProxyConfig::default())
-            .await
+        self.pull_pending_with_proxy(remote_url, api_key, limit, &ProxyConfig::default()).await
     }
 
     /// Pull pending rows using an explicit HTTP/SOCKS5 proxy policy.
@@ -407,8 +364,7 @@ impl SyncManager {
         limit: usize,
         proxy: &ProxyConfig,
     ) -> Result<(Vec<crisp_index_protocol::SearchHit>, i64)> {
-        let last_pull_ts: i64 = self
-            .get_state("last_pull_ts")?
+        let last_pull_ts: i64 = self.get_state("last_pull_ts")?
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
@@ -418,11 +374,10 @@ impl SyncManager {
             last_pull_ts,
             limit
         );
-        let mut req =
-            self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?.get(&url);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(api_key);
-        }
+        let mut req = self::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))
+            .get(&url)
+            ;
+        if !api_key.is_empty() { req = req.bearer_auth(api_key); }
 
         let resp = req.send().await?;
         if !resp.status().is_success() {
@@ -455,23 +410,17 @@ impl SyncManager {
         batch_size: usize,
     ) -> Result<(usize, usize)> {
         let claimed = self.claim_batch(batch_size)?;
-        let cb_entries: Vec<_> = claimed
-            .into_iter()
+        let cb_entries: Vec<_> = claimed.into_iter()
             .filter(|e| e.op == "cb_manifest_push")
             .collect();
-        if cb_entries.is_empty() {
-            return Ok((0, 0));
-        }
+        if cb_entries.is_empty() { return Ok((0, 0)); }
 
         let mut rows: Vec<cloud_backup::ManifestRow> = Vec::with_capacity(cb_entries.len());
         let mut id_for_row: Vec<i64> = Vec::with_capacity(cb_entries.len());
         let mut failed = 0;
         for entry in &cb_entries {
             match serde_json::from_str::<cloud_backup::ManifestRow>(&entry.payload) {
-                Ok(row) => {
-                    rows.push(row);
-                    id_for_row.push(entry.id);
-                }
+                Ok(row) => { rows.push(row); id_for_row.push(entry.id); }
                 Err(e) => {
                     // Malformed payload — bump retries so a fix can
                     // reset; don't include in the batch POST.
@@ -480,24 +429,17 @@ impl SyncManager {
                 }
             }
         }
-        if rows.is_empty() {
-            return Ok((0, failed));
-        }
+        if rows.is_empty() { return Ok((0, failed)); }
 
         match client.manifest_push(&rows).await {
             Ok(_) => {
-                for id in &id_for_row {
-                    self.mark_done(*id).ok();
-                }
-                self.set_state("cb_last_outbox_drain_ts", &now_ms().to_string())
-                    .ok();
+                for id in &id_for_row { self.mark_done(*id).ok(); }
+                self.set_state("cb_last_outbox_drain_ts", &now_ms().to_string()).ok();
                 Ok((rows.len(), failed))
             }
             Err(e) => {
                 let msg = format!("{e}");
-                for id in &id_for_row {
-                    self.mark_error(*id, &msg).ok();
-                }
+                for id in &id_for_row { self.mark_error(*id, &msg).ok(); }
                 Ok((0, failed + rows.len()))
             }
         }
@@ -515,22 +457,16 @@ impl SyncManager {
         batch_size: usize,
     ) -> Result<(usize, usize)> {
         let claimed = self.claim_batch_by_op("cb_file_upload", batch_size)?;
-        if claimed.is_empty() {
-            return Ok((0, 0));
-        }
+        if claimed.is_empty() { return Ok((0, 0)); }
 
         let mut uploaded = 0usize;
-        let mut failed = 0usize;
+        let mut failed   = 0usize;
         for entry in &claimed {
             #[derive(serde::Deserialize)]
-            struct UploadJob {
-                sha256: String,
-                path: String,
-            }
+            struct UploadJob { sha256: String, path: String }
             match serde_json::from_str::<UploadJob>(&entry.payload) {
                 Err(e) => {
-                    self.mark_error(entry.id, &format!("payload parse: {e}"))
-                        .ok();
+                    self.mark_error(entry.id, &format!("payload parse: {e}")).ok();
                     failed += 1;
                 }
                 Ok(job) => {
@@ -546,10 +482,7 @@ impl SyncManager {
                     // `tokio_util::io::ReaderStream` in a `reqwest::Body`.
                     // Keeps multi-GB media uploads off the heap.
                     match client.upload_file_by_hash(&job.sha256, &path).await {
-                        Ok(_) => {
-                            self.mark_done(entry.id).ok();
-                            uploaded += 1;
-                        }
+                        Ok(_) => { self.mark_done(entry.id).ok(); uploaded += 1; }
                         Err(e) => {
                             self.mark_error(entry.id, &format!("upload: {e}")).ok();
                             failed += 1;
@@ -562,40 +495,26 @@ impl SyncManager {
     }
 
     pub fn clear_failed(&self) -> Result<usize> {
-        let n = self
-            .conn
-            .lock()
-            .unwrap()
+        let n = self.conn.lock().unwrap()
             .execute("DELETE FROM sync_outbox WHERE retries >= 10", [])?;
         Ok(n)
     }
 
     pub fn status(&self, _remote_url: Option<&str>) -> SyncStatus {
         let pending_count = self.pending_count().unwrap_or(0);
-        let last_push_ts = self
-            .get_state("last_push_ts")
-            .ok()
-            .flatten()
+        let last_push_ts = self.get_state("last_push_ts").ok().flatten()
             .and_then(|s| s.parse::<i64>().ok());
-        let last_pull_ts = self
-            .get_state("last_pull_ts")
-            .ok()
-            .flatten()
+        let last_pull_ts = self.get_state("last_pull_ts").ok().flatten()
             .and_then(|s| s.parse::<i64>().ok());
         SyncStatus {
-            pending_count,
-            last_push_ts,
-            last_pull_ts,
+            pending_count, last_push_ts, last_pull_ts,
             remote_online: false, // updated async by the caller
         }
     }
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
 #[cfg(test)]
@@ -622,26 +541,10 @@ mod tests {
     #[test]
     fn manual_conflicts_are_durable_and_deduplicated() {
         let (_tmp, mgr) = fresh();
-        mgr.enqueue_conflict(
-            "/doc.txt",
-            "local",
-            "aaa",
-            "bbb",
-            Some("Local"),
-            Some("Remote"),
-            42,
-        )
-        .unwrap();
-        mgr.enqueue_conflict(
-            "/doc.txt",
-            "local",
-            "aaa",
-            "bbb",
-            Some("Local"),
-            Some("Remote"),
-            42,
-        )
-        .unwrap();
+        mgr.enqueue_conflict("/doc.txt", "local", "aaa", "bbb",
+            Some("Local"), Some("Remote"), 42).unwrap();
+        mgr.enqueue_conflict("/doc.txt", "local", "aaa", "bbb",
+            Some("Local"), Some("Remote"), 42).unwrap();
         let rows = mgr.pending_conflicts().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].path, "/doc.txt");
@@ -656,7 +559,7 @@ mod tests {
         let (_tmp, mgr) = fresh();
         let id1 = mgr.enqueue("ingest", "{}").unwrap();
         let id2 = mgr.enqueue("delete", "{}").unwrap();
-        let id3 = mgr.enqueue("move", "{}").unwrap();
+        let id3 = mgr.enqueue("move",   "{}").unwrap();
         assert!(id1 < id2 && id2 < id3, "rowids must be monotonic");
     }
 
@@ -666,9 +569,7 @@ mod tests {
         let id = mgr.enqueue("ingest", "{}").unwrap();
         assert_eq!(mgr.pending_count().unwrap(), 1);
         // Bump retries to 10 — should drop out of pending_count.
-        for _ in 0..10 {
-            mgr.mark_error(id, "fail").unwrap();
-        }
+        for _ in 0..10 { mgr.mark_error(id, "fail").unwrap(); }
         assert_eq!(mgr.pending_count().unwrap(), 0);
     }
 
@@ -715,11 +616,9 @@ mod tests {
     #[test]
     fn clear_failed_removes_only_max_retried() {
         let (_tmp, mgr) = fresh();
-        let id_ok = mgr.enqueue("ingest", "{}").unwrap();
-        let id_fail = mgr.enqueue("delete", "{}").unwrap();
-        for _ in 0..10 {
-            mgr.mark_error(id_fail, "boom").unwrap();
-        }
+        let id_ok    = mgr.enqueue("ingest", "{}").unwrap();
+        let id_fail  = mgr.enqueue("delete", "{}").unwrap();
+        for _ in 0..10 { mgr.mark_error(id_fail, "boom").unwrap(); }
         let cleared = mgr.clear_failed().unwrap();
         assert_eq!(cleared, 1);
         // The healthy entry is still there.
@@ -733,16 +632,10 @@ mod tests {
         let (_tmp, mgr) = fresh();
         assert_eq!(mgr.get_state("nope").unwrap(), None);
         mgr.set_state("last_pull_ts", "1234").unwrap();
-        assert_eq!(
-            mgr.get_state("last_pull_ts").unwrap().as_deref(),
-            Some("1234")
-        );
+        assert_eq!(mgr.get_state("last_pull_ts").unwrap().as_deref(), Some("1234"));
         // Replace.
         mgr.set_state("last_pull_ts", "5678").unwrap();
-        assert_eq!(
-            mgr.get_state("last_pull_ts").unwrap().as_deref(),
-            Some("5678")
-        );
+        assert_eq!(mgr.get_state("last_pull_ts").unwrap().as_deref(), Some("5678"));
     }
 
     #[test]
@@ -821,21 +714,18 @@ mod tests {
             "path": "/a.txt", "size_bytes": 1, "sha256": "a".repeat(64),
             "mtime_unix": 1.0, "owner_id": "o", "filename": "a.txt",
             "ext": "txt", "parent_dir": "/",
-        })
-        .to_string();
+        }).to_string();
         let row2 = serde_json::json!({
             "path": "/b.txt", "size_bytes": 2, "sha256": "b".repeat(64),
             "mtime_unix": 2.0, "owner_id": "o", "filename": "b.txt",
             "ext": "txt", "parent_dir": "/",
-        })
-        .to_string();
+        }).to_string();
         mgr.enqueue("cb_manifest_push", &row1).unwrap();
         mgr.enqueue("cb_manifest_push", &row2).unwrap();
         assert_eq!(mgr.pending_count().unwrap(), 2);
 
         let mut server = Server::new_async().await;
-        let m = server
-            .mock("POST", "/api/manifest/push")
+        let m = server.mock("POST", "/api/manifest/push")
             .with_status(200)
             .with_body(r#"{"accepted": 2}"#)
             .create_async()
@@ -859,13 +749,11 @@ mod tests {
             "path": "/c.txt", "size_bytes": 3, "sha256": "c".repeat(64),
             "mtime_unix": 3.0, "owner_id": "o", "filename": "c.txt",
             "ext": "txt", "parent_dir": "/",
-        })
-        .to_string();
+        }).to_string();
         mgr.enqueue("cb_manifest_push", &row).unwrap();
 
         let mut server = Server::new_async().await;
-        let m = server
-            .mock("POST", "/api/manifest/push")
+        let m = server.mock("POST", "/api/manifest/push")
             .with_status(500)
             .with_body("boom")
             .create_async()
@@ -893,7 +781,10 @@ mod tests {
 
         // Server not even hit; the routing filter discards both.
         // Use a never-bound port to verify no HTTP call happens.
-        let client = cloud_backup::CloudBackupClient::new("http://127.0.0.1:1", "k").unwrap();
+        let client = cloud_backup::CloudBackupClient::new(
+            "http://127.0.0.1:1",
+            "k",
+        ).unwrap();
         let (pushed, failed) = mgr.drain_cb_outbox(&client, 64).await.unwrap();
         assert_eq!(pushed, 0);
         assert_eq!(failed, 0);
@@ -912,9 +803,6 @@ mod tests {
         // tauri_commands.rs). The SyncManager's own pull_pending doesn't
         // mutate state — guard against accidental future regressions.
         // Read the source-of-truth value back to confirm it's untouched.
-        assert_eq!(
-            mgr.get_state("last_pull_ts").unwrap().as_deref(),
-            Some("1234567890")
-        );
+        assert_eq!(mgr.get_state("last_pull_ts").unwrap().as_deref(), Some("1234567890"));
     }
 }
