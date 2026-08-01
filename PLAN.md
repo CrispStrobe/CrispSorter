@@ -1418,6 +1418,9 @@ Tantivy segments grow, this becomes the dominant bandwidth cost.
   `PUT blocks?offset=N&size=M` writes a block at the given offset.
   `POST finalize` commits after all blocks are written.  Blockmap
   stored alongside each shard in the block-storage volume.
+  - [>] Added owner-scoped persistent Python staging routes with strict
+    block range/size/hash validation and finalize coverage; Rust client
+    transport and shard integration remain next. ✅ 2026-08-01
 - [x] **Lance file awareness.**  Lance `.lance` data files are
   append-mostly (new row groups appended, old ones rarely rewritten).
   Delta sync naturally exploits this — only the tail blocks change.
