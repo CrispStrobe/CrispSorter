@@ -2999,6 +2999,9 @@ a transfer without leaving the search/catalog workflow.
       the GUI/coordinator without duplicating schedule logic.
     - [x] Run start is now single-flight per job, and restart recovery updates
       affected jobs to `interrupted`, preventing duplicate scheduler ticks.
+    - [x] CLI `sync backup-job run-due [--dry-run]` now provides an explicit
+      external-scheduler entry point that evaluates due policy and reuses the
+      single-flight execution path.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select

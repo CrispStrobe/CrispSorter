@@ -556,6 +556,11 @@ enum BackupJobCmd {
     },
     /// List enabled jobs whose interval/daily schedule is due now.
     Due,
+    /// Execute all currently due jobs; suitable for an external scheduler.
+    RunDue {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5369,6 +5374,20 @@ async fn cmd_sync_backup_job(
                 OutFormat::Text => for job in jobs {
                     println!("{}  {:?}  {} → {}", job.id, job.schedule, job.source_root, job.remote_root);
                 },
+            }
+        }
+        BackupJobCmd::RunDue { dry_run } => {
+            let jobs = store.due_jobs(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+                .map_err(|e| e.to_string())?;
+            if jobs.is_empty() {
+                if matches!(out, OutFormat::Text) { println!("no backup jobs are due"); }
+                else { println!("[]"); }
+            } else {
+                let ids: Vec<_> = jobs.iter().map(|job| job.id.clone()).collect();
+                for id in ids {
+                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::Run { job_id: id, dry_run }).await?;
+                }
             }
         }
     }
