@@ -28,10 +28,11 @@ pub async fn drive_mount(
     state: State<'_, AppState>,
     drive_id: String,
     mount_point: String,
+    cache_max_bytes: Option<u64>,
 ) -> Result<(), String> {
     #[cfg(not(feature = "fuse"))]
     {
-        let _ = (state, drive_id, mount_point);
+        let _ = (state, drive_id, mount_point, cache_max_bytes);
         return Err("FUSE support is not enabled in this build".into());
     }
     #[cfg(feature = "fuse")]
@@ -53,10 +54,11 @@ pub async fn drive_mount(
             std::sync::Arc::from(DriveRegistry::instantiate(&config));
         let id = drive_id.clone();
         let point = mount_point.clone();
+        let cache_max_bytes = cache_max_bytes.unwrap_or(super::fuse_mount::fs::DEFAULT_CACHE_MAX_BYTES);
         active.insert(drive_id.clone(), mount_point);
         drop(active);
         let spawned = std::thread::Builder::new().name(format!("fuse-{id}")).spawn(move || {
-            if let Err(error) = super::fuse_mount::fs::mount_blocking(drive, &point) {
+            if let Err(error) = super::fuse_mount::fs::mount_blocking_with_cache(drive, &point, cache_max_bytes) {
                 eprintln!("FUSE mount {id} failed: {error:#}");
             }
             if let Some(mounts) = FUSE_MOUNTS.get() {

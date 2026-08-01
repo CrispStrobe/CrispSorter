@@ -1602,11 +1602,12 @@ source.
   mount_point, cache_max_bytes with 2 GB default) + `FuseMountStatus`.
   Read results use a bounded byte-based LRU (2 GB default); oversized files
   bypass the cache.
-- [x] **Tauri commands: `drive_mount(drive_id, mount_point)`,
+- [x] **Tauri commands: `drive_mount(drive_id, mount_point, cache_max_bytes)`,
   `drive_unmount(drive_id)`.** ✅ SHIPPED (2026-08-01). Mount runs on a
   dedicated thread, tracks active mounts, requires an absolute mount point,
   and returns a clear feature-disabled error in non-FUSE builds. Unmount uses
-  the platform helper with a safe explicit path argument. `drive_mount_status`
+  the platform helper with a safe explicit path argument. The optional cache
+  budget is applied by the FUSE filesystem. `drive_mount_status`
   exposes the process-local lifecycle registry for UI and automation callers.
 - [ ] **Integration with folder watcher.**  Once mounted, the user
   can point the existing `crispsorter watch <mountpoint>` at the

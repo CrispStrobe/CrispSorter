@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// TTL for cached attributes (5 seconds).
 const ATTR_TTL: Duration = Duration::from_secs(5);
-const DEFAULT_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 struct ContentCache {
     max_bytes: u64,
@@ -120,6 +120,18 @@ impl FuseDriveFs {
     /// to share its queue and tests to use a deterministic concurrency limit.
     pub fn with_queue(drive: Arc<dyn CloudDrive>, queue: TransferQueue) -> Self {
         Self::with_queue_and_cache(drive, queue, DEFAULT_CACHE_MAX_BYTES)
+    }
+
+    pub fn with_cache_limit(
+        drive: Arc<dyn CloudDrive>,
+        cache_max_bytes: u64,
+    ) -> Self {
+        Self {
+            drive,
+            queue: TransferQueue::shared(),
+            state: Mutex::new(InodeState::new()),
+            content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
+        }
     }
 
     fn with_queue_and_cache(
@@ -408,8 +420,17 @@ mod cache_tests {
 /// This function blocks (runs the FUSE event loop) — call it from a
 /// dedicated thread.  Returns when the filesystem is unmounted.
 pub fn mount_blocking(drive: Arc<dyn CloudDrive>, mount_point: &Path) -> Result<()> {
+    mount_blocking_with_cache(drive, mount_point, DEFAULT_CACHE_MAX_BYTES)
+}
+
+/// Mount with an explicit maximum in-memory content-cache size.
+pub fn mount_blocking_with_cache(
+    drive: Arc<dyn CloudDrive>,
+    mount_point: &Path,
+    cache_max_bytes: u64,
+) -> Result<()> {
     std::fs::create_dir_all(mount_point)?;
-    let fs = FuseDriveFs::new(drive);
+    let fs = FuseDriveFs::with_cache_limit(drive, cache_max_bytes);
     let options = vec![
         fuser::MountOption::RO,
         fuser::MountOption::FSName("crispsorter".to_string()),
