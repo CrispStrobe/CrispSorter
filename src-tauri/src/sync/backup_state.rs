@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS backup_runs (
     started_at      INTEGER NOT NULL,
     finished_at     INTEGER
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS backup_runs_one_running
+    ON backup_runs(job_id) WHERE status = 'running';
 ";
 
 pub struct BackupState {

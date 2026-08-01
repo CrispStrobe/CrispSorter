@@ -3000,6 +3000,8 @@ a transfer without leaving the search/catalog workflow.
       the GUI/coordinator without duplicating schedule logic.
     - [x] Run start is now single-flight per job, and restart recovery updates
       affected jobs to `interrupted`, preventing duplicate scheduler ticks.
+      A SQLite partial unique index enforces the one-running-run invariant
+      across concurrent processes as well.
     - [x] CLI `sync backup-job run-due [--dry-run]` now provides an explicit
       external-scheduler entry point that evaluates due policy and reuses the
       single-flight execution path.
