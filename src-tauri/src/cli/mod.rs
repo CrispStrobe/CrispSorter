@@ -11560,7 +11560,12 @@ fn cmd_drives(
                 .ok_or_else(|| {
                     format!("drive '{drive_id}' not found; run `crispsorter drives list`")
                 })?;
-            let drive = DriveRegistry::instantiate(cfg);
+            let config = crate::index::config_persist::load(&data_dir);
+            let drive = DriveRegistry::instantiate_with_proxy(
+                cfg,
+                &cli_proxy_config(&config)?,
+            )
+            .map_err(|e| e.to_string())?;
             let entries = drive
                 .list_dir(std::path::Path::new(&path))
                 .map_err(|e| e.to_string())?;

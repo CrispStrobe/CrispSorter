@@ -1655,6 +1655,8 @@ mostly plumbing + settings UI.
   plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
   their credential/config plumbing is migrated. Single `build_proxy_client`
   call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
+  - [x] CLI `drives ls` now uses the persisted proxy policy when constructing
+    the registered provider. ✅ 2026-08-01
 - [x] **Registered-drive construction path.** ✅ SHIPPED (2026-08-01).
   DriveBrowser, FUSE mount, file transfer, sharing, and version commands now
   load the persisted proxy policy and keychain password before constructing
