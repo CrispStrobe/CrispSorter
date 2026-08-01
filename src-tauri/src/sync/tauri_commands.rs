@@ -18,6 +18,33 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// Return the persisted conflict policy used by future sync mutations.
+#[tauri::command]
+pub async fn sync_get_conflict_policy(
+    state: State<'_, AppState>,
+) -> Result<super::conflict::ConflictPolicy, String> {
+    Ok(state.index.lock().await.config.conflict_policy)
+}
+
+/// Persist the conflict policy shared by sync and file-manager integrations.
+#[tauri::command]
+pub async fn sync_set_conflict_policy(
+    state: State<'_, AppState>,
+    policy: super::conflict::ConflictPolicy,
+) -> Result<super::conflict::ConflictPolicy, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let mut index = state.index.lock().await;
+    index.config.conflict_policy = policy;
+    crate::index::config_persist::save(&data_dir, &index.config)
+        .map_err(|e| format!("persisting conflict policy: {e}"))?;
+    Ok(policy)
+}
+
 async fn offline_queue(
     state: &State<'_, AppState>,
 ) -> Result<super::offline_queue::OfflineQueue, String> {

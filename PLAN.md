@@ -2819,6 +2819,9 @@ a transfer without leaving the search/catalog workflow.
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.
+  - [x] `ConflictPolicy` is now persisted in `IndexConfig` with a backward-
+    compatible default, and Tauri get/set commands expose one authoritative
+    policy for sync integrations. ✅ 2026-08-01
 - [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
