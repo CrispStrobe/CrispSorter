@@ -2,7 +2,7 @@ export type PanelSource =
     | { kind: 'LocalPath'; path: string }
     | { kind: 'CloudDrive'; driveId: string; path: string }
     | { kind: 'SearchResults'; query: string }
-    | { kind: 'DuplicateGroup'; groupId: string; items: DuplicateContextItem[] }
+    | { kind: 'DuplicateGroup'; groupId: string; items: DuplicateContextItem[]; decision: DuplicateDecision }
     | { kind: 'CatalogArchive'; archivePath: string }
     | { kind: 'RemoteSearchResults'; provider: string; query: string };
 
@@ -19,6 +19,8 @@ export type DuplicateContextItem = {
     role: 'source' | 'destination';
 };
 
+export type DuplicateDecision = 'review' | 'keep_source' | 'keep_destination' | 'keep_both';
+
 export function cloudDrivePanel(driveId: string, path: string, title = 'Cloud files'): ContextPanel {
     return { source: { kind: 'CloudDrive', driveId, path }, title };
 }
@@ -30,9 +32,10 @@ export function localPathPanel(path: string, title = 'Local file'): ContextPanel
 export function duplicateGroupPanel(
     groupId: string,
     items: DuplicateContextItem[] = [],
+    decision: DuplicateDecision = 'review',
     title = 'Duplicate group',
 ): ContextPanel {
-    return { source: { kind: 'DuplicateGroup', groupId, items }, title };
+    return { source: { kind: 'DuplicateGroup', groupId, items, decision }, title };
 }
 
 export function remoteSearchPanel(

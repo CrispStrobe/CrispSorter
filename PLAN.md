@@ -2776,6 +2776,9 @@ a transfer without leaving the search/catalog workflow.
     ✅ 2026-08-01
   - [x] Duplicate context now also renders modification times and provides
     safe open-file and copy-path actions for every candidate. ✅ 2026-08-01
+  - [x] Duplicate context now records a non-destructive dry-run decision
+    (review, keep source, keep destination, or keep both) before mutation
+    policies are implemented. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
