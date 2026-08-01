@@ -1462,6 +1462,8 @@ If the network drops mid-sync, operations are lost.
   - [x] GUI sync-pair uploads and cloud-backup shard uploads now stage the
     failed bytes and enqueue replay descriptors after queue exhaustion.
     ✅ 2026-08-01
+  - [x] CLI `sync cloud-backup backup-shards` now stages failed drive writes
+    and reports the replay operation id to the caller. ✅ 2026-08-01
 - [ ] **Replay on reconnect.**  Background task
   (`sync/offline_replay.rs`) polls network reachability every 60 s
   (HEAD request to the cb-api `/health` endpoint).  On success,

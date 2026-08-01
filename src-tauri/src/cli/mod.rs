@@ -6843,6 +6843,8 @@ async fn cmd_sync_cloud_backup(
                 let drive_path = backup_dir.join(&tar_name);
                 match client.shard_export(&shard_info.prefix).await {
                     Ok(data) => {
+                        let retry_data = data.clone();
+                        let retry_path = drive_path.clone();
                         let drive_for_transfer = Arc::clone(&drive);
                         let transfer = transfer_queue.submit_upload(
                             drive_id.clone(),
@@ -6860,8 +6862,46 @@ async fn cmd_sync_cloud_backup(
                                 );
                                 backed_up += 1;
                             }
-                            Ok(Err(e)) => errors.push(format!("write {} to drive: {e}", shard_info.prefix)),
-                            Err(e) => errors.push(format!("write {} queue task: {e}", shard_info.prefix)),
+                            Ok(Err(e)) => {
+                                let queued = crate::sync::tauri_commands::queue_failed_drive_upload(
+                                    &data_dir,
+                                    &drive_id,
+                                    &retry_path,
+                                    &retry_data,
+                                    &e,
+                                );
+                                errors.push(match queued {
+                                    Ok(id) => format!(
+                                        "write {} to drive: {e} (queued offline operation {id})",
+                                        shard_info.prefix
+                                    ),
+                                    Err(queue_error) => format!(
+                                        "write {} to drive: {e} (offline queue failed: {queue_error})",
+                                        shard_info.prefix
+                                    ),
+                                });
+                            }
+                            Err(e) => {
+                                let transfer_error = anyhow::anyhow!(
+                                    "write {} queue task: {e}",
+                                    shard_info.prefix
+                                );
+                                let queued = crate::sync::tauri_commands::queue_failed_drive_upload(
+                                    &data_dir,
+                                    &drive_id,
+                                    &retry_path,
+                                    &retry_data,
+                                    &transfer_error,
+                                );
+                                errors.push(match queued {
+                                    Ok(id) => format!(
+                                        "{transfer_error} (queued offline operation {id})"
+                                    ),
+                                    Err(queue_error) => format!(
+                                        "{transfer_error} (offline queue failed: {queue_error})"
+                                    ),
+                                });
+                            }
                         }
                     }
                     Err(e) => errors.push(format!("export {}: {e}", shard_info.prefix)),
