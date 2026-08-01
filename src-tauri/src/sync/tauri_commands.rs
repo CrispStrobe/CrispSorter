@@ -81,6 +81,20 @@ pub async fn sync_pair_plan(
     super::pairs::plan_local(&pair).map_err(|e| e.to_string())
 }
 
+/// Return recent explicit sync-pair runs for UI/CLI audit surfaces.
+#[tauri::command]
+pub async fn sync_pair_runs(
+    state: State<'_, AppState>,
+    id: String,
+    limit: Option<usize>,
+) -> Result<Vec<super::pairs::SyncPairRun>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    super::pairs::SyncPairStore::open(&data_dir)
+        .map_err(|e| e.to_string())?
+        .list_runs(&id, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPairPushResult {
     pub pair_id: String,
@@ -112,7 +126,19 @@ pub async fn sync_pair_push(
     }
     let plan = super::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
     let dry_run = dry_run.unwrap_or(false);
+    let started_at = sync_pair_now_ms();
     if dry_run || plan.is_empty() {
+        let _ = store.record_run(&super::pairs::SyncPairRun {
+            id: 0,
+            pair_id: pair.id.clone(),
+            status: if dry_run { "dry_run" } else { "no_changes" }.into(),
+            planned: plan.len(),
+            uploaded: 0,
+            watermark: pair.watermark,
+            error: None,
+            started_at,
+            finished_at: sync_pair_now_ms(),
+        });
         return Ok(SyncPairPushResult {
             pair_id: pair.id,
             dry_run,
@@ -164,6 +190,17 @@ pub async fn sync_pair_push(
     }
     pair.watermark = watermark;
     store.upsert(pair).map_err(|e| e.to_string())?;
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0,
+        pair_id: id.clone(),
+        status: "completed".into(),
+        planned: plan.len(),
+        uploaded,
+        watermark,
+        error: None,
+        started_at,
+        finished_at: sync_pair_now_ms(),
+    });
     Ok(SyncPairPushResult {
         pair_id: id,
         dry_run: false,
@@ -171,6 +208,13 @@ pub async fn sync_pair_push(
         uploaded,
         watermark,
     })
+}
+
+fn sync_pair_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// Return the persisted conflict policy used by future sync mutations.

@@ -40,6 +40,19 @@ pub struct SyncPlanEntry {
     pub mtime_unix: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncPairRun {
+    pub id: i64,
+    pub pair_id: String,
+    pub status: String,
+    pub planned: usize,
+    pub uploaded: usize,
+    pub watermark: i64,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub finished_at: i64,
+}
+
 /// Build a read-only local snapshot for a pair. No provider is contacted and
 /// no watermark is advanced; the eventual runner can compare this plan with
 /// its remote manifest before submitting transfers.
@@ -178,6 +191,18 @@ CREATE TABLE IF NOT EXISTS sync_pairs (
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sync_pair_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pair_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    planned INTEGER NOT NULL,
+    uploaded INTEGER NOT NULL,
+    watermark INTEGER NOT NULL,
+    error TEXT,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_pair_runs_pair ON sync_pair_runs(pair_id, id DESC);
 ";
 
 impl SyncPairStore {
@@ -270,6 +295,47 @@ impl SyncPairStore {
             .execute("DELETE FROM sync_pairs WHERE id = ?1", [id])?
             != 0)
     }
+
+    pub fn record_run(&self, run: &SyncPairRun) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO sync_pair_runs
+             (pair_id, status, planned, uploaded, watermark, error, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                run.pair_id,
+                run.status,
+                run.planned as i64,
+                run.uploaded as i64,
+                run.watermark,
+                run.error,
+                run.started_at,
+                run.finished_at,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn list_runs(&self, pair_id: &str, limit: usize) -> Result<Vec<SyncPairRun>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pair_id, status, planned, uploaded, watermark, error,
+                    started_at, finished_at
+             FROM sync_pair_runs WHERE pair_id = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pair_id, limit.min(1000) as i64], |row| {
+            Ok(SyncPairRun {
+                id: row.get(0)?,
+                pair_id: row.get(1)?,
+                status: row.get(2)?,
+                planned: row.get::<_, i64>(3)? as usize,
+                uploaded: row.get::<_, i64>(4)? as usize,
+                watermark: row.get(5)?,
+                error: row.get(6)?,
+                started_at: row.get(7)?,
+                finished_at: row.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }
 
 fn now_ms() -> i64 {
@@ -347,5 +413,30 @@ mod tests {
         assert!(plan_local_since(&p).unwrap().is_empty());
         p.watermark -= 1;
         assert_eq!(plan_local_since(&p).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn run_ledger_round_trips_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SyncPairStore::open(dir.path()).unwrap();
+        for status in ["completed", "failed"] {
+            store
+                .record_run(&SyncPairRun {
+                    id: 0,
+                    pair_id: "pair-1".into(),
+                    status: status.into(),
+                    planned: 2,
+                    uploaded: 1,
+                    watermark: 9,
+                    error: (status == "failed").then(|| "offline".into()),
+                    started_at: 1,
+                    finished_at: 2,
+                })
+                .unwrap();
+        }
+        let runs = store.list_runs("pair-1", 10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].status, "failed");
+        assert_eq!(runs[0].error.as_deref(), Some("offline"));
     }
 }
