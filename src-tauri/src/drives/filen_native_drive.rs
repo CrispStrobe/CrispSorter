@@ -9,16 +9,30 @@ use std::path::Path;
 pub struct NativeFilenDrive {
     label: String,
     session: Result<FilenSession>,
+    proxy: crisp_filen::HttpConfig,
 }
 
 impl NativeFilenDrive {
     pub fn from_keychain(label: impl Into<String>, drive_id: &str) -> Self {
+        Self::from_keychain_with_proxy(label, drive_id, &Default::default())
+    }
+
+    pub fn from_keychain_with_proxy(
+        label: impl Into<String>,
+        drive_id: &str,
+        proxy: &crate::sync::proxy::ProxyConfig,
+    ) -> Self {
         let session = super::secret::get_session(drive_id)
             .and_then(|value| value.ok_or_else(|| anyhow!("no native Filen session")))
             .and_then(|value| FilenSession::decode(&value));
         Self {
             label: label.into(),
             session,
+            proxy: crisp_filen::HttpConfig {
+                proxy_url: proxy.url.clone(),
+                proxy_username: proxy.username.clone(),
+                proxy_password: proxy.password.clone(),
+            },
         }
     }
     fn parts(&self) -> Result<(&FilenSession, FilenNativeClient)> {
@@ -26,7 +40,10 @@ impl NativeFilenDrive {
             .session
             .as_ref()
             .map_err(|e| anyhow!("native Filen session unavailable: {e:#}"))?;
-        Ok((session, FilenNativeClient::from_session(session)?))
+        Ok((
+            session,
+            FilenNativeClient::from_session_with_http_config(session, &self.proxy)?,
+        ))
     }
     fn resolve(
         &self,

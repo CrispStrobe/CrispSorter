@@ -733,10 +733,13 @@ impl DriveRegistry {
             DriveType::Filen => {
                 #[cfg(feature = "drive-filen-native")]
                 {
-                    Ok(Box::new(filen_native_drive::NativeFilenDrive::from_keychain(
-                        config.label.clone(),
-                        &config.id,
-                    )))
+                    Ok(Box::new(
+                        filen_native_drive::NativeFilenDrive::from_keychain_with_proxy(
+                            config.label.clone(),
+                            &config.id,
+                            proxy,
+                        ),
+                    ))
                 }
                 #[cfg(not(feature = "drive-filen-native"))]
                 {
@@ -749,10 +752,13 @@ impl DriveRegistry {
             DriveType::Internxt => {
                 #[cfg(feature = "drive-internxt-native")]
                 {
-                    Ok(Box::new(internxt_native_drive::NativeInternxtDrive::from_keychain(
-                        config.label.clone(),
-                        &config.id,
-                    )))
+                    Ok(Box::new(
+                        internxt_native_drive::NativeInternxtDrive::from_keychain_with_proxy(
+                            config.label.clone(),
+                            &config.id,
+                            proxy,
+                        ),
+                    ))
                 }
                 #[cfg(not(feature = "drive-internxt-native"))]
                 {

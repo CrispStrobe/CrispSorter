@@ -10,6 +10,7 @@ use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 pub struct NativeInternxtDrive {
     label: String,
     session: Result<InternxtSession>,
+    proxy: crisp_internxt::HttpConfig,
 }
 
 fn split_remote_name(name: &str) -> (&str, &str) {
@@ -21,12 +22,25 @@ fn split_remote_name(name: &str) -> (&str, &str) {
 
 impl NativeInternxtDrive {
     pub fn from_keychain(label: impl Into<String>, drive_id: &str) -> Self {
+        Self::from_keychain_with_proxy(label, drive_id, &Default::default())
+    }
+
+    pub fn from_keychain_with_proxy(
+        label: impl Into<String>,
+        drive_id: &str,
+        proxy: &crate::sync::proxy::ProxyConfig,
+    ) -> Self {
         let session = super::secret::get_session(drive_id)
             .and_then(|serialized| serialized.ok_or_else(|| anyhow!("no native Internxt session")))
             .and_then(|serialized| InternxtSession::decode(&serialized));
         Self {
             label: label.into(),
             session,
+            proxy: crisp_internxt::HttpConfig {
+                proxy_url: proxy.url.clone(),
+                proxy_username: proxy.username.clone(),
+                proxy_password: proxy.password.clone(),
+            },
         }
     }
 
@@ -35,7 +49,12 @@ impl NativeInternxtDrive {
             .session
             .as_ref()
             .map_err(|error| anyhow!("native Internxt session unavailable: {error:#}"))?;
-        let client = InternxtNativeClient::new(&session.drive_api_url, session.active_token())?;
+        let client = InternxtNativeClient::new_with_config_and_http(
+            &session.drive_api_url,
+            session.active_token(),
+            crisp_internxt::TransferConfig::default(),
+            &self.proxy,
+        )?;
         Ok((session, client))
     }
 

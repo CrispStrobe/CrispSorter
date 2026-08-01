@@ -3287,6 +3287,8 @@ a transfer without leaving the search/catalog workflow.
     and keep proxy secrets in memory only.
   - [x] Persisted proxy settings and the keychain-backed password now flow
     through Tauri cloud-backup construction and health probes.
+  - [x] Native Filen/Internxt Tauri adapters now retain that policy and pass
+    it into every reusable native client they construct.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider
