@@ -3098,6 +3098,8 @@ a transfer without leaving the search/catalog workflow.
   boundary exists.
   - [x] Cloud-backup and remote-index clients now consume the shared proxy
     builder; cloud-backup has hermetic valid/invalid proxy construction tests.
+  - [x] Proxy passwords are now excluded from serialization/deserialization,
+    and proxy credentials without a proxy URL fail validation.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider
