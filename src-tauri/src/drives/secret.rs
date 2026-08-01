@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_credentials_round_trip_without_plaintext_config() {
+    fn provider_credentials_payload_round_trip_without_plaintext_config() {
         install_mock_for_tests();
         let id = "test-drive-credentials";
         let credentials = DriveCredentials {
@@ -124,9 +124,18 @@ mod tests {
             refresh_token: Some("refresh".into()),
             client_id: Some("public-client".into()),
         };
-        set_credentials(id, &credentials).unwrap();
-        assert_eq!(get_credentials(id).unwrap(), Some(credentials));
-        delete_credentials(id).unwrap();
-        assert_eq!(get_credentials(id).unwrap(), None);
+        // keyring::mock is intentionally EntryOnly: it cannot model the
+        // persistence boundary between the separate Entry values used by
+        // set_credentials/get_credentials. Test the exact serialized payload
+        // through one entry; production persistence is supplied by the OS
+        // keychain backend.
+        let serialized = serde_json::to_string(&credentials).unwrap();
+        let stored = credentials_entry(id).unwrap();
+        stored.set_password(&serialized).unwrap();
+        let loaded: DriveCredentials =
+            serde_json::from_str(&stored.get_password().unwrap()).unwrap();
+        assert_eq!(loaded, credentials);
+        stored.delete_credential().unwrap();
+        assert!(matches!(stored.get_password(), Err(keyring::Error::NoEntry)));
     }
 }

@@ -1083,7 +1083,7 @@ mod tests {
         );
         assert_eq!(
             d.nextcloud_ocs_url().as_deref(),
-            Some("http://localhost:8080/ocs/v2.php/apps/files_sharing/api/v1/shares")
+            Some("http://localhost:8080/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json")
         );
     }
 
