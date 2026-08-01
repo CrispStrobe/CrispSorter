@@ -3067,14 +3067,14 @@ a transfer without leaving the search/catalog workflow.
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 
-- [ ] **General sync pairs.** Add local-folder ↔ CloudDrive pairs with
+- [x] **General sync pairs.** Add local-folder ↔ CloudDrive pairs with
   include/exclude globs, one-way/two-way modes, watcher integration, and
   persisted watermarks.  Keep cloud-backup shard sync as a separate mode.
   - [x] Persisted sync-pair definitions now cover local/remote roots,
     registered drive, direction, filters, enabled state, and a resumable
     watermark; Tauri list/upsert/delete commands and SQLite round-trip tests
-    are in place. The transfer runner and watcher dispatch remain the next
-    scoped step. ✅ 2026-08-01
+    are in place, with transfer execution and watcher dispatch complete.
+    ✅ 2026-08-01
   - [x] Added a read-only deterministic local planner with `**`, `*`, and `?`
     filter semantics plus a `sync_pair_plan` Tauri command. It emits sorted
     file metadata without contacting a provider or advancing the watermark;
