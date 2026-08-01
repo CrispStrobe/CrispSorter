@@ -225,7 +225,14 @@ pub async fn sync_pair_pull(
     remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
     remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     let dry_run = dry_run.unwrap_or(false);
+    let started_at = sync_pair_now_ms();
     if dry_run || remote.is_empty() {
+        let _ = store.record_run(&super::pairs::SyncPairRun {
+            id: 0, pair_id: pair.id.clone(),
+            status: if dry_run { "dry_run_pull" } else { "no_changes_pull" }.into(),
+            planned: remote.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
+            error: None, started_at, finished_at: sync_pair_now_ms(),
+        });
         return Ok(SyncPairPullResult { pair_id: pair.id, dry_run, planned: remote.len(), downloaded: 0, watermark: pair.watermark });
     }
     let mut downloaded = 0usize;
@@ -252,6 +259,10 @@ pub async fn sync_pair_pull(
     }
     pair.watermark = watermark;
     store.upsert(pair).map_err(|e| e.to_string())?;
+    let _ = store.record_run(&super::pairs::SyncPairRun {
+        id: 0, pair_id: id.clone(), status: "completed_pull".into(), planned: remote.len(),
+        uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_now_ms(),
+    });
     Ok(SyncPairPullResult { pair_id: id, dry_run: false, planned: remote.len(), downloaded, watermark })
 }
 
@@ -293,6 +304,7 @@ pub async fn sync_pair_push(
             status: if dry_run { "dry_run" } else { "no_changes" }.into(),
             planned: plan.len(),
             uploaded: 0,
+            downloaded: 0,
             watermark: pair.watermark,
             error: None,
             started_at,
@@ -384,6 +396,7 @@ pub async fn sync_pair_push(
         status: "completed".into(),
         planned: plan.len(),
         uploaded,
+        downloaded: 0,
         watermark,
         error: None,
         started_at,
@@ -394,6 +407,7 @@ pub async fn sync_pair_push(
         dry_run: false,
         planned: plan.len(),
         uploaded,
+        downloaded: 0,
         watermark,
     })
 }

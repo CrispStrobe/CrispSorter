@@ -125,6 +125,7 @@ pub struct SyncPairRun {
     pub status: String,
     pub planned: usize,
     pub uploaded: usize,
+    pub downloaded: usize,
     pub watermark: i64,
     pub error: Option<String>,
     pub started_at: i64,
@@ -275,6 +276,7 @@ CREATE TABLE IF NOT EXISTS sync_pair_runs (
     status TEXT NOT NULL,
     planned INTEGER NOT NULL,
     uploaded INTEGER NOT NULL,
+    downloaded INTEGER NOT NULL DEFAULT 0,
     watermark INTEGER NOT NULL,
     error TEXT,
     started_at INTEGER NOT NULL,
@@ -290,6 +292,17 @@ impl SyncPairStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        let has_downloaded: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sync_pair_runs') WHERE name = 'downloaded'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_downloaded == 0 {
+            conn.execute(
+                "ALTER TABLE sync_pair_runs ADD COLUMN downloaded INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         Ok(Self { conn })
     }
 
@@ -377,13 +390,14 @@ impl SyncPairStore {
     pub fn record_run(&self, run: &SyncPairRun) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO sync_pair_runs
-             (pair_id, status, planned, uploaded, watermark, error, started_at, finished_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (pair_id, status, planned, uploaded, downloaded, watermark, error, started_at, finished_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 run.pair_id,
                 run.status,
                 run.planned as i64,
                 run.uploaded as i64,
+                run.downloaded as i64,
                 run.watermark,
                 run.error,
                 run.started_at,
@@ -395,7 +409,7 @@ impl SyncPairStore {
 
     pub fn list_runs(&self, pair_id: &str, limit: usize) -> Result<Vec<SyncPairRun>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, pair_id, status, planned, uploaded, watermark, error,
+            "SELECT id, pair_id, status, planned, uploaded, downloaded, watermark, error,
                     started_at, finished_at
              FROM sync_pair_runs WHERE pair_id = ?1 ORDER BY id DESC LIMIT ?2",
         )?;
@@ -406,10 +420,11 @@ impl SyncPairStore {
                 status: row.get(2)?,
                 planned: row.get::<_, i64>(3)? as usize,
                 uploaded: row.get::<_, i64>(4)? as usize,
-                watermark: row.get(5)?,
-                error: row.get(6)?,
-                started_at: row.get(7)?,
-                finished_at: row.get(8)?,
+                downloaded: row.get::<_, i64>(5)? as usize,
+                watermark: row.get(6)?,
+                error: row.get(7)?,
+                started_at: row.get(8)?,
+                finished_at: row.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -505,6 +520,7 @@ mod tests {
                     status: status.into(),
                     planned: 2,
                     uploaded: 1,
+                    downloaded: 0,
                     watermark: 9,
                     error: (status == "failed").then(|| "offline".into()),
                     started_at: 1,

@@ -5187,7 +5187,7 @@ async fn cmd_sync_pair(
                     id: 0,
                     pair_id: pair.id.clone(),
                     status: if dry_run { "dry_run" } else { "no_changes" }.into(),
-                    planned: plan.len(), uploaded: 0, watermark: pair.watermark,
+                    planned: plan.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
                     error: None, started_at, finished_at: sync_pair_cli_now_ms(),
                 });
                 print_sync_pair_push(out, &id, dry_run, plan.len(), 0, pair.watermark);
@@ -5221,7 +5221,7 @@ async fn cmd_sync_pair(
             store.upsert(pair).map_err(|e| e.to_string())?;
             let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
                 id: 0, pair_id: id.clone(), status: "completed".into(), planned: plan.len(),
-                uploaded, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                uploaded, downloaded: 0, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
             });
             print_sync_pair_push(out, &id, false, plan.len(), uploaded, watermark);
         }
@@ -5251,7 +5251,14 @@ async fn cmd_sync_pair(
                 .map_err(|e| e.to_string())?;
             remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime > pair.watermark).unwrap_or(true));
             remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+            let started_at = sync_pair_cli_now_ms();
             if dry_run || remote.is_empty() {
+                let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                    id: 0, pair_id: pair.id.clone(),
+                    status: if dry_run { "dry_run_pull" } else { "no_changes_pull" }.into(),
+                    planned: remote.len(), uploaded: 0, downloaded: 0, watermark: pair.watermark,
+                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                });
                 print_sync_pair_pull(out, &id, dry_run, remote.len(), 0, pair.watermark);
                 return Ok(());
             }
@@ -5275,6 +5282,10 @@ async fn cmd_sync_pair(
             }
             pair.watermark = watermark;
             store.upsert(pair).map_err(|e| e.to_string())?;
+            let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                id: 0, pair_id: id.clone(), status: "completed_pull".into(), planned: remote.len(),
+                uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+            });
             print_sync_pair_pull(out, &id, false, remote.len(), downloaded, watermark);
         }
     }

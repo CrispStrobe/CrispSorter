@@ -2866,6 +2866,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Explicit sync-pair pushes now persist a bounded audit ledger with
     dry-run, no-change, and completed outcomes, counts, watermark, and
     timestamps; recent runs are exposed through `sync_pair_runs`. ✅ 2026-08-01
+  - [x] The run ledger now records upload and download counts; existing
+    databases migrate the new `downloaded` column automatically, and Tauri/
+    CLI pulls record dry-run/no-change/completed outcomes. ✅ 2026-08-01
   - [x] Headless CLI parity now exposes `sync pair list`, `plan`, and `runs`
     for inspecting configured pairs, filtered local snapshots, and audit
     history without touching cloud-backup commands. ✅ 2026-08-01
