@@ -29,6 +29,7 @@ pub mod offline_queue;
 pub mod pairs;
 pub mod partition;
 pub mod proxy;
+pub mod proxy_secret;
 pub mod secret;
 pub mod tauri_commands;
 pub mod transfer_queue;

@@ -1614,11 +1614,11 @@ has no proxy support — users behind corporate proxies can't use cloud
 features.  `reqwest` already supports proxies natively, so this is
 mostly plumbing + settings UI.
 
-- [ ] **`IndexConfig` proxy fields.**  `proxy_url: Option<String>`,
-  `proxy_username: Option<String>`, `proxy_password: Option<String>`.
-  Supports `http://`, `https://`, `socks5://`, `socks5h://` URL
-  schemes.  Password stored in OS keychain (same pattern as LLM API
-  keys).
+- [x] **`IndexConfig` proxy fields.** ✅ SHIPPED (2026-08-01). `proxy_url`
+  and `proxy_username` are persisted; the password is stored under the
+  dedicated `CrispSorter.Proxy` OS-keychain service and never serialized.
+  The Settings panel supports HTTP(S), SOCKS5, and SOCKS5H values through
+  the shared proxy builder.
 - [x] **`sync/proxy.rs` helper.**  ✅ SHIPPED (2026-07-05).
   `ProxyConfig` struct (url, username, password, all optional).
   `build_async_client(config)` and `build_blocking_client(config)`.
@@ -1632,9 +1632,9 @@ mostly plumbing + settings UI.
   plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
   their credential/config plumbing is migrated. Single `build_proxy_client`
   call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
-- [ ] **Settings UI.**  "Network" section: proxy URL input, username,
-  password (masked), "Test connection" button (HEAD to
-  `https://www.google.com` through the proxy).  DE/EN i18n.
+- [x] **Settings UI.** ✅ SHIPPED (2026-08-01). Network fields include
+  masked keychain-backed password storage and a bounded HEAD test through
+  `https://www.google.com`; localized copy refinement remains pending.
 - [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
 
 #### Priority 9 — FUSE mounting for cloud indexing

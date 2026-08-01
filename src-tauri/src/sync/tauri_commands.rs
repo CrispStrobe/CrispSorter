@@ -1210,6 +1210,42 @@ pub async fn sync_cb_clear_token(
     secret::clear_token_for_url(&url).map_err(|e| e.to_string())
 }
 
+/// Store the proxy password in the OS keychain; an empty value clears it.
+#[tauri::command]
+pub async fn proxy_set_password(password: String) -> Result<(), String> {
+    if password.trim().is_empty() {
+        crate::sync::proxy_secret::clear().map_err(|e| e.to_string())
+    } else {
+        crate::sync::proxy_secret::set(&password).map_err(|e| e.to_string())
+    }
+}
+
+/// Make a bounded request through the configured proxy. This validates both
+/// URL/auth parsing and reachability without exposing the password to the UI.
+#[tauri::command]
+pub async fn proxy_test_connection(state: State<'_, AppState>) -> Result<String, String> {
+    let config = state.index.lock().await.config.clone();
+    let proxy = crate::sync::proxy::ProxyConfig {
+        url: config.proxy_url,
+        username: config.proxy_username,
+        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    };
+    if proxy.url.is_none() {
+        return Err("proxy URL is not configured".into());
+    }
+    let client = crate::sync::proxy::build_async_client_with_timeout(
+        &proxy,
+        std::time::Duration::from_secs(10),
+    )
+    .map_err(|e| e.to_string())?;
+    let response = client
+        .head("https://www.google.com")
+        .send()
+        .await
+        .map_err(|e| format!("proxy connection failed: {e}"))?;
+    Ok(format!("Proxy connection succeeded (HTTP {})", response.status()))
+}
+
 /// Build a [`CloudBackupClient`] from the current state.  Returns
 /// an `Err` when the URL or token are missing — every push/pull
 /// command threads through this so the failure mode is uniform.

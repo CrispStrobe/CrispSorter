@@ -549,6 +549,10 @@
     let indexBackendType    = $state<'local' | 'remote' | 'hybrid'>('local');
     let indexRemoteUrl      = $state('');
     let indexRemoteApiKey   = $state('');
+    let indexProxyUrl       = $state('');
+    let indexProxyUsername  = $state('');
+    let indexProxyPassword  = $state('');
+    let indexProxyStatus    = $state('');
     let indexEmbedderModel  = $state<string>('bge_m3');
     let indexEmbedderBackend = $state<'onnx' | 'gguf'>('onnx');
     let indexDevice         = $state<'auto' | 'cpu' | 'metal' | 'cuda'>('auto');
@@ -1346,7 +1350,9 @@
         }
         // Sync saved config into the backend
         try {
-            await invoke('index_get_config').then(() => {}).catch(() => {});
+            const backendConfig = await invoke<any>('index_get_config');
+            indexProxyUrl = backendConfig.proxy_url ?? '';
+            indexProxyUsername = backendConfig.proxy_username ?? '';
         } catch { /* index not yet wired */ }
         // Discover what backends were compiled in (CrispEmbed is feature-gated).
         try {
@@ -1793,6 +1799,8 @@
                     backend_type:     indexBackendToRust(indexBackendType),
                     remote_url:       indexRemoteUrl || null,
                     remote_api_key:   indexRemoteApiKey || null,
+                    proxy_url:        indexProxyUrl.trim() || null,
+                    proxy_username:   indexProxyUsername.trim() || null,
                     embedder_model:   indexEmbedderToRust(indexEmbedderModel),
                     embedder_device:  indexDeviceToRust(indexDevice),
                     embedder_backend: supportsGguf(indexEmbedderModel) ? indexEmbedderBackend : 'onnx',
@@ -1852,6 +1860,9 @@
                     embedder_model_name: indexEmbedderModelName.trim() || null,
                 }
             });
+            await invoke('proxy_set_password', { password: indexProxyPassword });
+            indexProxyPassword = '';
+            indexProxyStatus = 'Proxy settings saved; password remains in the OS keychain.';
             await invoke('sync_set_conflict_policy', { policy: indexConflictPolicy });
             if (indexEnabled) {
                 indexInitProgress = 'Starte Index-Initialisierung …';
@@ -4674,6 +4685,34 @@
                     <button class="action-btn small" onclick={pickIndexModelCacheDir}>{i18n.t.settings.browse}</button>
                 </div>
                 <p class="hint">{i18n.t.settings.index.model_cache_dir_hint}</p>
+            </div>
+
+            <div class="section-card">
+                <label for="index-proxy-url">Network proxy</label>
+                <input id="index-proxy-url" type="url" bind:value={indexProxyUrl}
+                    placeholder="http://proxy.example:8080 or socks5h://127.0.0.1:9050" />
+                <input id="index-proxy-username" type="text" bind:value={indexProxyUsername}
+                    placeholder="Proxy username (optional)" style="margin-top:6px;" />
+                <input id="index-proxy-password" type="password" bind:value={indexProxyPassword}
+                    placeholder="Proxy password (stored in OS keychain)" style="margin-top:6px;" />
+                <div style="display:flex; gap:6px; margin-top:8px;">
+                    <button class="action-btn small" onclick={async () => {
+                        try {
+                            await invoke('index_set_config', { config: {
+                                ...(await invoke<any>('index_get_config')),
+                                proxy_url: indexProxyUrl.trim() || null,
+                                proxy_username: indexProxyUsername.trim() || null,
+                            }});
+                            if (indexProxyPassword) {
+                                await invoke('proxy_set_password', { password: indexProxyPassword });
+                                indexProxyPassword = '';
+                            }
+                            indexProxyStatus = await invoke<string>('proxy_test_connection');
+                        } catch (e) { indexProxyStatus = `Proxy test failed: ${e}`; }
+                    }}>Test connection</button>
+                </div>
+                <p class="hint">Supports HTTP(S), SOCKS5, and SOCKS5H. The password is never written to settings or logs.</p>
+                {#if indexProxyStatus}<p class="hint">{indexProxyStatus}</p>{/if}
             </div>
 
             <!-- Data directory -->
