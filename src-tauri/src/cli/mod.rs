@@ -11272,15 +11272,26 @@ mod cli_mode_detection_tests {
 
     /// Every name clap will accept at the top level, aliases included.
     fn real_names() -> Vec<String> {
-        let cmd = super::Cli::command();
-        let mut names = Vec::new();
-        for sub in cmd.get_subcommands() {
-            names.push(sub.get_name().to_string());
-            for alias in sub.get_all_aliases() {
-                names.push(alias.to_string());
-            }
-        }
-        names
+        // The generated clap tree is deep enough that constructing it on
+        // libtest's small worker stack can overflow on Linux. Keep this
+        // test about the command tree rather than the runner's stack size.
+        std::thread::Builder::new()
+            .name("cli-command-tree".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cmd = super::Cli::command();
+                let mut names = Vec::new();
+                for sub in cmd.get_subcommands() {
+                    names.push(sub.get_name().to_string());
+                    for alias in sub.get_all_aliases() {
+                        names.push(alias.to_string());
+                    }
+                }
+                names
+            })
+            .expect("spawn CLI command-tree test thread")
+            .join()
+            .expect("CLI command-tree test thread should not panic")
     }
 
     #[test]
