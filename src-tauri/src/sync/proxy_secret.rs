@@ -1,5 +1,6 @@
 //! OS-keychain storage for the optional network proxy password.
 
+#[cfg(not(test))]
 use keyring::Entry;
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
