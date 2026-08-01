@@ -2122,6 +2122,9 @@
     let backupRestoreEntries = $state<any[]>([]);
     let backupRestoreBusy = $state(false);
     let backupRestoreMsg = $state('');
+    const selectedBackupEntry = $derived(
+        backupRestoreEntries.find((entry) => entry.relative_path === backupRestorePath) ?? null,
+    );
     let backupEditId = $state('');
     let backupEditSource = $state('');
     let backupEditDrive = $state('');
@@ -2225,6 +2228,12 @@
         if (!backupRestoreJobId || !backupRestoreSnapshot || !backupRestorePath || !backupRestoreDestination) {
             backupRestoreMsg = 'Choose a job, snapshot, file, and destination.';
             return;
+        }
+        try {
+            await stat(backupRestoreDestination);
+            if (!window.confirm(`Replace existing destination?\n${backupRestoreDestination}`)) return;
+        } catch {
+            // Destination does not exist; the backend will create it atomically.
         }
         backupRestoreBusy = true;
         backupRestoreMsg = 'Restoring…';
@@ -4385,6 +4394,12 @@
                                         <option value={entry.relative_path}>{entry.relative_path} ({entry.size ?? '?'} bytes)</option>
                                     {/each}
                                 </select>
+                                {#if selectedBackupEntry}
+                                    <span class="hint" style="align-self:center;">
+                                        {selectedBackupEntry.size.toLocaleString()} bytes ·
+                                        {selectedBackupEntry.mtime_unix ? new Date(selectedBackupEntry.mtime_unix * 1000).toLocaleString() : 'unknown mtime'}
+                                    </span>
+                                {/if}
                                 <input type="text" bind:value={backupRestoreDestination} placeholder="Local destination path" style="min-width:240px;" />
                                 <button type="button" class="btn" onclick={restoreBackupFile} disabled={backupRestoreBusy}>Restore selected</button>
                             </div>
