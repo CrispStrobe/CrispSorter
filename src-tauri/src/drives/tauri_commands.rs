@@ -413,6 +413,40 @@ pub async fn drive_upload_resumable(
     .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn drive_download_resumable(
+    state: State<'_, AppState>,
+    drive_id: String,
+    remote_path: String,
+    local_path: String,
+    state_path: String,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?
+        .clone();
+    let drive = DriveRegistry::instantiate(&cfg);
+    tokio::task::spawn_blocking(move || {
+        drive.download_file_resumable(
+            std::path::Path::new(&remote_path),
+            std::path::Path::new(&local_path),
+            std::path::Path::new(&state_path),
+        )
+    })
+    .await
+    .map_err(|e| format!("resumable download task failed: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
 /// Log a native Internxt drive in without persisting the password or
 /// mnemonic. The resulting session is stored under the registered drive id
 /// in the OS keychain. This command is available in all builds so the UI can
