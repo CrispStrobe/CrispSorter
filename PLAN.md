@@ -1632,7 +1632,9 @@ no pinning.  Low effort, meaningful security improvement.
   provider (current + backup) to survive a CA migration.  Log a
   warning (not hard-fail) when only the backup pin matches — signals
   an upcoming rotation.
-- [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
+- [x] **Tests.**  ✅ Pin-set validation and hostname-selection coverage
+  shipped, including malformed base64, duplicate pins, missing domains,
+  incomplete rotations, case normalization, and trailing dots.
   - [x] Pin-set validation now rejects malformed base64 digests, duplicate
     primary/backup pins, missing domains, and incomplete rotations; hostname
     selection normalizes case and trailing dots.
@@ -1680,7 +1682,9 @@ mostly plumbing + settings UI.
 - [x] **Settings UI.** ✅ SHIPPED (2026-08-01). Network fields include
   masked keychain-backed password storage and a bounded HEAD test through
   `https://www.google.com`; localized copy refinement remains pending.
-- [ ] **Tests.**  ✅ 8 unit tests shipped with the module (see above).
+- [x] **Tests.**  ✅ Proxy/client and keychain coverage shipped: HTTP,
+  HTTPS, SOCKS5/SOCKS5H, invalid configuration, timeout, serde redaction,
+  password validation, and isolated keychain round-trip tests.
 
 #### Priority 9 — FUSE mounting for cloud indexing
 
