@@ -426,6 +426,37 @@ pub async fn drive_copy_path(
         .map_err(|e| e.to_string())
 }
 
+/// Delete or trash a file/directory within a registered drive.
+///
+/// This is intentionally separate from `drive_delete`, which removes the
+/// drive registration itself.
+#[tauri::command]
+pub async fn drive_delete_path(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().delete {
+        return Err(format!("{} does not support delete", drive.drive_type().label()));
+    }
+    drive
+        .delete(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())
+}
+
 /// Generate a public share link for a file on a registered drive.
 /// Providers without a public-link implementation return a clear error
 /// rather than silently returning an unusable local URL.

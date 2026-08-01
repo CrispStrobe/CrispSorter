@@ -2706,6 +2706,10 @@ a transfer without leaving the search/catalog workflow.
     tests covering write/read/stat/version listing and cleanup; they require
     explicit access-token environment variables and never consult keychains.
     ✅ 2026-08-01
+  - [x] The contract suite now includes a credential-free stub backend that
+    verifies every default unsupported mutation/share/version operation fails
+    or returns the documented empty result in lockstep with capabilities.
+    ✅ 2026-08-01
 - [ ] **Offline queue integration.** On exhausted transfer/network failure,
   persist a replayable operation with provider/path/state and expose retry,
   cancel, inspect, and purge commands.  Add reconnect replay through the
@@ -2741,6 +2745,9 @@ a transfer without leaving the search/catalog workflow.
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
   operations work across LocalDrive and at least Internxt/Filen/WebDAV.
+  - [x] Added the missing `drive_delete_path` Tauri command, distinct from
+    drive-registration deletion, with capability gating and provider error
+    propagation. ✅ 2026-08-01
 - [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
