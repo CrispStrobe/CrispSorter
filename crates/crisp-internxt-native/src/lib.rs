@@ -69,6 +69,39 @@ pub struct TransferConfig {
     pub request_timeout: Duration,
 }
 
+/// HTTP policy for authenticated Internxt requests.
+///
+/// Proxy credentials are in-memory only; callers should load them from a
+/// platform secret store and never persist this configuration as JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpConfig {
+    pub proxy_url: Option<String>,
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
+}
+
+impl HttpConfig {
+    fn build_client(&self, timeout: Duration) -> Result<Client> {
+        let mut builder = Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .http1_only()
+            .timeout(timeout);
+        if let Some(url) = &self.proxy_url {
+            let mut proxy = reqwest::Proxy::all(url)
+                .with_context(|| format!("invalid Internxt proxy URL: {url}"))?;
+            if let (Some(username), Some(password)) =
+                (&self.proxy_username, &self.proxy_password)
+            {
+                proxy = proxy.basic_auth(username, password);
+            }
+            builder = builder.proxy(proxy);
+        } else if self.proxy_username.is_some() || self.proxy_password.is_some() {
+            anyhow::bail!("Internxt proxy credentials require a proxy URL");
+        }
+        Ok(builder.build()?)
+    }
+}
+
 impl Default for TransferConfig {
     fn default() -> Self {
         Self {
@@ -759,15 +792,28 @@ impl InternxtNativeClient {
         bearer_token: impl Into<String>,
         transfer_config: TransferConfig,
     ) -> Result<Self> {
+        Self::new_with_config_and_http(
+            base_url,
+            bearer_token,
+            transfer_config,
+            &HttpConfig::default(),
+        )
+    }
+
+    /// Construct a client with transfer settings and an explicit
+    /// HTTP/SOCKS5 proxy policy.
+    pub fn new_with_config_and_http(
+        base_url: impl Into<String>,
+        bearer_token: impl Into<String>,
+        transfer_config: TransferConfig,
+        http_config: &HttpConfig,
+    ) -> Result<Self> {
         transfer_config.validate()?;
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         reqwest::Url::parse(&base_url)
             .with_context(|| format!("invalid Internxt URL: {base_url}"))?;
-        let http = Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .http1_only()
-            .timeout(transfer_config.request_timeout)
-            .build()
+        let http = http_config
+            .build_client(transfer_config.request_timeout)
             .context("building Internxt HTTP client")?;
         Ok(Self {
             base_url,
@@ -3603,6 +3649,36 @@ mod tests {
         0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
         0xee, 0xff,
     ];
+
+    #[test]
+    fn http_config_rejects_invalid_proxy_before_requests() {
+        let config = HttpConfig {
+            proxy_url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(InternxtNativeClient::new_with_config_and_http(
+            "http://127.0.0.1:1",
+            "token",
+            TransferConfig::default(),
+            &config,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn http_config_requires_proxy_url_for_credentials() {
+        let config = HttpConfig {
+            proxy_password: Some("secret".into()),
+            ..Default::default()
+        };
+        assert!(InternxtNativeClient::new_with_config_and_http(
+            "http://127.0.0.1:1",
+            "token",
+            TransferConfig::default(),
+            &config,
+        )
+        .is_err());
+    }
 
     fn test_nonce() -> u128 {
         std::time::SystemTime::now()

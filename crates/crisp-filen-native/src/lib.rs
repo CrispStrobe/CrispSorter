@@ -70,6 +70,34 @@ pub struct TransferConfig {
     pub retry_backoff_ms: u64,
 }
 
+/// HTTP policy for authenticated Filen requests.
+///
+/// Proxy credentials are supplied only in memory; callers should obtain them
+/// from their platform secret store rather than serializing this config.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpConfig {
+    pub proxy_url: Option<String>,
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
+}
+
+impl HttpConfig {
+    fn build_client(&self) -> Result<reqwest::blocking::Client> {
+        let mut builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30));
+        if let Some(url) = &self.proxy_url {
+            let mut proxy = reqwest::Proxy::all(url)
+                .with_context(|| format!("invalid Filen proxy URL: {url}"))?;
+            if let (Some(username), Some(password)) = (&self.proxy_username, &self.proxy_password) {
+                proxy = proxy.basic_auth(username, password);
+            }
+            builder = builder.proxy(proxy);
+        } else if self.proxy_username.is_some() || self.proxy_password.is_some() {
+            anyhow::bail!("Filen proxy credentials require a proxy URL");
+        }
+        Ok(builder.build()?)
+    }
+}
+
 impl Default for TransferConfig {
     fn default() -> Self {
         Self {
@@ -548,10 +576,15 @@ struct RemoteFolder {
 
 impl FilenNativeClient {
     fn new_inner(session: &FilenSession) -> Result<Self> {
+        Self::new_inner_with_http_config(session, &HttpConfig::default())
+    }
+
+    fn new_inner_with_http_config(
+        session: &FilenSession,
+        http_config: &HttpConfig,
+    ) -> Result<Self> {
         Ok(Self {
-            http: reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()?,
+            http: http_config.build_client()?,
             gateway_url: session.gateway_url.trim_end_matches('/').into(),
             ingest_url: session.ingest_url.trim_end_matches('/').into(),
             egest_url: session.egest_url.trim_end_matches('/').into(),
@@ -572,6 +605,14 @@ impl FilenNativeClient {
 
     pub fn from_session(session: &FilenSession) -> Result<Self> {
         Self::new_inner(session)
+    }
+
+    /// Construct a session client with an explicit HTTP/SOCKS5 proxy policy.
+    pub fn from_session_with_http_config(
+        session: &FilenSession,
+        http_config: &HttpConfig,
+    ) -> Result<Self> {
+        Self::new_inner_with_http_config(session, http_config)
     }
 
     /// Validate the long-lived Filen API-key session.
@@ -3170,6 +3211,26 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[test]
+    fn http_config_rejects_invalid_proxy_before_requests() {
+        let session = test_session("http://127.0.0.1:1".into());
+        let config = HttpConfig {
+            proxy_url: Some("not a proxy URL".into()),
+            ..Default::default()
+        };
+        assert!(FilenNativeClient::from_session_with_http_config(&session, &config).is_err());
+    }
+
+    #[test]
+    fn http_config_requires_proxy_url_for_credentials() {
+        let session = test_session("http://127.0.0.1:1".into());
+        let config = HttpConfig {
+            proxy_password: Some("secret".into()),
+            ..Default::default()
+        };
+        assert!(FilenNativeClient::from_session_with_http_config(&session, &config).is_err());
+    }
 
     fn test_session(gateway_url: String) -> FilenSession {
         FilenSession {

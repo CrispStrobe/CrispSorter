@@ -3278,6 +3278,9 @@ a transfer without leaving the search/catalog workflow.
     fail before any request is made.
   - [x] Google Drive and OneDrive now expose the same proxy-aware client
     boundary, with invalid configuration rejected before provider requests.
+  - [x] Native Filen and Internxt clients now accept explicit proxy policy at
+    session construction, reject malformed proxy credentials before requests,
+    and keep proxy secrets in memory only.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider
