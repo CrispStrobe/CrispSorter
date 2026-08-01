@@ -2699,6 +2699,9 @@ a transfer without leaving the search/catalog workflow.
     upload/download support alongside streaming; Filen and Internxt native
     adapters report all three, while subprocess and legacy providers report
     unsupported instead of requiring a late operation probe. ✅ 2026-08-01
+  - [x] Provider-neutral contract tests now pin the legacy fallback boundary:
+    streaming readers reject short/overlong input, and resumable operations
+    return explicit unsupported errors without probing a provider. ✅ 2026-08-01
   - [x] Google Drive and OneDrive now have ignored-by-default live round-trip
     tests covering write/read/stat/version listing and cleanup; they require
     explicit access-token environment variables and never consult keychains.

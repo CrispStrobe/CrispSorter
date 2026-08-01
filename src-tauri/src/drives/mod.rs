@@ -728,6 +728,43 @@ mod tests {
     }
 
     #[test]
+    fn legacy_resume_operations_fail_explicitly_and_do_not_probe_provider() {
+        let (_tmp, drive) = fixture();
+        let error = drive
+            .upload_file_resumable(
+                Path::new("local.bin"),
+                Path::new("remote.bin"),
+                Path::new("state.json"),
+                1,
+            )
+            .expect_err("legacy local drive must reject resumable uploads");
+        assert!(error.to_string().contains("does not support durable resumable uploads"));
+
+        let error = drive
+            .download_file_resumable(
+                Path::new("remote.bin"),
+                Path::new("local.bin"),
+                Path::new("state.json"),
+            )
+            .expect_err("legacy local drive must reject resumable downloads");
+        assert!(error.to_string().contains("does not support durable resumable downloads"));
+    }
+
+    #[test]
+    fn streaming_contract_rejects_short_and_overlong_readers() {
+        let (_tmp, drive) = fixture();
+        let mut short = Cursor::new(b"short".to_vec());
+        assert!(drive
+            .write_file_from_reader(Path::new("short.txt"), &mut short, 6)
+            .is_err());
+
+        let mut overlong = Cursor::new(b"overlong".to_vec());
+        assert!(drive
+            .write_file_from_reader(Path::new("overlong.txt"), &mut overlong, 4)
+            .is_err());
+    }
+
+    #[test]
     fn local_drive_creates_parent_dirs_on_write() {
         let (_tmp, drive) = fixture();
         drive
