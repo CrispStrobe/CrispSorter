@@ -1632,6 +1632,10 @@ mostly plumbing + settings UI.
   plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
   their credential/config plumbing is migrated. Single `build_proxy_client`
   call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
+- [x] **Registered-drive construction path.** ✅ SHIPPED (2026-08-01).
+  DriveBrowser, FUSE mount, file transfer, sharing, and version commands now
+  load the persisted proxy policy and keychain password before constructing
+  WebDAV, Google Drive, or OneDrive clients.
 - [x] **Settings UI.** ✅ SHIPPED (2026-08-01). Network fields include
   masked keychain-backed password storage and a bounded HEAD test through
   `https://www.google.com`; localized copy refinement remains pending.
