@@ -47,6 +47,15 @@ pub struct FailedExtractionRow {
     pub retryable:    bool,
 }
 
+/// Minimal document metadata used by sync conflict resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictRow {
+    pub doc_id: String,
+    pub source_hash: String,
+    pub indexed_at: Option<i64>,
+    pub title: Option<String>,
+}
+
 /// Columns consumed by `batches_to_search_results_with_scores` and
 /// `record_batches_to_search_results`.  Used by `.select(Select::Columns(…))`
 /// to avoid reading embedding vectors and other large blobs.
@@ -636,6 +645,52 @@ impl LocalIndex {
             .try_collect()
             .await?;
         Ok(batches)
+    }
+
+    /// Return representative local rows for one URI so cloud-backup pull can
+    /// resolve changed content instead of silently leaving duplicate versions.
+    pub async fn conflict_rows_for_location(&self, location_uri: &str) -> Result<Vec<ConflictRow>> {
+        let filter = format!(
+            "location_uri = '{}' AND chunk_index <= 0",
+            location_uri.replace('\'', "''")
+        );
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(filter)
+            .select(lancedb::query::Select::Columns(vec![
+                "doc_id".into(), "source_hash".into(),
+                "indexed_at".into(), "title".into(),
+            ]))
+            .limit(100)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut out = Vec::new();
+        for batch in &batches {
+            let Some(doc_ids) = batch.column_by_name("doc_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>()) else { continue };
+            let hashes = batch.column_by_name("source_hash")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let indexed = batch.column_by_name("indexed_at")
+                .and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>());
+            let titles = batch.column_by_name("title")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            for i in 0..batch.num_rows() {
+                if doc_ids.is_null(i) { continue; }
+                out.push(ConflictRow {
+                    doc_id: doc_ids.value(i).to_owned(),
+                    source_hash: hashes.filter(|c| !c.is_null(i))
+                        .map(|c| c.value(i).to_owned()).unwrap_or_default(),
+                    indexed_at: indexed.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
+                    title: titles.filter(|c| !c.is_null(i))
+                        .map(|c| c.value(i).to_owned()),
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Same as [`Self::fetch_by_doc_ids`] but appends `extra_sql` to the

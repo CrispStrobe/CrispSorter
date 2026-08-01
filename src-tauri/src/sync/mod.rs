@@ -58,6 +58,20 @@ pub struct SyncStatus {
     pub remote_online:  bool,
 }
 
+/// A cloud-backup pull conflict awaiting an explicit user decision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingConflict {
+    pub id: i64,
+    pub path: String,
+    pub local_doc_id: String,
+    pub local_hash: String,
+    pub remote_hash: String,
+    pub local_title: Option<String>,
+    pub remote_title: Option<String>,
+    pub remote_indexed_at: i64,
+    pub created_at: i64,
+}
+
 // ── SyncManager ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -78,6 +92,19 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
 CREATE TABLE IF NOT EXISTS sync_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    local_doc_id TEXT NOT NULL,
+    local_hash TEXT NOT NULL,
+    remote_hash TEXT NOT NULL,
+    local_title TEXT,
+    remote_title TEXT,
+    remote_indexed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(path, remote_hash)
 );
 ";
 
@@ -190,6 +217,46 @@ impl SyncManager {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Add a manual-review conflict idempotently.
+    pub fn enqueue_conflict(
+        &self, path: &str, local_doc_id: &str, local_hash: &str,
+        remote_hash: &str, local_title: Option<&str>, remote_title: Option<&str>,
+        remote_indexed_at: i64,
+    ) -> Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO sync_conflicts
+             (path, local_doc_id, local_hash, remote_hash, local_title,
+              remote_title, remote_indexed_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![path, local_doc_id, local_hash, remote_hash, local_title,
+                remote_title, remote_indexed_at, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// List unresolved conflicts in creation order for the review UI/CLI.
+    pub fn pending_conflicts(&self) -> Result<Vec<PendingConflict>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, path, local_doc_id, local_hash, remote_hash,
+                    local_title, remote_title, remote_indexed_at, created_at
+             FROM sync_conflicts ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| Ok(PendingConflict {
+            id: r.get(0)?, path: r.get(1)?, local_doc_id: r.get(2)?,
+            local_hash: r.get(3)?, remote_hash: r.get(4)?,
+            local_title: r.get(5)?, remote_title: r.get(6)?,
+            remote_indexed_at: r.get(7)?, created_at: r.get(8)?,
+        }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn remove_conflict(&self, id: i64) -> Result<bool> {
+        Ok(self.conn.lock().unwrap().execute(
+            "DELETE FROM sync_conflicts WHERE id = ?1", [id]
+        )? > 0)
     }
 
     /// Check if the remote server is reachable (quick GET /health).
@@ -444,6 +511,22 @@ mod tests {
         drop(m1);
         let m2 = SyncManager::open(tmp.path()).unwrap();
         assert_eq!(m2.pending_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn manual_conflicts_are_durable_and_deduplicated() {
+        let (_tmp, mgr) = fresh();
+        mgr.enqueue_conflict("/doc.txt", "local", "aaa", "bbb",
+            Some("Local"), Some("Remote"), 42).unwrap();
+        mgr.enqueue_conflict("/doc.txt", "local", "aaa", "bbb",
+            Some("Local"), Some("Remote"), 42).unwrap();
+        let rows = mgr.pending_conflicts().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/doc.txt");
+        assert_eq!(rows[0].remote_hash, "bbb");
+        assert!(mgr.remove_conflict(rows[0].id).unwrap());
+        assert!(mgr.pending_conflicts().unwrap().is_empty());
+        assert!(!mgr.remove_conflict(rows[0].id).unwrap());
     }
 
     #[test]

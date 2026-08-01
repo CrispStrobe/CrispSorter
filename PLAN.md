@@ -1441,17 +1441,17 @@ will surface.
   struct with `doc_id`, `source_hash`, `updated_at`, `title`.
   10 unit tests (each policy, hash short-circuit, missing timestamps,
   equal timestamps, serde round-trip, default policy).
-- [ ] **Wire into `SyncManager` pull path.**  On `sync cloud-backup
-  pull`, when a pulled `ManifestRow` has a `doc_id` that already
-  exists locally with a different `source_hash`, invoke
-  `resolve_conflict` instead of unconditionally overwriting.
-  `KeepBoth` appends `_remote` suffix to the pulled doc_id.
-  `Manual` writes to a `sync_conflicts` SQLite table for later
-  user resolution.
-- [ ] **`IndexConfig.conflict_policy` setting.**  Default:
-  `NewestWins` (backward-compatible — same as current overwrite
-  behaviour).  Settings UI: dropdown in the Cloud-backup section.
-  CLI: `--conflict-policy newest|local|remote|keep-both|manual`.
+- [x] **Wire into `SyncManager` pull path.** ✅ 2026-08-01. Cloud-backup
+  pull now compares same-path local hashes before ingest and applies the
+  configured newest/local/remote/keep-both/manual policy. Remote replacement
+  deletes stale local rows, keep-both uses a deterministic
+  `<remote-hash>_remote` id, and manual conflicts are durably queued in
+  `sync_conflicts` with idempotent `(path, remote_hash)` identity. Tauri
+  list/ack commands expose the queue for the review surface.
+- [x] **`IndexConfig.conflict_policy` setting.** ✅ 2026-08-01. Default is
+  `NewestWins`; Settings persists the five policies through the authoritative
+  index config and sync Tauri boundary. CLI selection remains a follow-up:
+  `--conflict-policy newest|local|remote|keep-both|manual`.
 - [ ] **Frontend: conflict review panel.**  When `Manual` policy is
   active and unresolved conflicts exist, show a review panel listing
   each conflict with local vs remote metadata side-by-side and
