@@ -287,6 +287,44 @@ pub async fn drive_share_link(
         .ok_or_else(|| format!("{} does not support public share links", drive.drive_type().label()))
 }
 
+/// List provider-managed versions for a file.
+#[tauri::command]
+pub async fn drive_list_versions(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+) -> Result<Vec<super::FileVersion>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().versions {
+        return Err(format!("{} does not support file versions", drive.drive_type().label()));
+    }
+    drive.list_versions(std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Restore a provider-managed file version.
+#[tauri::command]
+pub async fn drive_restore_version(
+    state: State<'_, AppState>,
+    drive_id: String,
+    path: String,
+    version_id: String,
+) -> Result<(), String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let drive = DriveRegistry::instantiate(cfg);
+    if !drive.capabilities().versions {
+        return Err(format!("{} does not support file version restore", drive.drive_type().label()));
+    }
+    drive.restore_version(std::path::Path::new(&path), &version_id)
+        .map_err(|e| e.to_string())
+}
+
 /// Read a file through the shared transfer queue.
 #[tauri::command]
 pub async fn drive_read_file(
