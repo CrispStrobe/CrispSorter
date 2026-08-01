@@ -2608,4 +2608,27 @@ mod tests {
         let merged = rrf_merge(vec![], 10);
         assert!(merged.is_empty());
     }
+
+    #[test]
+    fn remote_inventory_recurses_and_applies_pair_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(dir.path().join("nested/report.pdf"), b"pdf").unwrap();
+        std::fs::write(dir.path().join("nested/skip.txt"), b"txt").unwrap();
+        let drive = crate::drives::LocalDrive::new("inventory", dir.path().to_owned());
+        let mut rows = Vec::new();
+        inventory_remote(
+            &drive,
+            std::path::Path::new("/"),
+            "",
+            &["**/*.pdf".into()],
+            &[],
+            &mut rows,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].relative_path, "nested/report.pdf");
+        assert_eq!(rows[0].size, 3);
+        assert!(rows[0].mtime_unix.is_some());
+    }
 }

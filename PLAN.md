@@ -2898,6 +2898,9 @@ a transfer without leaving the search/catalog workflow.
     local-only, remote-only, unchanged, and divergent paths under explicit
     newest/local/remote/keep-both/manual policies without mutating either side.
     ✅ 2026-08-01
+  - [x] Added credential-free recursive remote-inventory coverage using
+    `LocalDrive` as a provider double; filters, sorting, size, and mtime are
+    asserted without network or keychain access. ✅ 2026-08-01
   - [x] Added explicit remote→local `sync_pair_pull` for `ToLocal` and
     `TwoWay` pairs. It requires remote-wins, uses provider read/list/stat and
     the shared transfer queue, applies the remote watermark cutoff, and writes
