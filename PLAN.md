@@ -3120,10 +3120,15 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
     same remote-wins guard, inventory cutoff, shared queue, and local-write
     behavior. ✅ 2026-08-01
-- [ ] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
+- [x] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
   Internxt, Filen, and generic WebDAV until proven safe.
+  - [x] cb-api staging, Rust transport, CLI `push-manifest --delta`,
+    generation preservation, and changed-block hermetic coverage are shipped;
+    Nextcloud/ownCloud use the separate CrispCloud delta app when available,
+    while Internxt, Filen, and generic WebDAV retain whole-file fallback.
+    ✅ 2026-08-01
   - [>] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud

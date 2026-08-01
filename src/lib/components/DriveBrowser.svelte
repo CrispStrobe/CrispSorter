@@ -8,6 +8,7 @@
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
+        supportsCloudVersions,
         type DriveCapabilities,
     } from '$lib/drives/browser';
     import {
@@ -84,7 +85,7 @@
             // the capability probe says they are unsupported. The Tauri
             // command also guards this, but avoiding the call here keeps the
             // frontend contract honest and avoids needless provider errors.
-            const cloud = caps.versions === true
+            const cloud = supportsCloudVersions(caps)
                 ? await invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => [])
                 : [];
             const local = await invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []);

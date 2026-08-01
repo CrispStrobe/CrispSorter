@@ -6,6 +6,7 @@ import {
     normalizeDrivePath,
     parentDrivePath,
     pathBaseName,
+    supportsCloudVersions,
 } from './browser';
 
 describe('drive browser path contract', () => {
@@ -54,5 +55,11 @@ describe('drive browser path contract', () => {
         expect(localPathFromSearchUri('crisp+cb-archive://archive/paper.pdf')).toBeNull();
         expect(localPathFromSearchUri('https://example.test/paper.pdf')).toBeNull();
         expect(pathBaseName('/Users/alice/paper.pdf')).toBe('paper.pdf');
+    });
+
+    it('only enables remote version queries when advertised', () => {
+        expect(supportsCloudVersions({ create_dir: false, rename: false, move_path: false, copy: false, delete: false })).toBe(false);
+        expect(supportsCloudVersions({ create_dir: false, rename: false, move_path: false, copy: false, delete: false, versions: false })).toBe(false);
+        expect(supportsCloudVersions({ create_dir: false, rename: false, move_path: false, copy: false, delete: false, versions: true })).toBe(true);
     });
 });
