@@ -453,6 +453,52 @@ mod tests {
     }
 
     #[test]
+    fn refresh_without_rotation_preserves_existing_refresh_token() {
+        let mut server = Server::new();
+        let request = server
+            .mock("POST", "/token")
+            .with_status(200)
+            .with_body(r#"{"access_token":"new"}"#)
+            .create();
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()),
+            refresh_token: Some("keep-me".into()),
+            ..Default::default()
+        };
+        let updated = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap();
+        assert_eq!(updated.access_token.as_deref(), Some("new"));
+        assert_eq!(updated.refresh_token.as_deref(), Some("keep-me"));
+        request.assert();
+    }
+
+    #[test]
+    fn malformed_refresh_response_is_rejected() {
+        let mut server = Server::new();
+        let request = server.mock("POST", "/token").with_status(200)
+            .with_body(r#"{"token":"wrong-field"}"#).create();
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()), refresh_token: Some("old".into()), ..Default::default()
+        };
+        let error = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap_err().to_string();
+        assert!(error.contains("did not contain an access token"));
+        request.assert();
+    }
+
+    #[test]
+    fn revoke_request_is_hermetic_and_rejects_provider_failure() {
+        let mut server = Server::new();
+        let request = server.mock("POST", "/revoke")
+            .match_body(mockito::Matcher::Exact("token=access-token".into()))
+            .with_status(200).create();
+        revoke_at(&format!("{}/revoke", server.url()), "access-token").unwrap();
+        request.assert();
+
+        let failure = server.mock("POST", "/revoke-fail").with_status(401).create();
+        assert!(revoke_at(&format!("{}/revoke-fail", server.url()), "access-token").is_err());
+        failure.assert();
+    }
+
+    #[test]
     fn refresh_requires_keychain_material_without_network() {
         let credentials = DriveCredentials {
             client_id: Some("public".into()),

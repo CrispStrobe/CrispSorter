@@ -3077,6 +3077,8 @@ a transfer without leaving the search/catalog workflow.
     - [x] OAuth callback parsing now rejects duplicate `code`, `state`, and
       `error` parameters; PKCE challenge generation is extracted and covered
       against the RFC 7636 verifier vector.
+    - [x] Added hermetic refresh-token preservation/malformed-response tests
+      and Google-style revocation success/failure HTTP tests.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
