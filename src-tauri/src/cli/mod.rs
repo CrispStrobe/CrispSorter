@@ -698,6 +698,10 @@ enum CloudBackupCmd {
         /// printed `more_available` flag flips to false.
         #[arg(long, default_value_t = 200)]
         limit: usize,
+        /// Also stage changed file blocks through the cloud-backup delta API.
+        /// The manifest remains authoritative; this flag adds content transfer.
+        #[arg(long)]
+        delta: bool,
     },
     /// Push embeddings for chunks already in the local index whose
     /// embedding vector + sparse json are populated.  Bandwidth-
@@ -5918,6 +5922,54 @@ fn parse_conflict_policy(value: &str) -> Result<crate::sync::conflict::ConflictP
     }
 }
 
+/// Upload only changed blocks for one indexed file.  The cloud-backup
+/// staging API uses the source hash as a stable file-level shard id; this is
+/// intentionally an adapter until directory-level shard orchestration lands.
+async fn push_delta_file(
+    client: &crate::sync::cloud_backup::CloudBackupClient,
+    path: &std::path::Path,
+    shard_id: &str,
+) -> Result<usize, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    use crate::sync::delta::{compute_blockmap, diff_blockmaps, Blockmap, DEFAULT_BLOCK_SIZE};
+
+    if !path.is_file() || shard_id.is_empty() || shard_id.len() > 128
+        || !shard_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+    {
+        return Err("delta source path or shard id is not uploadable".into());
+    }
+    let local = compute_blockmap(path, DEFAULT_BLOCK_SIZE).map_err(|e| e.to_string())?;
+    let remote = client.delta_blockmap(shard_id).await.map_err(|e| e.to_string())?;
+    let (changed, declare_map) = match remote {
+        None => ((0..local.blocks.len()).collect::<Vec<_>>(), true),
+        Some(value) => match serde_json::from_value::<Blockmap>(value) {
+            Ok(remote) => {
+                let changed = diff_blockmaps(&local, &remote).map_err(|e| e.to_string())?;
+                (changed.into_iter().map(|b| b.block_index).collect(), true)
+            }
+            Err(_) => ((0..local.blocks.len()).collect::<Vec<_>>(), true),
+        },
+    };
+    if changed.is_empty() && !declare_map {
+        return Ok(0);
+    }
+    // Declaring every generation seeds the server's partial payload from the
+    // previous finalized payload, so only `changed` needs to cross the wire.
+    client.delta_put_blockmap(shard_id, &serde_json::to_value(&local).map_err(|e| e.to_string())?)
+        .await.map_err(|e| e.to_string())?;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let changed_count = changed.len();
+    for index in changed {
+        let block = local.blocks.get(index).ok_or_else(|| "delta block index out of range".to_string())?;
+        let mut data = vec![0u8; block.size as usize];
+        file.seek(SeekFrom::Start(block.offset)).map_err(|e| e.to_string())?;
+        file.read_exact(&mut data).map_err(|e| e.to_string())?;
+        client.delta_put_block(shard_id, block.offset, data).await.map_err(|e| e.to_string())?;
+    }
+    client.delta_finalize(shard_id).await.map_err(|e| e.to_string())?;
+    Ok(changed_count)
+}
+
 async fn cmd_sync_cloud_backup(
     out: OutFormat,
     data_dir: &std::path::Path,
@@ -6023,7 +6075,7 @@ async fn cmd_sync_cloud_backup(
             }
         }
 
-        CloudBackupCmd::PushManifest { limit } => {
+        CloudBackupCmd::PushManifest { limit, delta } => {
             use crate::sync::cloud_backup::ManifestRow;
             let limit = limit.clamp(1, 2000);
             let local = crate::index::LocalIndex::open_or_create(data_dir, 1024)
@@ -6037,6 +6089,8 @@ async fn cmd_sync_cloud_backup(
                 .await.map_err(|e| e.to_string())?;
 
             let mut rows: Vec<ManifestRow> = Vec::new();
+            let mut delta_files = 0usize;
+            let mut delta_blocks = 0usize;
             let mut max_ts = last_ts;
             for c in &candidates {
                 let meta = c.metadata_json.as_deref()
@@ -6068,6 +6122,14 @@ async fn cmd_sync_cloud_backup(
                     url: None,
                     tags: vec![],
                 });
+                if delta {
+                    if let Some(path) = meta.get("fs_path").and_then(|v| v.as_str()) {
+                        if let Ok(uploaded) = push_delta_file(&client, std::path::Path::new(path), &c.source_hash).await {
+                            delta_files += 1;
+                            delta_blocks += uploaded;
+                        }
+                    }
+                }
                 if rows.len() >= limit { break; }
             }
             let pushed = rows.len();
@@ -6087,13 +6149,17 @@ async fn cmd_sync_cloud_backup(
                     serde_json::json!({
                         "pushed": pushed,
                         "accepted": resp.accepted,
+                        "delta_files": delta_files,
+                        "delta_blocks": delta_blocks,
                         "watermark": max_ts,
                         "more_available": pushed == limit,
                     })
                 ),
                 OutFormat::Text => println!(
-                    "pushed {pushed} row(s) (server accepted {}, watermark={max_ts}){}",
+                    "pushed {pushed} row(s) (server accepted {}, delta files={}, blocks={}, watermark={max_ts}){}",
                     resp.accepted,
+                    delta_files,
+                    delta_blocks,
                     if pushed == limit { " — more available, re-run to drain" } else { "" }
                 ),
             }

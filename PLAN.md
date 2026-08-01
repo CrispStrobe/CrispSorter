@@ -1409,28 +1409,32 @@ Tantivy segments grow, this becomes the dominant bandwidth cost.
   12 unit tests (Adler-32 known values, blockmap from file/bytes,
   single-block change, file growth, all-changed, serde round-trip,
   savings calculation).
-- [ ] **`sync cloud-backup push --delta` flag.**  On push: compute
+- [x] **`sync cloud-backup push-manifest --delta` flag.**  On push: compute
   local blockmap for each shard file, request remote blockmap from
-  cb-api, diff, upload only changed blocks.  Falls back to full upload
-  if the remote has no blockmap (first push or legacy server).
+  cb-api, diff, upload only changed blocks.  Falls back to a complete
+  block generation if the remote has no blockmap (first push or legacy
+  server).  The current CLI adapter uses each indexed file's source hash
+  as its stable shard id; directory-level shard orchestration remains next.
+  ✅ 2026-08-01
 - [ ] **cb-api `/api/v2/shards/{id}/blockmap` + `/api/v2/shards/{id}/blocks`
   endpoints.**  `GET blockmap` returns the stored blockmap JSON.
   `PUT blocks?offset=N&size=M` writes a block at the given offset.
   `POST finalize` commits after all blocks are written.  Blockmap
   stored alongside each shard in the block-storage volume.
-  - [>] Added owner-scoped persistent Python staging routes and Rust
+  - [x] Added owner-scoped persistent Python staging routes and Rust
     `CloudBackupClient` blockmap/block/finalize transport, with strict
-    range/size/hash validation and hermetic wire coverage; CLI shard
-    integration remains next. ✅ 2026-08-01
+    range/size/hash validation, generation seeding from the prior finalized
+    payload, and hermetic wire coverage. ✅ 2026-08-01
 - [x] **Lance file awareness.**  Lance `.lance` data files are
   append-mostly (new row groups appended, old ones rarely rewritten).
   Delta sync naturally exploits this — only the tail blocks change.
   Tantivy segments are immutable once written; only the `meta.json` +
   new segments need uploading.  This is documented in the delta module.
   ✅ 2026-08-01
-- [ ] **Tests.**  ✅ 12 unit tests shipped with the module (see above).
-  Remaining: integration test with mock HTTP server verifying only
-  changed blocks are uploaded.
+- [>] **Tests.**  ✅ 12 unit tests shipped with the module (see above), plus
+  hermetic Rust transport coverage and Python staging/generation coverage.
+  Remaining: a CLI-level mock HTTP assertion that counts changed-block
+  requests.
 
 #### Priority 3 — Offline operation queue with replay
 
