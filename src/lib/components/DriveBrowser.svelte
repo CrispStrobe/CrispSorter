@@ -2,24 +2,25 @@
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { ChevronRight, Copy, Folder, FolderPlus, RefreshCw, Trash2 } from 'lucide-svelte';
+    import {
+        availableDriveActions,
+        joinDrivePath,
+        normalizeDrivePath,
+        parentDrivePath,
+        type DriveCapabilities,
+    } from '$lib/drives/browser';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
-    type Capabilities = {
-        create_dir: boolean; rename: boolean; move_path: boolean; copy: boolean; delete: boolean;
-    };
-
     let drives = $state<Drive[]>([]);
     let driveId = $state('');
     let path = $state('/');
     let entries = $state<Entry[]>([]);
-    let capabilities = $state<Capabilities>({ create_dir: false, rename: false, move_path: false, copy: false, delete: false });
+    let capabilities = $state<DriveCapabilities>({ create_dir: false, rename: false, move_path: false, copy: false, delete: false });
     let loading = $state(false);
     let error = $state('');
     let selected = $state<string | null>(null);
-
-    const joinPath = (base: string, name: string) =>
-        `${base === '/' ? '' : base.replace(/\/$/, '')}/${name}`;
+    const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
     async function refresh() {
         if (!driveId) return;
@@ -53,7 +54,7 @@
 
     function open(entry: Entry) {
         if (entry.is_dir) {
-            path = joinPath(path, entry.name);
+            path = joinDrivePath(path, entry.name);
             void refresh();
         } else selected = entry.name;
     }
@@ -61,17 +62,17 @@
     async function createFolder() {
         const name = window.prompt('Folder name');
         if (!name?.trim() || !capabilities.create_dir) return;
-        try { await invoke('drive_create_dir', { driveId, path: joinPath(path, name.trim()) }); await refresh(); }
+        try { await invoke('drive_create_dir', { driveId, path: joinDrivePath(path, name.trim()) }); await refresh(); }
         catch (e) { error = String(e); }
     }
 
     async function mutate(kind: 'move' | 'copy') {
         if (!selected || (kind === 'move' ? !capabilities.move_path : !capabilities.copy)) return;
-        const destination = window.prompt(`${kind === 'move' ? 'Move' : 'Copy'} to path`, joinPath(path, selected));
+        const destination = window.prompt(`${kind === 'move' ? 'Move' : 'Copy'} to path`, joinDrivePath(path, selected));
         if (!destination?.trim()) return;
         try {
             await invoke(kind === 'move' ? 'drive_move_path' : 'drive_copy_path', {
-                driveId, source: joinPath(path, selected), destination: destination.trim()
+                driveId, source: joinDrivePath(path, selected), destination: normalizeDrivePath(destination.trim())
             });
             await refresh();
         } catch (e) { error = String(e); }
@@ -79,7 +80,7 @@
 
     async function removeSelected() {
         if (!selected || !capabilities.delete || !window.confirm(`Delete ${selected}?`)) return;
-        try { await invoke('drive_delete_path', { driveId, path: joinPath(path, selected) }); await refresh(); }
+        try { await invoke('drive_delete_path', { driveId, path: joinDrivePath(path, selected) }); await refresh(); }
         catch (e) { error = String(e); }
     }
 
@@ -103,15 +104,15 @@
 
     <div class="browser-toolbar">
         {#each path.split('/').filter(Boolean) as segment, index}
-            <button class="crumb" onclick={() => { path = '/' + path.split('/').filter(Boolean).slice(0, index + 1).join('/'); void refresh(); }}>{segment}</button>
+            <button class="crumb" onclick={() => { path = normalizeDrivePath('/' + path.split('/').filter(Boolean).slice(0, index + 1).join('/')); void refresh(); }}>{segment}</button>
             <ChevronRight size={14} />
         {/each}
-        {#if path !== '/'}<button class="crumb" onclick={() => { path = '/'; void refresh(); }}>root</button>{:else}<span class="crumb current">root</span>{/if}
+        {#if path !== '/'}<button class="crumb" onclick={() => { path = parentDrivePath(path); void refresh(); }}>parent</button>{:else}<span class="crumb current">root</span>{/if}
         <span class="toolbar-spacer"></span>
-        <button onclick={createFolder} disabled={!capabilities.create_dir}><FolderPlus size={15} /> New folder</button>
-        <button onclick={() => mutate('move')} disabled={!selected || !capabilities.move_path}>Move</button>
-        <button onclick={() => mutate('copy')} disabled={!selected || !capabilities.copy}><Copy size={15} /> Copy</button>
-        <button class="danger" onclick={removeSelected} disabled={!selected || !capabilities.delete}><Trash2 size={15} /> Delete</button>
+        <button onclick={createFolder} disabled={!actions.create_dir}><FolderPlus size={15} /> New folder</button>
+        <button onclick={() => mutate('move')} disabled={!actions.move}>Move</button>
+        <button onclick={() => mutate('copy')} disabled={!actions.copy}><Copy size={15} /> Copy</button>
+        <button class="danger" onclick={removeSelected} disabled={!actions.delete}><Trash2 size={15} /> Delete</button>
     </div>
 
     {#if error}<div class="browser-error">{error}</div>{/if}
