@@ -3126,7 +3126,7 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI now exposes `sync pair remote-plan` and `sync pair compare
     --policy`, reusing the provider inventory and metadata comparison path
     for headless conflict review. ✅ 2026-08-01
-- [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
+- [>] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.
   - [x] `ConflictPolicy` is now persisted in `IndexConfig` with a backward-
@@ -3162,6 +3162,9 @@ a transfer without leaving the search/catalog workflow.
     sibling name, and manual rejects until review. Pure decision tests cover
     every mutation policy; the broader preview/resolution surface remains
     open. ✅ 2026-08-01
+  - [ ] Add richer side-by-side preview and one-click resolution for sync-pair
+    divergences; current compare/pull paths require an explicit policy and do
+    not mutate until that policy is supplied.
 - [x] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for
@@ -3213,7 +3216,7 @@ a transfer without leaving the search/catalog workflow.
     locks for a bounded period, and the live suite confirms that all readers
     observe either the complete old or complete new file: 12/12 on both
     Nextcloud and ownCloud. ✅ 2026-08-01
-- [ ] **Share/version commands.** Expose `drive_list_versions` and
+- [x] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
   Add expiry/password options only to providers that actually support them.
