@@ -2865,10 +2865,11 @@ a transfer without leaving the search/catalog workflow.
     live suite now confirms on both providers that readers see the committed
     old file between block staging and finalize, then see all changed bytes
     after finalize; both suites pass 11/11. ✅ 2026-08-01
-  - [ ] Add an in-flight concurrent-reader stress test that races a reader
-    against the finalize request itself; the deterministic staged-state
-    visibility contract is covered above, but this scheduler-level stress case
-    remains separate.
+  - [x] Add an in-flight concurrent-reader stress test that races eight
+    readers against finalize. The PHP handler retries transient provider file
+    locks for a bounded period, and the live suite confirms that all readers
+    observe either the complete old or complete new file: 12/12 on both
+    Nextcloud and ownCloud. ✅ 2026-08-01
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
