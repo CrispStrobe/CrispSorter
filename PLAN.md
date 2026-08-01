@@ -2820,9 +2820,11 @@ a transfer without leaving the search/catalog workflow.
   and i18n infrastructure rather than creating a second notification system.
   - [x] Drawer now includes provider identity and live ETA alongside bytes,
     speed, state, cancellation, and offline retry details. ✅ 2026-08-01
-  - [ ] Resume availability remains deferred until queue snapshots carry
-    provider capability/resume-state metadata; no provider is falsely marked
-    resumable in the meantime.
+  - [x] Drawer now queries and caches the registered drive's capability
+    declaration and shows "resume available" only for the matching native
+    upload/download direction. Unknown providers remain unmarked. ✅ 2026-08-01
+  - [ ] Queue-native resume-state metadata remains deferred; the drawer's
+    capability badge does not claim that a currently running job can resume.
 
 #### P34.3 — Sync, backup, and collaboration, P1/P2
 

@@ -30,6 +30,7 @@
         last_error: string | null;
         status: string;
     };
+    type DriveCapabilities = { resumable_upload: boolean; resumable_download: boolean };
 
     let jobs = $state<TransferProgress[]>([]);
     let offline = $state<OfflineQueueStats | null>(null);
@@ -39,6 +40,7 @@
     let queueBusy = $state(false);
     let previous = new Map<number, { bytes: number; at: number }>();
     let speeds = new Map<number, number>();
+    let capabilityCache = new Map<string, DriveCapabilities>();
 
     const stateName = (state: TransferState): string => {
         if (typeof state === 'string') return state;
@@ -78,6 +80,13 @@
         return minutes < 60 ? `${minutes}m ${remaining}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
     }
 
+    function resumeAvailable(job: TransferProgress): boolean {
+        const caps = capabilityCache.get(job.drive_id);
+        return job.direction === 'upload'
+            ? !!caps?.resumable_upload
+            : !!caps?.resumable_download;
+    }
+
     function percent(job: TransferProgress): number {
         if (!job.bytes_total) return 0;
         return Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100));
@@ -95,6 +104,14 @@
                 previous.set(job.job_id, { bytes: job.bytes_done, at: now });
             }
             jobs = next;
+            const driveIds = [...new Set(next.map((job) => job.drive_id).filter(Boolean))];
+            await Promise.all(driveIds.filter((id) => !capabilityCache.has(id)).map(async (driveId) => {
+                try {
+                    capabilityCache.set(driveId, await invoke<DriveCapabilities>('drive_capabilities', { driveId }));
+                } catch {
+                    // Unknown/browser-preview providers stay unmarked.
+                }
+            }));
         } catch {
             // Browser preview and mobile builds may not expose Tauri commands.
         }
@@ -168,6 +185,7 @@
                                 <span>{formatBytes(job.bytes_done)}{job.bytes_total != null ? ` / ${formatBytes(job.bytes_total)}` : ''}</span>
                                 {#if speed(job) > 0}<span>{formatBytes(speed(job))}/s</span>{/if}
                                 {#if stateName(job.state) === 'active'}<span>ETA {eta(job)}</span>{/if}
+                                {#if resumeAvailable(job)}<span class="resume-badge">resume available</span>{/if}
                                 <span>#{job.job_id}</span>
                             </div>
                         </div>
@@ -233,6 +251,7 @@
     .progress-track { height: 4px; margin: 6px 0 4px; border-radius: 3px; background: #3f3f46; overflow: hidden; }
     .progress-value { height: 100%; border-radius: inherit; background: #8b5cf6; transition: width .25s ease; }
     .job-meta { color: #71717a; font-size: .64rem; }
+    .resume-badge { color: #86efac; }
     .job-meta span:last-child { margin-left: auto; }
     .cancel { display: grid; place-items: center; border: 0; border-radius: 5px; padding: 5px; color: #a1a1aa; background: transparent; cursor: pointer; }
     .cancel:hover { color: #f87171; background: #3f1f2a; }
