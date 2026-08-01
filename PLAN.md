@@ -3299,6 +3299,8 @@ a transfer without leaving the search/catalog workflow.
   - [x] Remaining Tauri sync, restore, offline-replay, and shard-transfer
     paths now use the proxy-aware registry constructor instead of silently
     falling back to a default HTTP client.
+  - [x] Headless cloud-backup CLI status, admin, and federated-search clients
+    now load the same persisted proxy policy and keychain password.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

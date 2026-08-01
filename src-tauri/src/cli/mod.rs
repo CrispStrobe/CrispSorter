@@ -5884,6 +5884,16 @@ fn cb_resolve_token(url: &str) -> Result<Option<String>, String> {
     crate::sync::secret::get_token_for_url(url).map_err(|e| format!("keychain: {e}"))
 }
 
+fn cli_proxy_config(
+    config: &crate::index::IndexConfig,
+) -> Result<crate::sync::proxy::ProxyConfig, String> {
+    Ok(crate::sync::proxy::ProxyConfig {
+        url: config.proxy_url.clone(),
+        username: config.proxy_username.clone(),
+        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
+    })
+}
+
 fn parse_conflict_policy(value: &str) -> Result<crate::sync::conflict::ConflictPolicy, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "newest" | "newest-wins" | "newest_wins" =>
@@ -5958,7 +5968,7 @@ async fn cmd_sync_cloud_backup(
 
     // Admin subcommands only need the URL + admin token — not a bearer key.
     if let CloudBackupCmd::Admin { .. } = &cmd {
-        return cmd_cloud_backup_admin(out, &url, cmd).await;
+        return cmd_cloud_backup_admin(out, &url, &cfg, cmd).await;
     }
 
     if url.is_empty() {
@@ -5967,7 +5977,9 @@ async fn cmd_sync_cloud_backup(
     let token = cb_resolve_token(&url)?
         .ok_or_else(|| "no API key — `crispsorter sync cloud-backup login --token cbk_...` first \
                         (or set CB_SYNC_API_KEY)".to_string())?;
-    let client = CloudBackupClient::new(&url, &token).map_err(|e| e.to_string())?;
+    let proxy = cli_proxy_config(&cfg)?;
+    let client = CloudBackupClient::new_with_proxy(&url, &token, &proxy)
+        .map_err(|e| e.to_string())?;
     let mgr = crate::sync::SyncManager::open(data_dir).map_err(|e| e.to_string())?;
 
     match cmd {
@@ -7056,6 +7068,7 @@ async fn cmd_sync_cloud_backup(
 async fn cmd_cloud_backup_admin(
     out: OutFormat,
     url: &str,
+    config: &crate::index::IndexConfig,
     cmd: CloudBackupCmd,
 ) -> Result<(), String> {
     use crate::sync::cloud_backup::CloudBackupClient;
@@ -7071,7 +7084,9 @@ async fn cmd_cloud_backup_admin(
     // client happy (admin routes don't enforce bearer auth server-side).
     let token = crate::sync::secret::get_token_for_url(url)
         .ok().flatten().unwrap_or_else(|| "placeholder".to_string());
-    let client = CloudBackupClient::new(url, &token).map_err(|e| e.to_string())?;
+    let proxy = cli_proxy_config(config)?;
+    let client = CloudBackupClient::new_with_proxy(url, &token, &proxy)
+        .map_err(|e| e.to_string())?;
 
     let CloudBackupCmd::Admin { sub } = cmd else { unreachable!() };
 
@@ -7377,7 +7392,12 @@ async fn cmd_search_async(
         } else {
             use crate::sync::cloud_backup::{HybridSearchFilters, HybridSearchRequest};
             let leg: Result<Vec<FederatedHit>, String> = async {
-                let client = crate::sync::cloud_backup::CloudBackupClient::new(&cb_url, &cb_token)
+                let proxy = cli_proxy_config(&cfg)?;
+                let client = crate::sync::cloud_backup::CloudBackupClient::new_with_proxy(
+                    &cb_url,
+                    &cb_token,
+                    &proxy,
+                )
                     .map_err(|e| e.to_string())?;
                 let filters = HybridSearchFilters {
                     ext: normalised_ext.clone(),
@@ -7577,7 +7597,12 @@ async fn cmd_cloud_backup_federated(
         } else if token.is_empty() {
             errors.insert("cloud_backup", "no API token stored".into());
         } else {
-            match crate::sync::cloud_backup::CloudBackupClient::new(&url, &token) {
+            let proxy = cli_proxy_config(&cfg)?;
+            match crate::sync::cloud_backup::CloudBackupClient::new_with_proxy(
+                &url,
+                &token,
+                &proxy,
+            ) {
                 Err(e) => { errors.insert("cloud_backup", e.to_string()); }
                 Ok(cli) => {
                     // Display-only federated leg — lean payload + server snippet
