@@ -143,6 +143,12 @@ impl BackupState {
              WHERE status = 'running'",
             params![now_ms()],
         ).context("recover interrupted backup runs")?;
+        conn.execute(
+            "UPDATE backup_jobs SET last_status = 'interrupted'
+             WHERE id IN (SELECT job_id FROM backup_runs WHERE status = 'interrupted'
+                          AND error = 'process restarted while backup was running')",
+            [],
+        ).context("recover interrupted backup job status")?;
         Ok(Self { conn })
     }
 
@@ -270,6 +276,13 @@ impl BackupState {
     pub fn start_run(&self, job_id: &str, planned: u64) -> Result<BackupRun> {
         if job_id.trim().is_empty() {
             anyhow::bail!("backup run job id is required");
+        }
+        let active: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM backup_runs WHERE job_id = ?1 AND status = 'running')",
+            params![job_id], |row| row.get(0),
+        ).context("check active backup run")?;
+        if active {
+            anyhow::bail!("backup job '{job_id}' already has a running execution");
         }
         let run = BackupRun {
             id: uuid::Uuid::new_v4().to_string(), job_id: job_id.to_owned(),
@@ -438,6 +451,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let bs = BackupState::open(tmp.path()).unwrap();
         let run = bs.start_run("documents", 3).unwrap();
+        assert!(bs.start_run("documents", 1).is_err());
         let finished = bs.finish_run(&run.id, 3, 0, true, 42).unwrap();
         assert_eq!(finished.status, BackupRunStatus::Completed);
         assert_eq!(bs.list_runs("documents", 10).unwrap().len(), 1);

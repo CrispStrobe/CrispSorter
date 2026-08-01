@@ -2997,6 +2997,8 @@ a transfer without leaving the search/catalog workflow.
       future background scheduler; manual jobs are never auto-due.
     - [x] Tauri `backup_job_due` exposes the same read-only due calculation to
       the GUI/coordinator without duplicating schedule logic.
+    - [x] Run start is now single-flight per job, and restart recovery updates
+      affected jobs to `interrupted`, preventing duplicate scheduler ticks.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select
