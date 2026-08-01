@@ -3,6 +3,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { save } from '@tauri-apps/plugin-dialog';
+    import { writeFile } from '@tauri-apps/plugin-fs';
     import { onMount } from 'svelte';
     import { getSetting, saveSetting } from '$lib/store';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
@@ -10,7 +11,7 @@
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
-        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus,
+        FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus, Download,
         Image as ImageIcon
     } from 'lucide-svelte';
     import TagCloud from './TagCloud.svelte';
@@ -83,6 +84,7 @@
     let loading     = $state(false);
     let error       = $state('');
     let shareBusy    = $state<string | null>(null);
+    let downloadBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let searched    = $state(false);
     let showFilters = $state(false);
@@ -1021,6 +1023,27 @@
         }
     }
 
+    /** Save a registered-drive search result locally through the shared queue. */
+    async function downloadDriveFile(uri: string, filename?: string): Promise<void> {
+        const parts = driveUriParts(uri);
+        if (!parts) return;
+        const destination = await save({
+            defaultPath: filename || pathBaseName(parts.remotePath) || 'download',
+            title: 'Save cloud file for offline use',
+        });
+        if (!destination) return;
+        downloadBusy = uri;
+        try {
+            const bytes = await invoke<number[]>('drive_read_file', parts);
+            await writeFile(destination, new Uint8Array(bytes));
+            error = `Downloaded ${filename || pathBaseName(parts.remotePath) || 'file'} for offline use.`;
+        } catch (e: any) {
+            error = `Could not download cloud file: ${String(e?.message ?? e)}`;
+        } finally {
+            downloadBusy = null;
+        }
+    }
+
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
@@ -1464,6 +1487,12 @@
                                     onclick={(e) => { e.stopPropagation(); void shareDriveFile(r.location_uri); }}
                                     title={shareCapabilities[driveIdFromUri(r.location_uri)] === false ? 'Public sharing is not supported' : 'Share link kopieren'}>
                                     {#if shareBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}<Share2 size={13} />{/if}
+                                </button>
+                                <button class="open-btn"
+                                    disabled={downloadBusy === r.location_uri}
+                                    onclick={(e) => { e.stopPropagation(); void downloadDriveFile(r.location_uri, r.filename); }}
+                                    title="Download for offline use">
+                                    {#if downloadBusy === r.location_uri}<Loader2 size={13} class="spin" />{:else}<Download size={13} />{/if}
                                 </button>
                             {/if}
                             {#if localPathFromSearchUri(r.location_uri)}

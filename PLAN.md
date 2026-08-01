@@ -3017,6 +3017,10 @@ a transfer without leaving the search/catalog workflow.
     the existing external-open and batch-sorter actions. ✅ 2026-08-01
   - [x] Local result groups now emit typed `SearchResults` context requests
     carrying the active query into the dual-panel browser. ✅ 2026-08-01
+  - [x] Registered-drive search results now offer a save-dialog download
+    action for offline use; bytes go through the shared `drive_read_file`
+    transfer-queue command and are written only to the user-selected path.
+    ✅ 2026-08-01
 - [ ] **Duplicate workflow.** Show duplicate groups side-by-side with size,
   hashes, locations, provider, indexed state, and document metadata.  Offer
   safe keep/delete/move/archive actions with dry-run, conflict policy,
