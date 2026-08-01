@@ -1485,7 +1485,7 @@ If the network drops mid-sync, operations are lost.
     provides retry-failed and purge-failed controls. ✅ 2026-08-01
   - [x] Expanded drawer view now lists queued operation/provider, retry count,
     status, and the latest error diagnostic. ✅ 2026-08-01
-- [ ] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
+- [x] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
 
 #### Priority 4 — Conflict resolution policies
 
@@ -2985,7 +2985,7 @@ a transfer without leaving the search/catalog workflow.
 
 #### P34.2 — Core file-manager surface, P1
 
-- [ ] **Contextual dual-panel mode.** Add a focused dual-panel workspace,
+- [x] **Contextual dual-panel mode.** Add a focused dual-panel workspace,
   not a separate generic app: left panel is a local/registered-drive folder
   or search-result context; right panel is the selected document, duplicate
   group, archive, cloud folder, or comparison target.  Support panel source
@@ -3055,7 +3055,7 @@ a transfer without leaving the search/catalog workflow.
     to the drive browser. Cloud-drive provenance is retained; search results,
     duplicate groups, catalog archives, and remote-search sources are modeled
     for the next integrations. ✅ 2026-08-01
-- [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
+- [x] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
   and i18n infrastructure rather than creating a second notification system.
