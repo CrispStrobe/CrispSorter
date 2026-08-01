@@ -1647,9 +1647,11 @@ configurable rule engine for complex workflows.
   (after classification, before the default auto-file behaviour).
   If no rules match, falls through to the existing `WatchMode`
   behaviour (backward-compatible).
-- [ ] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
+- [x] **Tauri commands: `automation_add_rule`, `automation_list_rules`,
   `automation_update_rule`, `automation_delete_rule`,
-  `automation_test_rule(file_path)`.**
+  `automation_test_rule(file_path)`.** ✅ SHIPPED (2026-08-01). Rules are
+  persisted atomically in `automation_rules.json`; the test command evaluates
+  a real sample file without executing any action.
 - [ ] **Settings UI: "Automation" panel.**  Rule list with
   add/edit/delete.  Rule editor: trigger conditions (AND/OR
   combinable), ordered action list, priority slider, enabled toggle.
@@ -1661,7 +1663,8 @@ configurable rule engine for complex workflows.
   "Photos to cloud": trigger `ext:jpg,png,heic` + `size > 1MB` →
   `UploadTo(gdrive, "/Photos/{year}/")`.
   "OCR all scans": trigger `folder_prefix:/Scans/` → `RunOcr(smart)`.
-- [ ] **Tests.**  ✅ 13 unit tests shipped with the module (see above).
+- [x] **Tests.**  ✅ 15 unit tests shipped with the module, including atomic
+  persistence and first-run disabled defaults.
 
 ### P30 — crisp-docx deep integration (2026-07-05)
 

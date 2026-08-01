@@ -172,6 +172,110 @@ async fn watch_record_tokens(state: tauri::State<'_, AppState>, tokens: u64) -> 
 }
 
 #[cfg(feature = "desktop")]
+/// List persisted automation rules, including disabled examples on first run.
+#[tauri::command]
+async fn automation_list_rules(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "desktop")]
+/// Replace or add one named automation rule and persist the complete set.
+#[tauri::command]
+async fn automation_save_rule(
+    state: tauri::State<'_, AppState>,
+    rule: watcher::rules::AutomationRule,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    if rule.name.trim().is_empty() {
+        return Err("automation rule name must not be empty".into());
+    }
+    if rule.actions.is_empty() || rule.triggers.is_empty() {
+        return Err("automation rules require at least one trigger and action".into());
+    }
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+    if let Some(existing) = rules.iter_mut().find(|item| item.name == rule.name) {
+        *existing = rule;
+    } else {
+        rules.push(rule);
+    }
+    rules.sort_by_key(|item| item.priority);
+    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+    Ok(rules)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn automation_add_rule(
+    state: tauri::State<'_, AppState>,
+    rule: watcher::rules::AutomationRule,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    automation_save_rule(state, rule).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn automation_update_rule(
+    state: tauri::State<'_, AppState>,
+    rule: watcher::rules::AutomationRule,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    automation_save_rule(state, rule).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn automation_delete_rule(
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+    rules.retain(|item| item.name != name);
+    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+    Ok(rules)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn automation_set_enabled(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    enabled: bool,
+) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+    let rule = rules.iter_mut().find(|item| item.name == name)
+        .ok_or_else(|| format!("automation rule '{name}' not found"))?;
+    rule.enabled = enabled;
+    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+    Ok(rules)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn automation_test_rule(
+    state: tauri::State<'_, AppState>,
+    file_path: String,
+    match_all: Option<bool>,
+) -> Result<Vec<watcher::rules::Action>, String> {
+    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+    let path = std::path::PathBuf::from(file_path);
+    let metadata = std::fs::metadata(&path).map_err(|e| format!("reading sample file: {e}"))?;
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+    let file = watcher::rules::FileContext {
+        path: &path,
+        extension,
+        size: metadata.len(),
+        doctype: None,
+        tags: &[],
+    };
+    Ok(watcher::rules::evaluate(&file, &rules, match_all.unwrap_or(false)))
+}
+
+#[cfg(feature = "desktop")]
 /// Report a file as failed during auto-processing.
 #[tauri::command]
 async fn watch_report_failure(
@@ -3088,6 +3192,13 @@ pub fn run() {
             watch_list_modes,
             watch_queue_status,
             watch_record_tokens,
+            automation_list_rules,
+            automation_save_rule,
+            automation_add_rule,
+            automation_update_rule,
+            automation_delete_rule,
+            automation_set_enabled,
+            automation_test_rule,
             watch_report_failure,
             watch_dead_letters,
             watch_dismiss_dead_letter,
