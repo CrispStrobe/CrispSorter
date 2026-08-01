@@ -1576,6 +1576,10 @@ unify local and cloud version tracking.
   Merges with the existing local version history from P25.1 into a
   unified timeline (local versions tagged "local", cloud versions
   tagged with the provider name).
+- [x] **Frontend capability contract.** ✅ SHIPPED (2026-08-01). The
+  `DriveCapabilities` type now includes the provider `versions` flag used
+  by the browser, matching the Rust capability payload; older UI fixtures
+  remain compatible when the field is absent.
 - [ ] **Tests.**  ✅ 4 unit tests shipped (see above).  Live tests
   require OAuth tokens — tagged `#[ignore]`.
 

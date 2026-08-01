@@ -84,7 +84,7 @@
                 invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => []),
                 invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []),
             ]);
-            cloudVersions = caps.versions ? cloud : [];
+            cloudVersions = caps.versions === true ? cloud : [];
             localVersions = local;
         } catch (e) { versionsError = String(e); }
         finally { versionsLoading = false; }
