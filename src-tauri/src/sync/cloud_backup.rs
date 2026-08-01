@@ -714,6 +714,42 @@ impl CloudBackupClient {
         Ok(resp.json::<ManifestPullResponse>().await.context("manifest_pull: parse body")?)
     }
 
+    /// `GET /api/manifest/resolve?path=…&sha256=…` — fetch one exact
+    /// owner-scoped manifest candidate without advancing the pull watermark.
+    pub async fn manifest_resolve(
+        &self,
+        path: &str,
+        sha256: &str,
+        include_full_text: bool,
+    ) -> Result<ManifestPullResponse> {
+        let encode = |value: &str| -> String {
+            value.chars().flat_map(|c| {
+                if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
+                    vec![c]
+                } else {
+                    format!("%{:02X}", c as u32).chars().collect()
+                }
+            }).collect()
+        };
+        let url = format!(
+            "{}/api/manifest/resolve?path={}&sha256={}&include_full_text={}",
+            self.base_url, encode(path), encode(sha256), include_full_text,
+        );
+        let resp = self.client
+            .get(url)
+            .header(AUTHORIZATION, self.auth_header())
+            .send()
+            .await
+            .context("manifest_resolve: send")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("manifest_resolve: HTTP {status}: {body}");
+        }
+        Ok(resp.json::<ManifestPullResponse>().await
+            .context("manifest_resolve: parse body")?)
+    }
+
     /// `POST /api/index/push-embeddings`.  Per-row rejections (e.g.
     /// pack failure) show up in the response's `errors` list but
     /// don't fail the whole batch.
@@ -1341,6 +1377,23 @@ mod tests {
         assert_eq!(resp.rows[0].path, "/a.pdf");
         assert_eq!(resp.max_indexed_at, 100);
         assert!(!resp.has_more);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_resolve_encodes_path_and_parses_candidate() {
+        let mut server = Server::new_async().await;
+        let m = server.mock("GET", "/api/manifest/resolve")
+            .match_query(Matcher::Regex(
+                "path=%2Fconflicts%2Fremote%20file.md&sha256=abc&include_full_text=true".into(),
+            ))
+            .with_status(200)
+            .with_body(r#"{"rows":[{"path":"/conflicts/remote file.md","size_bytes":3,"sha256":"abc","mtime_unix":1.0,"owner_id":"o","filename":"remote file.md","ext":"md","parent_dir":"/conflicts","indexed_at":100,"full_text":"new"}],"max_indexed_at":100,"has_more":false}"#)
+            .create_async()
+            .await;
+        let cli = client_for(&server);
+        let response = cli.manifest_resolve("/conflicts/remote file.md", "abc", true).await.unwrap();
+        assert_eq!(response.rows[0].full_text.as_deref(), Some("new"));
         m.assert_async().await;
     }
 

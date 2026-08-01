@@ -1979,6 +1979,20 @@
         }
     }
 
+    async function acceptRemoteConflict(conflict: PendingConflict) {
+        conflictsBusy = true;
+        conflictsMessage = '';
+        try {
+            await invoke('sync_accept_remote_conflict', { id: conflict.id });
+            pendingConflicts = pendingConflicts.filter((item) => item.id !== conflict.id);
+            conflictsMessage = `Accepted remote version for ${conflict.path}`;
+        } catch (e: any) {
+            conflictsMessage = `Could not accept remote version: ${e}`;
+        } finally {
+            conflictsBusy = false;
+        }
+    }
+
     function conflictTimestamp(value: number): string {
         // Older cb-api deployments used Unix seconds; current deployments
         // use milliseconds. Accept both while the queue is migrated.
@@ -4190,7 +4204,7 @@
                             <strong>Conflict review ({pendingConflicts.length})</strong>
                             <button type="button" class="btn" onclick={refreshConflicts} disabled={conflictsBusy}>Refresh</button>
                         </div>
-                        <p class="hint">Manual pulls remain unapplied until reviewed. Keeping local rejects the remote candidate safely; accepting remote is deferred until the server can rehydrate the complete manifest row.</p>
+                        <p class="hint">Manual pulls remain unapplied until reviewed. Each action is explicit and applies only the selected path/hash.</p>
                         {#if pendingConflicts.length === 0}
                             <p class="hint">No unresolved conflicts.</p>
                         {:else}
@@ -4211,7 +4225,10 @@
                                     </div>
                                     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
                                         <span class="hint">Remote indexed {conflictTimestamp(conflict.remote_indexed_at)}</span>
-                                        <button type="button" class="btn danger" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
+                                        <div style="display:flex; gap:6px;">
+                                            <button type="button" class="btn" onclick={() => acceptRemoteConflict(conflict)} disabled={conflictsBusy}>Keep remote</button>
+                                            <button type="button" class="btn danger" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
+                                        </div>
                                     </div>
                                 </div>
                             {/each}
