@@ -3087,6 +3087,8 @@ a transfer without leaving the search/catalog workflow.
       and Google-style revocation success/failure HTTP tests.
     - [x] Internxt native login now preserves structured gateway TFA codes and
       messages in actionable errors, with a secret-free unit test.
+    - [x] The same structured error mapping now covers security-detail and
+      session-hydration failures across the full Internxt login flow.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client

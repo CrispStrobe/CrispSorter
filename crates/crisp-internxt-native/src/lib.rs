@@ -878,9 +878,7 @@ impl InternxtNativeClient {
             .text()
             .context("reading Internxt login security details")?;
         if !security_status.is_success() {
-            return Err(anyhow!(
-                "Internxt login security returned {security_status}: {security_body}"
-            ));
+            return Err(gateway_error("Internxt login security returned", security_status, &security_body));
         }
         let encrypted_salt = serde_json::from_str::<serde_json::Value>(&security_body)?
             .get("sKey")
@@ -924,9 +922,7 @@ impl InternxtNativeClient {
         let refresh_status = refresh.status();
         let refresh_body = refresh.text().context("reading Internxt login hydration")?;
         if !refresh_status.is_success() {
-            return Err(anyhow!(
-                "Internxt login hydration returned {refresh_status}: {refresh_body}"
-            ));
+            return Err(gateway_error("Internxt login hydration returned", refresh_status, &refresh_body));
         }
         let hydrated: serde_json::Value = serde_json::from_str(&refresh_body)?;
         let user = hydrated
