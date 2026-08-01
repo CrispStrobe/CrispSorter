@@ -1,6 +1,6 @@
 pub mod asr;
-pub mod audit;
 pub mod audio;
+pub mod audit;
 pub mod batch_session;
 pub mod bg_ingest;
 pub mod images;
@@ -11,27 +11,27 @@ pub mod cli;
 pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
-pub mod sync;
 pub mod index;
 pub mod jobs;
-pub mod migrations;
-pub mod secrets;
-pub mod translate;
-#[cfg(feature = "desktop")]
-pub mod tts;
 pub mod kindle_clippings;
 pub mod kindle_import;
 pub mod kindle_match;
+pub mod migrations;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
 pub mod pdf_forms;
 pub mod pdf_ops;
 pub mod pdf_redact;
+pub mod pdf_session;
 pub mod pdf_text_edit;
 pub mod pdf_text_region;
 pub mod platform_share;
-pub mod pdf_session;
+pub mod secrets;
+pub mod sync;
+pub mod translate;
+#[cfg(feature = "desktop")]
+pub mod tts;
 pub mod volume;
 #[cfg(feature = "desktop")]
 pub mod watcher;
@@ -45,10 +45,7 @@ pub mod watcher;
 /// background. Use `tts_stop` to interrupt mid-utterance (e.g. on the
 /// chat Stop button).
 #[tauri::command]
-async fn tts_speak(
-    state: tauri::State<'_, AppState>,
-    text: String,
-) -> Result<(), String> {
+async fn tts_speak(state: tauri::State<'_, AppState>, text: String) -> Result<(), String> {
     if text.trim().is_empty() {
         return Ok(());
     }
@@ -89,8 +86,14 @@ async fn watch_start(
         _ => watcher::WatchMode::Off,
     };
     let mut guard = state.watcher.lock().await;
-    watcher::start(&mut guard, app, path, watch_mode, initial_scan.unwrap_or(false))
-        .map_err(|e| format!("watch_start failed: {e:#}"))
+    watcher::start(
+        &mut guard,
+        app,
+        path,
+        watch_mode,
+        initial_scan.unwrap_or(false),
+    )
+    .map_err(|e| format!("watch_start failed: {e:#}"))
 }
 
 #[cfg(feature = "desktop")]
@@ -98,10 +101,7 @@ async fn watch_start(
 /// actually removed; false when the folder wasn't being watched
 /// (idempotent — frontend can call this without checking first).
 #[tauri::command]
-async fn watch_stop_one(
-    state: tauri::State<'_, AppState>,
-    folder: String,
-) -> Result<bool, String> {
+async fn watch_stop_one(state: tauri::State<'_, AppState>, folder: String) -> Result<bool, String> {
     let path = std::path::PathBuf::from(folder);
     let mut guard = state.watcher.lock().await;
     Ok(watcher::stop_one(&mut guard, &path))
@@ -165,10 +165,7 @@ async fn watch_queue_status(
 #[cfg(feature = "desktop")]
 /// Report tokens consumed by auto-processing (called after each file).
 #[tauri::command]
-async fn watch_record_tokens(
-    state: tauri::State<'_, AppState>,
-    tokens: u64,
-) -> Result<(), String> {
+async fn watch_record_tokens(state: tauri::State<'_, AppState>, tokens: u64) -> Result<(), String> {
     let guard = state.watcher.lock().await;
     guard.record_tokens_used(tokens).await;
     Ok(())
@@ -235,10 +232,15 @@ async fn doctor_check() -> Result<serde_json::Value, String> {
     let face_detection = crate::images::face::is_face_detection_available();
     // Check model cache — use HOME env like cmd_doctor does (no `dirs` crate).
     let model_cache = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.crispstrobe.crispsorter/models"))
+        .map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Library/Application Support/com.crispstrobe.crispsorter/models")
+        })
         .unwrap_or_default();
-    let embedder_cached = model_cache.exists() &&
-        std::fs::read_dir(&model_cache).map(|d| d.count() > 0).unwrap_or(false);
+    let embedder_cached = model_cache.exists()
+        && std::fs::read_dir(&model_cache)
+            .map(|d| d.count() > 0)
+            .unwrap_or(false);
     let lance_dir = std::env::var_os("HOME").map(|h| {
         std::path::PathBuf::from(h)
             .join("Library/Application Support/com.crispstrobe.crispsorter/lance")
@@ -348,9 +350,11 @@ async fn catalog_scan_dir(
         max_size_bytes,
         follow_symlinks: false,
     };
-    tokio::task::spawn_blocking(move || catalog::scan::scan_dir(&p, opts).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| format!("catalog_scan_dir join error: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        catalog::scan::scan_dir(&p, opts).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("catalog_scan_dir join error: {e}"))?
 }
 
 /// Cheap header-only read for index-listing UIs. Avoids decoding the
@@ -417,7 +421,12 @@ async fn catalog_generate_deletion_script(
     format: Option<String>,
     target: Option<String>,
 ) -> Result<String, String> {
-    let format = match format.as_deref().unwrap_or("bash").to_ascii_lowercase().as_str() {
+    let format = match format
+        .as_deref()
+        .unwrap_or("bash")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "bash" => catalog::dedup::ScriptFormat::Bash,
         "batch" | "bat" | "cmd" => catalog::dedup::ScriptFormat::Batch,
         "powershell" | "ps" | "ps1" => catalog::dedup::ScriptFormat::Powershell,
@@ -428,7 +437,9 @@ async fn catalog_generate_deletion_script(
         "source" | "src" => catalog::dedup::DeletionTarget::Source,
         other => return Err(format!("unknown deletion target `{other}`")),
     };
-    Ok(catalog::dedup::generate_deletion_script(&matches, format, target))
+    Ok(catalog::dedup::generate_deletion_script(
+        &matches, format, target,
+    ))
 }
 
 /// Parse the user-facing `strategy` string into the typed enum.
@@ -573,7 +584,9 @@ async fn bg_ingest_set_ocr(
     let mut bg = state.bg_ingest.lock().await;
     bg.ocr_enabled = enabled;
     bg.ocr_tier = tier;
-    if let Some(lang) = rec_lang { bg.ocr_rec_lang = lang; }
+    if let Some(lang) = rec_lang {
+        bg.ocr_rec_lang = lang;
+    }
     Ok(())
 }
 
@@ -722,25 +735,23 @@ fn load_or_scan_for_dedup(path: &str) -> Result<catalog::index::FileIndex, Strin
 #[tauri::command]
 async fn catalog_metadata(path: String) -> Result<CafMetadataDto, String> {
     let p = std::path::PathBuf::from(path);
-    tokio::task::spawn_blocking(move || {
-        catalog::caf::read_metadata(&p).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("catalog_metadata join error: {e}"))
-    .and_then(|r| r)
-    .map(|m| CafMetadataDto {
-        version: m.version,
-        device: m.device,
-        volume: m.volume,
-        alias: m.alias,
-        serial: m.serial,
-        comment: m.comment,
-        date: m.date,
-        file_count: m.file_count,
-        total_size: m.total_size,
-        archive: m.archive,
-        freesize: m.freesize,
-    })
+    tokio::task::spawn_blocking(move || catalog::caf::read_metadata(&p).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("catalog_metadata join error: {e}"))
+        .and_then(|r| r)
+        .map(|m| CafMetadataDto {
+            version: m.version,
+            device: m.device,
+            volume: m.volume,
+            alias: m.alias,
+            serial: m.serial,
+            comment: m.comment,
+            date: m.date,
+            file_count: m.file_count,
+            total_size: m.total_size,
+            archive: m.archive,
+            freesize: m.freesize,
+        })
 }
 
 #[cfg(feature = "desktop")]
@@ -1575,19 +1586,31 @@ impl PdfMetadata {
 /// P27.10 — Export text to DOCX format.
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn export_to_docx(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+async fn export_to_docx(
+    title: String,
+    body: String,
+    out_path: String,
+) -> Result<extractors::export::ExportResult, String> {
     tokio::task::spawn_blocking(move || {
         extractors::export::export_to_docx(&title, &body, std::path::Path::new(&out_path))
-    }).await.map_err(|e| format!("join: {e}"))?
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 /// P27.10 — Export text to standalone HTML format.
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn export_to_html(title: String, body: String, out_path: String) -> Result<extractors::export::ExportResult, String> {
+async fn export_to_html(
+    title: String,
+    body: String,
+    out_path: String,
+) -> Result<extractors::export::ExportResult, String> {
     tokio::task::spawn_blocking(move || {
         extractors::export::export_to_html(&title, &body, std::path::Path::new(&out_path))
-    }).await.map_err(|e| format!("join: {e}"))?
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
 }
 
 /// P24.6 — Read clipboard content (text or image).
@@ -1603,9 +1626,10 @@ async fn clipboard_capture() -> Result<extractors::clipboard::ClipboardContent, 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 async fn clipboard_save_image() -> Result<(String, u32, u32), String> {
-    let (path, w, h) = tokio::task::spawn_blocking(extractors::clipboard::save_clipboard_image_to_temp)
-        .await
-        .map_err(|e| format!("join: {e}"))??;
+    let (path, w, h) =
+        tokio::task::spawn_blocking(extractors::clipboard::save_clipboard_image_to_temp)
+            .await
+            .map_err(|e| format!("join: {e}"))??;
     Ok((path.to_string_lossy().into_owned(), w, h))
 }
 
@@ -1620,7 +1644,9 @@ async fn feed_fetch_and_parse(url: String) -> Result<extractors::feed::ParsedFee
 #[cfg(feature = "desktop")]
 #[tauri::command]
 async fn feed_parse_file(path: String) -> Result<extractors::feed::ParsedFeed, String> {
-    let bytes = tokio::fs::read(&path).await.map_err(|e| format!("read {path}: {e}"))?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("read {path}: {e}"))?;
     extractors::feed::parse_feed(&bytes)
 }
 
@@ -1873,7 +1899,10 @@ fn parse_pdf_date_year(s: &str) -> Option<i32> {
     if s.len() < 4 {
         return None;
     }
-    s[..4].parse::<i32>().ok().filter(|&y| (1000..=9999).contains(&y))
+    s[..4]
+        .parse::<i32>()
+        .ok()
+        .filter(|&y| (1000..=9999).contains(&y))
 }
 
 #[cfg(test)]
@@ -2128,7 +2157,12 @@ async fn execute_batch(
     state: tauri::State<'_, AppState>,
     payload: BatchExecutionPayload,
 ) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
-    app_log!("info", "execute_batch: {} items, mode={}", payload.items.len(), payload.mode);
+    app_log!(
+        "info",
+        "execute_batch: {} items, mode={}",
+        payload.items.len(),
+        payload.mode
+    );
     let mut results = std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
     let mut script_content = String::new();
@@ -2292,7 +2326,10 @@ async fn execute_batch(
                     // FE can show something more diagnostic than just
                     // "error" in the histogram.  Prefix with the errno
                     // for grep-ability.
-                    let errno = e.raw_os_error().map(|n| format!("errno={n} ")).unwrap_or_default();
+                    let errno = e
+                        .raw_os_error()
+                        .map(|n| format!("errno={n} "))
+                        .unwrap_or_default();
                     BatchExecutionResult {
                         success: false,
                         error: Some(format!("RENAME_FAILED: {errno}{e}")),
@@ -2860,6 +2897,9 @@ pub fn run() {
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,
             drives::tauri_commands::drive_delete,
+            drives::tauri_commands::drive_credentials_status,
+            drives::tauri_commands::drive_disconnect,
+            drives::tauri_commands::drive_oauth_start,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,
             drives::tauri_commands::drive_capabilities,
@@ -3202,6 +3242,9 @@ pub fn run() {
             drives::tauri_commands::drive_create,
             drives::tauri_commands::drive_update,
             drives::tauri_commands::drive_delete,
+            drives::tauri_commands::drive_credentials_status,
+            drives::tauri_commands::drive_disconnect,
+            drives::tauri_commands::drive_oauth_start,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_stat,
             drives::tauri_commands::drive_capabilities,

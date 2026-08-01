@@ -2,7 +2,55 @@
 
 use super::{DriveConfig, DriveRegistry, DriveType};
 use crate::AppState;
+use serde::Serialize;
 use tauri::State;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DriveCredentialsStatus {
+    pub has_username: bool,
+    pub has_password: bool,
+    pub has_access_token: bool,
+    pub has_refresh_token: bool,
+    pub has_client_id: bool,
+}
+
+/// Start a public-client OAuth flow. The returned URL may be opened by the
+/// system browser; tokens are exchanged by the loopback callback thread and
+/// never returned through IPC.
+#[tauri::command]
+pub async fn drive_oauth_start(
+    state: State<'_, AppState>,
+    drive_id: String,
+    provider: String,
+    client_id: String,
+) -> Result<super::oauth::StartResult, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let config = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
+        .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
+    let expected = match config.kind {
+        DriveType::GoogleDrive => "google",
+        DriveType::OneDrive => "microsoft",
+        _ => return Err("OAuth login requires Google Drive or OneDrive".into()),
+    };
+    if provider != expected {
+        return Err("OAuth provider does not match drive type".into());
+    }
+    super::oauth::start(
+        drive_id,
+        super::oauth::Provider::parse(&provider).map_err(|e| e.to_string())?,
+        client_id,
+    )
+    .map_err(|e| e.to_string())
+}
 
 /// List all configured drives.
 #[tauri::command]
@@ -45,15 +93,17 @@ pub async fn drive_create(
         "internxt" => DriveType::Internxt,
         "sftp" => DriveType::Sftp,
         "webdav" => DriveType::WebDav,
+        "onedrive" => DriveType::OneDrive,
+        "google_drive" => DriveType::GoogleDrive,
         _ => DriveType::Local,
     };
     let config = DriveConfig {
         id: uuid::Uuid::new_v4().to_string(),
         label,
-        kind: drive_type,
+        kind: drive_type.clone(),
         path,
-        username,
-        password,
+        username: None,
+        password: None,
         insecure_tls,
         access_token: None,
         refresh_token: None,
@@ -62,6 +112,17 @@ pub async fn drive_create(
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     reg.add(config.clone()).map_err(|e| e.to_string())?;
+    if drive_type == DriveType::WebDav {
+        super::secret::set_credentials(
+            &config.id,
+            &super::secret::DriveCredentials {
+                username,
+                password,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| format!("storing drive credentials failed: {e:#}"))?;
+    }
     Ok(config)
 }
 
@@ -75,7 +136,12 @@ pub async fn drive_delete(state: State<'_, AppState>, id: String) -> Result<bool
         .clone()
         .ok_or("data_dir not initialised")?;
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    reg.remove(&id).map_err(|e| e.to_string())
+    let removed = reg.remove(&id).map_err(|e| e.to_string())?;
+    if removed {
+        super::secret::delete_credentials(&id).map_err(|e| e.to_string())?;
+        super::secret::delete_session(&id).map_err(|e| e.to_string())?;
+    }
+    Ok(removed)
 }
 
 /// Update an existing drive's label / kind / path / auth in place.
@@ -106,6 +172,8 @@ pub async fn drive_update(
         "internxt" => DriveType::Internxt,
         "sftp" => DriveType::Sftp,
         "webdav" => DriveType::WebDav,
+        "onedrive" => DriveType::OneDrive,
+        "google_drive" => DriveType::GoogleDrive,
         _ => DriveType::Local,
     };
     let mut reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
@@ -115,10 +183,10 @@ pub async fn drive_update(
     let updated = DriveConfig {
         id,
         label,
-        kind: drive_type,
+        kind: drive_type.clone(),
         path,
-        username,
-        password,
+        username: None,
+        password: None,
         insecure_tls,
         access_token: None,
         refresh_token: None,
@@ -127,7 +195,63 @@ pub async fn drive_update(
     };
     // `add` dedupes by id (replaces) — exactly the semantics we want.
     reg.add(updated.clone()).map_err(|e| e.to_string())?;
+    if drive_type == DriveType::WebDav && (username.is_some() || password.is_some()) {
+        super::secret::set_credentials(
+            &updated.id,
+            &super::secret::DriveCredentials {
+                username,
+                password,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| format!("storing drive credentials failed: {e:#}"))?;
+    }
     Ok(updated)
+}
+
+/// Return credential presence only. Secret values never cross the Tauri IPC boundary.
+#[tauri::command]
+pub async fn drive_credentials_status(
+    state: State<'_, AppState>,
+    drive_id: String,
+) -> Result<DriveCredentialsStatus, String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    if !reg.drives.iter().any(|drive| drive.id == drive_id) {
+        return Err(format!("drive '{drive_id}' not found"));
+    }
+    let c = super::secret::get_credentials(&drive_id)
+        .map_err(|e| format!("reading drive credential status failed: {e:#}"))?
+        .unwrap_or_default();
+    Ok(DriveCredentialsStatus {
+        has_username: c.username.is_some(),
+        has_password: c.password.is_some(),
+        has_access_token: c.access_token.is_some(),
+        has_refresh_token: c.refresh_token.is_some(),
+        has_client_id: c.client_id.is_some(),
+    })
+}
+
+/// Disconnect a provider without deleting its non-secret drive metadata.
+#[tauri::command]
+pub async fn drive_disconnect(state: State<'_, AppState>, drive_id: String) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    if !reg.drives.iter().any(|drive| drive.id == drive_id) {
+        return Err(format!("drive '{drive_id}' not found"));
+    }
+    super::secret::delete_credentials(&drive_id).map_err(|e| e.to_string())?;
+    super::secret::delete_session(&drive_id).map_err(|e| e.to_string())
 }
 
 /// List directory entries on a drive.
@@ -208,15 +332,28 @@ pub async fn drive_create_dir(
     drive_id: String,
     path: String,
 ) -> Result<(), String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
     let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = DriveRegistry::instantiate(cfg);
     if !drive.capabilities().create_dir {
-        return Err(format!("{} does not support create_dir", drive.drive_type().label()));
+        return Err(format!(
+            "{} does not support create_dir",
+            drive.drive_type().label()
+        ));
     }
-    drive.create_dir(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    drive
+        .create_dir(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())
 }
 
 /// Move or rename a path within a drive.
@@ -227,15 +364,30 @@ pub async fn drive_move_path(
     source: String,
     destination: String,
 ) -> Result<(), String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
     let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = DriveRegistry::instantiate(cfg);
     if !drive.capabilities().move_path {
-        return Err(format!("{} does not support move_path", drive.drive_type().label()));
+        return Err(format!(
+            "{} does not support move_path",
+            drive.drive_type().label()
+        ));
     }
-    drive.move_path(std::path::Path::new(&source), std::path::Path::new(&destination))
+    drive
+        .move_path(
+            std::path::Path::new(&source),
+            std::path::Path::new(&destination),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -247,15 +399,30 @@ pub async fn drive_copy_path(
     source: String,
     destination: String,
 ) -> Result<(), String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
     let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = DriveRegistry::instantiate(cfg);
     if !drive.capabilities().copy {
-        return Err(format!("{} does not support copy", drive.drive_type().label()));
+        return Err(format!(
+            "{} does not support copy",
+            drive.drive_type().label()
+        ));
     }
-    drive.copy_path(std::path::Path::new(&source), std::path::Path::new(&destination))
+    drive
+        .copy_path(
+            std::path::Path::new(&source),
+            std::path::Path::new(&destination),
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -315,7 +482,12 @@ pub async fn drive_share_link(
     drive
         .share_link(std::path::Path::new(&path))
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("{} does not support public share links", drive.drive_type().label()))
+        .ok_or_else(|| {
+            format!(
+                "{} does not support public share links",
+                drive.drive_type().label()
+            )
+        })
 }
 
 /// List provider-managed versions for a file.
@@ -325,15 +497,28 @@ pub async fn drive_list_versions(
     drive_id: String,
     path: String,
 ) -> Result<Vec<super::FileVersion>, String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
     let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = DriveRegistry::instantiate(cfg);
     if !drive.capabilities().versions {
-        return Err(format!("{} does not support file versions", drive.drive_type().label()));
+        return Err(format!(
+            "{} does not support file versions",
+            drive.drive_type().label()
+        ));
     }
-    drive.list_versions(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    drive
+        .list_versions(std::path::Path::new(&path))
+        .map_err(|e| e.to_string())
 }
 
 /// Restore a provider-managed file version.
@@ -344,15 +529,27 @@ pub async fn drive_restore_version(
     path: String,
     version_id: String,
 ) -> Result<(), String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
     let reg = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
-    let cfg = reg.drives.iter().find(|d| d.id == drive_id)
+    let cfg = reg
+        .drives
+        .iter()
+        .find(|d| d.id == drive_id)
         .ok_or_else(|| format!("drive '{drive_id}' not found"))?;
     let drive = DriveRegistry::instantiate(cfg);
     if !drive.capabilities().versions {
-        return Err(format!("{} does not support file version restore", drive.drive_type().label()));
+        return Err(format!(
+            "{} does not support file version restore",
+            drive.drive_type().label()
+        ));
     }
-    drive.restore_version(std::path::Path::new(&path), &version_id)
+    drive
+        .restore_version(std::path::Path::new(&path), &version_id)
         .map_err(|e| e.to_string())
 }
 
@@ -380,12 +577,12 @@ pub async fn drive_read_file(
     let drive: Arc<dyn super::CloudDrive> = Arc::from(DriveRegistry::instantiate(cfg));
     let path = std::path::PathBuf::from(path);
     let path_for_transfer = path.clone();
-    let transfer = state.transfer_queue.clone().submit_download(
-        drive_id,
-        path,
-        None,
-        move |_| drive.read_file(&path_for_transfer),
-    );
+    let transfer = state
+        .transfer_queue
+        .clone()
+        .submit_download(drive_id, path, None, move |_| {
+            drive.read_file(&path_for_transfer)
+        });
     match transfer.handle.await {
         Ok(Ok(data)) => Ok(data),
         Ok(Err(error)) => Err(error.to_string()),
@@ -420,9 +617,13 @@ pub async fn drive_write_file(
     let retry_data = data.clone();
     let retry_path = path.clone();
     let retry_drive_id = drive_id.clone();
-    let transfer = state.transfer_queue.clone().submit_upload(drive_id, path, data, move |path, data| {
-        drive.write_file(path, data)
-    });
+    let transfer =
+        state
+            .transfer_queue
+            .clone()
+            .submit_upload(drive_id, path, data, move |path, data| {
+                drive.write_file(path, data)
+            });
     match transfer.handle.await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => {
@@ -602,13 +803,9 @@ pub async fn drive_filen_native_login(
         let url = gateway_url
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| crisp_filen::DEFAULT_GATEWAY_URL.to_owned());
-        let session = crisp_filen::FilenNativeClient::login(
-            &url,
-            &email,
-            &password,
-            tfa_code.as_deref(),
-        )
-        .map_err(|e| format!("native Filen login failed: {e:#}"))?;
+        let session =
+            crisp_filen::FilenNativeClient::login(&url, &email, &password, tfa_code.as_deref())
+                .map_err(|e| format!("native Filen login failed: {e:#}"))?;
         let serialized = session
             .encode()
             .map_err(|e| format!("serializing native Filen session failed: {e:#}"))?;

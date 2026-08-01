@@ -27,6 +27,7 @@ pub mod internxt;
 pub mod internxt_native;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native_drive;
+pub(crate) mod oauth;
 pub mod onedrive;
 pub(crate) mod secret;
 pub mod tauri_commands;
@@ -180,17 +181,18 @@ pub trait CloudDrive: Send + Sync {
     /// Upload from a caller-provided reader. The exact plaintext size is
     /// required by encrypted gateways. Legacy providers use a checked,
     /// bounded-by-size fallback buffer; native providers stream directly.
-    fn write_file_from_reader(
-        &self,
-        path: &Path,
-        reader: &mut dyn Read,
-        size: u64,
-    ) -> Result<()> {
+    fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
         let mut data = Vec::new();
         reader.take(size).read_to_end(&mut data)?;
-        anyhow::ensure!(data.len() as u64 == size, "reader ended before declared size");
+        anyhow::ensure!(
+            data.len() as u64 == size,
+            "reader ended before declared size"
+        );
         let mut extra = [0u8; 1];
-        anyhow::ensure!(reader.read(&mut extra)? == 0, "reader has data beyond declared size");
+        anyhow::ensure!(
+            reader.read(&mut extra)? == 0,
+            "reader has data beyond declared size"
+        );
         self.write_file(path, &data)
     }
 
@@ -217,17 +219,26 @@ pub trait CloudDrive: Send + Sync {
     /// Create a directory, including missing parents where the provider
     /// supports it.
     fn create_dir(&self, _path: &Path) -> Result<()> {
-        Err(anyhow!("{} does not support create_dir", self.drive_type().label()))
+        Err(anyhow!(
+            "{} does not support create_dir",
+            self.drive_type().label()
+        ))
     }
 
     /// Rename/move a path within the same provider.
     fn move_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
-        Err(anyhow!("{} does not support move_path", self.drive_type().label()))
+        Err(anyhow!(
+            "{} does not support move_path",
+            self.drive_type().label()
+        ))
     }
 
     /// Copy a path within the same provider.
     fn copy_path(&self, _source: &Path, _destination: &Path) -> Result<()> {
-        Err(anyhow!("{} does not support copy", self.drive_type().label()))
+        Err(anyhow!(
+            "{} does not support copy",
+            self.drive_type().label()
+        ))
     }
 
     // ── P29.5: Share links ───────────────────────────────────────────
@@ -493,7 +504,8 @@ impl CloudDrive for LocalDrive {
                 for entry in std::fs::read_dir(source)
                     .with_context(|| format!("copy list: {}", source.display()))?
                 {
-                    let entry = entry.with_context(|| format!("copy entry: {}", source.display()))?;
+                    let entry =
+                        entry.with_context(|| format!("copy entry: {}", source.display()))?;
                     copy_recursive(&entry.path(), &destination.join(entry.file_name()))?;
                 }
             } else {
@@ -532,10 +544,10 @@ impl CloudDrive for LocalDrive {
 /// Serialisable config for one drive entry in the registry.
 ///
 /// For backwards compatibility, the auth fields are `#[serde(default)]` so
-/// existing `drives.json` files (written before WebDAV support) round-trip
-/// unchanged.  Auth lives in plaintext inside `drives.json`; users with
-/// secret-store ambitions should mount a WebDAV server locally and use a
-/// `Local` drive on the FUSE path instead.
+/// Auth is never serialized.  Provider credentials and OAuth tokens live in
+/// the OS keychain, keyed by `id`; this struct only contains non-secret drive
+/// metadata and the in-memory compatibility fields used by constructors and
+/// tests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriveConfig {
     pub id: String,
@@ -547,11 +559,11 @@ pub struct DriveConfig {
     /// For `WebDav`: the base URL ending in `/` (e.g.
     /// `https://webdav.example.com/dav/`).
     pub path: String,
-    /// Optional WebDAV basic-auth username.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// In-memory compatibility field; never read from or written to JSON.
+    #[serde(skip)]
     pub username: Option<String>,
-    /// Optional WebDAV basic-auth password.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// In-memory compatibility field; never read from or written to JSON.
+    #[serde(skip)]
     pub password: Option<String>,
     /// WebDAV-only: skip TLS certificate verification.  Off by default;
     /// flip on for self-signed servers like the local one started by
@@ -559,17 +571,19 @@ pub struct DriveConfig {
     /// cert).  Has no effect on non-WebDAV drives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insecure_tls: Option<bool>,
-    /// OAuth2 access token (OneDrive / Google Drive).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// In-memory compatibility field; never read from or written to JSON.
+    #[serde(skip)]
     pub access_token: Option<String>,
-    /// OAuth2 refresh token (OneDrive / Google Drive).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// In-memory compatibility field; never read from or written to JSON.
+    #[serde(skip)]
     pub refresh_token: Option<String>,
-    /// OAuth2 client ID (OneDrive / Google Drive).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Public OAuth2 client ID; retained in memory only until keychain-backed
+    /// OAuth setup is complete.
+    #[serde(skip)]
     pub client_id: Option<String>,
-    /// OAuth2 client secret (OneDrive / Google Drive).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Deprecated and intentionally never accepted or persisted.  Public
+    /// desktop OAuth clients must use PKCE instead of a bundled secret.
+    #[serde(skip)]
     pub client_secret: Option<String>,
 }
 
@@ -585,8 +599,73 @@ impl DriveRegistry {
         let drives = if path.exists() {
             let json = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            serde_json::from_str::<Vec<DriveConfig>>(&json)
-                .with_context(|| format!("parsing {}", path.display()))?
+            let mut raw: serde_json::Value = serde_json::from_str(&json)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            // One-time migration for pre-keychain files.  Read legacy fields
+            // only to move them into the OS keychain, then rewrite the file
+            // through the redacted DriveConfig serializer.
+            let mut migrated = false;
+            if let Some(items) = raw.as_array_mut() {
+                for item in items {
+                    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let credentials = crate::drives::secret::DriveCredentials {
+                        username: item
+                            .get("username")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                        password: item
+                            .get("password")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                        access_token: item
+                            .get("access_token")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                        refresh_token: item
+                            .get("refresh_token")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                        client_id: item
+                            .get("client_id")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                    };
+                    let had_legacy = credentials.username.is_some()
+                        || credentials.password.is_some()
+                        || credentials.access_token.is_some()
+                        || credentials.refresh_token.is_some()
+                        || credentials.client_id.is_some()
+                        || item.get("client_secret").is_some();
+                    if had_legacy {
+                        crate::drives::secret::set_credentials(id, &credentials)
+                            .context("migrating drive credentials to the OS keychain")?;
+                        for key in [
+                            "username",
+                            "password",
+                            "access_token",
+                            "refresh_token",
+                            "client_id",
+                            "client_secret",
+                        ] {
+                            if let Some(object) = item.as_object_mut() {
+                                object.remove(key);
+                            }
+                        }
+                        migrated = true;
+                    }
+                }
+            }
+            let drives = serde_json::from_value::<Vec<DriveConfig>>(raw)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            if migrated {
+                let redacted = serde_json::to_string_pretty(&drives)
+                    .context("redacting legacy drive credentials")?;
+                std::fs::write(&path, redacted)
+                    .with_context(|| format!("rewriting {} without secrets", path.display()))?;
+            }
+            drives
         } else {
             Vec::new()
         };
@@ -659,27 +738,55 @@ impl DriveRegistry {
                     ))
                 }
             }
-            DriveType::WebDav => Box::new(webdav::WebDavDrive::new(
-                config.label.clone(),
-                config.path.clone(),
-                config.username.clone(),
-                config.password.clone(),
-                config.insecure_tls.unwrap_or(false),
-            )),
-            DriveType::OneDrive => Box::new(onedrive::OneDriveDrive::new(
-                config.label.clone(),
-                config.access_token.clone().unwrap_or_default(),
-                config.refresh_token.clone(),
-                config.client_id.clone(),
-                config.client_secret.clone(),
-            )),
-            DriveType::GoogleDrive => Box::new(google_drive::GoogleDriveDrive::new(
-                config.label.clone(),
-                config.access_token.clone().unwrap_or_default(),
-                config.refresh_token.clone(),
-                config.client_id.clone(),
-                config.client_secret.clone(),
-            )),
+            DriveType::WebDav => {
+                let credentials = crate::drives::secret::get_credentials(&config.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Box::new(webdav::WebDavDrive::new(
+                    config.label.clone(),
+                    config.path.clone(),
+                    credentials.username.or_else(|| config.username.clone()),
+                    credentials.password.or_else(|| config.password.clone()),
+                    config.insecure_tls.unwrap_or(false),
+                ))
+            }
+            DriveType::OneDrive => {
+                let credentials = crate::drives::secret::get_credentials(&config.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Box::new(onedrive::OneDriveDrive::new(
+                    config.label.clone(),
+                    credentials
+                        .access_token
+                        .or_else(|| config.access_token.clone())
+                        .unwrap_or_default(),
+                    credentials
+                        .refresh_token
+                        .or_else(|| config.refresh_token.clone()),
+                    credentials.client_id.or_else(|| config.client_id.clone()),
+                    None,
+                ))
+            }
+            DriveType::GoogleDrive => {
+                let credentials = crate::drives::secret::get_credentials(&config.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Box::new(google_drive::GoogleDriveDrive::new(
+                    config.label.clone(),
+                    credentials
+                        .access_token
+                        .or_else(|| config.access_token.clone())
+                        .unwrap_or_default(),
+                    credentials
+                        .refresh_token
+                        .or_else(|| config.refresh_token.clone()),
+                    credentials.client_id.or_else(|| config.client_id.clone()),
+                    None,
+                ))
+            }
         }
     }
 }
@@ -739,6 +846,22 @@ mod tests {
     }
 
     #[test]
+    fn drive_config_serialization_redacts_all_auth_fields() {
+        let config = DriveConfig {
+            id: "redaction".into(), label: "Redaction".into(), kind: DriveType::WebDav,
+            path: "https://example.invalid/dav/".into(), username: Some("alice".into()),
+            password: Some("password".into()), insecure_tls: Some(false),
+            access_token: Some("access-token".into()), refresh_token: Some("refresh-token".into()),
+            client_id: Some("public-client".into()), client_secret: Some("must-not-ship".into()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        for secret in ["alice", "password", "access-token", "refresh-token", "public-client", "must-not-ship"] {
+            assert!(!json.contains(secret), "serialized drive config leaked {secret}");
+        }
+        assert!(json.contains("redaction"));
+    }
+
+    #[test]
     fn local_drive_write_then_read_round_trips() {
         let (_tmp, drive) = fixture();
         drive.write_file(Path::new("hello.txt"), b"world").unwrap();
@@ -774,7 +897,9 @@ mod tests {
                 1,
             )
             .expect_err("legacy local drive must reject resumable uploads");
-        assert!(error.to_string().contains("does not support durable resumable uploads"));
+        assert!(error
+            .to_string()
+            .contains("does not support durable resumable uploads"));
 
         let error = drive
             .download_file_resumable(
@@ -783,7 +908,9 @@ mod tests {
                 Path::new("state.json"),
             )
             .expect_err("legacy local drive must reject resumable downloads");
-        assert!(error.to_string().contains("does not support durable resumable downloads"));
+        assert!(error
+            .to_string()
+            .contains("does not support durable resumable downloads"));
     }
 
     #[test]
@@ -896,8 +1023,26 @@ mod tests {
         // test: capability discovery must not spawn a CLI, make HTTP calls,
         // or consult credentials/keychain state.
         let cases = [
-            (DriveType::Local, true, true, true, true, false, false, false),
-            (DriveType::Filen, true, true, true, true, false, false, cfg!(feature = "drive-filen-native")),
+            (
+                DriveType::Local,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (
+                DriveType::Filen,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                cfg!(feature = "drive-filen-native"),
+            ),
             (
                 DriveType::Internxt,
                 true,
@@ -908,12 +1053,41 @@ mod tests {
                 false,
                 cfg!(feature = "drive-internxt-native"),
             ),
-            (DriveType::WebDav, true, true, true, true, false, false, false),
-            (DriveType::OneDrive, true, true, true, false, true, true, false),
-            (DriveType::GoogleDrive, true, true, true, true, true, true, false),
+            (
+                DriveType::WebDav,
+                true,
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+            ),
+            (
+                DriveType::OneDrive,
+                true,
+                true,
+                true,
+                false,
+                true,
+                true,
+                false,
+            ),
+            (
+                DriveType::GoogleDrive,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+                false,
+            ),
         ];
 
-        for (kind, create_dir, rename, move_path, copy, share_links, versions, native_transfers) in cases {
+        for (kind, create_dir, rename, move_path, copy, share_links, versions, native_transfers) in
+            cases
+        {
             let config = DriveConfig {
                 id: format!("capability-{kind:?}"),
                 label: format!("capability-{kind:?}"),
@@ -935,8 +1109,14 @@ mod tests {
             assert_eq!(caps.share_links, share_links, "{kind:?} share_links");
             assert_eq!(caps.versions, versions, "{kind:?} versions");
             assert_eq!(caps.streaming, native_transfers, "{kind:?} streaming");
-            assert_eq!(caps.resumable_upload, native_transfers, "{kind:?} resumable upload");
-            assert_eq!(caps.resumable_download, native_transfers, "{kind:?} resumable download");
+            assert_eq!(
+                caps.resumable_upload, native_transfers,
+                "{kind:?} resumable upload"
+            );
+            assert_eq!(
+                caps.resumable_download, native_transfers,
+                "{kind:?} resumable download"
+            );
         }
     }
 
@@ -951,7 +1131,9 @@ mod tests {
             .copy_path(Path::new("source"), Path::new("copied"))
             .unwrap();
         assert_eq!(
-            drive.read_file(Path::new("copied/nested/file.txt")).unwrap(),
+            drive
+                .read_file(Path::new("copied/nested/file.txt"))
+                .unwrap(),
             b"payload"
         );
         drive

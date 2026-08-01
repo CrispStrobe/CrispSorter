@@ -2784,6 +2784,31 @@ a transfer without leaving the search/catalog workflow.
 
 #### P34.4 — Security and provider expansion, P2
 
+- [>] **Provider authentication and credential hygiene.** Authentication is
+  part of the product boundary, not an implementation detail: `drives.json`,
+  the frontend settings store, logs, URLs, crash reports, and the shipped app
+  must never contain passwords, TOTP codes, refresh/access tokens, or OAuth
+  client secrets.  OAuth public client IDs are not secrets; desktop/mobile
+  flows must use PKCE and a system browser.  Native Filen/Internxt login must
+  accept an optional one-time 2FA code and persist only the encrypted/native
+  session in the OS keychain. WebDAV must use keychain-backed credentials or
+  provider app passwords.
+  - [x] Drive metadata serialization now skips every auth field; legacy
+    plaintext fields are migrated once into the OS keychain and redacted.
+  - [x] Added separate keychain credentials and disconnect/status commands;
+    IPC exposes presence booleans only.
+  - [ ] Add Google and Microsoft authorization-code + PKCE browser flows,
+    loopback/deep-link callback handling, token refresh, and revocation. Never
+    ship a client secret; support user-supplied public client IDs where needed.
+  - [ ] Add the desktop/mobile login UI: browser sign-in for Google/OneDrive,
+    native email/password plus conditional TOTP for Filen/Internxt, and
+    WebDAV username/password or app-password entry without persistence in UI
+    settings. Add explicit disconnect/re-auth states.
+  - [ ] Add unit and hermetic HTTP coverage for PKCE/state validation, token
+    exchange/refresh/revocation, redaction, 2FA challenge/error mapping, and
+    keychain behavior; add gated live auth/read/write tests with no automatic
+    credential discovery.
+
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
   boundary exists.
