@@ -3013,6 +3013,9 @@ a transfer without leaving the search/catalog workflow.
     - [x] Added provider-independent `BackupScheduler` snapshots and Tauri
       `backup_job_scheduler_snapshot`, returning due IDs plus the next future
       wake-up timestamp without spawning implicit background work.
+    - [x] Added opt-in CLI `sync backup-job watch` with `--once`, `--dry-run`,
+      and bounded `--max-cycles`; it sleeps to the scheduler wake-up and runs
+      due jobs through the guarded execution path without implicit startup.
   - [ ] Add integrity verification and restore-selection UI/CLI with visible
     backup history; do not mark a run successful before verification completes.
     - [x] Added CLI `sync backup-job snapshot-list` and `restore`: users select

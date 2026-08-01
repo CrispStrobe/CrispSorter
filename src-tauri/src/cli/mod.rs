@@ -561,6 +561,15 @@ enum BackupJobCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Opt-in scheduler loop; never starts unless explicitly invoked.
+    Watch {
+        #[arg(long)]
+        once: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 0)]
+        max_cycles: u32,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5422,6 +5431,22 @@ async fn cmd_sync_backup_job(
                 for id in ids {
                     cmd_sync_backup_job(out, data_dir, BackupJobCmd::Run { job_id: id, dry_run }).await?;
                 }
+            }
+        }
+        BackupJobCmd::Watch { once, dry_run, max_cycles } => {
+            let mut cycles = 0u32;
+            loop {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64).unwrap_or(0);
+                let snapshot = crate::sync::backup_scheduler::BackupScheduler::snapshot(&store, now)
+                    .map_err(|e| e.to_string())?;
+                if !snapshot.due_job_ids.is_empty() {
+                    cmd_sync_backup_job(out, data_dir, BackupJobCmd::RunDue { dry_run }).await?;
+                }
+                cycles = cycles.saturating_add(1);
+                if once || (max_cycles > 0 && cycles >= max_cycles) { break; }
+                let wait_ms = snapshot.next_wake_at.map(|at| at.saturating_sub(now)).unwrap_or(60_000).clamp(1_000, 60_000);
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
             }
         }
     }
