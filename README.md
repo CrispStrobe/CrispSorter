@@ -136,6 +136,34 @@ range/resume behavior, mutations, and cryptographic vectors from Filen's MIT
 Go SDK. The live suite covers Rust↔Python interoperability plus upload,
 download, search, timestamps, replace, copy, trash, restore, and batch paths.
 
+### Generic cloud-provider live tests
+
+Google Drive, OneDrive, and generic WebDAV use separate ignored live tests at
+the `CloudDrive` boundary. They never run in ordinary unit test commands and
+never query the OS keychain. Supply a short-lived OAuth bearer token for the
+API providers, or WebDAV credentials explicitly:
+
+```bash
+export CRISPSORTER_GOOGLE_ACCESS_TOKEN='...'
+cargo test -p crispsorter --lib google_drive::tests::google_drive_live_file_round_trip \
+  -- --ignored --nocapture --test-threads=1
+
+export CRISPSORTER_ONEDRIVE_ACCESS_TOKEN='...'
+cargo test -p crispsorter --lib onedrive::tests::onedrive_live_file_round_trip \
+  -- --ignored --nocapture --test-threads=1
+
+export WEBDAV_TEST_URL='https://cloud.example/remote.php/dav/files/user/'
+export WEBDAV_TEST_USER='user'
+export WEBDAV_TEST_PASS='...'
+cargo test -p crispsorter --lib webdav::tests::webdav_live_write_read_delete_roundtrip \
+  -- --ignored --nocapture --test-threads=1
+```
+
+Each test uses a unique temporary name, verifies provider operations, and
+removes its remote fixtures. Run these only against accounts dedicated to
+test mutations. The manual GitHub Actions live job accepts the same values as
+repository secrets; ordinary CI remains hermetic.
+
 ## Headless CLI mode
 
 The same binary doubles as a CLI tool. Detection is on the first argument — running `crispsorter` with no args (the typical GUI launch) bypasses clap entirely.

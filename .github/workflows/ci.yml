@@ -378,11 +378,38 @@ jobs:
       INTERNXT_PW: ${{ secrets.INTERNXT_PW }}
       FILEN_EMAIL: ${{ secrets.FILEN_EMAIL }}
       FILEN_PASSWORD: ${{ secrets.FILEN_PASSWORD }}
+      CRISPSORTER_GOOGLE_ACCESS_TOKEN: ${{ secrets.CRISPSORTER_GOOGLE_ACCESS_TOKEN }}
+      CRISPSORTER_ONEDRIVE_ACCESS_TOKEN: ${{ secrets.CRISPSORTER_ONEDRIVE_ACCESS_TOKEN }}
+      WEBDAV_TEST_URL: ${{ secrets.WEBDAV_TEST_URL }}
+      WEBDAV_TEST_USER: ${{ secrets.WEBDAV_TEST_USER }}
+      WEBDAV_TEST_PASS: ${{ secrets.WEBDAV_TEST_PASS }}
+      WEBDAV_TEST_INSECURE: ${{ secrets.WEBDAV_TEST_INSECURE }}
     steps:
       - name: Check out CrispSorter
         uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
+
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_REF }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISP_DOCX_REPO }}
+          ref: ${{ env.CRISP_DOCX_REF }}
+          path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -398,4 +425,19 @@ jobs:
             echo "Filen live tests skipped: workflow secrets are not configured"
           else
             cargo test -p crisp-filen --test filen_live -- --ignored --nocapture --test-threads=1
+          fi
+          if [ -z "$CRISPSORTER_GOOGLE_ACCESS_TOKEN" ]; then
+            echo "Google Drive live tests skipped: workflow secret is not configured"
+          else
+            cargo test -p crispsorter --lib google_drive::tests::google_drive_live_file_round_trip -- --ignored --nocapture --test-threads=1
+          fi
+          if [ -z "$CRISPSORTER_ONEDRIVE_ACCESS_TOKEN" ]; then
+            echo "OneDrive live tests skipped: workflow secret is not configured"
+          else
+            cargo test -p crispsorter --lib onedrive::tests::onedrive_live_file_round_trip -- --ignored --nocapture --test-threads=1
+          fi
+          if [ -z "$WEBDAV_TEST_URL" ]; then
+            echo "WebDAV live tests skipped: workflow secret is not configured"
+          else
+            cargo test -p crispsorter --lib webdav::tests::webdav_live_write_read_delete_roundtrip -- --ignored --nocapture --test-threads=1
           fi

@@ -761,4 +761,40 @@ mod tests {
         download.assert();
         upload.assert();
     }
+
+    #[test]
+    #[ignore = "mutates a real Google Drive; requires CRISPSORTER_GOOGLE_ACCESS_TOKEN"]
+    fn google_drive_live_file_round_trip() {
+        let Some(token) = std::env::var("CRISPSORTER_GOOGLE_ACCESS_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!("skipping Google Drive live test: access token not configured");
+            return;
+        };
+        let drive = GoogleDriveDrive::new("live-test".into(), token, None, None, None);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let path = Path::new("_crispsorter_live").join(format!("google-{nonce}.txt"));
+        let content = format!("CrispSorter Google Drive live test {nonce}").into_bytes();
+        let result = (|| -> Result<()> {
+            drive.create_dir(Path::new("_crispsorter_live"))
+                .or_else(|error| {
+                    anyhow::ensure!(error.to_string().contains("HTTP 409"));
+                    Ok(())
+                })?;
+            drive.write_file(&path, &content)?;
+            let stat = drive.stat(&path)?;
+            anyhow::ensure!(!stat.is_dir && stat.size == content.len() as u64);
+            anyhow::ensure!(drive.read_file(&path)? == content);
+            let versions = drive.list_versions(&path)?;
+            anyhow::ensure!(!versions.is_empty(), "Google Drive returned no versions");
+            Ok(())
+        })();
+        let _ = drive.delete(&path);
+        let _ = drive.delete(Path::new("_crispsorter_live"));
+        result.expect("Google Drive live round trip failed");
+    }
 }
