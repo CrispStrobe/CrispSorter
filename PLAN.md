@@ -3003,6 +3003,9 @@ a transfer without leaving the search/catalog workflow.
       for a later frontend slice.
     - [x] Tauri `backup_job_snapshot_list` now exposes capability-checked,
       relative snapshot inventory for GUI restore selection.
+    - [x] Settings now shows persisted backup-job configuration and recent
+      durable run history with an explicit refresh action; restore picker and
+      job editing remain separate frontend work.
 
 #### P34.4 — Security and provider expansion, P2
 
