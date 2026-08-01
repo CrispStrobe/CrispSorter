@@ -2779,6 +2779,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Duplicate context now records a non-destructive dry-run decision
     (review, keep source, keep destination, or keep both) before mutation
     policies are implemented. ✅ 2026-08-01
+  - [x] The browser keeps a session audit of decision changes and supports
+    undoing the latest decision for the active duplicate group; durable audit
+    persistence remains deferred with destructive mutation support. ✅ 2026-08-01
 - [ ] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these

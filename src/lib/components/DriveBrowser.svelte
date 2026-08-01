@@ -16,6 +16,12 @@
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
     type FileStat = { size: number; is_dir: boolean; mtime_unix: number | null };
+    type DuplicateDecisionAudit = {
+        groupId: string;
+        previous: DuplicateDecision;
+        next: DuplicateDecision;
+        at: number;
+    };
     let drives = $state<Drive[]>([]);
     let driveId = $state('');
     let path = $state('/');
@@ -26,6 +32,7 @@
     let selected = $state<string | null>(null);
     let selectedStat = $state<FileStat | null>(null);
     let rightPanel = $state<ContextPanel | null>(null);
+    let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
     async function refresh() {
@@ -124,7 +131,21 @@
 
     function setDuplicateDecision(decision: DuplicateDecision) {
         if (rightPanel?.source.kind !== 'DuplicateGroup') return;
+        if (rightPanel.source.decision === decision) return;
+        duplicateAudit = [...duplicateAudit, {
+            groupId: rightPanel.source.groupId,
+            previous: rightPanel.source.decision,
+            next: decision,
+            at: Date.now(),
+        }];
         rightPanel = { ...rightPanel, source: { ...rightPanel.source, decision } };
+    }
+
+    function undoDuplicateDecision() {
+        const last = duplicateAudit.at(-1);
+        if (!last || rightPanel?.source.kind !== 'DuplicateGroup' || rightPanel.source.groupId !== last.groupId) return;
+        rightPanel = { ...rightPanel, source: { ...rightPanel.source, decision: last.previous } };
+        duplicateAudit = duplicateAudit.slice(0, -1);
     }
 
     onMount(() => {
@@ -204,6 +225,9 @@
                         <option value="keep_destination">Keep destination</option>
                         <option value="keep_both">Keep both</option>
                     </select>
+                    {#if duplicateAudit.some((entry) => entry.groupId === rightPanel.source.groupId)}
+                        <button class="duplicate-undo" onclick={undoDuplicateDecision}>Undo last decision</button>
+                    {/if}
                 </div>
                 <ul class="duplicate-context-list">
                     {#each rightPanel.source.items as item}
@@ -259,7 +283,7 @@
     .context-pane { grid-column: 2; grid-row: 4; border: 1px solid var(--border, #3a3a44); border-radius: 8px; padding: 16px; min-height: 150px; }
     .context-kicker { color: var(--text-muted, #8a8a96); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
     .context-pane h3 { margin: 8px 0; overflow-wrap: anywhere; } .context-pane code { color: var(--text-muted, #8a8a96); overflow-wrap: anywhere; }
-    .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; } .duplicate-decision { display: grid; gap: 4px; margin-top: 12px; } .duplicate-decision select { width: 100%; }
+    .context-label, .context-provenance { color: var(--text-muted, #8a8a96); font-size: .75rem; margin: 10px 0 5px; } .duplicate-decision { display: grid; gap: 4px; margin-top: 12px; } .duplicate-decision select { width: 100%; } .duplicate-undo { justify-self: start; padding: 4px 6px; font-size: .7rem; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-top: 18px; font-size: .85rem; } dt { color: var(--text-muted, #8a8a96); } dd { margin: 0; text-align: right; }
     .duplicate-context-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 8px; font-size: .8rem; } .duplicate-context-list li { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; } .duplicate-role { color: var(--text-muted, #8a8a96); text-transform: uppercase; font-size: .68rem; } .duplicate-path { grid-column: 1 / -1; overflow-wrap: anywhere; } .duplicate-context-list .entry-size, .duplicate-mtime { grid-column: 1 / -1; text-align: left; } .duplicate-mtime { color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-hash { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted, #8a8a96); font-size: .68rem; } .duplicate-actions { display: flex; gap: 6px; } .duplicate-actions button { padding: 3px 6px; font-size: .7rem; }
     @media (max-width: 720px) { .drive-browser { display: flex; } .context-pane { order: 5; } }
