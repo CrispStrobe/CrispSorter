@@ -257,6 +257,8 @@ pub struct SyncPairStore {
     conn: Connection,
 }
 
+const MAX_RUNS_PER_PAIR: usize = 100;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sync_pairs (
     id TEXT PRIMARY KEY,
@@ -404,7 +406,14 @@ impl SyncPairStore {
                 run.finished_at,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        self.conn.execute(
+            "DELETE FROM sync_pair_runs
+             WHERE pair_id = ?1 AND id NOT IN
+               (SELECT id FROM sync_pair_runs WHERE pair_id = ?1 ORDER BY id DESC LIMIT ?2)",
+            params![run.pair_id, MAX_RUNS_PER_PAIR as i64],
+        )?;
+        Ok(id)
     }
 
     pub fn list_runs(&self, pair_id: &str, limit: usize) -> Result<Vec<SyncPairRun>> {
@@ -532,6 +541,32 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].status, "failed");
         assert_eq!(runs[0].error.as_deref(), Some("offline"));
+    }
+
+    #[test]
+    fn run_ledger_prunes_old_rows_per_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SyncPairStore::open(dir.path()).unwrap();
+        for i in 0..(MAX_RUNS_PER_PAIR + 5) {
+            store
+                .record_run(&SyncPairRun {
+                    id: 0,
+                    pair_id: "pair-1".into(),
+                    status: format!("run-{i}"),
+                    planned: 0,
+                    uploaded: 0,
+                    downloaded: 0,
+                    watermark: i as i64,
+                    error: None,
+                    started_at: i as i64,
+                    finished_at: i as i64,
+                })
+                .unwrap();
+        }
+        let runs = store.list_runs("pair-1", 1000).unwrap();
+        assert_eq!(runs.len(), MAX_RUNS_PER_PAIR);
+        assert_eq!(runs[0].status, "run-104");
+        assert_eq!(runs.last().unwrap().status, "run-5");
     }
 
     #[test]
