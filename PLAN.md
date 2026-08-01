@@ -3165,6 +3165,9 @@ a transfer without leaving the search/catalog workflow.
   - [ ] Add richer side-by-side preview and one-click resolution for sync-pair
     divergences; current compare/pull paths require an explicit policy and do
     not mutate until that policy is supplied.
+  - [x] Manual cloud-backup conflicts now expose an explicit local preview
+    action when the queued path is an absolute filesystem path; provider and
+    relative remote paths remain guarded. ✅ 2026-08-01
 - [x] **End-to-end delta protocol.** Complete cb-api blockmap/changed-block/
   finalize endpoints and `push --delta`; integrate providers only where their
   APIs support random access or range reads.  Keep whole-file fallback for

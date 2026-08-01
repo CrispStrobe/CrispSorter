@@ -2000,6 +2000,26 @@
         return new Date(millis).toLocaleString();
     }
 
+    function conflictLocalPath(path: string): string | null {
+        // Conflict paths may be provider URIs or relative remote paths.
+        // Only pass an unambiguous absolute filesystem path to the opener.
+        if (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)) return path;
+        return null;
+    }
+
+    async function openLocalConflict(conflict: PendingConflict) {
+        const path = conflictLocalPath(conflict.path);
+        if (!path) {
+            conflictsMessage = 'This conflict has no unambiguous local filesystem path.';
+            return;
+        }
+        try {
+            await opener.openPath(path);
+        } catch (e: any) {
+            conflictsMessage = `Could not open local version: ${e}`;
+        }
+    }
+
     // ── Stage T — admin key management handlers ──────────────────────────
     async function cbAdminMint() {
         if (!cbAdminToken.trim() || !cbAdminMintName.trim()) {
@@ -4226,6 +4246,9 @@
                                     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;">
                                         <span class="hint">Remote indexed {conflictTimestamp(conflict.remote_indexed_at)}</span>
                                         <div style="display:flex; gap:6px;">
+                                            {#if conflictLocalPath(conflict.path)}
+                                                <button type="button" class="btn" onclick={() => openLocalConflict(conflict)} disabled={conflictsBusy}>Open local</button>
+                                            {/if}
                                             <button type="button" class="btn" onclick={() => acceptRemoteConflict(conflict)} disabled={conflictsBusy}>Keep remote</button>
                                             <button type="button" class="btn danger" onclick={() => keepLocalConflict(conflict)} disabled={conflictsBusy}>Keep local</button>
                                         </div>
