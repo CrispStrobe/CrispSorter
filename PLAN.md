@@ -2745,6 +2745,9 @@ a transfer without leaving the search/catalog workflow.
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
   operations work across LocalDrive and at least Internxt/Filen/WebDAV.
+  - [x] Added the missing `drive_delete_path` Tauri command, distinct from
+    drive-registration deletion, with capability gating and provider error
+    propagation. ✅ 2026-08-01
 - [ ] **Transfer drawer and status surface.** Show queued/active/retrying/
   failed/completed jobs, provider, path, bytes, speed, ETA, retry state,
   cancellation, and resume availability.  Reuse the existing frontend log
