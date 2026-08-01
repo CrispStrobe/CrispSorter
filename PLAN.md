@@ -1657,6 +1657,9 @@ mostly plumbing + settings UI.
   call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
   - [x] CLI `drives ls` now uses the persisted proxy policy when constructing
     the registered provider. ✅ 2026-08-01
+  - [x] CLI backup jobs, sync-pair inspection/push/pull, and cloud-backup
+    shard backup/restore now share the same proxy-aware drive constructor.
+    ✅ 2026-08-01
 - [x] **Registered-drive construction path.** ✅ SHIPPED (2026-08-01).
   DriveBrowser, FUSE mount, file transfer, sharing, and version commands now
   load the persisted proxy policy and keychain password before constructing

@@ -5377,7 +5377,7 @@ async fn cmd_sync_backup_job(
             let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
-                Arc::from(DriveRegistry::instantiate(&config));
+                Arc::from(cli_instantiate_drive(data_dir, &config)?);
             let capabilities = drive.probed_capabilities();
             if !capabilities.write || (job.verify_integrity && !capabilities.stat) {
                 return Err(format!("drive '{}' lacks required write/stat capability", job.drive_id));
@@ -5432,7 +5432,7 @@ async fn cmd_sync_backup_job(
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive = DriveRegistry::instantiate(&config);
+            let drive = cli_instantiate_drive(data_dir, &config)?;
             let entries = drive.list_dir(std::path::Path::new(&job.remote_root)).map_err(|e| e.to_string())?;
             let mut snapshots: Vec<_> = entries.into_iter()
                 .filter(|entry| entry.is_dir && is_backup_snapshot(&entry.name))
@@ -5465,7 +5465,7 @@ async fn cmd_sync_backup_job(
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive = DriveRegistry::instantiate(&config);
+            let drive = cli_instantiate_drive(data_dir, &config)?;
             let root = std::path::Path::new(&job.remote_root).join(&snapshot);
             let mut errors = Vec::new();
             let entries = drives::walk(drive.as_ref(), &root, None, &mut |path, error| {
@@ -5496,7 +5496,7 @@ async fn cmd_sync_backup_job(
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == job.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", job.drive_id))?.clone();
-            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(&config));
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(cli_instantiate_drive(data_dir, &config)?);
             if !drive.probed_capabilities().read { return Err("drive lacks read capability".into()); }
             let remote = std::path::Path::new(&job.remote_root).join(&snapshot).join(&relative);
             let expected = drive.stat(&remote).map_err(|e| format!("stat remote file: {e}"))?.size;
@@ -5683,7 +5683,7 @@ async fn cmd_sync_pair(
             let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-            let drive = crate::drives::DriveRegistry::instantiate(config);
+            let drive = cli_instantiate_drive(data_dir, config)?;
             if !drive.capabilities().list || !drive.capabilities().stat {
                 return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
             }
@@ -5707,7 +5707,7 @@ async fn cmd_sync_pair(
             let registry = crate::drives::DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-            let drive = crate::drives::DriveRegistry::instantiate(config);
+            let drive = cli_instantiate_drive(data_dir, config)?;
             if !drive.capabilities().list || !drive.capabilities().stat {
                 return Err(format!("{} does not support remote inventory", drive.drive_type().label()));
             }
@@ -5768,7 +5768,7 @@ async fn cmd_sync_pair(
             let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
             let drive: Arc<dyn crate::drives::CloudDrive> =
-                Arc::from(DriveRegistry::instantiate(config));
+                Arc::from(cli_instantiate_drive(data_dir, config)?);
             if !drive.capabilities().write {
                 return Err(format!("{} does not support uploads", drive.drive_type().label()));
             }
@@ -5813,7 +5813,7 @@ async fn cmd_sync_pair(
             let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
             let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
                 .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
-            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(DriveRegistry::instantiate(config));
+            let drive: Arc<dyn crate::drives::CloudDrive> = Arc::from(cli_instantiate_drive(data_dir, config)?);
             if !drive.capabilities().read || !drive.capabilities().list || !drive.capabilities().stat {
                 return Err(format!("{} does not support remote pull", drive.drive_type().label()));
             }
@@ -6778,7 +6778,7 @@ async fn cmd_sync_cloud_backup(
                 .ok_or_else(|| format!("drive '{}' not found; run `crispsorter drives list`", drive_id))?
                 .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
-                Arc::from(DriveRegistry::instantiate(&drive_cfg));
+                Arc::from(cli_instantiate_drive(data_dir, &drive_cfg)?);
             let transfer_queue = TransferQueue::shared();
 
             let bs = crate::sync::backup_state::BackupState::open(&data_dir)
@@ -6954,7 +6954,7 @@ async fn cmd_sync_cloud_backup(
                 .ok_or_else(|| format!("drive '{}' not found", drive_id))?
                 .clone();
             let drive: Arc<dyn crate::drives::CloudDrive> =
-                Arc::from(DriveRegistry::instantiate(&drive_cfg));
+                Arc::from(cli_instantiate_drive(data_dir, &drive_cfg)?);
 
             // Resolve the date dir: explicit or most-recent.
             let cb_root = std::path::Path::new("cb-backups");
@@ -11487,6 +11487,18 @@ mod conflict_policy_cli_tests {
 // way to discover an id. Two error messages already told users to run
 // `crispsorter drives list` before this existed.
 
+fn cli_instantiate_drive(
+    data_dir: &std::path::Path,
+    config: &crate::drives::DriveConfig,
+) -> Result<Box<dyn crate::drives::CloudDrive>, String> {
+    let index_config = crate::index::config_persist::load(data_dir);
+    crate::drives::DriveRegistry::instantiate_with_proxy(
+        config,
+        &cli_proxy_config(&index_config)?,
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn cmd_drives(
     out: OutFormat,
     data_dir: Option<PathBuf>,
@@ -11560,12 +11572,7 @@ fn cmd_drives(
                 .ok_or_else(|| {
                     format!("drive '{drive_id}' not found; run `crispsorter drives list`")
                 })?;
-            let config = crate::index::config_persist::load(&data_dir);
-            let drive = DriveRegistry::instantiate_with_proxy(
-                cfg,
-                &cli_proxy_config(&config)?,
-            )
-            .map_err(|e| e.to_string())?;
+            let drive = cli_instantiate_drive(&data_dir, cfg)?;
             let entries = drive
                 .list_dir(std::path::Path::new(&path))
                 .map_err(|e| e.to_string())?;
