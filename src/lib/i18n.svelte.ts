@@ -2,6 +2,19 @@ export type Language = 'en' | 'de';
 
 export const translations = {
     en: {
+        // AI Act Art 50(2): output a model generated is synthetic content and is
+        // labelled as such wherever it is shown. See docs/ai-act.md.
+        intendedPurpose: {
+            title: 'What this software is for',
+            intro: 'Please read this once before CrispSorter produces AI output.',
+            accept: 'I have read this',
+            blocked: 'AI output is paused until the note above is acknowledged.',
+        },
+        aiDisclosure: {
+            badge: 'AI-generated',
+            tooltip: 'Produced by a local AI model. Machine translation, summaries and chat answers can be wrong or incomplete — check anything that matters.',
+            speechMarked: 'Synthesised speech carries a machine-readable watermark.',
+        },
         nav: {
             batch: 'Batch',
             history: 'History',
@@ -1141,6 +1154,17 @@ export const translations = {
         }
     },
     de: {
+        intendedPurpose: {
+            title: 'Wofür diese Software gedacht ist',
+            intro: 'Bitte einmal lesen, bevor CrispSorter KI-Ausgaben erzeugt.',
+            accept: 'Ich habe das gelesen',
+            blocked: 'KI-Ausgaben sind pausiert, bis der Hinweis bestätigt wurde.',
+        },
+        aiDisclosure: {
+            badge: 'KI-generiert',
+            tooltip: 'Von einem lokalen KI-Modell erzeugt. Maschinelle Übersetzungen, Zusammenfassungen und Chat-Antworten können falsch oder unvollständig sein — Wichtiges bitte prüfen.',
+            speechMarked: 'Synthetische Sprache enthält ein maschinenlesbares Wasserzeichen.',
+        },
         nav: {
             batch: 'Stapel',
             history: 'Verlauf',

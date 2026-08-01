@@ -120,18 +120,48 @@ pub fn cleaned_page_image(path: &Path) -> Option<std::path::PathBuf> {
 }
 
 /// Detect if an image is a two-up book spread and return the gutter column.
-/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 5). Soft-fails to None
-/// when the method is not available (older CrispEmbed build).
+///
+/// Was a hardcoded `None` "deferred until CrispEmbed tags a release with
+/// detect_page_split()" — that release is here: the method is
+/// `CrispScanCleanup::detect_page_split` and both workflows now pin v0.16.1.
+/// Still soft-fails to `None` on an unreadable image or an engine that will not
+/// initialise, because a caller treats that as "not a spread" and carries on.
+#[cfg(feature = "crispembed")]
+pub fn detect_page_split(path: &Path) -> Option<i32> {
+    let img = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let eng = SCAN_CLEANUP
+        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .as_ref()?;
+    eng.lock()
+        .ok()?
+        .detect_page_split(img.as_raw(), w as i32, h as i32, 3)
+}
+
+#[cfg(not(feature = "crispembed"))]
 pub fn detect_page_split(_path: &Path) -> Option<i32> {
-    // Deferred until CrispEmbed tags a release with detect_page_split().
-    // The method exists on HEAD but not in v0.13.0 which CI pins.
     None
 }
 
-/// Detect the content bounding box (trim blank margins).
-/// Requires CrispEmbed > v0.13.0 (scan_cleanup port 6). Soft-fails to None.
+/// Detect the content bounding box, so blank scan margins can be trimmed.
+///
+/// Same story as [`detect_page_split`]: the stub outlived its reason. Returns
+/// `(x0, y0, x1, y1)` in pixels, or `None` when the page is unreadable or the
+/// engine finds no content to bound.
+#[cfg(feature = "crispembed")]
+pub fn content_bbox(path: &Path) -> Option<(i32, i32, i32, i32)> {
+    let img = image::open(path).ok()?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let eng = SCAN_CLEANUP
+        .get_or_init(|| crispembed::CrispScanCleanup::new(None, 0).ok().map(Mutex::new))
+        .as_ref()?;
+    eng.lock()
+        .ok()?
+        .content_bbox(img.as_raw(), w as i32, h as i32, 3)
+}
+
+#[cfg(not(feature = "crispembed"))]
 pub fn content_bbox(_path: &Path) -> Option<(i32, i32, i32, i32)> {
-    // Deferred until CrispEmbed tags a release with content_bbox().
     None
 }
 
@@ -636,15 +666,28 @@ pub fn ocr_via_pipeline(
     // Capture the LID result (ISO 639-1) detected during the pipeline run,
     // if a lid_model was configured. Populates the `language` field so
     // downstream indexing/search can use it without a separate LID pass.
-    // NOTE: `detected_lang()` landed after CrispEmbed v0.11.8 — gated so
-    // the release build against the pinned tag compiles.  Un-gate once
-    // CrispEmbed cuts a release with this API.
-    let detected_lang: Option<String> = None;
-    // let detected_lang = guard.detected_lang();
+    //
+    // This was stubbed to `None` while the release pin was CrispEmbed v0.11.8,
+    // which predated `detected_lang()`. The pin is v0.16.1 now — and the API
+    // was already present at v0.13.0, so the stub outlived its reason by
+    // several releases while silently discarding a language the pipeline had
+    // already computed.
+    let detected_lang = guard.detected_lang();
+
+    // CrispEmbed's pipeline also renders the page as markdown (`reading_order`
+    // applied, headings marked). `full_text` stays the indexed body — changing
+    // that would alter every existing row's text — but the markdown is worth
+    // mining for headings, so a scanned document feeds the boosted
+    // `headings_text` field exactly as a native `.md` file does. Empty markdown
+    // (engines that do not produce it) simply yields no headings.
+    let headings = super::text::lift_atx_headings(&res.markdown);
+    if !headings.is_empty() {
+        println!("[ocr] pipeline: lifted {} heading(s) from markdown", headings.len());
+    }
 
     Ok(ExtractedDocument {
         full_text: res.full_text,
-        headings: Vec::new(),
+        headings,
         ext: path
             .extension()
             .and_then(|e| e.to_str())
@@ -678,7 +721,7 @@ pub fn ocr_regions_via_pipeline(
     let res = guard
         .run(path_str)
         .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
-    Ok(res
+    let regions: Vec<super::ocr_render::OcrRegion> = res
         .regions
         .into_iter()
         .map(|r| {
@@ -692,7 +735,59 @@ pub fn ocr_regions_via_pipeline(
                 confidence: conf,
             }
         })
-        .collect())
+        .collect();
+
+    Ok(apply_reading_order(regions, &res.reading_order))
+}
+
+/// Reorder regions into the pipeline's reading order.
+///
+/// CrispEmbed's header defines `reading_order` as "reading-order region indices
+/// from the most recent pipeline run" — indices into `regions`. It matters for
+/// the structured renderers: hOCR / ALTO / searchable-PDF put text in the order
+/// they receive it, so a two-column scan emitted in detector order gives
+/// column-interleaved text on select-and-copy. `full_text` was already joined in
+/// reading order upstream; the *regions* were not.
+///
+/// Defensive by construction, because a wrong order is better than lost text:
+/// out-of-range and duplicate indices are ignored, and any region the list
+/// never mentions is appended in its original position rather than dropped. An
+/// empty list (engines that do not compute one) leaves the order untouched.
+///
+/// Deliberately **not** gated on `feature = "crispembed"`, though its only
+/// caller is: CI builds without that feature (the native dylib is a
+/// release-only artifact), so gating this would put the ordering logic in the
+/// set of code no job compiles. It needs nothing from CrispEmbed — our own
+/// `OcrRegion` and a slice of indices — so it compiles and is tested everywhere.
+fn apply_reading_order(
+    regions: Vec<super::ocr_render::OcrRegion>,
+    order: &[i32],
+) -> Vec<super::ocr_render::OcrRegion> {
+    if order.is_empty() {
+        return regions;
+    }
+    let mut taken = vec![false; regions.len()];
+    let mut out: Vec<super::ocr_render::OcrRegion> = Vec::with_capacity(regions.len());
+    let mut slots: Vec<Option<super::ocr_render::OcrRegion>> =
+        regions.into_iter().map(Some).collect();
+
+    for &idx in order {
+        let Ok(i) = usize::try_from(idx) else { continue };
+        if i >= slots.len() || taken[i] {
+            continue;
+        }
+        taken[i] = true;
+        if let Some(region) = slots[i].take() {
+            out.push(region);
+        }
+    }
+    // Anything the order never named still has to reach the renderer.
+    for slot in slots.iter_mut() {
+        if let Some(region) = slot.take() {
+            out.push(region);
+        }
+    }
+    out
 }
 
 #[cfg(not(feature = "crispembed"))]
@@ -961,6 +1056,48 @@ pub fn ocr_via_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn region(text: &str) -> super::super::ocr_render::OcrRegion {
+        super::super::ocr_render::OcrRegion {
+            text: text.to_owned(),
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            confidence: 1.0,
+        }
+    }
+
+    fn texts(regions: &[super::super::ocr_render::OcrRegion]) -> Vec<&str> {
+        regions.iter().map(|r| r.text.as_str()).collect()
+    }
+
+    #[test]
+    fn reading_order_reorders_regions() {
+        // A two-column scan: the detector emits left-top, right-top, left-bottom,
+        // and the pipeline says the reading order is left column then right.
+        let regions = vec![region("a"), region("b"), region("c")];
+        let out = apply_reading_order(regions, &[0, 2, 1]);
+        assert_eq!(texts(&out), vec!["a", "c", "b"]);
+    }
+
+    #[test]
+    fn empty_reading_order_leaves_the_detector_order_alone() {
+        let regions = vec![region("a"), region("b")];
+        let out = apply_reading_order(regions, &[]);
+        assert_eq!(texts(&out), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn reading_order_never_drops_or_duplicates_a_region() {
+        // Out-of-range, negative, and repeated indices are all ignored, and the
+        // region the order forgot is still emitted. Losing OCR text to a bad
+        // index would be far worse than emitting it in the wrong place.
+        let regions = vec![region("a"), region("b"), region("c")];
+        let out = apply_reading_order(regions, &[2, 99, -1, 2, 0]);
+        assert_eq!(texts(&out), vec!["c", "a", "b"]);
+        assert_eq!(out.len(), 3, "every region must survive");
+    }
 
     #[test]
     fn is_available_matches_feature() {

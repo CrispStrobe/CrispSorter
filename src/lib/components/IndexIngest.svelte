@@ -134,6 +134,12 @@
     let driveEditId       = $state<string | null>(null);
     let driveCreateLabel  = $state<string>('');
     let driveCreateKind   = $state<'local' | 'filen' | 'internxt' | 'sftp' | 'webdav' | 'onedrive' | 'google_drive'>('webdav');
+    /// Which drive kinds have a native client compiled into this build. Decides
+    /// both the picker labels and whether the kind is offered on mobile, where
+    /// the Python-CLI fallback cannot run. Defaults to false so a failed probe
+    /// degrades to the old desktop-only behaviour rather than advertising a
+    /// drive that would error on use.
+    let nativeDriveSupport = $state<{ filen: boolean; internxt: boolean }>({ filen: false, internxt: false });
     let driveCreatePath   = $state<string>('');
     let driveCreateUser   = $state<string>('');
     let driveCreatePass   = $state<string>('');
@@ -353,6 +359,21 @@
     }
     let crispLensStatus     = $state<CrispLensStatus | null>(null);
     let crispLensPollHandle = $state<ReturnType<typeof setInterval> | null>(null);
+    /// Whether this build contains the CrispLens client at all. The
+    /// `images_crisplens_*` commands are registered only under the
+    /// `images-crisplens` cargo feature, which is off by default, so in a
+    /// normal build they do not exist and every invoke would fail. Probed once;
+    /// false keeps the whole section — and its 30 s status poll — dormant
+    /// instead of rendering repeated "command not found". See PLAN.md P35.4.
+    let crispLensSupported = $state(false);
+    /// Whether this build can ask CrispLens *who* is in a picture (1:N face
+    /// identification, `/api/people` + `/api/faces`). Research-only and never
+    /// true in a shipped artifact — see Cargo.toml's
+    /// `images-crisplens-identify` and docs/ai-act.md. Gates the People list
+    /// and the per-image face overlay; the rest of the CrispLens integration
+    /// (semantic search, watchfolders, image fetch) does not identify anyone
+    /// and stays available when the client feature alone is on.
+    let crispLensIdentify = $state(false);
 
     // ── P13/B3 — CrispLens People view state ──────────────────────────────
     interface CrispLensPerson {
@@ -372,6 +393,9 @@
     let imagesPeopleMode       = $state(false);
 
     async function loadCrispLensPeople() {
+        // 1:N identification is not compiled into shipped builds — the command
+        // is not registered, so invoking it would only produce an error banner.
+        if (!crispLensIdentify) return;
         if (crispLensPeopleLoading) return;
         crispLensPeopleLoading = true;
         crispLensPeopleError = '';
@@ -521,6 +545,7 @@
      *  state went from unauth → auth, so the B5 cross-reference
      *  hint shows up as soon as a session lands. */
     async function fetchCrispLensStatus() {
+        if (!crispLensSupported) return;
         const wasAuthed = crispLensStatus?.authenticated ?? false;
         try {
             crispLensStatus = await invoke<CrispLensStatus>('images_crisplens_status');
@@ -567,6 +592,7 @@
     let crispLensInfo            = $state('');
 
     async function loadCrispLensSettings() {
+        if (!crispLensSupported) return;
         try {
             crispLensSettings   = await invoke<ImagesCrispLensSettings>('images_crisplens_settings_get');
             crispLensUrlDraft   = crispLensSettings.url;
@@ -749,6 +775,18 @@
     onMount(() => {
         let cleanup = () => {};
         (async () => {
+            // Which cloud drives have a native client in this build. Probed once;
+            // a failure leaves the conservative all-false default in place.
+            try {
+                nativeDriveSupport = await invoke<{ filen: boolean; internxt: boolean }>('drive_native_support');
+            } catch (e) { /* older backend without the probe — keep defaults */ }
+            try {
+                const support = await invoke<{ client: boolean; identify: boolean }>(
+                    'images_crisplens_supported'
+                );
+                crispLensSupported = support.client;
+                crispLensIdentify  = support.identify;
+            } catch (e) { /* probe absent — treat as unsupported */ }
             // Load persisted folder list and column visibility
             try {
                 const store = await storeLoad('index-ingest.json', { defaults: {}, autoSave: true });
@@ -1905,10 +1943,15 @@
                         bbox:      { top: number; right: number; bottom: number; left: number };
                         personName: string | null;
                     }
-                    const faces = await invoke<FaceRow[]>(
-                        'images_crisplens_image_faces',
-                        { imageId: resolved.id }
-                    );
+                    // Identity assignment per face — research-only capability,
+                    // absent from shipped builds. Without it the preview still
+                    // shows the image, just no named-face overlay.
+                    const faces = crispLensIdentify
+                        ? await invoke<FaceRow[]>(
+                              'images_crisplens_image_faces',
+                              { imageId: resolved.id }
+                          )
+                        : [];
                     // Guard against race: the user may have clicked
                     // a different tile while we were waiting on
                     // these two network calls.  Don't overwrite a
@@ -3625,13 +3668,23 @@
                                 <option value="webdav">WebDAV (Nextcloud / ownCloud / mailbox.org / Synology)</option>
                                 <option value="google_drive">Google Drive (Browser-Anmeldung)</option>
                                 <option value="onedrive">OneDrive / SharePoint (Browser-Anmeldung)</option>
-                                <!-- Both shell out to a Python CLI, which iOS and
-                                     Android forbid; offering them there produced a
-                                     spawn error at use time. WebDAV stays available
-                                     as the mobile route to the same storage. -->
-                                {#if isDesktop()}
-                                    <option value="filen">Filen (Python cli.py)</option>
-                                    <option value="internxt">Internxt (Python cli.py)</option>
+                                <!-- Offer each kind when it can actually work here.
+                                     The subprocess fallback shells out to a Python
+                                     CLI, which iOS/Android forbid (offering it there
+                                     produced a spawn error at use time). The native
+                                     client has no such limit — so gate on native
+                                     support first and on the platform only for the
+                                     fallback. WebDAV remains the mobile route to the
+                                     same storage when neither applies. -->
+                                {#if nativeDriveSupport.filen || isDesktop()}
+                                    <option value="filen">
+                                        {nativeDriveSupport.filen ? 'Filen (native)' : 'Filen (Python cli.py)'}
+                                    </option>
+                                {/if}
+                                {#if nativeDriveSupport.internxt || isDesktop()}
+                                    <option value="internxt">
+                                        {nativeDriveSupport.internxt ? 'Internxt (native)' : 'Internxt (Python cli.py)'}
+                                    </option>
                                 {/if}
                                 <option value="local">Lokal / OS-Mount (SMB / NFS / SFTP via FUSE)</option>
                                 <option value="sftp">SFTP (über OS-Mount)</option>

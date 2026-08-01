@@ -173,22 +173,20 @@ pub fn detect_language_from_pcm(
     // Stage AC Phase 6 — IN PROGRESS.  The Rust dispatcher below would
     // route all four LID methods (Whisper, Silero, Firered, Ecapa)
     // through the same module-level `crispasr_detect_language_pcm`
-    // C-ABI.  The C layer accepts methods 0-3 today, but the upstream
-    // Rust binding (`crispasr::LidMethod`) only exposes Whisper +
-    // Silero in v0.6.6 / v0.6.7.  Our `2036f0db` upstream patch that
-    // adds `Firered = 2` and `Ecapa = 3` lives on `main` but is NOT
-    // yet in a tagged release, and CRISPASR_REF in
-    // `.github/workflows/release.yml` pins to v0.6.6.  Re-enable
-    // the 4-arm dispatcher once CrispASR cuts v0.6.8+ and the
-    // pin is bumped.  For now, keep the original split: Whisper +
-    // Silero go through the module-level call; Ecapa + Firered bail
-    // with an actionable error.
+    // C-ABI.  All four methods are now available: `Firered = 2` and
+    // `Ecapa = 3` reached the upstream Rust binding by v0.8.6, which is
+    // what `release.yml` already pinned — so the two-arm split, and the
+    // "re-enable once CRISPASR_REF is bumped to v0.6.8+" note that went
+    // with it, had been obsolete for a long stretch of releases while
+    // FireRedLID (120 langs) and ECAPA-TDNN VoxLingua107 (107 langs)
+    // returned an error instead of a language.
     match method {
-        LidMethod::Whisper | LidMethod::Silero => {
+        LidMethod::Whisper | LidMethod::Silero | LidMethod::Firered | LidMethod::Ecapa => {
             let upstream_method = match method {
                 LidMethod::Whisper => crispasr::LidMethod::Whisper,
                 LidMethod::Silero => crispasr::LidMethod::Silero,
-                _ => unreachable!(),
+                LidMethod::Firered => crispasr::LidMethod::Firered,
+                LidMethod::Ecapa => crispasr::LidMethod::Ecapa,
             };
             let result = crispasr::detect_language_pcm(
                 pcm,
@@ -201,15 +199,6 @@ pub fn detect_language_from_pcm(
             )
             .map_err(|e| anyhow::anyhow!("crispasr detect_language_pcm: {e}"))?;
             return convert_lid(result);
-        }
-        LidMethod::Ecapa | LidMethod::Firered => {
-            anyhow::bail!(
-                "LID method {} not yet exposed via the upstream Rust binding \
-                 (CrispASR v0.6.6 / v0.6.7 ship only Whisper + Silero variants).  \
-                 The C-ABI supports all four; re-enable once CRISPASR_REF is bumped \
-                 to v0.6.8+.  For now use whisper or silero.",
-                method.as_str()
-            )
         }
     }
 }

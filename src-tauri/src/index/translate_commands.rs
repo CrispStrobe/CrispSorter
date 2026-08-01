@@ -134,6 +134,7 @@ pub async fn translate_text(
     state: State<'_, AppState>,
     input: TranslateInput,
 ) -> Result<TranslateResponse, String> {
+    crate::ensure_intended_purpose(&state, "translate_text").await?;
     translate_text_impl(state, input).await.map_err(|e| format!("{e:#}"))
 }
 

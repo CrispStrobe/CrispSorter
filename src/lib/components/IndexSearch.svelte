@@ -1,4 +1,5 @@
 <script lang="ts">
+    import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { save } from '@tauri-apps/plugin-dialog';
@@ -1602,6 +1603,10 @@
                     {#if looksDocToolable(r)}
                         {@const dt = docTools.get(r.doc_id)}
                         <div class="translate-surface" style="margin-top:6px;">
+                            <!-- Only the translate action here is gated in Rust;
+                                 search, OCR export and the rest are not. Hence a
+                                 notice inside this strip and not over the results. -->
+                            <IntendedPurposeGate blocking={false} />
                             <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                                 <span style="font-size:0.75rem; color:#a1a1aa;">Doc tools:</span>
                                 <button type="button" class="translate-btn" disabled={dt?.busy != null}

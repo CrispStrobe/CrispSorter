@@ -113,6 +113,14 @@ pub async fn translate_docx(
     preserve_formatting: Option<bool>,
     align_model_path: Option<String>,
 ) -> Result<TranslateResult, String> {
+    // Writes a machine-translated document to disk — the output that most
+    // needs to carry the notice, since it leaves the app. `translate_docx`
+    // takes an `AppHandle` rather than `State`, so resolve the state here.
+    {
+        use tauri::Manager as _;
+        let st = app.state::<crate::AppState>();
+        crate::ensure_intended_purpose(&st, "translate_docx").await?;
+    }
     use tauri::Emitter;
 
     let translator = build_translator(providers)?;
@@ -222,6 +230,24 @@ pub async fn translate_docx(
     }
 
     crisp_docx_core::save(&pkg, &out_path).map_err(|e| e.to_string())?;
+
+    // AI Act Art 50(2) attaches to the content, not to the window it was shown
+    // in: this file will be mailed on, and the UI badge does not travel with it.
+    // Stamp machine-readable provenance into the package's core properties.
+    //
+    // A stamping failure must not discard a translation the user waited for, so
+    // it is reported rather than propagated — but it is reported loudly, because
+    // a silently unmarked artifact is exactly the outcome to avoid.
+    if let Err(e) = crate::ai_provenance::stamp_docx(
+        std::path::Path::new(&out_path),
+        crate::ai_provenance::DOCX_MARK,
+    ) {
+        crate::app_log!(
+            "warn",
+            "translate_docx: wrote {} but could not stamp AI provenance: {e}",
+            out_path
+        );
+    }
 
     Ok(TranslateResult {
         total,

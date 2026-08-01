@@ -434,6 +434,9 @@ pub(crate) fn watchfolders_blocking(
 /// `GET /api/people` — full list of person clusters from CrispLens.
 /// Returns empty list when Tier 2 isn't configured/authenticated
 /// (same convention as `images_crisplens_watchfolders`).
+/// ⚠️ 1:N face identification (`/api/people`) — research only, never shipped.
+/// Behind `images-crisplens-identify`; see docs/ai-act.md and Cargo.toml.
+#[cfg(feature = "images-crisplens-identify")]
 #[tauri::command]
 pub async fn images_crisplens_people(
     state: State<'_, AppState>,
@@ -448,6 +451,9 @@ pub async fn images_crisplens_people(
 
 /// `GET /api/images/{id}/faces` — face crops detected in one image.
 /// Returns empty list when Tier 2 isn't configured.
+/// ⚠️ 1:N face identification (`/api/faces`) — research only, never shipped.
+/// Behind `images-crisplens-identify`; see docs/ai-act.md and Cargo.toml.
+#[cfg(feature = "images-crisplens-identify")]
 #[tauri::command]
 pub async fn images_crisplens_image_faces(
     state: State<'_, AppState>,

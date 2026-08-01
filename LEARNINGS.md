@@ -1265,6 +1265,37 @@ comes out of processing with this `null`, and TestFlight then offers it to
 build; see `docs/export-compliance.md` for the declaration itself, which
 is a legal answer rather than a script default.
 
+## Features and CI
+
+### A `#[cfg(feature)]` block that no build enables is code nobody checks
+
+Both native cloud-drive crates were finished, tested (46 + 41 tests), clippy-clean
+with `--all-features`, and covered by live round-trip jobs — while
+`drive-filen-native` / `drive-internxt-native` appeared in **no feature string
+anywhere**: not `release.yml`, not `ci.yml`, and `default = []`. Two
+consequences, both silent:
+
+1. **Every shipped artifact took the `#[cfg(not(feature = …))]` arms**, so users
+   got the old Python-subprocess drives and the native login button returned
+   "not enabled in this build". The feature shipped to nobody.
+2. **The glue compiled in no job**, so it rotted. `cargo check` with the
+   features on failed immediately — on an *unrelated, ungated* file
+   (`sync/pairs.rs`), meaning the library was broken for everyone.
+
+Per-crate coverage (`cargo test -p crisp-filen`) does not cover the adapter that
+wires the crate into the app. If a feature has an integration layer, some job
+must build the app *with that feature on*, or the layer is unverified by
+construction.
+
+### A cancelled CI run is not a green one
+
+The `pairs.rs` breakage sat on `main` unnoticed because the most recent
+*completed* run had been **cancelled** (concurrency `cancel-in-progress` plus
+rapid pushes), and a cancelled run reads as "not red" at a glance. `gh run list`
+shows `conclusion: cancelled` — treat that as *no information*, not as success.
+When checking whether a branch is healthy, look for a `success`, not for the
+absence of `failure`.
+
 ## Dependency evaluation
 
 ### Enumerate a vendor's repos before concluding their licence blocks you

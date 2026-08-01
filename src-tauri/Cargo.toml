@@ -27,7 +27,11 @@ protoc-bin-vendored = "3"
 # `SearchRequest`, etc. Path dep stays inside the workspace; both crates
 # rebuild together when the protocol changes.
 crisp-index-protocol = { path = "../crisp-index-protocol" }
-crisplens-protocol   = { path = "../crates/crisplens-protocol" }
+# Optional: only the `images-crisplens` feature needs the CrispLens wire
+# types (Person / Face / Bbox). Off by default and in no release feature
+# string, so shipped artifacts carry no client for a biometric
+# identification service — see docs/ai-act.md and PLAN.md P35.
+crisplens-protocol   = { path = "../crates/crisplens-protocol", optional = true }
 crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 crisp-internxt = { path = "../crates/crisp-internxt-native", optional = true }
 crisp-filen = { package = "crisp-filen", path = "../crates/crisp-filen-native", optional = true }
@@ -253,6 +257,29 @@ desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plu
 # verified against the vendor's Python CLI in both directions.
 drive-internxt-native = ["dep:crisp-internxt"]
 drive-filen-native = ["dep:crisp-filen"]
+# CrispLens integration, minus identification. OFF by default: see PLAN.md P35.4.
+# Covers settings/auth/status/watchfolders/semantic-search/image-fetch — none of
+# which identify a person.
+images-crisplens  = ["dep:crisplens-protocol"]
+# ⚠️ 1:N FACE IDENTIFICATION — RESEARCH ONLY, MUST NEVER SHIP. ⚠️
+#
+# Enables the two commands that ask CrispLens *who* is in a picture:
+# `images_crisplens_people` (`/api/people`, the identity gallery) and
+# `images_crisplens_image_faces` (`/api/faces`, per-image identity assignment).
+# Matching a probe face against a gallery of N identities is the reading of
+# Annex III(1) we will not argue with, so the capability exists for research and
+# is kept out of every artifact by construction rather than by policy.
+#
+# Do not add this to `default`, to any `--features` string in
+# .github/workflows/{ci,release}.yml, or to a bundle recipe. A test asserts the
+# workflows do not name it (`compliance.rs`). If you are enabling it locally,
+# you are the exporter of that decision — see docs/ai-act.md.
+#
+# NOTE (2026-08-01): CrispLens itself still serves both endpoints —
+# `fastapi_app.py` registers `people.router` and `face_cluster.router`
+# unconditionally on origin/main. Turning this off in CrispSorter stops *us*
+# asking; it does not remove the capability from the service.
+images-crisplens-identify = ["images-crisplens"]
 # PDF page rasterization for scanned/image PDFs (multi-page OCR). Needs a
 # per-platform libpdfium at runtime; bundled by the release build.
 pdf-render        = ["dep:pdfium-render"]

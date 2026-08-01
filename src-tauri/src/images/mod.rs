@@ -22,6 +22,10 @@
 //! gets a clean failure rather than a Tauri panic if it accidentally
 //! reaches for a future-slice capability.
 
+/// CrispLens (face recognition) client. Behind `images-crisplens`, which is
+/// off by default: an artifact without it contains no client for a biometric
+/// identification service. See docs/ai-act.md and PLAN.md P35.
+#[cfg(feature = "images-crisplens")]
 pub mod crisplens;
 pub mod exif;
 pub mod face;
@@ -141,5 +145,48 @@ mod tests {
         assert!(!is_image_ext("gif"));   // deliberately excluded for v1
         assert!(!is_image_ext("svg"));   // deliberately excluded for v1
         assert!(!is_image_ext(""));
+    }
+}
+
+/// Whether this build contains the CrispLens client at all.
+///
+/// The 13 `images_crisplens_*` commands are registered only under
+/// `images-crisplens`, so in a default build they do not exist and every
+/// `invoke` of one fails. The UI needs to know that *before* calling, so it can
+/// hide the section rather than render a wall of "command not found".
+///
+/// Always compiled — it reports a compile-time fact and must answer in builds
+/// where the module itself is absent. (A general "which optional features are
+/// in this build" command belongs to the plugin surface in PLAN.md P35.1; this
+/// is the narrow version that P35.4 needs now.)
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct CrispLensSupport {
+    /// The non-identifying client: settings, auth, status, watchfolders,
+    /// semantic search, image fetch.
+    pub client: bool,
+    /// 1:N face identification (`/api/people`, `/api/faces`). Research only —
+    /// never true in a shipped artifact. The UI hides People and the per-image
+    /// face overlay when this is false.
+    pub identify: bool,
+}
+
+#[tauri::command]
+pub fn images_crisplens_supported() -> CrispLensSupport {
+    CrispLensSupport {
+        client: cfg!(feature = "images-crisplens"),
+        identify: cfg!(feature = "images-crisplens-identify"),
+    }
+}
+
+#[cfg(test)]
+mod crisplens_support_tests {
+    #[test]
+    fn support_probe_tracks_the_compiled_feature() {
+        let s = super::images_crisplens_supported();
+        assert_eq!(s.client, cfg!(feature = "images-crisplens"));
+        assert_eq!(s.identify, cfg!(feature = "images-crisplens-identify"));
+        // The identify feature depends on the client feature, so identification
+        // without a client is a build that should not exist.
+        assert!(!(s.identify && !s.client), "identify implies client");
     }
 }

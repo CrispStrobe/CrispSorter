@@ -8,6 +8,8 @@
   Streams `translate://progress` events for a live progress indicator.
 -->
 <script lang="ts">
+    import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
@@ -432,6 +434,10 @@
     </div>
 
     <div class="actions">
+        <!-- `translate_docx` is gated in Rust; without this the first thing a user
+             sees on a fresh install is a raw error string. Non-blocking so the
+             form can still be filled in — it is running that Rust refuses. -->
+        <IntendedPurposeGate blocking={false} />
         <button class="primary" disabled={!inputPath || !outputPath || translating} onclick={runTranslate}>
             {#if translating}
                 <Loader2 size={16} class="spin" />
@@ -487,6 +493,8 @@
             <CheckCircle2 size={18} />
             <div>
                 <strong>Done</strong> — {result.succeeded}/{result.total} paragraphs translated{#if result.failed > 0}; {result.failed} failed (left as original){/if}.
+                <!-- Art 50(2): the output document is machine-generated text. -->
+                <AiGeneratedBadge />
                 <div class="hint">Output: <code>{outputPath}</code></div>
             </div>
         </div>

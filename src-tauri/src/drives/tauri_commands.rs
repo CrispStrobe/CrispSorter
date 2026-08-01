@@ -988,3 +988,39 @@ pub async fn drive_native_refresh(
         Err("native Internxt support is not enabled in this build".to_owned())
     }
 }
+
+/// Which drive kinds have a native (no-subprocess) client compiled into this
+/// build.
+///
+/// The UI needs this *before* a drive exists, so it cannot use
+/// `drive_capabilities`, which resolves a registered `drive_id`. The picker
+/// uses it for two decisions: whether to label a kind as native or as
+/// "Python cli.py", and whether to offer it on mobile at all — the
+/// subprocess drives cannot run on iOS/Android
+/// (`drives::ensure_subprocess_drives_supported`), but the native clients can,
+/// which is the whole point of P33.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct NativeDriveSupport {
+    pub filen: bool,
+    pub internxt: bool,
+}
+
+#[tauri::command]
+pub fn drive_native_support() -> NativeDriveSupport {
+    NativeDriveSupport {
+        filen: cfg!(feature = "drive-filen-native"),
+        internxt: cfg!(feature = "drive-internxt-native"),
+    }
+}
+
+#[cfg(test)]
+mod native_support_tests {
+    use super::*;
+
+    #[test]
+    fn native_support_reports_the_compiled_features() {
+        let support = drive_native_support();
+        assert_eq!(support.filen, cfg!(feature = "drive-filen-native"));
+        assert_eq!(support.internxt, cfg!(feature = "drive-internxt-native"));
+    }
+}

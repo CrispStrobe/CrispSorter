@@ -34,12 +34,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         .to_ascii_lowercase();
     let is_md = matches!(ext.as_str(), "md" | "markdown");
     let headings = if is_md {
-        full_text
-            .lines()
-            .filter(|line| line.trim_start().starts_with('#'))
-            .map(|line| line.trim_start_matches('#').trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
+        lift_atx_headings(&full_text)
     } else {
         Vec::new()
     };
@@ -89,6 +84,22 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
 /// double-quoted, single-quoted, and bare values; Windows line
 /// endings; and returns `None` for any non-conforming input (no
 /// frontmatter, missing `url:`, empty value, etc.).
+/// Lift ATX-style (`# Heading`) headings out of markdown.
+///
+/// Shared with the OCR path: CrispEmbed's pipeline emits a `markdown`
+/// rendering alongside the plain text, so a *scanned* document can feed the
+/// same boosted `headings_text` field that a native `.md` file does.
+/// Callers decide when markdown is expected — on-disk extraction gates this on
+/// the file extension, because a stray `#` line in source code or YAML is not
+/// a heading.
+pub(crate) fn lift_atx_headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.trim_start().starts_with('#'))
+        .map(|line| line.trim_start_matches('#').trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn extract_frontmatter_url(text: &str) -> Option<String> {
     let fm = locate_frontmatter(text)?;
     for line in fm.lines() {

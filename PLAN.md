@@ -20,13 +20,13 @@
 - P10 Robust ingest: TaskFailureReason, 300 s timeout, L2 fallback, DRM detection, skip-failed CLI
 - P11 Remote server: `crisp-index-server` (Axum + LanceDB + Tantivy), durable job queue, server-side embedding
 - P11 Cloud drives: `LocalDrive` + `InternxtDrive` + `FilenDrive` + `WebDavDrive` (live-verified); registry with create/edit/delete UI; `crisp+drive://` URIs; manifest-only L1 ingest + on-demand L3 promote
-- P11 SyncManager: pull-apply loop closed; federated search across local + cb-api + CrispLens (Stage S) with RRF merge + per-backend badges
+- P11 SyncManager: pull-apply loop closed; federated search across local + cb-api (Stage S) with RRF merge + per-backend badges. A third leg for the optional image service exists but is part of the deferred work in P35 and is off in every build
 - P12 cloud-backup: L1 manifest import, L3 via `retrieve.py`, reverse lookup, VPS-trigger indexing
-- P13 Bilder vertical: image-row filtered Übersicht tab, lazy thumbnails, EXIF preview pane, SHA-256 + perceptual-hash dup grouping, CrispLens Tier 2 connector
+- P13 Bilder vertical: image-row filtered Übersicht tab, lazy thumbnails, EXIF preview pane, SHA-256 + perceptual-hash dup grouping. The external image-service connector was started and **deferred unfinished** — see P35
 - P13.5 Audio + Translation vertical: symphonia + ffmpeg decode, 24 ASR / 5 TTS / 4 MT / 4 LID backends, `chat transcribe` + `chat tts` CLI, index-time audio/video extraction (22 file types), audio-LID routing, text-LID at index time, on-demand + batch translation; script-aware multilingual reranker routing (Stage Z: `has_nonlatin_script` ≥25% threshold, `reranker_multilingual` field, UI dropdown)
 - P13.6 Multimodal UX + L1/L2/L3 audio: Stapel + Kataloge accept all 22 extensions; audio L2 via schema migration v101; `index_audio_promote_l3` action
-- P13.7 Image L1/L2/L3 + search CLI + CrispLens push: image L2 via migration v102; `crispsorter index search` CLI with full filter set; CrispLens image push
-- P13.7 Cloud-backup HTTP API + bidirectional sync: cb-api (FastAPI, bcrypt auth, manifest push/pull, shard export/import/list, embedding push/query); CrispSorter SyncManager `CloudBackup` mode; GUI Cloud-backup panel; sync CLI; shard backup to cloud drives (Stage Q) with incremental watermarks + retention; manifests-DB import bridge (Stage R); cb-api key minting from GUI (Stage T); L1-only thin-client mode (Stage U) with vps_worker CrispLens + CrispASR bridges (Stage V); skeleton local index (Stage W) + remote-only search fallback; "Sync now" button + `sync_status_all` (Stage O)
+- P13.7 Image L1/L2/L3 + search CLI: image L2 via migration v102; `crispsorter index search` CLI with full filter set. The image-push half belongs to the deferred connector (P35) and ships in no build
+- P13.7 Cloud-backup HTTP API + bidirectional sync: cb-api (FastAPI, bcrypt auth, manifest push/pull, shard export/import/list, embedding push/query); CrispSorter SyncManager `CloudBackup` mode; GUI Cloud-backup panel; sync CLI; shard backup to cloud drives (Stage Q) with incremental watermarks + retention; manifests-DB import bridge (Stage R); cb-api key minting from GUI (Stage T); L1-only thin-client mode (Stage U) with vps_worker image-service + CrispASR bridges (Stage V); skeleton local index (Stage W) + remote-only search fallback; "Sync now" button + `sync_status_all` (Stage O)
 - **cb-api catalog moved to a dedicated block volume** (2026-05-28) — `CB_API_DB_PATH` in `<cb-api-env>` + `<vps-worker-env>` should point at attached block storage (ext4/XFS with proper POSIX `fsync`), not the host root disk or a CIFS share.  Deployment-specific paths kept out of the public repo; see the cloud-backup readme + env example for the supported shape.
 - **cb-api body-store split → LanceDB** (cloud-backup's *Stage W*, **not** the same as CrispSorter's Stage W skeleton-index) — body text (`full_text`) routes through the new `api/body_store.py` and lives in the per-shard Lance `documents` table on attached object storage instead of inline in `file_references`.  Toggled via `CB_BODY_BACKEND=lance` in `<cb-api-env>`.  Wire contract unchanged — `cloud_backup.rs::ManifestRow`/`ManifestPullResponse`/`SearchHit` work against both backends with **zero protocol changes**, verified end-to-end via `crispsorter sync cloud-backup pull --include-full-text` returning identical bytes regardless of which backend the cb-api is running.  Scales the cb-api remote backend toward 5 TB+ of corpus without bloating the catalog volume; the catalog grows at metadata-only rate (~few hundred bytes/row → ~3 GB at 5 M files).  Test coverage: 53 new unit + 6 new live in cloud-backup (`tests/test_body_store.py` + `tests/test_file_lifecycle.py` + `tests/test_search_edge_cases.py` + `tests/test_real_file_extraction.py` + `tests/test_wallabag_live.py`).
 - **Source-URL provenance** (v106, both repos) — `ExtractedDocument.source_url` + `RawDocument.url` + `DocumentChunk.url` (Arrow Utf8) + `ManifestRow.url` / `PullRow.url` / `SearchHit.url` on the wire.  Markdown extractor lifts YAML frontmatter `url:` via a tiny hand-parser (no new YAML dep — wallabag/Pocket/read-later exports use a uniform key:value shape).  PDF extractor lifts via lopdf's Info dict `/URL` + XMP `<dc:source>` / `<xmp:URL>`.  Cb-api stores in `file_references.url` (FTS5-indexed); Lance side mirrors as the documents-table `url` column.  CLI: `crispsorter index search --url-domain spiegel.de` pushes `url LIKE '%spiegel.de%'` into LanceDB's scalar SQL; same filter shape lands on cb-api's `/api/v2/index/search` via `HybridSearchFilters.url_domain`.  Migration v106 adds the column to existing LanceDB tables via `NewColumnTransform::AllNulls`.
@@ -181,11 +181,57 @@ that surfaced along the way.
   apk, windows portable, app.tar.gz). Published the draft as a non-latest
   release (v0.6.0 remains Latest).
 
-### P19 — Further CrispEmbed integration (v0.11.8 pinned; HEAD is v0.11.8+114)
+### P19 — Further CrispEmbed integration (v0.16.1 pinned in CI *and* release since 2026-08-01)
 
 P17 already wired most of CrispEmbed's surface (dense / sparse / ColBERT /
 rerank / `MathOcr` / `OcrPipeline` / `CrispVit` / `CrispLayout` / `CrispFace` /
-omni image+text). CrispEmbed HEAD (unreleased) adds **Qwen3-VL-2B** (engine 12,
+omni image+text).
+
+**Pin audit, 2026-08-01.** The two workflows disagreed, and had for three
+minor versions: `ci.yml` tracked `main` while `release.yml` pinned `v0.13.0`,
+so **CI never once built what shipped**. That is not academic — the two
+disagree about the API surface: `OcrPipelineResult.markdown` and
+`.reading_order` exist on `main` and not on `v0.13.0`, so code using them
+passes CI and breaks the release build. Both are now pinned to **v0.16.1**;
+keep them equal and bump together.
+
+The stale pin had also left three capabilities stubbed out, each with a comment
+promising to un-stub "once CrispEmbed cuts a release" — releases that had since
+happened:
+
+- [x] **OCR language detection** — `ocr_via_pipeline` hardcoded
+  `detected_lang: None` with a note that the API "landed after v0.11.8". It was
+  in fact present at v0.13.0, so the pipeline's LID result was being computed
+  and thrown away for several releases. Now feeds `ExtractedDocument.language`.
+- [x] **`detect_page_split`** (two-up book spread → gutter column) and
+  **`content_bbox`** (trim blank scan margins) — both were `pub fn … { None }`
+  bodies "deferred until CrispEmbed tags a release". Both are
+  `CrispScanCleanup` methods present at v0.16.1 and are now implemented,
+  soft-failing to `None` only on an unreadable image or an engine that will not
+  initialise.
+- [x] **OCR markdown → headings.** The pipeline renders a markdown view of the
+  page alongside the plain text; it was discarded. `full_text` deliberately
+  stays the indexed body (changing it would alter every existing row), but the
+  markdown is now mined for ATX headings via a lifter shared with
+  `extractors::text`, so a *scanned* document feeds the boosted
+  `headings_text` field exactly as a native `.md` file does.
+- [x] **OCR reading order.** `full_text` was already joined in reading order
+  upstream, but the *regions* were not — so hOCR / ALTO / searchable-PDF output
+  put a two-column scan in detector order, giving column-interleaved text on
+  select-and-copy. `apply_reading_order` now applies the pipeline's index list.
+  It is deliberately **not** gated on `feature = "crispembed"`, because CI
+  builds without that feature and gating it would put the ordering logic in the
+  set of code no job compiles; it needs nothing from CrispEmbed, so it is
+  tested everywhere (out-of-range, negative, duplicate and omitted indices all
+  covered — a bad index must never lose OCR text).
+
+Still open from the same audit: **`CRISPASR_REF` is `main` in CI and `v0.8.6`
+in release, against upstream `v0.8.24`** — the identical trap, 18 patch
+versions wide, and untouched here because bumping ASR is its own risk. CI also
+names the docx ref `CRISP_DOCX_REF` (`main`) where release uses
+`CRISPDOCX_REF` (a pinned SHA), so the two cannot even be compared by eye.
+
+CrispEmbed HEAD (unreleased) adds **Qwen3-VL-2B** (engine 12,
 DeepStack injection, fused attention, KV cache fast path), **PaddleOCR-VL**
 (NaViT + ERNIE-4.5, 109 langs, SOTA 96.3% OmniDocBench, Apache-2.0),
 **FireRed-OCR** (Qwen3-VL fine-tune, tables+LaTeX), **SmolDocling** (SigLIP +
@@ -397,7 +443,7 @@ All three Tier-1 gaps are closed.  Full spec → [HISTORY.md](HISTORY.md)
   same `TagCloud`, default-hidden, facets computed client-side from the
   hits on screen (per-document/per-hit counts), AND-narrows the displayed
   results.  The federated wire (`FederatedHit`) already carried `tags`
-  for local + cloud_backup hits (CrispLens carries none), so that pane
+  for local + cloud_backup hits (the deferred image-service leg carries none), so that pane
   needed zero Rust changes.  *Follow-up:* URL/settings persistence of the
   selected tags across launches.
 - [ ] **Server-side embeddings shipped with pulls** so the local
@@ -2559,6 +2605,125 @@ a trap:
   - [x] Publish coordinated versions of `crisp-internxt`, `crisp-filen`, and
     `crisp-cloud-rs`; verify README install commands, crates.io metadata,
     GitHub releases, and license notices after every release.
+
+- [x] **P33.6 — Actually ship it: build wiring and the missing CLI surface**
+  (2026-08-01).  The crates and the GUI were finished while the *integration*
+  was not, in a way that no test could report:
+
+  * **Neither `drive-filen-native` nor `drive-internxt-native` appeared in any
+    feature string** — not in `release.yml`, not in `ci.yml`, and `default =
+    []`.  Every shipped artifact therefore took the `#[cfg(not(feature = …))]`
+    arms in `instantiate` and gave users the *Python subprocess* drives, while
+    the native login button returned "native … support is not enabled in this
+    build".  All of that work reached no user.
+  * **Consequence: the glue compiled nowhere.**  `cargo test -p crisp-filen /
+    -p crisp-internxt` covers the crates, but
+    `drives/{filen,internxt}_native_drive.rs` and the `instantiate` arms only
+    compile with the features on, which no job did.  It had duly drifted out of
+    buildable state: `cargo check` with both features on failed on
+    `sync/pairs.rs:109`, where `split_first()` on `&[&str]` yields
+    `Option<(&&str, &[&str])>` and the literal pattern `Some(("**", rest))`
+    lacked its second `&`.  That file is *not* feature-gated, so the lib was
+    broken for everyone — hidden because the last completed CI run on `main`
+    had been **cancelled** rather than failed.
+  * **No `drives` subcommand existed**, yet two places told users to run
+    `crispsorter drives list` (`cli/mod.rs:685` and the `drive '…' not found`
+    error).  Drive management lived only in the standalone `crisp-internxt` /
+    `crisp-filen` binaries, which ship with neither the app nor the CLI.
+  * **The picker was stale in both directions**: it still read "Filen (Python
+    cli.py)" though selecting it now runs a native login, and both kinds sat
+    behind `isDesktop()` — a gate that, once the features were switched on,
+    would hide the native drives on exactly the platform the whole effort
+    targeted.
+
+  Fixed: features added to the CI test/build and to all four desktop release
+  feature strings; `pairs.rs` pattern corrected; `drives list` and
+  `drives ls --drive <id> [path]` added (with `drives` in `SUBCOMMANDS`, which
+  the clap-derived guard test now enforces) reporting each drive's real
+  transport (`native` / `python-cli` / `built-in`); and a
+  `drive_native_support` command so the picker gates and labels on *compiled
+  support* rather than on the platform.
+
+  Deliberately **not** done: the features stay off for iOS/Android builds.
+  Whether the crates build for `aarch64-apple-ios` is still unverified, and the
+  iOS job has only just started producing an archive — enabling them there on
+  spec would risk the one mobile build that works.  That verification is the
+  last step before mobile users see these drives.
+
+
+### P35 — Plugin surface, and the optional image-service client out of the app (planned, 2026-08-01)
+
+Two goals sharing a mechanism: the app needs an extension surface, and the
+optional external image-service client should not be in it. Removing the client
+is also the cleanest disposal of the face-recognition exposure recorded in
+`docs/ai-act.md` — the Annex III(1) question stops being ours if the code is not
+in our artifact.
+
+#### Build on what exists — do not invent a second mechanism
+
+The AIToolkit graft left a working capability-driven registry:
+
+* `src/lib/tabs.ts` — `TabDef { id, icon, label?, requires?: string[] }`, with
+  `CORE_TABS` plus a separately contributed tab set whose entries are gated on
+  capabilities (`service:chat`, …) that a remote backend advertises.
+* `src/lib/aitoolkit.ts` + `AIToolkitCapability.svelte` — probe, connect, render.
+
+That is already "remote service advertises capabilities → tabs appear". The
+image-service client is the same shape: HTTP service, login, a handful of
+resource endpoints. The work is generalising one provider into *any* provider.
+
+#### The hard constraint, stated up front
+
+**Tauri commands are compiled in; Rust cannot be loaded at runtime.** So a
+"plugin" is one of two things, and only one empties the binary:
+
+* **Compile-time** — plugin crate + cargo feature. Easy, but the code still
+  ships whenever the feature is on.
+* **Runtime, frontend + generic transport** — the app ships a *generic*
+  authenticated-HTTP capability; the plugin is a manifest plus UI plus
+  client-side code. This is the one that removes the client from the binary
+  entirely, and it is what P35.1 builds.
+
+#### Items
+
+- [ ] **P35.1 — Generic remote-provider plugin surface.** A manifest (`id`,
+  display name, base-URL setting, auth kind, advertised capabilities,
+  contributed `TabDef`s, entry component) plus a small generic Rust surface —
+  configure, login, probe, request — replacing the current provider-specific
+  command set. Generalise the two pieces that already exist in
+  provider-specific form (settings persistence, keychain storage) to be keyed by
+  plugin id.
+
+  **Security is the design problem, not an afterthought.** A generic "make an
+  authenticated HTTP request" command is exactly the primitive an untrusted
+  plugin wants for SSRF or exfiltration. Minimum bar: host fixed by the manifest
+  and allowlisted at install time, not chosen per call; no filesystem access
+  through the transport; credentials retrievable only by the plugin id that
+  stored them; explicit install-time consent naming host and capabilities. A
+  plugin surface that can reach `127.0.0.1` freely is a local-service scanner.
+
+- [ ] **P35.2 — The image-service client as the first plugin, in a private
+  repo.** Manifest + UI + client, targeting P35.1. Private because the service
+  is not public; the app must build, test and run with the plugin absent, which
+  is the real test of whether P35.1 is a surface or a hole shaped like one
+  consumer.
+
+- [ ] **P35.3 — Delete the in-tree client.** Size it honestly first: ~1,400 LOC
+  in the client module, 26 command registrations in `lib.rs`, ~34 references in
+  `cli/mod.rs`, entanglement in several more files (`images/{mod,types}.rs`,
+  `secrets/mod.rs`, `index/mod.rs`, `index/config_persist.rs`,
+  `sync/{cloud_backup,tauri_commands,secret}.rs`) and four frontend files. The
+  type and settings coupling is the part that fights back; the HTTP client is
+  the easy half. Also rename the remaining feature/module identifiers, which
+  still carry the provider name.
+
+- [x] **P35.4 — Interim: gate it off by default.** ✅ SHIPPED (2026-08-01).
+  Module, 26 command registrations, seven CLI sites and two sync legs behind a
+  default-off feature that appears in no release or CI feature string; the
+  identifying calls behind a second research-only feature with a build-recipe
+  guard test; a runtime probe so the UI hides what the build does not contain.
+  Reached the compliance objective in hours instead of after P35.1–3, and the
+  compiler enumerated the seams P35.3 must cut — the survey P35.3 needed anyway.
 
 ### P34 — CrispCloud capability inventory and scoped file-manager roadmap
 

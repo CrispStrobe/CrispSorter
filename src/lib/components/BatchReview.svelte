@@ -1,4 +1,6 @@
 <script lang="ts">
+    import IntendedPurposeGate from './IntendedPurposeGate.svelte';
+    import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager, isUnknownSentinel, type ProcessOverrides } from '../batch/store.svelte';
     import { upsertItem, upsertItemsBulk, deleteItems, clearBatch } from '../batchStore';
     import { i18n } from '../i18n.svelte';
@@ -1522,6 +1524,10 @@
 
         {#if selectedItem}
             <div class="detail-pane">
+                <!-- Non-blocking here: reviewing suggestions is fine, it is
+                     applying them (execute_batch) that Rust refuses. The notice
+                     appears where the user will act, with the accept path. -->
+                <IntendedPurposeGate blocking={false} />
                 <div class="detail-header">
                     <div style="display:flex; align-items:center; gap:8px;">
                         <h3>{i18n.t.batch.details}</h3>
@@ -1543,6 +1549,12 @@
                     <div class="detail-section">
                         <div class="detail-section-header">
                             <h4>{i18n.t.batch.edit_metadata}</h4>
+                            <!-- Title / author / year are inferred by a local
+                                 model, and the target path is derived from them.
+                                 Section-level rather than per-field: the whole
+                                 group is machine-derived, and the user edits it
+                                 before anything moves. See docs/ai-act.md. -->
+                            <AiGeneratedBadge compact />
                             {#if detailDirty}
                                 <div class="detail-actions">
                                     <button class="action-btn small danger" onclick={() => {

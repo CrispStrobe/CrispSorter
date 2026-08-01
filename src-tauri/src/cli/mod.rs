@@ -53,7 +53,7 @@ use std::process::ExitCode;
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
     "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx",
-    "search", "watch", "manpage", "completion", "help", "--help", "-h",
+    "search", "watch", "drives", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
 ];
 
 #[derive(Parser, Debug)]
@@ -75,6 +75,13 @@ struct Cli {
     /// jina-v3 / jina-v5 / jina-reranker-v2 / embeddinggemma.
     #[arg(long = "accept-license", global = true, default_value_t = false)]
     accept_license: bool,
+    /// Acknowledge what this software is intended for, and the uses it is not
+    /// intended for, so that output-producing commands run. One-time: the
+    /// acknowledgement is recorded in the data dir with the statement version
+    /// and a timestamp. `CRISPSORTER_ACCEPT_INTENDED_PURPOSE=1` does the same
+    /// without writing a record, for ephemeral/CI runs. See docs/ai-act.md.
+    #[arg(long = "accept-intended-purpose", global = true, default_value_t = false)]
+    accept_intended_purpose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -482,6 +489,69 @@ enum Command {
         #[arg(long)]
         embed_text: bool,
     },
+    /// Show or clear this install's intended-purpose acknowledgement.
+    ///
+    /// A legal notice you cannot inspect or withdraw is a poor notice. `show`
+    /// reports the recorded statement version and when it was accepted; `reset`
+    /// forgets it so the next output-producing command prompts again. Clearing
+    /// it does not un-produce anything already produced.
+    IntendedPurpose {
+        #[command(subcommand)]
+        cmd: IntendedPurposeCmd,
+    },
+    /// Inspect the registered cloud drives.
+    ///
+    /// The registry is created from the GUI (Index → drives), which owns the
+    /// login flows; this is the read side, so a `--drive <id>` argument
+    /// elsewhere can be resolved without guessing. Two error messages pointed
+    /// at `crispsorter drives list` before it existed.
+    Drives {
+        /// Override the data directory holding `drives.json`. Same flag as
+        /// `index` / `catalog`, so a non-default profile works here too.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        cmd: DrivesCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum IntendedPurposeCmd {
+    /// Print the statement, and whether/when it was acknowledged.
+    Show {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+    /// Forget the acknowledgement for this install.
+    Reset {
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DrivesCmd {
+    /// List registered drives: id, kind, label, and whether this build reaches
+    /// the provider natively or through the Python CLI.
+    List {
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List a directory on a drive, the way the GUI browser does.
+    Ls {
+        /// Drive id from `drives list`.
+        #[arg(long = "drive")]
+        drive_id: String,
+        /// Path within the drive; defaults to the root.
+        #[arg(default_value = "/")]
+        path: String,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -880,6 +950,7 @@ enum ImagesCmd {
     },
     /// P13/B1 — CrispLens (Tier 2) settings + auth.  Nested
     /// subcommands so future B2-B5 routes stack here cleanly.
+    #[cfg(feature = "images-crisplens")]
     Crisplens {
         #[command(subcommand)]
         cmd: CrispLensCmd,
@@ -887,6 +958,7 @@ enum ImagesCmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[cfg(feature = "images-crisplens")]
 enum CrispLensCmd {
     /// Print current non-secret CrispLens settings (backend + URL +
     /// UI tunables).  Does NOT touch the keychain.
@@ -935,9 +1007,13 @@ enum CrispLensCmd {
     Watchfolders,
     /// List person clusters from `GET /api/people` — the Faces
     /// subtab feed (slice B3).
+    // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+    #[cfg(feature = "images-crisplens-identify")]
     People,
     /// List face crops detected in a single image
     /// (`GET /api/images/{image_id}/faces`).
+    // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+    #[cfg(feature = "images-crisplens-identify")]
     ImageFaces {
         image_id: i64,
     },
@@ -984,6 +1060,8 @@ enum CrispLensCmd {
     /// P13.7 Step 8c — list every image attached to a CrispLens
     /// person cluster.  Hits `/api/people/{id}` for the cluster
     /// metadata + image list.
+    // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+    #[cfg(feature = "images-crisplens-identify")]
     Person {
         /// CrispLens person id (server-side primary key, integer).
         id: i64,
@@ -1766,6 +1844,25 @@ pub fn run() -> ExitCode {
         crate::index::license_consent::accept_all();
     }
 
+    // Global `--accept-intended-purpose`: record the acknowledgement so the
+    // output-producing commands stop refusing. Written to the resolved data dir
+    // rather than held in memory, because the point of the record is that it
+    // outlives the process and can be produced later.
+    if cli.accept_intended_purpose {
+        match resolve_data_dir(None) {
+            Ok(dir) => match crate::intended_purpose::acknowledge(&dir, "cli") {
+                Ok(rec) => eprintln!(
+                    "[intended-purpose] acknowledged statement v{} at {} ({})",
+                    rec.version,
+                    rec.accepted_at_unix,
+                    dir.display()
+                ),
+                Err(e) => eprintln!("[intended-purpose] could not record: {e}"),
+            },
+            Err(e) => eprintln!("[intended-purpose] could not resolve data dir: {e}"),
+        }
+    }
+
     let result: Result<(), String> = match cli.command {
         Command::Version => cmd_version(cli.format),
         Command::Doctor => cmd_doctor(cli.format),
@@ -1789,6 +1886,8 @@ pub fn run() -> ExitCode {
         Command::Pdf { cmd } => cmd_pdf(cli.format, cmd),
         Command::Docx { cmd } => cmd_docx(cli.format, cmd),
         Command::Watch { folder, all_exts } => cmd_watch(folder, all_exts),
+        Command::IntendedPurpose { cmd } => cmd_intended_purpose(cli.format, cmd),
+        Command::Drives { data_dir, cmd } => cmd_drives(cli.format, data_dir, cmd),
         Command::Search {
             query, data_dir, limit, local_only, cloud_only, ext, lang,
             folder_prefix, author, year_min, year_max, url_domain, tag,
@@ -6622,6 +6721,7 @@ async fn cmd_cloud_backup_federated(
 ) -> Result<(), String> {
     use crate::sync::tauri_commands::rrf_merge;
     use crate::sync::cloud_backup::FederatedHit;
+    #[cfg(feature = "images-crisplens")]
     use crate::images::crisplens::tauri_commands::get_json;
 
     let CloudBackupCmd::FederatedSearch { query, backends, limit } = cmd else {
@@ -6642,6 +6742,7 @@ async fn cmd_cloud_backup_federated(
     };
     let want_local = enabled.contains("local");
     let want_cb    = enabled.contains("cloud_backup");
+    #[cfg(feature = "images-crisplens")]
     let want_cl    = enabled.contains("crisplens");
 
     let mut lists: Vec<Vec<FederatedHit>> = Vec::new();
@@ -6770,6 +6871,7 @@ async fn cmd_cloud_backup_federated(
     }
 
     // ── CrispLens ────────────────────────────────────────────────────────
+    #[cfg(feature = "images-crisplens")]
     if want_cl {
         let encoded: String = q.chars().flat_map(|c| {
             if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '~') {
@@ -6917,6 +7019,7 @@ async fn cmd_images_async(
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
         }
 
+        #[cfg(feature = "images-crisplens")]
         ImagesCmd::Crisplens { cmd } => {
             return cmd_images_crisplens(out, &data_dir, cmd).await;
         }
@@ -7150,6 +7253,7 @@ fn cmd_images_exif_file(out: OutFormat, path: &std::path::Path) -> Result<(), St
 
 // ── images crisplens (P13/B1) ─────────────────────────────────────────────
 
+#[cfg(feature = "images-crisplens")]
 async fn cmd_images_crisplens(
     out: OutFormat,
     data_dir: &std::path::Path,
@@ -7338,6 +7442,8 @@ async fn cmd_images_crisplens(
             }
         }
 
+        // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+        #[cfg(feature = "images-crisplens-identify")]
         CrispLensCmd::People => {
             use crate::images::crisplens::tauri_commands::get_json;
             use crisplens_protocol::Person;
@@ -7365,6 +7471,8 @@ async fn cmd_images_crisplens(
             }
         }
 
+        // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+        #[cfg(feature = "images-crisplens-identify")]
         CrispLensCmd::ImageFaces { image_id } => {
             use crate::images::crisplens::tauri_commands::get_json;
             use crisplens_protocol::Face;
@@ -7650,6 +7758,8 @@ async fn cmd_images_crisplens(
         // P13.7 Step 8c — list every image attached to a person cluster.
         // Calls /api/people/{id} (already proxied through get_json_inner
         // for cookie + URL plumbing).
+        // 1:N identification — research only; see Cargo.toml + docs/ai-act.md.
+        #[cfg(feature = "images-crisplens-identify")]
         CrispLensCmd::Person { id } => {
             use crate::images::crisplens::tauri_commands::get_json_inner;
             let dd = data_dir.to_path_buf();
@@ -10401,5 +10511,189 @@ mod conflict_policy_cli_tests {
     fn rejects_unknown_policy_with_guidance() {
         let error = super::parse_conflict_policy("overwrite").unwrap_err();
         assert!(error.contains("newest|local|remote|keep-both|manual"));
+    }
+}
+
+// ── `drives` — the read side of the cloud-drive registry ───────────────────
+//
+// Drive creation and login live in the GUI, which owns the OAuth/keychain
+// flows. The CLI needs the read side because `--drive <id>` arguments (Stage-Q
+// `sync cloud-backup backup-shards`, among others) are unusable if there is no
+// way to discover an id. Two error messages already told users to run
+// `crispsorter drives list` before this existed.
+
+fn cmd_drives(
+    out: OutFormat,
+    data_dir: Option<PathBuf>,
+    cmd: DrivesCmd,
+) -> Result<(), String> {
+    use crate::drives::{DriveRegistry, DriveType};
+
+    let data_dir = resolve_data_dir(data_dir)?;
+    let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+
+    match cmd {
+        DrivesCmd::List { json } => {
+            let json = json || matches!(out, OutFormat::Json);
+            // Report which transport this build actually uses, not which the
+            // provider theoretically supports: for Filen/Internxt that depends
+            // on the `drive-*-native` features, and a user debugging a spawn
+            // error needs to know which side they are on.
+            let transport_of = |kind: &DriveType| -> &'static str {
+                match kind {
+                    DriveType::Filen if cfg!(feature = "drive-filen-native") => "native",
+                    DriveType::Internxt if cfg!(feature = "drive-internxt-native") => "native",
+                    DriveType::Filen | DriveType::Internxt => "python-cli",
+                    _ => "built-in",
+                }
+            };
+
+            if json {
+                let rows: Vec<_> = registry
+                    .drives
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "id": d.id,
+                            "label": d.label,
+                            "kind": d.kind,
+                            "path": d.path,
+                            "transport": transport_of(&d.kind),
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"n": rows.len(), "drives": rows})
+                    )
+                    .unwrap()
+                );
+            } else if registry.drives.is_empty() {
+                println!("no drives registered — add one in the GUI under Index → drives");
+            } else {
+                println!("{:<38}  {:<12}  {:<10}  {}", "ID", "KIND", "TRANSPORT", "LABEL");
+                for d in &registry.drives {
+                    println!(
+                        "{:<38}  {:<12}  {:<10}  {}",
+                        d.id,
+                        d.kind.label(),
+                        transport_of(&d.kind),
+                        d.label
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        DrivesCmd::Ls { drive_id, path, json } => {
+            let json = json || matches!(out, OutFormat::Json);
+            let cfg = registry
+                .drives
+                .iter()
+                .find(|d| d.id == drive_id)
+                .ok_or_else(|| {
+                    format!("drive '{drive_id}' not found; run `crispsorter drives list`")
+                })?;
+            let drive = DriveRegistry::instantiate(cfg);
+            let entries = drive
+                .list_dir(std::path::Path::new(&path))
+                .map_err(|e| e.to_string())?;
+
+            if json {
+                let rows: Vec<_> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({"name": e.name, "is_dir": e.is_dir, "size": e.size})
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "drive": drive_id, "path": path, "n": rows.len(), "entries": rows
+                    }))
+                    .unwrap()
+                );
+            } else {
+                for e in &entries {
+                    let size = if e.is_dir {
+                        "-".to_owned()
+                    } else {
+                        e.size.map(|s| s.to_string()).unwrap_or_else(|| "?".to_owned())
+                    };
+                    println!("{}  {:>12}  {}", if e.is_dir { "d" } else { "-" }, size, e.name);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+// ── `intended-purpose` — inspect / withdraw the acknowledgement ─────────────
+
+fn cmd_intended_purpose(out: OutFormat, cmd: IntendedPurposeCmd) -> Result<(), String> {
+    use crate::intended_purpose as ip;
+
+    match cmd {
+        IntendedPurposeCmd::Show { json, data_dir } => {
+            let dir = resolve_data_dir(data_dir)?;
+            let rec = ip::stored(&dir);
+            let current = ip::is_acknowledged(&dir);
+            if json || matches!(out, OutFormat::Json) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "acknowledged": current,
+                        "statement_version": ip::STATEMENT_VERSION,
+                        "record": rec.as_ref().map(|r| serde_json::json!({
+                            "version": r.version,
+                            "accepted_at_unix": r.accepted_at_unix,
+                            "via": r.via,
+                        })),
+                        "data_dir": dir.display().to_string(),
+                    }))
+                    .unwrap()
+                );
+            } else {
+                println!("{}", ip::STATEMENT);
+                println!();
+                match rec {
+                    // Report the recorded version *and* the current one: the
+                    // interesting case is a record that exists but is stale,
+                    // which reads as "acknowledged" if you only print a boolean.
+                    Some(r) => println!(
+                        "acknowledged: {current}  (recorded v{} at unix {}, via {}; current v{})",
+                        r.version,
+                        r.accepted_at_unix,
+                        if r.via.is_empty() { "unknown" } else { &r.via },
+                        ip::STATEMENT_VERSION
+                    ),
+                    None => println!(
+                        "acknowledged: {current}  (no record in {})",
+                        dir.display()
+                    ),
+                }
+            }
+            Ok(())
+        }
+        IntendedPurposeCmd::Reset { data_dir } => {
+            let dir = resolve_data_dir(data_dir)?;
+            let removed = ip::reset(&dir)?;
+            if matches!(out, OutFormat::Json) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "removed": removed,
+                        "data_dir": dir.display().to_string(),
+                    }))
+                    .unwrap()
+                );
+            } else if removed {
+                println!("acknowledgement removed from {}", dir.display());
+            } else {
+                println!("no acknowledgement was recorded in {}", dir.display());
+            }
+            Ok(())
+        }
     }
 }

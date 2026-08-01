@@ -1444,6 +1444,14 @@ pub async fn sync_status_all(
 
     // Probe CrispLens (blocking call, spawn to avoid blocking the async runtime).
     // status_blocking handles the "not configured" case internally.
+    //
+    // Behind `images-crisplens`: with the feature off there is no client to
+    // probe, and the wire shape stays identical — `configured: false` is
+    // already what an unconfigured install reports, so the UI needs no second
+    // code path for "not compiled in". See PLAN.md P35.4.
+    #[cfg(not(feature = "images-crisplens"))]
+    let cl_probe = async { serde_json::json!({"configured": false}) };
+    #[cfg(feature = "images-crisplens")]
     let cl_probe = {
         let data_dir2 = data_dir.clone();
         async move {
@@ -1909,6 +1917,7 @@ pub async fn sync_federated_search(
 
     let want_local = enabled.contains("local");
     let want_cb    = enabled.contains("cloud_backup");
+    #[cfg(feature = "images-crisplens")]
     let want_cl    = enabled.contains("crisplens");
 
     // Snapshot config under a single lock.
@@ -2044,6 +2053,13 @@ pub async fn sync_federated_search(
     };
 
     // ── CrispLens backend ───────────────────────────────────────────────────
+    // Behind `images-crisplens`: with the feature off there is no client, and the
+    // leg contributes nothing rather than erroring — the same shape `want_cl ==
+    // false` already produces for an unconfigured install, so callers need no
+    // second code path. See PLAN.md P35.4.
+    #[cfg(not(feature = "images-crisplens"))]
+    let cl_fut = async { (Vec::<FederatedHit>::new(), None) };
+    #[cfg(feature = "images-crisplens")]
     let cl_fut = async {
         if !want_cl { return (Vec::new(), None); }
         let dd = data_dir.clone();

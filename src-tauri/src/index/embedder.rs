@@ -2031,10 +2031,18 @@ impl CrispEmbedBackend {
     }
 
     // ── LoRA adapter hot-swap (Jina v5 task adapters) ──────────────
-    // These methods delegate to CrispEmbed's list_lora / set_lora /
-    // get_lora which landed after the v0.11.8 tag.  Gated behind a
-    // compile-time check so the release build against v0.11.8 succeeds.
-    // Un-gate once CrispEmbed cuts a release with the LoRA API.
+    // NOT blocked upstream any more. `CrispEmbed::{list_lora, set_lora,
+    // get_lora}` are present as of v0.16.1, which both workflows now pin, and
+    // `self.model` is exactly that type — so the old note ("landed after the
+    // v0.11.8 tag … un-gate once CrispEmbed cuts a release") is obsolete.
+    //
+    // What is actually missing is a *caller*: nothing in CrispSorter chooses a
+    // task adapter yet, so un-commenting these three would add `pub(crate)`
+    // methods with no users and fail CI's `clippy -D warnings` on `dead_code`.
+    // Wiring them means picking where the choice lives — an embedder setting
+    // that survives re-init, plus a surface to set it — which is a feature, not
+    // an un-gate. Tracked in PLAN.md § P19; keep them commented until then
+    // rather than adding an `#[allow(dead_code)]` nobody revisits.
     //
     // pub(crate) fn list_lora(&self) -> Vec<String> {
     //     self.model.list_lora()

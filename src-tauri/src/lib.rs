@@ -8,6 +8,9 @@ pub mod images;
 /// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
 pub use crispcat as catalog;
 pub mod cli;
+pub mod ai_provenance;
+mod compliance;
+pub mod intended_purpose;
 pub mod docx_tools;
 pub mod drives;
 pub mod extractors;
@@ -49,6 +52,7 @@ async fn tts_speak(state: tauri::State<'_, AppState>, text: String) -> Result<()
     if text.trim().is_empty() {
         return Ok(());
     }
+    ensure_intended_purpose(&state, "tts_speak").await?;
     // Stop any current utterance first — overlapping synths make the
     // output unintelligible and the user's mental model is "speak this
     // now, not after the previous reply finishes".
@@ -1013,6 +1017,25 @@ struct DownloadProgress {
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
 #[cfg(feature = "desktop")]
 use tokio::process::Child as TokioChild;
+
+/// Intended-purpose gate for a Tauri command, resolving `data_dir` from state.
+///
+/// One helper rather than the same six lines at each choke point: the whole
+/// value of the gate is that *every* output-producing path goes through it, and
+/// four hand-copied blocks are four chances for one to be forgotten or to drift.
+/// See `intended_purpose.rs` for what is gated and why chat is not among them.
+pub(crate) async fn ensure_intended_purpose(
+    state: &AppState,
+    operation: &str,
+) -> Result<(), String> {
+    let data_dir = state
+        .data_dir
+        .lock()
+        .await
+        .clone()
+        .ok_or("data_dir not initialised")?;
+    crate::intended_purpose::ensure(&data_dir, operation)
+}
 
 pub struct AppState {
     #[cfg(feature = "desktop")]
@@ -2163,6 +2186,15 @@ async fn execute_batch(
         payload.items.len(),
         payload.mode
     );
+    // Intended-purpose gate. This is the choke point where AI-derived
+    // suggestions stop being suggestions and start moving the user's files, so
+    // it is the one place the notice has to be unavoidable. Acknowledging is a
+    // one-time act (persisted with the statement version + a timestamp), which
+    // means every batch this app executes is one where the statement was shown —
+    // the artifact carries the notice. See src/intended_purpose.rs for where
+    // that inference stops holding.
+    ensure_intended_purpose(&state, "execute_batch").await?;
+
     let mut results = std::collections::HashMap::new();
     let is_script_mode = payload.mode.starts_with("script_");
     let mut script_content = String::new();
@@ -2948,6 +2980,7 @@ pub fn run() {
             drives::tauri_commands::drive_native_login,
             drives::tauri_commands::drive_filen_native_login,
             drives::tauri_commands::drive_native_logout,
+            drives::tauri_commands::drive_native_support,
             drives::tauri_commands::drive_native_refresh,
             doctor_check,
             images::tauri_commands::images_list,
@@ -2957,18 +2990,34 @@ pub fn run() {
             images::tauri_commands::images_duplicates,
             images::tauri_commands::images_near_duplicates,
             images::tauri_commands::images_detect_faces,
+            intended_purpose::tauri_commands::intended_purpose_status,
+            intended_purpose::tauri_commands::intended_purpose_acknowledge,
+            images::images_crisplens_supported,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_settings_get,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_settings_set,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_session_status,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_login,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_logout,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_status,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_watchfolders,
+            #[cfg(feature = "images-crisplens-identify")]
             images::crisplens::tauri_commands::images_crisplens_people,
+            #[cfg(feature = "images-crisplens-identify")]
             images::crisplens::tauri_commands::images_crisplens_image_faces,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_search,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_by_hash,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_by_local_path,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_push,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,
@@ -3306,6 +3355,7 @@ pub fn run() {
             drives::tauri_commands::drive_native_login,
             drives::tauri_commands::drive_filen_native_login,
             drives::tauri_commands::drive_native_logout,
+            drives::tauri_commands::drive_native_support,
             drives::tauri_commands::drive_native_refresh,
             doctor_check,
             images::tauri_commands::images_list,
@@ -3315,18 +3365,34 @@ pub fn run() {
             images::tauri_commands::images_duplicates,
             images::tauri_commands::images_near_duplicates,
             images::tauri_commands::images_detect_faces,
+            intended_purpose::tauri_commands::intended_purpose_status,
+            intended_purpose::tauri_commands::intended_purpose_acknowledge,
+            images::images_crisplens_supported,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_settings_get,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_settings_set,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_session_status,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_login,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_logout,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_status,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_watchfolders,
+            #[cfg(feature = "images-crisplens-identify")]
             images::crisplens::tauri_commands::images_crisplens_people,
+            #[cfg(feature = "images-crisplens-identify")]
             images::crisplens::tauri_commands::images_crisplens_image_faces,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_search,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_by_hash,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_by_local_path,
+            #[cfg(feature = "images-crisplens")]
             images::crisplens::tauri_commands::images_crisplens_image_push,
             index::tauri_commands::index_ingest_cb_manifest,
             index::tauri_commands::index_promote_cb_archive,

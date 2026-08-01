@@ -106,7 +106,9 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
 fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
     match pattern.split_first() {
         None => path.is_empty(),
-        Some(("**", rest)) => {
+        // `split_first` on `&[&str]` yields `Option<(&&str, &[&str])>`, so the
+        // literal needs its own `&` to line up with the double reference.
+        Some((&"**", rest)) => {
             glob_segments(rest, path)
                 || path
                     .split_first()

@@ -1,4 +1,6 @@
 <script lang="ts">
+    import IntendedPurposeGate from './IntendedPurposeGate.svelte';
+    import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { batchManager } from '../batch/store.svelte';
     import { DEFAULT_PROVIDERS, llmClient, type LLMProvider } from '../llm/client';
     import { getSetting } from '../store';
@@ -505,12 +507,23 @@
     </div>
 
     <div class="chat-main">
+        <!-- Chat completions go straight from `deep-chat` to the provider and
+             never reach a Tauri command, so the Rust gate cannot see them. This
+             overlay IS the gate for this surface. -->
+        <IntendedPurposeGate />
         <div class="chat-header" class:extra-pad={sidebarCollapsed}>
             <div class="header-info">
                 <h2>{i18n.t.chat.title}</h2>
                 <div class="context-stats">
                     <span class="stat-badge">{i18n.t.chat.docs} {selectedIds.length} ({formatSize(docContextSize)})</span>
                     <span class="stat-badge history">{i18n.t.chat.history}: {formatSize(chatHistorySize)}</span>
+                    <!-- Art 50(1)+(2): a panel-level disclosure rather than a
+                         per-message one. Answers render inside the `deep-chat`
+                         web component, so marking each bubble would mean
+                         reaching into its shadow DOM; a persistent notice on the
+                         surface that produces them informs the user just as
+                         well and cannot drift out of sync with the messages. -->
+                    <AiGeneratedBadge compact />
                 </div>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
