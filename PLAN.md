@@ -1602,10 +1602,11 @@ source.
   mount_point, cache_max_bytes with 2 GB default) + `FuseMountStatus`.
   3 unconditional unit tests (config serde, default cache, status).
   LRU content cache deferred (TODO in read path).
-- [ ] **Tauri commands: `drive_mount(drive_id, mount_point)`,
-  `drive_unmount(drive_id)`.**  Mount runs on a dedicated thread
-  (FUSE event loop is blocking).  Unmount via `fuser::MountOption`
-  or `fusermount -u`.
+- [x] **Tauri commands: `drive_mount(drive_id, mount_point)`,
+  `drive_unmount(drive_id)`.** ✅ SHIPPED (2026-08-01). Mount runs on a
+  dedicated thread, tracks active mounts, requires an absolute mount point,
+  and returns a clear feature-disabled error in non-FUSE builds. Unmount uses
+  the platform helper with a safe explicit path argument.
 - [ ] **Integration with folder watcher.**  Once mounted, the user
   can point the existing `crispsorter watch <mountpoint>` at the
   FUSE directory.  The watcher sees new/changed files and feeds them
