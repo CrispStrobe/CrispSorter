@@ -3040,7 +3040,7 @@ a transfer without leaving the search/catalog workflow.
     for that group instead of resetting to review. ✅ 2026-08-01
   - [x] The duplicate pane exposes persisted decision history with timestamps
     and an explicit clear-audit control. ✅ 2026-08-01
-- [ ] **Minimal file-manager operations.** Implement folder context, create
+- [x] **Minimal file-manager operations.** Implement folder context, create
   directory, rename, move/copy, delete/trash, refresh, breadcrumbs, and
   selection.  Defer the full Double Commander keyboard surface until these
   operations work across LocalDrive and at least Internxt/Filen/WebDAV.

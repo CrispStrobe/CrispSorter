@@ -11,10 +11,10 @@
 //! migration.  If only the backup pin matches, we log a warning
 //! (signals an upcoming rotation) but still allow the connection.
 //!
-//! Pinning is applied *after* standard chain validation — a pinned
-//! connection that passes chain validation but fails pin verification
-//! is rejected, while a connection that fails chain validation is
-//! rejected regardless of pins.
+//! The pin policy and verification primitives are implemented and validated
+//! at client construction time.  Handshake enforcement remains a separate
+//! integration step because the current native-tls/reqwest boundary does not
+//! expose the validated root chain to a portable SPKI verifier.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
