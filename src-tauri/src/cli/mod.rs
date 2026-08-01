@@ -486,10 +486,29 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum SyncCmd {
+    /// Manage persisted local-folder ↔ cloud-drive sync pairs.
+    Pair {
+        #[command(subcommand)]
+        cmd: SyncPairCmd,
+    },
     /// Cloud-backup HTTP target.
     CloudBackup {
         #[command(subcommand)]
         cmd: CloudBackupCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SyncPairCmd {
+    /// List configured sync pairs.
+    List,
+    /// Preview matching local files without contacting a provider.
+    Plan { id: String },
+    /// Show recent pair run audit records.
+    Runs {
+        id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 
@@ -5019,8 +5038,59 @@ async fn cmd_sync_async(
     cmd: SyncCmd,
 ) -> Result<(), String> {
     match cmd {
+        SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd),
         SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
     }
+}
+
+fn cmd_sync_pair(
+    out: OutFormat,
+    data_dir: &std::path::Path,
+    cmd: SyncPairCmd,
+) -> Result<(), String> {
+    let store = crate::sync::pairs::SyncPairStore::open(data_dir).map_err(|e| e.to_string())?;
+    match cmd {
+        SyncPairCmd::List => {
+            let pairs = store.list().map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&pairs).unwrap()),
+                OutFormat::Text => {
+                    for pair in pairs {
+                        println!("{}: {} ↔ {} ({:?}, watermark={})", pair.id, pair.local_root, pair.remote_root, pair.mode, pair.watermark);
+                    }
+                }
+            }
+        }
+        SyncPairCmd::Plan { id } => {
+            let pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            let plan = crate::sync::pairs::plan_local(&pair).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&plan).unwrap()),
+                OutFormat::Text => {
+                    for entry in plan {
+                        println!("{}  {} bytes  mtime={}", entry.relative_path, entry.size, entry.mtime_unix);
+                    }
+                }
+            }
+        }
+        SyncPairCmd::Runs { id, limit } => {
+            let runs = store.list_runs(&id, limit).map_err(|e| e.to_string())?;
+            match out {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&runs).unwrap()),
+                OutFormat::Text => {
+                    for run in runs {
+                        println!("#{} {} planned={} uploaded={} watermark={}{}", run.id, run.status, run.planned, run.uploaded, run.watermark, run.error.map(|e| format!(" error={e}")).unwrap_or_default());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the bearer token from (in priority order): CB_SYNC_API_KEY
