@@ -1402,6 +1402,9 @@ If the network drops mid-sync, operations are lost.
   exhausts its 5 retries (or gets a connection-refused / DNS error),
   persist it to the offline queue instead of dropping it.  Same for
   `sync cloud-backup push/pull` when the cb-api is unreachable.
+  - [x] GUI drive writes stage failed bytes and enqueue a replay descriptor;
+    startup maintenance and the explicit replay command retry those uploads.
+    ✅ 2026-08-01
 - [ ] **Replay on reconnect.**  Background task
   (`sync/offline_replay.rs`) polls network reachability every 60 s
   (HEAD request to the cb-api `/health` endpoint).  On success,
@@ -1414,6 +1417,8 @@ If the network drops mid-sync, operations are lost.
   list with per-op details and a "Retry now" button.
   - [x] The existing transfer drawer now surfaces pending/failed counts and
     provides retry-failed and purge-failed controls. ✅ 2026-08-01
+  - [x] Expanded drawer view now lists queued operation/provider, retry count,
+    status, and the latest error diagnostic. ✅ 2026-08-01
 - [ ] **Tests.**  ✅ 6 unit tests shipped with the module (see above).
 
 #### Priority 4 — Conflict resolution policies
