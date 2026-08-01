@@ -3096,6 +3096,8 @@ a transfer without leaving the search/catalog workflow.
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client
   boundary exists.
+  - [x] Cloud-backup and remote-index clients now consume the shared proxy
+    builder; cloud-backup has hermetic valid/invalid proxy construction tests.
 - [ ] Add client-side encrypted-drive wrapping and Cryptomator interoperability
   as a separate security project; do not mix it with ordinary provider links,
   indexing, or share-link semantics.  Encrypted filenames disable provider

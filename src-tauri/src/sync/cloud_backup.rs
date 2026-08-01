@@ -1211,6 +1211,14 @@ mod tests {
         CloudBackupClient::new(server.url(), "cbk_test_key").unwrap()
     }
 
+    #[test]
+    fn cloud_backup_client_uses_shared_proxy_validation() {
+        let invalid = ProxyConfig { url: Some("not a proxy URL".into()), ..Default::default() };
+        assert!(CloudBackupClient::new_with_proxy("http://localhost", "key", &invalid).is_err());
+        let valid = ProxyConfig { url: Some("socks5://127.0.0.1:9050".into()), ..Default::default() };
+        assert!(CloudBackupClient::new_with_proxy("http://localhost", "key", &valid).is_ok());
+    }
+
     // ── manifest_push ────────────────────────────────────────────────
 
     #[tokio::test]
