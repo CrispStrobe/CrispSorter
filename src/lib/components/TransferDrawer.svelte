@@ -132,6 +132,12 @@
         finally { queueBusy = false; }
     }
 
+    async function replayQueueNow() {
+        queueBusy = true;
+        try { await invoke('offline_queue_replay', { limit: 20 }); await refresh(); }
+        finally { queueBusy = false; }
+    }
+
     async function purgeFailedQueue() {
         queueBusy = true;
         try { await invoke('offline_queue_purge_failed', { olderThanDays: 0 }); await refresh(); }
@@ -164,7 +170,7 @@
     <section class="transfer-drawer" aria-label="Cloud transfers">
         <button class="drawer-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
             <span class="drawer-title"><span class="status-dot" class:busy={activeCount > 0}></span>Transfers</span>
-            <span class="drawer-summary">{activeCount} active · {jobs.length} total</span>
+            <span class="drawer-summary">{activeCount} active · {jobs.length} total{offline && offline.pending > 0 ? ` · ${offline.pending} queued` : ''}</span>
             {#if expanded}<ChevronDown size={16} />{:else}<ChevronUp size={16} />{/if}
         </button>
 
@@ -208,8 +214,13 @@
                 </div>
                 {#if offline.failed > 0}
                     <div class="offline-actions">
+                        {#if offline.pending > 0}<button onclick={replayQueueNow} disabled={queueBusy}>Retry now</button>{/if}
                         <button onclick={retryFailedQueue} disabled={queueBusy}>Retry failed</button>
                         <button onclick={purgeFailedQueue} disabled={queueBusy}>Purge failed</button>
+                    </div>
+                {:else if offline.pending > 0}
+                    <div class="offline-actions">
+                        <button onclick={replayQueueNow} disabled={queueBusy}>Retry now</button>
                     </div>
                 {/if}
             </div>
