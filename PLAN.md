@@ -2869,6 +2869,9 @@ a transfer without leaving the search/catalog workflow.
   - [x] Headless CLI parity now exposes `sync pair list`, `plan`, and `runs`
     for inspecting configured pairs, filtered local snapshots, and audit
     history without touching cloud-backup commands. ✅ 2026-08-01
+  - [x] CLI now also supports `sync pair push <id> [--dry-run]`, using the
+    same incremental watermark and shared TransferQueue upload path as the
+    Tauri command. ✅ 2026-08-01
 - [ ] **Conflict policies.** Wire newest/local/remote/keep-both/manual into
   sync and file-manager mutations.  Add a manual conflict review panel with
   local/remote metadata, hashes, preview, and explicit resolution actions.

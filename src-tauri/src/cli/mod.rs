@@ -510,6 +510,12 @@ enum SyncPairCmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Upload newer matching local files through the shared transfer queue.
+    Push {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -5038,12 +5044,12 @@ async fn cmd_sync_async(
     cmd: SyncCmd,
 ) -> Result<(), String> {
     match cmd {
-        SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd),
+        SyncCmd::Pair { cmd } => cmd_sync_pair(out, data_dir, cmd).await,
         SyncCmd::CloudBackup { cmd } => cmd_sync_cloud_backup(out, data_dir, cmd).await,
     }
 }
 
-fn cmd_sync_pair(
+async fn cmd_sync_pair(
     out: OutFormat,
     data_dir: &std::path::Path,
     cmd: SyncPairCmd,
@@ -5089,8 +5095,78 @@ fn cmd_sync_pair(
                 }
             }
         }
+        SyncPairCmd::Push { id, dry_run } => {
+            use crate::drives::DriveRegistry;
+            use crate::sync::transfer_queue::TransferQueue;
+            use std::sync::Arc;
+
+            let mut pair = store
+                .list()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|pair| pair.id == id)
+                .ok_or_else(|| format!("sync pair '{id}' not found"))?;
+            if matches!(pair.mode, crate::sync::pairs::SyncPairMode::ToLocal) {
+                return Err("sync pair is configured for remote-to-local direction".into());
+            }
+            let plan = crate::sync::pairs::plan_local_since(&pair).map_err(|e| e.to_string())?;
+            let started_at = sync_pair_cli_now_ms();
+            if dry_run || plan.is_empty() {
+                let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                    id: 0,
+                    pair_id: pair.id.clone(),
+                    status: if dry_run { "dry_run" } else { "no_changes" }.into(),
+                    planned: plan.len(), uploaded: 0, watermark: pair.watermark,
+                    error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+                });
+                print_sync_pair_push(out, &id, dry_run, plan.len(), 0, pair.watermark);
+                return Ok(());
+            }
+            let registry = DriveRegistry::open(data_dir).map_err(|e| e.to_string())?;
+            let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
+                .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
+            let drive: Arc<dyn crate::drives::CloudDrive> =
+                Arc::from(DriveRegistry::instantiate(config));
+            if !drive.capabilities().write {
+                return Err(format!("{} does not support uploads", drive.drive_type().label()));
+            }
+            let queue = TransferQueue::shared();
+            let mut uploaded = 0usize;
+            let mut watermark = pair.watermark;
+            for entry in &plan {
+                let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+                let bytes = std::fs::read(&local).map_err(|e| format!("reading {}: {e}", local.display()))?;
+                let remote = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
+                let drive_for_upload = drive.clone();
+                let transfer = queue.submit_upload(pair.drive_id.clone(), remote, bytes,
+                    move |path, data| drive_for_upload.write_file(path, data));
+                match transfer.handle.await {
+                    Ok(Ok(_)) => { uploaded += 1; watermark = watermark.max(entry.mtime_unix); }
+                    Ok(Err(error)) => return Err(error.to_string()),
+                    Err(error) => return Err(format!("sync transfer task failed: {error}")),
+                }
+            }
+            pair.watermark = watermark;
+            store.upsert(pair).map_err(|e| e.to_string())?;
+            let _ = store.record_run(&crate::sync::pairs::SyncPairRun {
+                id: 0, pair_id: id.clone(), status: "completed".into(), planned: plan.len(),
+                uploaded, watermark, error: None, started_at, finished_at: sync_pair_cli_now_ms(),
+            });
+            print_sync_pair_push(out, &id, false, plan.len(), uploaded, watermark);
+        }
     }
     Ok(())
+}
+
+fn print_sync_pair_push(out: OutFormat, id: &str, dry_run: bool, planned: usize, uploaded: usize, watermark: i64) {
+    match out {
+        OutFormat::Json => println!("{}", serde_json::json!({"pair_id": id, "dry_run": dry_run, "planned": planned, "uploaded": uploaded, "watermark": watermark})),
+        OutFormat::Text => println!("pair {id}: planned={planned} uploaded={uploaded} watermark={watermark}{}", if dry_run { " (dry-run)" } else { "" }),
+    }
+}
+
+fn sync_pair_cli_now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
 /// Resolve the bearer token from (in priority order): CB_SYNC_API_KEY
