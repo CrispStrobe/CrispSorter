@@ -54,6 +54,64 @@ fn setup() -> Option<(
     Some((client, session, cli, python))
 }
 
+fn native_setup() -> Option<(FilenNativeClient, crisp_filen::FilenSession)> {
+    let email = env::var("FILEN_EMAIL")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    let password = env::var("FILEN_PASSWORD")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    let session = match FilenNativeClient::login(
+        DEFAULT_GATEWAY_URL,
+        &email,
+        &password,
+        env::var("FILEN_TFA").ok().as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("Filen live login failed: {error:#}"),
+    };
+    let client = FilenNativeClient::from_session(&session).unwrap();
+    Some((client, session))
+}
+
+#[test]
+#[ignore = "uploads/downloads 100 MiB; requires FILEN_EMAIL/FILEN_PASSWORD"]
+fn filen_live_100m_resumable_round_trip() {
+    const LARGE_FILE_SIZE: u64 = 100 * 1024 * 1024 + 1;
+    let Some((client, session)) = native_setup() else {
+        eprintln!("skipping Filen large-file test: set FILEN_EMAIL and FILEN_PASSWORD");
+        return;
+    };
+    let folder = format!("_crispsorter_live_{}_100m_resume", std::process::id());
+    let folder_uuid = client
+        .create_folder(&session.root_folder_uuid, &folder)
+        .unwrap();
+    let source = tempfile::NamedTempFile::new().unwrap();
+    source.as_file().set_len(LARGE_FILE_SIZE).unwrap();
+    let mut upload = client
+        .begin_upload(&folder_uuid, "large.bin", "application/octet-stream", LARGE_FILE_SIZE)
+        .unwrap();
+    let upload_state = tempfile::NamedTempFile::new().unwrap();
+    client.save_upload_resume_state(upload_state.path(), &upload).unwrap();
+    upload = client.load_upload_resume_state(upload_state.path()).unwrap().unwrap();
+    client
+        .resume_upload_from_reader(&mut upload, std::fs::File::open(source.path()).unwrap())
+        .unwrap();
+
+    let item = client
+        .resolve_path(&session, std::path::Path::new(&format!("/{folder}/large.bin")))
+        .unwrap();
+    assert_eq!(item.size, LARGE_FILE_SIZE);
+    let output_dir = tempfile::tempdir().unwrap();
+    let destination = output_dir.path().join("large.bin");
+    let download_state = output_dir.path().join("large-download-state.json");
+    client
+        .download_file_to_path_resumable(&item, &destination, &download_state)
+        .unwrap();
+    assert_eq!(fs::metadata(&destination).unwrap().len(), LARGE_FILE_SIZE);
+    client.trash(&folder_uuid, "folder").unwrap();
+}
+
 #[test]
 #[ignore = "requires FILEN_EMAIL/FILEN_PASSWORD and a configured Python CLI session"]
 fn filen_live_rust_to_python() {

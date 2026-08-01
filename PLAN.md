@@ -2706,6 +2706,10 @@ a transfer without leaving the search/catalog workflow.
     identity, metadata, partial destination, and completed decrypted chunks.
     Incompatible state is discarded rather than applied to a replacement.
     ✅ 2026-08-01
+  - [x] Added an ignored Filen live 100 MiB+1 byte resumable upload/download
+    round-trip with persisted upload and download checkpoints; it requires
+    explicit `FILEN_EMAIL`/`FILEN_PASSWORD` and never discovers credentials.
+    ✅ 2026-08-01
 - [ ] **Provider capability matrix and test harness.** Add local mock HTTP
   servers and contract tests for listing, mutation, streaming, retries,
   resume, expired auth, share/version behavior, and unsupported operations.
