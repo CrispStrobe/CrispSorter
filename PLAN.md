@@ -2856,8 +2856,9 @@ a transfer without leaving the search/catalog workflow.
     generic rclone `copy`/`sync` orchestration; that does not mean Internxt’s
     provider API has native copy. Our Python and Dart Internxt clients do
     expose copy, so the Rust subprocess adapter now matches create/rename/
-    move; copy remains the next intentional gap if we choose to add
-    client-side orchestration.
+    move; the Rust subprocess adapter now also exposes the Python CLI's
+    metadata-preserving `cp` orchestration (the official Go adapter still
+    has no provider-level copy operation). ✅ 2026-08-01
 - [x] **One shared application TransferQueue (GUI slice).** AppState now owns
   one bounded queue shared by GUI drive reads/writes, cloud-backup upload/
   restore, and index archive promotion. ✅ Shipped 2026-07-31.

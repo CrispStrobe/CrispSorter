@@ -208,6 +208,7 @@ impl CloudDrive for InternxtDrive {
             create_dir: true,
             rename: true,
             move_path: true,
+            copy: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -388,6 +389,28 @@ impl CloudDrive for InternxtDrive {
         Ok(())
     }
 
+    fn copy_path(&self, source: &Path, destination: &Path) -> Result<()> {
+        let source_string = source.to_string_lossy();
+        let destination_parent = destination.parent().unwrap_or_else(|| Path::new("/"));
+        let destination_parent_string = destination_parent.to_string_lossy();
+        self.run(&["cp", &source_string, &destination_parent_string])?;
+        let source_name = source
+            .file_name()
+            .ok_or_else(|| anyhow!("copy source has no filename: {}", source.display()))?;
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| anyhow!("copy destination has no filename: {}", destination.display()))?;
+        if source_name != destination_name {
+            let copied = destination_parent.join(source_name);
+            self.run(&[
+                "rename",
+                &copied.to_string_lossy(),
+                &destination_name.to_string_lossy(),
+            ])?;
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> Result<()> {
         self.run(&["trash-path", &path.to_string_lossy(), "--force"])?;
         Ok(())
@@ -406,7 +429,7 @@ mod tests {
         assert!(drive.capabilities().create_dir);
         assert!(drive.capabilities().rename);
         assert!(drive.capabilities().move_path);
-        assert!(!drive.capabilities().copy);
+        assert!(drive.capabilities().copy);
     }
 
     #[test]
