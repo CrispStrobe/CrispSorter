@@ -1579,7 +1579,7 @@ mostly plumbing + settings UI.
   `SyncManager`, `cb-api` client, feed fetcher (`feed.rs`), LLM API
   clients.  The shared `CloudBackupClient::new_with_proxy`,
   `SyncManager::*_with_proxy`, and `fetch_and_parse_with_proxy` boundaries
-  are now wired; remaining providers use their existing constructors until
+  plus `RemoteClient::new_with_proxy` are now wired; remaining providers use their existing constructors until
   their credential/config plumbing is migrated. Single `build_proxy_client`
   call site shared via a lazy `OnceCell<reqwest::Client>` remains future work.
 - [ ] **Settings UI.**  "Network" section: proxy URL input, username,

@@ -36,8 +36,10 @@ use crisp_index_protocol::{
 };
 use reqwest::Client;
 use serde::Serialize;
+use std::time::Duration;
 
 use super::schema::{SearchFilters, SearchResult};
+use crate::sync::proxy::ProxyConfig;
 use super::{DocumentChunk, IndexBackend};
 
 // ── RemoteClient ──────────────────────────────────────────────────────────────
@@ -50,11 +52,21 @@ pub struct RemoteClient {
 
 impl RemoteClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        RemoteClient {
+        Self::new_with_proxy(base_url, api_key, &ProxyConfig::default())
+            .expect("default remote HTTP client must build")
+    }
+
+    /// Construct the remote index client with the shared proxy policy.
+    pub fn new_with_proxy(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        proxy: &ProxyConfig,
+    ) -> Result<Self> {
+        Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_key: api_key.into(),
-            client: Client::new(),
-        }
+            client: crate::sync::proxy::build_async_client_with_timeout(proxy, Duration::from_secs(30))?,
+        })
     }
 
     fn url(&self, path: &str) -> String {
