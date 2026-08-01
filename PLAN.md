@@ -3089,6 +3089,9 @@ a transfer without leaving the search/catalog workflow.
       messages in actionable errors, with a secret-free unit test.
     - [x] The same structured error mapping now covers security-detail and
       session-hydration failures across the full Internxt login flow.
+    - [x] Keychain-backed credential/session set/get/delete APIs now have
+      isolated mock-keyring round-trip coverage; no OS keychain is consulted
+      by tests.
 
 - [ ] Wire proxy configuration and certificate pinning through every cloud
   connector; add custom CA and TLS policy only after the common HTTP client

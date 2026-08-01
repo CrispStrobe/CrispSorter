@@ -138,4 +138,24 @@ mod tests {
         stored.delete_credential().unwrap();
         assert!(matches!(stored.get_password(), Err(keyring::Error::NoEntry)));
     }
+
+    #[test]
+    fn public_credential_and_session_api_round_trips_and_deletes() {
+        install_mock_for_tests();
+        let id = "test-public-secret-api";
+        let credentials = DriveCredentials {
+            username: Some("user".into()), password: Some("secret".into()),
+            access_token: Some("access".into()), refresh_token: Some("refresh".into()),
+            client_id: Some("public".into()),
+        };
+        set_credentials(id, &credentials).unwrap();
+        assert_eq!(get_credentials(id).unwrap(), Some(credentials));
+        delete_credentials(id).unwrap();
+        assert_eq!(get_credentials(id).unwrap(), None);
+
+        set_session(id, "encrypted-session").unwrap();
+        assert_eq!(get_session(id).unwrap().as_deref(), Some("encrypted-session"));
+        delete_session(id).unwrap();
+        assert_eq!(get_session(id).unwrap(), None);
+    }
 }
