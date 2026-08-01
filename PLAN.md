@@ -2843,9 +2843,16 @@ a transfer without leaving the search/catalog workflow.
     client now requests `format=json` (required by ownCloud) and accepts both
     OCS success status codes used by the two servers; hermetic request/response
     and live create/delete tests pass. ✅ 2026-08-01
-  - [ ] Verify atomic finalize semantics in the patched desktop clients; the
-    current server validates If-Match before each mutation but does not yet
-    expose a transaction-level lock.
+  - [x] Complete server-side staged finalize semantics in the patched desktop
+    clients' shared PHP handler. Changed blocks are staged under a per-file
+    lock, every mutation validates If-Match, and finalize applies the complete
+    result with one content write before rebuilding the block map and clearing
+    staging. The live 9/9 delta suites pass on both Nextcloud and ownCloud,
+    including replacement, shrink, grow, and stale-ETag rejection.
+    ✅ 2026-08-01
+  - [ ] Validate transaction-level visibility from concurrent desktop-client
+    readers. The server-side finalize is serialized and single-write, but the
+    live suite does not yet include a concurrent-reader observation test.
 - [ ] **Share/version commands.** Expose `drive_list_versions` and
   `drive_restore_version`; add Google/OneDrive response mocks, then add
   WebDAV/Nextcloud detection only when the server advertises OCS sharing.
