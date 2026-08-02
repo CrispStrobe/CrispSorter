@@ -1527,7 +1527,7 @@ will surface.
     calls the owner-scoped `/api/manifest/resolve` path+hash lookup, validates
     identity, replaces the local path at the index level, and only
     then removes the durable conflict. ✅ 2026-08-01
-- [ ] **Tests.**  ✅ 10 unit tests shipped with the module (see above).
+- [x] **Tests.** ✅ 10 unit tests shipped with the module (see above).
   Manual queue persistence/deduplication coverage now ships in
   `sync::tests::manual_conflicts_are_durable_and_deduplicated`; the exact
   manifest resolver has Python API coverage and a Rust hermetic HTTP parser

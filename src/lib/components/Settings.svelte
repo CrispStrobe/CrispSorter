@@ -4221,7 +4221,8 @@
                 <label for='index-conflict-policy' style='margin-top:14px;'>
                     Conflict policy
                 </label>
-                <select id='index-conflict-policy' bind:value={indexConflictPolicy}>
+                <select id='index-conflict-policy' bind:value={indexConflictPolicy}
+                    onchange={() => { if (indexConflictPolicy === 'manual') void refreshConflicts(); }}>
                     <option value='newest_wins'>Newest wins</option>
                     <option value='local_wins'>Local wins</option>
                     <option value='remote_wins'>Remote wins</option>
