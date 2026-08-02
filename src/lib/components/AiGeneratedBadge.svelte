@@ -7,8 +7,12 @@
     // applies to every generative surface, and a copied span is the thing that
     // gets forgotten when the next one is added.
     //
-    // Not needed for synthesised *audio* — CrispASR watermarks that in the
-    // signal itself (see docs/ai-act.md).
+    // Audio synthesised *by CrispASR* is watermarked in the signal itself.
+    // Audio and images from the AIToolkit backend are marked differently — an
+    // XMP/ID3 assertion written into the file's metadata by the server — so the
+    // badge still belongs on those panels, and the artifact-level state is
+    // reported there from the backend's own `marked` signal rather than assumed.
+    // See docs/ai-act.md § 5.
     import { Sparkles } from 'lucide-svelte';
     import { i18n } from '$lib/i18n.svelte';
 

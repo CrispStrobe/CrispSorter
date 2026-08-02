@@ -2705,6 +2705,10 @@ pub async fn sync_federated_search(
     // false` already produces for an unconfigured install, so callers need no
     // second code path. See PLAN.md P35.4.
     #[cfg(not(feature = "images-crisplens"))]
+    // Typed `None` rather than a bare one: the feature-on arm infers the error
+    // type from its own `Err(e) => (…, Some(e.to_string()))`, but this arm has
+    // nothing to infer from, and the only consumer is `e.into()` into a
+    // `serde_json::Value`.
     let cl_fut = async { (Vec::<FederatedHit>::new(), Option::<String>::None) };
     #[cfg(feature = "images-crisplens")]
     let cl_fut = async {
@@ -3014,6 +3018,12 @@ mod tests {
         std::fs::write(dir.path().join("nested/skip.txt"), b"txt").unwrap();
         let drive = crate::drives::LocalDrive::new("inventory", dir.path().to_owned());
         let mut rows = Vec::new();
+        // Start from the drive's own root path, the way a configured sync pair
+        // does. NOT `Path::new("/")`: `LocalDrive::full` passes absolute paths
+        // through by design (it backs local disks and SFTP mounts, where
+        // absolute remote paths are the normal case), so `/` means the real
+        // filesystem root and this walked the whole machine until it hit an
+        // unreadable system directory.
         inventory_remote(
             &drive,
             dir.path(),

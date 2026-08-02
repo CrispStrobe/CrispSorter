@@ -1,5 +1,10 @@
 <script lang="ts">
+	// The connection tab also carries inline panels that produce AI output
+	// (chat, translate, and vision — which is image captioning). Same Art 50
+	// treatment as AIToolkitCapability.svelte; see docs/ai-act.md.
 	import { aitoolkit, aitoolkitCaps, AIToolkitClient, capabilitiesFromFeatures } from '$lib/aitoolkit';
+	import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+	import IntendedPurposeGate from './IntendedPurposeGate.svelte';
 
 	let baseUrl = $state($aitoolkit.baseUrl);
 	let token = $state<string | null>($aitoolkit.token);
@@ -13,6 +18,11 @@
 	let error = $state('');
 	let busy = $state(false);
 	let sub = $state('chat');
+
+	/// `ocr` and `extract` render text that is already in the file; the rest
+	/// generate content and are in scope for Art 50(2).
+	const GENERATIVE = new Set(['chat', 'translate', 'vision']);
+	let generative = $derived(GENERATIVE.has(sub));
 
 	function client() {
 		return new AIToolkitClient(baseUrl.replace(/\/+$/, ''), token);
@@ -143,7 +153,10 @@
 			{/each}
 		</div>
 
-		<section>
+		<section class="panels">
+			<!-- Scoped to the panels rather than the whole tab: an overlay over the
+			     connection form would block the login the panels need. -->
+			{#if generative}<IntendedPurposeGate />{/if}
 			{#if !token && sub !== 'extract'}<p class="muted">Log in to use provider-backed capabilities.</p>{/if}
 
 			{#if sub === 'chat'}
@@ -169,7 +182,10 @@
 				<p class="muted">Capability <code>{sub}</code> is available on the backend; a panel for it is not wired here yet.</p>
 			{/if}
 
-			{#if out}<pre>{out}</pre>{/if}
+			{#if out}
+				{#if generative}<AiGeneratedBadge compact />{/if}
+				<pre>{out}</pre>
+			{/if}
 		</section>
 	{/if}
 
@@ -190,4 +206,7 @@
 	.err { color: #e03131; }
 	.muted { opacity: 0.7; }
 	section { margin-top: 0.75rem; }
+	/* Anchors the IntendedPurposeGate overlay (`position: absolute; inset: 0`)
+	   to the panel area. */
+	.panels { position: relative; }
 </style>
