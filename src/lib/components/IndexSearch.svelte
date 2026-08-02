@@ -87,7 +87,6 @@
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
-    let promoteBusy  = $state<string | null>(null);
     let promoteBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let batchSelection = $state<Set<string>>(new Set());

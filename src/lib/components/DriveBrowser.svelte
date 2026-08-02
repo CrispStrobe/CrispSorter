@@ -377,6 +377,8 @@
                 <code>{rightPanel.source.query}</code>
             {:else if rightPanel.source.kind === 'DuplicateGroup'}
                 {@const dupSource = rightPanel.source}
+                {@const cloudMutations = duplicateMutationAudit.filter((entry) => entry.groupId === dupSource.groupId)}
+                {@const lastCloudMutation = cloudMutations.at(-1)}
                 <code>group: {dupSource.groupId}</code>
                 <div class="duplicate-decision">
                     <span class="context-label">Dry-run decision</span>
@@ -389,9 +391,7 @@
                     {#if duplicateAudit.some((entry) => entry.groupId === dupSource.groupId)}
                         <button class="duplicate-undo" onclick={undoDuplicateDecision}>Undo last decision</button>
                     {/if}
-                    {@const cloudMutations = duplicateMutationAudit.filter((entry) => entry.groupId === dupSource.groupId)}
                     {#if cloudMutations.length > 0}
-                        {@const lastCloudMutation = cloudMutations.at(-1)}
                         <details class="duplicate-audit">
                             <summary>Cloud mutation audit ({cloudMutations.length})</summary>
                             <div class="audit-list">
