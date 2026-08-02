@@ -1,11 +1,16 @@
 <script lang="ts">
     // AI Act Art 50(2) disclosure marker for synthetic text.
     //
-    // Chat answers, summaries and machine translation are content a model
-    // generated, so they are labelled wherever they are shown. Deliberately one
-    // shared component rather than an inline span per view: the obligation
-    // applies to every generative surface, and a copied span is the thing that
-    // gets forgotten when the next one is added.
+    // Chat answers, machine translation and batch metadata suggestions are
+    // content a model generated, so they are labelled wherever they are shown.
+    // Deliberately one shared component rather than an inline span per view:
+    // the obligation applies to every generative surface, and a copied span is
+    // the thing that gets forgotten when the next one is added.
+    //
+    // Not summaries: `index/summary.rs` is extractive sentence-slicing, which
+    // reproduces the input rather than generating. The tooltip used to claim
+    // otherwise (corrected 2026-08-02) — overstating the badge is its own kind
+    // of inaccurate disclosure.
     //
     // Audio synthesised *by CrispASR* is watermarked in the signal itself.
     // Audio and images from the AIToolkit backend are marked differently — an

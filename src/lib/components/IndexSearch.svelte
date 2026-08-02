@@ -1,5 +1,6 @@
 <script lang="ts">
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
+    import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath, openUrl } from '@tauri-apps/plugin-opener';
     import { save } from '@tauri-apps/plugin-dialog';
@@ -2061,6 +2062,13 @@
                             {:else if ts.translated_text}
                                 <div class="translate-result">
                                     <div class="translate-meta">
+                                        <!-- Art 50(2): machine translation shown here is synthetic
+                                             text and carries the same badge as the Translate panel.
+                                             This surface was unmarked until the 2026-08-02 audit —
+                                             it invokes `translate_text` directly rather than going
+                                             through the AIToolkit client, so the disclosure guard
+                                             could not see it. -->
+                                        <AiGeneratedBadge compact />
                                         <span class="translate-arrow">
                                             {ts.source_lang ?? '?'} → {ts.target_lang ?? translateTargetLang}
                                         </span>

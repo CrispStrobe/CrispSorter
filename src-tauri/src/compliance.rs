@@ -11,12 +11,18 @@
 mod tests {
     use std::path::{Path, PathBuf};
 
-    /// Every `.rs` file under `src/`, except this one — it necessarily contains
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri has a parent")
+            .to_path_buf()
+    }
+
+    /// Every `.rs` file under `dir`, except this one — it necessarily contains
     /// the very identifiers it forbids.
-    fn rust_sources_except_self() -> Vec<PathBuf> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    fn rust_sources_in(dir: PathBuf) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        let mut stack = vec![root];
+        let mut stack = vec![dir];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for entry in entries.flatten() {
@@ -28,6 +34,34 @@ mod tests {
                 {
                     out.push(path);
                 }
+            }
+        }
+        out
+    }
+
+    /// The app crate only. Use where the invariant is about what *CrispSorter*
+    /// does, as opposed to what exists anywhere in the workspace.
+    fn rust_sources_except_self() -> Vec<PathBuf> {
+        rust_sources_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+    }
+
+    /// Every Rust source in the workspace, not just `src-tauri/`.
+    ///
+    /// The watermark guard used to scan the app crate alone, which quietly
+    /// assumed synthesis could only ever live there. The workspace has nine
+    /// members; a future generation path in one of them would have been
+    /// invisible — the same "scoped to the wrong tree" failure that let the
+    /// AIToolkit panels ship unaudited (docs/ai-act.md § 5). Widened
+    /// 2026-08-02.
+    fn workspace_rust_sources() -> Vec<PathBuf> {
+        let root = repo_root();
+        let mut out = rust_sources_except_self();
+        out.extend(rust_sources_in(root.join("crisp-index-server/src")));
+        out.extend(rust_sources_in(root.join("crisp-index-protocol/src")));
+        let Ok(entries) = std::fs::read_dir(root.join("crates")) else { return out };
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                out.extend(rust_sources_in(entry.path().join("src")));
             }
         }
         out
@@ -49,7 +83,7 @@ mod tests {
     #[test]
     fn tts_never_bypasses_the_synthetic_audio_watermark() {
         let mut offenders = Vec::new();
-        for path in rust_sources_except_self() {
+        for path in workspace_rust_sources() {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             for needle in ["synthesize_raw", "accept_marking_responsibility"] {
                 if text.contains(needle) {
@@ -78,21 +112,37 @@ mod tests {
     /// build error, months from now, without reading Cargo.toml's warning.
     #[test]
     fn no_build_recipe_enables_face_identification() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("src-tauri has a parent")
-            .to_path_buf();
+        let repo = repo_root();
         let mut offenders = Vec::new();
 
-        for wf in ["ci.yml", "release.yml"] {
-            let path = repo.join(".github/workflows").join(wf);
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        // Every workflow, not a hardcoded pair. Naming `ci.yml` and
+        // `release.yml` made the guard silently blind to a third workflow —
+        // and adding one is not the kind of change anybody would think to
+        // re-audit. Enumerated 2026-08-02.
+        let mut workflows: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if matches!(ext, Some("yml") | Some("yaml")) {
+                    workflows.push(path);
+                }
+            }
+        }
+        assert!(
+            !workflows.is_empty(),
+            "no workflows found — this guard would pass by scanning nothing"
+        );
+
+        for path in &workflows {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
             for (n, line) in text.lines().enumerate() {
                 // The feature is *described* in comments on purpose; only an
                 // actual --features list turning it on is a problem.
                 let enables = line.contains("--features") || line.contains("tauri_args");
                 if enables && line.contains("images-crisplens-identify") {
-                    offenders.push(format!("{wf}:{}: {}", n + 1, line.trim()));
+                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
                 }
             }
         }
@@ -110,6 +160,41 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "a build recipe enables 1:N face identification — read \
+             docs/ai-act.md before changing this test:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// Annex III(1)(b): inferring age or gender from a face is biometric
+    /// **categorisation**, a different limb from identification and one the
+    /// feature guard above does not cover.
+    ///
+    /// `crisplens_protocol::Face` carries `estimated_age` and
+    /// `estimated_gender`, and it arrives with the *parent* feature
+    /// `images-crisplens` — which is legitimately allowed to be enabled,
+    /// because the rest of that surface (settings, auth, watchfolders,
+    /// semantic search) identifies nobody. So the boundary that matters is not
+    /// "is the feature on" but "does CrispSorter ever read those fields".
+    ///
+    /// Today it reads neither. Deserialising a struct that happens to have the
+    /// columns is not categorisation; surfacing them would be. Pinned
+    /// 2026-08-02 so that stays a decision rather than a diff nobody flagged.
+    #[test]
+    fn no_inferred_biometric_attribute_is_ever_read() {
+        let mut offenders = Vec::new();
+        for path in rust_sources_except_self() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for needle in ["estimated_age", "estimated_gender"] {
+                if text.contains(needle) {
+                    offenders.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "CrispSorter reads an inferred biometric attribute (age/gender). \
+             That is Annex III(1)(b) biometric categorisation, not the \
+             identification limb the feature guard covers — read \
              docs/ai-act.md before changing this test:\n  {}",
             offenders.join("\n  ")
         );
@@ -137,14 +222,29 @@ mod tests {
         out
     }
 
-    /// The methods on `AIToolkitClient` that return model-generated content.
-    /// Calling any of them makes the calling view an Art 50 surface.
-    const GENERATIVE_CLIENT_CALLS: [&str; 5] = [
+    /// The client calls that return model-generated content. Calling any of
+    /// them makes the calling view an Art 50 surface.
+    ///
+    /// **Two clients, not one.** The first five are `AIToolkitClient` methods —
+    /// a remote HTTP backend. `llmClient.query(` is the *local* path
+    /// (`src/lib/llm/client.ts` → `POST /chat/completions`), and it is the one
+    /// the app actually leans on: chat answers, batch metadata, the Settings
+    /// benchmark. It was missing from this list until the 2026-08-02 audit,
+    /// which meant `Chat.svelte` — the flagship generative surface — matched no
+    /// needle and was reviewed by nobody. Its badge and gate were correct, but
+    /// by hand: deleting either would have passed CI.
+    ///
+    /// That is the § 5 lesson recurring one layer in. The first version of this
+    /// guard was scoped to the wrong *tree* (Rust, not Svelte); this one was
+    /// scoped to the wrong *client* (remote, not local). When adding a
+    /// generative call anywhere, add its needle here first.
+    const GENERATIVE_CALLS: [&str; 6] = [
         ".chat(",
         ".translate(",
-        ".vision(",       // captioning — generated text about an image
-        ".generateImage(", // synthetic image
-        ".tts(",           // synthetic audio, NOT watermarked (remote backend)
+        ".vision(",         // captioning — generated text about an image
+        ".generateImage(",  // synthetic image
+        ".tts(",            // synthetic audio, marked by the backend in-band
+        "llmClient.query(", // the local LLM — chat, batch metadata, benchmark
     ];
 
     /// Art 50: a view that generates content must disclose it and must satisfy
@@ -165,7 +265,7 @@ mod tests {
         let mut offenders = Vec::new();
         for path in svelte_sources() {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let calls: Vec<&str> = GENERATIVE_CLIENT_CALLS
+            let calls: Vec<&str> = GENERATIVE_CALLS
                 .iter()
                 .copied()
                 .filter(|needle| text.contains(needle))
@@ -246,7 +346,7 @@ mod tests {
     ///
     /// So the client's endpoint list is pinned. Adding one fails here until
     /// somebody classifies it and, if it generates content, adds its call to
-    /// `GENERATIVE_CLIENT_CALLS` above so the disclosure guard covers it.
+    /// `GENERATIVE_CALLS` above so the disclosure guard covers it.
     #[test]
     fn the_aitoolkit_client_exposes_no_unclassified_endpoint() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -287,7 +387,7 @@ mod tests {
             unknown.is_empty(),
             "the AIToolkit client reaches an endpoint no audit has classified. \
              Decide whether it returns generated content; if it does, add its \
-             call to GENERATIVE_CLIENT_CALLS and mark the surface. See \
+             call to GENERATIVE_CALLS and mark the surface. See \
              docs/ai-act.md:\n  {}",
             unknown.join("\n  ")
         );
@@ -329,7 +429,7 @@ mod tests {
         assert!(
             views.iter().any(|p| {
                 std::fs::read_to_string(p)
-                    .map(|t| GENERATIVE_CLIENT_CALLS.iter().any(|n| t.contains(n)))
+                    .map(|t| GENERATIVE_CALLS.iter().any(|n| t.contains(n)))
                     .unwrap_or(false)
             }),
             "no view matched any generative call — the needles have drifted from \
@@ -348,6 +448,73 @@ mod tests {
             }),
             "no view calls .generateImage() — the marked-image guard is inspecting \
              nothing; re-point it at wherever image generation moved"
+        );
+
+        // "At least one view matches" is a weak floor: it was satisfied by the
+        // AIToolkit panels for the whole time Chat.svelte matched nothing. Name
+        // the surface that must always be covered, so the needles cannot drift
+        // off the app's primary generative path while the guard still reports
+        // success on a secondary one.
+        let chat = views
+            .iter()
+            .find(|p| p.ends_with("Chat.svelte"))
+            .expect("Chat.svelte is in the component tree");
+        let chat_text = std::fs::read_to_string(chat).expect("read Chat.svelte");
+        assert!(
+            GENERATIVE_CALLS.iter().any(|n| chat_text.contains(n)),
+            "Chat.svelte matches no generative needle. It is the app's main \
+             generative surface, so either the local client was renamed (update \
+             GENERATIVE_CALLS) or chat moved — and until then the disclosure \
+             guard is not looking at it. See docs/ai-act.md § 5."
+        );
+    }
+
+    /// The disclosure guard reads `.svelte` files, because a badge belongs on a
+    /// view. But `llmClient.query(` is reachable from plain `.ts` too, and a
+    /// generative call in a module has no badge to carry — so the guard above
+    /// cannot express the invariant for those callers.
+    ///
+    /// So they are pinned by name instead. `batch/store.svelte.ts` drives batch
+    /// metadata inference and its output is disclosed where it is *rendered*,
+    /// in `BatchReview.svelte`. A new module-level caller has no such story
+    /// until somebody writes one, which is the point of failing here.
+    #[test]
+    fn no_unreviewed_module_generates_text() {
+        let root = repo_root().join("src");
+        let reviewed = ["store.svelte.ts"];
+        let mut offenders = Vec::new();
+        let mut stack = vec![root];
+        let mut scanned = 0usize;
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("ts") {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // client.ts *defines* the method; it is not a caller.
+                if name == "client.ts" {
+                    continue;
+                }
+                scanned += 1;
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                if text.contains("llmClient.query(") && !reviewed.contains(&name) {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(scanned > 5, "the .ts scan found {scanned} files — too few to be real");
+        assert!(
+            offenders.is_empty(),
+            "a module generates text and no audit has said where that output is \
+             disclosed. Add the disclosure at the view that renders it, then add \
+             the module here. See docs/ai-act.md § 2b:\n  {}",
+            offenders.join("\n  ")
         );
     }
 }

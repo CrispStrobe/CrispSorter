@@ -1,5 +1,12 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte';
+    // Art 50: the connection test and the provider benchmark both run a prompt
+    // through `llmClient.query` and display the model's answer — the benchmark
+    // with a free-form prompt the user writes. Low-traffic, but generated text
+    // shown to a person is generated text, and the rule this project set itself
+    // is that there is no exemption list. Found unmarked in the 2026-08-02 audit.
+    import AiGeneratedBadge from './AiGeneratedBadge.svelte';
+    import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
     import { isDesktop } from '../platform';
     import {
@@ -3659,6 +3666,7 @@
                     </div>
                 </div>
 
+                <IntendedPurposeGate blocking={false} />
                 <button class="action-btn primary large-bench-btn" onclick={runBenchmark} disabled={benchRunning}>
                     {#if benchRunning}<Loader2 size={20} class="loader-spin" />{:else}<Play size={20} />{/if}
                     <span>{i18n.t.settings.benchmark.run_btn}</span>
@@ -5221,8 +5229,10 @@
                         {i18n.t.settings.test_connection}
                     </button>
                 </div>
+                <IntendedPurposeGate blocking={false} />
                 {#if testResult}
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
+                        {#if testResult.success}<AiGeneratedBadge compact />{/if}
                         <span>{testResult.message}</span>
                     </div>
                 {/if}
@@ -5606,6 +5616,8 @@
         <div class="bench-modal" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
             <div class="bench-modal-header">
                 <span>{benchModal.title}</span>
+                <!-- The bodies below are model output, verbatim. -->
+                <AiGeneratedBadge compact />
                 <button class="bench-modal-close" onclick={() => benchModal = null} aria-label={i18n.t.settings.action_close_bench_modal}>✕</button>
             </div>
             <div class="bench-modal-body">
