@@ -87,6 +87,7 @@
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
+    let promoteBusy  = $state<string | null>(null);
     let promoteBusy = $state<string | null>(null);
     let shareCapabilities = $state<Record<string, boolean>>({});
     let batchSelection = $state<Set<string>>(new Set());
@@ -1159,6 +1160,52 @@
         }
     }
 
+    function cbArchiveOriginalPath(uri: string): string | null {
+        if (!uri.startsWith('crisp+cb-archive://')) return null;
+        const hash = uri.indexOf('#');
+        if (hash < 0 || hash === uri.length - 1) return null;
+        try {
+            return decodeURIComponent(uri.slice(hash + 1));
+        } catch {
+            return null;
+        }
+    }
+
+    /** Promote a cloud-backup L1 archive hit to local L3 text/embeddings. */
+    async function promoteCbArchive(result: SearchResult): Promise<void> {
+        const originalPath = cbArchiveOriginalPath(result.location_uri);
+        if (!originalPath || promoteBusy === result.doc_id) return;
+        let retrievePyPath = await getSetting('cbRetrievePyPath', null) as string | null;
+        if (!retrievePyPath) {
+            const { open } = await import('@tauri-apps/plugin-dialog');
+            const selected = await open({
+                multiple: false,
+                filters: [{ name: 'Python script', extensions: ['py'] }],
+                title: 'Select cloud-backup retrieve.py',
+            });
+            if (typeof selected !== 'string') return;
+            retrievePyPath = selected;
+            await saveSetting('cbRetrievePyPath', retrievePyPath);
+        }
+        promoteBusy = result.doc_id;
+        error = '';
+        try {
+            await invoke('index_promote_cb_archive', {
+                docId: result.doc_id,
+                originalPath,
+                retrievePyPath,
+                outputDir: null,
+                ownerId: null,
+            });
+            error = `Promoted ${result.filename || originalPath} to local full-text index.`;
+            await runSearch();
+        } catch (e: any) {
+            error = `Could not promote archive result: ${String(e?.message ?? e)}`;
+        } finally {
+            promoteBusy = null;
+        }
+    }
+
     function openDriveInContext(uri: string): void {
         const parts = driveUriParts(uri);
         if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.remotePath));
@@ -1739,6 +1786,15 @@
                                     onclick={(e) => { e.stopPropagation(); void addResultToBatch(r); }}
                                     title="Add to batch sorter">
                                     <ListPlus size={13} />
+                                </button>
+                            {/if}
+                            {#if cbArchiveOriginalPath(r.location_uri)}
+                                <button class="open-btn"
+                                    disabled={promoteBusy === r.doc_id}
+                                    onclick={(e) => { e.stopPropagation(); void promoteCbArchive(r); }}
+                                    aria-label="Promote archive result to local full-text index"
+                                    title="Restore and promote to local full-text index">
+                                    {#if promoteBusy === r.doc_id}<Loader2 size={13} class="spin" />{:else}L3{/if}
                                 </button>
                             {/if}
                             {#if r.url}
