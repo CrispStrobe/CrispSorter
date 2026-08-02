@@ -18,7 +18,7 @@
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
-    import { subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
@@ -161,6 +161,17 @@
     }
 
     async function openDuplicateItem(itemPath: string) {
+        if (itemPath.startsWith('crisp+drive://')) {
+            const rest = itemPath.slice('crisp+drive://'.length);
+            const slash = rest.indexOf('/');
+            if (slash > 0) {
+                requestBrowserContext(cloudDrivePanel(
+                    rest.slice(0, slash),
+                    decodeURIComponent(rest.slice(slash)),
+                ));
+                return;
+            }
+        }
         try { await openPath(itemPath); }
         catch (e) { error = `Could not open duplicate: ${String(e)}`; }
     }
