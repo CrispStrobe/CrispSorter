@@ -8,7 +8,7 @@
     import AiGeneratedBadge from './AiGeneratedBadge.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
-    import { isDesktop } from '../platform';
+    import { caps, currentCaps } from '../capabilities';
     import {
         resolveSecret,
         bulkSetSecrets,
@@ -146,8 +146,13 @@
 
     // MLX is Apple Silicon only — hide on Windows/Linux
     const isMacOS = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
-    // Sidecar controls (Start/Stop Ollama, llama.cpp, MLX) only shown on desktop
-    const showSidecarControls = isDesktop();
+    // Start/Stop buttons for Ollama, llama.cpp and MLX. Gated on whether
+    // this build can *launch* a server, not on whether it is desktop:
+    // the Mac App Store build is desktop and may not spawn, while every
+    // build can still talk to a server the user started (PLAN P36.2).
+    // `$caps` rather than a one-shot read so the controls appear when the
+    // probe resolves.
+    const showSidecarControls = $derived($caps.launch_local_servers);
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
     let selectedProviderId = $state('global');
@@ -2166,7 +2171,10 @@
     let backupEditMsg = $state('');
 
     async function refreshBackupJobs() {
-        if (!isDesktop) return;
+        // Was `if (!isDesktop)` — testing the imported *function object*,
+        // which is always truthy, so the guard never fired and mobile ran
+        // the desktop-only backup queries anyway. PLAN P36.5.
+        if (!currentCaps().desktop) return;
         backupJobsBusy = true;
         try {
             backupJobs = await invoke<any[]>('backup_job_list');

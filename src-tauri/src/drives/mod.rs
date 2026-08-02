@@ -17,11 +17,16 @@
 //! stable `id` (UUID), a human label, and a type tag.  The registry is
 //! serialised to `{data_dir}/drives.json` so it survives app restarts.
 
+// The Python-CLI drives: spawning is their entire transport, so they are
+// absent from builds that cannot spawn (PLAN P36.2). `desktop-mas` forces
+// the native clients on instead, so nothing is lost there.
+#[cfg(feature = "sidecars")]
 pub mod filen;
 #[cfg(feature = "drive-filen-native")]
 pub mod filen_native_drive;
 pub mod fuse_mount;
 pub mod google_drive;
+#[cfg(feature = "sidecars")]
 pub mod internxt;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native;
@@ -49,18 +54,28 @@ use std::path::{Path, PathBuf};
 /// guard existed the drive picker offered both kinds on iOS and they failed at
 /// use time with a raw spawn error.
 ///
-/// The modules stay compiled on every target (they build fine; it is the
-/// *runtime* that refuses), so the registry dispatch and its tests are
-/// platform-independent. `src/lib/platform.ts` hides the matching UI options,
-/// exactly as it already does for the Ollama / llama.cpp / MLX sidecars; this
-/// is the backstop for anything that gets past the UI.
+/// The modules stay compiled wherever spawning is possible at all (they build
+/// fine; it is the *runtime* that refuses), so the registry dispatch and its
+/// tests are platform-independent. `capabilities()` (PLAN P36.5) hides the
+/// matching UI options, exactly as it does for the Ollama / llama.cpp / MLX
+/// sidecars; this is the backstop for anything that gets past the UI.
 ///
-/// Note also that the Mac App Store build is sandboxed, where exec'ing a
-/// user-chosen interpreter outside the container is denied without a
-/// temporary-exception entitlement. These drives are a direct-download feature.
-/// Tracked in PLAN.md: native Rust replacements would lift both limits.
+/// The Mac App Store build is the same story for a different reason: exec'ing
+/// a user-chosen interpreter outside the container is denied without a
+/// temporary-exception entitlement. That build resolves it rather than
+/// refusing — `desktop-mas` forces `drive-filen-native` and
+/// `drive-internxt-native` on (PLAN P36.1), so Filen and Internxt route
+/// through the Rust clients in `crates/crisp-{filen,internxt}-native` and
+/// never reach this guard.
+///
+/// Unused when every subprocess drive has been compiled out — which is
+/// exactly the `desktop-mas` case, where both native clients are forced on
+/// and `filen.rs` / `internxt.rs` do not exist. Kept rather than gated: it
+/// is the guard the remaining configurations rely on, and its wording is
+/// asserted by a test on every target.
+#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
 pub(crate) fn ensure_subprocess_drives_supported(kind: &str) -> Result<()> {
-    if cfg!(any(target_os = "ios", target_os = "android")) {
+    if !cfg!(feature = "sidecars") || cfg!(any(target_os = "ios", target_os = "android")) {
         return Err(anyhow!(unsupported_drive_message(kind)));
     }
     Ok(())
@@ -70,10 +85,12 @@ pub(crate) fn ensure_subprocess_drives_supported(kind: &str) -> Result<()> {
 /// target. Left inline, only the *polarity* of the guard would be covered —
 /// and only on whichever platform happens to be running the tests, which is
 /// never the one the guard exists for.
+#[cfg_attr(not(feature = "sidecars"), allow(dead_code))]
 fn unsupported_drive_message(kind: &str) -> String {
     format!(
         "the {kind} drive needs to run a Python CLI as a subprocess, which \
-         iOS and Android do not permit — use it from a desktop build, or \
+         this build cannot do — iOS, Android and sandboxed (App Store) \
+         builds all deny it. Use a build with the native {kind} client, or \
          reach the same storage over WebDAV"
     )
 }
@@ -772,12 +789,16 @@ impl DriveRegistry {
                         ),
                     ))
                 }
-                #[cfg(not(feature = "drive-filen-native"))]
+                #[cfg(all(not(feature = "drive-filen-native"), feature = "sidecars"))]
                 {
                     Ok(Box::new(filen::FilenDrive::new(
                         config.label.clone(),
                         PathBuf::from(&config.path),
                     )))
+                }
+                #[cfg(all(not(feature = "drive-filen-native"), not(feature = "sidecars")))]
+                {
+                    Err(anyhow!(unsupported_drive_message("Filen")))
                 }
             }
             DriveType::Internxt => {
@@ -791,12 +812,16 @@ impl DriveRegistry {
                         ),
                     ))
                 }
-                #[cfg(not(feature = "drive-internxt-native"))]
+                #[cfg(all(not(feature = "drive-internxt-native"), feature = "sidecars"))]
                 {
                     Ok(Box::new(internxt::InternxtDrive::new(
                         config.label.clone(),
                         PathBuf::from(&config.path),
                     )))
+                }
+                #[cfg(all(not(feature = "drive-internxt-native"), not(feature = "sidecars")))]
+                {
+                    Err(anyhow!(unsupported_drive_message("Internxt")))
                 }
             }
             DriveType::WebDav => {
@@ -1385,8 +1410,11 @@ mod tests {
         // an EPERM from the sandbox is platform behaviour our tests cannot
         // reach — it is why the guard exists rather than something it proves.
         let got = ensure_subprocess_drives_supported("Filen");
-        if cfg!(any(target_os = "ios", target_os = "android")) {
-            assert!(got.is_err(), "mobile must refuse the subprocess drives");
+        if cfg!(any(target_os = "ios", target_os = "android")) || !cfg!(feature = "sidecars") {
+            assert!(
+                got.is_err(),
+                "a build that cannot spawn must refuse the subprocess drives"
+            );
         } else {
             assert!(got.is_ok(), "desktop must keep working: {got:?}");
         }

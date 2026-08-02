@@ -14,6 +14,19 @@
 //!
 //! Configuration: the absolute path to `cli.py` is stored on
 //! `DriveConfig.path`.
+//!
+//! ## Gated on `sidecars` (PLAN P36.2)
+//!
+//! Spawning is this drive's entire transport, so it is absent from any
+//! build that cannot spawn — mobile, and the sandboxed `desktop-mas`
+//! SKU. `desktop-mas` forces `drive-filen-native` on instead, so Filen
+//! still works there; it just goes through `crates/crisp-filen-native`.
+//!
+//! The gate is stated twice on purpose: `drives/mod.rs` will not declare
+//! the module, and this attribute makes the file itself refuse to
+//! compile into a sandboxed build even if some future `mod` declaration
+//! forgets. It is also what `compliance.rs` looks for.
+#![cfg(feature = "sidecars")]
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;

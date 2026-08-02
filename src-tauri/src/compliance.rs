@@ -200,6 +200,194 @@ mod tests {
         );
     }
 
+    // ── Sandbox invariants (PLAN P36.6) ────────────────────────────────
+    //
+    // Not AI Act obligations, but the same class of regression and so the
+    // same treatment: a property an audit established once, that a later
+    // change reverses silently because the code still works. Somebody adds
+    // a `Command::new` months from now and nothing says the Mac App Store
+    // build just stopped being submittable — it builds, it runs, it is
+    // simply no longer shippable, and the first sign is a review rejection.
+
+    /// Spawning a process must live behind `feature = "sidecars"`.
+    ///
+    /// App Sandbox denies fork/exec of anything outside the app bundle, so
+    /// every `Command::new` in the tree is a thing the `desktop-mas` and
+    /// iOS builds cannot do. The flag is what makes that checkable: gated
+    /// code is code the sandboxed artifact does not contain.
+    ///
+    /// The check is deliberately crude — a file either has the feature
+    /// somewhere in it or it does not. Proving that a *particular* spawn
+    /// sits inside a particular `cfg` needs a parser, and the realistic
+    /// mistake is not a subtly mis-scoped attribute; it is a new spawn in a
+    /// file that never thought about the sandbox at all.
+    ///
+    /// If you are here because this test failed: the fix is a
+    /// `#[cfg(feature = "sidecars")]` on the spawning path plus an
+    /// in-process fallback (or an honest error) for builds without it. See
+    /// PLAN.md P36.2 for the resolution chosen for each existing site.
+    #[test]
+    fn no_process_spawn_outside_the_sidecars_feature() {
+        // Files whose spawns are already gated, with what a sandboxed build
+        // reaches instead. Listed rather than inferred so that adding a file
+        // here is a deliberate act with a stated substitute.
+        let gated: [(&str, &str); 8] = [
+            ("lib.rs", "mod no_sidecars — HTTP client without the launcher"),
+            ("tts/mod.rs", "CrispASR synthesis, watermarked, played by the webview"),
+            ("extractors/ocr.rs", "CrispEmbed / PaddleOCR / ocrs tiers"),
+            ("audio/ffmpeg_fallback.rs", "the glint decode tier"),
+            ("volume/mod.rs", "getattrlist(2) / getfsstat(2) on macOS"),
+            ("platform_share.rs", "NSWorkspace via Launch Services"),
+            ("drives/filen.rs", "crates/crisp-filen-native"),
+            ("drives/internxt.rs", "crates/crisp-internxt-native"),
+        ];
+
+        let mut offenders = Vec::new();
+        let mut seen_gated = Vec::new();
+        for path in rust_sources_except_self() {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            if !text.contains("Command::new") {
+                continue;
+            }
+            // `#[cfg(test)]` code never ships, so a spawn in a test module
+            // is not a sandbox problem. Only whole test files are exempt —
+            // a file that mixes both still has to gate the real path.
+            let display = path.display().to_string();
+            let is_gated = text.contains("feature = \"sidecars\"");
+            if is_gated {
+                if let Some((name, _)) = gated.iter().find(|(n, _)| display.ends_with(n)) {
+                    seen_gated.push(*name);
+                }
+                continue;
+            }
+            offenders.push(display);
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a process spawn is reachable from a sandboxed build. Gate it \
+             behind `feature = \"sidecars\"` and give the sandboxed path an \
+             in-process substitute — see PLAN.md P36.2:\n  {}",
+            offenders.join("\n  ")
+        );
+
+        // And the guard must still be looking at the files it was written
+        // for. A rename or a move would otherwise leave it passing over an
+        // empty set, which is the failure mode every guard in this file is
+        // written to avoid.
+        for (name, substitute) in gated {
+            assert!(
+                seen_gated.contains(&name),
+                "{name} no longer contains a `sidecars`-gated spawn. Either \
+                 the spawn is gone (delete this row) or the file moved and \
+                 the guard is no longer watching it. Sandboxed builds were \
+                 relying on: {substitute}"
+            );
+        }
+    }
+
+    /// `dev-tools` must not reach a shipped artifact.
+    ///
+    /// It gates `index_promote_cb_archive`, which runs an interpreter named
+    /// by an environment variable against a script path chosen by the
+    /// caller. That is arbitrary code execution wearing a Tauri command's
+    /// clothes; it is a developer convenience and nothing else.
+    ///
+    /// Same shape as `no_build_recipe_enables_face_identification`, and for
+    /// the same reason: the realistic mistake is somebody appending the
+    /// feature to a `--features` line while chasing a build error.
+    #[test]
+    fn no_build_recipe_enables_dev_tools() {
+        let repo = repo_root();
+        let mut offenders = Vec::new();
+
+        let mut workflows: Vec<PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(repo.join(".github/workflows")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if matches!(ext, Some("yml") | Some("yaml")) {
+                    workflows.push(path);
+                }
+            }
+        }
+        assert!(
+            !workflows.is_empty(),
+            "no workflows found — this guard would pass by scanning nothing"
+        );
+
+        for path in &workflows {
+            let Ok(text) = std::fs::read_to_string(path) else { continue };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            for (n, line) in text.lines().enumerate() {
+                let enables = line.contains("--features") || line.contains("tauri_args");
+                if enables && line.contains("dev-tools") {
+                    offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+
+        let manifest = std::fs::read_to_string(repo.join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        for line in manifest.lines() {
+            let l = line.trim();
+            // `dev-tools = []` is the declaration; `default = [...]` or any
+            // other feature listing it is what would turn it on.
+            if l.starts_with("dev-tools =") {
+                continue;
+            }
+            if l.contains("\"dev-tools\"") && !l.starts_with('#') {
+                offenders.push(format!("Cargo.toml: {l}"));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a build recipe enables `dev-tools`, which carries a route that \
+             executes a caller-chosen script. See PLAN.md P36.4:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// The Mac App Store SKU differs from the `.dmg` by one feature.
+    ///
+    /// Pinned because the split is easy to undo by accident: someone adds a
+    /// dependency to `desktop-mas` to fix a build, and the two SKUs quietly
+    /// stop being the same product. `desktop-mas` must be `desktop` plus the
+    /// native drives — never `sidecars`, which is the whole point, and never
+    /// a third thing the `.dmg` does not also have.
+    #[test]
+    fn the_mac_app_store_sku_is_desktop_minus_spawning() {
+        let manifest = std::fs::read_to_string(repo_root().join("src-tauri/Cargo.toml"))
+            .expect("read src-tauri/Cargo.toml");
+        let line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("desktop-mas"))
+            .expect("`desktop-mas` is the Mac App Store feature; it must exist");
+
+        assert!(
+            !line.contains("sidecars"),
+            "`desktop-mas` enables `sidecars`, so the sandboxed build now \
+             spawns processes and is not submittable: {line}"
+        );
+        for required in ["desktop", "drive-filen-native", "drive-internxt-native"] {
+            assert!(
+                line.contains(required),
+                "`desktop-mas` must include `{required}` — the Python-CLI \
+                 drives are exactly what a sandboxed build cannot run: {line}"
+            );
+        }
+
+        // And `sidecars` must not have crept into `default`, which would put
+        // the spawn paths into every build including mobile.
+        for l in manifest.lines() {
+            let l = l.trim();
+            if l.starts_with("default") && l.contains("sidecars") {
+                panic!("`sidecars` is a default feature: {l}");
+            }
+        }
+    }
+
     /// Every `.svelte` file under the frontend `src/`.
     fn svelte_sources() -> Vec<PathBuf> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

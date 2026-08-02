@@ -383,23 +383,79 @@
             .trim();
     }
 
+    /**
+     * Two speech paths, one contract (PLAN P36.2).
+     *
+     * `{mode:'native'}` — a platform synth (`say`, SAPI, espeak) is already
+     * speaking; `tts_stop` interrupts it and there is nothing to play here.
+     *
+     * `{mode:'webview'}` — the sandboxed path. The backend cannot spawn a
+     * synth, so it returned watermarked WAV bytes from CrispASR and we own
+     * the playback. Held in `ttsAudio` so `stopSpeaking` can interrupt it.
+     */
+    type SpeakOutcome =
+        | { mode: 'native' }
+        | { mode: 'webview'; wav_base64: string; sample_rate: number };
+
+    let ttsAudio: HTMLAudioElement | null = null;
+
+    function playWav(base64: string): Promise<void> {
+        return new Promise((resolve) => {
+            // A data: URL rather than a Blob URL — nothing to revoke, and
+            // the utterances are a few hundred KB at most.
+            const audio = new Audio(`data:audio/wav;base64,${base64}`);
+            ttsAudio = audio;
+            const done = () => {
+                if (ttsAudio === audio) ttsAudio = null;
+                resolve();
+            };
+            audio.onended = done;
+            audio.onerror = done;
+            audio.play().catch((e) => {
+                console.warn('[tts] playback failed', e);
+                done();
+            });
+        });
+    }
+
     async function speakBotReply(text: string) {
         const clean = plainifyForSpeech(text);
         if (!clean) return;
         try {
             ttsSpeaking = true;
-            await invoke('tts_speak', { text: clean });
+            // Interrupt our own previous utterance first; the native path
+            // does the equivalent inside the Rust command.
+            stopWebviewAudio();
+            const outcome = await invoke<SpeakOutcome | null>('tts_speak', { text: clean });
+            if (outcome?.mode === 'webview') {
+                // Here we *do* know when speech ends, so the flag tracks it
+                // exactly rather than guessing with a timer.
+                await playWav(outcome.wav_base64);
+                ttsSpeaking = false;
+                return;
+            }
         } catch (e) {
             console.warn('[tts] speak failed', e);
         } finally {
-            // We can't cleanly tell when the synth finishes (it runs detached
-            // on the Rust side). Reset the flag a moment later so the Stop
-            // button stays enabled while plausibly speaking.
-            setTimeout(() => { ttsSpeaking = false; }, 500);
+            // Native path only: we can't cleanly tell when the synth finishes
+            // (it runs detached on the Rust side). Reset the flag a moment
+            // later so the Stop button stays enabled while plausibly speaking.
+            if (ttsSpeaking) setTimeout(() => { ttsSpeaking = false; }, 500);
         }
     }
 
+    function stopWebviewAudio() {
+        if (!ttsAudio) return;
+        ttsAudio.pause();
+        ttsAudio.currentTime = 0;
+        ttsAudio = null;
+    }
+
     async function stopSpeaking() {
+        // Both paths, unconditionally: whichever one is not running is a
+        // no-op, and asking the backend which it was would be a round trip
+        // to learn something the Stop button does not care about.
+        stopWebviewAudio();
         try {
             await invoke('tts_stop');
         } catch (e) {

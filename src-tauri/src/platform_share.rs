@@ -52,10 +52,13 @@ pub struct PlatformCapabilities {
 pub fn capabilities() -> PlatformCapabilities {
     PlatformCapabilities {
         system_share_sheet: cfg!(target_os = "macos"),
-        direct_print: cfg!(any(
-            target_os = "macos",
-            target_os = "linux",
-            target_os = "windows"
+        // Printing is `lp` / the Windows Print verb — a spawn on every
+        // platform, so a build without `sidecars` has no print path at
+        // all and must say so (P36.2). This is the mechanism that keeps
+        // the button off the sandboxed build rather than letting it error.
+        direct_print: cfg!(all(
+            feature = "sidecars",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
         )),
         platform: std::env::consts::OS.to_string(),
     }
@@ -77,6 +80,15 @@ fn ensure_exists(path: &Path) -> Result<(), String> {
 /// macOS specifically an `NSPrintOperation` against a rendered document.
 /// [`open_in_default_app`] is the escape hatch when the user wants the
 /// dialog: their PDF viewer will have one.
+///
+/// Every implementation here runs another program, so the whole function
+/// is `sidecars`-gated (P36.2). Sandboxed printing is a genuinely
+/// different shape of call — `NSPrintOperation` against a rendered
+/// document, on the main thread — and belongs behind this same
+/// [`PlatformOps`] seam when it is written, not bolted onto `lp`.
+/// [`capabilities`] reports `direct_print: false` meanwhile, so the UI
+/// hides the button rather than offering one that errors.
+#[cfg(feature = "sidecars")]
 pub fn print_file(path: &Path) -> Result<String, String> {
     ensure_exists(path)?;
 
@@ -135,20 +147,43 @@ pub fn print_file(path: &Path) -> Result<String, String> {
 /// Doubles as the "print with a dialog" path: the user's PDF viewer has
 /// one, and this is the only way to reach it without embedding a print
 /// panel ourselves.
+///
+/// ## macOS goes through Launch Services, not `open(1)` (P36.2)
+///
+/// `NSWorkspace.openURL:` asks the window server to open the file; App
+/// Sandbox permits it precisely because the app is not the one executing
+/// anything. `Command::new("open")` — and, note, `tauri_plugin_opener::
+/// open_path`, which looks like the sandbox-safe choice but delegates to
+/// the `open` crate and so runs `/usr/bin/open` — is a fork/exec of a
+/// binary outside the bundle, which the sandbox denies. Same user-visible
+/// behaviour, and it is now the path on every macOS build rather than a
+/// second one to keep in sync.
 pub fn open_in_default_app(path: &Path) -> Result<(), String> {
     ensure_exists(path)?;
-    let cmd = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(cmd)
-        .arg(path)
-        .spawn()
-        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
-    Ok(())
+
+    #[cfg(target_os = "macos")]
+    {
+        return mac_workspace::open(path);
+    }
+
+    #[cfg(all(feature = "sidecars", not(target_os = "macos")))]
+    {
+        let cmd = if cfg!(target_os = "windows") { "explorer" } else { "xdg-open" };
+        std::process::Command::new(cmd)
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+        Ok(())
+    }
+
+    #[cfg(all(not(feature = "sidecars"), not(target_os = "macos")))]
+    {
+        Err(format!(
+            "opening {} in another application needs the `sidecars` feature \
+             on this platform",
+            path.display()
+        ))
+    }
 }
 
 /// Show the file in the platform's file manager, selected.
@@ -156,14 +191,10 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
     ensure_exists(path)?;
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("failed to reveal: {e}"))?;
-        return Ok(());
+        // Finder reveal, same Launch Services route as `open_in_default_app`.
+        return mac_workspace::reveal(path);
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "sidecars", target_os = "windows"))]
     {
         std::process::Command::new("explorer")
             .arg(format!("/select,{}", path.display()))
@@ -171,7 +202,7 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
             .map_err(|e| format!("failed to reveal: {e}"))?;
         return Ok(());
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(all(feature = "sidecars", not(any(target_os = "macos", target_os = "windows"))))]
     {
         // No portable "select this file" on Linux; open the directory.
         let dir = path.parent().unwrap_or(path);
@@ -179,6 +210,52 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
             .arg(dir)
             .spawn()
             .map_err(|e| format!("failed to open folder: {e}"))?;
+        Ok(())
+    }
+    #[cfg(all(not(feature = "sidecars"), not(target_os = "macos")))]
+    {
+        Err(format!(
+            "revealing {} in the file manager needs the `sidecars` feature \
+             on this platform",
+            path.display()
+        ))
+    }
+}
+
+/// Launch Services, reached through AppKit rather than through `open(1)`.
+///
+/// Both calls are `NSWorkspace` messages: they hand a URL to the window
+/// server and return. Nothing is spawned by this process, which is what
+/// makes them usable inside the sandbox — and they are already on the
+/// objc2-app-kit dependency the share sheet below needs, so this costs no
+/// new crate.
+#[cfg(target_os = "macos")]
+mod mac_workspace {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSArray, NSString, NSURL};
+    use std::path::Path;
+
+    fn file_url(path: &Path) -> objc2::rc::Retained<NSURL> {
+        NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()))
+    }
+
+    pub fn open(path: &Path) -> Result<(), String> {
+        // `openURL:` returns false when Launch Services has no handler for
+        // the type — a real outcome the user should hear about, not a
+        // silent no-op.
+        if NSWorkspace::new().openURL(&file_url(path)) {
+            Ok(())
+        } else {
+            Err(format!(
+                "macOS has no application registered to open {}",
+                path.display()
+            ))
+        }
+    }
+
+    pub fn reveal(path: &Path) -> Result<(), String> {
+        let urls = NSArray::from_retained_slice(&[file_url(path)]);
+        NSWorkspace::new().activateFileViewerSelectingURLs(&urls);
         Ok(())
     }
 }
@@ -244,9 +321,20 @@ pub mod tauri_commands {
 
     #[tauri::command]
     pub async fn platform_print(path: String) -> Result<String, String> {
-        tokio::task::spawn_blocking(move || print_file(Path::new(&path)))
-            .await
-            .map_err(|e| format!("join: {e}"))?
+        #[cfg(feature = "sidecars")]
+        {
+            tokio::task::spawn_blocking(move || print_file(Path::new(&path)))
+                .await
+                .map_err(|e| format!("join: {e}"))?
+        }
+        #[cfg(not(feature = "sidecars"))]
+        {
+            let _ = path;
+            Err("this build cannot print directly — `platform_capabilities` \
+                 reports direct_print:false. Open the file in its default \
+                 application and print from there."
+                .to_string())
+        }
     }
 
     #[tauri::command]
@@ -316,9 +404,19 @@ mod tests {
     fn capabilities_report_this_platform() {
         let c = capabilities();
         assert_eq!(c.platform, std::env::consts::OS);
-        // Every desktop target we build for can dispatch a print.
-        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        // Every desktop target we build for can dispatch a print — as long
+        // as it may spawn `lp` / the Print verb.
+        #[cfg(all(
+            feature = "sidecars",
+            any(target_os = "macos", target_os = "linux", target_os = "windows")
+        ))]
         assert!(c.direct_print);
+        #[cfg(not(feature = "sidecars"))]
+        assert!(
+            !c.direct_print,
+            "a build with no print path must not advertise one — the frontend \
+             renders the button from this flag"
+        );
         // The share sheet is macOS-only until the iOS impl lands.
         #[cfg(target_os = "macos")]
         assert!(c.system_share_sheet);
@@ -329,11 +427,13 @@ mod tests {
     #[test]
     fn missing_files_are_rejected_before_touching_the_os() {
         let missing = Path::new("/definitely/not/here/nope.pdf");
+        #[cfg(feature = "sidecars")]
         assert!(print_file(missing).is_err());
         assert!(open_in_default_app(missing).is_err());
         assert!(reveal_in_file_manager(missing).is_err());
     }
 
+    #[cfg(feature = "sidecars")]
     #[test]
     fn missing_file_error_names_the_path() {
         let err = print_file(Path::new("/nope/missing.pdf")).unwrap_err();

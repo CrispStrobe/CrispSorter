@@ -175,6 +175,21 @@ getrandom   = "0.2"
 zpdf        = { git = "https://github.com/CrispStrobe/zpdf", rev = "eacd155806545017f536d9a5d1b0aef937da753d", default-features = false, optional = true }
 zpdf-writer = { git = "https://github.com/CrispStrobe/zpdf", rev = "eacd155806545017f536d9a5d1b0aef937da753d", optional = true }
 
+# P36.3 — glint: the in-process decode tier that lets the ffmpeg shell-out
+# be optional. Clean-room MIT C++17 codec suite (MP3, AAC-LC, Opus,
+# Ogg-Vorbis, FLAC) with a safe Rust wrapper — so unlike ffmpeg (LGPL, and a
+# separate binary besides) it links in and ships, which satisfies both the
+# P32 permissive-only rule and the App Sandbox no-spawn rule.
+#
+# Taken from crates.io rather than the sibling `../glint` checkout: the
+# crisp-docx path deps already force every CI job to clone a second repo, and
+# a decode tier is not worth a third. Same version either way (0.11.0).
+#
+# `links = "glint"` in glint-audio-sys means only one copy can ever be in the
+# graph — a second, differently-versioned glint would be a link-time conflict,
+# not a silently duplicated codec.
+glint-audio = { version = "0.11.0", optional = true }
+
 # RAG / Search
 # lancedb 0.26.2 is the latest stable on crates.io.
 # 0.27.0-beta.5 is git-only and adds nothing relevant (JS native arrays, Lance rc bump).
@@ -252,7 +267,34 @@ default = []
 # crates behind it depend on subprocess spawning, inotify, and other
 # OS primitives absent on mobile.  CI / release builds for desktop
 # should enable it: `cargo build --features desktop`
-desktop = ["dep:notify", "dep:walkdir", "dep:tauri-plugin-shell", "dep:tauri-plugin-process", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
+desktop = ["dep:notify", "dep:walkdir", "dep:mistralrs", "reqwest/native-tls", "dep:feed-rs", "dep:docx-rs"]
+# P36.1 — the right to spawn a helper process, split out of `desktop`.
+#
+# App Sandbox (Mac App Store, iOS) forbids fork/exec of anything outside the
+# app bundle, so the two SKUs differ by exactly this feature and nothing else.
+# `sidecars` implies `desktop` because every spawn site in the tree also needs
+# the desktop surface around it; the reverse does not hold, which is the whole
+# point. Every `Command::new` in `src/` lives behind this flag — enforced by
+# `no_process_spawn_outside_the_sidecars_feature` in `compliance.rs`.
+#
+# The in-process substitute for each spawn is named in PLAN.md P36.2. Nothing
+# here is a fallback in the "degraded" sense: mistral.rs, CrispEmbed and
+# CrispASR are all linked in, so a sandboxed build keeps local inference, OCR,
+# ASR and TTS. What it loses is the *launcher* for user-installed servers.
+sidecars = ["desktop", "dep:tauri-plugin-shell", "dep:tauri-plugin-process"]
+# P36.1 — the Mac App Store SKU: everything `desktop` has, no spawning.
+#
+# Forces the native drive clients on, because the Python-CLI drives are
+# exactly what a sandboxed build cannot run.
+desktop-mas = ["desktop", "drive-filen-native", "drive-internxt-native"]
+# P36.4 — developer-only routes that no shipped artifact may carry.
+#
+# Today: `index_promote_cb_archive`, which shells out to a `retrieve.py`
+# chosen by the caller. Same shape as `images-crisplens-identify` — off by
+# default, named in no release recipe, guarded by a test
+# (`no_build_recipe_enables_dev_tools` in `compliance.rs`). Enabling it also
+# needs `sidecars`, since the route spawns.
+dev-tools = []
 # P33.1 — native Internxt protocol. Kept opt-in while the client is being
 # verified against the vendor's Python CLI in both directions.
 drive-internxt-native = ["dep:crisp-internxt"]
@@ -325,6 +367,12 @@ translate-nmt   = ["crisp-docx-llm/nmt", "crispasr"]
 # use `audio::writer::write_wav_mono` without dragging the whole crispasr
 # feature into the build.  hound is pure-Rust, no system deps, ~30 KB compiled.
 crispasr          = ["dep:crispasr", "dep:crispasr-sys", "dep:symphonia"]
+# P36.3 — the in-process decode tier below symphonia. Independent of
+# `crispasr` as a feature, but only reachable through it: `audio::decoder`
+# and the tier ladder are themselves `crispasr`-gated, so enabling
+# `audio-glint` alone compiles the codec suite and calls nothing. Release
+# recipes name both.
+audio-glint       = ["dep:glint-audio"]
 crispasr-vulkan   = ["crispasr", "crispasr/vulkan", "crispasr-sys/vulkan"]
 crispasr-metal    = ["crispasr", "crispasr/metal", "crispasr-sys/metal"]
 crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
@@ -344,12 +392,19 @@ mistralrs = { version = "0.7.0", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for macOS
 mistralrs = { version = "0.7.0", features = ["metal"], optional = true }
+# P36.2 — `getattrlist(2)` / `getfsstat(2)` for volume ids, replacing the
+# `mount` + `df` + `diskutil` shell-outs that App Sandbox forbids. Already in
+# the tree transitively (tokio, tauri, ort, …); declared here so
+# `volume::macos` can name it directly.
+libc = "0.2"
 # P32.2 — the macOS share sheet (NSSharingServicePicker). Already in the
 # tree via tauri; declared here so we can call AppKit directly. Bindings
 # only, so no new licence surface (objc2 crates are MIT/Apache-2.0).
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSGeometry"] }
-objc2-app-kit = { version = "0.3", features = ["NSSharingService", "NSView", "NSWindow", "NSResponder", "NSGraphics"] }
+# `NSWorkspace` is P36.2: opening and revealing files through Launch
+# Services instead of spawning `open(1)`, which App Sandbox forbids.
+objc2-app-kit = { version = "0.3", features = ["NSSharingService", "NSView", "NSWindow", "NSResponder", "NSGraphics", "NSWorkspace", "NSRunningApplication"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 ort = { version = "=2.0.0-rc.11" } # Rely on default features for Linux

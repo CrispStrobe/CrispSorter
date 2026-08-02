@@ -298,7 +298,7 @@ jobs:
         # features. Those sub-features only select the ggml backend inside the
         # sibling crates, so the CrispSorter code compiled is identical and CI
         # needs no Vulkan SDK; backend-specific breakage stays release-only.
-        run: cargo test -p crispsorter --lib --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Build the CLI binary
         working-directory: repos/CrispSorter
@@ -307,7 +307,7 @@ jobs:
         # gate on P32.11 Z4 — the claims zpdf is adopted for. The native drive
         # features match the shipped release builds, so the binary CI checks is
         # the binary users get.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,crispasr,translate-align,translate-nmt,pdf-render
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF

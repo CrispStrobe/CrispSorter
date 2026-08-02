@@ -14,6 +14,7 @@
     import { Settings as SettingsIcon, Database, Library, ListChecks, MessageSquare, ChevronLeft, ChevronRight, UploadCloud, Terminal, Languages, ScanText, FileText } from 'lucide-svelte';
     import { CORE_TABS, AITOOLKIT_TABS, MOBILE_TABS, visibleTabs } from '$lib/tabs';
     import { aitoolkitCaps } from '$lib/aitoolkit';
+    import { buildFlags, loadCapabilities } from '$lib/capabilities';
     import AIToolkitView from '$lib/components/AIToolkitView.svelte';
     import AIToolkitCapability from '$lib/components/AIToolkitCapability.svelte';
     import IndexIngest from '$lib/components/IndexIngest.svelte';
@@ -118,9 +119,20 @@
         else         _stopQueuePoll?.();
     });
 
+    // P36.5 — one capability set for every `requires:` gate: `build:*`
+    // keys from what this binary compiled in, `service:*` keys from a
+    // connected AIToolkit backend. Merged here rather than in `tabs.ts` so
+    // the registry stays a plain data file with no store imports.
+    let allCaps = $derived(new Set([...$buildFlags, ...$aitoolkitCaps]));
+
     onMount(() => {
         let cleanup = () => {};
         (async () => {
+            // Probe the build before anything renders conditionally. Its
+            // own failure path leaves every gated surface hidden, so this
+            // deliberately does not guard the rest of startup.
+            await loadCapabilities();
+
             // Load saved language
             const savedLang = await getSetting('language', 'en') as Language;
             i18n.setLanguage(savedLang);
@@ -365,7 +377,7 @@
                 {#if !navCollapsed}<span class="logo-text">CrispSorter</span>{/if}
             </div>
             
-            {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], $aitoolkitCaps) as tab (tab.id)}
+            {#each visibleTabs([...CORE_TABS, ...AITOOLKIT_TABS], allCaps) as tab (tab.id)}
                 {#if tab.separatorBefore}<div class="nav-separator"></div>{/if}
                 {@const Icon = tab.icon}
                 <button class="nav-item" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id} title={((i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id)}>
@@ -517,7 +529,7 @@
 
     <!-- Mobile bottom tab bar — visible only on small screens -->
     <nav class="mobile-nav">
-        {#each MOBILE_TABS as tab (tab.id)}
+        {#each visibleTabs(MOBILE_TABS, allCaps) as tab (tab.id)}
             {@const Icon = tab.icon}
             <button class="mobile-tab" class:active={activeTab === tab.id} onclick={() => activeTab = tab.id}>
                 <Icon size={20} /><span>{(i18n.t.nav as Record<string, string>)[tab.id] ?? tab.label ?? tab.id}</span>

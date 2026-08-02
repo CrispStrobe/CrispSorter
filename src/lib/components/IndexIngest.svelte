@@ -6,7 +6,7 @@
     import { readDir, readFile, readTextFile, stat, type DirEntry } from '@tauri-apps/plugin-fs';
     import { load as storeLoad } from '@tauri-apps/plugin-store';
     import { getSetting, saveSetting } from '$lib/store';
-    import { isDesktop } from '../platform';
+    import { caps } from '../capabilities';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
@@ -3691,18 +3691,20 @@
                                 <option value="onedrive">OneDrive / SharePoint (Browser-Anmeldung)</option>
                                 <!-- Offer each kind when it can actually work here.
                                      The subprocess fallback shells out to a Python
-                                     CLI, which iOS/Android forbid (offering it there
-                                     produced a spawn error at use time). The native
-                                     client has no such limit — so gate on native
-                                     support first and on the platform only for the
-                                     fallback. WebDAV remains the mobile route to the
-                                     same storage when neither applies. -->
-                                {#if nativeDriveSupport.filen || isDesktop()}
+                                     CLI, which iOS/Android forbid and App Sandbox
+                                     denies (offering it there produced a spawn error
+                                     at use time). The native client has no such
+                                     limit — so gate on native support first and on
+                                     `drive_subprocess` for the fallback, which is
+                                     the build's own answer rather than a guess from
+                                     the user agent (PLAN P36.5). WebDAV remains the
+                                     route to the same storage when neither applies. -->
+                                {#if nativeDriveSupport.filen || $caps.drive_subprocess}
                                     <option value="filen">
                                         {nativeDriveSupport.filen ? 'Filen (native)' : 'Filen (Python cli.py)'}
                                     </option>
                                 {/if}
-                                {#if nativeDriveSupport.internxt || isDesktop()}
+                                {#if nativeDriveSupport.internxt || $caps.drive_subprocess}
                                     <option value="internxt">
                                         {nativeDriveSupport.internxt ? 'Internxt (native)' : 'Internxt (Python cli.py)'}
                                     </option>
@@ -3711,9 +3713,9 @@
                                 <option value="sftp">SFTP (über OS-Mount)</option>
                             </select>
                         </label>
-                        {#if !isDesktop()}
+                        {#if !$caps.drive_subprocess && !nativeDriveSupport.filen && !nativeDriveSupport.internxt}
                             <p class="drive-dialog-hint">
-                                Auf iOS und Android funktionieren die Python-CLI-Laufwerke nicht.
+                                In dieser Version funktionieren die Python-CLI-Laufwerke nicht.
                                 Für Filen oder Internxt bitte einen extern erreichbaren WebDAV-Endpunkt verwenden.
                             </p>
                         {/if}

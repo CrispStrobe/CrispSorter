@@ -2,6 +2,7 @@ pub mod asr;
 pub mod audio;
 pub mod audit;
 pub mod batch_session;
+pub mod capabilities;
 pub mod bg_ingest;
 pub mod images;
 /// Re-export the extracted crispcat workspace crate as `catalog` so existing
@@ -39,35 +40,58 @@ pub mod volume;
 #[cfg(feature = "desktop")]
 pub mod watcher;
 
-/// Speak `text` aloud via the platform's native TTS synth.
+/// Speak `text` aloud.
 ///
-#[cfg(feature = "desktop")]
 /// Replaces any in-flight utterance — calling `tts_speak` twice in a row
-/// kills the first synth and starts the second. The Rust handler returns
-/// as soon as the synth process is spawned; speaking happens in the
-/// background. Use `tts_stop` to interrupt mid-utterance (e.g. on the
-/// chat Stop button).
+/// interrupts the first and starts the second.
+///
+/// The return value tells the caller whether it still has work to do.
+/// `{"mode":"native"}` means a platform synth is already speaking and
+/// `tts_stop` interrupts it. `{"mode":"webview", …}` carries watermarked
+/// WAV bytes the caller must play itself — the sandboxed path, where
+/// spawning `say` is not an option (PLAN P36.2).
+#[cfg(feature = "desktop")]
 #[tauri::command]
-async fn tts_speak(state: tauri::State<'_, AppState>, text: String) -> Result<(), String> {
+async fn tts_speak(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<Option<tts::SpeakOutcome>, String> {
     if text.trim().is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     ensure_intended_purpose(&state, "tts_speak").await?;
-    // Stop any current utterance first — overlapping synths make the
-    // output unintelligible and the user's mental model is "speak this
-    // now, not after the previous reply finishes".
+
+    #[cfg(feature = "sidecars")]
     {
-        let mut slot = state.tts_process.lock().await;
-        if let Some(mut prev) = slot.take() {
-            tts::kill_quietly(&mut prev).await;
+        // Stop any current utterance first — overlapping synths make the
+        // output unintelligible and the user's mental model is "speak this
+        // now, not after the previous reply finishes".
+        {
+            let mut slot = state.tts_process.lock().await;
+            if let Some(mut prev) = slot.take() {
+                tts::kill_quietly(&mut prev).await;
+            }
         }
+        let child = tts::spawn_speak(&text)
+            .await
+            .map_err(|e| format!("TTS spawn failed: {e:#}"))?;
+        let mut slot = state.tts_process.lock().await;
+        *slot = Some(child);
+        Ok(Some(tts::SpeakOutcome::Native))
     }
-    let child = tts::spawn_speak(&text)
-        .await
-        .map_err(|e| format!("TTS spawn failed: {e:#}"))?;
-    let mut slot = state.tts_process.lock().await;
-    *slot = Some(child);
-    Ok(())
+
+    #[cfg(not(feature = "sidecars"))]
+    {
+        // In-process synthesis reuses the same lazily-loaded CrispASR
+        // handle voice input already builds, so speech costs no second
+        // model load. Interrupting is the webview's job here: it owns the
+        // element that is playing.
+        let handle = asr_handle(&state).await;
+        let outcome = tts::speak_in_process(&handle, &text)
+            .await
+            .map_err(|e| format!("TTS synthesis failed: {e:#}"))?;
+        Ok(Some(outcome))
+    }
 }
 
 #[cfg(feature = "desktop")]
@@ -873,14 +897,24 @@ async fn catalog_metadata(path: String) -> Result<CafMetadataDto, String> {
         })
 }
 
-#[cfg(feature = "desktop")]
 /// Stop any in-flight TTS utterance. No-op when nothing is speaking.
+///
+/// Only the `sidecars` path has anything to stop: it owns a synth process.
+/// On the in-process path the audio lives in a webview element the caller
+/// created, so the caller stops it — the command stays registered and
+/// succeeds so the frontend needs no second code path.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 async fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut slot = state.tts_process.lock().await;
-    if let Some(mut child) = slot.take() {
-        tts::kill_quietly(&mut child).await;
+    #[cfg(feature = "sidecars")]
+    {
+        let mut slot = state.tts_process.lock().await;
+        if let Some(mut child) = slot.take() {
+            tts::kill_quietly(&mut child).await;
+        }
     }
+    #[cfg(not(feature = "sidecars"))]
+    let _ = state;
     Ok(())
 }
 
@@ -954,6 +988,35 @@ async fn audio_metadata(path: String) -> Result<audio::probe::AudioMetadata, Str
     .map_err(|e| format!("audio_metadata join error: {e}"))?
 }
 
+/// The app's single CrispASR handle, created on first use.
+///
+/// Both directions of speech go through this: `asr_transcribe` (voice in)
+/// and, on sandboxed builds, `tts_speak` (voice out). Sharing one handle
+/// means the model is loaded once, not once per direction.
+///
+/// Cheap to call — the handle is a clonable lazy slot, and the actual
+/// model download + load happens inside its first `transcribe` /
+/// `synthesize`.
+async fn asr_handle(state: &AppState) -> asr::AsrHandle {
+    // Resolve model cache from the active IndexConfig (so voice and
+    // embedder share the same external-volume override) with a sane
+    // app-data fallback when the index is disabled.
+    let cache_dir = {
+        let idx = state.index.lock().await;
+        let data_dir_for_default = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|h| h.join(".cache").join("crispsorter"))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        index::resolve_model_cache_dir(&idx.config, &data_dir_for_default)
+    };
+
+    let mut slot = state.asr.lock().await;
+    if slot.is_none() {
+        *slot = Some(asr::AsrHandle::new(asr::AsrConfig::default(), cache_dir));
+    }
+    slot.as_ref().unwrap().clone()
+}
+
 /// Transcribe Float32 PCM 16 kHz mono audio to text via CrispASR.
 ///
 /// Lazy-initializes the ASR handle on first call (the handle's first
@@ -968,27 +1031,9 @@ async fn asr_transcribe(
     if pcm.is_empty() {
         return Ok(String::new());
     }
-    // Resolve model cache from the active IndexConfig (so voice and
-    // embedder share the same external-volume override) with a sane
-    // app-data fallback when the index is disabled.
-    let cache_dir = {
-        let idx = state.index.lock().await;
-        let data_dir_for_default = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .map(|h| h.join(".cache").join("crispsorter"))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        index::resolve_model_cache_dir(&idx.config, &data_dir_for_default)
-    };
 
-    let handle = {
-        let mut slot = state.asr.lock().await;
-        if slot.is_none() {
-            *slot = Some(asr::AsrHandle::new(asr::AsrConfig::default(), cache_dir));
-        }
-        slot.as_ref().unwrap().clone()
-    };
-
-    handle
+    asr_handle(&state)
+        .await
         .transcribe(pcm)
         .await
         .map_err(|e| format!("ASR transcribe failed: {e:#}"))
@@ -1130,7 +1175,7 @@ struct DownloadProgress {
 
 // Global state to hold the high-level Model instance and current model path
 // Using tokio::sync::Mutex because guards need to be Send across await points in Tauri commands
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 use tokio::process::Child as TokioChild;
 
 /// Intended-purpose gate for a Tauri command, resolving `data_dir` from state.
@@ -1157,19 +1202,23 @@ pub struct AppState {
     model: Mutex<Option<Arc<Model>>>,
     #[cfg(feature = "desktop")]
     current_model_path: Mutex<Option<String>>,
-    #[cfg(feature = "desktop")]
+    // The three managed helper servers. `sidecars`, not `desktop`: a
+    // sandboxed desktop build still talks to llama.cpp / MLX / Ollama over
+    // HTTP, it just cannot be the thing that started them (PLAN P36.2).
+    #[cfg(feature = "sidecars")]
     sidecar_process: Mutex<Option<TokioChild>>,
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "sidecars")]
     mlx_process: Mutex<Option<TokioChild>>,
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "sidecars")]
     ollama_process: Mutex<Option<TokioChild>>,
     pub index: Mutex<index::IndexState>,
     /// Speech-to-text handle. Lazy-loaded on first `asr_transcribe` call.
     /// `None` until the user invokes voice input; `Some` thereafter.
     pub asr: Mutex<Option<asr::AsrHandle>>,
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "sidecars")]
     /// Currently-speaking TTS child process, if any. Held so `tts_stop`
-    /// can kill it mid-utterance.
+    /// can kill it mid-utterance. Absent on the in-process path, where the
+    /// webview owns the playing audio.
     pub tts_process: Mutex<Option<TokioChild>>,
     #[cfg(feature = "desktop")]
     /// Folder-watcher state. Single watched directory for v1; the
@@ -1193,11 +1242,12 @@ pub struct AppState {
     pub transfer_queue: sync::transfer_queue::TransferQueue,
 }
 
-// ── Desktop-only sidecar commands ──────────────────────────────────────────
-// These spawn OS-level processes (llama.cpp, MLX, Ollama) which are
-// unavailable on mobile.  Gated behind `feature = "desktop"`.
+// ── Sidecar commands ───────────────────────────────────────────────────────
+// These spawn OS-level processes (llama.cpp, MLX, Ollama), which mobile does
+// not offer and App Sandbox forbids.  Gated behind `feature = "sidecars"`;
+// see `mod no_sidecars` below for what a sandboxed build registers instead.
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn start_llamacpp_sidecar(
     state: tauri::State<'_, AppState>,
@@ -1363,7 +1413,7 @@ async fn start_llamacpp_sidecar(
     Ok("Sidecar starting".to_string())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut sidecar_lock = state.sidecar_process.lock().await;
@@ -1374,7 +1424,7 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
     Ok(())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn start_mlx_server(
     state: tauri::State<'_, AppState>,
@@ -1529,7 +1579,7 @@ async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn start_ollama(
     state: tauri::State<'_, AppState>,
@@ -1622,7 +1672,7 @@ async fn start_ollama(
     Ok("Ollama starting".to_string())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut ollama_lock = state.ollama_process.lock().await;
@@ -1633,7 +1683,7 @@ async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "sidecars")]
 #[tauri::command]
 async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut mlx_lock = state.mlx_process.lock().await;
@@ -1643,6 +1693,103 @@ async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String
     }
     Ok(())
 }
+
+// ── Sandboxed desktop: the same six commands, minus the launcher ───────────
+//
+// P36.2. `desktop-mas` keeps llama.cpp, MLX and Ollama in the provider list
+// — they are reached over loopback HTTP, which
+// `com.apple.security.network.client` permits and which is how every other
+// App Store client of a local model server works. What it cannot do is be
+// the process that *starts* them.
+//
+// So the commands stay registered rather than disappearing from
+// `generate_handler!`: a missing command surfaces to the frontend as an
+// opaque "command not found", while these say what happened and what to do
+// about it. `capabilities()` (P36.5) reports `sidecars: false` so the UI
+// never offers the button in the first place — this is the backstop, not
+// the mechanism.
+#[cfg(all(feature = "desktop", not(feature = "sidecars")))]
+mod no_sidecars {
+    /// One message, four call sites — the text is the user-facing
+    /// contract, and four hand-copied variants would drift.
+    fn cannot_launch(server: &str, how_to_start: &str) -> String {
+        format!(
+            "this build cannot start {server} for you: launching a helper \
+             process is not permitted in a sandboxed app. Start it yourself \
+             ({how_to_start}) and CrispSorter will connect to it over \
+             localhost as usual."
+        )
+    }
+
+    #[tauri::command]
+    pub async fn start_llamacpp_sidecar(
+        _state: tauri::State<'_, crate::AppState>,
+        _app_handle: tauri::AppHandle,
+        _model_path: String,
+        _port: u16,
+    ) -> Result<String, String> {
+        Err(cannot_launch("llama-server", "`llama-server -m <model> --port <port>`"))
+    }
+
+    #[tauri::command]
+    pub async fn stop_llamacpp_sidecar(
+        _state: tauri::State<'_, crate::AppState>,
+    ) -> Result<(), String> {
+        // Nothing of ours is running, so "stopped" is the truthful answer.
+        // Erroring here would make the frontend's teardown path noisy for
+        // no reason.
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn start_mlx_server(
+        _state: tauri::State<'_, crate::AppState>,
+        _app_handle: tauri::AppHandle,
+        _model_path: String,
+        _port: u16,
+    ) -> Result<String, String> {
+        Err(cannot_launch(
+            "the MLX server",
+            "`mlx_lm.server --model <model> --port <port>`",
+        ))
+    }
+
+    #[tauri::command]
+    pub async fn stop_mlx_server(
+        _state: tauri::State<'_, crate::AppState>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn start_ollama(
+        _state: tauri::State<'_, crate::AppState>,
+        app_handle: tauri::AppHandle,
+    ) -> Result<String, String> {
+        use tauri::Emitter;
+        // An already-running Ollama is the expected case here, and it needs
+        // no launcher at all — report it exactly as the spawning path does
+        // so the frontend's ready-state handling is identical.
+        if let Ok(r) = reqwest::get("http://localhost:11434/api/tags").await {
+            if r.status().is_success() {
+                let _ = app_handle.emit("ollama-ready", true);
+                return Ok("Ollama already running".to_string());
+            }
+        }
+        Err(cannot_launch("Ollama", "`ollama serve`, or the Ollama app"))
+    }
+
+    #[tauri::command]
+    pub async fn stop_ollama(_state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "desktop", not(feature = "sidecars")))]
+use no_sidecars::{
+    start_llamacpp_sidecar, start_mlx_server, start_ollama, stop_llamacpp_sidecar, stop_mlx_server,
+    stop_ollama,
+};
 
 #[tauri::command]
 async fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
@@ -2720,13 +2867,21 @@ async fn run_mistralrs_query(
 pub fn run() {
     #[cfg(feature = "desktop")]
     initialize_logging();
+    // `mut` is only used by the `sidecars` block below, so a sandboxed
+    // build has nothing to reassign. Allowed rather than restructured: the
+    // plugin list stays one readable chain, and the alternative is two
+    // near-identical `Builder::default()` expressions behind a `cfg`.
+    #[cfg_attr(not(feature = "sidecars"), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build());
-    #[cfg(feature = "desktop")]
+    // P36.1 — the two plugins that exist to run other programs. Absent from
+    // the sandboxed build by construction: `sidecars` is the only feature
+    // that pulls them in as dependencies at all.
+    #[cfg(feature = "sidecars")]
     {
         builder = builder
             .plugin(tauri_plugin_shell::init())
@@ -3012,15 +3167,15 @@ pub fn run() {
             model: Mutex::new(None),
             #[cfg(feature = "desktop")]
             current_model_path: Mutex::new(None),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "sidecars")]
             sidecar_process: Mutex::new(None),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "sidecars")]
             mlx_process: Mutex::new(None),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "sidecars")]
             ollama_process: Mutex::new(None),
             index: Mutex::new(index::IndexState::disabled()),
             asr: Mutex::new(None),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "sidecars")]
             tts_process: Mutex::new(None),
             #[cfg(feature = "desktop")]
             watcher: Mutex::new(watcher::WatcherState::new()),
@@ -3440,6 +3595,9 @@ pub fn run() {
             pdf_text_region::tauri_commands::pdf_measure_text_region,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
+            // P36.5 — what this build compiled in. The frontend gates every
+            // conditional surface on this instead of sniffing the user agent.
+            capabilities::tauri_commands::build_capabilities,
             platform_share::tauri_commands::platform_print,
             platform_share::tauri_commands::platform_open_external,
             platform_share::tauri_commands::platform_share,
@@ -3820,6 +3978,9 @@ pub fn run() {
             pdf_text_region::tauri_commands::pdf_measure_text_region,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
+            // P36.5 — what this build compiled in. The frontend gates every
+            // conditional surface on this instead of sniffing the user agent.
+            capabilities::tauri_commands::build_capabilities,
             platform_share::tauri_commands::platform_print,
             platform_share::tauri_commands::platform_open_external,
             platform_share::tauri_commands::platform_share,

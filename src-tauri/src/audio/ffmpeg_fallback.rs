@@ -18,6 +18,19 @@
 //!
 //! That writes raw Float32 LE PCM at 16 kHz mono to stdout, which
 //! we read directly into a `Vec<f32>` via `bytemuck`-style reinterpret.
+//!
+//! ## Gated on `sidecars` (PLAN P36.3)
+//!
+//! This is tier 3, and the only tier that runs another program. A build
+//! that cannot spawn stops at tier 2 (`glint_fallback`), losing the
+//! container long tail this module exists for — `.avi`, `.wmv`, `.flv`,
+//! `.ts`, `.amr`, `.ra` — which `supported_extension` reports honestly
+//! rather than failing at decode time.
+//!
+//! Stated as an attribute as well as in `audio/mod.rs` so the file itself
+//! cannot be pulled into a sandboxed build by a future `mod` line, and so
+//! `compliance.rs` can see the gate.
+#![cfg(feature = "sidecars")]
 
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
