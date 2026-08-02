@@ -33,6 +33,9 @@ Highlights from this pass:
 - Certificate pin data is validated, but root-SPKI handshake enforcement is
   not falsely claimed: the current native-tls/reqwest boundary does not
   expose the verified root chain needed by the policy.
+- CI caught and corrected the reqwest `query` feature omission introduced by
+  Google Drive trash restoration; the provider client now declares the request
+  builder feature it actually uses.
 
 ---
 

@@ -73,6 +73,14 @@ merged with `git fetch origin main && git merge --no-edit origin/main` and
 pushed to `origin/main` for GitHub CI. Always inspect concurrent remote-main
 commits before pushing; do not reset or overwrite them.
 
+### Reqwest request helpers are feature-gated
+
+In reqwest 0.13, `RequestBuilder::query` is behind the crate's `query`
+feature, including for the blocking client. A new `.query(...)` call can
+therefore fail in the clean CI dependency graph with `no method named query`.
+Keep `src-tauri/Cargo.toml`'s feature list aligned with the request-builder
+APIs used by provider connectors.
+
 ---
 
 ## CI release refs must use tagged releases, not commit SHAs

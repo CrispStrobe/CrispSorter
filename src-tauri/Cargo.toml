@@ -65,7 +65,7 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
 # default-features=false drops the native-tls (OpenSSL) backend.
 # Desktop gets native-tls (best perf), mobile gets rustls (no system OpenSSL needed).
-reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart"] }
+reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart", "query"] }
 # Vendored OpenSSL: cross-compiles OpenSSL from source so Android / iOS
 # builds don't need a pre-installed system OpenSSL.  On desktop the
 # system libssl is still preferred (vendored only kicks in when the
