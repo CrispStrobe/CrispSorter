@@ -190,6 +190,18 @@ repository secrets; ordinary CI remains hermetic.
 
 The same binary doubles as a CLI tool. Detection is on the first argument — running `crispsorter` with no args (the typical GUI launch) bypasses clap entirely.
 
+Registered-drive search is available headlessly as well as in the GUI:
+
+```bash
+crispsorter drives search --drive <drive-id> "report" --path /documents
+crispsorter drives search --drive <drive-id> "invoice" --content --json
+```
+
+Search is bounded to depth 8 and 100 results by default. Filename matching is
+the default; `--content` additionally reads only provider-readable files up to
+256 KiB. This is a bounded fallback, not unrestricted provider full-text
+search.
+
 ```bash
 crispsorter version
 crispsorter doctor                                     # OCR engines, embedder cache, etc.
